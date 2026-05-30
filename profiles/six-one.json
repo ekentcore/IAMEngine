@@ -1,0 +1,162 @@
+{
+  "schemaVersion": "2.0",
+
+  "client": {
+    "id": "six-one",
+    "name": "Six One Commodities LLC",
+    "primaryDomain": "61commodities.com",
+    "pod": "POD-FinancialServices"
+  },
+
+  "identity": {
+    "backbone": "ad-synced",
+    "usernamePatterns": ["{first}{last}@{domain}"],
+    "password": { "mode": "generate", "minLength": 14, "onOffboard": "reset-and-capture" },
+    "directorySync": { "host": "61c-dc01", "command": "Start-ADSyncSyncCycle -PolicyType Delta" }
+  },
+
+  "secrets": {
+    "ad-dc":        { "provider": "delinea", "id": "REPLACE_ME", "label": "61c-dc01 domain controller" },
+    "m365-admin":   { "provider": "delinea", "id": "REPLACE_ME", "label": "365 Admin Center" },
+    "teams-admin":  { "provider": "delinea", "id": "REPLACE_ME", "label": "Teams Admin Portal" },
+    "mimecast":     { "provider": "delinea", "id": "REPLACE_ME", "label": "Mimecast Admin Console" },
+    "spanning":     { "provider": "delinea", "id": "REPLACE_ME", "label": "Spanning (uses 365 secret)" },
+    "perimeter81":  { "provider": "delinea", "id": "REPLACE_ME", "label": "Perimeter 81" }
+  },
+
+  "delivery": { "method": "mimecast-secure-email", "welcomeLetter": true },
+
+  "systems": [
+    {
+      "key": "servicenow", "mode": "api", "dependsOn": [],
+      "onboard":  { "when": "always", "config": { "requiredFields": ["email", "phone", "location", "title"] } },
+      "offboard": { "when": "always", "config": { "action": "mark-inactive-on-end-date" } }
+    },
+    {
+      "key": "active-directory", "mode": "api", "secrets": ["ad-dc"], "dependsOn": ["servicenow"],
+      "onboard": {
+        "when": "always",
+        "config": {
+          "ou": "Six One Users",
+          "homeDrive": { "letter": "H", "unc": "\\\\61c-fs01\\Users\\<username>" },
+          "groups": ["Back Office Users"],
+          "conditionalGroups": [
+            { "when": "avd == true",      "groups": ["61C-CORE_Users"] },
+            { "when": "perimeter == true", "groups": ["Perimeter 81 requested groups"] }
+          ]
+        }
+      },
+      "offboard": {
+        "when": "always", "captureEvidence": true,
+        "guardrails": ["do-not-move-ou"],
+        "config": {
+          "resetPassword": true,
+          "hideFromGal": { "attribute": "msDS-cloudExtensionAttribute1", "value": "HideFromGAL" },
+          "removeAllGroups": true,
+          "disableAccount": true,
+          "ouNote": "Do NOT move the user out of their OU — it deletes the user in 365."
+        }
+      }
+    },
+    {
+      "key": "directory-sync", "mode": "api", "secrets": ["ad-dc"], "dependsOn": ["active-directory"],
+      "onboard":  { "when": "always" },
+      "offboard": { "when": "always" }
+    },
+    {
+      "key": "m365", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["directory-sync"],
+      "onboard": {
+        "when": "always",
+        "config": {
+          "licenses": ["Microsoft 365 E3", "Microsoft Defender for Office 365 (Plan 2)", "Microsoft Entra ID P2", "Microsoft Teams Domestic Calling Plan", "Microsoft Teams Phone Standard"],
+          "groups": ["Mimecast TTP Users"],
+          "geoDistributionLists": { "Houston": ["Houston All"], "Stamford": ["Stamford All"] },
+          "geoGroups": { "Houston": ["Houston Printix Users"], "Stamford": ["Stamford Printix Users"] },
+          "pocApprovalGroups": ["Mimecast Large File Send Users", "Mimecast Secure Send Users"],
+          "sharedMailboxes": ["Global Vacation Calendar"],
+          "sharePointSites": ["Applications"],
+          "profilePhoto": "61C logo"
+        }
+      },
+      "offboard": {
+        "when": "always", "captureEvidence": true,
+        "config": {
+          "blockSignIn": true,
+          "removeAllGroups": true,
+          "oneDriveBackup": { "target": "Offboarded User Data SharePoint site", "folder": "<username>" },
+          "mailbox": { "convertToShared": true, "sizeThresholdGB": 50, "aboveThreshold": "skip-convert-and-keep-e3" },
+          "removeLicense": { "exceptWhen": "mailbox above 50GB" }
+        }
+      }
+    },
+    {
+      "key": "exchange", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["m365"],
+      "offboard": {
+        "when": "always",
+        "config": {
+          "convertToShared": { "skipIfMailboxOverGB": 50 },
+          "onRequest": ["ooo-message", "email-forwarding", "email-delegates"],
+          "blockMobileDevices": true,
+          "disable": ["Exchange ActiveSync", "OWA (unless delegate access needed)"]
+        }
+      }
+    },
+    {
+      "key": "teams", "mode": "api", "secrets": ["teams-admin"], "dependsOn": ["m365"],
+      "onboard": {
+        "when": "on-request",
+        "config": {
+          "phoneByAreaCode": { "Stamford": "203", "Houston": "346", "Singapore": "+65" },
+          "writeBack": ["ServiceNow contact business phone", "AD telephoneNumber", "case notes"]
+        }
+      }
+    },
+    {
+      "key": "avd", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["m365"],
+      "onboard":  { "when": "on-request", "config": { "reuseHighestUnassigned": true, "hostPool": "61C-CORE" } },
+      "offboard": { "when": "on-request", "config": { "hostPool": "61C-CORE", "steps": ["Unassign user", "Stop the AVD (stop first if unassign fails)"] } }
+    },
+    {
+      "key": "mimecast", "mode": "api", "secrets": ["mimecast"], "dependsOn": ["m365"],
+      "onboard": { "when": "always", "config": { "syncAll": true, "verifyInternalDirectory": "@61commodities.com" } }
+    },
+    {
+      "key": "spanning", "mode": "api", "secrets": ["spanning"], "dependsOn": ["m365"],
+      "onboard": { "when": "always", "config": { "syncList": true, "assignLicense": true, "procureIfUnavailable": true } },
+      "offboard": {
+        "when": "always", "dependsOn": ["exchange", "m365"],
+        "config": { "afterMailboxConvertAndLicenseRemoval": true, "swapLicense": { "from": "Shared Mailbox", "to": "Archive" }, "procureIfUnavailable": true }
+      }
+    },
+    {
+      "key": "perimeter81", "mode": "api", "secrets": ["perimeter81"], "dependsOn": ["m365"],
+      "onboard":  { "when": "on-request", "config": { "defaultIf": "user receives a laptop", "ensureLicenseAvailable": true, "procureIfUnavailable": true, "note": "Do not add the user (group-driven)." } },
+      "offboard": { "when": "always", "config": { "removeUser": true, "downtickLicense": true } }
+    },
+    {
+      "key": "tableau", "mode": "manual", "dependsOn": [],
+      "onboard": { "when": "on-request", "config": { "note": "Reach out to the application champion for licensing." } }
+    },
+    {
+      "key": "workstation", "mode": "manual", "dependsOn": [],
+      "onboard": { "when": "on-request", "requiresApproval": false, "config": { "onsiteEngineerCheck": true, "avdAlternative": true } }
+    },
+    {
+      "key": "hardware", "mode": "manual", "dependsOn": [],
+      "offboard": { "when": "on-request", "config": { "backupTarget": "Offboarded User Data SharePoint site", "keep": ["Desktop", "Documents", "Downloads", "Pictures"], "removeProfiles": true } }
+    },
+    {
+      "key": "welcome-letter", "mode": "manual", "dependsOn": ["m365"],
+      "onboard": { "when": "always", "config": { "ccPoc": "KC Becraft", "ccManager": true, "ccPodManager": "IAM Pod Manager", "attachToCase": ["MS Teams #", "61C Email", "PC S/N", "PC Name"] } }
+    },
+    {
+      "key": "first-day-call", "mode": "manual", "dependsOn": [],
+      "onboard": { "when": "always", "schedule": { "offsetDaysMin": 0, "offsetDaysMax": 0, "note": "Finance Pod calls the user at 2pm local on first day to confirm login." } }
+    },
+    {
+      "key": "case-resolution", "mode": "api", "dependsOn": ["m365", "mimecast"],
+      "onboard":  { "when": "always", "config": { "verifyMfaPhone": true, "sendCredentials": true, "closeAllTasks": true } },
+      "offboard": { "when": "always", "config": { "deliverResetPasswordIfRequested": true, "closeAllTasks": true } }
+    }
+  ]
+}

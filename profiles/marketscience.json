@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "2.0",
+
+  "client": {
+    "id": "marketscience",
+    "name": "MarketScience",
+    "primaryDomain": "marketscience.co"
+  },
+
+  "identity": {
+    "backbone": "entra",
+    "usernamePatterns": ["{first}.{last}@{domain}"],
+    "lowercase": true,
+    "password": { "mode": "generate", "minLength": 14, "onOffboard": "reset-and-capture" }
+  },
+
+  "secrets": {
+    "m365-admin": { "provider": "delinea", "id": "REPLACE_ME", "label": "365 Admin Center" }
+  },
+
+  "delivery": { "method": "mimecast-secure-email", "note": "Credentials delivered via Mimecast secure email even though this client has no Mimecast provisioning." },
+
+  "systems": [
+    {
+      "key": "servicenow", "mode": "api", "dependsOn": [],
+      "onboard":  { "when": "always", "config": { "requiredFields": ["email", "phone", "location", "title"] } },
+      "offboard": { "when": "always", "config": { "action": "mark-inactive-on-end-date" } }
+    },
+    {
+      "key": "m365", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["servicenow"],
+      "onboard": {
+        "when": "always",
+        "config": { "licenses": ["Microsoft 365 E5"], "groupsOnRequest": true, "aliasOnRequest": true }
+      },
+      "offboard": {
+        "when": "always", "captureEvidence": true,
+        "config": { "blockSignIn": true, "hideFromGal": true, "removeAllGroups": true, "onRequest": ["ooo-message", "email-forwarding", "email-delegates"], "removeLicense": { "defer": true, "removedBy": "entra", "note": "Do not remove the license here — removed in the Entra step after mailbox conversion." } }
+      }
+    },
+    {
+      "key": "exchange", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["m365"],
+      "offboard": {
+        "when": "always",
+        "config": { "removeMobileDevices": true, "disable": ["Exchange ActiveSync", "OWA (unless delegate access needed)"], "convertToShared": { "value": true, "unless": "instructed not to" } }
+      }
+    },
+    {
+      "key": "entra", "mode": "api", "secrets": ["m365-admin"], "dependsOn": ["exchange", "m365"],
+      "offboard": {
+        "when": "always", "captureEvidence": true,
+        "config": { "removeAppAccess": true, "revokeMfaSessions": true, "revokeActiveSessions": true, "removeLicense": true, "verifyAfterSync": { "waitMinutes": 5, "confirm": "account not moved to deleted users group" } }
+      }
+    },
+    {
+      "key": "case-resolution", "mode": "api", "dependsOn": ["m365"],
+      "onboard":  { "when": "always", "config": { "sendCredentials": true, "closeAllTasks": true } },
+      "offboard": { "when": "always", "config": { "deliverResetPasswordIfRequested": true, "closeAllTasks": true } }
+    }
+  ]
+}

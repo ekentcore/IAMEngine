@@ -1,0 +1,28 @@
+# --- secrets / env (NEVER commit) ---
+env.env
+.env
+.env.local
+*.env
+!*.env.example
+web/.env
+web/.env.local
+
+# --- dependencies ---
+node_modules/
+web/node_modules/
+
+# --- build output ---
+.next/
+web/.next/
+dist/
+build/
+
+# --- prisma generated client ---
+web/node_modules/.prisma/
+
+# --- os / editor ---
+.DS_Store
+*.log
+
+# --- archives ---
+*.zip

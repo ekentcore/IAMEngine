@@ -1,0 +1,177 @@
+// iam-engine database — PostgreSQL via Prisma
+// Normalizes the v2 client profiles (profiles/_schema.json) into rows.
+// Run: npx prisma migrate dev && npx prisma db seed
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Backbone {
+  entra
+  google
+  ad_synced
+  ad_standalone
+}
+
+enum ClientStatus {
+  active
+  archived
+}
+
+enum Mode {
+  api
+  browser
+  manual
+}
+
+enum Lifecycle {
+  always
+  on_request
+  never
+}
+
+enum Action {
+  onboard
+  offboard
+}
+
+enum CaseStatus {
+  queued
+  planning
+  running
+  needs_manual
+  needs_approval
+  completed
+  failed
+}
+
+enum JobStatus {
+  pending
+  dispatched
+  running
+  succeeded
+  failed
+  manual
+  skipped
+}
+
+enum AgentScope {
+  central
+  client_network
+}
+
+model Client {
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  name          String
+  primaryDomain String
+  domains       String[]
+  backbone      Backbone
+  pod           String?
+  status        ClientStatus   @default(active)
+  createdAt     DateTime       @default(now())
+  archivedAt    DateTime?
+  systems       ClientSystem[]
+  secrets       Secret[]
+  agents        Agent[]
+  cases         CaseRequest[]
+}
+
+model SystemCatalog {
+  key            String         @id // servicenow, m365, active-directory, ...
+  name           String
+  defaultMode    Mode           @default(api)
+  supportsOnboard  Boolean      @default(true)
+  supportsOffboard Boolean      @default(true)
+  moduleName     String?        // e.g. Coretelligent.M365
+  buildTier      Int            @default(3) // 1 = core/built, 3 = long tail
+  clientSystems  ClientSystem[]
+}
+
+model ClientSystem {
+  id               String        @id @default(cuid())
+  client           Client        @relation(fields: [clientId], references: [id])
+  clientId         String
+  system           SystemCatalog @relation(fields: [systemKey], references: [key])
+  systemKey        String
+  mode             Mode
+  onboardWhen      Lifecycle     @default(never)
+  offboardWhen     Lifecycle     @default(never)
+  dependsOn        String[]      // system keys
+  requiresApproval Boolean       @default(false)
+  captureEvidence  Boolean       @default(false)
+  secretNames      String[]      // references Secret.name for this client
+  config           Json?         // per-client, per-lane settings (loose)
+
+  @@unique([clientId, systemKey])
+}
+
+model Secret {
+  id         String  @id @default(cuid())
+  client     Client  @relation(fields: [clientId], references: [id])
+  clientId   String
+  name       String  // logical key used by ClientSystem.secretNames
+  provider   String  @default("delinea")
+  externalId String  // Delinea secret id — NEVER a value
+  label      String?
+
+  @@unique([clientId, name])
+}
+
+model Agent {
+  id         String     @id @default(cuid())
+  client     Client?    @relation(fields: [clientId], references: [id])
+  clientId   String?    // null for the central cloud runner
+  name       String
+  scope      AgentScope
+  version    String?
+  lastSeenAt DateTime?
+  enabled    Boolean    @default(true)
+  jobs       Job[]
+}
+
+model CaseRequest {
+  id                  String     @id @default(cuid())
+  client              Client     @relation(fields: [clientId], references: [id])
+  clientId            String
+  action              Action
+  serviceNowCaseNumber String?
+  status              CaseStatus @default(queued)
+  payload             Json       // the ServiceNow intake form (see DATA_MODEL.md)
+  createdAt           DateTime   @default(now())
+  jobs                Job[]
+}
+
+model Job {
+  id            String      @id @default(cuid())
+  case          CaseRequest @relation(fields: [caseRequestId], references: [id])
+  caseRequestId String
+  systemKey     String
+  sequence      Int
+  mode          Mode
+  status        JobStatus   @default(pending)
+  assignedAgent Agent?      @relation(fields: [assignedAgentId], references: [id])
+  assignedAgentId String?
+  request       Json?       // resolved instructions for the runner
+  result        Json?
+  evidence      Json?       // screenshots / membership snapshots refs
+  error         String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  at            DateTime @default(now())
+  actor         String   // system | <user> | agent:<id>
+  clientId      String?
+  caseRequestId String?
+  jobId         String?
+  action        String
+  detail        Json?
+}

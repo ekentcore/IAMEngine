@@ -1,0 +1,20 @@
+# PostgreSQL
+POSTGRES_USER=your_user
+POSTGRES_PASSWORD=your_password
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=msp_kpi_db
+
+# Redis (for SN data caching)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=10
+REDIS_PASSWORD=
+
+# ServiceNow Integration
+SN_INSTANCE_URL=https://yourinstance.service-now.com
+SN_USERNAME=
+SN_PASSWORD=
+
+# Logging
+LOG_LEVEL=INFO
