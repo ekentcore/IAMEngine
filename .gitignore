@@ -36,3 +36,14 @@ data/
 *.swp
 *.swo
 *~
+
+# --- python (profile-generator extract stage) ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# --- profile-generator output (regenerable via run.sh; promote good drafts into profiles/) ---
+tools/profile-generator/out/
+profiles/_drafts/
