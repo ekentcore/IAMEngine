@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
@@ -31,13 +31,61 @@ const BACKBONE_LABEL: Record<string, string> = {
   ad_standalone: "AD standalone",
 };
 
+type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
+type SortDir = "asc" | "desc";
+
+// null/empty sorts last regardless of direction.
+function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
+  const av = a[key];
+  const bv = b[key];
+  const aEmpty = av === null || av === "";
+  const bEmpty = bv === null || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  if (typeof av === "number" && typeof bv === "number") return av - bv;
+  return String(av).localeCompare(String(bv));
+}
+
 export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const router = useRouter();
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
+  const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [busy, setBusy] = useState<string | null>(null);
 
-  async function toggleArchive(c: ClientVM) {
-    const action = c.status === "archived" ? "restore" : "archive";
-    if (action === "archive" && !confirm(`Archive ${c.name}? (offboard a client)`)) return;
+  // archive confirmation
+  const confirmRef = useRef<HTMLDialogElement>(null);
+  const [pending, setPending] = useState<ClientVM | null>(null);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = clients.filter((c) => {
+      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (modeledFilter === "modeled" && !c.modeled) return false;
+      if (modeledFilter === "unmodeled" && c.modeled) return false;
+      if (!q) return true;
+      return [c.name, c.coreId, c.region, c.primaryDomain, c.supportStatus]
+        .some((v) => v?.toLowerCase().includes(q));
+    });
+    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+  }, [clients, query, statusFilter, modeledFilter, sortKey, sortDir]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("asc"); }
+  }
+
+  function askArchive(c: ClientVM) {
+    setPending(c);
+    confirmRef.current?.showModal();
+  }
+
+  async function patch(c: ClientVM, action: "archive" | "restore") {
     setBusy(c.slug);
     try {
       const res = await fetch(`/api/clients/${c.slug}`, {
@@ -52,6 +100,22 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     }
   }
 
+  async function confirmArchive() {
+    const c = pending;
+    confirmRef.current?.close();
+    setPending(null);
+    if (c) await patch(c, "archive");
+  }
+
+  function SortHead({ k, label }: { k: SortKey; label: string }) {
+    return (
+      <th className="sortable" onClick={() => toggleSort(k)}>
+        {label}
+        {sortKey === k && <span className="arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+      </th>
+    );
+  }
+
   return (
     <>
       <div className="toolbar" style={{ marginTop: "1rem" }}>
@@ -59,26 +123,47 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
         <AddClientDialog />
       </div>
 
+      <div className="filters">
+        <input
+          className="search"
+          placeholder="Search name, CORE id, domain, region…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as never)}>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+          <option value="all">All statuses</option>
+        </select>
+        <select className="inline" value={modeledFilter} onChange={(e) => setModeledFilter(e.target.value as never)}>
+          <option value="all">All</option>
+          <option value="modeled">Modeled</option>
+          <option value="unmodeled">Not modeled</option>
+        </select>
+        <span className="grow" />
+        <span className="note">
+          {visible.length} of {clients.length}
+        </span>
+      </div>
+
       <table>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>CORE id</th>
-            <th>Region</th>
-            <th>Domain</th>
+            <SortHead k="name" label="Name" />
+            <SortHead k="coreId" label="CORE id" />
+            <SortHead k="region" label="Region" />
+            <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
-            <th>On / Off</th>
-            <th>Systems</th>
-            <th>Status</th>
+            <SortHead k="onboardingRating" label="On / Off" />
+            <SortHead k="systemCount" label="Systems" />
+            <SortHead k="status" label="Status" />
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {clients.map((c) => (
+          {visible.map((c) => (
             <tr key={c.id}>
-              <td>
-                <Link href={`/clients/${c.slug}`}>{c.name}</Link>
-              </td>
+              <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted">{c.coreId ?? "—"}</td>
               <td className="muted">{c.region ?? "—"}</td>
               <td className="muted">{c.primaryDomain || "—"}</td>
@@ -89,9 +174,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   <span className="badge unmodeled">not modeled</span>
                 )}
               </td>
-              <td className="muted">
-                {(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}
-              </td>
+              <td className="muted">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
               <td className="muted">{c.systemCount}</td>
               <td>
                 {c.status === "archived" ? (
@@ -101,21 +184,35 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td>
-                <button onClick={() => toggleArchive(c)} disabled={busy === c.slug}>
-                  {c.status === "archived" ? "Restore" : "Archive"}
-                </button>
+                {c.status === "archived" ? (
+                  <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
+                ) : (
+                  <button onClick={() => askArchive(c)} disabled={busy === c.slug}>Archive</button>
+                )}
               </td>
             </tr>
           ))}
-          {clients.length === 0 && (
+          {visible.length === 0 && (
             <tr>
               <td colSpan={9} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
-                No clients yet. Click “Refresh from ServiceNow”.
+                {clients.length === 0 ? "No clients yet. Click “Refresh from ServiceNow”." : "No matches."}
               </td>
             </tr>
           )}
         </tbody>
       </table>
+
+      <dialog ref={confirmRef}>
+        <h2>Archive client</h2>
+        <p>
+          Archive <strong>{pending?.name}</strong>? This offboards the client — it’s removed from
+          the active list and marked archived. You can restore it afterwards.
+        </p>
+        <div className="dialog-actions">
+          <button onClick={() => { confirmRef.current?.close(); setPending(null); }}>Cancel</button>
+          <button className="btn-danger" onClick={confirmArchive}>Archive</button>
+        </div>
+      </dialog>
     </>
   );
 }

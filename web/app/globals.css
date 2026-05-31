@@ -37,7 +37,30 @@ h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
 h2 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0; }
 
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.toolbar { display: flex; align-items: center; gap: 0.5rem; }
+.toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+/* filter/search bar */
+.filters { display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+.filters .search { width: 280px; }
+.filters .grow { flex: 1; }
+input.inline, select.inline { width: auto; }
+
+/* sortable headers */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--fg); }
+th .arrow { color: var(--fg); margin-left: 0.25rem; }
+
+/* modal result rows + spinner */
+.kv { display: flex; justify-content: space-between; padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
+.kv:last-child { border-bottom: none; }
+.spinner {
+  display: inline-block; width: 14px; height: 14px; margin-right: 0.5rem;
+  border: 2px solid var(--line); border-top-color: var(--fg); border-radius: 50%;
+  animation: spin 0.7s linear infinite; vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.danger { color: #9a3a3a; }
+.dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
 
 button {
   font: inherit;
@@ -50,6 +73,8 @@ button {
 button:hover { background: var(--bg-soft); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.btn-danger { background: #9a3a3a; color: #fff; border-color: #9a3a3a; }
+button.btn-danger:hover { background: #8a3333; }
 
 table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
