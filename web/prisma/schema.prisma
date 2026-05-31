@@ -71,11 +71,24 @@ model Client {
   name          String
   primaryDomain String
   domains       String[]
-  backbone      Backbone
+  backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
   status        ClientStatus   @default(active)
   createdAt     DateTime       @default(now())
   archivedAt    DateTime?
+
+  // --- ServiceNow roster fields (source of truth for which clients exist) ---
+  serviceNowSysId  String?   @unique // CSM customer_account sys_id
+  coreId           String?   @unique // u_core_id, e.g. "CORE832"
+  region           String?           // u_region (Core, Olympus, ...)
+  timezone         String?           // u_time_zone
+  supportStatus    String?           // u_support_status
+  coManaged        Boolean   @default(false) // u_comanaged_it
+  onboardingRating Int?              // u_onboarding raw 1|2|3 (null if a text choice)
+  offboardingRating Int?             // u_offboarding raw 1|2|3 (null if a text choice)
+  snLastSyncedAt   DateTime?         // last successful ServiceNow sync for this row
+  metadata         Json?             // raw SN choice labels (e.g. offboarding = "Document Missing")
+
   systems       ClientSystem[]
   secrets       Secret[]
   agents        Agent[]

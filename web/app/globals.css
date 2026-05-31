@@ -1,0 +1,90 @@
+/* Flat, minimal. No gradients, thin borders, sentence case. Polish later. */
+:root {
+  --fg: #1a1a1a;
+  --muted: #6b6b6b;
+  --line: #e5e5e5;
+  --bg: #ffffff;
+  --bg-soft: #fafafa;
+  --accent: #1a1a1a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: inherit; }
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+.app-header .brand { font-weight: 600; }
+.app-header .muted { color: var(--muted); }
+
+main { padding: 1.5rem; }
+
+h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
+h2 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0; }
+
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.toolbar { display: flex; align-items: center; gap: 0.5rem; }
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover { background: var(--bg-soft); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: none; }
+tbody tr:hover { background: var(--bg-soft); }
+
+.badge {
+  display: inline-block;
+  font-size: 12px;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+}
+.badge.modeled { color: #1a1a1a; border-color: #cfcfcf; }
+.badge.unmodeled { color: #9a9a9a; }
+.badge.archived { color: #9a3a3a; border-color: #e3c4c4; }
+
+.muted { color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; }
+
+input, select {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  width: 100%;
+}
+label { display: block; font-size: 12px; color: var(--muted); margin: 0.5rem 0 0.15rem; }
+
+dialog {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1.25rem;
+  width: 360px;
+  max-width: 90vw;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.25); }
