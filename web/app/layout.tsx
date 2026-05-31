@@ -11,7 +11,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Link href="/clients" className="brand" style={{ textDecoration: "none" }}>
             iam-engine
           </Link>
-          <span className="muted">Clients</span>
+          <Link href="/clients" className="muted" style={{ textDecoration: "none" }}>Clients</Link>
+          <Link href="/cases" className="muted" style={{ textDecoration: "none" }}>Cases</Link>
         </header>
         {children}
       </body>

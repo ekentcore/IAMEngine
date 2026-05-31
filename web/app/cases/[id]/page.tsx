@@ -1,0 +1,89 @@
+// Case detail (server component): the planned, ordered job list, manual checklist, and
+// the intake payload. Nothing executes yet (Phase 2) — this is the plan.
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { db } from "@/lib/db";
+import { makeCaseRepository } from "@/lib/cases/repository";
+
+export const dynamic = "force-dynamic";
+
+export default async function CaseDetailPage({ params }: { params: { id: string } }) {
+  const c = await makeCaseRepository(db).getCase(params.id);
+  if (!c) notFound();
+
+  const manual = c.jobs.filter((j) => j.isManual);
+  const automated = c.jobs.filter((j) => !j.isManual);
+
+  return (
+    <main>
+      <p className="note"><Link href="/cases">← Cases</Link></p>
+      <div className="row-between">
+        <div>
+          <h1>{c.subject ?? "Case"}</h1>
+          <p className="note">
+            <Link href={`/clients/${c.client.slug}`}>{c.client.name}</Link> · {c.action} ·{" "}
+            {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
+          </p>
+        </div>
+      </div>
+
+      <h2>Planned steps ({c.jobs.length})</h2>
+      {c.jobs.length === 0 ? (
+        <p className="note">No steps planned — no systems matched this client + action.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>System</th>
+              <th>Mode</th>
+              <th>Type</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.jobs.map((j) => (
+              <tr key={j.id}>
+                <td className="muted">{j.sequence + 1}</td>
+                <td>{j.systemName} <span className="note">({j.systemKey})</span></td>
+                <td><span className="badge">{j.mode}</span></td>
+                <td className="muted">
+                  {j.isManual ? "manual / checklist" : "automated"}
+                  {j.requiresApproval && <span className="badge archived" style={{ marginLeft: 6 }}>approval</span>}
+                </td>
+                <td><span className="badge">{j.status}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {manual.length > 0 && (
+        <>
+          <h2>Manual checklist ({manual.length})</h2>
+          <ul className="note">
+            {manual.map((j) => <li key={j.id}>{j.systemName} — {j.mode}</li>)}
+          </ul>
+        </>
+      )}
+
+      <h2>Intake</h2>
+      <table>
+        <tbody>
+          {Object.entries(c.payload).map(([k, v]) => (
+            <tr key={k}>
+              <th style={{ width: 240 }}>{k}</th>
+              <td>{v === null || v === "" ? <span className="muted">—</span> : String(typeof v === "boolean" ? (v ? "yes" : "no") : v)}</td>
+            </tr>
+          ))}
+          {Object.keys(c.payload).length === 0 && (
+            <tr><td className="muted">No intake fields.</td></tr>
+          )}
+        </tbody>
+      </table>
+      <p className="note" style={{ marginTop: "1rem" }}>
+        {automated.length} automated, {manual.length} manual. Nothing executes yet — runners arrive in a later phase.
+      </p>
+    </main>
+  );
+}

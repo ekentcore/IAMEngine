@@ -31,3 +31,8 @@ web/node_modules/.prisma/
 
 # --- client KB corpus (sensitive: keep local, Phase-6 generator input only) ---
 data/
+
+# editor swap files
+*.swp
+*.swo
+*~

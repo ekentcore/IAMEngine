@@ -39,6 +39,7 @@ export type AuditEntry = {
   actor: string;
   action: string;
   clientId?: string | null;
+  caseRequestId?: string | null;
   detail?: unknown;
 };
 

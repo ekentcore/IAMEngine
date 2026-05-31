@@ -153,7 +153,8 @@ model CaseRequest {
   client              Client     @relation(fields: [clientId], references: [id])
   clientId            String
   action              Action
-  serviceNowCaseNumber String?
+  serviceNowCaseNumber String?   @unique // e.g. UM0028698 — used to make import idempotent
+  subject             String?            // short description for list display
   status              CaseStatus @default(queued)
   payload             Json       // the ServiceNow intake form (see DATA_MODEL.md)
   createdAt           DateTime   @default(now())
