@@ -67,7 +67,7 @@ async function main() {
     if (nk) byName.set(nk, c);
   }
 
-  const kbClients = loadClientKb();
+  const kbClients = loadClientKb(ENRICH); // only retain runbook text when we'll enrich
   if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
@@ -84,29 +84,53 @@ async function main() {
     clients: [] as Array<Record<string, unknown>>,
   };
 
-  for (const kb of kbClients) {
+  // Phase 1: build a candidate draft per KB client.
+  type Cand = { kb: ClientKb; profile: DraftProfile; matched: RosterClient | null; confidence: "high" | "medium" | "low"; backboneConfident: boolean; systemKeys: string[] };
+  const rank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+  const candidates: Cand[] = kbClients.map((kb) => {
     const dom = normalizeDomain(kb.domainRaw);
     const matched: RosterClient | null = (dom && byDomain.get(dom)) || byName.get(nameKey(kb.clientLeaf)) || null;
-    const { profile, confidence, backboneConfident, systemKeys } = buildProfile(kb, matched);
+    const b = buildProfile(kb, matched);
+    return { kb, matched, profile: b.profile, confidence: b.confidence, backboneConfident: b.backboneConfident, systemKeys: b.systemKeys };
+  });
 
-    let slug = profile.client.id;
-    if (usedSlugs.has(slug)) slug = `${slug}-${slugify(kb.clientLeaf).slice(0, 6)}`;
-    while (usedSlugs.has(slug)) slug = `${slug}x`;
-    usedSlugs.add(slug);
-    profile.client.id = slug;
+  // Phase 2: when several KB clients match the SAME roster client, keep only the richest
+  // (most systems, then highest confidence) so the better draft wins at seed time instead
+  // of a thin duplicate clobbering it. Unmatched candidates are all kept.
+  const bestByRoster = new Map<string, Cand>();
+  const kept: Cand[] = [];
+  for (const c of candidates) {
+    for (const u of c.kb.unmodeled) report.unmodeledHeaders[u] = (report.unmodeledHeaders[u] ?? 0) + 1; // full-corpus signal
+    if (!c.matched) { kept.push(c); continue; }
+    const prev = bestByRoster.get(c.matched.slug);
+    const better = !prev
+      || (c.systemKeys.length !== prev.systemKeys.length
+        ? c.systemKeys.length > prev.systemKeys.length
+        : rank[c.confidence] > rank[prev.confidence]);
+    if (better) bestByRoster.set(c.matched.slug, c);
+  }
+  kept.push(...bestByRoster.values());
 
-    report[matched ? "matched" : "unmatched"]++;
-    report.byConfidence[confidence]++;
-    for (const u of kb.unmodeled) report.unmodeledHeaders[u] = (report.unmodeledHeaders[u] ?? 0) + 1;
+  // Phase 3: assign ids/filenames, build entries + report.
+  for (const c of kept) {
+    // client.id must equal the roster slug for matched clients so seed reconciles to it.
+    const baseId = c.matched ? c.matched.slug : c.profile.client.id;
+    c.profile.client.id = baseId;
+    let fileSlug = baseId;
+    if (usedSlugs.has(fileSlug)) fileSlug = `${fileSlug}-${slugify(c.kb.clientLeaf).slice(0, 6)}`;
+    while (usedSlugs.has(fileSlug)) fileSlug = `${fileSlug}x`;
+    usedSlugs.add(fileSlug);
 
+    report[c.matched ? "matched" : "unmatched"]++;
+    report.byConfidence[c.confidence]++;
     const entry: Record<string, unknown> = {
-      slug, name: profile.client.name, matchedTo: matched?.slug ?? null,
-      backbone: profile.identity.backbone, backboneConfident, backboneSource: "heuristic",
-      confidence, systems: systemKeys, systemCount: systemKeys.length,
-      family: kb.family, unmodeled: kb.unmodeled.length,
+      slug: fileSlug, name: c.profile.client.name, matchedTo: c.matched?.slug ?? null,
+      backbone: c.profile.identity.backbone, backboneConfident: c.backboneConfident, backboneSource: "heuristic",
+      confidence: c.confidence, systems: c.systemKeys, systemCount: c.systemKeys.length,
+      family: c.kb.family, unmodeled: c.kb.unmodeled.length,
     };
     report.clients.push(entry);
-    entries.push({ kb, profile, matched, slug, entry });
+    entries.push({ kb: c.kb, profile: c.profile, matched: c.matched, slug: fileSlug, entry });
   }
 
   // Optional LLM enrichment pass (matched clients by default; --all for everyone).

@@ -52,7 +52,8 @@ export const CATALOG: Record<string, CatalogEntry> = {
 // numbering ("1. ") and lowercased before matching.
 const HEADER_RULES: Array<[RegExp, string]> = [
   [/service ?now|^snow$/, "servicenow"],
-  [/microsoft 365|office 365|^m365$|o365|\b365\b|admin center/, "m365"],
+  // specific m365 forms only — avoid generic "admin center" (zoom/google/adobe) and bare "365" (retention policies)
+  [/microsoft 365|office 365|^m365$|o365|365 admin|^admin center$/, "m365"],
   [/case resolution|final steps/, "case-resolution"],
   [/welcome letter|welcome email/, "welcome-letter"],
   [/first day|day one|first-day/, "first-day-call"],
@@ -93,9 +94,12 @@ export function inferBackbone(keys: Set<string>): { backbone: "entra" | "google"
   const hasAD = keys.has("active-directory");
   const hasSync = keys.has("directory-sync");
   const hasGoogle = keys.has("google-workspace");
+  const hasM365 = keys.has("m365");
   if (hasAD && hasSync) return { backbone: "ad-synced", confident: true };
   if (hasAD) return { backbone: "ad-standalone", confident: true };
-  if (hasGoogle && !keys.has("m365")) return { backbone: "google", confident: true };
-  if (hasGoogle) return { backbone: "google", confident: false }; // google + m365 mirror
-  return { backbone: "entra", confident: keys.has("m365") };
+  if (hasGoogle && !hasM365) return { backbone: "google", confident: true };
+  // google + m365 is ambiguous (M365-primary with Google apps vs Google-primary mirror);
+  // default to entra and flag low-confidence so --enrich resolves it.
+  if (hasGoogle && hasM365) return { backbone: "entra", confident: false };
+  return { backbone: "entra", confident: hasM365 };
 }

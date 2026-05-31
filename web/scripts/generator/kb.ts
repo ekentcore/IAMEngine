@@ -93,7 +93,8 @@ function detectFamily(path: string): "cvp" | "olympus" | null {
 }
 
 // Group both KB feeds by client_leaf into one record per client.
-export function loadClientKb(): ClientKb[] {
+// includeText controls whether we retain stripped runbook text (only needed for --enrich).
+export function loadClientKb(includeText = true): ClientKb[] {
   const onboard = loadJsonl("onboarding.jsonl");
   const offboard = loadJsonl("offboarding.jsonl");
 
@@ -115,20 +116,24 @@ export function loadClientKb(): ClientKb[] {
     return c;
   };
 
+  // A client can have more than one "latest" runbook per action — merge, don't overwrite.
+  const mergeSystems = (into: string[], add: string[]) => {
+    for (const k of add) if (!into.includes(k)) into.push(k);
+  };
   for (const r of onboard) {
     const c = ensure(r);
     c.onboardKb = r.number;
     const { systems, unmodeled } = classify(r.body_html);
-    c.onboardSystems = systems;
-    c.onboardText = stripHtml(r.body_html);
+    mergeSystems(c.onboardSystems, systems);
+    if (includeText) c.onboardText = c.onboardText ? `${c.onboardText}\n${stripHtml(r.body_html, 3000)}` : stripHtml(r.body_html);
     for (const u of unmodeled) if (!c.unmodeled.includes(u)) c.unmodeled.push(u);
   }
   for (const r of offboard) {
     const c = ensure(r);
     c.offboardKb = r.number;
     const { systems, unmodeled } = classify(r.body_html);
-    c.offboardSystems = systems;
-    c.offboardText = stripHtml(r.body_html);
+    mergeSystems(c.offboardSystems, systems);
+    if (includeText) c.offboardText = c.offboardText ? `${c.offboardText}\n${stripHtml(r.body_html, 3000)}` : stripHtml(r.body_html);
     for (const u of unmodeled) if (!c.unmodeled.includes(u)) c.unmodeled.push(u);
   }
 

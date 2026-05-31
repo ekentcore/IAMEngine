@@ -72,15 +72,14 @@ export function applyEnrichment(profile: DraftProfile, e: Enrichment): void {
     profile.identity.directorySync = { command: "Start-ADSyncSyncCycle -PolicyType Delta" };
   }
   for (const sys of profile.systems) {
+    // Only enrich an existing onboard lane — never fabricate one for an offboard-only system.
+    if (!sys.onboard) continue;
+    const onboard = sys.onboard as Record<string, unknown>;
     if (sys.key === "m365" && e.m365Licenses.length) {
-      const onboard = (sys.onboard ?? { when: "always" }) as Record<string, unknown>;
       onboard.config = { ...(onboard.config as object), licenses: e.m365Licenses };
-      sys.onboard = onboard;
     }
     if (sys.key === "active-directory" && (e.adOu || e.groups.length)) {
-      const onboard = (sys.onboard ?? { when: "always" }) as Record<string, unknown>;
       onboard.config = { ...(onboard.config as object), ...(e.adOu ? { ou: e.adOu } : {}), ...(e.groups.length ? { groups: e.groups } : {}) };
-      sys.onboard = onboard;
     }
   }
 }

@@ -48,10 +48,15 @@ async function applyProfile(p: any, source: Source, handAuthored: Set<string>): 
   }
 
   const backbone = backboneMap[p.identity.backbone];
+  if (!backbone) {
+    console.warn(`skip ${slug}: unknown backbone "${p.identity.backbone}"`);
+    return "skipped";
+  }
   const client = await prisma.client.upsert({
     where: { slug },
-    // both sources set backbone; generated only reaches here for an existing, un-authored client
-    update: { backbone, pod: p.client.pod ?? undefined },
+    // both sources set backbone; generated only reaches here for an existing, un-authored
+    // client. name is NOT updated (ServiceNow sync is authoritative for it); domains are.
+    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [] },
     create: {
       slug, name: p.client.name, primaryDomain: p.client.primaryDomain,
       domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null,
@@ -67,27 +72,22 @@ async function applyProfile(p: any, source: Source, handAuthored: Set<string>): 
   }
 
   for (const s of p.systems) {
+    // Build the full field set once so create and update can't drift apart.
+    const fields = {
+      mode: s.mode,
+      onboardWhen: laneMap[s.onboard?.when ?? "never"] ?? "never",
+      offboardWhen: laneMap[s.offboard?.when ?? "never"] ?? "never",
+      dependsOn: s.dependsOn ?? [],
+      requiresApproval: Boolean(s.onboard?.requiresApproval || s.offboard?.requiresApproval),
+      captureEvidence: Boolean(s.onboard?.captureEvidence || s.offboard?.captureEvidence),
+      secretNames: s.secrets ?? [],
+      config: { onboard: s.onboard?.config ?? null, offboard: s.offboard?.config ?? null,
+                dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn } },
+    };
     await prisma.clientSystem.upsert({
       where: { clientId_systemKey: { clientId: client.id, systemKey: s.key } },
-      update: {
-        mode: s.mode,
-        onboardWhen: laneMap[s.onboard?.when ?? "never"] ?? "never",
-        offboardWhen: laneMap[s.offboard?.when ?? "never"] ?? "never",
-        dependsOn: s.dependsOn ?? [],
-        config: { onboard: s.onboard?.config ?? null, offboard: s.offboard?.config ?? null,
-                  dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn } },
-      },
-      create: {
-        clientId: client.id, systemKey: s.key, mode: s.mode,
-        onboardWhen: laneMap[s.onboard?.when ?? "never"] ?? "never",
-        offboardWhen: laneMap[s.offboard?.when ?? "never"] ?? "never",
-        dependsOn: s.dependsOn ?? [],
-        requiresApproval: Boolean(s.onboard?.requiresApproval || s.offboard?.requiresApproval),
-        captureEvidence: Boolean(s.onboard?.captureEvidence || s.offboard?.captureEvidence),
-        secretNames: s.secrets ?? [],
-        config: { onboard: s.onboard?.config ?? null, offboard: s.offboard?.config ?? null,
-                  dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn } },
-      },
+      update: fields,
+      create: { clientId: client.id, systemKey: s.key, ...fields },
     });
   }
   return "applied";
@@ -105,8 +105,10 @@ async function main() {
   const handAuthored = new Set<string>();
   for (const file of readdirSync(PROFILES).filter((f) => f.endsWith(".json") && !f.startsWith("_"))) {
     const p = JSON.parse(readFileSync(join(PROFILES, file), "utf8"));
+    // Protect every hand-authored slug from the generated pass, even if we skip applying it
+    // (e.g. raith.json is schema 1.0) — a generated draft must never clobber an authored file.
+    if (p?.client?.id) handAuthored.add(p.client.id);
     if (await applyProfile(p, "authored", handAuthored) === "applied") {
-      handAuthored.add(p.client.id);
       console.log(`authored: ${p.client.name} (${p.systems.length} systems)`);
     } else {
       console.warn(`skip ${file}: not schema 2.0`);
