@@ -20,6 +20,7 @@ export type ClientVM = {
   onboardingRating: number | null;
   offboardingRating: number | null;
   snLastSyncedAt: string | null;
+  systemKeys: string[];
   systemCount: number;
   modeled: boolean;
 };
@@ -175,7 +176,13 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td className="muted">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
-              <td className="muted">{c.systemCount}</td>
+              <td
+                className="muted"
+                style={{ cursor: c.systemCount ? "help" : "default" }}
+                title={c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)"}
+              >
+                {c.systemCount}
+              </td>
               <td>
                 {c.status === "archived" ? (
                   <span className="badge archived">archived</span>

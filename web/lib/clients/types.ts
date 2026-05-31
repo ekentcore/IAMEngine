@@ -15,6 +15,7 @@ export type ClientListItem = {
   onboardingRating: number | null;
   offboardingRating: number | null;
   snLastSyncedAt: Date | null;
+  systemKeys: string[];
   systemCount: number;
   modeled: boolean; // has at least one ClientSystem (i.e. a profile was applied)
 };

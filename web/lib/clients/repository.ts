@@ -39,7 +39,7 @@ export function makeClientRepository(db: PrismaClient) {
           onboardingRating: true,
           offboardingRating: true,
           snLastSyncedAt: true,
-          _count: { select: { systems: true } },
+          systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } },
         },
       });
       return rows.map((r) => ({
@@ -55,8 +55,9 @@ export function makeClientRepository(db: PrismaClient) {
         onboardingRating: r.onboardingRating,
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
-        systemCount: r._count.systems,
-        modeled: r._count.systems > 0,
+        systemKeys: r.systems.map((s) => s.systemKey),
+        systemCount: r.systems.length,
+        modeled: r.systems.length > 0,
       }));
     },
 
