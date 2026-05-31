@@ -37,15 +37,23 @@ function depFor(key: string, present: Set<string>): string[] {
   return present.has("m365") ? ["m365"] : ["servicenow"];
 }
 
-// Map IR signals into a profile lane.
+const VALID_WHEN = new Set(["always", "on-request", "never"]);
+const VALID_GUARDRAILS = new Set(["do-not-delete", "do-not-move-ou", "no-device-wipe-without-approval"]);
+
+// Map IR signals (free-form) into a profile lane, defending against values that would
+// violate the closed-enum parts of the schema (when / guardrails).
 function laneFromSignals(signals: Record<string, unknown> | undefined): Lane | undefined {
   if (!signals) return { when: "always" };
   const lane: Lane = {};
   const config: Record<string, unknown> = {};
-  lane.when = (signals.when as Lane["when"]) ?? "always";
+  const w = String(signals.when ?? "");
+  lane.when = (VALID_WHEN.has(w) ? w : "always") as Lane["when"];
   if (signals.captureEvidence) lane.captureEvidence = true;
   if (signals.requiresApproval) lane.requiresApproval = true;
-  if (Array.isArray(signals.guardrails) && signals.guardrails.length) lane.guardrails = signals.guardrails as string[];
+  if (Array.isArray(signals.guardrails)) {
+    const g = (signals.guardrails as unknown[]).filter((x): x is string => typeof x === "string" && VALID_GUARDRAILS.has(x));
+    if (g.length) lane.guardrails = g;
+  }
   if (signals.schedule) lane.schedule = signals.schedule as Lane["schedule"];
   if (Array.isArray(signals.licenses) && signals.licenses.length) config.licenses = signals.licenses;
   if (signals.ou) config.ou = signals.ou;
@@ -61,7 +69,9 @@ function band(score: number): DraftMeta["band"] {
 export interface Assembled { profile: Profile; meta: DraftMeta }
 
 export function assembleProfile(ir: IR): Assembled {
-  const id = ir.client.suggestedId || ir.client.leaf.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const slug = (ir.client.suggestedId || ir.client.leaf.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")).slice(0, 40);
+  // never let the id be empty (non-Latin / punctuation-only leaf) — schema requires >=1 char
+  const id = slug || `client-${String(ir.kb.onboard || ir.kb.offboard || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   const backboneDefaulted = !ir.backboneHint;
   const backbone: Backbone = ir.backboneHint ?? "entra";
   const primaryDomainMissing = !ir.client.primaryDomain;
@@ -86,7 +96,8 @@ export function assembleProfile(ir: IR): Assembled {
       entry.secrets = [sec.name];
       secretNames.add(sec.name);
     }
-    const deps = depFor(key, present);
+    // only depend on systems that actually exist in this profile (never self/dangling)
+    const deps = depFor(key, present).filter((d) => d !== key && present.has(d));
     if (deps.length) entry.dependsOn = deps;
     if (slot.onboard) entry.onboard = laneFromSignals(slot.onboard.signals);
     if (slot.offboard) entry.offboard = laneFromSignals(slot.offboard.signals);

@@ -11,7 +11,7 @@ from .registry import extract_signals
 from .sectioning import split_sections
 
 _EMAIL = re.compile(r"@([a-z0-9][a-z0-9.-]*\.[a-z]{2,})", re.I)
-_PLACEHOLDER = re.compile(r"\[replace|replace with|<client>|xxxx", re.I)
+_PLACEHOLDER = re.compile(r"\[replace|replace with|<client>", re.I)
 # domains that are us / vendors, never the client's primary domain
 _IGNORE_DOMAINS = {
     "coretelligent.com", "core.tech", "microsoft.com", "office.com", "gmail.com",

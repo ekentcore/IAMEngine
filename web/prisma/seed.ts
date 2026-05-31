@@ -30,6 +30,10 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["tableau", "Tableau", 3], ["notion", "Notion", 3], ["printix", "Printix", 3],
   ["hardware", "Hardware", 3], ["workstation", "Workstation", 3], ["welcome-letter", "Welcome letter", 3],
   ["first-day-call", "First-day call", 3], ["case-resolution", "Case resolution", 1],
+  // long-tail keys the Phase-6 generator can emit; needed so a promoted draft seeds without a FK error
+  ["data-transfer", "Data transfer", 2], ["archive", "Archive", 3],
+  ["egnyte-sync-server", "Egnyte Sync Server", 3], ["address-book", "Printer address book", 3],
+  ["equipment-return", "Equipment return", 3],
 ];
 
 async function main() {

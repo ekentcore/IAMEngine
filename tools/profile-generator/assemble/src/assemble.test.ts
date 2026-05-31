@@ -62,6 +62,42 @@ test("missing backbone defaults to entra and lowers confidence", () => {
   assert.ok(meta.confidence < 0.9);
 });
 
+test("dependsOn never references a system not present in the profile", () => {
+  // only active-directory detected (no servicenow) — must not depend on a missing system.
+  const onlyAd = ir({
+    detected: [{ systemKey: "active-directory", action: "onboarding", section: "Domain", confidence: 0.9, mode: "api", signals: { when: "always" } }],
+  });
+  const { profile } = assembleProfile(onlyAd);
+  const present = new Set(profile.systems.map((s) => s.key));
+  for (const s of profile.systems) {
+    for (const dep of s.dependsOn ?? []) {
+      assert.ok(present.has(dep), `${s.key} depends on missing ${dep}`);
+    }
+  }
+});
+
+test("out-of-enum guardrails are filtered out (stays schema-valid)", () => {
+  const bad = ir({
+    detected: [
+      { systemKey: "servicenow", action: "onboarding", section: "ServiceNow", confidence: 0.9, mode: "api", signals: { when: "always" } },
+      { systemKey: "active-directory", action: "offboarding", section: "Domain", confidence: 0.9, mode: "api", signals: { when: "always", guardrails: ["do-not-move-ou", "no-such-guardrail"] } },
+    ],
+  });
+  const { profile } = assembleProfile(bad);
+  assert.ok(validate(profile), "schema errors: " + formatErrors(validate).join("; "));
+  const ad = profile.systems.find((s) => s.key === "active-directory")!;
+  assert.deepEqual(ad.offboard?.guardrails, ["do-not-move-ou"]);
+});
+
+test("out-of-enum 'when' falls back to always (stays schema-valid)", () => {
+  const bad = ir({
+    detected: [{ systemKey: "servicenow", action: "onboarding", section: "ServiceNow", confidence: 0.9, mode: "api", signals: { when: "conditional" } }],
+  });
+  const { profile } = assembleProfile(bad);
+  assert.ok(validate(profile), "schema errors: " + formatErrors(validate).join("; "));
+  assert.equal(profile.systems[0].onboard?.when, "always");
+});
+
 test("missing primary domain still produces a schema-valid profile", () => {
   const { profile, meta } = assembleProfile(ir({ client: { ...ir().client, primaryDomain: null } }));
   assert.ok(validate(profile), "schema errors: " + formatErrors(validate).join("; "));

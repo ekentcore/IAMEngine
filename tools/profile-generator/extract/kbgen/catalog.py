@@ -63,7 +63,8 @@ SECTION_ALIASES: list[tuple[str, str]] = [
     (r"mailbox audit", "exchange"),
     (r"(microsoft |azure )?entra( id)?( admin)?", "entra"),
     (r"azure (active directory|ad|admin)", "entra"),
-    (r"(microsoft |ms )?365( admin)?( center)?", "m365"),
+    # require a qualifier so a bare '365' (e.g. 'after 365 days') is NOT matched as m365.
+    (r"(?:microsoft|ms|office) 365|365 admin(?: center)?|\bm365\b", "m365"),
     (r"\bo365\b", "m365"),
     (r"^admin center$", "m365"),
     (r"email account", "m365"),

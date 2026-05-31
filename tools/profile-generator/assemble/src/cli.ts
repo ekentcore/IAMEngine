@@ -54,7 +54,14 @@ function main(): number {
   const invalidDir = join(reportsDir, "invalid");
 
   for (const f of irFiles) {
-    const ir = JSON.parse(readFileSync(join(irDir, f), "utf8")) as IR;
+    let ir: IR;
+    try {
+      ir = JSON.parse(readFileSync(join(irDir, f), "utf8")) as IR;
+    } catch (e) {
+      // one corrupt IR file must not abort the whole fleet run
+      invalid.push({ id: f, errors: [`unreadable IR: ${(e as Error).message}`] });
+      continue;
+    }
     let { profile, meta } = assembleProfile(ir);
     profile = applyTemplate(profile, ir.client.family ?? null, templatesDir);
     if (profile.systems.length === 0) {

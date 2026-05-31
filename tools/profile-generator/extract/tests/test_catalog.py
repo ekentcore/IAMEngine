@@ -71,3 +71,7 @@ class TestClassifyDashedRealHeaders:
 
     def test_mailbox_audit_is_exchange(self):
         assert self.c("Mailbox Audit") == ("system", "exchange")
+
+    def test_bare_365_in_day_count_is_not_m365(self):
+        # 'after 365 days' must not be swallowed by the m365 alias.
+        assert self.c("Archive mailbox after 365 days") == ("system", "archive")
