@@ -16,6 +16,8 @@ web/node_modules/
 web/.next/
 dist/
 build/
+next-env.d.ts
+*.tsbuildinfo
 
 # --- prisma generated client ---
 web/node_modules/.prisma/

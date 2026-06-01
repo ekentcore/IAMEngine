@@ -23,19 +23,18 @@ function included(cs: ClientSystem, action: Action, payload: Record<string, unkn
   return Boolean(payload[key]);
 }
 
-// Topological sort honoring dependsOn (declared order as tiebreak). Lane-specific deps,
-// if present in config.dependsOn[action], override the system-level dependsOn.
-export function planCase(
-  systems: ClientSystem[],
-  action: Action,
-  payload: Record<string, unknown>
-): PlannedJob[] {
-  const active = systems.filter((s) => included(s, action, payload));
+// Lane-specific deps (config.dependsOn[action]) override the system-level dependsOn.
+// Filtered to deps that are actually present among `active`.
+export function depsOf(s: ClientSystem, action: Action, present: Set<string>): string[] {
+  const laneDeps = (s.config as { dependsOn?: Record<string, string[]> } | null)?.dependsOn?.[action];
+  return (laneDeps ?? s.dependsOn).filter((d) => present.has(d));
+}
+
+// Topological sort honoring dependsOn (declared order as tiebreak). Shared by the
+// orchestrator (planning jobs) and the runbook view (display order from the data).
+export function topoOrder(active: ClientSystem[], action: Action): ClientSystem[] {
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
-  const depsOf = (s: ClientSystem): string[] => {
-    const laneDeps = (s.config as { dependsOn?: Record<string, string[]> } | null)?.dependsOn?.[action];
-    return (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
-  };
+  const present = new Set(byKey.keys());
 
   const order: ClientSystem[] = [];
   const state = new Map<string, "open" | "done">();
@@ -43,13 +42,21 @@ export function planCase(
     if (state.get(s.systemKey) === "done") return;
     if (state.get(s.systemKey) === "open") throw new Error(`dependency cycle at ${s.systemKey}`);
     state.set(s.systemKey, "open");
-    for (const d of depsOf(s)) visit(byKey.get(d)!);
+    for (const d of depsOf(s, action, present)) visit(byKey.get(d)!);
     state.set(s.systemKey, "done");
     order.push(s);
   };
   for (const s of active) visit(s);
+  return order;
+}
 
-  return order.map((s, i) => ({
+export function planCase(
+  systems: ClientSystem[],
+  action: Action,
+  payload: Record<string, unknown>
+): PlannedJob[] {
+  const active = systems.filter((s) => included(s, action, payload));
+  return topoOrder(active, action).map((s, i) => ({
     systemKey: s.systemKey,
     sequence: i,
     mode: s.mode,
