@@ -48,6 +48,7 @@ export interface DraftMeta {
   primaryDomainMissing: boolean;
   systemCount: number;
   unmodeledCount: number;
+  unmodeled: string[];
   family: string | null;
   kb: { onboard?: string | null; offboard?: string | null };
   warnings: string[];

@@ -52,6 +52,8 @@ function main(): number {
   if (!reportOnly) { mkdirSync(outDir, { recursive: true }); }
   mkdirSync(reportsDir, { recursive: true });
   const invalidDir = join(reportsDir, "invalid");
+  const stepsDir = join(reportsDir, "steps");
+  mkdirSync(stepsDir, { recursive: true });
 
   for (const f of irFiles) {
     let ir: IR;
@@ -73,6 +75,7 @@ function main(): number {
     if (validate(profile)) {
       metas.push(meta);
       generated.set(profile.client.name.toLowerCase(), profile);
+      writeSteps(join(stepsDir, `${meta.id}.md`), ir, meta);
       if (!reportOnly) writeFileSync(join(outDir, `${meta.id}.json`), JSON.stringify(profile, null, 2) + "\n");
     } else {
       const errors = formatErrors(validate);
@@ -91,7 +94,36 @@ function main(): number {
   if (needsManual.length) console.log(`  needs manual profiling (no modeled systems): ${needsManual.length}`);
   if (invalid.length) console.log(`  INVALID (schema gate): ${invalid.length} -> ${invalidDir}`);
   console.log(`  report: ${join(reportsDir, "drafts.md")}`);
+  console.log(`  per-client steps: ${stepsDir}/<id>.md`);
   return invalid.length ? 1 : 0;
+}
+
+// Per-client review packet: the runbook step text for every section (modeled + unmodeled),
+// so a reviewer can see exactly how to create the user (username/password, fields, etc.)
+// and what was detected-but-not-modeled.
+function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
+  const lines = [
+    `# ${meta.name} — runbook steps`,
+    "",
+    `backbone: ${meta.backbone}${meta.backboneDefaulted ? " (default — verify)" : ""} · confidence ${meta.confidence} · KB ${ir.kb.onboard ?? "–"} / ${ir.kb.offboard ?? "–"}`,
+    "",
+    "Step text is clipped from the ServiceNow runbook — open the KB for full detail. Sections marked ⚠ were detected but are not modeled yet (handle manually).",
+  ];
+  for (const action of ["onboarding", "offboarding"] as const) {
+    const det = ir.detected.filter((d) => d.action === action);
+    const unm = ir.unmodeled.filter((u) => u.action === action);
+    if (det.length === 0 && unm.length === 0) continue;
+    lines.push("", `## ${action}`);
+    for (const d of det) {
+      lines.push("", `### ${d.systemKey} — ${d.section}`);
+      if (d.instructions) lines.push("", `> ${d.instructions.replace(/\s+/g, " ")}`);
+    }
+    for (const u of unm) {
+      lines.push("", `### ⚠ ${u.section}${u.guess ? ` (${u.guess})` : ""} — not modeled`);
+      if (u.instructions) lines.push("", `> ${u.instructions.replace(/\s+/g, " ")}`);
+    }
+  }
+  writeFileSync(path, lines.join("\n") + "\n");
 }
 
 function writeReport(path: string, metas: DraftMeta[], invalid: { id: string; errors: string[] }[], needsManual: { id: string; name: string; unmodeled: number }[], diffLines: string[]): void {
@@ -101,13 +133,15 @@ function writeReport(path: string, metas: DraftMeta[], invalid: { id: string; er
     "",
     `${metas.length} valid drafts, ${invalid.length} invalid. Lowest-confidence first — review these before promoting out of profiles/_drafts/.`,
     "",
-    "| conf | band | client | backbone | systems | unmodeled | KB on/off | warnings |",
-    "|---:|---|---|---|---:|---:|---|---|",
+    "Per-client runbook steps (incl. unmodeled sections) are in `steps/<id>.md`.",
+    "",
+    "| conf | band | client | backbone | systems | unmodeled systems (detected, not modeled) | warnings |",
+    "|---:|---|---|---|---:|---|---:|",
   ];
   for (const m of rows) {
     const bb = m.backbone + (m.backboneDefaulted ? " *(default)*" : "");
-    const kb = `${m.kb.onboard ?? "–"} / ${m.kb.offboard ?? "–"}`;
-    lines.push(`| ${m.confidence.toFixed(2)} | ${m.band} | ${m.name} | ${bb} | ${m.systemCount} | ${m.unmodeledCount} | ${kb} | ${m.warnings.length} |`);
+    const unm = m.unmodeled.length ? m.unmodeled.slice(0, 5).join(", ") + (m.unmodeled.length > 5 ? ` +${m.unmodeled.length - 5}` : "") : "—";
+    lines.push(`| ${m.confidence.toFixed(2)} | ${m.band} | ${m.name} | ${bb} | ${m.systemCount} | ${unm} | ${m.warnings.length} |`);
   }
   if (needsManual.length) {
     lines.push("", "## Needs manual profiling — no modeled systems detected", "",

@@ -111,10 +111,14 @@ export function assembleProfile(ir: IR): Assembled {
     secrets[name] = { provider: "delinea", id: "REPLACE_ME", label };
   }
 
+  // Prefer the username pattern + password rules parsed from the M365 onboarding steps;
+  // fall back to a sane default only when the runbook didn't state them.
+  const m365onb = ir.detected.find((d) => d.systemKey === "m365" && d.action === "onboarding");
+  const msig = (m365onb?.signals ?? {}) as { usernamePattern?: string; password?: Record<string, unknown> };
   const identity: Profile["identity"] = {
     backbone,
-    usernamePatterns: ["{first}{last}@{domain}"],
-    password: { mode: "generate", onOffboard: "reset" },
+    usernamePatterns: typeof msig.usernamePattern === "string" ? [msig.usernamePattern] : ["{first}{last}@{domain}"],
+    password: { mode: "generate", ...(msig.password ?? {}), onOffboard: "reset" },
   };
   if (backbone === "ad-synced") identity.directorySync = { command: "Start-ADSyncSyncCycle -PolicyType Delta" };
 
@@ -133,8 +137,8 @@ export function assembleProfile(ir: IR): Assembled {
   let score = avg;
   if (backboneDefaulted) score -= 0.15;
   if (primaryDomainMissing) score -= 0.1;
-  const distinctUnmodeled = new Set(ir.unmodeled.map((u) => u.guess || u.section)).size;
-  score -= 0.05 * Math.min(distinctUnmodeled, 4);
+  const unmodeled = [...new Set(ir.unmodeled.map((u) => u.guess || u.section))];
+  score -= 0.05 * Math.min(unmodeled.length, 4);
   score = Math.max(0, Math.min(1, Number(score.toFixed(2))));
 
   const meta: DraftMeta = {
@@ -146,7 +150,8 @@ export function assembleProfile(ir: IR): Assembled {
     backboneDefaulted,
     primaryDomainMissing,
     systemCount: systems.length,
-    unmodeledCount: distinctUnmodeled,
+    unmodeledCount: unmodeled.length,
+    unmodeled,
     family: ir.client.family ?? null,
     kb: ir.kb,
     warnings: ir.warnings ?? [],

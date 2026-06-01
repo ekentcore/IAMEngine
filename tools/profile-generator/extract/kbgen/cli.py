@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .build import build_client_ir
 from .families import detect_family
-from .loader import group_by_client, latest_only, load_records
+from .loader import best_per_action, group_by_client, load_records
 from .scope import is_offboard_only, parked_reason
 
 TOOL_ROOT = Path(__file__).resolve().parents[2]
@@ -111,8 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     data = Path(args.data)
-    onb = latest_only(load_records(data / "onboarding.jsonl"))
-    off = latest_only(load_records(data / "offboarding.jsonl"))
+    # Load all versions; best_per_action picks the latest (or best available) per client+action.
+    onb = load_records(data / "onboarding.jsonl")
+    off = load_records(data / "offboarding.jsonl")
     groups = group_by_client(onb, off)
 
     selected = select(groups, args)
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         if reason and not args.include_parked:
             skipped.append((path, reason))
             continue
-        records = groups[path]
+        records = best_per_action(groups[path])
         if is_offboard_only(path):
             records = [r for r in records if r.get("action") == "offboarding"]
             if not records:

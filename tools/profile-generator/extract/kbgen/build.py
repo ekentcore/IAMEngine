@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from html import unescape
 
 from .backbone import infer_backbone
 from .catalog import CATALOG, classify_header
@@ -28,10 +29,16 @@ def _section_confidence(section, text: str) -> float:
     return max(0.3, min(0.95, round(conf, 2)))
 
 
+def _clip(text: str, limit: int = 700) -> str:
+    """The section's runbook text, kept short — enough for a reviewer to see the steps."""
+    t = (text or "").strip()
+    return t if len(t) <= limit else t[: limit - 1] + "…"
+
+
 def _infer_primary_domain(html_blobs: list[str]) -> str | None:
     counts: Counter[str] = Counter()
     for blob in html_blobs:
-        for d in _EMAIL.findall(blob or ""):
+        for d in _EMAIL.findall(unescape(blob or "")):  # mailto: links encode '@' as &#64;
             d = d.lower()
             if d not in _IGNORE_DOMAINS:
                 counts[d] += 1
@@ -54,6 +61,8 @@ def build_client_ir(records: list[dict]) -> dict:
         kb["onboard" if action == "onboarding" else "offboard"] = rec.get("number")
         if action not in actions:
             actions.append(action)
+        if rec.get("latest") is not True:
+            warnings.append(f"{action} KB {rec.get('number')} is not marked latest — used best available; verify it's current")
         html_blobs.append(rec.get("body_html", ""))
         for section in split_sections(rec.get("body_html", "")):
             kind, val = classify_header(section.header)
@@ -67,10 +76,11 @@ def build_client_ir(records: list[dict]) -> dict:
                     "confidence": _section_confidence(section, section.text),
                     "mode": CATALOG.get(val, "api"),
                     "signals": extract_signals(val, section),
+                    "instructions": _clip(section.text),
                 })
                 system_keys.add(val)
             else:
-                unmodeled.append({"section": section.raw_header, "action": action, "guess": val})
+                unmodeled.append({"section": section.raw_header, "action": action, "guess": val, "instructions": _clip(section.text)})
 
     backbone = infer_backbone(system_keys)
     if backbone and backbone.startswith("ad"):

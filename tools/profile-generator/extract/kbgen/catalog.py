@@ -100,9 +100,10 @@ SECTION_ALIASES: list[tuple[str, str]] = [
     (r"perimeter ?81", "perimeter81"),
     (r"vpn(/rds| setup)?", "perimeter81"),
     (r"\bavd\b|azure virtual desktop", "avd"),
-    (r"\bjamf\b|\bintune\b|\baddigy\b|\bmdm\b", "mdm"),
+    (r"\bjamf\b|\bintune\b|\baddigy\b|\bmdm\b|endpoint manager", "mdm"),
     (r"\bprintix\b", "printix"),
     (r"printer address book|address book", "address-book"),
+    (r"\bprinters?\b", "printix"),  # generic "Printers" (after address-book so that wins)
     # --- lifecycle / manual ---
     (r"welcome letter|info email", "welcome-letter"),
     (r"first[\s-]?day", "first-day-call"),
@@ -110,6 +111,7 @@ SECTION_ALIASES: list[tuple[str, str]] = [
     (r"hardware(/data)?", "hardware"),
     (r"after \d+ days|^archive$", "archive"),
     (r"equipment return", "equipment-return"),
+    (r"\bequipment\b|\bcomputer\b", "hardware"),  # generic device sections (after equipment-return)
 ]
 
 # Headers that are recognisably a system/vendor we do NOT model yet. Maps a pattern to a

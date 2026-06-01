@@ -31,6 +31,14 @@ class TestClassifyHeader:
         assert classify_header("active directory") == ("system", "active-directory")
         assert classify_header("ad sync") == ("system", "directory-sync")
 
+    def test_device_and_mdm_and_printer_gaps(self):
+        assert classify_header("equipment") == ("system", "hardware")
+        assert classify_header("computer") == ("system", "hardware")
+        assert classify_header("endpoint manager") == ("system", "mdm")
+        assert classify_header("printers") == ("system", "printix")
+        # 'printer address books' must still win for address-book, not printix
+        assert classify_header("printer address books") == ("system", "address-book")
+
     def test_assorted_systems(self):
         assert classify_header("mimecast") == ("system", "mimecast")
         assert classify_header("g-suite") == ("system", "google-workspace")

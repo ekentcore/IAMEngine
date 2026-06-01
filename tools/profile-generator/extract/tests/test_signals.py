@@ -27,6 +27,27 @@ class TestM365Licenses:
         assert "licenses" not in sig
 
 
+class TestM365Identity:
+    def test_username_pattern_firstinitiallastname(self):
+        sig = extract_signals("m365", sec("Microsoft 365", "Username: FirstInitialLastName@acorecapital.com then set a password"))
+        assert sig["usernamePattern"] == "{firstInitial}{last}@{domain}"
+
+    def test_username_pattern_dotted(self):
+        sig = extract_signals("m365", sec("Microsoft 365", "Username: FirstName.LastName@x.com"))
+        assert sig["usernamePattern"] == "{first}.{last}@{domain}"
+
+    def test_password_rules_parsed(self):
+        text = ("Password (at least one of each type) Minimum eight characters "
+                "Special Character Number Uppercase Letter Lowercase Letter")
+        pw = extract_signals("m365", sec("Microsoft 365", text))["password"]
+        assert pw["minLength"] == 8
+        assert pw["requireSpecial"] and pw["requireNumber"] and pw["requireUpper"] and pw["requireLower"]
+
+    def test_no_username_text_yields_no_key(self):
+        sig = extract_signals("m365", sec("Microsoft 365", "Assign Microsoft 365 E3."))
+        assert "usernamePattern" not in sig
+
+
 class TestActiveDirectory:
     def test_extracts_quoted_ou(self):
         sig = extract_signals("active-directory", sec("Domain", "Create the user in the 'Six One Users' OU."))

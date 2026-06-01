@@ -10,12 +10,14 @@ export interface Detected {
   confidence: number;
   mode?: "api" | "browser" | "manual";
   signals?: Record<string, unknown>;
+  instructions?: string;
 }
 
 export interface Unmodeled {
   section: string;
   action: Action;
   guess?: string | null;
+  instructions?: string;
 }
 
 export interface IR {

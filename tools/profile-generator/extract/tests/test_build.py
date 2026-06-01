@@ -44,6 +44,12 @@ class TestBuildClientIr:
     def test_primary_domain_inferred_from_emails(self):
         assert self.ir["client"]["primaryDomain"] == "acme.com"
 
+    def test_primary_domain_from_html_encoded_at(self):
+        # runbooks use mailto: links where '@' is encoded as &#64; — must still resolve.
+        html = "<h2>Microsoft 365</h2><p>Username: FLast&#64;encoded.com password rules</p>"
+        ir = build_client_ir([rec("onboarding", "KB9", "Encoded Co", html)])
+        assert ir["client"]["primaryDomain"] == "encoded.com"
+
     def test_kb_numbers_recorded(self):
         assert self.ir["kb"]["onboard"] == "KB1"
 
