@@ -13,6 +13,7 @@ from html import unescape
 from bs4 import BeautifulSoup, Tag
 
 _MAILTO = "mailto:"
+_SYS_ID = re.compile(r"sys_id=([0-9a-f]{32})", re.I)
 # a "Label:" line with an empty value — the fill-in fields of a template body
 _FIELD = re.compile(r"^\s*([A-Za-z][\w /]*?):\s*$")
 _SUBJECT = re.compile(r"^Subject:\s*(.+)$", re.I)  # matched per text node, not the flat blob
@@ -85,15 +86,31 @@ def extract_email(html: str) -> dict | None:
     return {"type": "email", "to": to, "cc": cc_names + cc, "subject": subject, "body": body, "fields": fields}
 
 
-# Detectors run over each section's HTML; each returns an artifact dict or None.
-ARTIFACT_DETECTORS = [extract_email]
+def extract_attachments(html: str) -> list[dict]:
+    """sys_attachment links (group-mapping spreadsheets, tear-off forms) the app can pull and
+    parse later. Shape: {type, href, sysId, filename}. Skips empty-text anchors — those are
+    embedded form images, not files an operator opens."""
+    soup = BeautifulSoup(html or "", "lxml")
+    out: list[dict] = []
+    for a in soup.find_all("a"):
+        href = unescape(a.get("href") or "")
+        if "sys_attachment" not in href.lower():
+            continue
+        filename = a.get_text(" ", strip=True)
+        if not filename:
+            continue
+        m = _SYS_ID.search(href)
+        out.append({"type": "attachment", "href": href, "sysId": m.group(1) if m else None, "filename": filename})
+    return out
+
+
+# Detectors run over each section's HTML; each returns a list of artifact dicts. Add one here.
+ARTIFACT_DETECTORS = [lambda h: ([extract_email(h)] if extract_email(h) else []), extract_attachments]
 
 
 def extract_artifacts(html: str) -> list[dict]:
     """All typed artifacts found in a section's HTML, in detector order."""
     out: list[dict] = []
     for detect in ARTIFACT_DETECTORS:
-        art = detect(html)
-        if art:
-            out.append(art)
+        out.extend(detect(html))
     return out

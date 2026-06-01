@@ -1,5 +1,6 @@
 // Minimal Azure OpenAI chat client for the generator's enrichment pass. JSON mode only.
 // Reads AZURE_OPENAI_* from process.env (loaded from env.env by the CLI).
+import { redact } from "../automation/redact";
 
 export type AzureConfig = {
   endpoint: string;
@@ -35,7 +36,8 @@ export async function azureChatJson(
       body: JSON.stringify({
         messages: [
           { role: "system", content: system },
-          { role: "user", content: user },
+          // redact secrets/PII from user-supplied content before it leaves the boundary
+          { role: "user", content: redact(user) },
         ],
         temperature: 0,
         max_tokens: 600,

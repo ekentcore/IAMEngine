@@ -2,7 +2,7 @@
 email template (the corpus in data/ is sensitive + gitignored, so never a committed
 fixture). Structure: a step-section with intro <p>s, a 'CC …' <li>, 'Email:' <div>s with
 mailto anchors, a 'Subject:' line, and a <pre> body with Label: fill-in fields."""
-from kbgen.extractors.artifacts import extract_artifacts, extract_email
+from kbgen.extractors.artifacts import extract_artifacts, extract_attachments, extract_email
 
 ONEMARKET_HTML = """
 <div class="step-section">
@@ -71,10 +71,38 @@ class TestExtractEmail:
         assert extract_email("<div class='step'><ul><li>Sync the directory</li></ul></div>") is None
 
 
+GROUPS_HTML = """
+<div class="step-section"><span>Add the user to the groups in the document:</span>
+  <div class="step">
+    <a href="https://support.core.tech/sys_attachment.do?sys_id=c5d7ea7783e7b6d41ebc9cefeeaad307">New Employee Permissions Groups document</a>
+    <a href="/sys_attachment.do?sysparm_referring_url=tear_off&amp;view=true&amp;sys_id=dd591a3147d8f2903c5e88f4116d431f"></a>
+  </div>
+</div>
+"""
+
+
+class TestExtractAttachments:
+    def test_captures_the_named_sys_attachment_link(self):
+        arts = extract_attachments(GROUPS_HTML)
+        assert len(arts) == 1  # the empty-text tear-off image is skipped
+        a = arts[0]
+        assert a["type"] == "attachment"
+        assert a["sysId"] == "c5d7ea7783e7b6d41ebc9cefeeaad307"
+        assert a["filename"] == "New Employee Permissions Groups document"
+        assert "sys_attachment" in a["href"]
+
+    def test_no_attachment_for_an_ordinary_link(self):
+        assert extract_attachments('<p>See <a href="https://example.com/help">help</a>.</p>') == []
+
+
 class TestExtractArtifacts:
     def test_returns_the_email_artifact_for_a_template_section(self):
         arts = extract_artifacts(ONEMARKET_HTML)
         assert len(arts) == 1 and arts[0]["type"] == "email"
+
+    def test_returns_the_attachment_artifact_for_a_groups_section(self):
+        arts = extract_artifacts(GROUPS_HTML)
+        assert [a["type"] for a in arts] == ["attachment"]
 
     def test_empty_for_a_plain_section(self):
         assert extract_artifacts("<p>Assign Microsoft 365 E3.</p>") == []

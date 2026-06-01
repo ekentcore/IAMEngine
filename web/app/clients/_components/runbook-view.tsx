@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { isEmail, type Artifact } from "@/lib/runbook/artifacts";
+import { isEmail, isAttachment, type Artifact, type EmailArtifact, type AttachmentArtifact } from "@/lib/runbook/artifacts";
 
 export type RunbookItemVM = {
   id: string; // `${action}-${seq}`
@@ -62,6 +62,7 @@ export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: str
 function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; slug: string; open: boolean; onToggle: () => void }) {
   const auto = it.status === "automated";
   const emails = it.artifacts.filter(isEmail);
+  const attachments = it.artifacts.filter(isAttachment);
   const badge = auto ? "✅ Automated" : it.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
   const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
   return (
@@ -70,6 +71,7 @@ function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; s
         <strong style={{ marginRight: 6 }}>{n}.</strong>
         <span className={`badge ${auto ? "automated" : "human"}`}>{badge}</span> {title}
         {emails.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· ✉ email</span>}
+        {attachments.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· 📎 file</span>}
         {it.after.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {it.after.join(", ")}</span>}
       </summary>
       <div style={{ margin: "0.4rem 0 0.6rem" }}>
@@ -96,12 +98,15 @@ function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; s
             href={`/api/clients/${slug}/runbook/email?action=${it.action}&seq=${it.seq}&i=${i}`}
           />
         ))}
+        {attachments.map((att, i) => (
+          <AttachmentBlock key={i} att={att} slug={slug} action={it.action} seq={it.seq} i={i} />
+        ))}
       </div>
     </details>
   );
 }
 
-function EmailBlock({ email, href }: { email: import("@/lib/runbook/artifacts").EmailArtifact; href: string }) {
+function EmailBlock({ email, href }: { email: EmailArtifact; href: string }) {
   const Row = ({ label, value }: { label: string; value: string }) =>
     value ? (
       <div>
@@ -126,6 +131,80 @@ function EmailBlock({ email, href }: { email: import("@/lib/runbook/artifacts").
           </div>
         )}
         <pre style={{ whiteSpace: "pre-wrap", margin: "0.4rem 0 0", fontSize: 11, lineHeight: 1.45, fontFamily: "inherit" }}>{email.body}</pre>
+      </div>
+    </div>
+  );
+}
+
+type ResolveResult = {
+  resolution?: { groups: string[]; unverified: string[]; reasoning: string; lowConfidence: boolean };
+  sheet?: { headers: string[]; rowCount: number; filename?: string };
+  error?: string;
+};
+
+function AttachmentBlock({
+  att, slug, action, seq, i,
+}: { att: AttachmentArtifact; slug: string; action: "onboard" | "offboard"; seq: number; i: number }) {
+  const [user, setUser] = useState({ department: "", jobTitle: "", location: "" });
+  const [state, setState] = useState<"idle" | "loading">("idle");
+  const [result, setResult] = useState<ResolveResult | null>(null);
+
+  async function resolve() {
+    setState("loading");
+    setResult(null);
+    try {
+      const res = await fetch(`/api/clients/${slug}/runbook/attachment/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, seq, i, user }),
+      });
+      setResult((await res.json()) as ResolveResult);
+    } catch (e) {
+      setResult({ error: (e as Error).message });
+    } finally {
+      setState("idle");
+    }
+  }
+
+  const input = (key: keyof typeof user, ph: string) => (
+    <input
+      value={user[key]}
+      placeholder={ph}
+      onChange={(e) => setUser((u) => ({ ...u, [key]: e.target.value }))}
+      style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #e5e7eb", borderRadius: 4, width: 130 }}
+    />
+  );
+
+  return (
+    <div style={{ marginTop: "0.5rem", marginLeft: "0.8rem" }}>
+      <div className="row-between" style={{ alignItems: "baseline" }}>
+        <div className="note">📎 Attachment: {att.filename || "file"}</div>
+        {att.href && <a href={att.href} target="_blank" rel="noreferrer" className="note">open in ServiceNow →</a>}
+      </div>
+      <div style={{ background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
+        <div className="note" style={{ marginBottom: 4 }}>Resolve groups for a user (filled from the UM case later):</div>
+        <div className="toolbar" style={{ gap: 6, flexWrap: "wrap" }}>
+          {input("department", "Department")}
+          {input("jobTitle", "Title")}
+          {input("location", "Location")}
+          <button onClick={resolve} disabled={state === "loading"}>
+            {state === "loading" ? "Resolving…" : "Resolve groups"}
+          </button>
+        </div>
+        {result?.error && <div style={{ color: "#b91c1c", marginTop: 6 }}>{result.error}</div>}
+        {result?.resolution && (
+          <div style={{ marginTop: 6 }}>
+            <div>
+              <span className="note">Groups: </span>
+              {result.resolution.groups.length ? result.resolution.groups.join(", ") : "—"}
+              {result.resolution.lowConfidence && <span className="note"> (low confidence — verify)</span>}
+            </div>
+            {result.resolution.unverified.length > 0 && (
+              <div className="note">Suggested but not in the sheet: {result.resolution.unverified.join(", ")}</div>
+            )}
+            {result.resolution.reasoning && <div className="note">{result.resolution.reasoning}</div>}
+          </div>
+        )}
       </div>
     </div>
   );

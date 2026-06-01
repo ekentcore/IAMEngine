@@ -97,6 +97,15 @@ test.describe("KB-content enrichment", () => {
     await expect(item.getByText(/helpdesk@logicsource\.com/)).toBeVisible();
   });
 
+  test("LogicSource shows the Groups attachment block with a resolve action", async ({ page }) => {
+    await page.goto("/clients/core1748"); // LogicSource
+    const item = page.locator("details", { hasText: "📎 Attachment" }).first();
+    await item.locator("summary").click();
+    await expect(item.getByText(/📎 Attachment: New Employee Permissions Groups document/)).toBeVisible();
+    await expect(item.getByRole("link", { name: /open in ServiceNow/ })).toBeVisible();
+    await expect(item.getByRole("button", { name: "Resolve groups" })).toBeVisible();
+  });
+
   test(".eml download serves an attachment with the right headers", async ({ request }) => {
     const res = await request.get("/api/clients/core1748/runbook/email?action=onboard&seq=1&i=0");
     expect(res.status()).toBe(200);
