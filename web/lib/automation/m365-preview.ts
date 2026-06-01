@@ -38,9 +38,9 @@ function passwordComment(identity: Identity): string {
   return `# generated to policy: ${rules}`;
 }
 
-export function previewM365(action: "onboard" | "offboard", config: M365Config | null | undefined, identity: Identity | null | undefined, primaryDomain: string): string {
-  const cfg = config ?? {};
-  const id = identity ?? {};
+export function previewM365(action: "onboard" | "offboard", config: unknown, identity: unknown, primaryDomain: string): string {
+  const cfg = (config ?? {}) as M365Config;
+  const id = (identity ?? {}) as Identity;
   if (action === "offboard") return offboard(cfg, id, primaryDomain);
   return onboard(cfg, id, primaryDomain);
 }

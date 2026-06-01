@@ -48,3 +48,8 @@ export function buildRunbook(ir: IR): RunbookItem[] {
     a.action === b.action ? a.seq - b.seq : a.action === "onboarding" ? -1 : 1,
   );
 }
+
+// "<systemKey> — <title>" for a modeled section, "<title> (<guess>)" for an unmodeled one.
+export function runbookTitle(item: Pick<RunbookItem, "systemKey" | "title" | "guess">): string {
+  return item.systemKey ? `${item.systemKey} — ${item.title}` : item.guess ? `${item.title} (${item.guess})` : item.title;
+}

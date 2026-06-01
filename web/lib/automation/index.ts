@@ -4,7 +4,7 @@
 import { previewM365 } from "./m365-preview";
 
 export type Action = "onboard" | "offboard";
-export type Previewer = (action: Action, config: any, identity: any, primaryDomain: string) => string;
+export type Previewer = (action: Action, config: unknown, identity: unknown, primaryDomain: string) => string;
 
 const PREVIEWERS: Record<string, Previewer> = {
   m365: previewM365,
@@ -12,5 +12,5 @@ const PREVIEWERS: Record<string, Previewer> = {
 
 export function automationPreview(systemKey: string, action: Action, config: unknown, identity: unknown, primaryDomain: string): string | null {
   const fn = PREVIEWERS[systemKey];
-  return fn ? fn(action, config as any, (identity ?? {}) as any, primaryDomain) : null;
+  return fn ? fn(action, config, identity, primaryDomain) : null;
 }

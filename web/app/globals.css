@@ -92,6 +92,8 @@ tbody tr:hover { background: var(--bg-soft); }
 .badge.modeled { color: #1a1a1a; border-color: #cfcfcf; }
 .badge.unmodeled { color: #9a9a9a; }
 .badge.archived { color: #9a3a3a; border-color: #e3c4c4; }
+.badge.automated { color: #2e7d32; border-color: #c4e3c8; }
+.badge.human { color: #9a6a00; border-color: #e8d9b0; }
 
 .muted { color: var(--muted); }
 .note { color: var(--muted); font-size: 12px; }

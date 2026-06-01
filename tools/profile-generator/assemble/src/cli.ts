@@ -8,7 +8,7 @@ import { assembleProfile } from "./assemble.js";
 import { applyTemplate } from "./templates.js";
 import { makeValidator, formatErrors } from "./validate.js";
 import { diffAgainstCurated } from "./diff.js";
-import { buildRunbook } from "./runbook.js";
+import { buildRunbook, runbookTitle, type RunbookItem } from "./runbook.js";
 import type { IR } from "./ir.js";
 import type { DraftMeta, Profile } from "./profile.js";
 
@@ -76,11 +76,12 @@ function main(): number {
     if (validate(profile)) {
       metas.push(meta);
       generated.set(profile.client.name.toLowerCase(), profile);
-      writeSteps(join(stepsDir, `${meta.id}.md`), ir, meta);
+      const runbook = buildRunbook(ir);
+      writeSteps(join(stepsDir, `${meta.id}.md`), runbook, ir, meta);
       if (!reportOnly) {
         writeFileSync(join(outDir, `${meta.id}.json`), JSON.stringify(profile, null, 2) + "\n");
         // companion runbook (modeled + unmodeled + steps) seed loads into RunbookSection
-        writeFileSync(join(outDir, `${meta.id}.runbook.json`), JSON.stringify(buildRunbook(ir), null, 2) + "\n");
+        writeFileSync(join(outDir, `${meta.id}.runbook.json`), JSON.stringify(runbook, null, 2) + "\n");
       }
     } else {
       const errors = formatErrors(validate);
@@ -107,7 +108,7 @@ function main(): number {
 // each tagged Automated vs Human interaction (manual or not-yet-modeled), with the runbook
 // steps (username/password, fields, …) in collapsible <details>. The human-interaction
 // items are the backlog for building new modules.
-function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
+function writeSteps(path: string, all: RunbookItem[], ir: IR, meta: DraftMeta): void {
   const lines = [
     `# ${meta.name} — onboarding & offboarding steps`,
     "",
@@ -118,7 +119,6 @@ function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
     + "candidates for new modules. Expand each to see the steps. Text is from the KB; open the "
     + "article for anything truncated.",
   ];
-  const all = buildRunbook(ir);
   for (const action of ["onboarding", "offboarding"] as const) {
     const items = all.filter((i) => i.action === action);
     if (items.length === 0) continue;
@@ -127,8 +127,7 @@ function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
     for (const it of items) {
       const badge = it.status === "automated" ? "✅ Automated" : "✋ Human interaction";
       const sub = it.status === "automated" ? "Automated" : it.status === "manual" ? "Human interaction (manual step)" : "Human interaction — not modeled (needs a module)";
-      const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
-      lines.push("", "<details>", `<summary><b>${badge}</b> · ${title}</summary>`, "", `_${sub}_`, "");
+      lines.push("", "<details>", `<summary><b>${badge}</b> · ${runbookTitle(it)}</summary>`, "", `_${sub}_`, "");
       if (it.steps.length) {
         for (const s of it.steps) {
           const indent = s.match(/^ */)?.[0].length ?? 0;

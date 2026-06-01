@@ -26,8 +26,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
 
   const items: RunbookItemVM[] = runbook.map((r) => {
     const sys = r.systemKey ? sysByKey.get(r.systemKey) : undefined;
-    const after = sys ? (sys.dependsOn ?? []).filter((d) => keysInAction[r.action].has(d)) : [];
-    const laneConfig = (sys?.config as Record<string, unknown> | null)?.[r.action] ?? null;
+    const cfg = (sys?.config ?? null) as { onboard?: unknown; offboard?: unknown; dependsOn?: Record<string, string[]> } | null;
+    // lane-specific deps win over the system-level list (mirrors orchestrator.depsOf), filtered
+    // to systems actually present in this action's runbook.
+    const laneDeps = cfg?.dependsOn?.[r.action];
+    const after = sys ? (laneDeps ?? sys.dependsOn ?? []).filter((d) => keysInAction[r.action].has(d)) : [];
+    const laneConfig = cfg?.[r.action] ?? null;
     const code = r.status === "automated" && r.systemKey
       ? automationPreview(r.systemKey, r.action, laneConfig, client.identity, client.primaryDomain)
       : null;
@@ -46,8 +50,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     };
   });
 
-  const onboardKb = kbUrl(runbook.find((r) => r.action === "onboard")?.kbArticle);
-  const offboardKb = kbUrl(runbook.find((r) => r.action === "offboard")?.kbArticle);
+  const onboardKb = items.find((i) => i.action === "onboard" && i.kbHref)?.kbHref ?? null;
+  const offboardKb = items.find((i) => i.action === "offboard" && i.kbHref)?.kbHref ?? null;
 
   return (
     <main>

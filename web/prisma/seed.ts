@@ -174,7 +174,7 @@ async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
   await prisma.runbookSection.createMany({
     data: items.map((i) => ({
       clientId: clientDbId,
-      action: i.action === "offboarding" ? "offboard" : "onboard",
+      action: i.action.startsWith("off") ? "offboard" : "onboard", // "offboarding"/"offboard" -> offboard
       seq: i.seq,
       systemKey: i.systemKey ?? null,
       title: i.title,

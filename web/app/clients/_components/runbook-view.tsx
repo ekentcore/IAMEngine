@@ -34,7 +34,7 @@ export function RunbookView({ items }: { items: RunbookItemVM[] }) {
         return (
           <div key={action} style={{ marginTop: "1rem" }}>
             <div className="row-between" style={{ alignItems: "baseline" }}>
-              <h3 style={{ textTransform: "capitalize", margin: 0 }}>{action}</h3>
+              <h3 style={{ margin: 0 }}>{action === "onboard" ? "Onboard" : "Offboard"}</h3>
               <div className="toolbar">
                 {kb?.kbHref && (
                   <a href={kb.kbHref} target="_blank" rel="noreferrer" className="note">KB article {kb.kbNum} →</a>
@@ -64,7 +64,7 @@ function Item({ it, n, open, onToggle }: { it: RunbookItemVM; n: number; open: b
     <details open={open} style={{ margin: "0.2rem 0" }}>
       <summary onClick={(e) => { e.preventDefault(); onToggle(); }} style={{ cursor: "pointer" }}>
         <strong style={{ marginRight: 6 }}>{n}.</strong>
-        <span className="badge" style={{ color: auto ? "#2e7d32" : "#9a6a00" }}>{badge}</span> {title}
+        <span className={`badge ${auto ? "automated" : "human"}`}>{badge}</span> {title}
         {it.after.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {it.after.join(", ")}</span>}
       </summary>
       <div style={{ margin: "0.4rem 0 0.6rem" }}>

@@ -1,5 +1,5 @@
 // Shared types for the clients domain (repository + sync service + routes/UI).
-import type { Client, ClientStatus, Backbone } from "@prisma/client";
+import type { Client, ClientStatus, Backbone, Mode, Lifecycle } from "@prisma/client";
 
 // Projection used by the list view — excludes the heavy ClientSystem.config JSON.
 export type ClientListItem = {
@@ -61,9 +61,9 @@ export type ClientDetail = Client & {
   systems: Array<{
     id: string;
     systemKey: string;
-    mode: string;
-    onboardWhen: string;
-    offboardWhen: string;
+    mode: Mode;
+    onboardWhen: Lifecycle;
+    offboardWhen: Lifecycle;
     dependsOn: string[];
     requiresApproval: boolean;
     captureEvidence: boolean;
