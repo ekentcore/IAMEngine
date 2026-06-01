@@ -54,3 +54,9 @@ profiles/_drafts/
 
 # claude worktrees
 .claude/worktrees/
+
+# playwright e2e
+test-results/
+playwright-report/
+web/test-results/
+web/playwright-report/
