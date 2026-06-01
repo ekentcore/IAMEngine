@@ -39,6 +39,15 @@ export function makeRunnerService(db: PrismaClient) {
       return agent;
     },
 
+    // Operator action: enable/disable an agent (a disabled agent can't claim/broker/post).
+    async setEnabled(agentId: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      await db.agent.update({ where: { id: agentId }, data: { enabled } });
+      await db.auditLog.create({ data: { actor: "ui", action: enabled ? "agent.enable" : "agent.disable", detail: { agentId } } });
+      return { id: agentId, enabled };
+    },
+
     async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, enabled: true } });
       if (!agent) throw new HttpError(404, "unknown agent");

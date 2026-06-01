@@ -13,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </Link>
           <Link href="/clients" className="muted" style={{ textDecoration: "none" }}>Clients</Link>
           <Link href="/cases" className="muted" style={{ textDecoration: "none" }}>Cases</Link>
+          <Link href="/agents" className="muted" style={{ textDecoration: "none" }}>Agents</Link>
         </header>
         {children}
       </body>

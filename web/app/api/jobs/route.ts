@@ -3,6 +3,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
+export const dynamic = "force-dynamic"; // queries the DB per-request; never static
+
 export async function GET() {
   const rows = await db.job.groupBy({ by: ["status"], _count: { _all: true } });
   const byStatus = Object.fromEntries(rows.map((r) => [r.status, r._count._all]));
