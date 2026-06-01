@@ -14,9 +14,12 @@
     "env:sync": "node scripts/sync-env.mjs",
     "db:create": "node scripts/create-db.mjs",
     "db:setup": "npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed",
-    "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts"
+    "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts",
+    "test": "tsx --test lib/**/*.test.ts"
   },
-  "prisma": { "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts" },
+  "prisma": {
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
+  },
   "dependencies": {
     "@prisma/client": "^5.18.0",
     "next": "^14.2.5",
@@ -24,13 +27,14 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "prisma": "^5.18.0",
-    "pg": "^8.12.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.5.4",
     "@types/node": "^20.14.10",
     "@types/pg": "^8.11.6",
     "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0"
+    "@types/react-dom": "^18.3.0",
+    "pg": "^8.12.0",
+    "prisma": "^5.18.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.5.4"
   }
 }

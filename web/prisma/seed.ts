@@ -82,11 +82,19 @@ async function applyProfile(p: any, source: Source, handAuthored: Set<string>): 
       onboardWhen: laneMap[s.onboard?.when ?? "never"] ?? "never",
       offboardWhen: laneMap[s.offboard?.when ?? "never"] ?? "never",
       dependsOn: s.dependsOn ?? [],
+      // collapsed columns kept for the UI's coarse "needs approval / captures evidence" badge…
       requiresApproval: Boolean(s.onboard?.requiresApproval || s.offboard?.requiresApproval),
       captureEvidence: Boolean(s.onboard?.captureEvidence || s.offboard?.captureEvidence),
       secretNames: s.secrets ?? [],
-      config: { onboard: s.onboard?.config ?? null, offboard: s.offboard?.config ?? null,
-                dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn } },
+      // …while config carries the authoritative PER-LANE flags + lane config + lane deps the
+      // orchestrator resolves (so an offboard-only approval gate never fires on an onboard).
+      config: {
+        onboard: s.onboard?.config ?? null,
+        offboard: s.offboard?.config ?? null,
+        dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn },
+        requiresApproval: { onboard: Boolean(s.onboard?.requiresApproval), offboard: Boolean(s.offboard?.requiresApproval) },
+        captureEvidence: { onboard: Boolean(s.onboard?.captureEvidence), offboard: Boolean(s.offboard?.captureEvidence) },
+      },
     };
     await prisma.clientSystem.upsert({
       where: { clientId_systemKey: { clientId: client.id, systemKey: s.key } },

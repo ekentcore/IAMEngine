@@ -11,6 +11,7 @@ type Row = {
   mode: Mode;
   onboardWhen: Lane;
   offboardWhen: Lane;
+  dependsOn: string[];
   requiresApproval: boolean;
   captureEvidence: boolean;
   secretNames: string[];
@@ -36,6 +37,7 @@ function rowFromCatalog(key: string): Row {
     mode: (c?.mode ?? "api") as Mode,
     onboardWhen: mapLane(c?.onboard ?? null),
     offboardWhen: mapLane(c?.offboard ?? null),
+    dependsOn: [],
     requiresApproval: false,
     captureEvidence: false,
     secretNames: c?.secret ? [c.secret] : [],
@@ -85,6 +87,8 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           mode: sys.mode,
           onboardWhen: sys.onboardWhen,
           offboardWhen: sys.offboardWhen,
+          // round-trip dependsOn — without this, every save wiped it and broke topo-ordering
+          dependsOn: Array.isArray(sys.dependsOn) ? sys.dependsOn : [],
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
@@ -194,7 +198,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
 
           <table>
             <thead>
-              <tr><th>System</th><th>Mode</th><th>Onboard</th><th>Offboard</th><th>Appr</th><th>Evid</th><th>Secrets</th><th>Config</th><th></th></tr>
+              <tr><th>System</th><th>Mode</th><th>Onboard</th><th>Offboard</th><th>Deps</th><th>Appr</th><th>Evid</th><th>Secrets</th><th>Config</th><th></th></tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
@@ -203,6 +207,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                   <td><select value={r.mode} onChange={(e) => update(i, { mode: e.target.value as Mode })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></td>
                   <td><select value={r.onboardWhen} onChange={(e) => update(i, { onboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
                   <td><select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
+                  <td><input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 90 }} /></td>
                   <td><input type="checkbox" style={{ width: "auto" }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} /></td>
                   <td><input type="checkbox" style={{ width: "auto" }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} /></td>
                   <td><input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} style={{ width: 90 }} /></td>
@@ -210,7 +215,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                   <td><button onClick={() => remove(i)}>✕</button></td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={9} className="muted" style={{ textAlign: "center" }}>No systems. Add one or use “Parse instructions”.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: "center" }}>No systems. Add one or use “Parse instructions”.</td></tr>}
             </tbody>
           </table>
 

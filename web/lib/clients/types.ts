@@ -64,9 +64,11 @@ export type ClientDetail = Client & {
     mode: string;
     onboardWhen: string;
     offboardWhen: string;
+    dependsOn: string[];
     requiresApproval: boolean;
     captureEvidence: boolean;
     secretNames: string[];
+    config: unknown;
     system: { name: string; buildTier: number; moduleName: string | null };
   }>;
   secrets: Array<{ name: string; provider: string; label: string | null }>;

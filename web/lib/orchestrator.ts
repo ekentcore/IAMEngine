@@ -12,15 +12,35 @@ export type PlannedJob = {
   config: unknown;
 };
 
+// The per-lane config shape seed.ts writes into ClientSystem.config.
+type SystemConfig = {
+  onboard?: unknown;
+  offboard?: unknown;
+  dependsOn?: Record<string, string[]>;
+  requestKey?: string;
+  requiresApproval?: Record<string, boolean | undefined>;
+  captureEvidence?: Record<string, boolean | undefined>;
+};
+
+// Maps an on-request system to the intake-payload signal that turns it on. This is the
+// generalized mechanism (vs hardcoding per profile): add a row as new signals are mapped
+// in the intake-mapper. A profile/editor can override via config.requestKey, and manual
+// cases can set a payload flag named after the system key.
+const REQUEST_SIGNALS: Record<string, (payload: Record<string, unknown>, action: Action) => boolean> = {
+  teams: (p, a) => a === "onboard" && Boolean(p.officeLineRequired || p.cellPhoneRequired),
+};
+
 // Decide whether a system participates in this action, given the case payload.
 function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>): boolean {
   const when = action === "onboard" ? cs.onboardWhen : cs.offboardWhen;
   if (when === "never") return false;
   if (when === "always") return true;
-  // on_request: turned on by a case-payload signal. Map per system as rules grow;
-  // default: look for a truthy hint keyed by the system or its config.requestKey.
-  const key = (cs.config as { requestKey?: string } | null)?.requestKey ?? cs.systemKey;
-  return Boolean(payload[key]);
+  // on_request: explicit requestKey override -> central signal map -> systemKey fallback.
+  const cfg = cs.config as SystemConfig | null;
+  if (cfg?.requestKey) return Boolean(payload[cfg.requestKey]);
+  const signal = REQUEST_SIGNALS[cs.systemKey];
+  if (signal) return signal(payload, action);
+  return Boolean(payload[cs.systemKey]);
 }
 
 // Topological sort honoring dependsOn (declared order as tiebreak). Lane-specific deps,
@@ -33,7 +53,7 @@ export function planCase(
   const active = systems.filter((s) => included(s, action, payload));
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
   const depsOf = (s: ClientSystem): string[] => {
-    const laneDeps = (s.config as { dependsOn?: Record<string, string[]> } | null)?.dependsOn?.[action];
+    const laneDeps = (s.config as SystemConfig | null)?.dependsOn?.[action];
     return (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
   };
 
@@ -49,13 +69,21 @@ export function planCase(
   };
   for (const s of active) visit(s);
 
-  return order.map((s, i) => ({
-    systemKey: s.systemKey,
-    sequence: i,
-    mode: s.mode,
-    requiresApproval: s.requiresApproval,
-    captureEvidence: s.captureEvidence,
-    secretNames: s.secretNames,
-    config: s.config,
-  }));
+  return order.map((s, i) => {
+    const cfg = s.config as SystemConfig | null;
+    // Per-lane flags: if config carries the per-lane map use it authoritatively (an absent
+    // lane means false — no cross-lane bleed); otherwise fall back to the collapsed column.
+    const ra = cfg?.requiresApproval;
+    const ce = cfg?.captureEvidence;
+    return {
+      systemKey: s.systemKey,
+      sequence: i,
+      mode: s.mode,
+      requiresApproval: ra ? Boolean(ra[action]) : s.requiresApproval,
+      captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
+      secretNames: s.secretNames,
+      // The runner needs only this action's resolved config, not the whole blob.
+      config: cfg ? (cfg[action] ?? null) : null,
+    };
+  });
 }
