@@ -111,3 +111,49 @@ class TestSectionSteps:
     def test_steps_do_not_bleed_into_next_section(self):
         m = {s.header: s for s in split_sections(self.HTML)}["microsoft 365"]
         assert all("Sync the directory" not in s for s in m.steps)
+
+
+class TestStepSection:
+    """Real KB authors verify/confirm steps as
+       <div class="step-section"><span>INSTRUCTION</span>
+         <div class="step"><ul><li>ITEM</li>…</ul></div></div>
+    The instruction span lives outside any <li>/<p>, so it was being dropped while the
+    group items showed with no context. Capture the instruction as a step with the items
+    nested under it."""
+
+    HTML = """
+      <h2>Microsoft Entra</h2>
+      <div class="step-section">
+        <span>Verify the user was added to the following dynamic groups:</span>
+        <div class="step">
+          <ul><li>AAD-KnowBe4</li><li>AAD-MFA-Enabled</li></ul>
+        </div>
+      </div>
+      <h2>Mimecast</h2><p>Sync the directory.</p>
+    """
+
+    def _entra(self):
+        return {s.header: s for s in split_sections(self.HTML)}["microsoft entra"]
+
+    def test_instruction_span_becomes_a_step(self):
+        steps = self._entra().steps
+        assert any(s.strip() == "Verify the user was added to the following dynamic groups:" for s in steps)
+
+    def test_group_list_items_captured(self):
+        joined = " || ".join(self._entra().steps)
+        assert "AAD-KnowBe4" in joined and "AAD-MFA-Enabled" in joined
+
+    def test_group_items_nested_under_instruction(self):
+        steps = self._entra().steps
+        instr = next(i for i, s in enumerate(steps) if "Verify the user" in s)
+        group = next(i for i, s in enumerate(steps) if "AAD-KnowBe4" in s)
+        assert instr < group                       # instruction first
+        assert not steps[instr].startswith(" ")    # at depth 0
+        assert steps[group].startswith("  ")       # items indented as sub-steps
+
+    def test_instruction_excludes_the_group_list_text(self):
+        instr = next(s for s in self._entra().steps if "Verify the user" in s)
+        assert "AAD-KnowBe4" not in instr  # the nested list wrapper is excluded from own text
+
+    def test_step_section_steps_do_not_bleed_into_next_section(self):
+        assert all("Sync the directory" not in s for s in self._entra().steps)

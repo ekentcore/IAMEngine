@@ -34,6 +34,14 @@ def normalize_header(raw: str) -> str:
 
 LIST_TAGS = ("ul", "ol")
 STEP_TAGS = ("li", "p")
+# KB "step-section" blocks wrap an instruction (a leading <span>/text) plus a nested
+# "step" div holding the list. We capture the instruction and exclude the nested step div
+# from a parent's own text so the instruction and its list items don't double up.
+STEP_DIV_CLASSES = ("step", "step-section")
+
+
+def _is_step_div(el: Tag) -> bool:
+    return el.name == "div" and any(c in STEP_DIV_CLASSES for c in (el.get("class") or []))
 
 
 @dataclass
@@ -62,24 +70,45 @@ def split_sections(html: str) -> list[Section]:
 
 
 def _own_text(el: Tag) -> str:
-    """An element's own text, excluding any nested list (nested <li> become their own steps)."""
+    """An element's own text, excluding any nested list and nested step div (their items
+    become their own steps)."""
     parts: list[str] = []
     for c in el.children:
         if isinstance(c, NavigableString):
             parts.append(str(c))
-        elif isinstance(c, Tag) and c.name not in LIST_TAGS:
+        elif isinstance(c, Tag) and c.name not in LIST_TAGS and not _is_step_div(c):
             parts.append(c.get_text(" "))
     return _WS.sub(" ", " ".join(parts)).strip()
 
 
+def _step_depth(el: Tag) -> int:
+    """Nesting depth used for indentation: list ancestors plus step-section ancestors, so a
+    list inside a step-section indents one level under its instruction line."""
+    return sum(
+        1
+        for a in el.parents
+        if isinstance(a, Tag)
+        and (a.name in LIST_TAGS or (a.name == "div" and "step-section" in (a.get("class") or [])))
+    )
+
+
 def _section_steps(header: Tag, header_ids: set[int]) -> list[str]:
-    """Discrete steps from the section body: each <li> (own text, indented by nesting depth)
-    and each top-level <p>, in document order."""
+    """Discrete steps from the section body, in document order: the instruction text of each
+    step-section, each <li> (own text), and each top-level <p>; nested items are indented."""
     steps: list[str] = []
     for el in header.next_elements:
         if isinstance(el, Tag) and el.name in HEADER_TAGS and id(el) in header_ids:
             break
-        if not (isinstance(el, Tag) and el.name in STEP_TAGS):
+        if not isinstance(el, Tag):
+            continue
+        # The leading instruction of a step-section (e.g. "Verify the user was added to …"),
+        # which lives outside any <li>/<p>; its nested list items follow as sub-steps.
+        if el.name == "div" and "step-section" in (el.get("class") or []):
+            txt = _own_text(el)
+            if txt:
+                steps.append("  " * max(0, _step_depth(el) - 1) + txt)
+            continue
+        if el.name not in STEP_TAGS:
             continue
         if el.name == "p" and any(isinstance(a, Tag) and a.name == "li" for a in el.parents):
             continue  # a <p> inside an <li> is already folded into that li's own text
@@ -87,8 +116,7 @@ def _section_steps(header: Tag, header_ids: set[int]) -> list[str]:
         if not txt:
             continue
         if el.name == "li":
-            depth = sum(1 for a in el.parents if isinstance(a, Tag) and a.name in LIST_TAGS)
-            steps.append("  " * max(0, depth - 1) + txt)
+            steps.append("  " * max(0, _step_depth(el) - 1) + txt)
         else:
             steps.append(txt)
     return steps
