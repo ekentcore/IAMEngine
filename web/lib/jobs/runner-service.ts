@@ -12,6 +12,13 @@ const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobReq
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
 
+// An agent disabled mid-flight must not keep brokering credentials or posting results.
+async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<void> {
+  const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
+  if (!agent) throw new HttpError(404, "unknown agent");
+  if (!agent.enabled) throw new HttpError(403, "agent disabled");
+}
+
 export function makeRunnerService(db: PrismaClient) {
   return {
     async enroll(input: { name: string; scope: AgentScope; clientSlug?: string | null }): Promise<{ id: string; scope: AgentScope; clientId: string | null }> {
@@ -45,14 +52,21 @@ export function makeRunnerService(db: PrismaClient) {
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
 
-      // Reclaim stale leases: a job dispatched long ago whose runner never reported back
-      // (crash/stall) goes back to pending so it can be re-offered.
-      const reclaimed = await db.job.updateMany({
-        where: { status: "dispatched", startedAt: { lt: new Date(Date.now() - LEASE_MS) } },
-        data: { status: "pending", assignedAgentId: null },
+      // Reclaim stale leases: a job dispatched long ago whose assigned agent is gone/stale/
+      // disabled goes back to pending. Scoped to dead agents so a peer can't reset a live
+      // agent's in-flight jobs (the live agent keeps lastSeenAt fresh via heartbeat).
+      const staleCutoff = new Date(Date.now() - LEASE_MS);
+      const stale = await db.job.findMany({
+        where: {
+          status: "dispatched",
+          startedAt: { lt: staleCutoff },
+          OR: [{ assignedAgentId: null }, { assignedAgent: { lastSeenAt: { lt: staleCutoff } } }, { assignedAgent: { enabled: false } }],
+        },
+        select: { id: true },
       });
-      if (reclaimed.count > 0) {
-        await db.auditLog.create({ data: { actor: "system", action: "job.lease.reclaim", detail: { count: reclaimed.count } } });
+      if (stale.length > 0) {
+        await db.job.updateMany({ where: { id: { in: stale.map((s) => s.id) } }, data: { status: "pending", assignedAgentId: null } });
+        await db.auditLog.create({ data: { actor: "system", action: "job.lease.reclaim", detail: { count: stale.length } } });
       }
 
       // central runner (clientId null) sees all clients' api jobs; a client agent sees only
@@ -127,6 +141,7 @@ export function makeRunnerService(db: PrismaClient) {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
+      await assertAgentEnabled(db, agentId);
       if (job.status !== "dispatched" && job.status !== "running") throw new HttpError(409, `job is ${job.status}; credentials only brokered for in-progress jobs`);
       const allowed = req(job).secretNames ?? [];
       if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
@@ -142,6 +157,7 @@ export function makeRunnerService(db: PrismaClient) {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, serviceNowCaseNumber: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
+      await assertAgentEnabled(db, agentId);
 
       const status = input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
       if (job.status !== "dispatched" && job.status !== "running") {

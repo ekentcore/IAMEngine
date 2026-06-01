@@ -11,6 +11,7 @@
 param(
     [Parameter(Mandatory)][string]$AppUrl,        # https://iam-engine.internal
     [Parameter(Mandatory)][string]$AgentId,
+    [string]$ApiToken = $env:RUNNER_API_TOKEN,    # interim shared bearer (until mTLS)
     [int]$PollSeconds = 15,
     [int]$BatchSize   = 5
 )
@@ -32,8 +33,9 @@ $DISPATCH = @{
 function Invoke-AppApi {
     param([string]$Method, [string]$Path, $Body)
     $p = @{ Method = $Method; Uri = "$AppUrl$Path"; ContentType = 'application/json' }
+    if ($ApiToken) { $p.Headers = @{ Authorization = "Bearer $ApiToken" } }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 12) }
-    Invoke-RestMethod @p   # mTLS / signed token added in production
+    Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
 }
 
 function Get-JobCredential {

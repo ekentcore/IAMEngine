@@ -9,6 +9,13 @@ import { HttpError } from "@/lib/jobs/types";
 const SCOPES = ["central", "client_network"];
 
 export async function POST(request: Request) {
+  // Enrollment is the bootstrap step (no agent identity yet), so it gets its own token gate
+  // on top of the middleware's transport token. Skipped only if ENROLLMENT_TOKEN is unset.
+  const enrollToken = process.env.ENROLLMENT_TOKEN;
+  if (enrollToken && request.headers.get("x-enrollment-token") !== enrollToken) {
+    return NextResponse.json({ error: "invalid enrollment token" }, { status: 401 });
+  }
+
   let body: { name?: unknown; scope?: unknown; clientSlug?: unknown };
   try {
     body = await request.json();
