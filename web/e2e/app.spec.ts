@@ -51,6 +51,31 @@ test.describe("client detail — the runbook fix", () => {
   });
 });
 
+test.describe("runbook upgrades", () => {
+  test("Source KB link + numbered steps", async ({ page }) => {
+    await page.goto("/clients/six-one");
+    await expect(page.getByRole("link", { name: /onboard →/ }).first()).toBeVisible();
+    await expect(page.locator("details summary").first()).toContainText(/^\s*\d+\./);
+  });
+
+  test("Expand all opens items; Collapse all closes them", async ({ page }) => {
+    await page.goto("/clients/six-one");
+    await page.getByRole("button", { name: "Expand all" }).first().click();
+    expect(await page.locator("details[open]").count()).toBeGreaterThan(3);
+    await page.getByRole("button", { name: "Collapse all" }).first().click();
+    await expect.poll(async () => page.locator("details[open]").count()).toBe(0);
+  });
+
+  test("automated m365 item shows the intended-automation code block", async ({ page }) => {
+    await page.goto("/clients/core507"); // ACORE — entra, m365 onboard automated
+    const m365 = page.locator("details", { has: page.getByText(/m365 —/) }).first();
+    await m365.locator("summary").click();
+    await expect(m365.getByText(/Intended automation/i).first()).toBeVisible();
+    await expect(m365.locator("pre code")).toContainText("$UserPrincipalName");
+    await expect(m365.locator("pre code")).toContainText(/New-MgUser|Update-MgUser/);
+  });
+});
+
 test.describe("agents", () => {
   test("agents page renders and the enroll dialog opens", async ({ page }) => {
     await page.goto("/agents");

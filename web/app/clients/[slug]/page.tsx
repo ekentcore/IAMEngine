@@ -1,10 +1,12 @@
 // Client detail (server component): roster metadata + the modeled systems and their flags.
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { RunbookSection } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { kbUrl } from "@/lib/servicenow/kb-url";
+import { automationPreview } from "@/lib/automation";
 import { EditSystemsButton } from "../_components/edit-systems-button";
+import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +18,36 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     where: { clientId: client.id },
     orderBy: [{ action: "asc" }, { seq: "asc" }],
   });
+
+  // index systems for dependency badges + per-system config (code preview)
+  const sysByKey = new Map(client.systems.map((s) => [s.systemKey, s]));
+  const keysInAction: Record<"onboard" | "offboard", Set<string>> = { onboard: new Set(), offboard: new Set() };
+  for (const r of runbook) if (r.systemKey) keysInAction[r.action].add(r.systemKey);
+
+  const items: RunbookItemVM[] = runbook.map((r) => {
+    const sys = r.systemKey ? sysByKey.get(r.systemKey) : undefined;
+    const after = sys ? (sys.dependsOn ?? []).filter((d) => keysInAction[r.action].has(d)) : [];
+    const laneConfig = (sys?.config as Record<string, unknown> | null)?.[r.action] ?? null;
+    const code = r.status === "automated" && r.systemKey
+      ? automationPreview(r.systemKey, r.action, laneConfig, client.identity, client.primaryDomain)
+      : null;
+    return {
+      id: `${r.action}-${r.seq}`,
+      action: r.action,
+      status: r.status,
+      systemKey: r.systemKey,
+      title: r.title,
+      guess: r.guess,
+      steps: r.steps,
+      after,
+      kbHref: kbUrl(r.kbArticle),
+      kbNum: r.kbArticle,
+      code,
+    };
+  });
+
+  const onboardKb = kbUrl(runbook.find((r) => r.action === "onboard")?.kbArticle);
+  const offboardKb = kbUrl(runbook.find((r) => r.action === "offboard")?.kbArticle);
 
   return (
     <main>
@@ -53,6 +85,14 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       </table>
 
       <h2>Systems</h2>
+      {(onboardKb || offboardKb) && (
+        <p className="note">
+          Source KB:{" "}
+          {onboardKb && <a href={onboardKb} target="_blank" rel="noreferrer">onboard →</a>}
+          {onboardKb && offboardKb && " · "}
+          {offboardKb && <a href={offboardKb} target="_blank" rel="noreferrer">offboard →</a>}
+        </p>
+      )}
       {client.systems.length === 0 ? (
         <p className="note">No profile applied yet — this client is roster-only.</p>
       ) : (
@@ -99,53 +139,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         Generated from the ServiceNow KB. ✅ automated steps run via a module; ✋ human-interaction
         steps (manual, or not yet modeled) need a person — those are the module backlog. Expand to see the steps.
       </p>
-      <Runbook sections={runbook} />
-    </main>
-  );
-}
-
-function Runbook({ sections }: { sections: RunbookSection[] }) {
-  if (sections.length === 0) {
-    return <p className="note">No generated runbook yet — run the profile generator (<code>tools/profile-generator/run.sh</code>) and <code>npm run db:seed</code>.</p>;
-  }
-  return (
-    <>
-      {(["onboard", "offboard"] as const).map((action) => {
-        const items = sections.filter((s) => s.action === action);
-        if (items.length === 0) return null;
-        const auto = items.filter((s) => s.status === "automated").length;
-        return (
-          <div key={action} style={{ marginTop: "0.75rem" }}>
-            <h3 style={{ textTransform: "capitalize", marginBottom: "0.25rem" }}>{action}</h3>
-            <p className="note" style={{ marginTop: 0 }}>{items.length} steps — {auto} automated, {items.length - auto} human interaction</p>
-            {items.map((s) => <RunbookItem key={s.id} s={s} />)}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-function RunbookItem({ s }: { s: RunbookSection }) {
-  const auto = s.status === "automated";
-  const label = auto ? "✅ Automated" : s.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
-  const title = s.systemKey ? `${s.systemKey} — ${s.title}` : s.guess ? `${s.title} (${s.guess})` : s.title;
-  return (
-    <details style={{ margin: "0.2rem 0", padding: "0.15rem 0" }}>
-      <summary>
-        <span className="badge" style={{ color: auto ? "#2e7d32" : "#9a6a00" }}>{label}</span> {title}
-      </summary>
-      {s.steps.length === 0 ? (
-        <p className="note" style={{ marginLeft: "1rem" }}>(no step text captured — see the KB article)</p>
+      {items.length === 0 ? (
+        <p className="note">No generated runbook yet — run <code>tools/profile-generator/run.sh</code> then <code>npm run db:seed</code>.</p>
       ) : (
-        <div style={{ margin: "0.4rem 0 0.6rem" }}>
-          {s.steps.map((step, i) => {
-            const indent = step.match(/^ */)?.[0].length ?? 0;
-            return <div key={i} className="muted" style={{ marginLeft: `${0.8 + indent * 0.6}rem` }}>• {step.trim()}</div>;
-          })}
-        </div>
+        <RunbookView items={items} />
       )}
-    </details>
+    </main>
   );
 }
 
