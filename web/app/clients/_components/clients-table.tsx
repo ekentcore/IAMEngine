@@ -78,6 +78,14 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     return sorted;
   }, [clients, query, statusFilter, modeledFilter, sortKey, sortDir]);
 
+  // modeled = has a profile/runbook we can act on ("who we can do"); counted within the
+  // current status filter so the numbers match what's on screen.
+  const counts = useMemo(() => {
+    const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
+    const modeled = inStatus.filter((c) => c.modeled).length;
+    return { total: inStatus.length, modeled, unmodeled: inStatus.length - modeled };
+  }, [clients, statusFilter]);
+
   function toggleSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(key); setSortDir("asc"); }
@@ -139,9 +147,9 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <option value="all">All statuses</option>
         </select>
         <select className="inline" value={modeledFilter} onChange={(e) => setModeledFilter(e.target.value as never)}>
-          <option value="all">All</option>
-          <option value="modeled">Modeled</option>
-          <option value="unmodeled">Not modeled</option>
+          <option value="all">All ({counts.total})</option>
+          <option value="modeled">Modeled — can do ({counts.modeled})</option>
+          <option value="unmodeled">Not modeled ({counts.unmodeled})</option>
         </select>
         <span className="grow" />
         <span className="note">
