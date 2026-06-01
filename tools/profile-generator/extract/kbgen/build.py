@@ -29,12 +29,6 @@ def _section_confidence(section, text: str) -> float:
     return max(0.3, min(0.95, round(conf, 2)))
 
 
-def _clip(text: str, limit: int = 700) -> str:
-    """The section's runbook text, kept short — enough for a reviewer to see the steps."""
-    t = (text or "").strip()
-    return t if len(t) <= limit else t[: limit - 1] + "…"
-
-
 def _infer_primary_domain(html_blobs: list[str]) -> str | None:
     counts: Counter[str] = Counter()
     for blob in html_blobs:
@@ -55,6 +49,7 @@ def build_client_ir(records: list[dict]) -> dict:
     warnings: list[str] = []
     system_keys: set[str] = set()
     html_blobs: list[str] = []
+    order = 0  # document-order index across all sections (for step-by-step reconstruction)
 
     for rec in records:
         action = "onboarding" if rec.get("action") == "onboarding" else "offboarding"
@@ -73,14 +68,16 @@ def build_client_ir(records: list[dict]) -> dict:
                     "systemKey": val,
                     "action": action,
                     "section": section.raw_header,
+                    "seq": order,
                     "confidence": _section_confidence(section, section.text),
                     "mode": CATALOG.get(val, "api"),
                     "signals": extract_signals(val, section),
-                    "instructions": _clip(section.text),
+                    "steps": section.steps,
                 })
                 system_keys.add(val)
             else:
-                unmodeled.append({"section": section.raw_header, "action": action, "guess": val, "instructions": _clip(section.text)})
+                unmodeled.append({"section": section.raw_header, "action": action, "seq": order, "guess": val, "steps": section.steps})
+            order += 1
 
     backbone = infer_backbone(system_keys)
     if backbone and backbone.startswith("ad"):

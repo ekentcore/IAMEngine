@@ -98,29 +98,48 @@ function main(): number {
   return invalid.length ? 1 : 0;
 }
 
-// Per-client review packet: the runbook step text for every section (modeled + unmodeled),
-// so a reviewer can see exactly how to create the user (username/password, fields, etc.)
-// and what was detected-but-not-modeled.
+type StepItem = { seq: number; auto: boolean; status: string; title: string; steps: string[] };
+
+// Per-client step-by-step packet: EVERYTHING the runbook calls for, in document order,
+// each tagged Automated vs Human interaction (manual or not-yet-modeled), with the runbook
+// steps (username/password, fields, …) in collapsible <details>. The human-interaction
+// items are the backlog for building new modules.
 function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
   const lines = [
-    `# ${meta.name} — runbook steps`,
+    `# ${meta.name} — onboarding & offboarding steps`,
     "",
     `backbone: ${meta.backbone}${meta.backboneDefaulted ? " (default — verify)" : ""} · confidence ${meta.confidence} · KB ${ir.kb.onboard ?? "–"} / ${ir.kb.offboard ?? "–"}`,
     "",
-    "Step text is clipped from the ServiceNow runbook — open the KB for full detail. Sections marked ⚠ were detected but are not modeled yet (handle manually).",
+    "Everything the runbook calls for, in order. **✅ Automated** runs via a module; "
+    + "**✋ Human interaction** (manual or not-yet-modeled) needs a person — those are the "
+    + "candidates for new modules. Expand each to see the steps. Text is from the KB; open the "
+    + "article for anything truncated.",
   ];
   for (const action of ["onboarding", "offboarding"] as const) {
-    const det = ir.detected.filter((d) => d.action === action);
-    const unm = ir.unmodeled.filter((u) => u.action === action);
-    if (det.length === 0 && unm.length === 0) continue;
-    lines.push("", `## ${action}`);
-    for (const d of det) {
-      lines.push("", `### ${d.systemKey} — ${d.section}`);
-      if (d.instructions) lines.push("", `> ${d.instructions.replace(/\s+/g, " ")}`);
+    const items: StepItem[] = [];
+    for (const d of ir.detected.filter((x) => x.action === action)) {
+      const auto = d.mode !== "manual";
+      items.push({ seq: d.seq ?? 0, auto, status: auto ? "Automated" : "Human interaction (manual step)", title: `${d.systemKey} — ${d.section}`, steps: d.steps ?? [] });
     }
-    for (const u of unm) {
-      lines.push("", `### ⚠ ${u.section}${u.guess ? ` (${u.guess})` : ""} — not modeled`);
-      if (u.instructions) lines.push("", `> ${u.instructions.replace(/\s+/g, " ")}`);
+    for (const u of ir.unmodeled.filter((x) => x.action === action)) {
+      items.push({ seq: u.seq ?? 0, auto: false, status: "Human interaction — not modeled (needs a module)", title: u.guess ? `${u.section} (${u.guess})` : u.section, steps: u.steps ?? [] });
+    }
+    if (items.length === 0) continue;
+    items.sort((a, b) => a.seq - b.seq);
+    const autoN = items.filter((i) => i.auto).length;
+    lines.push("", `## ${action}`, "", `${items.length} steps — ${autoN} automated, ${items.length - autoN} human interaction`);
+    for (const it of items) {
+      const badge = it.auto ? "✅ Automated" : "✋ Human interaction";
+      lines.push("", "<details>", `<summary><b>${badge}</b> · ${it.title}</summary>`, "", `_${it.status}_`, "");
+      if (it.steps.length) {
+        for (const s of it.steps) {
+          const indent = s.match(/^ */)?.[0].length ?? 0;
+          lines.push(`${" ".repeat(indent)}- ${s.trim()}`);
+        }
+      } else {
+        lines.push("_(no step text captured — see the KB article)_");
+      }
+      lines.push("", "</details>");
     }
   }
   writeFileSync(path, lines.join("\n") + "\n");

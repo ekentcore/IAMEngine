@@ -7,17 +7,19 @@ export interface Detected {
   systemKey: string;
   action: Action;
   section: string;
+  seq?: number;
   confidence: number;
   mode?: "api" | "browser" | "manual";
   signals?: Record<string, unknown>;
-  instructions?: string;
+  steps?: string[];
 }
 
 export interface Unmodeled {
   section: string;
   action: Action;
+  seq?: number;
   guess?: string | null;
-  instructions?: string;
+  steps?: string[];
 }
 
 export interface IR {

@@ -75,3 +75,39 @@ class TestSplitSections:
         secs = {s.header: s for s in split_sections(self.HTML)}
         assert secs["teams"].raw_header == "Teams (if requested)"
         assert secs["teams"].level == 4
+
+
+class TestSectionSteps:
+    HTML = """
+      <h2>Microsoft 365</h2>
+      <p>Connect to Entra Admin Center.</p>
+      <ol>
+        <li>Click New user
+          <ul><li>Username: FLast@x.com</li><li>Set a password</li></ul>
+        </li>
+        <li>Fill the properties tab</li>
+      </ol>
+      <h2>Mimecast</h2><p>Sync the directory.</p>
+    """
+
+    def test_paragraph_and_list_items_become_ordered_steps(self):
+        m = {s.header: s for s in split_sections(self.HTML)}["microsoft 365"]
+        joined = " || ".join(m.steps)
+        assert m.steps[0] == "Connect to Entra Admin Center."
+        assert "Click New user" in joined
+        assert "Username: FLast@x.com" in joined
+        assert "Fill the properties tab" in joined
+
+    def test_parent_li_excludes_nested_list_text(self):
+        m = {s.header: s for s in split_sections(self.HTML)}["microsoft 365"]
+        parent = next(s for s in m.steps if "Click New user" in s)
+        assert "Username" not in parent  # nested items are their own steps
+
+    def test_nested_steps_are_indented(self):
+        m = {s.header: s for s in split_sections(self.HTML)}["microsoft 365"]
+        nested = next(s for s in m.steps if "Username: FLast@x.com" in s)
+        assert nested.startswith("  ")
+
+    def test_steps_do_not_bleed_into_next_section(self):
+        m = {s.header: s for s in split_sections(self.HTML)}["microsoft 365"]
+        assert all("Sync the directory" not in s for s in m.steps)
