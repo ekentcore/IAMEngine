@@ -1,0 +1,25 @@
+// POST /api/jobs/claim — { agentId, batchSize? }. Atomically claims eligible api jobs.
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { HttpError } from "@/lib/jobs/types";
+
+export async function POST(request: Request) {
+  let body: { agentId?: unknown; batchSize?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
+  }
+  if (typeof body.agentId !== "string" || !body.agentId) return NextResponse.json({ error: "agentId is required" }, { status: 422 });
+  const n = Number(body.batchSize);
+  const batchSize = Number.isFinite(n) ? Math.max(1, Math.min(25, Math.floor(n))) : 5;
+
+  try {
+    const jobs = await makeRunnerService(db).claim(body.agentId, batchSize);
+    return NextResponse.json(jobs);
+  } catch (e) {
+    if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });
+    return NextResponse.json({ error: "internal error" }, { status: 500 });
+  }
+}
