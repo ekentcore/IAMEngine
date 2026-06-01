@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyGateOpen, deriveCaseStatus, type JobLite } from "./runner-logic";
+import { dependencyGateOpen, deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 
 function j(over: Partial<JobLite>): JobLite {
   return { id: "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
@@ -38,4 +38,26 @@ test("deriveCaseStatus: only manual checklist left -> needs_manual", () => {
 
 test("deriveCaseStatus: a gated approval job blocks -> needs_approval", () => {
   assert.equal(deriveCaseStatus([j({ status: "succeeded" }), j({ status: "pending", requiresApproval: true })]), "needs_approval");
+});
+
+test("isClaimable: gate open + non-terminal case -> claimable", () => {
+  const t = j({ id: "m365", sequence: 1 });
+  assert.equal(isClaimable(t, [j({ sequence: 0, status: "succeeded" }), t], "running"), true);
+});
+
+test("isClaimable: never claim jobs on a failed or completed case", () => {
+  const t = j({ id: "m365", sequence: 0 });
+  assert.equal(isClaimable(t, [t], "failed"), false);
+  assert.equal(isClaimable(t, [t], "completed"), false);
+});
+
+test("isClaimable: approval-gated job not claimable unless approved", () => {
+  const gated = j({ id: "x", sequence: 0, requiresApproval: true });
+  assert.equal(isClaimable(gated, [gated], "needs_approval"), false);
+  assert.equal(isClaimable({ ...gated, approved: true }, [gated], "needs_approval"), true);
+});
+
+test("isClaimable: closed dependency gate -> not claimable", () => {
+  const t = j({ id: "m365", sequence: 1 });
+  assert.equal(isClaimable(t, [j({ sequence: 0, status: "running" }), t], "running"), false);
 });

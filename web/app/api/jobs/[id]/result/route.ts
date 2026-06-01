@@ -8,12 +8,13 @@ import { HttpError, type ResultInput } from "@/lib/jobs/types";
 const STATUSES = ["succeeded", "failed", "skipped"];
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  let body: { status?: unknown; result?: unknown; evidence?: unknown; error?: unknown };
+  let body: { agentId?: unknown; status?: unknown; result?: unknown; evidence?: unknown; error?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
+  if (typeof body.agentId !== "string" || !body.agentId) return NextResponse.json({ error: "agentId is required" }, { status: 422 });
   if (!STATUSES.includes(body.status as string)) {
     return NextResponse.json({ error: 'status must be "succeeded", "failed", or "skipped"' }, { status: 422 });
   }
@@ -25,7 +26,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   };
 
   try {
-    const out = await makeRunnerService(db).recordResult(params.id, input);
+    const out = await makeRunnerService(db).recordResult(params.id, body.agentId, input);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

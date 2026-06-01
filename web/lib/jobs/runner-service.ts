@@ -2,12 +2,15 @@
 // case advance. Factory-style over PrismaClient, mirroring lib/clients/repository.ts.
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
-import { dependencyGateOpen, deriveCaseStatus, type JobLite } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 
-type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[] };
+type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean };
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
+
+// A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
+const LEASE_MS = 10 * 60 * 1000;
 
 export function makeRunnerService(db: PrismaClient) {
   return {
@@ -42,23 +45,39 @@ export function makeRunnerService(db: PrismaClient) {
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
 
-      // central runner (clientId null) sees all clients' api jobs; a client agent sees only its own.
+      // Reclaim stale leases: a job dispatched long ago whose runner never reported back
+      // (crash/stall) goes back to pending so it can be re-offered.
+      const reclaimed = await db.job.updateMany({
+        where: { status: "dispatched", startedAt: { lt: new Date(Date.now() - LEASE_MS) } },
+        data: { status: "pending", assignedAgentId: null },
+      });
+      if (reclaimed.count > 0) {
+        await db.auditLog.create({ data: { actor: "system", action: "job.lease.reclaim", detail: { count: reclaimed.count } } });
+      }
+
+      // central runner (clientId null) sees all clients' api jobs; a client agent sees only
+      // its own. Jobs on a failed/completed case are excluded so a dead case can't run more.
       const candidates = await db.job.findMany({
-        where: { status: "pending", mode: "api", ...(agent.clientId ? { case: { clientId: agent.clientId } } : {}) },
+        where: {
+          status: "pending",
+          mode: "api",
+          case: { status: { notIn: ["failed", "completed"] }, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
+        },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
-        select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true },
+        select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },
       });
       if (candidates.length === 0) return [];
 
       // load all jobs of the candidate cases once, for the dependency gate
       const caseIds = [...new Set(candidates.map((c) => c.caseRequestId))];
-      const caseJobs = await db.job.findMany({
+      const allJobs = await db.job.findMany({
         where: { caseRequestId: { in: caseIds } },
         select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true },
       });
-      const lite = (j: typeof caseJobs[number]): JobLite => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval) });
+      const lite = (j: { id: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite =>
+        ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) });
       const byCase = new Map<string, JobLite[]>();
-      for (const j of caseJobs) {
+      for (const j of allJobs) {
         const arr = byCase.get(j.caseRequestId) ?? [];
         arr.push(lite(j));
         byCase.set(j.caseRequestId, arr);
@@ -66,8 +85,7 @@ export function makeRunnerService(db: PrismaClient) {
 
       const eligible: string[] = [];
       for (const c of candidates) {
-        if (req(c).requiresApproval) continue; // approval-gated: never auto-dispatched
-        if (!dependencyGateOpen(lite(c), byCase.get(c.caseRequestId) ?? [])) continue;
+        if (!isClaimable(lite(c), byCase.get(c.caseRequestId) ?? [], c.case.status)) continue;
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }
@@ -83,7 +101,7 @@ export function makeRunnerService(db: PrismaClient) {
         include: { case: { include: { client: { select: { slug: true, primaryDomain: true, backbone: true } } } } },
         orderBy: { sequence: "asc" },
       });
-      await db.auditLog.create({ data: { actor: `agent:${agent.id}`, action: "job.claim", detail: { count: claimed.length, jobIds: claimed.map((c) => c.id) } } });
+      await db.auditLog.create({ data: { actor: `agent:${agent.id}`, action: "job.claim", detail: { count: claimed.length, jobIds: claimed.map((c) => c.id), clients: [...new Set(claimed.map((c) => c.case.client.slug))] } } });
 
       return claimed.map((j) => {
         const r = req(j);
@@ -106,9 +124,10 @@ export function makeRunnerService(db: PrismaClient) {
     // the secret must be one named on that job. Never returns a secret value (we store only
     // the Delinea reference); production exchanges externalId for a short-TTL scoped cred here.
     async brokerCredential(jobId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { assignedAgentId: true, request: true, case: { select: { clientId: true } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
+      if (job.status !== "dispatched" && job.status !== "running") throw new HttpError(409, `job is ${job.status}; credentials only brokered for in-progress jobs`);
       const allowed = req(job).secretNames ?? [];
       if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
       const secret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
@@ -117,20 +136,35 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: secret.provider, externalId: secret.externalId, secretName, brokered: false, expiresInSeconds: 300, note: "Delinea broker not wired — reference only; exchange externalId for a scoped credential in production" };
     },
 
-    // Record a job result, advance the case, audit, and queue a work note.
-    async recordResult(jobId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
+    // Record a job result, advance the case, audit, and queue a work note. The posting agent
+    // must own the job; a repeat of the same terminal result is an idempotent no-op.
+    async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, serviceNowCaseNumber: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
-      if (job.status !== "dispatched" && job.status !== "running") throw new HttpError(409, `job is ${job.status}, not in progress`);
+      if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
 
       const status = input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
+      if (job.status !== "dispatched" && job.status !== "running") {
+        // idempotent: a lost-ack retry of the same outcome succeeds; a conflicting re-post 409s.
+        if (job.status === status) {
+          const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
+          return { jobId, status, caseStatus: cs?.status ?? "unknown" };
+        }
+        throw new HttpError(409, `job already ${job.status}`);
+      }
+
       await db.job.update({
         where: { id: jobId },
         data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
       });
 
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, sequence: true, mode: true, status: true, request: true } });
-      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval) })));
+      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      // On case failure, cancel the still-pending jobs so they aren't orphaned forever
+      // (their dependency gate could never open behind a failed predecessor anyway).
+      if (caseStatus === "failed") {
+        await db.job.updateMany({ where: { caseRequestId: job.caseRequestId, status: "pending" }, data: { status: "skipped" } });
+      }
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
@@ -139,6 +173,23 @@ export function makeRunnerService(db: PrismaClient) {
       await db.auditLog.create({ data: { actor: "system", action: "servicenow.worknote.pending", caseRequestId: job.caseRequestId, detail: { caseNumber: job.case.serviceNowCaseNumber, note: `${job.systemKey}: ${status}${input.error ? ` — ${input.error}` : ""}` } } });
 
       return { jobId, status, caseStatus };
+    },
+
+    // Release an approval-gated job so it can be claimed. Gate is enforced here (server-side),
+    // per CLAUDE.md: destructive steps need a recorded approval before dispatch.
+    async approveJob(jobId: string, approvedBy: string): Promise<{ jobId: string; caseStatus: string }> {
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, request: true, case: { select: { clientId: true } } } });
+      if (!job) throw new HttpError(404, "unknown job");
+      const r = req(job);
+      if (!r.requiresApproval) throw new HttpError(409, "job does not require approval");
+      if (job.status !== "pending") throw new HttpError(409, `job is ${job.status}; only a pending job can be approved`);
+
+      await db.job.update({ where: { id: jobId }, data: { request: { ...r, approved: true } as Prisma.InputJsonValue } });
+      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, sequence: true, mode: true, status: true, request: true } });
+      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
+      await db.auditLog.create({ data: { actor: approvedBy, action: "job.approve", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { approvedBy } } });
+      return { jobId, caseStatus };
     },
   };
 }

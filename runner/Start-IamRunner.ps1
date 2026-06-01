@@ -44,30 +44,33 @@ function Get-JobCredential {
 Write-Host "iam-engine runner $AgentId polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
 while ($true) {
     try {
-        Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = '0.1.0' } | Out-Null
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = '0.1.0' }
+        if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize }
 
         foreach ($job in @($jobs)) {
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ status = 'failed'; error = "no executor for $($job.systemKey)" }
+                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = "no executor for $($job.systemKey)" }
                     continue
                 }
                 $fn = if ($job.action -eq 'offboard') { $handler.Offboard } else { $handler.Onboard }
                 if (-not $fn) {
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ status = 'failed'; error = "no $($job.action) lane for $($job.systemKey)" }
+                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = "no $($job.action) lane for $($job.systemKey)" }
                     continue
                 }
 
-                $cred = $null
-                if ($job.secretNames) { $cred = Get-JobCredential $job.id $job.secretNames[0] }
+                # Broker every secret the job names (least-privilege, one call each), keyed by name.
+                $creds = @{}
+                foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
+                $cred = if ($job.secretNames) { $creds[$job.secretNames[0]] } else { $null }
 
-                $result = & $fn $job $cred
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ status = 'succeeded'; result = $result }
+                $result = & $fn $job $cred $creds
+                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'succeeded'; result = $result }
             }
             catch {
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ status = 'failed'; error = $_.Exception.Message }
+                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $_.Exception.Message }
             }
         }
     }
