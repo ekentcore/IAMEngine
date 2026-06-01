@@ -41,42 +41,23 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["equipment-return", "Equipment return", 3],
 ];
 
-type Source = "authored" | "generated";
+// Normalised client-name key for matching generated profiles to roster clients (whose slugs
+// are CORE ids, so slug equality never matches a name-slugged generated profile).
+function normName(s: string): string {
+  return (s || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+function stripSuffix(n: string): string {
+  return n.replace(/\b(llc|inc|lp|llp|ltd|co|corp|corporation|company|holdings|partners|capital|group|management|the)\b/g, " ").replace(/\s+/g, " ").trim();
+}
 
-async function applyProfile(p: any, source: Source, handAuthored: Set<string>): Promise<"applied" | "skipped"> {
-  if (p.schemaVersion !== "2.0") return "skipped";
-  const slug: string = p.client.id;
-
-  const existing = await prisma.client.findUnique({ where: { slug } });
-  if (source === "generated") {
-    if (!existing) return "skipped"; // only enrich clients already in the roster
-    if (handAuthored.has(slug)) return "skipped"; // never clobber an authoritative profile
-  }
-
-  const backbone = backboneMap[p.identity.backbone];
-  if (!backbone) {
-    console.warn(`skip ${slug}: unknown backbone "${p.identity.backbone}"`);
-    return "skipped";
-  }
-  const client = await prisma.client.upsert({
-    where: { slug },
-    // both sources set backbone; generated only reaches here for an existing, un-authored
-    // client. name is NOT updated (ServiceNow sync is authoritative for it); domains are.
-    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [] },
-    create: {
-      slug, name: p.client.name, primaryDomain: p.client.primaryDomain,
-      domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null,
-    },
-  });
-
+async function upsertSecretsAndSystems(clientId: string, p: any): Promise<void> {
   for (const [secName, ref] of Object.entries<any>(p.secrets ?? {})) {
     await prisma.secret.upsert({
-      where: { clientId_name: { clientId: client.id, name: secName } },
+      where: { clientId_name: { clientId, name: secName } },
       update: { externalId: ref.id, label: ref.label ?? null },
-      create: { clientId: client.id, name: secName, provider: ref.provider, externalId: ref.id, label: ref.label ?? null },
+      create: { clientId, name: secName, provider: ref.provider, externalId: ref.id, label: ref.label ?? null },
     });
   }
-
   for (const s of p.systems) {
     // Build the full field set once so create and update can't drift apart.
     const fields = {
@@ -99,11 +80,24 @@ async function applyProfile(p: any, source: Source, handAuthored: Set<string>): 
       },
     };
     await prisma.clientSystem.upsert({
-      where: { clientId_systemKey: { clientId: client.id, systemKey: s.key } },
+      where: { clientId_systemKey: { clientId, systemKey: s.key } },
       update: fields,
-      create: { clientId: client.id, systemKey: s.key, ...fields },
+      create: { clientId, systemKey: s.key, ...fields },
     });
   }
+}
+
+// Hand-authored profiles are authoritative: upsert the client by its own slug (create allowed).
+async function applyAuthored(p: any): Promise<"applied" | "skipped"> {
+  if (p.schemaVersion !== "2.0") return "skipped";
+  const backbone = backboneMap[p.identity.backbone];
+  if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return "skipped"; }
+  const client = await prisma.client.upsert({
+    where: { slug: p.client.id },
+    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [] },
+    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null },
+  });
+  await upsertSecretsAndSystems(client.id, p);
   return "applied";
 }
 
@@ -115,34 +109,53 @@ async function main() {
     });
   }
 
-  // Pass 1: hand-authored profiles (authoritative).
-  const handAuthored = new Set<string>();
+  // Pass 1: hand-authored profiles (authoritative). Protect their clients (by name) from
+  // the generated pass.
+  const handAuthoredNames = new Set<string>();
   for (const file of readdirSync(PROFILES).filter((f) => f.endsWith(".json") && !f.startsWith("_"))) {
     const p = JSON.parse(readFileSync(join(PROFILES, file), "utf8"));
-    // Protect every hand-authored slug from the generated pass, even if we skip applying it
-    // (e.g. raith.json is schema 1.0) — a generated draft must never clobber an authored file.
-    if (p?.client?.id) handAuthored.add(p.client.id);
-    if (await applyProfile(p, "authored", handAuthored) === "applied") {
+    if (p?.client?.name) handAuthoredNames.add(normName(p.client.name));
+    if (await applyAuthored(p) === "applied") {
       console.log(`authored: ${p.client.name} (${p.systems.length} systems)`);
     } else {
       console.warn(`skip ${file}: not schema 2.0`);
     }
   }
 
-  // Pass 2: generated drafts (enrich existing roster clients only) + their runbook sections.
-  let applied = 0, skipped = 0, runbook = 0;
+  // Pass 2: generated drafts enrich existing roster clients, matched by NAME (then domain),
+  // since roster slugs are CORE ids and won't equal a name-slugged generated profile.
+  let applied = 0, skipped = 0, unmatched = 0, runbook = 0;
   if (existsSync(GENERATED)) {
+    const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true } });
+    const byName = new Map<string, string>();
+    const byDomain = new Map<string, string>();
+    const strippedGroups = new Map<string, Set<string>>();
+    for (const c of clients) {
+      byName.set(normName(c.name), c.id);
+      if (c.primaryDomain) byDomain.set(c.primaryDomain.toLowerCase(), c.id);
+      const sk = stripSuffix(normName(c.name));
+      if (sk) (strippedGroups.get(sk) ?? strippedGroups.set(sk, new Set()).get(sk)!).add(c.id);
+    }
+    const byStrippedUnique = new Map<string, string>();
+    for (const [k, ids] of strippedGroups) if (ids.size === 1) byStrippedUnique.set(k, [...ids][0]);
+
     for (const file of readdirSync(GENERATED).filter((f) => f.endsWith(".json") && !f.endsWith(".runbook.json") && !f.startsWith("_"))) {
       const p = JSON.parse(readFileSync(join(GENERATED, file), "utf8"));
-      if ((await applyProfile(p, "generated", handAuthored)) === "applied") {
-        applied++;
-        const c = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { id: true } });
-        if (c) runbook += await loadRunbook(c.id, p.client.id);
-      } else {
-        skipped++;
-      }
+      if (p.schemaVersion !== "2.0") { skipped++; continue; }
+      const nn = normName(p.client.name);
+      if (handAuthoredNames.has(nn)) { skipped++; continue; } // never clobber a curated client
+      const clientId =
+        byName.get(nn) ??
+        (p.client.primaryDomain ? byDomain.get(String(p.client.primaryDomain).toLowerCase()) : undefined) ??
+        byStrippedUnique.get(stripSuffix(nn));
+      if (!clientId) { unmatched++; continue; } // KB client not in the roster
+      const backbone = backboneMap[p.identity.backbone];
+      if (backbone) await prisma.client.update({ where: { id: clientId }, data: { backbone, pod: p.client.pod ?? undefined } });
+      await upsertSecretsAndSystems(clientId, p);
+      runbook += await loadRunbook(clientId, p.client.id);
+      applied++;
     }
-    console.log(`generated: ${applied} applied (enriched roster clients), ${skipped} skipped; ${runbook} runbook sections loaded`);
+    console.log(`generated: ${applied} enriched, ${skipped} skipped (curated/non-2.0), ${unmatched} no roster match; ${runbook} runbook sections loaded`);
   }
 }
 
