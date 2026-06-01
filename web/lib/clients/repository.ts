@@ -1,8 +1,8 @@
 // Thin Prisma wrapper for the clients domain. No business logic — callers pass resolved
 // values. Built as a factory so tests can inject a mock/throwaway PrismaClient.
-import type { PrismaClient, Prisma } from "@prisma/client";
+import type { PrismaClient, Prisma, Backbone } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
-import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput } from "./types";
+import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 
 // SN-owned fields written on both create and update (never touches backbone or systems).
 // Return type is inferred (plain scalars) so it spreads into both create and update inputs.
@@ -39,7 +39,7 @@ export function makeClientRepository(db: PrismaClient) {
           onboardingRating: true,
           offboardingRating: true,
           snLastSyncedAt: true,
-          _count: { select: { systems: true } },
+          systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } },
         },
       });
       return rows.map((r) => ({
@@ -55,8 +55,9 @@ export function makeClientRepository(db: PrismaClient) {
         onboardingRating: r.onboardingRating,
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
-        systemCount: r._count.systems,
-        modeled: r._count.systems > 0,
+        systemKeys: r.systems.map((s) => s.systemKey),
+        systemCount: r.systems.length,
+        modeled: r.systems.length > 0,
       }));
     },
 
@@ -131,6 +132,47 @@ export function makeClientRepository(db: PrismaClient) {
         where: { slug },
         data: { status, archivedAt: status === "archived" ? new Date() : null },
       });
+    },
+
+    // Replace a client's whole system set (and optionally its backbone) in one transaction:
+    // upsert each desired system, delete any the client has that aren't in the new set.
+    async replaceSystems(
+      slug: string,
+      systems: EditableSystem[],
+      backbone?: Backbone | null
+    ): Promise<{ clientId: string; upserted: number; removed: number } | null> {
+      const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
+      if (!client) return null;
+      const keep = new Set(systems.map((s) => s.systemKey));
+
+      const removed = await db.$transaction(async (tx) => {
+        if (backbone !== undefined) {
+          await tx.client.update({ where: { id: client.id }, data: { backbone } });
+        }
+        for (const s of systems) {
+          const data = {
+            mode: s.mode,
+            onboardWhen: s.onboardWhen,
+            offboardWhen: s.offboardWhen,
+            dependsOn: s.dependsOn ?? [],
+            requiresApproval: s.requiresApproval,
+            captureEvidence: s.captureEvidence,
+            secretNames: s.secretNames ?? [],
+            config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined,
+          };
+          await tx.clientSystem.upsert({
+            where: { clientId_systemKey: { clientId: client.id, systemKey: s.systemKey } },
+            update: data,
+            create: { clientId: client.id, systemKey: s.systemKey, ...data },
+          });
+        }
+        const del = await tx.clientSystem.deleteMany({
+          where: { clientId: client.id, systemKey: { notIn: [...keep] } },
+        });
+        return del.count;
+      });
+
+      return { clientId: client.id, upserted: systems.length, removed };
     },
 
     async writeAudit(entry: AuditEntry): Promise<void> {

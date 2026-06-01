@@ -6,6 +6,7 @@ import { useMemo, useRef, useState } from "react";
 import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
+import { SystemsEditor } from "./systems-editor";
 
 export type ClientVM = {
   id: string;
@@ -20,6 +21,7 @@ export type ClientVM = {
   onboardingRating: number | null;
   offboardingRating: number | null;
   snLastSyncedAt: string | null;
+  systemKeys: string[];
   systemCount: number;
   modeled: boolean;
 };
@@ -55,6 +57,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [busy, setBusy] = useState<string | null>(null);
+  const [editSlug, setEditSlug] = useState<string | null>(null);
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -175,7 +178,13 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td className="muted">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
-              <td className="muted">{c.systemCount}</td>
+              <td
+                className="muted"
+                style={{ cursor: c.systemCount ? "help" : "default" }}
+                title={c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)"}
+              >
+                {c.systemCount}
+              </td>
               <td>
                 {c.status === "archived" ? (
                   <span className="badge archived">archived</span>
@@ -184,6 +193,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td>
+                <button onClick={() => setEditSlug(c.slug)} style={{ marginRight: 4 }}>Edit</button>
                 {c.status === "archived" ? (
                   <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
                 ) : (
@@ -213,6 +223,8 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <button className="btn-danger" onClick={confirmArchive}>Archive</button>
         </div>
       </dialog>
+
+      <SystemsEditor slug={editSlug} open={!!editSlug} onClose={() => setEditSlug(null)} />
     </>
   );
 }

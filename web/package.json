@@ -13,7 +13,8 @@
     "db:studio": "prisma studio",
     "env:sync": "node scripts/sync-env.mjs",
     "db:create": "node scripts/create-db.mjs",
-    "db:setup": "npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed"
+    "db:setup": "npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed",
+    "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts"
   },
   "prisma": { "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts" },
   "dependencies": {

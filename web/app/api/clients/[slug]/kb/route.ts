@@ -1,0 +1,12 @@
+// GET /api/clients/:slug/kb — render the client's current systems into pasteable KB text
+// (HTML + Markdown, for both onboard and offboard).
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { makeClientRepository } from "@/lib/clients/repository";
+import { renderKb } from "@/lib/clients/kb-render";
+
+export async function GET(_req: Request, { params }: { params: { slug: string } }) {
+  const client = await makeClientRepository(db).getClientBySlug(params.slug);
+  if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(renderKb(client));
+}

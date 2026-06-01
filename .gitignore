@@ -32,6 +32,10 @@ web/node_modules/.prisma/
 # --- client KB corpus (sensitive: keep local, Phase-6 generator input only) ---
 data/
 
+# --- generated client profiles (real names/domains: keep local, reproduce via npm run generate:profiles) ---
+web/profiles/generated/
+profiles/generated/
+
 # editor swap files
 *.swp
 *.swo
@@ -47,3 +51,6 @@ __pycache__/
 # --- profile-generator output (regenerable via run.sh; promote good drafts into profiles/) ---
 tools/profile-generator/out/
 profiles/_drafts/
+
+# claude worktrees
+.claude/worktrees/

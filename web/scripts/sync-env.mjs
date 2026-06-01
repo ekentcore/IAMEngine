@@ -19,6 +19,11 @@ const lines = [
   `SN_USER="${env.SN_USER ?? env.SN_USERNAME ?? ""}"`,
   `SN_PASSWORD="${env.SN_PASSWORD ?? ""}"`,
   "",
+  `AZURE_OPENAI_ENDPOINT="${env.AZURE_OPENAI_ENDPOINT ?? ""}"`,
+  `AZURE_OPENAI_KEY="${env.AZURE_OPENAI_KEY ?? ""}"`,
+  `AZURE_OPENAI_DEPLOYMENT="${env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini"}"`,
+  `AZURE_OPENAI_VERSION="${env.AZURE_OPENAI_VERSION ?? "2025-01-01-preview"}"`,
+  "",
 ];
 
 writeFileSync(OUT, lines.join("\n"));
