@@ -74,6 +74,8 @@ model Client {
   backbone      Backbone
   pod           String?
   status        ClientStatus   @default(active)
+  identity      Json?          // profile identity block: usernamePatterns, password, directorySync
+  kb            Json?          // { onboard: {number, sections}, offboard: {...} } — ServiceNow KB refs
   createdAt     DateTime       @default(now())
   archivedAt    DateTime?
   systems       ClientSystem[]
@@ -99,6 +101,7 @@ model ClientSystem {
   clientId         String
   system           SystemCatalog @relation(fields: [systemKey], references: [key])
   systemKey        String
+  seq              Int           @default(0) // profile array index — stable order base; dependsOn owns correctness
   mode             Mode
   onboardWhen      Lifecycle     @default(never)
   offboardWhen     Lifecycle     @default(never)

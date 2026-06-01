@@ -7,6 +7,11 @@
     "primaryDomain": "yumaai.com"
   },
 
+  "kb": {
+    "onboard":  { "number": "KB0018531", "sections": ["ServiceNow", "Microsoft 365", "Mimecast", "Case Resolution"] },
+    "offboard": { "number": "KB0018533", "sections": ["ServiceNow", "Microsoft 365", "Hardware/Data (If Requested)", "Case Resolution"] }
+  },
+
   "identity": {
     "backbone": "entra",
     "usernamePatterns": ["{first}@{domain}"],

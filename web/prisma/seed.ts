@@ -46,10 +46,11 @@ async function main() {
 
     const client = await prisma.client.upsert({
       where: { slug: p.client.id },
-      update: {},
+      update: { identity: p.identity, kb: p.kb ?? null },
       create: {
         slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain,
         domains: p.client.domains ?? [], backbone: backboneMap[p.identity.backbone], pod: p.client.pod ?? null,
+        identity: p.identity, kb: p.kb ?? null,
       },
     });
 
@@ -61,12 +62,12 @@ async function main() {
       });
     }
 
-    for (const s of p.systems) {
+    for (const [seq, s] of p.systems.entries()) {
       await prisma.clientSystem.upsert({
         where: { clientId_systemKey: { clientId: client.id, systemKey: s.key } },
-        update: {},
+        update: { seq },
         create: {
-          clientId: client.id, systemKey: s.key, mode: s.mode,
+          clientId: client.id, systemKey: s.key, seq, mode: s.mode,
           onboardWhen: laneMap[s.onboard?.when ?? "never"] ?? "never",
           offboardWhen: laneMap[s.offboard?.when ?? "never"] ?? "never",
           dependsOn: s.dependsOn ?? [],

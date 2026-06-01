@@ -8,6 +8,11 @@
     "pod": "POD-LifeSciences"
   },
 
+  "kb": {
+    "onboard":  { "number": "KB0042674", "sections": ["ServiceNow", "Active Directory (No Sync to 365)", "User Profile", "Microsoft 365", "Mimecast", "Adobe Acrobat", "Final Steps"] },
+    "offboard": { "number": "KB0042675", "sections": ["ServiceNow", "Domain", "Microsoft 365", "Adobe", "Hardware (If Requested)", "Case Resolution"] }
+  },
+
   "identity": {
     "backbone": "ad-standalone",
     "usernamePatterns": ["{firstInitial}{last}"],

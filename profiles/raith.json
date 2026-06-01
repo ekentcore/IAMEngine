@@ -8,6 +8,11 @@
     "pod": "POD-FinancialServices"
   },
 
+  "kb": {
+    "onboard":  { "number": "KB0035920", "sections": ["ServiceNow", "Microsoft 365", "Mimecast", "Egnyte", "Adobe", "Address Book", "Case Resolution"] },
+    "offboard": { "number": "KB0035921", "sections": ["ServiceNow", "Microsoft 365", "Egnyte", "Adobe", "LOB", "Case Resolution"] }
+  },
+
   "identity": {
     "usernamePattern": "{first}.{last}@{domain}",
     "displayNamePattern": "{first} {last}"

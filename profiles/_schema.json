@@ -23,6 +23,16 @@
       }
     },
 
+    "kb": {
+      "type": "object",
+      "description": "ServiceNow KB articles for this client's runbook. Sourced from the raw KB exports by tools/kb/extract_kb.py (interim, until a direct ServiceNow pull). The article body is the authoritative human runbook; only the number + section order are lifted here.",
+      "additionalProperties": false,
+      "properties": {
+        "onboard":  { "$ref": "#/$defs/kbArticle" },
+        "offboard": { "$ref": "#/$defs/kbArticle" }
+      }
+    },
+
     "identity": {
       "type": "object",
       "description": "Where the user truly lives. This one field drives most downstream behavior.",
@@ -105,6 +115,16 @@
   },
 
   "$defs": {
+    "kbArticle": {
+      "type": "object",
+      "required": ["number"],
+      "additionalProperties": false,
+      "properties": {
+        "number":   { "type": "string", "pattern": "^KB[0-9]+$", "description": "ServiceNow KB number, e.g. KB0037439." },
+        "sections": { "type": "array", "items": { "type": "string" }, "description": "Ordered <h2> section headings from the article body — the human runbook order." }
+      }
+    },
+
     "secretRef": {
       "type": "object",
       "required": ["provider", "id"],

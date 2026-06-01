@@ -7,6 +7,11 @@
     "primaryDomain": "marketscience.co"
   },
 
+  "kb": {
+    "onboard":  { "number": "KB0028627", "sections": ["ServiceNow", "Microsoft 365", "Resolving Case"] },
+    "offboard": { "number": "KB0028625", "sections": ["ServiceNow", "Microsoft 365", "Resolving Case"] }
+  },
+
   "identity": {
     "backbone": "entra",
     "usernamePatterns": ["{first}.{last}@{domain}"],

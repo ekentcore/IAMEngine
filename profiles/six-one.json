@@ -8,6 +8,11 @@
     "pod": "POD-FinancialServices"
   },
 
+  "kb": {
+    "onboard":  { "number": "KB0037439", "sections": ["ServiceNow", "Domain", "Microsoft 365", "Mimecast", "Spanning", "Printix", "VPN/RDS - Perimeter 81 (If Requested)", "Tableau (If Requested)", "Workstation", "Welcome Letter / Info Email", "First Day Steps", "Case Resolution"] },
+    "offboard": { "number": "KB0037437", "sections": ["ServiceNow", "Domain", "Microsoft 365", "Spanning", "Perimeter 81", "Hardware", "Case Resolution"] }
+  },
+
   "identity": {
     "backbone": "ad-synced",
     "usernamePatterns": ["{first}{last}@{domain}"],
