@@ -6,6 +6,37 @@
   "type": "object",
   "required": ["irVersion", "client", "kb", "actions", "detected", "unmodeled"],
   "additionalProperties": false,
+  "$defs": {
+    "artifact": {
+      "description": "Typed non-step content a section carries: an email template to send, or a linked file (spreadsheet/form). Rendered as a block in the runbook; placeholders filled from a pulled UM case later.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "to", "subject", "body"],
+          "additionalProperties": false,
+          "properties": {
+            "type":    { "const": "email" },
+            "to":      { "type": "array", "items": { "type": "string" } },
+            "cc":      { "type": "array", "items": { "type": "string" } },
+            "subject": { "type": "string" },
+            "body":    { "type": "string" },
+            "fields":  { "type": "array", "items": { "type": "string" }, "description": "Fill-in labels in the body (Name, Title, …) — the variables a UM case populates." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "href"],
+          "additionalProperties": false,
+          "properties": {
+            "type":     { "const": "attachment" },
+            "href":     { "type": "string", "description": "The sys_attachment URL from the KB." },
+            "sysId":    { "type": ["string", "null"], "description": "ServiceNow attachment sys_id parsed from the href, for API fetch." },
+            "filename": { "type": "string", "description": "Link text / filename." }
+          }
+        }
+      ]
+    }
+  },
   "properties": {
     "irVersion": { "const": "1.0" },
 
@@ -59,7 +90,8 @@
           "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Extractor's confidence this section really means this system." },
           "mode":       { "enum": ["api", "browser", "manual"], "description": "Suggested execution mode (defaults from the catalog)." },
           "signals":    { "type": "object", "additionalProperties": true, "description": "Structured hints pulled from the section body: licenses[], groups[], ou, usernamePattern, password, requiresApproval, captureEvidence, schedule, guardrails. Free-form; the assembler maps known keys into the profile." },
-          "steps":      { "type": "array", "items": { "type": "string" }, "description": "Ordered runbook steps (list items + paragraphs); nested steps are indented. Surfaced to reviewers." }
+          "steps":      { "type": "array", "items": { "type": "string" }, "description": "Ordered runbook steps (list items + paragraphs); nested steps are indented. Surfaced to reviewers." },
+          "artifacts":  { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
         }
       }
     },
@@ -76,7 +108,8 @@
           "action":  { "enum": ["onboarding", "offboarding"] },
           "seq":     { "type": "integer", "description": "Document-order index across all sections." },
           "guess":   { "type": ["string", "null"], "description": "Best guess at what system/vendor this is, if recognisable (e.g. 'Duo (MFA)', 'Box', 'Salesforce')." },
-          "steps":   { "type": "array", "items": { "type": "string" }, "description": "Ordered runbook steps for this not-yet-modeled section — the spec for building its module." }
+          "steps":   { "type": "array", "items": { "type": "string" }, "description": "Ordered runbook steps for this not-yet-modeled section — the spec for building its module." },
+          "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
         }
       }
     },

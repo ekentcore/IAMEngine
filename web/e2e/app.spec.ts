@@ -76,6 +76,38 @@ test.describe("runbook upgrades", () => {
   });
 });
 
+test.describe("KB-content enrichment", () => {
+  test("verify/confirm instruction text is captured (ACORE dynamic groups)", async ({ page }) => {
+    await page.goto("/clients/core507"); // ACORE
+    const item = page
+      .locator("details", { hasText: "Verify the user was added to the following dynamic groups" })
+      .first();
+    await item.locator("summary").click();
+    // the instruction shows AND the group names nest under it
+    await expect(item.getByText("Verify the user was added to the following dynamic groups:")).toBeVisible();
+    await expect(item.getByText(/AAD-KnowBe4/).first()).toBeVisible();
+  });
+
+  test("LogicSource shows the OneMarket email template block", async ({ page }) => {
+    await page.goto("/clients/core1748"); // LogicSource
+    const item = page.locator("details", { hasText: "OneMarket Apps" }).first();
+    await item.locator("summary").click();
+    await expect(item.getByText("Email template (helpdesk)")).toBeVisible();
+    await expect(item.getByText("New User Activation: OneMarket Apps")).toBeVisible();
+    await expect(item.getByText(/helpdesk@logicsource\.com/)).toBeVisible();
+  });
+
+  test(".eml download serves an attachment with the right headers", async ({ request }) => {
+    const res = await request.get("/api/clients/core1748/runbook/email?action=onboard&seq=1&i=0");
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toContain("message/rfc822");
+    expect(res.headers()["content-disposition"]).toContain('filename="core1748-');
+    const body = await res.text();
+    expect(body).toContain("Subject: New User Activation: OneMarket Apps");
+    expect(body).toContain("To: helpdesk@logicsource.com");
+  });
+});
+
 test.describe("agents", () => {
   test("agents page renders and the enroll dialog opens", async ({ page }) => {
     await page.goto("/agents");

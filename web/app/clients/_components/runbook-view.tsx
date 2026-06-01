@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { isEmail, type Artifact } from "@/lib/runbook/artifacts";
 
 export type RunbookItemVM = {
   id: string; // `${action}-${seq}`
   action: "onboard" | "offboard";
+  seq: number;
   status: string; // automated | manual | unmodeled
   systemKey: string | null;
   title: string;
@@ -14,9 +16,10 @@ export type RunbookItemVM = {
   kbHref: string | null;
   kbNum: string | null;
   code: string | null; // intended-automation PowerShell preview
+  artifacts: Artifact[]; // email templates / linked files
 };
 
-export function RunbookView({ items }: { items: RunbookItemVM[] }) {
+export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: string }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggle = (id: string) =>
     setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -47,7 +50,7 @@ export function RunbookView({ items }: { items: RunbookItemVM[] }) {
               {group.length} steps — {auto} automated, {group.length - auto} human interaction
             </p>
             {group.map((it, idx) => (
-              <Item key={it.id} it={it} n={idx + 1} open={open.has(it.id)} onToggle={() => toggle(it.id)} />
+              <Item key={it.id} it={it} n={idx + 1} slug={slug} open={open.has(it.id)} onToggle={() => toggle(it.id)} />
             ))}
           </div>
         );
@@ -56,8 +59,9 @@ export function RunbookView({ items }: { items: RunbookItemVM[] }) {
   );
 }
 
-function Item({ it, n, open, onToggle }: { it: RunbookItemVM; n: number; open: boolean; onToggle: () => void }) {
+function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; slug: string; open: boolean; onToggle: () => void }) {
   const auto = it.status === "automated";
+  const emails = it.artifacts.filter(isEmail);
   const badge = auto ? "✅ Automated" : it.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
   const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
   return (
@@ -65,6 +69,7 @@ function Item({ it, n, open, onToggle }: { it: RunbookItemVM; n: number; open: b
       <summary onClick={(e) => { e.preventDefault(); onToggle(); }} style={{ cursor: "pointer" }}>
         <strong style={{ marginRight: 6 }}>{n}.</strong>
         <span className={`badge ${auto ? "automated" : "human"}`}>{badge}</span> {title}
+        {emails.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· ✉ email</span>}
         {it.after.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {it.after.join(", ")}</span>}
       </summary>
       <div style={{ margin: "0.4rem 0 0.6rem" }}>
@@ -84,7 +89,44 @@ function Item({ it, n, open, onToggle }: { it: RunbookItemVM; n: number; open: b
             </pre>
           </div>
         )}
+        {emails.map((em, i) => (
+          <EmailBlock
+            key={i}
+            email={em}
+            href={`/api/clients/${slug}/runbook/email?action=${it.action}&seq=${it.seq}&i=${i}`}
+          />
+        ))}
       </div>
     </details>
+  );
+}
+
+function EmailBlock({ email, href }: { email: import("@/lib/runbook/artifacts").EmailArtifact; href: string }) {
+  const Row = ({ label, value }: { label: string; value: string }) =>
+    value ? (
+      <div>
+        <span className="note">{label}: </span>
+        {value}
+      </div>
+    ) : null;
+  return (
+    <div style={{ marginTop: "0.5rem", marginLeft: "0.8rem" }}>
+      <div className="row-between" style={{ alignItems: "baseline" }}>
+        <div className="note">✉ Email template (helpdesk):</div>
+        <a href={href} download className="note">download .eml →</a>
+      </div>
+      <div style={{ background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
+        <Row label="To" value={(email.to ?? []).join(", ")} />
+        <Row label="Cc" value={(email.cc ?? []).join(", ")} />
+        <Row label="Subject" value={email.subject} />
+        {email.fields && email.fields.length > 0 && (
+          <div style={{ marginTop: "0.3rem" }}>
+            <span className="note">Fields (filled from the UM case): </span>
+            {email.fields.join(", ")}
+          </div>
+        )}
+        <pre style={{ whiteSpace: "pre-wrap", margin: "0.4rem 0 0", fontSize: 11, lineHeight: 1.45, fontFamily: "inherit" }}>{email.body}</pre>
+      </div>
+    </div>
   );
 }

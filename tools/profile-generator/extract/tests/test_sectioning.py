@@ -157,3 +157,31 @@ class TestStepSection:
 
     def test_step_section_steps_do_not_bleed_into_next_section(self):
         assert all("Sync the directory" not in s for s in self._entra().steps)
+
+
+class TestSectionHtml:
+    """Each section keeps its inner HTML so typed-artifact extractors (email, attachment)
+    can read anchors/structure the flattened text/steps lose."""
+
+    HTML = """
+      <div><h2 id="a">OneMarket Apps</h2></div>
+      <div class="step-section">
+        <div>Email: <a href="mailto:helpdesk@logicsource.com">helpdesk@logicsource.com</a></div>
+        <pre>Name:\nTitle:</pre>
+      </div>
+      <div><h2 id="b">Microsoft 365</h2></div>
+      <div class="step-section"><span>Connect to Entra.</span></div>
+    """
+
+    def _secs(self):
+        return {s.header: s for s in split_sections(self.HTML)}
+
+    def test_section_html_keeps_anchors(self):
+        h = self._secs()["onemarket apps"].html
+        assert 'href="mailto:helpdesk@logicsource.com"' in h
+        assert "<pre>" in h
+
+    def test_section_html_stops_at_next_header(self):
+        h = self._secs()["onemarket apps"].html
+        assert "Connect to Entra" not in h
+        assert "Microsoft 365" not in h

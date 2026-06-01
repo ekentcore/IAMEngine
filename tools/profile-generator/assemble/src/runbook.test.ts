@@ -45,3 +45,14 @@ test("carries steps, systemKey (null for unmodeled), and guess", () => {
   assert.deepEqual(box.steps, ["s1"]);
   assert.equal(items.find((i) => i.title === "Equipment")!.systemKey, "hardware");
 });
+
+test("carries artifacts (email templates) onto the item, defaulting to []", () => {
+  const email = { type: "email" as const, to: ["hd@x.com"], subject: "New User", body: "Name:", fields: ["Name"] };
+  const items = buildRunbook(ir({
+    unmodeled: [{ section: "OneMarket", action: "onboarding", seq: 2, guess: null, steps: [], artifacts: [email] }],
+  }));
+  const om = items.find((i) => i.title === "OneMarket")!;
+  assert.deepEqual(om.artifacts, [email]);
+  // items without artifacts get an empty array, never undefined
+  assert.deepEqual(items.find((i) => i.title === "Microsoft 365")!.artifacts, []);
+});

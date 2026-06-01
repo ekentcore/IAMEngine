@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
+import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 
@@ -38,6 +39,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     return {
       id: `${r.action}-${r.seq}`,
       action: r.action,
+      seq: r.seq,
       status: r.status,
       systemKey: r.systemKey,
       title: r.title,
@@ -47,6 +49,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       kbHref: kbUrl(r.kbArticle),
       kbNum: r.kbArticle,
       code,
+      artifacts: asArtifacts(r.artifacts),
     };
   });
 
@@ -146,7 +149,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       {items.length === 0 ? (
         <p className="note">No generated runbook yet — run <code>tools/profile-generator/run.sh</code> then <code>npm run db:seed</code>.</p>
       ) : (
-        <RunbookView items={items} />
+        <RunbookView items={items} slug={client.slug} />
       )}
     </main>
   );

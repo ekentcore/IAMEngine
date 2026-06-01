@@ -52,6 +52,8 @@ class Section:
     text: str
     # ordered runbook steps (list items + paragraphs), nested = indented
     steps: list[str] = field(default_factory=list)
+    # the section's inner HTML — kept so artifact extractors can read anchors/structure
+    html: str = ""
 
 
 def split_sections(html: str) -> list[Section]:
@@ -65,8 +67,32 @@ def split_sections(html: str) -> list[Section]:
         norm = normalize_header(raw)
         if not norm or norm in NOISE_HEADERS or len(norm.split()) > MAX_HEADER_WORDS:
             continue
-        sections.append(Section(raw, norm, int(h.name[1]), _body_text(h, header_ids), _section_steps(h, header_ids)))
+        sections.append(Section(raw, norm, int(h.name[1]), _body_text(h, header_ids),
+                                _section_steps(h, header_ids), _section_html(h, header_ids)))
     return sections
+
+
+def _section_html(header: Tag, header_ids: set[int]) -> str:
+    """Inner HTML of the section: each maximal block after the header up to the next header.
+    A block that itself contains a later header is descended into (so the next section's
+    header div isn't swallowed); descendants of an already-captured block are skipped."""
+    captured: set[int] = set()
+    parts: list[str] = []
+    for el in header.next_elements:
+        if not isinstance(el, Tag):
+            continue
+        if el.name in HEADER_TAGS and id(el) in header_ids:
+            break
+        parents = {id(a) for a in el.parents}
+        if id(header) in parents:
+            continue  # the header's own descendants (e.g. its <span>)
+        if captured & parents:
+            continue  # inside a block we already captured
+        if any(isinstance(d, Tag) and d.name in HEADER_TAGS and id(d) in header_ids for d in el.descendants):
+            continue  # wrapper of a later header — descend into it instead of capturing whole
+        parts.append(str(el))
+        captured.add(id(el))
+    return "".join(parts)
 
 
 def _own_text(el: Tag) -> str:

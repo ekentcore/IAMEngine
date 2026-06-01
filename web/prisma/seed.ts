@@ -3,7 +3,7 @@
 // roster clients (matched by slug during generation) — they never create new clients and
 // never clobber a hand-authored profile.
 // Run via: npx prisma db seed
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -167,7 +167,7 @@ async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
   const path = join(GENERATED, `${slug}.runbook.json`);
   if (!existsSync(path)) return 0;
   const items = JSON.parse(readFileSync(path, "utf8")) as Array<{
-    action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[]; kbArticle?: string | null;
+    action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[]; kbArticle?: string | null; artifacts?: unknown[];
   }>;
   await prisma.runbookSection.deleteMany({ where: { clientId: clientDbId } });
   if (items.length === 0) return 0;
@@ -182,6 +182,7 @@ async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
       guess: i.guess ?? null,
       steps: i.steps ?? [],
       kbArticle: i.kbArticle ?? null,
+      artifacts: i.artifacts && i.artifacts.length ? (i.artifacts as Prisma.InputJsonValue) : undefined,
     })),
   });
   return items.length;

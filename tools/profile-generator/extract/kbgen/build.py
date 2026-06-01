@@ -7,6 +7,7 @@ from html import unescape
 
 from .backbone import infer_backbone
 from .catalog import CATALOG, classify_header
+from .extractors.artifacts import extract_artifacts
 from .families import detect_family, suggest_id
 from .registry import extract_signals
 from .sectioning import split_sections
@@ -63,8 +64,9 @@ def build_client_ir(records: list[dict]) -> dict:
             kind, val = classify_header(section.header)
             if kind == "noise":
                 continue
+            artifacts = extract_artifacts(section.html)  # email templates, attachments
             if kind == "system":
-                detected.append({
+                entry = {
                     "systemKey": val,
                     "action": action,
                     "section": section.raw_header,
@@ -73,10 +75,16 @@ def build_client_ir(records: list[dict]) -> dict:
                     "mode": CATALOG.get(val, "api"),
                     "signals": extract_signals(val, section),
                     "steps": section.steps,
-                })
+                }
+                if artifacts:
+                    entry["artifacts"] = artifacts
+                detected.append(entry)
                 system_keys.add(val)
             else:
-                unmodeled.append({"section": section.raw_header, "action": action, "seq": order, "guess": val, "steps": section.steps})
+                entry = {"section": section.raw_header, "action": action, "seq": order, "guess": val, "steps": section.steps}
+                if artifacts:
+                    entry["artifacts"] = artifacts
+                unmodeled.append(entry)
             order += 1
 
     backbone = infer_backbone(system_keys)

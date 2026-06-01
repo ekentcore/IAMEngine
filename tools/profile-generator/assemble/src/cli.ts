@@ -133,8 +133,16 @@ function writeSteps(path: string, all: RunbookItem[], ir: IR, meta: DraftMeta): 
           const indent = s.match(/^ */)?.[0].length ?? 0;
           lines.push(`${" ".repeat(indent)}- ${s.trim()}`);
         }
-      } else {
+      } else if (!it.artifacts.length) {
         lines.push("_(no step text captured — see the KB article)_");
+      }
+      for (const a of it.artifacts) {
+        if (a.type === "email") {
+          lines.push("", "**✉ Email template** (placeholders filled from the UM case later):", "", "```");
+          if (a.to.length) lines.push(`To: ${a.to.join(", ")}`);
+          if (a.cc?.length) lines.push(`Cc: ${a.cc.join(", ")}`);
+          lines.push(`Subject: ${a.subject}`, "", a.body, "```");
+        }
       }
       lines.push("", "</details>");
     }

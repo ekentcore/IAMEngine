@@ -1,7 +1,7 @@
 // Builds the per-client runbook: every section (modeled + unmodeled) in document order,
 // each tagged with its automation status. Shared by the markdown packet and the
 // <id>.runbook.json that seed loads into the DB.
-import type { Action, IR } from "./ir.js";
+import type { Action, Artifact, IR } from "./ir.js";
 
 export type RunbookStatus = "automated" | "manual" | "unmodeled";
 
@@ -14,6 +14,7 @@ export interface RunbookItem {
   guess: string | null;
   steps: string[];
   kbArticle: string | null; // the source ServiceNow KB number for this action
+  artifacts: Artifact[]; // email templates / linked files surfaced from this section
 }
 
 export function buildRunbook(ir: IR): RunbookItem[] {
@@ -30,6 +31,7 @@ export function buildRunbook(ir: IR): RunbookItem[] {
       guess: null,
       steps: d.steps ?? [],
       kbArticle: kbFor(d.action),
+      artifacts: d.artifacts ?? [],
     });
   }
   for (const u of ir.unmodeled) {
@@ -42,6 +44,7 @@ export function buildRunbook(ir: IR): RunbookItem[] {
       guess: u.guess ?? null,
       steps: u.steps ?? [],
       kbArticle: kbFor(u.action),
+      artifacts: u.artifacts ?? [],
     });
   }
   return items.sort((a, b) =>

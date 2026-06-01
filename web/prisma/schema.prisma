@@ -196,6 +196,7 @@ model RunbookSection {
   guess     String?  // vendor guess for an unmodeled section
   steps     String[] // ordered runbook steps (nested items indented)
   kbArticle String?  // source ServiceNow KB number for this action (e.g. KB0034662)
+  artifacts Json?    // typed non-step content: email templates, linked attachments
 
   @@index([clientId, action, seq])
 }
