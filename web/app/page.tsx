@@ -1,10 +1,14 @@
-// Placeholder dashboard. Phase 1: replace with the clients list (add / archive).
-// Follow the host design system (flat, minimal borders, sentence case) when building out.
+// Dashboard entry point. The clients list lives at /clients.
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main style={{ padding: "2rem", fontFamily: "system-ui" }}>
       <h1>iam-engine</h1>
-      <p>Phase 1: clients list with add (onboard) and archive (offboard). See docs/BUILD_PLAN.md.</p>
+      <p>
+        <Link href="/clients">Clients</Link> — view each client&apos;s systems and onboarding /
+        offboarding runbook.
+      </p>
     </main>
   );
 }
