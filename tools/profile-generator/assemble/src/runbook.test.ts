@@ -7,7 +7,7 @@ function ir(over: Partial<IR> = {}): IR {
   return {
     irVersion: "1.0",
     client: { leaf: "X", path: "X" },
-    kb: {},
+    kb: { onboard: "KB0001", offboard: "KB0002" },
     actions: ["onboarding"],
     detected: [
       { systemKey: "m365", action: "onboarding", section: "Microsoft 365", seq: 1, confidence: 0.9, mode: "api", steps: ["a", "b"] },
@@ -29,6 +29,12 @@ test("status: api/browser -> automated, manual -> manual, unmodeled -> unmodeled
   assert.equal(byTitle["Microsoft 365"], "automated");
   assert.equal(byTitle["Equipment"], "manual");
   assert.equal(byTitle["Box"], "unmodeled");
+});
+
+test("attaches the action's KB article number to each item", () => {
+  const items = buildRunbook(ir());
+  assert.equal(items.find((i) => i.title === "Microsoft 365")!.kbArticle, "KB0001"); // onboarding
+  assert.equal(items.find((i) => i.title === "Exchange")!.kbArticle, "KB0002"); // offboarding
 });
 
 test("carries steps, systemKey (null for unmodeled), and guess", () => {

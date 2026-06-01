@@ -13,9 +13,12 @@ export interface RunbookItem {
   status: RunbookStatus;
   guess: string | null;
   steps: string[];
+  kbArticle: string | null; // the source ServiceNow KB number for this action
 }
 
 export function buildRunbook(ir: IR): RunbookItem[] {
+  const kbFor = (action: Action): string | null =>
+    (action === "onboarding" ? ir.kb.onboard : ir.kb.offboard) ?? null;
   const items: RunbookItem[] = [];
   for (const d of ir.detected) {
     items.push({
@@ -26,6 +29,7 @@ export function buildRunbook(ir: IR): RunbookItem[] {
       status: d.mode === "manual" ? "manual" : "automated",
       guess: null,
       steps: d.steps ?? [],
+      kbArticle: kbFor(d.action),
     });
   }
   for (const u of ir.unmodeled) {
@@ -37,6 +41,7 @@ export function buildRunbook(ir: IR): RunbookItem[] {
       status: "unmodeled",
       guess: u.guess ?? null,
       steps: u.steps ?? [],
+      kbArticle: kbFor(u.action),
     });
   }
   return items.sort((a, b) =>

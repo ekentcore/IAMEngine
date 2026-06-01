@@ -73,6 +73,7 @@ model Client {
   domains       String[]
   backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
+  identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
   status        ClientStatus   @default(active)
   createdAt     DateTime       @default(now())
   archivedAt    DateTime?
@@ -194,6 +195,7 @@ model RunbookSection {
   status    String   // automated | manual | unmodeled
   guess     String?  // vendor guess for an unmodeled section
   steps     String[] // ordered runbook steps (nested items indented)
+  kbArticle String?  // source ServiceNow KB number for this action (e.g. KB0034662)
 
   @@index([clientId, action, seq])
 }

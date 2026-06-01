@@ -95,8 +95,8 @@ async function applyAuthored(p: any): Promise<string | null> {
   if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return null; }
   const client = await prisma.client.upsert({
     where: { slug: p.client.id },
-    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [] },
-    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null },
+    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], identity: p.identity ?? undefined },
+    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined },
   });
   await upsertSecretsAndSystems(client.id, p);
   return client.id;
@@ -152,7 +152,7 @@ async function main() {
         curatedRb++;
       } else {
         const backbone = backboneMap[p.identity.backbone];
-        if (backbone) await prisma.client.update({ where: { id: clientId }, data: { backbone, pod: p.client.pod ?? undefined } });
+        await prisma.client.update({ where: { id: clientId }, data: { ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined } });
         await upsertSecretsAndSystems(clientId, p);
         runbook += await loadRunbook(clientId, p.client.id);
         enriched++;
@@ -167,7 +167,7 @@ async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
   const path = join(GENERATED, `${slug}.runbook.json`);
   if (!existsSync(path)) return 0;
   const items = JSON.parse(readFileSync(path, "utf8")) as Array<{
-    action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[];
+    action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[]; kbArticle?: string | null;
   }>;
   await prisma.runbookSection.deleteMany({ where: { clientId: clientDbId } });
   if (items.length === 0) return 0;
@@ -181,6 +181,7 @@ async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
       status: i.status,
       guess: i.guess ?? null,
       steps: i.steps ?? [],
+      kbArticle: i.kbArticle ?? null,
     })),
   });
   return items.length;
