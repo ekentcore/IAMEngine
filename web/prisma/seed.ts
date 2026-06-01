@@ -9,7 +9,9 @@ import { join } from "path";
 
 const prisma = new PrismaClient();
 const PROFILES = join(process.cwd(), "..", "profiles");
-const GENERATED = join(PROFILES, "generated");
+// Generated drafts are produced by tools/profile-generator (the canonical generator) into
+// profiles/_drafts/. Pass 2 enriches existing roster clients from these.
+const GENERATED = join(PROFILES, "_drafts");
 
 const backboneMap: Record<string, "entra" | "google" | "ad_synced" | "ad_standalone"> = {
   entra: "entra", google: "google", "ad-synced": "ad_synced", "ad-standalone": "ad_standalone",
@@ -127,15 +129,45 @@ async function main() {
     }
   }
 
-  // Pass 2: generated drafts (enrich existing roster clients only).
-  let applied = 0, skipped = 0;
+  // Pass 2: generated drafts (enrich existing roster clients only) + their runbook sections.
+  let applied = 0, skipped = 0, runbook = 0;
   if (existsSync(GENERATED)) {
-    for (const file of readdirSync(GENERATED).filter((f) => f.endsWith(".json") && !f.startsWith("_"))) {
+    for (const file of readdirSync(GENERATED).filter((f) => f.endsWith(".json") && !f.endsWith(".runbook.json") && !f.startsWith("_"))) {
       const p = JSON.parse(readFileSync(join(GENERATED, file), "utf8"));
-      (await applyProfile(p, "generated", handAuthored)) === "applied" ? applied++ : skipped++;
+      if ((await applyProfile(p, "generated", handAuthored)) === "applied") {
+        applied++;
+        const c = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { id: true } });
+        if (c) runbook += await loadRunbook(c.id, p.client.id);
+      } else {
+        skipped++;
+      }
     }
-    console.log(`generated: ${applied} applied (enriched roster clients), ${skipped} skipped (no roster match / authored)`);
+    console.log(`generated: ${applied} applied (enriched roster clients), ${skipped} skipped; ${runbook} runbook sections loaded`);
   }
+}
+
+// Load <slug>.runbook.json (the full step-by-step, modeled + unmodeled) into RunbookSection.
+async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
+  const path = join(GENERATED, `${slug}.runbook.json`);
+  if (!existsSync(path)) return 0;
+  const items = JSON.parse(readFileSync(path, "utf8")) as Array<{
+    action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[];
+  }>;
+  await prisma.runbookSection.deleteMany({ where: { clientId: clientDbId } });
+  if (items.length === 0) return 0;
+  await prisma.runbookSection.createMany({
+    data: items.map((i) => ({
+      clientId: clientDbId,
+      action: i.action === "offboarding" ? "offboard" : "onboard",
+      seq: i.seq,
+      systemKey: i.systemKey ?? null,
+      title: i.title,
+      status: i.status,
+      guess: i.guess ?? null,
+      steps: i.steps ?? [],
+    })),
+  });
+  return items.length;
 }
 
 main().catch((e) => { console.error(e); process.exit(1); }).finally(() => prisma.$disconnect());

@@ -93,6 +93,7 @@ model Client {
   secrets       Secret[]
   agents        Agent[]
   cases         CaseRequest[]
+  runbook       RunbookSection[]
 }
 
 model SystemCatalog {
@@ -177,6 +178,24 @@ model Job {
   error         String?
   startedAt     DateTime?
   finishedAt    DateTime?
+}
+
+// The full per-client runbook, generated from the KB by tools/profile-generator and loaded
+// at seed time. Every section (modeled + not-yet-modeled) in document order, with its steps,
+// so the UI can show the complete onboarding/offboarding picture incl. human-interaction work.
+model RunbookSection {
+  id        String   @id @default(cuid())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId  String
+  action    Action
+  seq       Int
+  systemKey String?  // null when the section is not modeled as a system yet
+  title     String   // the runbook section header
+  status    String   // automated | manual | unmodeled
+  guess     String?  // vendor guess for an unmodeled section
+  steps     String[] // ordered runbook steps (nested items indented)
+
+  @@index([clientId, action, seq])
 }
 
 model AuditLog {

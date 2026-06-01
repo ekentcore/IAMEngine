@@ -1,6 +1,7 @@
 // Client detail (server component): roster metadata + the modeled systems and their flags.
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { RunbookSection } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { EditSystemsButton } from "../_components/edit-systems-button";
@@ -10,6 +11,11 @@ export const dynamic = "force-dynamic";
 export default async function ClientDetailPage({ params }: { params: { slug: string } }) {
   const client = await makeClientRepository(db).getClientBySlug(params.slug);
   if (!client) notFound();
+
+  const runbook = await db.runbookSection.findMany({
+    where: { clientId: client.id },
+    orderBy: [{ action: "asc" }, { seq: "asc" }],
+  });
 
   return (
     <main>
@@ -87,7 +93,59 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           </tbody>
         </table>
       )}
+
+      <h2 style={{ marginTop: "1.5rem" }}>Runbook — everything to do</h2>
+      <p className="note">
+        Generated from the ServiceNow KB. ✅ automated steps run via a module; ✋ human-interaction
+        steps (manual, or not yet modeled) need a person — those are the module backlog. Expand to see the steps.
+      </p>
+      <Runbook sections={runbook} />
     </main>
+  );
+}
+
+function Runbook({ sections }: { sections: RunbookSection[] }) {
+  if (sections.length === 0) {
+    return <p className="note">No generated runbook yet — run the profile generator (<code>tools/profile-generator/run.sh</code>) and <code>npm run db:seed</code>.</p>;
+  }
+  return (
+    <>
+      {(["onboard", "offboard"] as const).map((action) => {
+        const items = sections.filter((s) => s.action === action);
+        if (items.length === 0) return null;
+        const auto = items.filter((s) => s.status === "automated").length;
+        return (
+          <div key={action} style={{ marginTop: "0.75rem" }}>
+            <h3 style={{ textTransform: "capitalize", marginBottom: "0.25rem" }}>{action}</h3>
+            <p className="note" style={{ marginTop: 0 }}>{items.length} steps — {auto} automated, {items.length - auto} human interaction</p>
+            {items.map((s) => <RunbookItem key={s.id} s={s} />)}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function RunbookItem({ s }: { s: RunbookSection }) {
+  const auto = s.status === "automated";
+  const label = auto ? "✅ Automated" : s.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
+  const title = s.systemKey ? `${s.systemKey} — ${s.title}` : s.guess ? `${s.title} (${s.guess})` : s.title;
+  return (
+    <details style={{ margin: "0.2rem 0", padding: "0.15rem 0" }}>
+      <summary>
+        <span className="badge" style={{ color: auto ? "#2e7d32" : "#9a6a00" }}>{label}</span> {title}
+      </summary>
+      {s.steps.length === 0 ? (
+        <p className="note" style={{ marginLeft: "1rem" }}>(no step text captured — see the KB article)</p>
+      ) : (
+        <div style={{ margin: "0.4rem 0 0.6rem" }}>
+          {s.steps.map((step, i) => {
+            const indent = step.match(/^ */)?.[0].length ?? 0;
+            return <div key={i} className="muted" style={{ marginLeft: `${0.8 + indent * 0.6}rem` }}>• {step.trim()}</div>;
+          })}
+        </div>
+      )}
+    </details>
   );
 }
 

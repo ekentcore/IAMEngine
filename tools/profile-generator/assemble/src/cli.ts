@@ -8,6 +8,7 @@ import { assembleProfile } from "./assemble.js";
 import { applyTemplate } from "./templates.js";
 import { makeValidator, formatErrors } from "./validate.js";
 import { diffAgainstCurated } from "./diff.js";
+import { buildRunbook } from "./runbook.js";
 import type { IR } from "./ir.js";
 import type { DraftMeta, Profile } from "./profile.js";
 
@@ -76,7 +77,11 @@ function main(): number {
       metas.push(meta);
       generated.set(profile.client.name.toLowerCase(), profile);
       writeSteps(join(stepsDir, `${meta.id}.md`), ir, meta);
-      if (!reportOnly) writeFileSync(join(outDir, `${meta.id}.json`), JSON.stringify(profile, null, 2) + "\n");
+      if (!reportOnly) {
+        writeFileSync(join(outDir, `${meta.id}.json`), JSON.stringify(profile, null, 2) + "\n");
+        // companion runbook (modeled + unmodeled + steps) seed loads into RunbookSection
+        writeFileSync(join(outDir, `${meta.id}.runbook.json`), JSON.stringify(buildRunbook(ir), null, 2) + "\n");
+      }
     } else {
       const errors = formatErrors(validate);
       invalid.push({ id: meta.id, errors });
@@ -98,8 +103,6 @@ function main(): number {
   return invalid.length ? 1 : 0;
 }
 
-type StepItem = { seq: number; auto: boolean; status: string; title: string; steps: string[] };
-
 // Per-client step-by-step packet: EVERYTHING the runbook calls for, in document order,
 // each tagged Automated vs Human interaction (manual or not-yet-modeled), with the runbook
 // steps (username/password, fields, …) in collapsible <details>. The human-interaction
@@ -115,22 +118,17 @@ function writeSteps(path: string, ir: IR, meta: DraftMeta): void {
     + "candidates for new modules. Expand each to see the steps. Text is from the KB; open the "
     + "article for anything truncated.",
   ];
+  const all = buildRunbook(ir);
   for (const action of ["onboarding", "offboarding"] as const) {
-    const items: StepItem[] = [];
-    for (const d of ir.detected.filter((x) => x.action === action)) {
-      const auto = d.mode !== "manual";
-      items.push({ seq: d.seq ?? 0, auto, status: auto ? "Automated" : "Human interaction (manual step)", title: `${d.systemKey} — ${d.section}`, steps: d.steps ?? [] });
-    }
-    for (const u of ir.unmodeled.filter((x) => x.action === action)) {
-      items.push({ seq: u.seq ?? 0, auto: false, status: "Human interaction — not modeled (needs a module)", title: u.guess ? `${u.section} (${u.guess})` : u.section, steps: u.steps ?? [] });
-    }
+    const items = all.filter((i) => i.action === action);
     if (items.length === 0) continue;
-    items.sort((a, b) => a.seq - b.seq);
-    const autoN = items.filter((i) => i.auto).length;
+    const autoN = items.filter((i) => i.status === "automated").length;
     lines.push("", `## ${action}`, "", `${items.length} steps — ${autoN} automated, ${items.length - autoN} human interaction`);
     for (const it of items) {
-      const badge = it.auto ? "✅ Automated" : "✋ Human interaction";
-      lines.push("", "<details>", `<summary><b>${badge}</b> · ${it.title}</summary>`, "", `_${it.status}_`, "");
+      const badge = it.status === "automated" ? "✅ Automated" : "✋ Human interaction";
+      const sub = it.status === "automated" ? "Automated" : it.status === "manual" ? "Human interaction (manual step)" : "Human interaction — not modeled (needs a module)";
+      const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
+      lines.push("", "<details>", `<summary><b>${badge}</b> · ${title}</summary>`, "", `_${sub}_`, "");
       if (it.steps.length) {
         for (const s of it.steps) {
           const indent = s.match(/^ */)?.[0].length ?? 0;
