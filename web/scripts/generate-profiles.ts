@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node
 import { join } from "node:path";
 import { loadClientKb, type ClientKb } from "./generator/kb";
 import { buildProfile, slugify, normalizeDomain, type DraftProfile } from "./generator/build";
-import { azureConfigFromEnv, azureConfigured } from "./generator/llm";
+import { azureConfigFromEnv, azureConfigured } from "../lib/generator/llm";
 import { enrichProfile, applyEnrichment } from "./generator/enrich";
 
 const prisma = new PrismaClient();

@@ -1,6 +1,6 @@
 // LLM enrichment: read a client's runbook text and correct the load-bearing field
 // (backbone) + extract light per-system config the header heuristic can't see.
-import { azureChatJson, type AzureConfig } from "./llm";
+import { azureChatJson, type AzureConfig } from "../../lib/generator/llm";
 import type { ClientKb } from "./kb";
 import type { DraftProfile } from "./build";
 

@@ -1,7 +1,7 @@
 // Build a draft v2 profile object (validates against profiles/_schema.json) from a
 // client's detected systems + inferred backbone. Secret ids are REPLACE_ME placeholders —
 // the structure is generated; the Delinea refs are filled in by a human later.
-import { CATALOG, inferBackbone, type Lane } from "./system-map";
+import { CATALOG, inferBackbone, type Lane } from "../../lib/generator/system-map";
 import type { ClientKb } from "./kb";
 
 export type DraftProfile = {

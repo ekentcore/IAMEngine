@@ -3,7 +3,8 @@
 // couldn't map (the "detected but not yet modeled" signal).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { headerToSystemKey } from "./system-map";
+import { headerToSystemKey } from "../../lib/generator/system-map";
+import { stripHtml } from "../../lib/generator/parse";
 
 const DATA_DIR = join(process.cwd(), "..", "data");
 
@@ -32,16 +33,6 @@ export type ClientKb = {
   offboardText: string;
 };
 
-function stripHtml(html: string, max = 6000): string {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-}
 
 function loadJsonl(file: string): KbRecord[] {
   const out: KbRecord[] = [];

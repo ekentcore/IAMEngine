@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { EditSystemsButton } from "../_components/edit-systems-button";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             {client.status}
           </p>
         </div>
+        <EditSystemsButton slug={client.slug} />
       </div>
 
       <table>

@@ -6,6 +6,7 @@ import { useMemo, useRef, useState } from "react";
 import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
+import { SystemsEditor } from "./systems-editor";
 
 export type ClientVM = {
   id: string;
@@ -56,6 +57,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [busy, setBusy] = useState<string | null>(null);
+  const [editSlug, setEditSlug] = useState<string | null>(null);
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -191,6 +193,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td>
+                <button onClick={() => setEditSlug(c.slug)} style={{ marginRight: 4 }}>Edit</button>
                 {c.status === "archived" ? (
                   <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
                 ) : (
@@ -220,6 +223,8 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <button className="btn-danger" onClick={confirmArchive}>Archive</button>
         </div>
       </dialog>
+
+      <SystemsEditor slug={editSlug} open={!!editSlug} onClose={() => setEditSlug(null)} />
     </>
   );
 }

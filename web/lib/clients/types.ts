@@ -20,6 +20,19 @@ export type ClientListItem = {
   modeled: boolean; // has at least one ClientSystem (i.e. a profile was applied)
 };
 
+// One system as edited in the UI (full lanes + config). Lane values are the DB enum form.
+export type EditableSystem = {
+  systemKey: string;
+  mode: "api" | "browser" | "manual";
+  onboardWhen: "always" | "on_request" | "never";
+  offboardWhen: "always" | "on_request" | "never";
+  dependsOn: string[];
+  requiresApproval: boolean;
+  captureEvidence: boolean;
+  secretNames: string[];
+  config: unknown; // free-form JSON
+};
+
 export type CreateClientInput = {
   name: string;
   primaryDomain: string;
