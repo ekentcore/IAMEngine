@@ -18,6 +18,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psd1" -Force
 Import-Module "$PSScriptRoot/lib/Coretelligent.Secrets/Coretelligent.Secrets.psm1" -Force
 # The AD module needs the on-prem ActiveDirectory cmdlets — only present on a client-network
 # agent host. Load it only there so the central cloud runner doesn't fail to import.
@@ -38,6 +39,11 @@ $DISPATCH = @{
     'active-directory' = @{
         Onboard  = { param($job, $creds) Invoke-CtgADOnboarding  -User (Add-ClientContext $job) -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config }
+    }
+    'mimecast' = @{
+        Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }
+        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
     }
 }
 

@@ -84,7 +84,7 @@ function Resolve-CtgSkuId {
     $name = if ($License -is [string]) { $License } else { Get-CtgProp $License 'name' }
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
 
-    $skus = @(Get-MgSubscribedSku -ErrorAction SilentlyContinue)
+    $skus = @(Get-MgSubscribedSku -All -ErrorAction SilentlyContinue)
     $direct = $skus | Where-Object { $_.SkuPartNumber -ieq $name } | Select-Object -First 1
     if ($direct) { return $direct.SkuId }
 

@@ -1,0 +1,41 @@
+#Requires -Modules @{ ModuleName='Pester'; ModuleVersion='5.0.0' }
+# Smoke test: the runner script parses and every function its DISPATCH map calls is exported
+# by its module. Runs anywhere — modules are imported by .psm1 (no Microsoft.Graph / AD / live
+# tenant needed to LOAD them). This is the "is the wiring intact?" check for the POC host.
+
+BeforeAll {
+    $script:Root = "$PSScriptRoot/.."
+    Import-Module "$Root/modules/Coretelligent.M365/Coretelligent.M365.psm1" -Force
+    Import-Module "$Root/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psm1" -Force
+    Import-Module "$Root/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psm1" -Force
+}
+
+Describe 'Runner wiring smoke' {
+    It 'Start-IamRunner.ps1 parses without syntax errors' {
+        $errs = $null
+        [System.Management.Automation.Language.Parser]::ParseFile("$Root/Start-IamRunner.ps1", [ref]$null, [ref]$errs) | Out-Null
+        $errs | Should -BeNullOrEmpty
+    }
+
+    # systemKey -> the functions the DISPATCH lanes invoke (keep in sync with Start-IamRunner.ps1).
+    $cases = @(
+        @{ System = 'm365';             Fns = @('Connect-CtgM365', 'Invoke-CtgM365Onboarding', 'Invoke-CtgM365Offboarding', 'New-CtgCompliantPassword') }
+        @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding') }
+        @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding') }
+    )
+    It 'exports every function the <System> lane dispatches' -ForEach $cases {
+        foreach ($fn in $Fns) {
+            (Get-Command $fn -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty -Because "$fn is dispatched for $System"
+        }
+    }
+
+    It 'every module manifest parses and declares its root + exports' {
+        # Import-PowerShellDataFile validates the manifest as data without resolving its
+        # RequiredModules (Graph / ActiveDirectory aren't installed in this test environment).
+        foreach ($psd1 in (Get-ChildItem "$Root/modules" -Recurse -Filter '*.psd1')) {
+            $m = Import-PowerShellDataFile -Path $psd1.FullName
+            $m.RootModule        | Should -Not -BeNullOrEmpty -Because "$($psd1.Name) needs a RootModule"
+            $m.FunctionsToExport  | Should -Not -BeNullOrEmpty -Because "$($psd1.Name) must export functions"
+        }
+    }
+}
