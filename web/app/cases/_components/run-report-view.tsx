@@ -1,0 +1,154 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
+
+const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
+  verified: { label: "verified", color: "#15803d" },
+  warning: { label: "warning", color: "#b45309" },
+  failed: { label: "failed", color: "#b91c1c" },
+  skipped: { label: "skipped", color: "#6b7280" },
+  manual: { label: "manual", color: "#374151" },
+  needs_approval: { label: "needs approval", color: "#7c3aed" },
+  pending: { label: "pending", color: "#6b7280" },
+};
+
+const PRE: React.CSSProperties = {
+  background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem",
+  overflowX: "auto", fontSize: 11, lineHeight: 1.45, margin: "0.25rem 0 0",
+};
+
+function Badge({ verdict }: { verdict: StepVerdict }) {
+  const v = VERDICT[verdict];
+  return <span className="badge" style={{ color: v.color, borderColor: v.color }}>{v.label}</span>;
+}
+
+// The after-action run report: per-step verdicts, actions, validation read-backs, and errors.
+// Auto-refreshes while the case is still running; offers per-step re-run + a gated SN write-back.
+export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunReport; caseId: string; writeEnabled: boolean }) {
+  const [report, setReport] = useState<RunReport>(initial);
+  const [open, setOpen] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [writeBack, setWriteBack] = useState(false);
+  const [writeMsg, setWriteMsg] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const refresh = useCallback(async () => {
+    const res = await fetch(`/api/cases/${caseId}/report`, { cache: "no-store" });
+    if (res.ok) setReport((await res.json()) as RunReport);
+  }, [caseId]);
+
+  // Poll while the case is in flight (queued/planning/running) so the report tracks execution.
+  const live = ["queued", "planning", "running"].includes(report.caseStatus);
+  useEffect(() => {
+    if (!live) { if (timer.current) clearInterval(timer.current); return; }
+    timer.current = setInterval(refresh, 4000);
+    return () => { if (timer.current) clearInterval(timer.current); };
+  }, [live, refresh]);
+
+  const toggle = (n: number) => setOpen((s) => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x; });
+
+  async function rerun(stepSeq: number, jobId: string | undefined) {
+    if (!jobId) return;
+    setBusy(`rerun-${stepSeq}`);
+    try {
+      await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function postWorkNote() {
+    setBusy("worknote");
+    setWriteMsg(null);
+    try {
+      const res = await fetch(`/api/cases/${caseId}/worknote`, { method: "POST" });
+      const body = (await res.json()) as { ok?: boolean; error?: string };
+      setWriteMsg(res.ok ? "Work note posted to the UM ticket." : body.error ?? "Write-back failed.");
+    } catch (e) {
+      setWriteMsg((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const s = report.summary;
+  return (
+    <div>
+      <div className="row-between" style={{ alignItems: "baseline" }}>
+        <p className="note" style={{ margin: 0 }}>
+          {s.succeeded} verified · {s.warnings} warning · {s.failed} failed · {s.skipped} skipped · {s.manual} manual
+          {s.needsApproval > 0 && ` · ${s.needsApproval} needs approval`}
+          {s.pending > 0 && ` · ${s.pending} pending`}
+          {live && <span className="muted"> · refreshing…</span>}
+        </p>
+        <div className="toolbar">
+          <button onClick={refresh}>Refresh</button>
+          <a href={`/api/cases/${caseId}/report?format=md`} download className="note">download .md →</a>
+        </div>
+      </div>
+
+      {report.steps.map((step) => {
+        const isOpen = open.has(step.seq);
+        const hasDetail = step.actions.length > 0 || step.validation || step.error;
+        return (
+          <details key={step.seq} open={isOpen} style={{ margin: "0.2rem 0" }}>
+            <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
+              <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
+              <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
+              {(step.verdict === "warning" || step.verdict === "failed") && step.jobId && (
+                <button
+                  style={{ marginLeft: 8, fontSize: 11 }}
+                  disabled={busy === `rerun-${step.seq}`}
+                  onClick={(e) => { e.preventDefault(); rerun(step.seq, step.jobId); }}
+                >
+                  {busy === `rerun-${step.seq}` ? "re-running…" : "re-run / re-validate"}
+                </button>
+              )}
+            </summary>
+            <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>
+              {step.actions.length > 0 && (
+                <div>
+                  <div className="note">Actions:</div>
+                  <ul className="muted" style={{ margin: "0.2rem 0 0" }}>
+                    {step.actions.map((a, i) => <li key={i}>{a}</li>)}
+                  </ul>
+                </div>
+              )}
+              {step.validation && (
+                <div style={{ marginTop: "0.4rem" }}>
+                  <div className="note">Validation: {step.validation.ok ? "ok" : "MISS"}</div>
+                  <ul className="muted" style={{ margin: "0.2rem 0 0" }}>
+                    {step.validation.checks.map((c, i) => (
+                      <li key={i} style={{ color: c.pass ? undefined : "#b91c1c" }}>
+                        {c.pass ? "✓" : "✗"} {c.name}
+                        {c.expected !== undefined && ` (expected ${String(c.expected)}, got ${String(c.actual)})`}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {step.error && <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>}
+            </div>
+          </details>
+        );
+      })}
+
+      <div style={{ marginTop: "0.8rem", paddingTop: "0.6rem", borderTop: "1px solid #e5e7eb" }}>
+        <label className="note" title={writeEnabled ? undefined : "Disabled — the ServiceNow key is read-only (SN_WRITE_ENABLED is off)"}>
+          <input type="checkbox" checked={writeBack} disabled={!writeEnabled} onChange={(e) => setWriteBack(e.target.checked)} style={{ marginRight: 6 }} />
+          Write back to UM
+        </label>
+        <button
+          style={{ marginLeft: 8 }}
+          disabled={!writeEnabled || !writeBack || busy === "worknote"}
+          onClick={postWorkNote}
+        >
+          {busy === "worknote" ? "posting…" : "Post work note"}
+        </button>
+        {writeMsg && <span className="note" style={{ marginLeft: 8 }}>{writeMsg}</span>}
+      </div>
+    </div>
+  );
+}

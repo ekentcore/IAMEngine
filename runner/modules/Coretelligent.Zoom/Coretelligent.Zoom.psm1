@@ -123,4 +123,29 @@ function Invoke-CtgZoomOffboarding {
     [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding
+function Confirm-CtgZoom {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Zoom. No mutations; returns { ok; checks[] }.
+        onboard -> the user is present. offboard -> the user is absent (deleted) or deactivated.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+    $email = $User.UserPrincipalName
+    $u = Get-CtgZoomUser -Email $email
+    if ($Action -eq 'onboard') {
+        $check = @{ name = 'Zoom user present'; expected = $true; actual = [bool]$u; pass = [bool]$u }
+    }
+    else {
+        # Deleted users return $null; deactivated users have status != 'active'.
+        $gone = (-not $u) -or ((Get-CtgProp $u 'status') -and (Get-CtgProp $u 'status') -ne 'active')
+        $check = @{ name = 'Zoom user removed/deactivated'; expected = $true; actual = [bool]$gone; pass = [bool]$gone }
+    }
+    [pscustomobject]@{ ok = $check.pass; checks = @($check) }
+}
+
+Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom

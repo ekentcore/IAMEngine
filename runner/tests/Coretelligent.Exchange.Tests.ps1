@@ -55,3 +55,36 @@ Describe 'Connect-CtgExchange' {
         Should -Invoke Connect-ExchangeOnline -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Organization -eq '61commodities.com' }
     }
 }
+
+Describe 'Confirm-CtgExchange' {
+    BeforeEach {
+        function global:Get-Mailbox { [CmdletBinding()] param($Identity) }
+        function global:Get-CASMailbox { [CmdletBinding()] param($Identity) }
+        Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+    }
+
+    It 'offboard: passes when the mailbox is shared and ActiveSync/OWA are off' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: an over-threshold mailbox is allowed to stay a user mailbox' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '75 GB (80,530,636,800 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'onboard has no lane: returns ok with no checks' {
+        $r = Confirm-CtgExchange -User $user -Config ([pscustomobject]@{}) -Action 'onboard'
+        $r.ok | Should -BeTrue
+        @($r.checks).Count | Should -Be 0
+    }
+}

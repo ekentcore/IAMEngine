@@ -41,6 +41,18 @@ test("onboard payload emits the canonical identity fields the modules read", () 
   assert.equal(payload.managerName, "Evan Kent");
 });
 
+test("deriveAction prefers the coded subcategory value over display text", () => {
+  // 30100 = User Offboarding, regardless of the display text / short description.
+  const offb = rec({ number: "UM0028680", subcategory: ["30100", "User Offboarding"], short_description: "ONB - typo'd title" });
+  assert.equal(normalizeIntake(offb).action, "offboard");
+  // 30000 = User Onboarding.
+  const onb = rec({ number: "UM0028740", subcategory: ["30000", "User Onboarding"] });
+  assert.equal(normalizeIntake(onb).action, "onboard");
+  // No coded value: fall back to the display-text / short_description match.
+  const fallback = rec({ number: "UM0028999", subcategory: "Offboard User", short_description: "Offboard - Jane" });
+  assert.equal(normalizeIntake(fallback).action, "offboard");
+});
+
 test("applyUsernamePattern supports the profile tokens and lowercases the local part", () => {
   const vals = { first: "Jane", last: "Van Doe", mi: "Q", domain: "61commodities.com" };
   assert.equal(applyUsernamePattern("{first}{last}@{domain}", vals), "janevandoe@61commodities.com");

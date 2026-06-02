@@ -48,4 +48,22 @@ function Invoke-CtgDirectorySync {
     [pscustomobject]@{ System = 'directory-sync'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Invoke-CtgDirectorySync
+function Confirm-CtgDirectorySync {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Azure AD Connect: the delta sync has settled (no cycle in
+        progress). No mutations; returns { ok; checks[] }. Same check for both lanes.
+    #>
+    [CmdletBinding()]
+    param(
+        [pscustomobject]$User,
+        [pscustomobject]$Config,
+        [ValidateSet('onboard', 'offboard')][string]$Action
+    )
+    $scheduler = Get-ADSyncScheduler
+    $inProgress = [bool](Get-CtgProp $scheduler 'SyncCycleInProgress')
+    $check = @{ name = 'delta sync settled'; expected = $false; actual = $inProgress; pass = (-not $inProgress) }
+    [pscustomobject]@{ ok = $check.pass; checks = @($check) }
+}
+
+Export-ModuleMember -Function Invoke-CtgDirectorySync, Confirm-CtgDirectorySync

@@ -104,3 +104,35 @@ Describe 'Invoke-CtgADOffboarding' {
         Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $TargetPath -match 'Disabled Users' }
     }
 }
+
+Describe 'Confirm-CtgAD' {
+    It 'onboard: passes when the user is in the OU with the expected group' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=61commodities,DC=com'; Enabled=$true; HomeDirectory='\\srv\home\jdoe' } }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Back Office Users' }, [pscustomobject]@{ Name='Domain Users' }) }
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; PrimaryDomain='61commodities.com' }
+        $config = [pscustomobject]@{ ou='Six One Users'; groups=@('Back Office Users'); homeDrive=[pscustomobject]@{ unc='\\srv\home\<username>'; letter='H' } }
+        $r = Confirm-CtgAD -User $user -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'group: Back Office Users' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'home drive mapped' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: passes when disabled, groups gone, hidden, and NOT moved (guardrail)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$false; msExchHideFromAddressLists=$true } }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Domain Users' }) }
+        $user = [pscustomobject]@{ SamAccountName='jdoe' }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists' }; guardrails=@('do-not-move-ou'); disabledUsersOu='OU=Disabled,DC=x' }
+        $r = Confirm-CtgAD -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'not moved (do-not-move-ou)' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: fails the not-moved check when the user sits under the Disabled OU' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Disabled,DC=x'; Enabled=$false } }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @() }
+        $user = [pscustomobject]@{ SamAccountName='jdoe' }
+        $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); disabledUsersOu='OU=Disabled,DC=x' }
+        $r = Confirm-CtgAD -User $user -Config $config -Action 'offboard'
+        ($r.checks | Where-Object { $_.name -eq 'not moved (do-not-move-ou)' }).pass | Should -BeFalse
+    }
+}

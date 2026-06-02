@@ -191,4 +191,64 @@ function Invoke-CtgADOffboarding {
     }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Test-CtgCondition, Resolve-CtgOuPath
+function Confirm-CtgAD {
+    <#
+    .SYNOPSIS
+        Post-action read-back for on-prem AD. No mutations; returns { ok; checks[] }.
+    .PARAMETER Action
+        'onboard' (user in the OU + groups + home drive) or 'offboard' (disabled + groups
+        removed + hidden from GAL + NOT moved when the do-not-move-ou guardrail is present).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
+    $sam = $User.SamAccountName
+    $domain = Get-CtgProp $User 'PrimaryDomain'
+
+    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue
+    $exists = [bool]$u
+    $groupNames = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) } else { @() }
+
+    if ($Action -eq 'onboard') {
+        $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
+        & $add 'user exists' $true $exists
+        & $add "in OU $ouPath" $true ([bool]($exists -and (Get-CtgProp $u 'DistinguishedName') -like "*$ouPath"))
+
+        $want = [System.Collections.Generic.List[string]]::new()
+        foreach ($g in @(Get-CtgProp $Config 'groups')) { if ($g) { $want.Add([string]$g) } }
+        foreach ($cg in @(Get-CtgProp $Config 'conditionalGroups')) {
+            if (Test-CtgCondition (Get-CtgProp $cg 'when') $User) { foreach ($g in @(Get-CtgProp $cg 'groups')) { if ($g) { $want.Add([string]$g) } } }
+        }
+        foreach ($g in $want) { & $add "group: $g" $true ([bool]($groupNames -contains $g)) }
+
+        $home = Get-CtgProp $Config 'homeDrive'
+        if ($home) { & $add 'home drive mapped' $true ([bool]($exists -and (Get-CtgProp $u 'HomeDirectory'))) }
+    }
+    else {
+        & $add 'account disabled' $true ([bool](-not $exists -or (Get-CtgProp $u 'Enabled') -eq $false))
+        if ($exists -and (Get-CtgProp $Config 'removeAllGroups')) {
+            $remaining = @($groupNames | Where-Object { $_ -ne 'Domain Users' }).Count
+            & $add 'groups removed' $true ([bool]($remaining -eq 0))
+        }
+        $hide = Get-CtgProp $Config 'hideFromGal'
+        if ($exists -and $hide -and (Get-CtgProp $hide 'attribute')) {
+            & $add 'hidden from GAL' $true ([bool]((Get-CtgProp $u 'msExchHideFromAddressLists')))
+        }
+        # do-not-move-ou guardrail: the DN must NOT sit under the Disabled Users OU.
+        $disabledOu = Get-CtgProp $Config 'disabledUsersOu'
+        if ($exists -and (@(Get-CtgProp $Config 'guardrails') -contains 'do-not-move-ou') -and $disabledOu) {
+            & $add 'not moved (do-not-move-ou)' $true ([bool]((Get-CtgProp $u 'DistinguishedName') -notlike "*$disabledOu"))
+        }
+    }
+
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD

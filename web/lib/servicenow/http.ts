@@ -59,3 +59,42 @@ export async function snGet<T>(
   const json = (await res.json()) as { result: T };
   return json.result;
 }
+
+// Write a JSON body to a ServiceNow REST path (POST to create, PATCH to update — a work-note
+// append is a PATCH of the record's `work_notes` journal field). Returns the parsed `result`.
+// Mirrors snGet's auth + timeout + typed-error handling.
+export async function snWrite<T>(
+  config: SnConfig,
+  method: "POST" | "PATCH" | "PUT",
+  path: string,
+  body: unknown,
+  fetcher: Fetcher = fetch
+): Promise<T> {
+  const url = new URL(`${config.instanceUrl}${path}`);
+
+  let res: Response;
+  try {
+    res = await fetcher(url.toString(), {
+      method,
+      headers: { Authorization: authHeader(config), Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new SnGatewayError(`ServiceNow request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw new SnGatewayError(err instanceof Error ? err.message : String(err));
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new SnGatewayError(`ServiceNow returned ${res.status} ${res.statusText}`, res.status, text.slice(0, 500));
+  }
+
+  const json = (await res.json()) as { result: T };
+  return json.result;
+}
+
+export const snPost = <T>(config: SnConfig, path: string, body: unknown, fetcher: Fetcher = fetch) =>
+  snWrite<T>(config, "POST", path, body, fetcher);

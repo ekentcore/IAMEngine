@@ -52,3 +52,36 @@ Describe 'Connect-CtgMimecast' {
         Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Mimecast -ParameterFilter { $Uri -match '/oauth/token' } -Times 1
     }
 }
+
+Describe 'Confirm-CtgMimecast' {
+    It 'onboard: verifies the internal domain is registered' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Method, $Path, $Body)
+            if ($Path -like '*internal-domains*') { return [pscustomobject]@{ data = @([pscustomobject]@{ domain = '61commodities.com'; status = 'verified' }) } }
+            return [pscustomobject]@{ data = @() }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ verifyInternalDirectory = '@61commodities.com' }) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: passes when the user is absent from each configured group' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Method, $Path, $Body)
+            return [pscustomobject]@{ data = @([pscustomobject]@{ emailAddress = 'someone-else@61commodities.com' }) }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ groups = @('grp-1') }) -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: fails when the user is still a group member' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Method, $Path, $Body)
+            return [pscustomobject]@{ data = @([pscustomobject]@{ emailAddress = 'jdoe@61commodities.com' }) }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ groups = @('grp-1') }) -Action 'offboard'
+        $r.ok | Should -BeFalse
+    }
+}

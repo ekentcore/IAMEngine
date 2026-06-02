@@ -13,12 +13,16 @@ export type RunnerJob = {
   payload: unknown;
   requiresApproval: boolean;
   captureEvidence: boolean;
+  dryRun: boolean; // when true the runner runs -WhatIf (no mutations) + validation-only read-backs
 };
 
 export type ResultInput = {
   status: "succeeded" | "failed" | "skipped";
   result?: unknown;
   evidence?: unknown;
+  // Post-action read-back: { ok, checks:[{name,expected,actual,pass}] }. A miss (ok=false) does
+  // NOT fail the job/case — the run report flags it as a warning. Re-validation can clear it.
+  validation?: unknown;
   error?: string | null;
 };
 

@@ -7,7 +7,7 @@
     Description       = 'Perimeter 81 / Check Point Harmony SASE user lifecycle (group-driven onboard, find-then-remove offboard). Endpoint paths are best-effort and must be verified on the tenant.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgPerimeter81', 'Invoke-CtgP81Api', 'Find-CtgP81User', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding')
+    FunctionsToExport = @('Connect-CtgPerimeter81', 'Invoke-CtgP81Api', 'Find-CtgP81User', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding', 'Confirm-CtgPerimeter81')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

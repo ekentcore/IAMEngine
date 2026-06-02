@@ -1,7 +1,8 @@
 // Renders the PowerShell/Graph commands the M365 module (runner/modules/Coretelligent.M365)
 // intends to run, templated from a client's m365 config + identity. The variables block at
-// the top is the per-user input — placeholders now, populated from a pulled UM case later.
-// Pure string templating; no side effects.
+// the top is the per-user input — `<UM case>` placeholders until a planned case supplies a
+// resolved `user` payload, then the real values are substituted inline. No side effects.
+import { psArray, uval, ulist, resolveUpn, type PreviewUser } from "./preview-helpers";
 
 type M365Config = {
   licenses?: string[];
@@ -17,11 +18,9 @@ type Identity = {
   password?: { minLength?: number; requireUpper?: boolean; requireLower?: boolean; requireNumber?: boolean; requireSpecial?: boolean };
 };
 
-const psArray = (xs: string[] | undefined): string =>
-  xs && xs.length ? "@(\n" + xs.map((x) => `    "${x}"`).join(",\n") + "\n  )" : "@()";
-
-function upnExpr(identity: Identity, domain: string): string {
-  // keep the username tokens ({first}/{firstInitial}/{last}) literal — they're filled per user.
+function upnExpr(identity: Identity, domain: string, user: PreviewUser): string {
+  // A planned case carries the resolved UPN; otherwise show the pattern with tokens left literal.
+  if (user) return uval(user, "userPrincipalName", uval(user, "workEmail", "<UM case>"));
   const pattern = identity.usernamePatterns?.[0] ?? "{first}{last}@{domain}";
   return pattern.replace("{domain}", domain || "<domain>");
 }
@@ -38,24 +37,27 @@ function passwordComment(identity: Identity): string {
   return `# generated to policy: ${rules}`;
 }
 
-export function previewM365(action: "onboard" | "offboard", config: unknown, identity: unknown, primaryDomain: string): string {
+export function previewM365(action: "onboard" | "offboard", config: unknown, identity: unknown, primaryDomain: string, user?: PreviewUser): string {
   const cfg = (config ?? {}) as M365Config;
   const id = (identity ?? {}) as Identity;
-  if (action === "offboard") return offboard(cfg, id, primaryDomain);
-  return onboard(cfg, id, primaryDomain);
+  if (action === "offboard") return offboard(cfg, id, primaryDomain, user);
+  return onboard(cfg, id, primaryDomain, user);
 }
 
-function onboard(config: M365Config, identity: Identity, domain: string): string {
+function onboard(config: M365Config, identity: Identity, domain: string, user: PreviewUser): string {
+  // Prefer the resolved per-user licenses/groups (from the planned case) over the client default.
+  const licenses = ulist(user, "productLicenses") ?? config.licenses;
+  const groups = ulist(user, "securityGroups") ?? config.groups;
   const lines = [
-    "# --- variables (populated from the UM case later) ---",
-    `$FirstName         = "<UM case>"`,
-    `$LastName          = "<UM case>"`,
-    `$UserPrincipalName = "${upnExpr(identity, domain)}"   # from $FirstName / $LastName`,
-    `$JobTitle          = "<UM case>"`,
-    `$MobilePhone       = "<UM case>"`,
-    `$UsageLocation     = "US"`,
-    `$Licenses          = ${psArray(config.licenses)}`,
-    `$Groups            = ${psArray(config.groups)}`,
+    user ? "# --- variables (resolved from the UM case) ---" : "# --- variables (populated from the UM case later) ---",
+    `$FirstName         = "${uval(user, "firstName")}"`,
+    `$LastName          = "${uval(user, "lastName")}"`,
+    `$UserPrincipalName = "${upnExpr(identity, domain, user)}"   # from $FirstName / $LastName`,
+    `$JobTitle          = "${uval(user, "jobTitle")}"`,
+    `$MobilePhone       = "${uval(user, "mobilePhone")}"`,
+    `$UsageLocation     = "${uval(user, "usageLocation", "US")}"`,
+    `$Licenses          = ${psArray(licenses)}`,
+    `$Groups            = ${psArray(groups)}`,
     "",
     "# --- intended automation (Coretelligent.M365 — idempotent: checks state before changing) ---",
     passwordComment(identity),
@@ -77,10 +79,10 @@ function onboard(config: M365Config, identity: Identity, domain: string): string
   return lines.join("\n");
 }
 
-function offboard(config: M365Config, _identity: Identity, _domain: string): string {
+function offboard(config: M365Config, _identity: Identity, _domain: string, user: PreviewUser): string {
   const lines = [
-    "# --- variables (populated from the UM case later) ---",
-    `$UserPrincipalName = "<UM case: user to offboard>"`,
+    user ? "# --- variables (resolved from the UM case) ---" : "# --- variables (populated from the UM case later) ---",
+    `$UserPrincipalName = "${resolveUpn(user)}"`,
     "",
     "# --- intended automation (Coretelligent.M365 — idempotent) ---",
     "# block sign-in",

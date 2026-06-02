@@ -105,4 +105,47 @@ function Invoke-CtgExchangeOffboarding {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = $sizeGB; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOffboarding
+function Confirm-CtgExchange {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Exchange Online offboard. No mutations; returns { ok; checks[] }.
+        Mailbox is Shared (or kept as a user mailbox when over the size threshold), and
+        ActiveSync + OWA are disabled.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
+
+    # Exchange has no onboard lane (the mailbox is created with the M365 user).
+    if ($Action -eq 'onboard') { return [pscustomobject]@{ ok = $true; checks = @() } }
+
+    $upn = $User.UserPrincipalName
+    $mbx = Get-Mailbox -Identity $upn -ErrorAction SilentlyContinue
+    $cts = Get-CtgProp $Config 'convertToShared'
+    if ($cts) {
+        $threshold = [double]((Get-CtgProp $cts 'skipIfMailboxOverGB') ?? 50)
+        $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
+        if ($sizeGB -gt $threshold) {
+            & $add "mailbox kept (>$threshold GB)" $true $true   # over-threshold mailboxes are intentionally not converted
+        }
+        else {
+            & $add 'mailbox is shared' 'SharedMailbox' ([string](Get-CtgProp $mbx 'RecipientTypeDetails'))
+        }
+    }
+    if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false) {
+        $cas = Get-CASMailbox -Identity $upn -ErrorAction SilentlyContinue
+        & $add 'ActiveSync disabled' $false ([bool](Get-CtgProp $cas 'ActiveSyncEnabled'))
+        & $add 'OWA disabled' $false ([bool](Get-CtgProp $cas 'OWAEnabled'))
+    }
+
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

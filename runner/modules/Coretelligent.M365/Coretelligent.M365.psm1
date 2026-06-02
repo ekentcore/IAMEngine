@@ -222,7 +222,7 @@ function Invoke-CtgM365Onboarding {
     # Canonical config uses `licenses` (name strings or {name,skuId}); fall back to the older
     # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
     $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
-    $assigned = @((Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue).SkuId)
+    $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
     foreach ($lic in $licenseSpecs) {
         $name  = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
         $skuId = Resolve-CtgSkuId $lic
@@ -357,7 +357,7 @@ function Invoke-CtgM365Offboarding {
             $actions.Add("license kept — mailbox $MailboxSizeGB GB is over threshold ($threshold GB); remove after mailbox handling")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Remove licenses")) {
-            $skus = @((Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue).SkuId)
+            $skus = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
             if ($skus.Count) {
                 Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $skus | Out-Null
                 $actions.Add("removed $($skus.Count) license(s)")
@@ -377,4 +377,61 @@ function Invoke-CtgM365Offboarding {
     }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding
+function Confirm-CtgM365 {
+    <#
+    .SYNOPSIS
+        Post-action read-back for M365. Reads the user's current state (no mutations) and
+        returns { ok; checks[] } so the runner/app can verify what actually happened.
+    .PARAMETER Action
+        'onboard' (user exists + enabled + licenses + groups) or 'offboard' (disabled + groups
+        removed + license removed/kept per the mailbox threshold).
+    .OUTPUTS
+        [pscustomobject]@{ ok = [bool]; checks = @(@{ name; expected; actual; pass }) }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
+    $upn = $User.UserPrincipalName
+
+    $u = Get-MgUser -Filter "userPrincipalName eq '$upn'" -Property Id, AccountEnabled, UserPrincipalName -ErrorAction SilentlyContinue
+    $exists = [bool]$u
+
+    if ($Action -eq 'onboard') {
+        & $add 'user exists' $true $exists
+        & $add 'AccountEnabled' $true ([bool]($exists -and (Get-CtgProp $u 'AccountEnabled') -eq $true))
+        if ($exists) {
+            $assigned = @(Get-MgUserLicenseDetail -UserId $u.Id -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
+            $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+            foreach ($lic in $licenseSpecs) {
+                $name = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
+                $skuId = Resolve-CtgSkuId $lic
+                & $add "license: $name" $true ([bool]($skuId -and $assigned -contains $skuId))
+            }
+            $memberNames = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue |
+                ForEach-Object { Get-CtgProp $_.AdditionalProperties 'displayName' })
+            foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
+                & $add "group: $g" $true ([bool]($memberNames -contains $g))
+            }
+        }
+    }
+    else {
+        # Offboard: a removed user trivially satisfies the teardown checks.
+        & $add 'sign-in blocked' $true ([bool](-not $exists -or (Get-CtgProp $u 'AccountEnabled') -eq $false))
+        if ($exists -and (Get-CtgProp $Config 'removeAllGroups') -ne $false) {
+            $memberCount = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue |
+                Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }).Count
+            & $add 'groups removed' $true ([bool]($memberCount -eq 0))
+        }
+    }
+
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365

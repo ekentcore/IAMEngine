@@ -1,5 +1,5 @@
-// POST /api/jobs/{id}/result — { status, result?, evidence?, error? }. Finalizes the job,
-// advances the case, audits, and queues a ServiceNow work note.
+// POST /api/jobs/{id}/result — { status, result?, evidence?, validation?, error? }. Finalizes
+// the job, advances the case, audits, and queues a ServiceNow work note.
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
@@ -8,7 +8,7 @@ import { HttpError, type ResultInput } from "@/lib/jobs/types";
 const STATUSES = ["succeeded", "failed", "skipped"];
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  let body: { agentId?: unknown; status?: unknown; result?: unknown; evidence?: unknown; error?: unknown };
+  let body: { agentId?: unknown; status?: unknown; result?: unknown; evidence?: unknown; validation?: unknown; error?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -22,6 +22,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     status: body.status as ResultInput["status"],
     result: body.result,
     evidence: body.evidence,
+    validation: body.validation,
     error: typeof body.error === "string" ? body.error : null,
   };
 

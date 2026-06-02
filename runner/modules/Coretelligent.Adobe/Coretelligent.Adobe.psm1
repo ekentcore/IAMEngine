@@ -103,4 +103,54 @@ function Invoke-CtgAdobeOffboarding {
     [pscustomobject]@{ System = 'adobe'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgAdobe, Invoke-CtgAdobeAction, Invoke-CtgAdobeOnboarding, Invoke-CtgAdobeOffboarding
+function Get-CtgAdobeUser {
+    # Read seam (UMAPI GET user). Returns $null when the user isn't in the organization. Mocked
+    # in tests. The UMAPI user record carries the granted product profiles under `groups`.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Email)
+    if (-not $script:AdobeToken) { throw "Call Connect-CtgAdobe first." }
+    $headers = @{ Authorization = "Bearer $script:AdobeToken"; 'X-Api-Key' = $script:AdobeApiKey }
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri "$script:AdobeApiUrl/v2/usermanagement/organizations/$script:AdobeOrgId/users/$Email" -Headers $headers
+        return (Get-CtgProp $resp 'user') ?? $resp
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
+        throw
+    }
+}
+
+function Confirm-CtgAdobe {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Adobe. No mutations; returns { ok; checks[] }.
+        onboard -> the user is present in the configured product profile(s).
+        offboard -> the user is absent from the organization.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
+    $email = $User.UserPrincipalName
+    $u = Get-CtgAdobeUser -Email $email
+
+    if ($Action -eq 'onboard') {
+        & $add 'Adobe user present' $true ([bool]$u)
+        $granted = @(Get-CtgProp $u 'groups')
+        foreach ($p in @(Get-CtgProp $Config 'productProfiles')) {
+            if ($p) { & $add "profile: $p" $true ([bool]($granted -contains $p)) }
+        }
+    }
+    else {
+        & $add 'Adobe user absent' $true ([bool](-not $u))
+    }
+
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Connect-CtgAdobe, Invoke-CtgAdobeAction, Invoke-CtgAdobeOnboarding, Invoke-CtgAdobeOffboarding, Get-CtgAdobeUser, Confirm-CtgAdobe

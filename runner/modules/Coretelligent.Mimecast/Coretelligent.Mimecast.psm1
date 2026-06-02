@@ -143,4 +143,44 @@ function Invoke-CtgMimecastOffboarding {
     [pscustomobject]@{ System = 'mimecast'; Status = 'ok'; Upn = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding
+function Confirm-CtgMimecast {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Mimecast. No mutations; returns { ok; checks[] }.
+        onboard -> the client's internal domain is registered + verified.
+        offboard -> the user is absent from each configured Mimecast group.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
+
+    if ($Action -eq 'onboard') {
+        $verify = Get-CtgProp $Config 'verifyInternalDirectory'
+        if ($verify) {
+            $domain = ([string]$verify).TrimStart('@').ToLower()
+            $resp = Invoke-CtgMimecastApi -Method GET -Path '/domain/cloud-gateway/v1/internal-domains'
+            $match = @($resp.data) | Where-Object { ([string]$_.domain).ToLower() -eq $domain } | Select-Object -First 1
+            & $add "internal domain verified: $domain" $true ([bool]$match)
+        }
+    }
+    else {
+        $email = ([string]$User.UserPrincipalName).ToLower()
+        foreach ($g in @(Get-CtgProp $Config 'groups')) {
+            if (-not $g) { continue }
+            $resp = Invoke-CtgMimecastApi -Method GET -Path "/directory/cloud-gateway/v1/groups/$g/members"
+            $present = @($resp.data) | Where-Object { ([string]$_.emailAddress).ToLower() -eq $email }
+            & $add "removed from group $g" $true ([bool](-not $present))
+        }
+    }
+
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast

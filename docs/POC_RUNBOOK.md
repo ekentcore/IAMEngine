@@ -5,9 +5,9 @@ onboarding/offboarding** for a small set of POC clients. It assumes Phases 1–3
 seeded, clients list, case planning, runner API) and the automation modules in `runner/` are
 present. See `docs/ARCHITECTURE.md` and `docs/RUNNER_PROTOCOL.md` for the why.
 
-The modules are unit-tested (`runner/tests/`, 24 Pester tests with mocked Graph/AD/Mimecast
-cmdlets) but **final validation is on a real host with a test user** — that's what this guide
-sets up.
+The modules are unit-tested (`runner/tests/`, Pester with mocked Graph/AD/Mimecast cmdlets —
+each module's action lanes plus its `Confirm-Ctg<System>` validator) but **final validation is
+on a real host with a test user** — that's what this guide sets up.
 
 ---
 
@@ -82,8 +82,12 @@ Already needed by the app, relevant to execution:
 DATABASE_URL=...                 # Postgres
 RUNNER_API_TOKEN=<shared bearer> # interim auth until mTLS; same value on the runner
 SN_INSTANCE_URL / SN_USER / SN_PASSWORD     # ServiceNow (work notes, contact, attachments)
+SN_WRITE_ENABLED=false           # gate for the work-note write-back; keep false while the key is read-only
 AZURE_OPENAI_ENDPOINT / _KEY / _DEPLOYMENT  # group-resolver + KB enrichment (optional)
 ```
+
+The `m365-admin` secret can also carry a `CertificateThumbprint` field (for EXO app-only /
+Exchange offboard); fill it in the Delinea secret alongside `UserName`/`Password`.
 
 ---
 
@@ -118,6 +122,23 @@ dependencies clear. Watch the case in the UI: each job shows `succeeded` / `fail
 Smallest entra POC: a client with `servicenow` → `m365` (→ `mimecast`). Smallest ad-synced
 POC (Six One): `servicenow` → `active-directory` → `directory-sync` → `m365` → `mimecast`.
 
+**Action detection**: imported UM tickets are routed by the coded subcategory value —
+`30000` = User Onboarding, `30100` = User Offboarding (with a display-text fallback).
+
+---
+
+## 7a. Pre-flight: review the playbook (dry run)
+
+Open the case in the UI — the **Playbook (dry run)** section renders every step in execution
+order, each expandable to the *real* script it will run (with the resolved UPN/licenses/groups
+substituted inline) and the post-action checks it will verify. Nothing executes. Download it
+(`GET /api/cases/:id/playbook?format=md`) to review or attach to the ticket before dispatch.
+
+To prove it against the live tenant with **zero mutations**, dispatch the case as a dry run:
+set `request.dryRun = true` on the jobs. The runner then sets `$WhatIfPreference`, so every
+module's `SupportsShouldProcess` short-circuits the changes and only the validation read-backs
+run — the executable confirmation of the playbook.
+
 ---
 
 ## 8. Smoke test + validation
@@ -148,7 +169,31 @@ manifests are well-formed. Then validate per system with a **test user**:
   direct add); the API endpoints are best-effort — verify against the Harmony SASE tenant.
 
 Built modules: `m365`, `active-directory`, `mimecast`, `directory-sync`, `exchange`, `zoom`,
-`adobe`, `perimeter81` — all with Pester tests (`runner/tests/`, 45 green).
+`adobe`, `perimeter81` — all with Pester tests (`runner/tests/`), each now including a
+`Confirm-Ctg<System>` validator with pass/miss coverage.
+
+After each action the runner calls the matching `Confirm-Ctg<System>` validator (a read-only
+read-back). On a miss it re-runs the idempotent action and re-validates up to twice (short
+backoff) to absorb eventual-consistency lag. A persistent miss does **not** fail the job — the
+job still `succeeds` and the `{ ok, checks }` block rides along on the result; the run report
+flags it as a **warning** (red), never as a case failure.
+
+---
+
+## 8a. After-action: the run report + ServiceNow write-back
+
+The case's **Run report** section aggregates each step into a verdict — *verified* (succeeded
++ validation ok), *warning* (succeeded but validation missed), *failed*, *skipped*, *manual*,
+*needs approval* — with the module's `Actions`, the validation checks, and any error. It
+auto-refreshes while the case is running, and each warning/failed step has a one-click
+**re-run / re-validate** (`POST /api/jobs/:id/rerun`). Download it as markdown
+(`GET /api/cases/:id/report?format=md`) to attach to the ticket.
+
+**Write-back** is gated. With `SN_WRITE_ENABLED=true`, tick **Write back to UM** and **Post
+work note** to append the run-report summary to the UM ticket
+(`POST /api/cases/:id/worknote` → resolves the UM `sys_id`, PATCHes `work_notes`). While the
+POC key is read-only (`SN_WRITE_ENABLED=false`) the checkbox is disabled — the on-screen +
+downloadable report is always available to attach manually.
 
 ---
 

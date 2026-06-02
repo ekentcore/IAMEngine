@@ -37,3 +37,22 @@ test("null config/identity (system with no lane config) does not throw", () => {
   assert.match(out, /New-MgUser/);
   assert.match(out, /\$Licenses\s*=\s*@\(\)/); // empty
 });
+
+test("onboard: a resolved user payload substitutes real values inline", () => {
+  const user = {
+    firstName: "Jane", lastName: "Doe", userPrincipalName: "jdoe@acme.com",
+    jobTitle: "Analyst", mobilePhone: "5160000000", usageLocation: "US",
+    productLicenses: ["Microsoft 365 E5"], securityGroups: ["VPN Users"],
+  };
+  const out = previewM365("onboard", config, identity, "acme.com", user);
+  assert.match(out, /resolved from the UM case/);
+  assert.match(out, /\$FirstName\s*=\s*"Jane"/);
+  assert.match(out, /\$UserPrincipalName\s*=\s*"jdoe@acme\.com"/);
+  assert.match(out, /Microsoft 365 E5/); // per-user license wins over the client default
+  assert.match(out, /VPN Users/);
+});
+
+test("offboard: a resolved user payload fills the UPN", () => {
+  const out = previewM365("offboard", { blockSignIn: true }, identity, "acme.com", { userPrincipalName: "jdoe@acme.com" });
+  assert.match(out, /\$UserPrincipalName\s*=\s*"jdoe@acme\.com"/);
+});

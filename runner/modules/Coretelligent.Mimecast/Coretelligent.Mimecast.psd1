@@ -7,7 +7,7 @@
     Description       = 'Idempotent Mimecast email-security lifecycle via the Mimecast 2.0 API (cloud-gateway). No external module dependencies (uses Invoke-RestMethod).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgMimecast', 'Invoke-CtgMimecastApi', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding')
+    FunctionsToExport = @('Connect-CtgMimecast', 'Invoke-CtgMimecastApi', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

@@ -7,7 +7,7 @@
     Description       = 'Idempotent Adobe entitlement lifecycle via the User Management API (UMAPI) v2. No external module dependencies.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgAdobe', 'Invoke-CtgAdobeAction', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding')
+    FunctionsToExport = @('Connect-CtgAdobe', 'Invoke-CtgAdobeAction', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding', 'Get-CtgAdobeUser', 'Confirm-CtgAdobe')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

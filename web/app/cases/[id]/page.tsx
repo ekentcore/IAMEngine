@@ -1,15 +1,23 @@
-// Case detail (server component): the planned, ordered job list, manual checklist, and
-// the intake payload. Nothing executes yet (Phase 2) — this is the plan.
+// Case detail (server component): the pre-flight dry-run playbook, the after-action run report,
+// the planned/ordered job list, manual checklist, and the intake payload.
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { loadPlaybook } from "@/lib/cases/playbook";
+import { loadRunReport } from "@/lib/cases/run-report";
+import { writeBackEnabled } from "@/lib/servicenow/worknote";
+import { PlaybookView } from "../_components/playbook-view";
+import { RunReportView } from "../_components/run-report-view";
 
 export const dynamic = "force-dynamic";
 
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
   const c = await makeCaseRepository(db).getCase(params.id);
   if (!c) notFound();
+
+  const [playbook, runReport] = await Promise.all([loadPlaybook(db, params.id), loadRunReport(db, params.id)]);
+  const writeEnabled = writeBackEnabled();
 
   const manual = c.jobs.filter((j) => j.isManual);
   const automated = c.jobs.filter((j) => !j.isManual);
@@ -26,6 +34,20 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           </p>
         </div>
       </div>
+
+      {playbook && playbook.steps.length > 0 && (
+        <>
+          <h2>Playbook (dry run)</h2>
+          <PlaybookView playbook={playbook} caseId={c.id} />
+        </>
+      )}
+
+      {runReport && runReport.steps.length > 0 && (
+        <>
+          <h2>Run report</h2>
+          <RunReportView initial={runReport} caseId={c.id} writeEnabled={writeEnabled} />
+        </>
+      )}
 
       <h2>Planned steps ({c.jobs.length})</h2>
       {c.jobs.length === 0 ? (
@@ -82,7 +104,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </tbody>
       </table>
       <p className="note" style={{ marginTop: "1rem" }}>
-        {automated.length} automated, {manual.length} manual. Nothing executes yet — runners arrive in a later phase.
+        {automated.length} automated, {manual.length} manual. Review the playbook before dispatch; the run report tracks execution.
       </p>
     </main>
   );

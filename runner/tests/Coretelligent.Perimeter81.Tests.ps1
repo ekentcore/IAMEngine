@@ -44,3 +44,22 @@ Describe 'Invoke-CtgPerimeter81Offboarding' {
         ($r.Actions -join ' ') | Should -Match 'not found'
     }
 }
+
+Describe 'Confirm-CtgPerimeter81' {
+    It 'offboard: passes when the user is absent (seat freed)' {
+        Mock Invoke-CtgP81Api -ModuleName Coretelligent.Perimeter81 -MockWith { [pscustomobject]@{ data = @() } }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgPerimeter81 -User $user -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'onboard: passes when license headroom is available' {
+        Mock Invoke-CtgP81Api -ModuleName Coretelligent.Perimeter81 -MockWith {
+            param($Method, $Path, $Body)
+            return [pscustomobject]@{ available = 5 }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgPerimeter81 -User $user -Config ([pscustomobject]@{ ensureLicenseAvailable = $true }) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+}

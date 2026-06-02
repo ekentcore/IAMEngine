@@ -123,3 +123,42 @@ Describe 'Invoke-CtgM365Offboarding' {
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly   # license removed
     }
 }
+
+Describe 'Confirm-CtgM365' {
+    BeforeEach {
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:Skus }
+    }
+
+    It 'onboard: all checks pass when the user is enabled with the right license + group' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ SkuId = 'sku-e3' }) }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ AdditionalProperties = @{ displayName = 'Sales' } }) }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ licenses = @('Microsoft 365 E3'); groups = @('Sales') }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'AccountEnabled' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'license: Microsoft 365 E3' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'group: Sales' }).pass | Should -BeTrue
+    }
+
+    It 'onboard: a missing group fails that check and overall ok' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @('Sales') }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -eq 'group: Sales' }).pass | Should -BeFalse
+    }
+
+    It 'offboard: passes when sign-in is blocked and groups are gone' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $false } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ removeAllGroups = $true }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+}

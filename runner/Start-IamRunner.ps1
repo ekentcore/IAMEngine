@@ -42,40 +42,78 @@ $DISPATCH = @{
         Connect  = { param($job, $creds) Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $job.client.primaryDomain }
         Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
     'active-directory' = @{
         Onboard  = { param($job, $creds) Invoke-CtgADOnboarding  -User (Add-ClientContext $job) -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action }
     }
     'mimecast' = @{
         Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }
         Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }
     }
     'directory-sync' = @{
         Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action }
     }
     'exchange' = @{
         # EXO app-only needs certificate auth; the m365-admin secret carries the cert thumbprint.
         Connect  = { param($job, $creds) $s = $creds['m365-admin']; Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint'] }
         Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
     }
     'zoom' = @{
         Connect  = { param($job, $creds) Connect-CtgZoom -Credential $creds['zoom'].Credential -AccountId $creds['zoom'].Fields['AccountId'] }
         Onboard  = { param($job, $creds) Invoke-CtgZoomOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgZoomOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgZoom -User $job.payload -Config $job.config -Action $job.action }
     }
     'adobe' = @{
         Connect  = { param($job, $creds) Connect-CtgAdobe -Credential $creds['adobe'].Credential -OrgId $creds['adobe'].Fields['OrgId'] }
         Onboard  = { param($job, $creds) Invoke-CtgAdobeOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgAdobeOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgAdobe -User $job.payload -Config $job.config -Action $job.action }
     }
     'perimeter81' = @{
         Connect  = { param($job, $creds) Connect-CtgPerimeter81 -ApiKey $creds['perimeter81'].Fields['ApiKey'] }
         Onboard  = { param($job, $creds) Invoke-CtgPerimeter81Onboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgPerimeter81Offboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
     }
+}
+
+# Action -> validate, with idempotent auto-retry. On a validation miss we re-run the (idempotent)
+# action and re-validate up to $MaxRevalidate times — this self-heals eventual-consistency lags.
+# A persistent miss is NOT a failure: the job still succeeds; the validation block (ok=$false)
+# rides along on the result and the app's run report flags it as a warning.
+$MaxRevalidate = 2
+
+function Invoke-JobWithValidation {
+    param($Job, $Handler, [scriptblock]$Fn, $Creds, [bool]$DryRun)
+
+    # Dry run: set WhatIf so every module's SupportsShouldProcess short-circuits the mutations,
+    # then run the validators read-only — the executable confirmation of the app-side playbook.
+    if ($DryRun) { $WhatIfPreference = $true }
+    try { $result = & $Fn $Job $Creds }
+    finally { if ($DryRun) { $WhatIfPreference = $false } }
+
+    $validate = if ($Handler.ContainsKey('Validate')) { $Handler['Validate'] } else { $null }
+    $validation = $null
+    if ($validate) {
+        $validation = & $validate $Job $Creds
+        $attempt = 0
+        while ($validation -and -not $validation.ok -and -not $DryRun -and $attempt -lt $MaxRevalidate) {
+            Start-Sleep -Seconds (2 * ($attempt + 1))
+            $result = & $Fn $Job $Creds          # idempotent re-run
+            $validation = & $validate $Job $Creds
+            $attempt++
+        }
+    }
+    [pscustomobject]@{ Result = $result; Validation = $validation }
 }
 
 # Track which (system|tenant) Connect blocks have already run this process.
@@ -147,8 +185,11 @@ while ($true) {
                     if ($script:Connected.Add($key)) { & $handler.Connect $job $creds }
                 }
 
-                $result = & $fn $job $creds
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'succeeded'; result = $result }
+                $dryRun = [bool]$job.dryRun
+                $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun
+                $body = @{ agentId = $AgentId; status = 'succeeded'; result = $outcome.Result }
+                if ($null -ne $outcome.Validation) { $body.validation = $outcome.Validation }
+                Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
             }
             catch {
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $_.Exception.Message }

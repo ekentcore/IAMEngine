@@ -5,7 +5,7 @@ import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 
-type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean };
+type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean };
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
 
@@ -139,6 +139,7 @@ export function makeRunnerService(db: PrismaClient) {
           payload: j.case.payload,
           requiresApproval: Boolean(r.requiresApproval),
           captureEvidence: Boolean(r.captureEvidence),
+          dryRun: Boolean(r.dryRun),
         };
       });
     },
@@ -180,7 +181,7 @@ export function makeRunnerService(db: PrismaClient) {
 
       await db.job.update({
         where: { id: jobId },
-        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
+        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
       });
 
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, sequence: true, mode: true, status: true, request: true } });

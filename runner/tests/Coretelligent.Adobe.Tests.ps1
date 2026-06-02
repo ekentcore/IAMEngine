@@ -39,3 +39,19 @@ Describe 'Connect-CtgAdobe' {
         Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Adobe -ParameterFilter { $Uri -match 'adobelogin.com' } -Times 1
     }
 }
+
+Describe 'Confirm-CtgAdobe' {
+    It 'onboard: passes when the user is present in the configured profile' {
+        Mock Get-CtgAdobeUser -ModuleName Coretelligent.Adobe -MockWith { [pscustomobject]@{ email = 'jdoe@61commodities.com'; groups = @('Acrobat Pro DC') } }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgAdobe -User $user -Config ([pscustomobject]@{ productProfiles = @('Acrobat Pro DC') }) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: passes when the user is absent from the org' {
+        Mock Get-CtgAdobeUser -ModuleName Coretelligent.Adobe -MockWith { $null }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+        $r = Confirm-CtgAdobe -User $user -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+}

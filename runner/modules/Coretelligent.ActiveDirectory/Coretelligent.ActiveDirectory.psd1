@@ -10,7 +10,7 @@
     # The on-prem AD cmdlets (RSAT). Present on the client agent host, not the central runner.
     RequiredModules   = @('ActiveDirectory')
 
-    FunctionsToExport = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding', 'Test-CtgCondition', 'Resolve-CtgOuPath')
+    FunctionsToExport = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding', 'Test-CtgCondition', 'Resolve-CtgOuPath', 'Confirm-CtgAD')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

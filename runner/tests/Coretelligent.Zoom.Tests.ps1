@@ -54,3 +54,23 @@ Describe 'Connect-CtgZoom' {
         Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Zoom -ParameterFilter { $Uri -match 'grant_type=account_credentials' } -Times 1
     }
 }
+
+Describe 'Confirm-CtgZoom' {
+    It 'onboard: passes when the user is present' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { [pscustomobject]@{ id = 'zoom-1'; email = 'jdoe@61commodities.com'; status = 'active' } }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: passes when the user is absent' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { $null }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: fails when the user is still active' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { [pscustomobject]@{ id = 'zoom-1'; status = 'active' } }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeFalse
+    }
+}

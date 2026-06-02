@@ -56,6 +56,12 @@ function deriveUsageLocation(officeLocation: string | null): string {
 }
 
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
+  // The coded subcategory value is the authoritative signal: 30000 = User Onboarding,
+  // 30100 = User Offboarding (category 1 = Access/Identity). Confirmed live on UM tickets.
+  const subVal = val(r, "subcategory") ?? "";
+  if (subVal === "30100") return "offboard";
+  if (subVal === "30000") return "onboard";
+  // Fallback for tickets lacking the coded value: match the display text / short description.
   const sub = (disp(r, "subcategory") ?? "").toLowerCase();
   const short = (val(r, "short_description") ?? "").toLowerCase();
   if (sub.includes("offboard") || short.includes("offboard")) return "offboard";

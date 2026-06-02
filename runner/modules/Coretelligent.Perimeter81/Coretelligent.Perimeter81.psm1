@@ -105,4 +105,33 @@ function Invoke-CtgPerimeter81Offboarding {
     [pscustomobject]@{ System = 'perimeter81'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgPerimeter81, Invoke-CtgP81Api, Find-CtgP81User, Invoke-CtgPerimeter81Onboarding, Invoke-CtgPerimeter81Offboarding
+function Confirm-CtgPerimeter81 {
+    <#
+    .SYNOPSIS
+        Post-action read-back for Perimeter 81. No mutations; returns { ok; checks[] }.
+        onboard -> license headroom is available (membership itself is group-driven).
+        offboard -> the user is absent (seat freed).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+    )
+    if ($Action -eq 'offboard') {
+        $found = Find-CtgP81User -Email $User.UserPrincipalName
+        $check = @{ name = 'Perimeter 81 user absent'; expected = $true; actual = [bool](-not $found); pass = [bool](-not $found) }
+        return [pscustomobject]@{ ok = $check.pass; checks = @($check) }
+    }
+    # Onboard is group-driven; the only verifiable read-back is license headroom.
+    $checks = @()
+    if (Get-CtgProp $Config 'ensureLicenseAvailable') {
+        $lic = Invoke-CtgP81Api -Method GET -Path '/api/v1/licenses'
+        $available = [int]((Get-CtgProp $lic 'available') ?? (Get-CtgProp $lic 'seatsAvailable') ?? 0)
+        $checks = @(@{ name = 'license headroom available'; expected = $true; actual = ($available -gt 0); pass = ($available -gt 0) })
+    }
+    $all = @($checks)
+    [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
+}
+
+Export-ModuleMember -Function Connect-CtgPerimeter81, Invoke-CtgP81Api, Find-CtgP81User, Invoke-CtgPerimeter81Onboarding, Invoke-CtgPerimeter81Offboarding, Confirm-CtgPerimeter81

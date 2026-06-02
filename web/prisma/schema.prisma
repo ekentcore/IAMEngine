@@ -176,6 +176,7 @@ model Job {
   request       Json?       // resolved instructions for the runner
   result        Json?
   evidence      Json?       // screenshots / membership snapshots refs
+  validation    Json?       // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
   error         String?
   startedAt     DateTime?
   finishedAt    DateTime?

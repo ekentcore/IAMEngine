@@ -17,14 +17,14 @@ Describe 'Runner wiring smoke' {
 
     # systemKey -> the functions the DISPATCH lanes invoke (keep in sync with Start-IamRunner.ps1).
     $cases = @(
-        @{ System = 'm365';             Fns = @('Connect-CtgM365', 'Invoke-CtgM365Onboarding', 'Invoke-CtgM365Offboarding', 'New-CtgCompliantPassword') }
-        @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding') }
-        @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding') }
-        @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync') }
-        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding') }
-        @{ System = 'zoom';             Fns = @('Connect-CtgZoom', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding') }
-        @{ System = 'adobe';            Fns = @('Connect-CtgAdobe', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding') }
-        @{ System = 'perimeter81';      Fns = @('Connect-CtgPerimeter81', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding') }
+        @{ System = 'm365';             Fns = @('Connect-CtgM365', 'Invoke-CtgM365Onboarding', 'Invoke-CtgM365Offboarding', 'New-CtgCompliantPassword', 'Confirm-CtgM365') }
+        @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding', 'Confirm-CtgAD') }
+        @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast') }
+        @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync', 'Confirm-CtgDirectorySync') }
+        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange') }
+        @{ System = 'zoom';             Fns = @('Connect-CtgZoom', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding', 'Confirm-CtgZoom') }
+        @{ System = 'adobe';            Fns = @('Connect-CtgAdobe', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding', 'Confirm-CtgAdobe') }
+        @{ System = 'perimeter81';      Fns = @('Connect-CtgPerimeter81', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding', 'Confirm-CtgPerimeter81') }
     )
     It 'exports every function the <System> lane dispatches' -ForEach $cases {
         foreach ($fn in $Fns) {
