@@ -81,6 +81,20 @@ th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var
 th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: none; }
 tbody tr:hover { background: var(--bg-soft); }
 
+/* hoverable help affordance (tooltip via title=) */
+.help { cursor: help; }
+th.help { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* grouped "Module" cell (rowSpan): ties a module's lanes together visually */
+td.module-cell {
+  vertical-align: top;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-left: 2px solid var(--line);
+  background: var(--bg-soft);
+}
+
 .badge {
   display: inline-block;
   font-size: 12px;

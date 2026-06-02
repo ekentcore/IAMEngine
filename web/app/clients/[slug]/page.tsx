@@ -11,6 +11,42 @@ import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 
 export const dynamic = "force-dynamic";
 
+// Hover help for the systems table — explains the columns + flags that aren't self-evident.
+const HELP = {
+  module:
+    "The shared Coretelligent.* PowerShell module that runs this system. Rows under one module are different lanes of the SAME module — e.g. Entra, Exchange and M365 all run on Coretelligent.M365.",
+  mode: "How the step runs — api: automated via the module · browser: Playwright automation · manual: a human checklist item.",
+  onboard: "When this system runs on onboarding — always · on_request (only when the intake asks) · never (not part of onboarding).",
+  offboard: "When this system runs on offboarding — always · on_request · never.",
+  flags: "approval = destructive step, gated server-side until approved. evidence = snapshot the before-state and attach it to the case before any destructive change.",
+  secrets: "Delinea secret references the runner brokers at run time — names only, never values.",
+  approval: "Destructive step — gated server-side; it won't run until an operator approves it.",
+  evidence:
+    "Captures the before-state (group memberships, license/app assignments) and attaches it to the case BEFORE anything is removed — for audit and restore. Mainly used on offboarding.",
+};
+const laneHelp = (l: string) =>
+  l === "always" ? "Runs every time for this action" : l === "on_request" ? "Runs only when the intake form requests it" : "Not part of this action";
+
+type SysRow = {
+  id: string; systemKey: string; mode: string; onboardWhen: string; offboardWhen: string;
+  requiresApproval: boolean; captureEvidence: boolean; secretNames: string[];
+  system: { name: string; buildTier: number; moduleName: string | null };
+};
+
+// Group systems by the module that runs them so module-mates read together; modules with a
+// real name first (by build tier), standalone (no-module) systems last; within a group by key.
+function groupByModule(systems: SysRow[]) {
+  const groups = new Map<string, SysRow[]>();
+  for (const s of systems) {
+    const k = s.system.moduleName ?? "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(s);
+  }
+  return [...groups.entries()]
+    .map(([k, sys]) => ({ module: k || null, systems: [...sys].sort((a, b) => a.systemKey.localeCompare(b.systemKey)), tier: Math.min(...sys.map((x) => x.system.buildTier)) }))
+    .sort((a, b) => (!!a.module !== !!b.module ? (a.module ? -1 : 1) : a.tier !== b.tier ? a.tier - b.tier : (a.module ?? "").localeCompare(b.module ?? "")));
+}
+
 export default async function ClientDetailPage({ params }: { params: { slug: string } }) {
   const client = await makeClientRepository(db).getClientBySlug(params.slug);
   if (!client) notFound();
@@ -103,42 +139,52 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       {client.systems.length === 0 ? (
         <p className="note">No profile applied yet — this client is roster-only.</p>
       ) : (
+        <>
+        <p className="note" style={{ marginTop: 0 }}>
+          Grouped by the module that runs each system — rows under one module (e.g. Entra / Exchange / M365) are different lanes of the same module. Hover a column or flag for what it means.
+        </p>
         <table>
           <thead>
             <tr>
+              <th className="help" title={HELP.module}>Module</th>
               <th>System</th>
-              <th>Mode</th>
-              <th>Onboard</th>
-              <th>Offboard</th>
-              <th>Flags</th>
-              <th>Secrets</th>
+              <th className="help" title={HELP.mode}>Mode</th>
+              <th className="help" title={HELP.onboard}>Onboard</th>
+              <th className="help" title={HELP.offboard}>Offboard</th>
+              <th className="help" title={HELP.flags}>Flags</th>
+              <th className="help" title={HELP.secrets}>Secrets</th>
             </tr>
           </thead>
           <tbody>
-            {client.systems.map((s) => (
-              <tr key={s.id}>
-                <td>
-                  {s.system.name}
-                  <span className="note"> ({s.systemKey})</span>
-                </td>
-                <td>
-                  <span className="badge">{s.mode}</span>
-                </td>
-                <td className="muted">{s.onboardWhen}</td>
-                <td className="muted">{s.offboardWhen}</td>
-                <td className="muted">
-                  {[
-                    s.requiresApproval ? "approval" : null,
-                    s.captureEvidence ? "evidence" : null,
-                  ]
-                    .filter(Boolean)
-                    .join(", ") || "—"}
-                </td>
-                <td className="muted">{s.secretNames.join(", ") || "—"}</td>
-              </tr>
-            ))}
+            {groupByModule(client.systems).map((g) =>
+              g.systems.map((s, i) => (
+                <tr key={s.id}>
+                  {i === 0 && (
+                    <td rowSpan={g.systems.length} className="module-cell" title={g.module ? `${g.systems.length} lane${g.systems.length > 1 ? "s" : ""} on ${g.module}` : "Standalone — no shared Coretelligent.* module"}>
+                      {g.module ? g.module.replace(/^Coretelligent\./, "") : <span className="muted">—</span>}
+                    </td>
+                  )}
+                  <td>
+                    {s.system.name}
+                    <span className="note"> ({s.systemKey})</span>
+                  </td>
+                  <td>
+                    <span className="badge" title={`${s.mode} mode`}>{s.mode}</span>
+                  </td>
+                  <td className="muted help" title={laneHelp(s.onboardWhen)}>{s.onboardWhen}</td>
+                  <td className="muted help" title={laneHelp(s.offboardWhen)}>{s.offboardWhen}</td>
+                  <td className="muted">
+                    {!s.requiresApproval && !s.captureEvidence && "—"}
+                    {s.requiresApproval && <span className="badge help" title={HELP.approval}>approval</span>}
+                    {s.captureEvidence && <span className="badge help" title={HELP.evidence} style={{ marginLeft: s.requiresApproval ? 4 : 0 }}>evidence</span>}
+                  </td>
+                  <td className="muted">{s.secretNames.join(", ") || "—"}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
+        </>
       )}
 
       <h2 style={{ marginTop: "1.5rem" }}>Runbook — everything to do</h2>
