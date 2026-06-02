@@ -36,6 +36,19 @@ const BACKBONE_LABEL: Record<string, string> = {
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
 type SortDir = "asc" | "desc";
 
+// Everything a row exposes, flattened for search — so the box matches what you can SEE
+// (incl. the Backbone + Systems columns) and the slug. Lowercased once per client.
+function haystack(c: ClientVM): string {
+  return [
+    c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus,
+    c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
+    c.systemKeys.join(" "),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 // null/empty sorts last regardless of direction.
 function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
   const av = a[key];
@@ -63,20 +76,41 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const confirmRef = useRef<HTMLDialogElement>(null);
   const [pending, setPending] = useState<ClientVM | null>(null);
 
+  // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
+  const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
+  const matchesSearch = (c: ClientVM) => {
+    if (terms.length === 0) return true;
+    const hay = haystack(c);
+    return terms.every((t) => hay.includes(t));
+  };
+
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
     const filtered = clients.filter((c) => {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (modeledFilter === "modeled" && !c.modeled) return false;
       if (modeledFilter === "unmodeled" && c.modeled) return false;
-      if (!q) return true;
-      return [c.name, c.coreId, c.region, c.primaryDomain, c.supportStatus]
-        .some((v) => v?.toLowerCase().includes(q));
+      return matchesSearch(c);
     });
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
     if (sortDir === "desc") sorted.reverse();
     return sorted;
-  }, [clients, query, statusFilter, modeledFilter, sortKey, sortDir]);
+    // matchesSearch closes over `terms`, which is the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, terms, statusFilter, modeledFilter, sortKey, sortDir]);
+
+  // When a search has results that the STATUS filter is hiding, offer a one-click widen — this is
+  // the usual "search looks broken" cause (you searched an archived client while viewing active).
+  const hiddenByStatus = useMemo(() => {
+    if (terms.length === 0 || statusFilter === "all") return 0;
+    return clients.filter(
+      (c) =>
+        c.status !== statusFilter &&
+        !(modeledFilter === "modeled" && !c.modeled) &&
+        !(modeledFilter === "unmodeled" && c.modeled) &&
+        matchesSearch(c)
+    ).length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, terms, statusFilter, modeledFilter]);
 
   // modeled = has a profile/runbook we can act on ("who we can do"); counted within the
   // current status filter so the numbers match what's on screen.
@@ -118,11 +152,11 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     if (c) await patch(c, "archive");
   }
 
-  function SortHead({ k, label }: { k: SortKey; label: string }) {
+  function SortHead({ k, label, num }: { k: SortKey; label: string; num?: boolean }) {
     return (
-      <th className="sortable" onClick={() => toggleSort(k)}>
+      <th className={`sortable${num ? " num" : ""}${sortKey === k ? " sorted" : ""}`} onClick={() => toggleSort(k)}>
         {label}
-        {sortKey === k && <span className="arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+        <span className="arrow">{sortKey === k ? (sortDir === "asc" ? "▲" : "▼") : ""}</span>
       </th>
     );
   }
@@ -135,12 +169,19 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
       </div>
 
       <div className="filters">
-        <input
-          className="search"
-          placeholder="Search name, CORE id, domain, region…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="search-field">
+          <span className="search-icon" aria-hidden>⌕</span>
+          <input
+            className="search"
+            placeholder="Search name, CORE id, domain, region, backbone, system…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+          />
+          {query && (
+            <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
+          )}
+        </div>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as never)}>
           <option value="active">Active</option>
           <option value="archived">Archived</option>
@@ -152,12 +193,19 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <option value="unmodeled">Not modeled ({counts.unmodeled})</option>
         </select>
         <span className="grow" />
-        <span className="note">
-          {visible.length} of {clients.length}
+        <span className="note result-count">
+          {visible.length === clients.length ? `${clients.length} clients` : `${visible.length} of ${clients.length}`}
         </span>
       </div>
 
-      <table>
+      {hiddenByStatus > 0 && (
+        <p className="note filter-hint">
+          {hiddenByStatus} more match{hiddenByStatus === 1 ? "es" : ""} outside the {statusFilter} filter ·{" "}
+          <button type="button" className="linklike" onClick={() => setStatusFilter("all")}>show all statuses</button>
+        </p>
+      )}
+
+      <table className="data-table clients-table">
         <thead>
           <tr>
             <SortHead k="name" label="Name" />
@@ -165,19 +213,19 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
             <SortHead k="region" label="Region" />
             <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
-            <SortHead k="onboardingRating" label="On / Off" />
-            <SortHead k="systemCount" label="Systems" />
+            <SortHead k="onboardingRating" label="On / Off" num />
+            <SortHead k="systemCount" label="Systems" num />
             <SortHead k="status" label="Status" />
-            <th></th>
+            <th aria-label="Actions"></th>
           </tr>
         </thead>
         <tbody>
           {visible.map((c) => (
             <tr key={c.id}>
-              <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
-              <td className="muted">{c.coreId ?? "—"}</td>
+              <td><Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link></td>
+              <td className="muted mono">{c.coreId ?? "—"}</td>
               <td className="muted">{c.region ?? "—"}</td>
-              <td className="muted">{c.primaryDomain || "—"}</td>
+              <td className="muted mono">{c.primaryDomain || "—"}</td>
               <td>
                 {c.backbone ? (
                   <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
@@ -185,23 +233,23 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   <span className="badge unmodeled">not modeled</span>
                 )}
               </td>
-              <td className="muted">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
+              <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
               <td
-                className="muted"
+                className={`num tnum ${c.systemCount ? "" : "muted"}`}
                 style={{ cursor: c.systemCount ? "help" : "default" }}
                 title={c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)"}
               >
-                {c.systemCount}
+                {c.systemCount || "—"}
               </td>
               <td>
                 {c.status === "archived" ? (
                   <span className="badge archived">archived</span>
                 ) : (
-                  <span className="badge">active</span>
+                  <span className="badge active">active</span>
                 )}
               </td>
-              <td>
-                <button onClick={() => setEditSlug(c.slug)} style={{ marginRight: 4 }}>Edit</button>
+              <td className="row-actions">
+                <button onClick={() => setEditSlug(c.slug)}>Edit</button>
                 {c.status === "archived" ? (
                   <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
                 ) : (
@@ -212,8 +260,16 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={9} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
-                {clients.length === 0 ? "No clients yet. Click “Refresh from ServiceNow”." : "No matches."}
+              <td colSpan={9}>
+                <div className="empty-state">
+                  {clients.length === 0 ? (
+                    <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
+                  ) : query ? (
+                    <>No clients match “{query}”. <button type="button" className="linklike" onClick={() => setQuery("")}>Clear search</button></>
+                  ) : (
+                    "No clients match the current filters."
+                  )}
+                </div>
               </td>
             </tr>
           )}
