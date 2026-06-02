@@ -30,8 +30,9 @@ export type BrokeredCredential = {
   provider: string;
   externalId: string;
   secretName: string;
-  brokered: boolean;
+  brokered: boolean; // true once the app has preflighted the reference against Delinea
   expiresInSeconds: number;
+  label?: string; // Delinea secret name (a human label) — never the secret value
   note?: string;
 };
 

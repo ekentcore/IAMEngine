@@ -23,6 +23,7 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.DirectorySync/Coretelligent.D
 Import-Module "$PSScriptRoot/modules/Coretelligent.Zoom/Coretelligent.Zoom.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Adobe/Coretelligent.Adobe.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Perimeter81.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
 Import-Module "$PSScriptRoot/lib/Coretelligent.Secrets/Coretelligent.Secrets.psm1" -Force
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
 # module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
@@ -84,7 +85,17 @@ $DISPATCH = @{
         Offboard = { param($job, $creds) Invoke-CtgPerimeter81Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
     }
+    'google-workspace' = @{
+        Connect  = { param($job, $creds) Connect-CtgGoogle -Credential $creds['google-admin'].Credential -CustomerId $creds['google-admin'].Fields['CustomerId'] }
+        Onboard  = { param($job, $creds) Invoke-CtgGoogleOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
+        Offboard = { param($job, $creds) Invoke-CtgGoogleOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgGoogle -User $job.payload -Config $job.config -Action $job.action }
+    }
 }
+
+# entra is the Entra-ID slice of the M365 module — same executor + read-backs (catalog
+# moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
+$DISPATCH['entra'] = $DISPATCH['m365']
 
 # Action -> validate, with idempotent auto-retry. On a validation miss we re-run the (idempotent)
 # action and re-validate up to $MaxRevalidate times — this self-heals eventual-consistency lags.
@@ -165,12 +176,14 @@ while ($true) {
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = "no executor for $($job.systemKey)" }
+                    # No executor for this system: resolve as a manual follow-up, not a failure,
+                    # so an uncovered `api` system doesn't kill the whole case.
+                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no executor for $($job.systemKey) — manual follow-up" }
                     continue
                 }
                 $fn = if ($job.action -eq 'offboard') { $handler.Offboard } else { $handler.Onboard }
                 if (-not $fn) {
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = "no $($job.action) lane for $($job.systemKey)" }
+                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no $($job.action) lane for $($job.systemKey) — manual follow-up" }
                     continue
                 }
 
@@ -189,6 +202,11 @@ while ($true) {
                 $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun
                 $body = @{ agentId = $AgentId; status = 'succeeded'; result = $outcome.Result }
                 if ($null -ne $outcome.Validation) { $body.validation = $outcome.Validation }
+                # Surface the module's evidence snapshot (e.g. group memberships captured before an
+                # offboard removes them) so it's persisted with the job and shown in the run report.
+                if ($outcome.Result -and $outcome.Result.PSObject.Properties['Evidence'] -and $null -ne $outcome.Result.Evidence) {
+                    $body.evidence = $outcome.Result.Evidence
+                }
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
             }
             catch {

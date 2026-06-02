@@ -10,6 +10,7 @@ import { previewDirectorySync } from "./directory-sync-preview";
 import { previewZoom } from "./zoom-preview";
 import { previewAdobe } from "./adobe-preview";
 import { previewPerimeter81 } from "./perimeter81-preview";
+import { previewGoogleWorkspace } from "./google-workspace-preview";
 
 export type Action = "onboard" | "offboard";
 // `user` (optional) is the planned case payload; when present the preview substitutes its
@@ -24,6 +25,9 @@ export type Previewer = (
 
 const PREVIEWERS: Record<string, Previewer> = {
   m365: previewM365,
+  // entra is the Entra-ID slice of the M365 module (catalog moduleName = Coretelligent.M365);
+  // it shares the M365 executor + read-backs so an entra job isn't left without an executor.
+  entra: previewM365,
   "active-directory": previewActiveDirectory,
   mimecast: previewMimecast,
   exchange: previewExchange,
@@ -31,6 +35,7 @@ const PREVIEWERS: Record<string, Previewer> = {
   zoom: previewZoom,
   adobe: previewAdobe,
   perimeter81: previewPerimeter81,
+  "google-workspace": previewGoogleWorkspace,
 };
 
 export function automationPreview(
@@ -45,6 +50,16 @@ export function automationPreview(
   return fn ? fn(action, config, identity, primaryDomain, user) : null;
 }
 
+// The single source of truth for "is there an executor for this system". These keys match
+// the runner's DISPATCH table (runner/Start-IamRunner.ps1) exactly. A planned `api` job for
+// a system not in this set has no executor: the runner (and the simulated executor) resolve
+// it as `skipped` — a manual follow-up — rather than failing the case.
+export const SUPPORTED_SYSTEMS = new Set(Object.keys(PREVIEWERS));
+
+export function hasExecutor(systemKey: string): boolean {
+  return SUPPORTED_SYSTEMS.has(systemKey);
+}
+
 // The read-back checks each system's Confirm-Ctg<System> validator runs after the action, by
 // (systemKey, action). Surfaced in the playbook so a reviewer sees what "verified" will mean.
 // Kept here next to the previewer registry so the two stay in sync.
@@ -52,6 +67,14 @@ const VALIDATES: Record<string, Record<Action, string[]>> = {
   m365: {
     onboard: ["user exists", "AccountEnabled = true", "each license assigned", "each group present"],
     offboard: ["AccountEnabled = false", "groups removed", "license removed/kept per threshold"],
+  },
+  entra: {
+    onboard: ["user exists", "AccountEnabled = true", "each license assigned", "each group present"],
+    offboard: ["AccountEnabled = false", "groups removed", "license removed/kept per threshold"],
+  },
+  "google-workspace": {
+    onboard: ["user exists", "in target OU (not Root)", "each group present", "mail flow ok"],
+    offboard: ["user suspended (not deleted)", "groups removed", "moved to Inactive OU"],
   },
   "active-directory": {
     onboard: ["user in target OU", "groups present", "home drive mapped"],

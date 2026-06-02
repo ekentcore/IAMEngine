@@ -4,6 +4,9 @@
 import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
+import { checkSecret, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
+import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
+import { snConfigFromEnv } from "../servicenow/gateway";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean };
 
@@ -157,8 +160,24 @@ export function makeRunnerService(db: PrismaClient) {
       if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
       const secret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
       if (!secret) throw new HttpError(404, `no secret reference '${secretName}' for this client`);
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName } } });
-      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered: false, expiresInSeconds: 300, note: "Delinea broker not wired — reference only; exchange externalId for a scoped credential in production" };
+
+      // Preflight against Delinea when configured: prove the app's service account can resolve
+      // this reference (reading only the secret's label — the VALUE never enters the app) so a
+      // dead/misscoped reference fails here with a clear error rather than on the runner. The
+      // runner still exchanges the reference for the real credential via Coretelligent.Secrets.
+      const cfg = delineaConfigFromEnv();
+      let brokered = false;
+      let label: string | undefined;
+      let note: string | undefined = "Delinea not configured on the app — reference only; the runner resolves the value via Coretelligent.Secrets";
+      if (delineaConfigured(cfg)) {
+        const check = await checkSecret(cfg, secret.externalId);
+        if (!check.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${check.error ?? "unknown error"}`);
+        brokered = true;
+        label = check.label;
+        note = undefined;
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered } } });
+      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note };
     },
 
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
@@ -194,9 +213,22 @@ export function makeRunnerService(db: PrismaClient) {
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
-      // Work-note write-back (RUNNER_PROTOCOL): queued as an audit row. The actual ServiceNow
-      // write needs the UM record sys_id (we hold only the number) — wire in a follow-up.
-      await db.auditLog.create({ data: { actor: "system", action: "servicenow.worknote.pending", caseRequestId: job.caseRequestId, detail: { caseNumber: job.case.serviceNowCaseNumber, note: `${job.systemKey}: ${status}${input.error ? ` — ${input.error}` : ""}` } } });
+      // Work-note write-back (RUNNER_PROTOCOL): append a note to the UM ticket. postWorkNote
+      // resolves the number -> sys_id and PATCHes work_notes; it's gated by SN_WRITE_ENABLED and
+      // never fatal to result recording (a ServiceNow outage must not lose the job result).
+      const caseNumber = job.case.serviceNowCaseNumber;
+      const note = `${job.systemKey}: ${status}${input.error ? ` — ${input.error}` : ""}`;
+      if (caseNumber && writeBackEnabled()) {
+        try {
+          const wn = await postWorkNote(snConfigFromEnv(), caseNumber, note);
+          await db.auditLog.create({ data: { actor: "system", action: wn.ok ? "servicenow.worknote" : "servicenow.worknote.failed", caseRequestId: job.caseRequestId, detail: { caseNumber, note, ...(wn.ok ? { sysId: wn.sysId } : { error: wn.error }) } } });
+        } catch (e) {
+          await db.auditLog.create({ data: { actor: "system", action: "servicenow.worknote.failed", caseRequestId: job.caseRequestId, detail: { caseNumber, note, error: (e as Error).message } } });
+        }
+      } else {
+        // Write-back disabled or no SN number: record the note we would have posted.
+        await db.auditLog.create({ data: { actor: "system", action: "servicenow.worknote.pending", caseRequestId: job.caseRequestId, detail: { caseNumber, note } } });
+      }
 
       return { jobId, status, caseStatus };
     },

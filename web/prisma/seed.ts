@@ -27,7 +27,7 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["exchange", "Exchange", 1, "Coretelligent.M365"],
   ["active-directory", "Active Directory", 2, "Coretelligent.ActiveDirectory"],
   ["directory-sync", "Entra Connect sync", 2, "Coretelligent.ActiveDirectory"],
-  ["mimecast", "Mimecast", 2], ["adobe", "Adobe", 2], ["google-workspace", "Google Workspace", 2],
+  ["mimecast", "Mimecast", 2], ["adobe", "Adobe", 2], ["google-workspace", "Google Workspace", 2, "Coretelligent.GoogleWorkspace"],
   ["knowbe4", "KnowBe4", 2], ["sharepoint", "SharePoint", 3], ["spanning", "Spanning", 3],
   ["zoom", "Zoom", 3], ["slack", "Slack", 3], ["egnyte", "Egnyte", 3], ["mdm", "MDM (Addigy/Jamf/Intune)", 3],
   ["proofpoint", "Proofpoint", 3], ["dropbox", "Dropbox", 3], ["perimeter81", "Perimeter 81", 3],
