@@ -7,11 +7,14 @@ import type { CaseDetail, CaseListItem, NewCaseInput } from "./types";
 
 export function makeCaseRepository(db: PrismaClient) {
   return {
-    // Client + its systems, needed to plan a case. null if the client doesn't exist.
-    async clientForPlanning(slug: string): Promise<{ id: string; name: string; slug: string; systems: ClientSystem[] } | null> {
+    // Client + its systems + identity, needed to plan a case (identity/domain drive the UPN/
+    // SamAccountName derivation). null if the client doesn't exist.
+    async clientForPlanning(slug: string): Promise<
+      { id: string; name: string; slug: string; primaryDomain: string; identity: unknown; systems: ClientSystem[] } | null
+    > {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, name: true, slug: true, systems: true },
+        select: { id: true, name: true, slug: true, primaryDomain: true, identity: true, systems: true },
       });
       return c;
     },

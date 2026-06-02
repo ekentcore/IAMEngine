@@ -2,6 +2,7 @@
 // for lane filtering + topo-sort; this service persists the result and sets case status.
 import type { CaseStatus } from "@prisma/client";
 import { planCase, type PlannedJob } from "../orchestrator";
+import { deriveIdentity } from "../servicenow/intake-mapper";
 import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
 
@@ -28,9 +29,21 @@ export async function createAndPlanCase(
   const client = await repo.clientForPlanning(input.clientSlug);
   if (!client) throw new Error(`client not found: ${input.clientSlug}`);
 
-  const planned = planCase(client.systems, input.action, input.payload);
+  // For onboarding, derive the user's identity (UPN/SamAccountName/work email) from the
+  // client's username pattern + primary domain so the runner modules receive ready-to-use
+  // fields. Offboarding identifies an existing user, so no derivation is needed.
+  const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null };
+  const payload =
+    input.action === "onboard"
+      ? deriveIdentity(input.payload, {
+          usernamePatterns: identity.usernamePatterns ?? null,
+          primaryDomain: client.primaryDomain,
+        })
+      : input.payload;
+
+  const planned = planCase(client.systems, input.action, payload);
   const status = deriveStatus(planned);
-  const caseId = await repo.createCaseWithJobs(input, client.id, planned, status);
+  const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 
   await repo.writeAudit({
     actor,

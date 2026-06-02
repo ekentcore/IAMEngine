@@ -41,6 +41,20 @@ const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => {
   return [];
 };
 
+// Office-location display ("United States") -> M365 UsageLocation (ISO-3166 alpha-2). Default US.
+const COUNTRY_TO_ISO2: Record<string, string> = {
+  "united states": "US", "united states of america": "US", "usa": "US",
+  "canada": "CA", "united kingdom": "GB", "uk": "GB", "ireland": "IE",
+  "australia": "AU", "india": "IN", "singapore": "SG", "germany": "DE",
+  "france": "FR", "spain": "ES", "netherlands": "NL", "mexico": "MX",
+};
+function deriveUsageLocation(officeLocation: string | null): string {
+  if (!officeLocation) return "US";
+  const m = officeLocation.trim().toLowerCase();
+  if (/^[a-z]{2}$/.test(m)) return m.toUpperCase(); // already a code
+  return COUNTRY_TO_ISO2[m] ?? "US";
+}
+
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   const sub = (disp(r, "subcategory") ?? "").toLowerCase();
   const short = (val(r, "short_description") ?? "").toLowerCase();
@@ -49,20 +63,31 @@ function deriveAction(r: SnUserMgmtRecord): IntakeAction {
 }
 
 function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
+  const firstName = trimmed(val(r, "u_first"));
+  const lastName = trimmed(val(r, "u_last"));
+  const title = val(r, "u_title");
+  const officeLocation = disp(r, "u_office_location");
   return {
     // person
-    firstName: trimmed(val(r, "u_first")),
-    lastName: trimmed(val(r, "u_last")),
+    firstName,
+    lastName,
     mi: trimmed(val(r, "u_mi")),
+    // canonical identity fields the Coretelligent.* modules read (PowerShell access is
+    // case-insensitive, so e.g. $User.JobTitle resolves these). UserPrincipalName /
+    // SamAccountName / PrimaryDomain are filled by deriveIdentity() once the client is known.
+    displayName: [firstName, lastName].filter(Boolean).join(" ") || null,
+    jobTitle: title,
+    mobilePhone: val(r, "u_personal_phone"),
+    usageLocation: deriveUsageLocation(officeLocation),
     startDate: dateOnly(val(r, "u_start_date")),
     isRehire: yes(r, "u_is_this_a_re_hire"),
     newOrExisting: disp(r, "u_new_or_existing"),
     employmentType: disp(r, "u_employment_type") ?? val(r, "u_employment_type"),
     otherEmploymentType: val(r, "u_other_employment_type"),
-    title: val(r, "u_title"),
+    title,
     department: val(r, "u_department"),
     managerName: disp(r, "u_manager_name"), // readable name, not sys_id
-    officeLocation: disp(r, "u_office_location"),
+    officeLocation,
     personalEmail: val(r, "u_personal_email"),
     personalPhone: val(r, "u_personal_phone"),
     homeAddress: val(r, "u_home_address"),
@@ -138,5 +163,79 @@ export function normalizeIntake(r: SnUserMgmtRecord): NormalizedIntake {
     caseNumber: val(r, "number") ?? "",
     subject: val(r, "short_description") ?? val(r, "number") ?? "Imported case",
     payload: action === "onboard" ? onboardPayload(r) : offboardPayload(r),
+  };
+}
+
+// --- identity derivation (needs the client's username pattern + domain) -------------------
+
+const cleanToken = (s: string): string => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Apply a profile username pattern ({first}{last}@{domain}, {first}.{last}@{domain},
+// {firstInitial}{last}@{domain}, …) to a person. The local part is lowercased + de-spaced;
+// the domain is kept verbatim. Unknown tokens are left as-is for a reviewer to spot.
+export function applyUsernamePattern(
+  pattern: string,
+  vals: { first: string; last: string; mi?: string; domain: string }
+): string {
+  const f = cleanToken(vals.first);
+  const l = cleanToken(vals.last);
+  const m = cleanToken(vals.mi ?? "");
+  const map: Record<string, string> = {
+    "{first}": f, "{last}": l, "{mi}": m,
+    "{firstinitial}": f.slice(0, 1), "{lastinitial}": l.slice(0, 1),
+    "{f}": f.slice(0, 1), "{l}": l.slice(0, 1),
+    "{domain}": vals.domain ?? "",
+  };
+  return pattern.replace(/\{[a-zA-Z]+\}/g, (tok) => (tok.toLowerCase() in map ? map[tok.toLowerCase()] : tok));
+}
+
+// Fill the username-derived identity fields (UPN, SamAccountName, …) onto an onboard payload,
+// using the client's username pattern + primary domain. Returns a NEW merged payload; also
+// attaches templateFields for the email-template (.eml) variables.
+export function deriveIdentity(
+  payload: Record<string, unknown>,
+  opts: { usernamePatterns?: string[] | null; primaryDomain?: string | null }
+): Record<string, unknown> {
+  const first = String(payload.firstName ?? "");
+  const last = String(payload.lastName ?? "");
+  const mi = String(payload.mi ?? "");
+  const domain = (opts.primaryDomain ?? "").trim().toLowerCase();
+  const pattern = opts.usernamePatterns?.[0] || "{first}.{last}@{domain}";
+
+  // Build the local part from the pattern's left-of-@ portion so a missing domain still yields
+  // a SamAccountName (the UPN/work email need a domain).
+  const localPattern = pattern.split("@")[0];
+  const localPart = applyUsernamePattern(localPattern, { first, last, mi, domain: "" });
+  const upn = domain && localPart ? `${localPart}@${domain}` : null;
+  const displayName = (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
+
+  const merged = {
+    ...payload,
+    displayName,
+    userPrincipalName: upn,
+    samAccountName: localPart || null,
+    mailNickname: localPart || null,
+    primaryDomain: domain || null,
+    workEmail: upn,
+  };
+  return { ...merged, templateFields: emailTemplateFields(merged) };
+}
+
+// Map an onboard payload onto the email-template (.eml) variable labels — the fields a UM
+// case fills in the helpdesk email (e.g. LogicSource's OneMarket template).
+export function emailTemplateFields(payload: Record<string, unknown>): Record<string, string | null> {
+  const s = (k: string): string | null => {
+    const v = payload[k];
+    return v == null || v === "" ? null : String(v);
+  };
+  return {
+    "Name": s("displayName"),
+    "Title": s("jobTitle") ?? s("title"),
+    "Department": s("department"),
+    "Location": s("officeLocation"),
+    "Reports to": s("managerName"),
+    "Start Date": s("startDate"),
+    "Personal Email": s("personalEmail"),
+    "Work Email": s("workEmail") ?? s("userPrincipalName"),
   };
 }
