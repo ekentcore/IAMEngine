@@ -21,9 +21,25 @@ const disp = (r: SnUserMgmtRecord, k: string): string | null => {
   return v == null || v === "" ? null : v;
 };
 const bool = (r: SnUserMgmtRecord, k: string): boolean => r[k]?.value === "true";
+const yes = (r: SnUserMgmtRecord, k: string): boolean => (val(r, k) ?? "").toLowerCase() === "yes";
 const trimmed = (s: string | null): string | null => (s ? s.trim() : null);
 // SN datetimes come as "2026-06-15 19:34:29"; keep the date.
 const dateOnly = (s: string | null): string | null => (s ? s.split(" ")[0] : null);
+
+// Reference / glide_list fields hold sys_ids in `value` but readable names in `display_value`
+// (SN joins lists with ", "). Always surface the names, as an array.
+const dispList = (r: SnUserMgmtRecord, k: string): string[] => {
+  const d = disp(r, k);
+  return d ? d.split(", ").map((s) => s.trim()).filter(Boolean) : [];
+};
+// Some fields exist as both a base and a "_uc" twin; take the first that has values.
+const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => {
+  for (const k of keys) {
+    const l = dispList(r, k);
+    if (l.length) return l;
+  }
+  return [];
+};
 
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   const sub = (disp(r, "subcategory") ?? "").toLowerCase();
@@ -34,16 +50,53 @@ function deriveAction(r: SnUserMgmtRecord): IntakeAction {
 
 function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
   return {
+    // person
     firstName: trimmed(val(r, "u_first")),
     lastName: trimmed(val(r, "u_last")),
     mi: trimmed(val(r, "u_mi")),
     startDate: dateOnly(val(r, "u_start_date")),
-    isRehire: (val(r, "u_is_this_a_re_hire") ?? "").toLowerCase() === "yes",
+    isRehire: yes(r, "u_is_this_a_re_hire"),
+    newOrExisting: disp(r, "u_new_or_existing"),
     employmentType: disp(r, "u_employment_type") ?? val(r, "u_employment_type"),
-    emailAddressNeeded: (val(r, "u_email_address_needed") ?? "").toLowerCase() === "yes",
-    officeLineRequired: (val(r, "u_office_line_required") ?? "").toLowerCase() === "yes",
-    timezone: val(r, "contact_time_zone"),
+    otherEmploymentType: val(r, "u_other_employment_type"),
+    title: val(r, "u_title"),
+    department: val(r, "u_department"),
+    managerName: disp(r, "u_manager_name"), // readable name, not sys_id
+    officeLocation: disp(r, "u_office_location"),
+    personalEmail: val(r, "u_personal_email"),
+    personalPhone: val(r, "u_personal_phone"),
+    homeAddress: val(r, "u_home_address"),
+    timezone: disp(r, "u_new_contact_time_zone") ?? val(r, "contact_time_zone"),
+    isPrimaryWorkspaceWfh: yes(r, "u_is_their_primary_workspace_wfh"),
+    hasDirectReports: yes(r, "u_will_this_individual_have_direct_reports"),
+    directReports: dispList(r, "u_who_are_direct_reports"),
+    mirrorPermissionsFromUser: disp(r, "u_mirror_existing_user"),
+    roles: dispList(r, "u_role_s"),
+    listMembership: dispList(r, "u_coretelligent_list_membership"),
     requestedBy: disp(r, "opened_by"),
+    // access / licensing (names, not sys_ids)
+    emailAddressNeeded: yes(r, "u_email_address_needed"),
+    officeLineRequired: yes(r, "u_office_line_required"),
+    cellPhoneRequired: yes(r, "u_cell_phone_line_required"),
+    productLicenses: dispList(r, "u_product_licenses"),
+    securityGroups: dispList(r, "u_security_groups_uc"),
+    emailDistroGroups: firstList(r, "u_email_distro_groups_uc", "u_email_distro_groups"),
+    sharedMailboxes: firstList(r, "u_shared_resource_mailboxes_uc", "u_shared_resource_mailboxes"),
+    otherUnlistedMailbox: val(r, "u_other_unlisted_mailbox"),
+    fileShareAccess: firstList(r, "u_what_shares_should_they_have_access_to", "u_shared_drive_access_uc"),
+    cloudApplications: firstList(r, "u_cloud_applications_uc", "u_cloud_applications"),
+    otherCloudApps: val(r, "u_other_cloud_application_needs"),
+    // hardware / software
+    clientProvidingAsset: yes(r, "u_client_providing_asset"),
+    needsComputer: yes(r, "u_computer_needed"),
+    printers: val(r, "u_printer_s_needed"),
+    monitors: val(r, "u_monitors_needed"),
+    monitorStands: yes(r, "u_monitor_stand_s_needed"),
+    keyboardMouse: yes(r, "u_keyboard_mouse_combo"),
+    dockingStation: yes(r, "u_docking_station_needed"),
+    otherHardware: firstList(r, "u_other_hardware_needed_uc", "u_other_hardware_opt_needed"),
+    installedSoftware: firstList(r, "u_installed_software_uc", "u_installed_software"),
+    otherSoftware: val(r, "u_other_software_needs"),
     otherNeeds: val(r, "u_other_needs"),
     description: val(r, "description"),
   };
