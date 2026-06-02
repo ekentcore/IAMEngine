@@ -5,9 +5,7 @@
 
 BeforeAll {
     $script:Root = "$PSScriptRoot/.."
-    Import-Module "$Root/modules/Coretelligent.M365/Coretelligent.M365.psm1" -Force
-    Import-Module "$Root/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psm1" -Force
-    Import-Module "$Root/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psm1" -Force
+    Get-ChildItem "$Root/modules" -Recurse -Filter '*.psm1' | ForEach-Object { Import-Module $_.FullName -Force }
 }
 
 Describe 'Runner wiring smoke' {
@@ -22,6 +20,8 @@ Describe 'Runner wiring smoke' {
         @{ System = 'm365';             Fns = @('Connect-CtgM365', 'Invoke-CtgM365Onboarding', 'Invoke-CtgM365Offboarding', 'New-CtgCompliantPassword') }
         @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding') }
         @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding') }
+        @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync') }
+        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding') }
     )
     It 'exports every function the <System> lane dispatches' -ForEach $cases {
         foreach ($fn in $Fns) {

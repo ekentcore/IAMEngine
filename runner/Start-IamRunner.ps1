@@ -19,13 +19,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.DirectorySync/Coretelligent.DirectorySync.psd1" -Force
 Import-Module "$PSScriptRoot/lib/Coretelligent.Secrets/Coretelligent.Secrets.psm1" -Force
-# The AD module needs the on-prem ActiveDirectory cmdlets — only present on a client-network
-# agent host. Load it only there so the central cloud runner doesn't fail to import.
+# These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
+# module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
+# where its dependency is present so the central cloud runner doesn't fail to import.
 if (Get-Module -ListAvailable ActiveDirectory) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psd1" -Force
 }
-# Future modules (Coretelligent.Mimecast, …) register here.
+if (Get-Module -ListAvailable ExchangeOnlineManagement) {
+    Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
+}
 
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
 # the first job for that system; the action lanes receive ($job, $creds) where $creds maps each
@@ -44,6 +48,15 @@ $DISPATCH = @{
         Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }
         Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
+    }
+    'directory-sync' = @{
+        Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
+    }
+    'exchange' = @{
+        # EXO app-only needs certificate auth; the m365-admin secret carries the cert thumbprint.
+        Connect  = { param($job, $creds) $s = $creds['m365-admin']; Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint'] }
+        Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
     }
 }
 
