@@ -22,6 +22,9 @@ Describe 'Runner wiring smoke' {
         @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding') }
         @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync') }
         @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding') }
+        @{ System = 'zoom';             Fns = @('Connect-CtgZoom', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding') }
+        @{ System = 'adobe';            Fns = @('Connect-CtgAdobe', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding') }
+        @{ System = 'perimeter81';      Fns = @('Connect-CtgPerimeter81', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding') }
     )
     It 'exports every function the <System> lane dispatches' -ForEach $cases {
         foreach ($fn in $Fns) {

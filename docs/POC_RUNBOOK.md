@@ -139,6 +139,16 @@ manifests are well-formed. Then validate per system with a **test user**:
 - **AD offboard** — password reset, groups captured + removed, hidden from GAL, disabled, and
   **not moved** when `do-not-move-ou` is set (verify the 365 account survives).
 - **Mimecast onboard** — directory sync triggered, internal domain verified.
+- **directory-sync** — a delta sync starts (or is skipped because one is already running).
+- **Exchange offboard** — mailbox converted to shared only when ≤ threshold; ActiveSync/OWA
+  disabled; returns `MailboxSizeGB` for the m365 keep-license decision.
+- **Zoom onboard/offboard** — user created (licensed) / deactivated; re-run is idempotent.
+- **Adobe onboard/offboard** — added to product profiles / removed from the org (UMAPI).
+- **Perimeter 81 offboard** — user found by email and removed. ⚠ Onboard is group-driven (no
+  direct add); the API endpoints are best-effort — verify against the Harmony SASE tenant.
+
+Built modules: `m365`, `active-directory`, `mimecast`, `directory-sync`, `exchange`, `zoom`,
+`adobe`, `perimeter81` — all with Pester tests (`runner/tests/`, 45 green).
 
 ---
 
