@@ -175,6 +175,42 @@ export function makeClientRepository(db: PrismaClient) {
       return { clientId: client.id, upserted: systems.length, removed };
     },
 
+    // Secret wiring for the per-client secrets panel: the systems' secretName references + the
+    // saved Delinea references (id included — unlike getClientBySlug, which omits it). null if the
+    // client doesn't exist.
+    async secretsWiring(slug: string): Promise<
+      | {
+          clientId: string;
+          systems: { systemKey: string; secretNames: string[] }[];
+          secrets: { name: string; externalId: string; label: string | null; provider: string }[];
+        }
+      | null
+    > {
+      const c = await db.client.findUnique({
+        where: { slug },
+        select: {
+          id: true,
+          systems: { select: { systemKey: true, secretNames: true } },
+          secrets: { select: { name: true, externalId: true, label: true, provider: true } },
+        },
+      });
+      if (!c) return null;
+      return { clientId: c.id, systems: c.systems, secrets: c.secrets };
+    },
+
+    // Upsert the client's Delinea references (name -> id + label). Stores only references.
+    async upsertSecrets(clientId: string, entries: { name: string; externalId: string; label?: string | null }[]): Promise<void> {
+      await db.$transaction(
+        entries.map((e) =>
+          db.secret.upsert({
+            where: { clientId_name: { clientId, name: e.name } },
+            update: { externalId: e.externalId, label: e.label ?? null },
+            create: { clientId, name: e.name, provider: "delinea", externalId: e.externalId, label: e.label ?? null },
+          })
+        )
+      );
+    },
+
     async writeAudit(entry: AuditEntry): Promise<void> {
       await db.auditLog.create({
         data: {

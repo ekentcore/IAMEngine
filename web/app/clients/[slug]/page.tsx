@@ -8,6 +8,9 @@ import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
+import { SecretsPanel } from "../_components/secrets-panel";
+import { deriveSecretRows } from "@/lib/secrets/wiring";
+import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +58,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     where: { clientId: client.id },
     orderBy: [{ action: "asc" }, { seq: "asc" }],
   });
+
+  // Secret wiring: every secretName the systems reference + the saved Delinea references (with id).
+  const wiring = await makeClientRepository(db).secretsWiring(params.slug);
+  const secretRows = wiring ? deriveSecretRows(wiring.systems, wiring.secrets) : [];
 
   // index systems for dependency badges + per-system config (code preview)
   const sysByKey = new Map(client.systems.map((s) => [s.systemKey, s]));
@@ -186,6 +193,9 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </table>
         </>
       )}
+
+      <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>
+      <SecretsPanel slug={client.slug} initialRows={secretRows} delineaConfigured={delineaConfigured(delineaConfigFromEnv())} />
 
       <h2 style={{ marginTop: "1.5rem" }}>Runbook — everything to do</h2>
       <p className="note">
