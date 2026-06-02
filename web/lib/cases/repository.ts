@@ -1,9 +1,12 @@
 // Thin Prisma wrapper for the cases domain. Factory-style for testability, mirroring
 // lib/clients/repository.ts.
-import type { PrismaClient, Prisma, ClientSystem, CaseStatus } from "@prisma/client";
+import type { PrismaClient, Prisma, ClientSystem, CaseStatus, Action } from "@prisma/client";
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput } from "./types";
+
+// Job statuses that mean execution has begun — a case in any of these can't be re-planned.
+const STARTED_STATUSES = ["dispatched", "running", "succeeded", "failed"];
 
 export function makeCaseRepository(db: PrismaClient) {
   return {
@@ -69,6 +72,63 @@ export function makeCaseRepository(db: PrismaClient) {
         return c;
       });
       return created.id;
+    },
+
+    // Inputs for re-planning an existing case: its SN number + payload, the client (with current
+    // identity + systems), and whether any job has already started (re-plan is pre-execution only).
+    async replanInputs(caseId: string): Promise<
+      | { serviceNowCaseNumber: string | null; action: Action; payload: Record<string, unknown>;
+          client: { id: string; slug: string; primaryDomain: string; identity: unknown; systems: ClientSystem[] }; started: boolean }
+      | null
+    > {
+      const c = await db.caseRequest.findUnique({
+        where: { id: caseId },
+        select: {
+          serviceNowCaseNumber: true, action: true, payload: true,
+          client: { select: { id: true, slug: true, primaryDomain: true, identity: true, systems: true } },
+          jobs: { select: { status: true } },
+        },
+      });
+      if (!c) return null;
+      return {
+        serviceNowCaseNumber: c.serviceNowCaseNumber,
+        action: c.action,
+        payload: (c.payload ?? {}) as Record<string, unknown>,
+        client: c.client,
+        started: c.jobs.some((j) => STARTED_STATUSES.includes(j.status)),
+      };
+    },
+
+    // Re-plan: replace the case's jobs and refresh its action/payload/status in one transaction.
+    async replanCaseJobs(
+      caseId: string,
+      upd: { action: Action; payload: Record<string, unknown>; status: CaseStatus },
+      planned: PlannedJob[]
+    ): Promise<void> {
+      await db.$transaction(async (tx) => {
+        await tx.job.deleteMany({ where: { caseRequestId: caseId } });
+        await tx.caseRequest.update({
+          where: { id: caseId },
+          data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status },
+        });
+        if (planned.length > 0) {
+          await tx.job.createMany({
+            data: planned.map((p) => ({
+              caseRequestId: caseId,
+              systemKey: p.systemKey,
+              sequence: p.sequence,
+              mode: p.mode,
+              status: p.mode === "api" ? "pending" : "manual",
+              request: {
+                config: p.config ?? null,
+                requiresApproval: p.requiresApproval,
+                captureEvidence: p.captureEvidence,
+                secretNames: p.secretNames,
+              } as Prisma.InputJsonValue,
+            })),
+          });
+        }
+      });
     },
 
     async listCases(): Promise<CaseListItem[]> {

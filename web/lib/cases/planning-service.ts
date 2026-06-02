@@ -15,7 +15,7 @@ export type PlanOutcome = {
 };
 
 // Derive the case's post-planning status from the planned jobs.
-function deriveStatus(jobs: PlannedJob[]): CaseStatus {
+export function deriveStatus(jobs: PlannedJob[]): CaseStatus {
   if (jobs.some((j) => j.requiresApproval)) return "needs_approval";
   if (jobs.some((j) => j.mode === "api")) return "queued"; // ready to dispatch (no runners yet)
   return "needs_manual"; // only manual/browser steps

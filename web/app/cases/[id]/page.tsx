@@ -9,8 +9,13 @@ import { loadRunReport } from "@/lib/cases/run-report";
 import { writeBackEnabled } from "@/lib/servicenow/worknote";
 import { PlaybookView } from "../_components/playbook-view";
 import { RunReportView } from "../_components/run-report-view";
+import { ReplanButton } from "../_components/replan-button";
+import { IntakePanel } from "../_components/intake-panel";
 
 export const dynamic = "force-dynamic";
+
+// Once any job leaves the planned/blocked state the case is executing — re-plan is locked.
+const STARTED_STATUSES = ["dispatched", "running", "succeeded", "failed"];
 
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
   const c = await makeCaseRepository(db).getCase(params.id);
@@ -21,6 +26,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
   const manual = c.jobs.filter((j) => j.isManual);
   const automated = c.jobs.filter((j) => !j.isManual);
+  const canReplan = !c.jobs.some((j) => STARTED_STATUSES.includes(j.status));
 
   return (
     <main>
@@ -33,6 +39,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
           </p>
         </div>
+        <ReplanButton caseId={c.id} canReplan={canReplan} />
       </div>
 
       {playbook && playbook.steps.length > 0 && (
@@ -89,7 +96,15 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </>
       )}
 
-      <h2>Intake</h2>
+      {c.serviceNowCaseNumber && (
+        <>
+          <h2>Intake form ({c.serviceNowCaseNumber})</h2>
+          <p className="note">Live from ServiceNow — what the requester filled in, and what they left blank.</p>
+          <IntakePanel caseId={c.id} />
+        </>
+      )}
+
+      <h2>Planned identity</h2>
       <table>
         <tbody>
           {Object.entries(c.payload).map(([k, v]) => (
