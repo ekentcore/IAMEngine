@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 import type { Playbook } from "@/lib/cases/playbook";
-import { dependencyDepth } from "@/lib/dependency-depth";
-
-const INDENT_REM = 1.1; // slight indent per dependency level
+import { dependencyDepth, indentStyle } from "@/lib/dependency-depth";
 
 const PRE: React.CSSProperties = {
   background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem",
@@ -34,7 +32,7 @@ export function PlaybookView({ playbook, caseId }: { playbook: Playbook; caseId:
         const auto = s.mode === "api";
         const d = depth.get(s.systemKey) ?? 0;
         return (
-          <details key={s.seq} open={isOpen} style={{ margin: "0.2rem 0", marginLeft: `${Math.min(d, 6) * INDENT_REM}rem`, borderLeft: d > 0 ? "2px solid var(--line)" : undefined, paddingLeft: d > 0 ? "0.5rem" : undefined }}>
+          <details key={s.seq} open={isOpen} style={{ margin: "0.2rem 0", ...indentStyle(d) }}>
             <summary onClick={(e) => { e.preventDefault(); toggle(s.seq); }} style={{ cursor: "pointer" }}>
               {d > 0 && <span className="muted" style={{ marginRight: 4 }}>↳</span>}
               <strong style={{ marginRight: 6 }}>{s.seq}.</strong>

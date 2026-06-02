@@ -23,3 +23,15 @@ export function dependencyDepth(items: Array<{ key: string; deps: string[] }>): 
   for (const i of items) depth(i.key, new Set());
   return memo;
 }
+
+const INDENT_REM = 1.1; // slight indent per dependency level
+const MAX_INDENT = 6; // cap so a long chain can't run off the page
+
+// Shared inline style for indenting a runbook/playbook step under its dependency parent, so the
+// runbook and playbook views can't drift. depth 0 → no indent.
+export function indentStyle(depth: number): import("react").CSSProperties {
+  const d = Math.min(Math.max(depth, 0), MAX_INDENT);
+  if (d === 0) return {};
+  const rem = Math.round(d * INDENT_REM * 10) / 10; // 1 decimal — avoids 4.39999…rem in the DOM
+  return { marginLeft: `${rem}rem`, borderLeft: "2px solid var(--line)", paddingLeft: "0.5rem" };
+}

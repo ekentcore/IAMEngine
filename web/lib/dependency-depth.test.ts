@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyDepth } from "./dependency-depth";
+import { dependencyDepth, indentStyle } from "./dependency-depth";
 
 test("depth = longest dependency chain to a root among present items", () => {
   const d = dependencyDepth([
@@ -22,6 +22,12 @@ test("depth = longest dependency chain to a root among present items", () => {
 test("ignores deps not present in the list (e.g. a filtered-out lane)", () => {
   const d = dependencyDepth([{ key: "m365", deps: ["servicenow"] }]); // servicenow absent
   assert.equal(d.get("m365"), 0);
+});
+
+test("indentStyle: no indent at depth 0, scales with depth, caps at 6", () => {
+  assert.deepEqual(indentStyle(0), {});
+  assert.equal((indentStyle(2) as { marginLeft: string }).marginLeft, "2.2rem");
+  assert.equal((indentStyle(10) as { marginLeft: string }).marginLeft, "6.6rem"); // capped at 6
 });
 
 test("roots and self-deps stay at depth 0", () => {

@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 import { isEmail, isAttachment, type Artifact, type EmailArtifact, type AttachmentArtifact } from "@/lib/runbook/artifacts";
-import { dependencyDepth } from "@/lib/dependency-depth";
-
-const INDENT_REM = 1.1; // slight indent per dependency level
+import { dependencyDepth, indentStyle } from "@/lib/dependency-depth";
 
 export type RunbookItemVM = {
   id: string; // `${action}-${seq}`
@@ -71,7 +69,7 @@ function Item({ it, n, slug, indent, open, onToggle }: { it: RunbookItemVM; n: n
   const badge = auto ? "✅ Automated" : it.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
   const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
   return (
-    <details open={open} style={{ margin: "0.2rem 0", marginLeft: `${Math.min(indent, 6) * INDENT_REM}rem`, borderLeft: indent > 0 ? "2px solid var(--line)" : undefined, paddingLeft: indent > 0 ? "0.5rem" : undefined }}>
+    <details open={open} style={{ margin: "0.2rem 0", ...indentStyle(indent) }}>
       <summary onClick={(e) => { e.preventDefault(); onToggle(); }} style={{ cursor: "pointer" }}>
         {indent > 0 && <span className="muted" style={{ marginRight: 4 }}>↳</span>}
         <strong style={{ marginRight: 6 }}>{n}.</strong>
