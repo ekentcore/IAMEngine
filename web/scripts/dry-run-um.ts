@@ -7,6 +7,8 @@
 import { db } from "@/lib/db";
 import { importCaseFromServiceNow } from "@/lib/cases/import-service";
 import { loadPlaybook, renderPlaybookMarkdown } from "@/lib/cases/playbook";
+import { snConfigFromEnv } from "@/lib/servicenow/gateway";
+import { fetchIntakeFields, formatIntakeFields } from "@/lib/servicenow/intake-fields";
 
 const um = process.argv[2];
 if (!um) {
@@ -15,10 +17,18 @@ if (!um) {
 }
 
 (async () => {
+  // 1. The intake form first — every field the requester filled in (with values), then the
+  //    blanks. Independent of planning, so it shows even if the client isn't onboarded yet.
+  const intake = await fetchIntakeFields(snConfigFromEnv(), um);
+  if (intake) console.log(formatIntakeFields(intake) + "\n");
+  else console.log(`no ServiceNow record for ${um}\n`);
+
+  // 2. Plan the case + render the playbook (the exact scripts each step will run).
   const res = await importCaseFromServiceNow(db, um, "cli:dry-run");
   if (!res.ok) {
-    console.error(`import failed (${res.code}): ${res.error}`);
-    process.exit(2);
+    console.error(`plan skipped (${res.code}): ${res.error}`);
+    await db.$disconnect();
+    return;
   }
   const o = res.outcome;
   console.log(
