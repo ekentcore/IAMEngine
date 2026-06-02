@@ -8,7 +8,9 @@
 # Public surface:
 #   Connect-CtgM365            - establish a Graph session from a credential
 #   New-CtgCompliantPassword   - generate a policy-compliant initial password
+#   Resolve-CtgSkuId           - license name/part-number -> tenant SkuId
 #   Invoke-CtgM365Onboarding   - idempotent: user + licenses + groups + alias
+#   Invoke-CtgM365Offboarding  - idempotent: block sign-in + groups + license teardown
 #
 # Everything is idempotent: safe to re-run after a partial failure.
 
@@ -27,7 +29,72 @@ function Get-CtgRandomChar {
     $Set[(Get-CtgRandomInt $Set.Length)]
 }
 
+# Safe property read under StrictMode: $null if the member/key is absent.
+function Get-CtgProp {
+    param($Object, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [hashtable]) { return $Object[$Name] }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+# Friendly license name -> Entra SkuPartNumber, for the SKUs that appear in client profiles.
+# Unknown names fall through to a direct SkuPartNumber match against the tenant.
+$script:LicenseSkuMap = @{
+    'microsoft 365 e3'                                = 'SPE_E3'
+    'microsoft 365 e5'                                = 'SPE_E5'
+    'microsoft 365 f3'                                = 'SPE_F1'
+    'microsoft 365 business premium'                  = 'SPB'
+    'microsoft 365 business standard'                 = 'O365_BUSINESS_PREMIUM'
+    'microsoft 365 business basic'                    = 'O365_BUSINESS_ESSENTIALS'
+    'office 365 e1'                                   = 'STANDARDPACK'
+    'office 365 e3'                                   = 'ENTERPRISEPACK'
+    'office 365 e5'                                   = 'ENTERPRISEPREMIUM'
+    'microsoft entra id p1'                           = 'AAD_PREMIUM'
+    'microsoft entra id p2'                           = 'AAD_PREMIUM_P2'
+    'microsoft defender for office 365 (plan 1)'      = 'ATP_ENTERPRISE'
+    'microsoft defender for office 365 (plan 2)'      = 'THREAT_INTELLIGENCE'
+    'exchange online (plan 1)'                        = 'EXCHANGESTANDARD'
+    'exchange online (plan 2)'                        = 'EXCHANGEENTERPRISE'
+    'microsoft teams phone standard'                  = 'MCOEV'
+    'microsoft teams domestic calling plan'           = 'MCOPSTN1'
+    'microsoft teams audio conferencing'              = 'MCOMEETADV'
+    'microsoft intune plan 1'                         = 'INTUNE_A'
+    'power bi pro'                                     = 'POWER_BI_PRO'
+    'project plan 3'                                  = 'PROJECTPROFESSIONAL'
+    'visio plan 2'                                    = 'VISIOCLIENT'
+}
+
 #endregion
+
+function Resolve-CtgSkuId {
+    <#
+    .SYNOPSIS
+        Resolve a license spec to a tenant SkuId. Accepts an explicit { skuId } object, a raw
+        SkuPartNumber, or a friendly name (e.g. "Microsoft 365 E3"). Returns $null if the tenant
+        does not have a matching subscribed SKU (caller logs a WARN rather than failing the job).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$License)
+
+    $explicit = Get-CtgProp $License 'skuId'
+    if ($explicit) { return $explicit }
+
+    $name = if ($License -is [string]) { $License } else { Get-CtgProp $License 'name' }
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+
+    $skus = @(Get-MgSubscribedSku -ErrorAction SilentlyContinue)
+    $direct = $skus | Where-Object { $_.SkuPartNumber -ieq $name } | Select-Object -First 1
+    if ($direct) { return $direct.SkuId }
+
+    $part = $script:LicenseSkuMap[$name.ToLower()]
+    if ($part) {
+        $mapped = $skus | Where-Object { $_.SkuPartNumber -ieq $part } | Select-Object -First 1
+        if ($mapped) { return $mapped.SkuId }
+    }
+    return $null
+}
 
 function New-CtgCompliantPassword {
     <#
@@ -152,21 +219,28 @@ function Invoke-CtgM365Onboarding {
     }
 
     # 2. Licenses — add only what's missing ------------------------------------
+    # Canonical config uses `licenses` (name strings or {name,skuId}); fall back to the older
+    # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
+    $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
     $assigned = @((Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue).SkuId)
-    foreach ($lic in $Config.defaultLicenses) {
-        if ($assigned -contains $lic.skuId) {
-            $actions.Add("license present: $($lic.name)")
+    foreach ($lic in $licenseSpecs) {
+        $name  = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
+        $skuId = Resolve-CtgSkuId $lic
+        if (-not $skuId) { $actions.Add("WARN license not in tenant: $name"); continue }
+        if ($assigned -contains $skuId) {
+            $actions.Add("license present: $name")
             continue
         }
-        if ($PSCmdlet.ShouldProcess($upn, "Assign license $($lic.name)")) {
+        if ($PSCmdlet.ShouldProcess($upn, "Assign license $name")) {
             Set-MgUserLicense -UserId $userId `
-                -AddLicenses @(@{ SkuId = $lic.skuId }) -RemoveLicenses @() | Out-Null
-            $actions.Add("assigned license: $($lic.name)")
+                -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() | Out-Null
+            $actions.Add("assigned license: $name")
         }
     }
 
     # 3. Groups — check membership before adding -------------------------------
-    foreach ($groupName in $Config.defaultGroups) {
+    $groupNames = @(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ }
+    foreach ($groupName in $groupNames) {
         $group = Get-MgGroup -Filter "mail eq '$groupName' or displayName eq '$groupName'" -Top 1 -ErrorAction SilentlyContinue
         if (-not $group) { $actions.Add("WARN group not found: $groupName"); continue }
 
@@ -181,15 +255,17 @@ function Invoke-CtgM365Onboarding {
     }
 
     # 4. Alias — only if requested ---------------------------------------------
-    if ($Config.alias -and $Config.alias.enabled) {
-        $alias = "smtp:$($Config.alias.address)"
+    $alias = Get-CtgProp $Config 'alias'
+    if ($alias -and (Get-CtgProp $alias 'enabled')) {
+        $address = Get-CtgProp $alias 'address'
+        $proxy = "smtp:$address"
         $current = @((Get-MgUser -UserId $userId -Property ProxyAddresses).ProxyAddresses)
-        if ($current -contains $alias) {
-            $actions.Add("alias present: $($Config.alias.address)")
+        if ($current -contains $proxy) {
+            $actions.Add("alias present: $address")
         }
-        elseif ($PSCmdlet.ShouldProcess($upn, "Add alias $($Config.alias.address)")) {
-            Update-MgUser -UserId $userId -ProxyAddresses ($current + $alias)
-            $actions.Add("added alias: $($Config.alias.address)")
+        elseif ($PSCmdlet.ShouldProcess($upn, "Add alias $address")) {
+            Update-MgUser -UserId $userId -ProxyAddresses ($current + $proxy)
+            $actions.Add("added alias: $address")
         }
     }
 
@@ -202,4 +278,103 @@ function Invoke-CtgM365Onboarding {
     }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Invoke-CtgM365Onboarding
+function Invoke-CtgM365Offboarding {
+    <#
+    .SYNOPSIS
+        Idempotently tear down a user's 365-admin footprint: block sign-in, capture group
+        evidence then remove all groups, and remove the license — honoring the mailbox size
+        threshold (keep E3 if the mailbox is over the limit, per the "do not remove yet" rule).
+        Mailbox conversion and Entra/Exchange specifics are handled by their own modules.
+    .PARAMETER User
+        Normalized user object; must carry UserPrincipalName.
+    .PARAMETER Config
+        The 'config' block from the m365 system's offboard lane: blockSignIn, removeAllGroups,
+        oneDriveBackup{...}, mailbox{sizeThresholdGB,aboveThreshold}, removeLicense{...}.
+    .PARAMETER MailboxSizeGB
+        Current mailbox size (from Exchange upstream); drives the keep-license threshold.
+    .OUTPUTS
+        Result object with Status, an Evidence snapshot (groups removed), and an Actions log.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [double]$MailboxSizeGB = 0
+    )
+
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $upn = $User.UserPrincipalName
+
+    $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("user not found ($upn) — nothing to offboard"); Evidence = @{ Groups = @() } }
+    }
+    $userId = $existing.Id
+
+    # 1. Evidence FIRST — snapshot group memberships before we remove anything ----
+    $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
+        Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }
+    $groupEvidence = foreach ($g in $memberships) {
+        [pscustomobject]@{ Id = $g.Id; DisplayName = (Get-CtgProp $g.AdditionalProperties 'displayName') }
+    }
+    $actions.Add("captured $($groupEvidence.Count) group membership(s) as evidence")
+
+    # 2. Block sign-in (idempotent) --------------------------------------------
+    $blockSignIn = Get-CtgProp $Config 'blockSignIn'
+    if ($blockSignIn -ne $false) {
+        if ((Get-CtgProp $existing 'AccountEnabled') -eq $false) {
+            $actions.Add("sign-in already blocked")
+        }
+        elseif ($PSCmdlet.ShouldProcess($upn, "Block sign-in")) {
+            Update-MgUser -UserId $userId -AccountEnabled:$false
+            $actions.Add("blocked sign-in")
+        }
+    }
+
+    # 3. Remove from all groups (evidence already captured) --------------------
+    if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
+        foreach ($g in $groupEvidence) {
+            if ($PSCmdlet.ShouldProcess($upn, "Remove from group $($g.DisplayName)")) {
+                try {
+                    Remove-MgGroupMemberByRef -GroupId $g.Id -DirectoryObjectId $userId -ErrorAction Stop
+                    $actions.Add("removed from group: $($g.DisplayName)")
+                }
+                catch { $actions.Add("WARN could not remove from $($g.DisplayName): $($_.Exception.Message)") }
+            }
+        }
+    }
+
+    # 4. OneDrive backup — flagged for the data-transfer step (not done inline) -
+    $oneDrive = Get-CtgProp $Config 'oneDriveBackup'
+    if ($oneDrive) { $actions.Add("OneDrive backup required -> $((Get-CtgProp $oneDrive 'target'))") }
+
+    # 5. License removal — honor the mailbox size threshold --------------------
+    $removeLicense = Get-CtgProp $Config 'removeLicense'
+    $mailbox = Get-CtgProp $Config 'mailbox'
+    $threshold = if ($mailbox) { [double]((Get-CtgProp $mailbox 'sizeThresholdGB') ?? 50) } else { 50 }
+    if ($null -ne $removeLicense) {
+        if ($MailboxSizeGB -gt $threshold) {
+            $actions.Add("license kept — mailbox $MailboxSizeGB GB is over threshold ($threshold GB); remove after mailbox handling")
+        }
+        elseif ($PSCmdlet.ShouldProcess($upn, "Remove licenses")) {
+            $skus = @((Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue).SkuId)
+            if ($skus.Count) {
+                Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $skus | Out-Null
+                $actions.Add("removed $($skus.Count) license(s)")
+            } else {
+                $actions.Add("no licenses to remove")
+            }
+        }
+    }
+
+    [pscustomobject]@{
+        System   = 'm365'
+        Status   = 'ok'
+        UserId   = $userId
+        Upn      = $upn
+        Evidence = @{ Groups = @($groupEvidence) }
+        Actions  = $actions.ToArray()
+    }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding

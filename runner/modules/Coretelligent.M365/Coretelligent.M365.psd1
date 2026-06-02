@@ -15,7 +15,7 @@
         @{ ModuleName = 'Microsoft.Graph.Groups';         ModuleVersion = '2.0.0' }
     )
 
-    FunctionsToExport = @('Connect-CtgM365', 'New-CtgCompliantPassword', 'Invoke-CtgM365Onboarding')
+    FunctionsToExport = @('Connect-CtgM365', 'New-CtgCompliantPassword', 'Resolve-CtgSkuId', 'Invoke-CtgM365Onboarding', 'Invoke-CtgM365Offboarding')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()
