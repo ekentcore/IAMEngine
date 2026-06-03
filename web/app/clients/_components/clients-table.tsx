@@ -264,8 +264,8 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
-                  ) : query ? (
-                    <>No clients match “{query}”. <button type="button" className="linklike" onClick={() => setQuery("")}>Clear search</button></>
+                  ) : terms.length > 0 ? (
+                    <>No clients match “{query.trim()}”. <button type="button" className="linklike" onClick={() => setQuery("")}>Clear search</button></>
                   ) : (
                     "No clients match the current filters."
                   )}

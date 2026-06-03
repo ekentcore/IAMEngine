@@ -29,7 +29,10 @@ export function delineaConfigured(c: DelineaConfig): boolean {
 
 const defaultFetcher: Fetcher = (url, init) => fetch(url, init) as unknown as Promise<FetchResponse>;
 
-async function getToken(cfg: DelineaConfig, fetcher: Fetcher): Promise<string> {
+// Exchange the app's bootstrap creds for an access token. Exported so a batch ("Test all") can
+// fetch ONE token and reuse it across many checkSecret calls instead of one login per secret —
+// otherwise N wired secrets = N concurrent password-grants, which trips Delinea rate limits.
+export async function getDelineaToken(cfg: DelineaConfig, fetcher: Fetcher = defaultFetcher): Promise<string> {
   const body = new URLSearchParams({ grant_type: "password", username: cfg.username, password: cfg.password }).toString();
   const res = await fetcher(`${cfg.baseUrl}/oauth2/token`, {
     method: "POST",
@@ -43,13 +46,14 @@ async function getToken(cfg: DelineaConfig, fetcher: Fetcher): Promise<string> {
 }
 
 // Resolve a single reference to a pass/fail. Never throws to the caller — returns a readable error.
-export async function checkSecret(cfg: DelineaConfig, externalId: string, fetcher: Fetcher = defaultFetcher): Promise<SecretCheck> {
+// Pass `token` to reuse a batch-fetched access token (see getDelineaToken).
+export async function checkSecret(cfg: DelineaConfig, externalId: string, fetcher: Fetcher = defaultFetcher, token?: string): Promise<SecretCheck> {
   if (!secretIsSet(externalId)) return { ok: false, error: "not set" };
   if (!delineaConfigured(cfg)) return { ok: false, error: "Delinea not configured (set DELINEA_* on the app)" };
   try {
-    const token = await getToken(cfg, fetcher);
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
     const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (res.status === 404) return { ok: false, error: "not found in Delinea" };
     if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied (check the app's Delinea permissions)" };

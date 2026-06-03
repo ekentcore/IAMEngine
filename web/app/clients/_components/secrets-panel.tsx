@@ -37,6 +37,15 @@ export function SecretsPanel({
     setRows((rs) => rs.map((r) => (r.name === name ? { ...r, [field]: value } : r)));
     setDirty(true);
     setSaveMsg(null);
+    // A prior ✓/✗ tested a different id — clear it so the badge can't claim a stale verification.
+    if (field === "externalId") {
+      setTests((t) => {
+        if (!t[name]) return t;
+        const next = { ...t };
+        delete next[name];
+        return next;
+      });
+    }
   }
 
   async function save() {

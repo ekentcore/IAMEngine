@@ -10,6 +10,7 @@ import { snConfigFromEnv } from "../servicenow/gateway";
 import { fetchUserManagementCase } from "../servicenow/intake";
 import { makeCaseRepository } from "./repository";
 import { deriveStatus, type PlanOutcome } from "./planning-service";
+import { CaseAlreadyStartedError } from "./job-status";
 
 export type ReplanResult =
   | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean }
@@ -28,13 +29,19 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
   let refreshedFromServiceNow = false;
 
   // Re-pull the latest UM for a ServiceNow-sourced case (the requester may have edited it).
+  // Best-effort: a SN outage / unconfigured env must NOT block re-planning against edited local
+  // systems — keep the stored action/payload and carry on (refreshedFromServiceNow stays false).
   if (info.serviceNowCaseNumber) {
-    const raw = await fetchUserManagementCase(snConfigFromEnv(), info.serviceNowCaseNumber);
-    if (raw) {
-      const intake = normalizeIntake(raw);
-      action = intake.action;
-      payload = intake.payload;
-      refreshedFromServiceNow = true;
+    try {
+      const raw = await fetchUserManagementCase(snConfigFromEnv(), info.serviceNowCaseNumber);
+      if (raw) {
+        const intake = normalizeIntake(raw);
+        action = intake.action;
+        payload = intake.payload;
+        refreshedFromServiceNow = true;
+      }
+    } catch {
+      // swallow — re-plan proceeds with the stored intake.
     }
   }
 
@@ -46,7 +53,15 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
 
   const planned = planCase(info.client.systems, action, payload);
   const status = deriveStatus(planned);
-  await repo.replanCaseJobs(caseId, { action, payload, status }, planned);
+  try {
+    await repo.replanCaseJobs(caseId, { action, payload, status }, planned);
+  } catch (e) {
+    // A job started executing in the TOCTOU window between the pre-check and the replace.
+    if (e instanceof CaseAlreadyStartedError) {
+      return { ok: false, error: "this case started executing while re-planning — refresh and try again", code: "already_started" };
+    }
+    throw e;
+  }
 
   await repo.writeAudit({
     actor, action: "case.replan", clientId: info.client.id, caseRequestId: caseId,

@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
-import { checkSecret, delineaConfigFromEnv } from "@/lib/secrets/delinea";
+import { checkSecret, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
 
 export const dynamic = "force-dynamic";
 
@@ -37,9 +37,16 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     .filter((i): i is TestItem => i !== null);
 
   const cfg = delineaConfigFromEnv();
+  // One token for the whole batch ("Test all") — not one password-grant per secret.
+  let token: string | undefined;
+  try {
+    if (delineaConfigured(cfg)) token = await getDelineaToken(cfg);
+  } catch {
+    // leave token undefined — each checkSecret reports the auth failure itself.
+  }
   const results = await Promise.all(
     items.map(async (i) => {
-      const r = await checkSecret(cfg, i.externalId);
+      const r = await checkSecret(cfg, i.externalId, undefined, token);
       return { name: i.name, ok: r.ok, label: r.label, error: r.error };
     })
   );

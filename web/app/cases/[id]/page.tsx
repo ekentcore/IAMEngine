@@ -11,11 +11,9 @@ import { PlaybookView } from "../_components/playbook-view";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { IntakePanel } from "../_components/intake-panel";
+import { hasStartedJobs } from "@/lib/cases/job-status";
 
 export const dynamic = "force-dynamic";
-
-// Once any job leaves the planned/blocked state the case is executing — re-plan is locked.
-const STARTED_STATUSES = ["dispatched", "running", "succeeded", "failed"];
 
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
   const c = await makeCaseRepository(db).getCase(params.id);
@@ -26,7 +24,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
   const manual = c.jobs.filter((j) => j.isManual);
   const automated = c.jobs.filter((j) => !j.isManual);
-  const canReplan = !c.jobs.some((j) => STARTED_STATUSES.includes(j.status));
+  const canReplan = !hasStartedJobs(c.jobs);
 
   return (
     <main>

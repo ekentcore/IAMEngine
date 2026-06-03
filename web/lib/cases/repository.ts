@@ -4,9 +4,7 @@ import type { PrismaClient, Prisma, ClientSystem, CaseStatus, Action } from "@pr
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput } from "./types";
-
-// Job statuses that mean execution has begun — a case in any of these can't be re-planned.
-const STARTED_STATUSES = ["dispatched", "running", "succeeded", "failed"];
+import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
 
 export function makeCaseRepository(db: PrismaClient) {
   return {
@@ -95,7 +93,7 @@ export function makeCaseRepository(db: PrismaClient) {
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         client: c.client,
-        started: c.jobs.some((j) => STARTED_STATUSES.includes(j.status)),
+        started: hasStartedJobs(c.jobs),
       };
     },
 
@@ -106,7 +104,12 @@ export function makeCaseRepository(db: PrismaClient) {
       planned: PlannedJob[]
     ): Promise<void> {
       await db.$transaction(async (tx) => {
-        await tx.job.deleteMany({ where: { caseRequestId: caseId } });
+        // Race-safe guard (closes the TOCTOU window after replanInputs' pre-check): delete only
+        // the not-yet-started jobs, then assert none remain. If a runner claimed a job between the
+        // pre-check and here, a started job survives the delete → throw to roll the whole tx back
+        // (no jobs lost), surfaced to the caller as `already_started`.
+        await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: STARTED_STATUSES } } });
+        if ((await tx.job.count({ where: { caseRequestId: caseId } })) > 0) throw new CaseAlreadyStartedError();
         await tx.caseRequest.update({
           where: { id: caseId },
           data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status },
