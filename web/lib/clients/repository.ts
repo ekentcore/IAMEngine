@@ -4,6 +4,29 @@ import type { PrismaClient, Prisma, Backbone } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 
+// Order systemKeys by the runbook's documented run sequence (onboard first — the primary process,
+// and where "resolving case" lands last — then offboard-only systems by their seq; any system with
+// no runbook section sorts last, alphabetically). This is the order the engineer runs the process,
+// not alphabetical.
+function orderByRunSequence(
+  systemKeys: string[],
+  sections: { systemKey: string | null; action: string; seq: number }[]
+): string[] {
+  const rank = new Map<string, number>();
+  for (const s of sections) {
+    if (!s.systemKey) continue;
+    const r = s.action === "onboard" ? s.seq : 1000 + s.seq; // onboard ranks before offboard-only
+    const cur = rank.get(s.systemKey);
+    if (cur === undefined || r < cur) rank.set(s.systemKey, r);
+  }
+  const FALLBACK = Number.MAX_SAFE_INTEGER;
+  return [...systemKeys].sort((a, b) => {
+    const ra = rank.get(a) ?? FALLBACK;
+    const rb = rank.get(b) ?? FALLBACK;
+    return ra - rb || a.localeCompare(b);
+  });
+}
+
 // SN-owned fields written on both create and update (never touches backbone or systems).
 // Return type is inferred (plain scalars) so it spreads into both create and update inputs.
 function snData(c: NormalizedSnClient) {
@@ -39,7 +62,9 @@ export function makeClientRepository(db: PrismaClient) {
           onboardingRating: true,
           offboardingRating: true,
           snLastSyncedAt: true,
-          systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } },
+          systems: { select: { systemKey: true } },
+          // the runbook seq is the documented run order; used to list systems in execution order
+          runbook: { select: { systemKey: true, action: true, seq: true } },
         },
       });
       return rows.map((r) => ({
@@ -55,7 +80,7 @@ export function makeClientRepository(db: PrismaClient) {
         onboardingRating: r.onboardingRating,
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
-        systemKeys: r.systems.map((s) => s.systemKey),
+        systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
         modeled: r.systems.length > 0,
       }));
