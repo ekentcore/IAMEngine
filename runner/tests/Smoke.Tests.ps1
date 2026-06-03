@@ -21,7 +21,7 @@ Describe 'Runner wiring smoke' {
         @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding', 'Confirm-CtgAD') }
         @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast') }
         @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync', 'Confirm-CtgDirectorySync') }
-        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange') }
+        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeHybridOnboard', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange') }
         @{ System = 'zoom';             Fns = @('Connect-CtgZoom', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding', 'Confirm-CtgZoom') }
         @{ System = 'adobe';            Fns = @('Connect-CtgAdobe', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding', 'Confirm-CtgAdobe') }
         @{ System = 'perimeter81';      Fns = @('Connect-CtgPerimeter81', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding', 'Confirm-CtgPerimeter81') }

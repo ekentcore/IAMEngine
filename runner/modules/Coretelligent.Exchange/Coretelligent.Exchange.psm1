@@ -106,6 +106,31 @@ function Set-CtgMailboxRegional {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
+# Combined hybrid onboard, one job across the AAD Connect sync boundary: enable the remote mailbox,
+# block until it lands in EXO (config-gated — skipped when Config.waitForSync is false), then finish
+# regional + manager-calendar. A mailbox that doesn't sync before the timeout is NOT an error: the
+# regional/calendar step is deferred (re-running the idempotent job finishes it once sync catches up).
+function Invoke-CtgExchangeHybridOnboard {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $enable = Invoke-CtgExchangeOnboarding -User $User -Config $Config
+    $identity = $User.SamAccountName
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ($enable.Actions) { $actions.AddRange([string[]]$enable.Actions) }
+
+    if ((Get-CtgProp $Config 'waitForSync') -ne $false) {
+        $wait = Wait-CtgMailbox -Identity $identity -TimeoutSeconds ([int]((Get-CtgProp $Config 'syncTimeoutSeconds') ?? 600))
+        $actions.Add("mailbox sync: $($wait.Status)")
+        if (-not $wait.Found) {
+            return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray(); Warning = 'mailbox not synced before timeout — regional/calendar deferred to a re-run' }
+        }
+    }
+
+    $regional = Set-CtgMailboxRegional -Identity $identity -Config $Config -ManagerEmail ([string](Get-CtgProp $User 'ManagerEmail'))
+    if ($regional.Actions) { $actions.AddRange([string[]]$regional.Actions) }
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
+}
+
 # Sync-wait: after Azure AD Connect runs a delta, poll Exchange Online until the new user's mailbox
 # appears (the script's `Do { Start-Sleep 30; Get-Mailbox } While ($null)` — but app-orchestrated,
 # bounded, never an open-ended sleep). Returns Found/timeout so the runner can decide to proceed to
@@ -227,4 +252,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

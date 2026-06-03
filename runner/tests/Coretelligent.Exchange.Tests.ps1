@@ -122,6 +122,40 @@ Describe 'Invoke-CtgExchangeOnboarding' {
     }
 }
 
+Describe 'Invoke-CtgExchangeHybridOnboard' {
+    BeforeEach {
+        $script:user = [pscustomobject]@{ SamAccountName='jdoe'; ManagerEmail='boss@core.tech' }
+        Mock Invoke-CtgExchangeOnboarding -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ System='exchange'; Status='ok'; Email='jdoe@core.tech'; Routing='jdoe@coretell.mail.onmicrosoft.com'; Actions=@('enabled remote mailbox') } }
+        Mock Set-CtgMailboxRegional   -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ System='exchange'; Status='ok'; Actions=@('regional set') } }
+    }
+
+    It 'runs enable -> wait -> regional and carries the manager email through' {
+        Mock Wait-CtgMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Status='ok'; Found=$true; Identity='jdoe' } }
+        $r = Invoke-CtgExchangeHybridOnboard -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        $r.Email  | Should -Be 'jdoe@core.tech'
+        Should -Invoke Invoke-CtgExchangeOnboarding -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        Should -Invoke Wait-CtgMailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        Should -Invoke Set-CtgMailboxRegional -ModuleName Coretelligent.Exchange -Times 1 -Exactly -ParameterFilter { $ManagerEmail -eq 'boss@core.tech' }
+        ($r.Actions -join ' ') | Should -Match 'regional set'
+    }
+
+    It 'skips the sync-wait when waitForSync is false' {
+        Mock Wait-CtgMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Status='ok'; Found=$true } }
+        $r = Invoke-CtgExchangeHybridOnboard -User $user -Config ([pscustomobject]@{ waitForSync=$false })
+        Should -Invoke Wait-CtgMailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        Should -Invoke Set-CtgMailboxRegional -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+    }
+
+    It 'defers regional/calendar when the mailbox never syncs (no error)' {
+        Mock Wait-CtgMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Status='timeout'; Found=$false } }
+        $r = Invoke-CtgExchangeHybridOnboard -User $user -Config ([pscustomobject]@{})
+        $r.Status  | Should -Be 'ok'
+        $r.Warning | Should -Match 'not synced'
+        Should -Invoke Set-CtgMailboxRegional -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+    }
+}
+
 Describe 'Set-CtgMailboxRegional' {
     It 'sets language/timezone and grants the manager Reviewer on the calendar' {
         Mock Set-MailboxRegionalConfiguration -ModuleName Coretelligent.Exchange -MockWith {}
