@@ -104,10 +104,11 @@ async function applyAuthored(p: any): Promise<string | null> {
   if (p.schemaVersion !== "2.0" && p.schemaVersion !== "2.1") return null;
   const backbone = backboneMap[p.identity.backbone];
   if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return null; }
-  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true } });
+  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true, emailDomainLocked: true } });
   // v2.1 plan-time blocks (undefined for v2.0 profiles → column left null)
   const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
-  const emailDomain = p.client.emailDomain ?? undefined; // curated email/UPN domain when set
+  // Don't overwrite an email domain a human locked in the UI.
+  const emailDomain = existing?.emailDomainLocked ? undefined : (p.client.emailDomain ?? undefined);
   const update = stripEdited(
     { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, identity: p.identity ?? undefined, ...planBlocks },
     existing?.editedFields ?? []

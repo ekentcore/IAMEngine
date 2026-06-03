@@ -295,11 +295,15 @@ function Invoke-CtgM365Onboarding {
     }
 
     # 3b. Seat-aware E5/E3 fallback (live SKU consumption) ----------------------
+    $licenseFallbackAdGroup = $null
     $seatAware = Get-CtgProp $Config 'seatAwareLicense'
     if ($seatAware) {
         $sal = Set-CtgSeatAwareLicense -UserId $userId -Config $seatAware
         foreach ($a in $sal.Actions) { $actions.Add("license: $a") }
-        if ($sal.FallbackAdGroup) { $script:CtgLicenseFallbackAdGroup = $sal.FallbackAdGroup }
+        # The E3 fallback is an on-prem AD group this (Graph) lane can't add — surface it on the
+        # result so the runner hands it to the active-directory lane (the AD groups already ran, so
+        # this is a follow-up add).
+        $licenseFallbackAdGroup = $sal.FallbackAdGroup
     }
 
     # 4. Alias — only if requested ---------------------------------------------
@@ -322,6 +326,7 @@ function Invoke-CtgM365Onboarding {
         Status  = 'ok'
         UserId  = $userId
         Upn     = $upn
+        LicenseFallbackAdGroup = $licenseFallbackAdGroup  # AD group the runner must add (E3 fallback), or $null
         Actions = $actions.ToArray()
     }
 }

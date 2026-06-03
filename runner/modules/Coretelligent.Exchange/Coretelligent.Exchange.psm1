@@ -56,8 +56,11 @@ function Invoke-CtgExchangeOnboarding {
 
     $identity = $User.SamAccountName
     $alias = ([string]((Get-CtgProp $User 'MailNickname') ?? $User.SamAccountName)).ToLower()
-    $smtp = (Get-CtgProp $User 'WorkEmail') ?? $User.UserPrincipalName
+    $smtp = (Get-CtgProp $User 'WorkEmail') ?? (Get-CtgProp $User 'UserPrincipalName')
     $routingDomain = Get-CtgProp $cfg 'routingDomain'
+    if ([string]::IsNullOrWhiteSpace($routingDomain)) {
+        return [pscustomobject]@{ System = 'exchange'; Status = 'failed'; Error = 'enableRemoteMailbox.routingDomain is missing'; Actions = @('no routing domain — remote mailbox not enabled') }
+    }
     $routing = "$alias@$routingDomain"
 
     $existing = Get-RemoteMailbox -Identity $identity -ErrorAction SilentlyContinue

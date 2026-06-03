@@ -100,7 +100,8 @@
             { "path": "OU=GA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == GA" },
             { "path": "OU=MA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == MA" },
             { "path": "OU=NY,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == NY Metro" },
-            { "path": "OU=Other,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == Remote (US)" }
+            { "path": "OU=Other,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == Remote (US)" },
+            { "path": "OU=Other,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" }
           ],
           "groups": ["DEPT-Field", "ExchStatusReport", "Notifications", "TechStaff", "SSO - Zoom Pro Users"]
         }
@@ -143,7 +144,10 @@
       "titles": ["Remote Support Technician", "Remote Support Engineer I", "Remote Support Engineer II"],
       "systems": {
         "active-directory": {
-          "ou": [{ "path": "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "title ~= ^Remote Support" }],
+          "ou": [
+            { "path": "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "title ~= ^Remote Support" },
+            { "path": "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" }
+          ],
           "groups": [
             "Notifications", "TechStaff",
             { "groups": ["Core-RST-Support", "TEAM-RST-Support"], "when": "title ~= ^Remote Support" }

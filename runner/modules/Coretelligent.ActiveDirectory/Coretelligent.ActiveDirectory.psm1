@@ -71,9 +71,16 @@ function Set-CtgADAttributes {
         $value = if ($Attributes -is [hashtable]) { $Attributes[$name] } else { $Attributes.$name }
         if ($null -eq $value -or "$value" -eq '') { continue }
         if ($name -ieq 'manager') {
-            # already a DN? else resolve by name
-            $dn = if ("$value" -match '^(CN|OU)=') { "$value" } else {
-                (Get-ADUser -Filter "Name -eq '$value'" -ErrorAction SilentlyContinue | Select-Object -First 1).DistinguishedName
+            # already a DN? else resolve by name — escape quotes, and refuse to guess on ambiguity.
+            $dn = if ("$value" -match '^(CN|OU)=') {
+                "$value"
+            }
+            else {
+                $safe = "$value" -replace "'", "''"
+                $found = @(Get-ADUser -Filter "Name -eq '$safe'" -ErrorAction SilentlyContinue)
+                if ($found.Count -gt 1) { Write-Warning "manager '$value' is ambiguous ($($found.Count) matches) — skipped"; $null }
+                elseif ($found.Count -eq 1) { $found[0].DistinguishedName }
+                else { $null }
             }
             if ($dn -and $PSCmdlet.ShouldProcess($Identity, "Set manager = $dn")) {
                 Set-ADUser -Identity $Identity -Manager $dn -ErrorAction Continue
@@ -81,8 +88,10 @@ function Set-CtgADAttributes {
             }
             continue
         }
+        # countryCode is an Integer-syntax AD attribute; cast so a templated "840" doesn't fail.
+        $replaceVal = if ($name -ieq 'countryCode') { [int]$value } else { $value }
         if ($PSCmdlet.ShouldProcess($Identity, "Set $name = $value")) {
-            Set-ADUser -Identity $Identity -Replace @{ $name = $value } -ErrorAction Continue
+            Set-ADUser -Identity $Identity -Replace @{ $name = $replaceVal } -ErrorAction Continue
             $applied.Add("$name=$value")
         }
     }

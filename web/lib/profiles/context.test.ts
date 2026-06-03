@@ -47,6 +47,19 @@ test("buildPlanContext: matches a location when the office string contains the k
   assert.equal((context.location as { city: string }).city, "Needham");
 });
 
+test("buildPlanContext: selects the persona from the intake roles[] list", () => {
+  const { persona } = buildPlanContext({ roles: ["Field Services"], firstName: "A", lastName: "B" }, { personas, locations });
+  assert.equal(persona?.name, "Field Services");
+});
+
+test("matchLocation uses word boundaries — a city like 'Cambridge' is not location CA", () => {
+  const { context } = buildPlanContext({ officeLocation: "Cambridge campus", department: "x" }, { personas, locations });
+  // 'ca' is a substring of 'cambridge' but not a whole word → no CA match
+  assert.notEqual((context.location as { name?: string }).name, "CA");
+  // a real whole-word location still matches
+  assert.equal((buildPlanContext({ officeLocation: "Cambridge, MA", department: "x" }, { personas, locations }).context.location as { name: string }).name, "MA");
+});
+
 test("buildPlanContext: no persona/location data still yields a usable context", () => {
   const { context, persona } = buildPlanContext({ firstName: "A", lastName: "B" }, { personas: null, locations: null });
   assert.equal(persona, null);

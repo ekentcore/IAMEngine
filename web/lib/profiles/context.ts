@@ -24,13 +24,15 @@ export function selectPersona(roleName: string | null | undefined, personas: Per
 }
 
 // Match the intake's office location to a profile location key: exact (case-insensitive) first,
-// else a key contained in the office string ("Needham, MA office" -> "MA").
+// else a key that appears as a WHOLE WORD in the office string ("Needham, MA office" -> "MA"). The
+// word boundary matters: a plain substring would match "MA"/"CA" inside "Camden"/"Cambridge".
 function matchLocation(office: string | undefined, locations: Locations | null | undefined): { key: string; data: LocationDef } | null {
   if (!locations || !office) return null;
   const o = office.trim().toLowerCase();
   const exact = Object.keys(locations).find((k) => k.toLowerCase() === o);
   if (exact) return { key: exact, data: locations[exact] };
-  const contained = Object.keys(locations).find((k) => o.includes(k.toLowerCase()));
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const contained = Object.keys(locations).find((k) => new RegExp(`\\b${escape(k.toLowerCase())}\\b`).test(o));
   if (contained) return { key: contained, data: locations[contained] };
   return null;
 }
@@ -40,7 +42,9 @@ export function buildPlanContext(
   profile: { personas?: Personas | null; locations?: Locations | null }
 ): { context: PlanContext; persona: SelectedPersona | null } {
   const s = (k: string): string | undefined => (payload[k] == null || payload[k] === "" ? undefined : String(payload[k]));
-  const roleName = s("role") ?? s("department") ?? null;
+  // The intake emits `roles` (a list); fall back to `role`/`department` (Coretelligent uses dept).
+  const roles = payload.roles;
+  const roleName = s("role") ?? (Array.isArray(roles) && roles.length ? String(roles[0]) : undefined) ?? s("department") ?? null;
 
   const loc = matchLocation(s("officeLocation") ?? s("location"), profile.locations);
   const ld = loc?.data ?? {};

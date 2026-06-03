@@ -70,6 +70,15 @@ test("Remote Support: title regex drives the OU + RST groups", () => {
   assert.ok((rs.groups as string[]).includes("TEAM-RST-Support"));
 });
 
+test("Remote Support with a non-matching title falls back to the Support OU (never domain root)", () => {
+  const rs = adConfig("Remote Support", {
+    ...base, role: { name: "Remote Support" }, title: "Support Analyst", location: { name: "MA" }, country: US,
+  });
+  assert.equal(rs.ou, "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local");
+  // the title-gated RST groups are NOT added (title didn't match)
+  assert.ok(!(rs.groups as string[]).includes("Core-RST-Support"));
+});
+
 test("Digital Transformation / India: country OU + Podshore-ALL, not the US/FT groups", () => {
   const dt = adConfig("Digital Transformation Services", {
     ...base, role: { name: "Digital Transformation Services" }, title: "Consultant",
