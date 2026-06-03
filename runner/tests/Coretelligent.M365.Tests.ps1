@@ -9,14 +9,14 @@ BeforeAll {
     $ModulePath = "$PSScriptRoot/../modules/Coretelligent.M365/Coretelligent.M365.psm1"
 
     # Global stubs so Pester can Mock these in the module scope (real cmdlets come from Microsoft.Graph).
-    function global:Get-MgSubscribedSku {}
+    function global:Get-MgSubscribedSku { param($SubscribedSkuId, [switch]$All) }
     function global:Get-MgUser {}
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
     function global:Set-MgUserLicense {}
     function global:Get-MgGroup {}
     function global:Get-MgGroupMember {}
-    function global:New-MgGroupMember {}
+    function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
     function global:Update-MgUser {}
     function global:Get-MgUserMemberOf {}
     function global:Remove-MgGroupMemberByRef {}
@@ -160,5 +160,37 @@ Describe 'Confirm-CtgM365' {
         $config = [pscustomobject]@{ removeAllGroups = $true }
         $r = Confirm-CtgM365 -User $user -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Set-CtgSeatAwareLicense' {
+    BeforeEach {
+        $script:cfg = [pscustomobject]@{ skuId='sku-e5'; entraGroupWhenAvailable='e5-group'; adGroupFallback='M365 E3 Users Group' }
+    }
+
+    It 'adds to the E5 Entra group when a seat is available' {
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ PrepaidUnits=[pscustomobject]@{ Enabled=100 }; ConsumedUnits=40 } }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
+        $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg
+        $r.Tier | Should -Be 'E5'
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'e5-group' } -Times 1
+    }
+
+    It 'falls back to the E3 AD group when no E5 seat is free' {
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ PrepaidUnits=[pscustomobject]@{ Enabled=100 }; ConsumedUnits=100 } }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
+        $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg
+        $r.Tier | Should -Be 'E3'
+        $r.FallbackAdGroup | Should -Be 'M365 E3 Users Group'
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 0 -Exactly  # AD group not added via Graph
+    }
+
+    It 'adds to an E3 Entra group via Graph when one is configured' {
+        $cfg2 = [pscustomobject]@{ skuId='sku-e5'; entraGroupWhenAvailable='e5-group'; entraGroupFallback='e3-group' }
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ PrepaidUnits=[pscustomobject]@{ Enabled=5 }; ConsumedUnits=5 } }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
+        $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg2
+        $r.Tier | Should -Be 'E3'
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'e3-group' } -Times 1
     }
 }

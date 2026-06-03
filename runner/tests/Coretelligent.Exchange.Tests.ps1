@@ -9,6 +9,13 @@ BeforeAll {
     function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward) }
     function global:Set-CASMailbox { [CmdletBinding()] param($Identity, $ActiveSyncEnabled, $OWAEnabled) }
     function global:Set-MailboxAutoReplyConfiguration { [CmdletBinding()] param($Identity, $AutoReplyState, $InternalMessage, $ExternalMessage) }
+    # on-prem hybrid remote-mailbox + post-sync EXO finishing
+    function global:Get-RemoteMailbox { [CmdletBinding()] param($Identity) }
+    function global:Enable-RemoteMailbox { [CmdletBinding()] param($Identity, $RemoteRoutingAddress, $Alias, $DisplayName, $PrimarySmtpAddress) }
+    function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled) }
+    function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
+    function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
+    function global:Get-Mailbox { [CmdletBinding()] param($Identity) }
 
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
 }
@@ -86,5 +93,73 @@ Describe 'Confirm-CtgExchange' {
         $r = Confirm-CtgExchange -User $user -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeTrue
         @($r.checks).Count | Should -Be 0
+    }
+}
+
+Describe 'Invoke-CtgExchangeOnboarding' {
+    BeforeEach {
+        $script:user = [pscustomobject]@{ SamAccountName='jdoe'; MailNickname='jdoe'; DisplayName='John Doe'; UserPrincipalName='jdoe@core.tech'; WorkEmail='jdoe@core.tech' }
+        $script:config = [pscustomobject]@{ enableRemoteMailbox = [pscustomobject]@{ routingDomain='coretell.mail.onmicrosoft.com'; emailAddressPolicyEnabled=$true } }
+    }
+
+    It 'enables the remote mailbox with the routing address and sets the policy flag' {
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { $null }
+        Mock Enable-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith {}
+        Mock Set-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith {}
+        $r = Invoke-CtgExchangeOnboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Enable-RemoteMailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $RemoteRoutingAddress -eq 'jdoe@coretell.mail.onmicrosoft.com' -and $PrimarySmtpAddress -eq 'jdoe@core.tech' } -Times 1
+        Should -Invoke Set-RemoteMailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $EmailAddressPolicyEnabled -eq $true } -Times 1
+    }
+
+    It 'is idempotent — skips enable when already remote-enabled' {
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity='jdoe' } }
+        Mock Enable-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith {}
+        Mock Set-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith {}
+        $r = Invoke-CtgExchangeOnboarding -User $user -Config $config
+        Should -Invoke Enable-RemoteMailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'already enabled'
+    }
+}
+
+Describe 'Set-CtgMailboxRegional' {
+    It 'sets language/timezone and grants the manager Reviewer on the calendar' {
+        Mock Set-MailboxRegionalConfiguration -ModuleName Coretelligent.Exchange -MockWith {}
+        Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith {}
+        $config = [pscustomobject]@{ regional=[pscustomobject]@{ language='en-us'; timezone='Pacific Standard Time'; defaultTimezone='Eastern Standard Time' }; calendar=[pscustomobject]@{ grantManagerReviewer=$true } }
+        Set-CtgMailboxRegional -Identity 'jdoe@core.tech' -Config $config -ManagerEmail 'boss@core.tech'
+        Should -Invoke Set-MailboxRegionalConfiguration -ModuleName Coretelligent.Exchange -ParameterFilter { $TimeZone -eq 'Pacific Standard Time' } -Times 1
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $User -eq 'boss@core.tech' -and $AccessRights -eq 'Reviewer' } -Times 1
+    }
+
+    It 'falls back to the default timezone when the location had none (literal {token})' {
+        Mock Set-MailboxRegionalConfiguration -ModuleName Coretelligent.Exchange -MockWith {}
+        $config = [pscustomobject]@{ regional=[pscustomobject]@{ language='en-us'; timezone='{location.timezone}'; defaultTimezone='Eastern Standard Time' } }
+        Set-CtgMailboxRegional -Identity 'jdoe@core.tech' -Config $config
+        Should -Invoke Set-MailboxRegionalConfiguration -ModuleName Coretelligent.Exchange -ParameterFilter { $TimeZone -eq 'Eastern Standard Time' } -Times 1
+    }
+}
+
+Describe 'Wait-CtgMailbox' {
+    It 'returns Found as soon as the mailbox appears in EXO' {
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity='jdoe' } }
+        $r = Wait-CtgMailbox -Identity 'jdoe@core.tech' -TimeoutSeconds 5 -IntervalSeconds 0
+        $r.Found | Should -BeTrue
+        $r.Status | Should -Be 'ok'
+    }
+
+    It 'returns timeout when the mailbox never lands within the window' {
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $r = Wait-CtgMailbox -Identity 'jdoe@core.tech' -TimeoutSeconds 0 -IntervalSeconds 0
+        $r.Found | Should -BeFalse
+        $r.Status | Should -Be 'timeout'
+    }
+
+    It 'keeps polling until the mailbox appears (no open-ended sleep)' {
+        $script:n = 0
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $script:n++; if ($script:n -ge 3) { [pscustomobject]@{ Identity='jdoe' } } else { $null } }
+        $r = Wait-CtgMailbox -Identity 'jdoe@core.tech' -TimeoutSeconds 10 -IntervalSeconds 0
+        $r.Found | Should -BeTrue
+        Should -Invoke Get-Mailbox -ModuleName Coretelligent.Exchange -Times 3
     }
 }

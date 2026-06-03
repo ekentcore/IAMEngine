@@ -136,3 +136,46 @@ Describe 'Confirm-CtgAD' {
         ($r.checks | Where-Object { $_.name -eq 'not moved (do-not-move-ou)' }).pass | Should -BeFalse
     }
 }
+
+Describe 'Set-CtgADAttributes' {
+    It 'Set-ADUser -Replace each non-empty attribute' {
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        $applied = Set-CtgADAttributes -Identity 'jdoe' -Attributes @{ title='Engineer'; department='Field Services'; c='US' }
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 3
+        ($applied -join '|') | Should -Match 'title=Engineer'
+    }
+
+    It 'skips empty / null values' {
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        $applied = Set-CtgADAttributes -Identity 'jdoe' -Attributes @{ title=''; st=$null; department='X' }
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1
+        ($applied -join '|') | Should -Not -Match 'title'
+    }
+
+    It 'resolves a manager NAME to a DN and sets -Manager' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Boss,OU=Users,DC=x' } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        Set-CtgADAttributes -Identity 'jdoe' -Attributes @{ manager='Jane Boss' }
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Manager -eq 'CN=Jane Boss,OU=Users,DC=x' } -Times 1
+    }
+
+    It 'uses a manager DN as-is (no lookup)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        Set-CtgADAttributes -Identity 'jdoe' -Attributes @{ manager='CN=Boss,OU=Users,DC=x' }
+        Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Manager -eq 'CN=Boss,OU=Users,DC=x' } -Times 1
+    }
+
+    It 'onboarding applies the resolved attribute map' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        Mock New-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        Mock Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -MockWith {}
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; DisplayName='John Doe'; FirstName='John'; LastName='Doe'; UserPrincipalName='jdoe@core.tech'; PrimaryDomain='core.tech' }
+        $config = [pscustomobject]@{ ou='OU=Field,DC=x'; attributes=[pscustomobject]@{ title='Engineer'; department='Field Services' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        ($r.Actions -join '|') | Should -Match 'set attribute: title=Engineer'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.department -eq 'Field Services' } -Times 1
+    }
+}

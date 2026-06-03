@@ -96,6 +96,46 @@ function Resolve-CtgSkuId {
     return $null
 }
 
+# Seat-aware E5/E3 fallback (the internal script's rule): read LIVE SKU consumption — a decision the
+# planner can't make — and add the user to the E5 Entra group when a seat is free, else fall back to
+# E3. Config.seatAwareLicense: { skuId, entraGroupWhenAvailable, entraGroupFallback?, adGroupFallback? }.
+# Returns the chosen Tier + (when the fallback is an AD group the M365 lane can't touch) the AD group
+# name for the runner to hand to the active-directory lane.
+function Set-CtgSeatAwareLicense {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$UserId, [Parameter(Mandatory)]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $sku = Get-MgSubscribedSku -SubscribedSkuId (Get-CtgProp $Config 'skuId') -ErrorAction SilentlyContinue
+    $enabled = [int](Get-CtgProp (Get-CtgProp $sku 'PrepaidUnits') 'Enabled')
+    $consumed = [int](Get-CtgProp $sku 'ConsumedUnits')
+    $available = $enabled - $consumed
+    $fallbackAdGroup = $null
+
+    if ($sku -and $available -gt 0) {
+        $tier = 'E5'
+        $g = Get-CtgProp $Config 'entraGroupWhenAvailable'
+        if ($g -and $PSCmdlet.ShouldProcess($UserId, "Add to E5 group $g")) {
+            New-MgGroupMember -GroupId $g -DirectoryObjectId $UserId
+            $actions.Add("E5 seat available ($available) — added to E5 Entra group")
+        }
+    }
+    else {
+        $tier = 'E3'
+        $eg = Get-CtgProp $Config 'entraGroupFallback'
+        if ($eg) {
+            if ($PSCmdlet.ShouldProcess($UserId, "Add to E3 group $eg")) {
+                New-MgGroupMember -GroupId $eg -DirectoryObjectId $UserId
+                $actions.Add("no E5 seat — added to E3 Entra group")
+            }
+        }
+        else {
+            $fallbackAdGroup = Get-CtgProp $Config 'adGroupFallback'
+            $actions.Add("no E5 seat — fall back to AD group: $fallbackAdGroup")
+        }
+    }
+    [pscustomobject]@{ Tier = $tier; FallbackAdGroup = $fallbackAdGroup; Actions = $actions.ToArray() }
+}
+
 function New-CtgCompliantPassword {
     <#
     .SYNOPSIS
@@ -252,6 +292,14 @@ function Invoke-CtgM365Onboarding {
             New-MgGroupMember -GroupId $group.Id -DirectoryObjectId $userId
             $actions.Add("added to group: $groupName")
         }
+    }
+
+    # 3b. Seat-aware E5/E3 fallback (live SKU consumption) ----------------------
+    $seatAware = Get-CtgProp $Config 'seatAwareLicense'
+    if ($seatAware) {
+        $sal = Set-CtgSeatAwareLicense -UserId $userId -Config $seatAware
+        foreach ($a in $sal.Actions) { $actions.Add("license: $a") }
+        if ($sal.FallbackAdGroup) { $script:CtgLicenseFallbackAdGroup = $sal.FallbackAdGroup }
     }
 
     # 4. Alias — only if requested ---------------------------------------------
@@ -434,4 +482,4 @@ function Confirm-CtgM365 {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365

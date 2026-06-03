@@ -5,12 +5,13 @@
     "id": "coretelligent",
     "name": "Coretelligent",
     "primaryDomain": "coretelligent.com",
+    "emailDomain": "core.tech",
     "domains": ["core.tech"]
   },
 
   "identity": {
     "backbone": "ad-synced",
-    "usernamePatterns": ["{firstInitial}{last}@core.tech"],
+    "usernamePatterns": ["{firstInitial}{last}"],
     "lowercase": true,
     "password": { "mode": "generate", "minLength": 16, "onOffboard": "reset-and-capture" },
     "directorySync": { "host": "CORE-CCE-AZSYNC.coretelligent.local", "command": "Start-ADSyncSyncCycle -PolicyType Delta" }
@@ -46,8 +47,8 @@
         "title": "{title}",
         "department": "{role.name}",
         "manager": "{manager}",
-        "city": "{location.city}",
-        "state": "{location.state}",
+        "l": "{location.city}",
+        "st": "{location.state}",
         "physicalDeliveryOfficeName": "{location.name}",
         "telephoneNumber": "{did}",
         "homePhone": "{mobile}",

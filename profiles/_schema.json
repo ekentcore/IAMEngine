@@ -20,6 +20,7 @@
         "name":          { "type": "string" },
         "primaryDomain": { "type": "string" },
         "domains":       { "type": "array", "items": { "type": "string" }, "description": "All routable domains, e.g. uovo.com / uovo.fashion / uovo.art." },
+        "emailDomain":   { "type": "string", "description": "Curated email/UPN domain when it differs from the website primaryDomain (e.g. Coretelligent: site coretelligent.com, mail core.tech). Sets Client.emailDomain at seed time; used for identity derivation." },
         "pod":           { "type": "string" }
       }
     },

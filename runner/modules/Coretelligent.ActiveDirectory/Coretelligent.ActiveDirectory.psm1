@@ -56,6 +56,39 @@ function Test-CtgCondition {
 
 #endregion
 
+# Apply a directory-attribute map (the planner's resolved $Config.attributes) generically: each
+# attribute is Set-ADUser -Replace'd, so a new attribute is a profile edit with NO module change.
+# `manager` is special — it's a DN-valued attribute, so a readable name is resolved to a DN first.
+# Returns the list of applied "name=value" pairs (for the actions log).
+function Set-CtgADAttributes {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$Identity, $Attributes)
+    $applied = [System.Collections.Generic.List[string]]::new()
+    if (-not $Attributes) { return $applied.ToArray() }
+    # Works for a JSON-deserialized pscustomobject (production) or a hashtable (tests).
+    $names = if ($Attributes -is [hashtable]) { @($Attributes.Keys) } else { @($Attributes.PSObject.Properties.Name) }
+    foreach ($name in $names) {
+        $value = if ($Attributes -is [hashtable]) { $Attributes[$name] } else { $Attributes.$name }
+        if ($null -eq $value -or "$value" -eq '') { continue }
+        if ($name -ieq 'manager') {
+            # already a DN? else resolve by name
+            $dn = if ("$value" -match '^(CN|OU)=') { "$value" } else {
+                (Get-ADUser -Filter "Name -eq '$value'" -ErrorAction SilentlyContinue | Select-Object -First 1).DistinguishedName
+            }
+            if ($dn -and $PSCmdlet.ShouldProcess($Identity, "Set manager = $dn")) {
+                Set-ADUser -Identity $Identity -Manager $dn -ErrorAction Continue
+                $applied.Add("manager=$dn")
+            }
+            continue
+        }
+        if ($PSCmdlet.ShouldProcess($Identity, "Set $name = $value")) {
+            Set-ADUser -Identity $Identity -Replace @{ $name = $value } -ErrorAction Continue
+            $applied.Add("$name=$value")
+        }
+    }
+    return $applied.ToArray()
+}
+
 function Invoke-CtgADOnboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -94,7 +127,12 @@ function Invoke-CtgADOnboarding {
         }
     }
 
-    # 3. Groups: base + conditional --------------------------------------------
+    # 3. Directory attributes (resolved by the planner) ------------------------
+    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'attributes'))) {
+        $actions.Add("set attribute: $a")
+    }
+
+    # 4. Groups: base + conditional --------------------------------------------
     $groups = [System.Collections.Generic.List[string]]::new()
     foreach ($g in @(Get-CtgProp $Config 'groups')) { if ($g) { $groups.Add([string]$g) } }
     foreach ($cg in @(Get-CtgProp $Config 'conditionalGroups')) {
@@ -251,4 +289,4 @@ function Confirm-CtgAD {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Set-CtgADAttributes, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD

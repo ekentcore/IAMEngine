@@ -43,6 +43,82 @@ function Get-CtgMailboxSizeGB {
     return 0
 }
 
+# Hybrid onboarding: enable the on-prem remote mailbox so Azure AD Connect provisions a mailbox in
+# Exchange Online. Runs on the client-network agent against the ON-PREM Exchange management session
+# (Enable-RemoteMailbox / *-RemoteMailbox), not EXO. Idempotent: skips if already remote-enabled.
+# Config.enableRemoteMailbox: { routingDomain, emailAddressPolicyEnabled }.
+function Invoke-CtgExchangeOnboarding {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $cfg = Get-CtgProp $Config 'enableRemoteMailbox'
+    if (-not $cfg) { return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @('no remote-mailbox config — skipped') } }
+
+    $identity = $User.SamAccountName
+    $alias = ([string]((Get-CtgProp $User 'MailNickname') ?? $User.SamAccountName)).ToLower()
+    $smtp = (Get-CtgProp $User 'WorkEmail') ?? $User.UserPrincipalName
+    $routingDomain = Get-CtgProp $cfg 'routingDomain'
+    $routing = "$alias@$routingDomain"
+
+    $existing = Get-RemoteMailbox -Identity $identity -ErrorAction SilentlyContinue
+    if ($existing) {
+        $actions.Add("remote mailbox already enabled ($identity)")
+    }
+    elseif ($PSCmdlet.ShouldProcess($identity, "Enable remote mailbox -> $routing")) {
+        Enable-RemoteMailbox -Identity $identity -RemoteRoutingAddress $routing -Alias $alias -DisplayName $User.DisplayName -PrimarySmtpAddress $smtp | Out-Null
+        $actions.Add("enabled remote mailbox: $smtp (routing $routing)")
+    }
+
+    if ((Get-CtgProp $cfg 'emailAddressPolicyEnabled') -ne $false -and $PSCmdlet.ShouldProcess($identity, "EmailAddressPolicyEnabled = true")) {
+        Set-RemoteMailbox -Identity $identity -EmailAddressPolicyEnabled $true
+        $actions.Add("email address policy enabled")
+    }
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $smtp; Routing = $routing; Actions = $actions.ToArray() }
+}
+
+# Post-sync EXO finishing: regional config (language/timezone) + grant the manager Reviewer on the
+# new user's calendar. Runs after the mailbox has landed in Exchange Online (see the sync-wait).
+# A timezone that's still a literal {token} (the location had none) falls back to the default.
+function Set-CtgMailboxRegional {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$Identity, [Parameter(Mandatory)][pscustomobject]$Config, [string]$ManagerEmail)
+    $actions = [System.Collections.Generic.List[string]]::new()
+
+    $regional = Get-CtgProp $Config 'regional'
+    if ($regional) {
+        $lang = [string]((Get-CtgProp $regional 'language') ?? 'en-us')
+        $tz = [string](Get-CtgProp $regional 'timezone')
+        if ([string]::IsNullOrWhiteSpace($tz) -or $tz -match '\{') { $tz = [string]((Get-CtgProp $regional 'defaultTimezone') ?? 'Eastern Standard Time') }
+        if ($PSCmdlet.ShouldProcess($Identity, "Regional: $lang / $tz")) {
+            Set-MailboxRegionalConfiguration -Identity $Identity -Language $lang -TimeZone $tz
+            $actions.Add("regional set: $lang / $tz")
+        }
+    }
+
+    $cal = Get-CtgProp $Config 'calendar'
+    if ($cal -and (Get-CtgProp $cal 'grantManagerReviewer') -and $ManagerEmail -and $PSCmdlet.ShouldProcess($Identity, "Grant $ManagerEmail Reviewer on calendar")) {
+        Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $ManagerEmail -AccessRights Reviewer -Confirm:$false | Out-Null
+        $actions.Add("granted $ManagerEmail Reviewer on calendar")
+    }
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
+}
+
+# Sync-wait: after Azure AD Connect runs a delta, poll Exchange Online until the new user's mailbox
+# appears (the script's `Do { Start-Sleep 30; Get-Mailbox } While ($null)` — but app-orchestrated,
+# bounded, never an open-ended sleep). Returns Found/timeout so the runner can decide to proceed to
+# the post-sync regional/calendar step or surface a slow sync.
+function Wait-CtgMailbox {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Identity, [int]$TimeoutSeconds = 600, [int]$IntervalSeconds = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $mbx = Get-Mailbox -Identity $Identity -ErrorAction SilentlyContinue
+        if ($mbx) { return [pscustomobject]@{ Status = 'ok'; Found = $true; Identity = $Identity } }
+        if ((Get-Date) -ge $deadline) { return [pscustomobject]@{ Status = 'timeout'; Found = $false; Identity = $Identity } }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
+}
+
 function Invoke-CtgExchangeOffboarding {
     <#
     .SYNOPSIS
@@ -148,4 +224,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
