@@ -101,12 +101,49 @@ Coretelligent-internal these are SSO-by-group, so the dedicated SaaS modules
 (`Coretelligent.Zoom`, etc.) are not invoked — the group adds in `active-directory` cover
 them. Worth confirming when we write the profile.
 
+## Design decisions (locked)
+
+How per-client variation scales without modules sprouting per-client branches. A module is a
+generic engine; a client is data; a module never branches on client identity.
+
+- **Conditional logic resolves in the planner, not the modules.** The app already holds the
+  full intake + profile, so it flattens `globals + persona + location + conditionals` into a
+  concrete per-job `config` (resolved groups, attributes, OU). The runner receives decisions,
+  not rules — and the UI can preview the exact plan before anything runs.
+- **Only live-state conditions stay in the modules** — the ones the app cannot see: seat-aware
+  E5/E3 fallback (reads consumed units) and keep-license-if-mailbox-over-threshold (reads
+  mailbox size). Everything role/location/title/option-driven is plan-time data.
+- **Personas are a reusable schema concept** (`personas` + `globals`), usable by any role-driven
+  client — not a Coretelligent special case. Cloud-only clients omit them.
+- **Attributes are a generic map**, not named per-attribute parameters: the module loops over
+  `attributes` and sets each (`-Replace`), so a new attribute is a profile edit, zero module
+  change.
+- **One condition + template grammar** (`$defs/condition`, `{token}` interpolation) used
+  everywhere a `when` or a value template appears, across all systems.
+- **Schema tightening is light-touch:** AD and M365 config get documented `$defs`
+  (`adOnboardConfig`, `m365OnboardConfig`, …) that validate known keys but keep
+  `additionalProperties: true`; long-tail systems stay fully open.
+
+## Schema changes shipped (`profiles/_schema.json`, v2.1)
+
+Backward compatible — `schemaVersion` accepts `2.0` and `2.1`; all existing v2 profiles still
+validate (raith is a stale `1.0` file that never conformed and is untouched).
+
+- `schemaVersion` widened to `["2.0", "2.1"]`.
+- New top-level `globals` and `personas` blocks (config fragments keyed by system key).
+- New `$defs`: `condition` (the grammar), `groupList` (plain + conditional group entries),
+  `attributeMap` (generic attribute → templated/conditional value), `ouSpec` (string or
+  conditional `{path, when}` list), `configFragment`, `persona`.
+- AD/M365 config `$defs` wired via `if/then` on the system `key`; `m365OnboardConfig` adds
+  `seatAwareLicenses` for the run-time E5/E3 fallback.
+- Token templating documented at the schema root (`$comment`).
+
 ## Next steps
 
-1. Fill the module gaps (priority order): AD attributes (`Set-CtgADAttributes` +
-   conditional-group grammar), `Invoke-CtgExchangeOnboarding`, EXO regional + calendar,
-   seat-aware E5/E3 licensing.
-2. Write `profiles/coretelligent.json` from the `$roles` / `$locations` / `$global_groups`
-   tables, validated against `profiles/_schema.json` — this surfaces exactly which config the
-   schema cannot yet express (conditional groups, per-location OU) and feeds the schema work in
-   step 1.
+1. **Planner resolution** (web/app): the merge + condition engine + `{token}` interpolation
+   that turns profile + intake → flat `job.config`; ingest `personas`/`globals` in the seed.
+2. **Module gaps** (now smaller — they apply flat data): `Set-CtgADAttributes` (generic
+   `-Replace` loop over the resolved `attributes`), `Invoke-CtgExchangeOnboarding`
+   (`Enable-RemoteMailbox`), EXO regional + calendar, seat-aware E5/E3.
+3. **`profiles/coretelligent.json`**: author from the `$roles` / `$locations` /
+   `$global_groups` tables against v2.1 — the proof the abstraction holds.

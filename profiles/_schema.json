@@ -2,13 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://coretelligent.internal/onboarding/profile.schema.json",
   "title": "Client Lifecycle Profile",
-  "description": "Declarative join/leave (and eventually move) definition for a single client. One file per client. The runbook becomes data; the per-system logic lives in shared modules; the orchestrator selects the lane via -Action.",
+  "description": "Declarative join/leave (and eventually move) definition for a single client. One file per client. The runbook becomes data; the per-system logic lives in shared modules; the orchestrator selects the lane via -Action. Per-client variation (groups, OUs, attributes, licenses) is expressed as config — never as module code.",
+  "$comment": "Token templating: string values in attributes, ou paths, homeDrive.unc, and group names may contain {tokens} resolved at PLAN time against the case context. Known tokens: {first} {last} {firstInitial} {username} {upn} {domain} {title} {department} {employmentType} {startDate} {extension} {role.name} {location.name} {location.timezone} {country.short} {country.name} {country.code}. The legacy <username> form is accepted as an alias for {username}. Conditions (see $defs/condition) use the same context and are resolved by the planner; only conditions on live system state (seat counts, mailbox size) stay in the modules.",
   "type": "object",
   "required": ["schemaVersion", "client", "identity", "secrets", "systems"],
   "additionalProperties": false,
 
   "properties": {
-    "schemaVersion": { "const": "2.0" },
+    "schemaVersion": { "enum": ["2.0", "2.1"], "description": "2.1 adds top-level personas/globals and the unified condition grammar. 2.0 profiles remain valid (the new blocks are optional)." },
 
     "client": {
       "type": "object",
@@ -47,7 +48,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "when":   { "type": "string", "description": "Case-variable condition, e.g. 'group == Prialto'." },
+              "when":   { "$ref": "#/$defs/condition" },
               "domain": { "type": "string" },
               "ou":     { "type": "string" }
             }
@@ -86,6 +87,18 @@
       "additionalProperties": { "$ref": "#/$defs/secretRef" }
     },
 
+    "globals": {
+      "type": "object",
+      "description": "Config fragments applied to EVERY user, keyed by system key (e.g. 'active-directory', 'm365'). The planner deep-merges these UNDER persona and system config, resolving any conditional entries at plan time. Replaces the old script's $global_groups. Optional.",
+      "additionalProperties": { "$ref": "#/$defs/configFragment" }
+    },
+
+    "personas": {
+      "type": "object",
+      "description": "Reusable role/persona bundles (replaces the old script's $roles table). Selected by intake (roles[]/title) or auto-selected via 'match'. Each persona contributes config fragments per system, layered between globals and the system's own config. Optional; cloud-only clients omit it.",
+      "additionalProperties": { "$ref": "#/$defs/persona" }
+    },
+
     "delivery": {
       "type": "object",
       "required": ["method"],
@@ -116,6 +129,102 @@
       }
     },
 
+    "condition": {
+      "type": "string",
+      "description": "Boolean expression resolved at PLAN time against the case context (intake + selected persona + location + requested options). Grammar: <term> [(&& | ||) <term>]*, each term '<var> <op> <value>'. Vars are dotted paths: role.name, location.name, country.short, title, employmentType, plus intake booleans (avd, perimeter, ...). Operators: == != ~= (regex match) and 'in [a, b, c]'. Values may be quoted or bare; true/false are booleans. Examples: 'avd == true', 'location.name == CA', 'title ~= ^Remote Support', 'country.short == US && employmentType == Full-Time', 'title in [Project Manager, Project Engineer]'. An empty/absent condition means always-true. Conditions that need LIVE system state (seat counts, mailbox size) are NOT expressed here — the module owns those.",
+      "minLength": 1
+    },
+
+    "groupList": {
+      "type": "array",
+      "description": "Security/distribution groups. Each item is either a plain group name (string, may contain {tokens}) or a conditional bundle { groups, when } added only when the condition resolves true. Supersedes the separate 'conditionalGroups' key (still accepted for back-compat).",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["groups"],
+            "properties": {
+              "groups": { "type": "array", "items": { "type": "string" } },
+              "when":   { "$ref": "#/$defs/condition" }
+            }
+          }
+        ]
+      }
+    },
+
+    "attributeMap": {
+      "type": "object",
+      "description": "Directory attribute name -> value, applied generically (the module loops and sets each; new attributes need NO module change). Values are {token} templates. Use the exact directory attribute name (e.g. title, department, company, extensionAttribute4, ipPhone, c, co, countryCode, employeeType). A value may also be a conditional list resolved to the first matching entry.",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": ["string", "number", "boolean"] },
+          {
+            "type": "array",
+            "description": "Conditional value: first entry whose 'when' resolves true wins.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value"],
+              "properties": {
+                "value": { "type": ["string", "number", "boolean"] },
+                "when":  { "$ref": "#/$defs/condition" }
+              }
+            }
+          }
+        ]
+      }
+    },
+
+    "ouSpec": {
+      "description": "An OU as a single DN/name (string, may contain {tokens}) OR an array of { path, when } resolved to the first matching path at plan time.",
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string" },
+              "when": { "$ref": "#/$defs/condition" }
+            }
+          }
+        }
+      ]
+    },
+
+    "configFragment": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Partial system config contributed by globals or a persona, deep-merged by the planner under the system's own config. May carry conditional group/OU/attribute entries resolved at plan time. Open-ended so it can carry any key the target system's config supports.",
+      "properties": {
+        "groups":     { "$ref": "#/$defs/groupList" },
+        "attributes": { "$ref": "#/$defs/attributeMap" },
+        "ou":         { "$ref": "#/$defs/ouSpec" },
+        "licenses":   { "type": "array", "items": {} }
+      }
+    },
+
+    "persona": {
+      "type": "object",
+      "required": ["systems"],
+      "additionalProperties": false,
+      "properties": {
+        "label":  { "type": "string" },
+        "titles": { "type": "array", "items": { "type": "string" }, "description": "Selectable job titles for this persona (intake picks one; 'Other' allows free text)." },
+        "match":  { "$ref": "#/$defs/condition", "description": "Optional: auto-select this persona when the condition resolves true, instead of explicit intake selection." },
+        "systems": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "system key -> config fragment this persona contributes (e.g. active-directory: { ou, groups, attributes }, m365: { licenses }).",
+          "additionalProperties": { "$ref": "#/$defs/configFragment" }
+        }
+      }
+    },
+
     "when": {
       "enum": ["always", "on-request", "never"],
       "description": "always = every run; on-request = only if a case variable asks for it; never = system absent for this lifecycle action."
@@ -141,7 +250,93 @@
           }
         },
         "guardrails":      { "type": "array", "items": { "enum": ["do-not-delete", "do-not-move-ou", "no-device-wipe-without-approval"] }, "description": "Destructive-action protections that vary by client and are catastrophic to get wrong." },
-        "config":          { "type": "object", "additionalProperties": true, "description": "System- and action-specific settings: license bundles, group lists, OU paths, mailbox thresholds, data-transfer targets, etc." }
+        "config":          { "type": "object", "additionalProperties": true, "description": "System- and action-specific settings: license bundles, group lists, OU paths, mailbox thresholds, data-transfer targets, etc. Known keys for active-directory and m365 are validated (see adOnboardConfig/m365OnboardConfig); other systems stay open-ended." }
+      }
+    },
+
+    "adOnboardConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "active-directory onboard config. Known keys validated; extras allowed.",
+      "properties": {
+        "ou":        { "$ref": "#/$defs/ouSpec" },
+        "homeDrive": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "letter": { "type": "string" }, "unc": { "type": "string" } }
+        },
+        "groups":            { "$ref": "#/$defs/groupList" },
+        "conditionalGroups": {
+          "type": "array",
+          "description": "Legacy form (now also expressible inline in 'groups'). Each entry adds its groups when 'when' resolves true.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["groups"],
+            "properties": {
+              "when":   { "$ref": "#/$defs/condition" },
+              "groups": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "attributes": { "$ref": "#/$defs/attributeMap" }
+      }
+    },
+
+    "adOffboardConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "active-directory offboard config. Known keys validated; extras allowed.",
+      "properties": {
+        "resetPassword":   { "type": "boolean" },
+        "removeAllGroups": { "type": "boolean" },
+        "disableAccount":  { "type": "boolean" },
+        "hideFromGal": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "attribute": { "type": "string" }, "value": { "type": "string" }, "method": { "type": "string" } }
+        },
+        "disabledUsersOu": { "type": "string" }
+      }
+    },
+
+    "m365OnboardConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "m365 onboard config. Known keys validated; extras allowed.",
+      "properties": {
+        "licenses":        { "type": "array", "items": {} },
+        "defaultLicenses": { "type": "array", "items": {} },
+        "groups":          { "$ref": "#/$defs/groupList" },
+        "defaultGroups":   { "type": "array", "items": { "type": "string" } },
+        "alias":           { "type": "object" },
+        "seatAwareLicenses": {
+          "type": "array",
+          "description": "Run-time license fallback resolved by the module against LIVE seat counts: try each in order, assign the first with an available seat (via group membership or a direct SKU). Replaces the script's E5-else-E3 logic.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["license"],
+            "properties": {
+              "license": { "type": "string" },
+              "group":   { "type": "string" },
+              "skuId":   { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "m365OffboardConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "m365 offboard config. Known keys validated; extras allowed.",
+      "properties": {
+        "blockSignIn":    { "type": "boolean" },
+        "removeAllGroups":{ "type": "boolean" },
+        "oneDriveBackup": { "type": "object" },
+        "mailbox":        { "type": "object" },
+        "removeLicense":  { "type": ["object", "boolean"], "description": "true = remove all licenses; object = conditional (e.g. { exceptWhen: 'mailbox above 50GB' }). The module honors the mailbox-size threshold either way." }
       }
     },
 
@@ -160,7 +355,27 @@
         "stopOnError": { "type": "boolean", "default": false },
         "onboard":     { "$ref": "#/$defs/lane" },
         "offboard":    { "$ref": "#/$defs/lane" }
-      }
+      },
+      "allOf": [
+        {
+          "if":   { "required": ["key"], "properties": { "key": { "const": "active-directory" } } },
+          "then": {
+            "properties": {
+              "onboard":  { "properties": { "config": { "$ref": "#/$defs/adOnboardConfig" } } },
+              "offboard": { "properties": { "config": { "$ref": "#/$defs/adOffboardConfig" } } }
+            }
+          }
+        },
+        {
+          "if":   { "required": ["key"], "properties": { "key": { "const": "m365" } } },
+          "then": {
+            "properties": {
+              "onboard":  { "properties": { "config": { "$ref": "#/$defs/m365OnboardConfig" } } },
+              "offboard": { "properties": { "config": { "$ref": "#/$defs/m365OffboardConfig" } } }
+            }
+          }
+        }
+      ]
     }
   }
 }
