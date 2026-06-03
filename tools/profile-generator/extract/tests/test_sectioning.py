@@ -159,6 +159,39 @@ class TestStepSection:
         assert all("Sync the directory" not in s for s in self._entra().steps)
 
 
+class TestBuriedTextStep:
+    """KB editors sometimes bury a trailing instruction in a nested plain "step" div with no
+    <li>/<p> (the close-the-case note at the end of "Resolving Case" is the real example). It must
+    still be captured as a step, not silently dropped, and not double-counted."""
+
+    HTML = """
+      <h2>Resolving Case</h2>
+      <div class="step-section">Send the new user's credentials through a secure email.
+        <div class="step scrollable">
+          <div><div> </div>
+            <div><div><div>Once the computer has been configured for the user - or if there is no
+            computer configured - close all of the tasks to resolve the case.</div></div></div>
+          </div>
+        </div>
+      </div>
+      <h2>Done</h2><p>x</p>
+    """
+
+    def _sec(self):
+        return {s.header: s for s in split_sections(self.HTML)}["resolving case"]
+
+    def test_leading_instruction_captured(self):
+        assert any("Send the new user's credentials" in s for s in self._sec().steps)
+
+    def test_buried_close_case_note_captured(self):
+        joined = " || ".join(self._sec().steps)
+        assert "close all of the tasks to resolve the case" in joined
+
+    def test_buried_note_not_double_captured(self):
+        joined = " || ".join(self._sec().steps)
+        assert joined.count("close all of the tasks to resolve the case") == 1
+
+
 class TestSectionHtml:
     """Each section keeps its inner HTML so typed-artifact extractors (email, attachment)
     can read anchors/structure the flattened text/steps lose."""

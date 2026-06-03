@@ -134,6 +134,16 @@ def _section_steps(header: Tag, header_ids: set[int]) -> list[str]:
             if txt:
                 steps.append("  " * max(0, _step_depth(el) - 1) + txt)
             continue
+        # A plain "step" div (not a "step-section") that holds only text — no <li>/<p>/list the
+        # branches below would capture. KB editors sometimes bury a trailing instruction (e.g.
+        # "…close all of the tasks to resolve the case.") in deeply-nested <div>s like this; without
+        # this it's silently dropped. Guarded on "no list/p inside" so normal step divs (which wrap
+        # a list) aren't double-captured.
+        if _is_step_div(el) and not el.find(["li", "p", "ul", "ol"]):
+            txt = _own_text(el)
+            if txt:
+                steps.append("  " * max(0, _step_depth(el) - 1) + txt)
+            continue
         if el.name not in STEP_TAGS:
             continue
         if el.name == "p" and any(isinstance(a, Tag) and a.name == "li" for a in el.parents):
