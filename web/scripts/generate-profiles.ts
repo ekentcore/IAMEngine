@@ -64,7 +64,9 @@ async function main() {
   const byDomain = new Map<string, RosterClient>();
   const byName = new Map<string, RosterClient>();
   for (const c of roster) {
-    if (c.primaryDomain) byDomain.set(c.primaryDomain.toLowerCase(), c);
+    // only key real domains (must contain a dot) so a garbage roster primaryDomain like
+    // "top" can't collide with every KB client's path-derived pseudo-domain.
+    if (c.primaryDomain && c.primaryDomain.includes(".")) byDomain.set(c.primaryDomain.toLowerCase(), c);
     const nk = nameKey(c.name);
     if (nk) byName.set(nk, c);
   }
