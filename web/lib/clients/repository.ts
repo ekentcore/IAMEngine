@@ -69,6 +69,7 @@ export function makeClientRepository(db: PrismaClient) {
           offboardingRating: true,
           snLastSyncedAt: true,
           editedFields: true,
+          identity: true,
           systems: { select: { systemKey: true } },
           // the runbook seq is the documented run order; used to list systems in execution order
           runbook: { select: { systemKey: true, action: true, seq: true } },
@@ -88,6 +89,7 @@ export function makeClientRepository(db: PrismaClient) {
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
         editedFields: r.editedFields,
+        usernamePattern: ((r.identity as { usernamePatterns?: string[] } | null)?.usernamePatterns?.[0] ?? "{first}.{last}@{domain}").split("@")[0],
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
         modeled: r.systems.length > 0,
@@ -174,6 +176,18 @@ export function makeClientRepository(db: PrismaClient) {
     },
     async setBackbone(slug: string, backbone: Backbone | null) {
       return db.client.update({ where: { slug }, data: { backbone, editedFields: await addEdited(db, slug, "backbone") } });
+    },
+    // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
+    // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses
+    // the left-of-@ part and resolves the domain separately).
+    async setUsernamePattern(slug: string, localPattern: string) {
+      const c = await db.client.findUnique({ where: { slug }, select: { identity: true } });
+      const identity = (c?.identity ?? {}) as Record<string, unknown>;
+      const next = { ...identity, usernamePatterns: [`${localPattern}@{domain}`] };
+      return db.client.update({
+        where: { slug },
+        data: { identity: next as Prisma.InputJsonValue, editedFields: await addEdited(db, slug, "usernamePattern") },
+      });
     },
 
     // Hard refresh: overwrite ALL SN-owned fields from a freshly-fetched account (incl. the

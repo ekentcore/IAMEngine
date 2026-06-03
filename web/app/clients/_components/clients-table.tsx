@@ -22,6 +22,7 @@ export type ClientVM = {
   offboardingRating: number | null;
   snLastSyncedAt: string | null;
   editedFields: string[];
+  usernamePattern: string;
   systemKeys: string[];
   systemCount: number;
   modeled: boolean;
@@ -74,7 +75,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const [editSlug, setEditSlug] = useState<string | null>(null);
 
   // inline cell editing (double-click)
-  const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" } | null>(null);
+  const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
   const [savingCell, setSavingCell] = useState(false);
 
   // archive confirmation
@@ -266,7 +267,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           {visible.length === clients.length ? `${clients.length} clients` : `${visible.length} of ${clients.length}`}
         </span>
       </div>
-      <p className="note" style={{ margin: "0.35rem 0 0" }}>Double-click a domain or backbone cell to edit it.</p>
+      <p className="note" style={{ margin: "0.35rem 0 0" }}>Double-click a domain, backbone, or email-format cell to edit it.</p>
 
       {hiddenByStatus > 0 && (
         <p className="note filter-hint">
@@ -274,6 +275,16 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <button type="button" className="linklike" onClick={() => setStatusFilter("all")}>show all statuses</button>
         </p>
       )}
+
+      <datalist id="username-patterns">
+        <option value="{first}.{last}">first.last</option>
+        <option value="{f}{last}">flast</option>
+        <option value="{first}{l}">firstl</option>
+        <option value="{first}_{last}">first_last</option>
+        <option value="{first}-{last}">first-last</option>
+        <option value="{last}.{first}">last.first</option>
+        <option value="{first}">first</option>
+      </datalist>
 
       <table className="data-table clients-table">
         <thead>
@@ -292,6 +303,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
             <SortHead k="coreId" label="CORE id" />
             <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
+            <th className="help" title="Email/UPN name format — e.g. {first}.{last} → jane.doe@domain">Email format</th>
             <SortHead k="onboardingRating" label="On / Off" num />
             <SortHead k="systemCount" label="Systems" num />
             <SortHead k="status" label="Status" />
@@ -369,6 +381,32 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   </>
                 )}
               </td>
+              <td className="mono editable" title="Double-click to edit the email name format" onDoubleClick={() => setCell({ slug: c.slug, field: "username" })}>
+                {cell?.slug === c.slug && cell.field === "username" ? (
+                  <input
+                    autoFocus
+                    list="username-patterns"
+                    defaultValue={c.usernamePattern}
+                    disabled={savingCell}
+                    style={{ width: 130, padding: "2px 6px" }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveCell(c.slug, "set-username-pattern", { pattern: (e.target as HTMLInputElement).value });
+                      else if (e.key === "Escape") setCell(null);
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value.trim() && e.target.value !== c.usernamePattern) saveCell(c.slug, "set-username-pattern", { pattern: e.target.value });
+                      else setCell(null);
+                    }}
+                  />
+                ) : (
+                  <>
+                    {c.usernamePattern}
+                    {c.editedFields.includes("usernamePattern") && (
+                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                    )}
+                  </>
+                )}
+              </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
               <td className={`num tnum ${c.systemCount ? "" : "muted"}`}>
                 {c.systemCount ? (
@@ -405,7 +443,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={9}>
+              <td colSpan={10}>
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>

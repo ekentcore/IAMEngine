@@ -20,7 +20,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -37,6 +37,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (!domain) return NextResponse.json({ error: "domain must be a domain like acme.com" }, { status: 422 });
     const client = await repo.setPrimaryDomain(params.slug, domain);
     await repo.writeAudit({ actor: "ui", action: "client.domain.set", clientId: client.id, detail: { primaryDomain: domain } });
+    return NextResponse.json(client);
+  }
+
+  // Inline table edit: the email/UPN name format (identity.usernamePatterns[0]).
+  if (body.action === "set-username-pattern") {
+    const raw = typeof body.pattern === "string" ? body.pattern.trim() : "";
+    const local = raw.split("@")[0]; // accept a full pattern or just the local part
+    if (!/\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i.test(local)) {
+      return NextResponse.json({ error: "pattern must include a name token like {first} or {last}" }, { status: 422 });
+    }
+    const client = await repo.setUsernamePattern(params.slug, local);
+    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: local } });
     return NextResponse.json(client);
   }
 
