@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { isEmail, isAttachment, type Artifact, type EmailArtifact, type AttachmentArtifact } from "@/lib/runbook/artifacts";
-import { dependencyDepth, indentStyle } from "@/lib/dependency-depth";
 
 export type RunbookItemVM = {
   id: string; // `${action}-${seq}`
@@ -35,8 +34,6 @@ export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: str
         const ids = group.map((i) => i.id);
         const auto = group.filter((i) => i.status === "automated").length;
         const kb = group.find((i) => i.kbHref);
-        // indent each step under the step(s) it runs after (deps are within an action lane).
-        const depth = dependencyDepth(group.map((i) => ({ key: i.systemKey ?? i.id, deps: i.after })));
         return (
           <div key={action} style={{ marginTop: "1rem" }}>
             <div className="row-between" style={{ alignItems: "baseline" }}>
@@ -53,7 +50,7 @@ export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: str
               {group.length} steps — {auto} automated, {group.length - auto} human interaction
             </p>
             {group.map((it, idx) => (
-              <Item key={it.id} it={it} n={idx + 1} slug={slug} indent={depth.get(it.systemKey ?? it.id) ?? 0} open={open.has(it.id)} onToggle={() => toggle(it.id)} />
+              <Item key={it.id} it={it} n={idx + 1} slug={slug} open={open.has(it.id)} onToggle={() => toggle(it.id)} />
             ))}
           </div>
         );
@@ -62,16 +59,15 @@ export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: str
   );
 }
 
-function Item({ it, n, slug, indent, open, onToggle }: { it: RunbookItemVM; n: number; slug: string; indent: number; open: boolean; onToggle: () => void }) {
+function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; slug: string; open: boolean; onToggle: () => void }) {
   const auto = it.status === "automated";
   const emails = it.artifacts.filter(isEmail);
   const attachments = it.artifacts.filter(isAttachment);
   const badge = auto ? "✅ Automated" : it.status === "manual" ? "✋ Human · manual" : "✋ Human · needs module";
   const title = it.systemKey ? `${it.systemKey} — ${it.title}` : it.guess ? `${it.title} (${it.guess})` : it.title;
   return (
-    <details open={open} style={{ margin: "0.2rem 0", ...indentStyle(indent) }}>
+    <details open={open} style={{ margin: "0.2rem 0" }}>
       <summary onClick={(e) => { e.preventDefault(); onToggle(); }} style={{ cursor: "pointer" }}>
-        {indent > 0 && <span className="muted" style={{ marginRight: 4 }}>↳</span>}
         <strong style={{ marginRight: 6 }}>{n}.</strong>
         <span className={`badge ${auto ? "automated" : "human"}`}>{badge}</span> {title}
         {emails.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· ✉ email</span>}
