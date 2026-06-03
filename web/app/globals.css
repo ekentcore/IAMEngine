@@ -68,6 +68,17 @@ th.sortable:hover { color: var(--fg); }
 th.sortable.sorted { color: var(--fg); }
 th .arrow { color: var(--fg); margin-left: 0.25rem; font-size: 9px; display: inline-block; width: 0.7em; }
 
+/* hover popover — a reliable, styled replacement for the native title= tooltip (which is slow
+   and often doesn't render). Used to reveal a client's system list from the Systems count. */
+.tip { position: relative; cursor: help; border-bottom: 1px dotted var(--muted); }
+.tip > .tip-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5;
+  display: none; width: max-content; max-width: 320px; white-space: normal; text-align: left;
+  background: var(--fg); color: #fff; font-weight: 400; font-size: 12px; line-height: 1.45;
+  padding: 0.4rem 0.6rem; border-radius: 4px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+.tip:hover > .tip-pop, .tip:focus-within > .tip-pop { display: block; }
+
 /* modal result rows + spinner */
 .kv { display: flex; justify-content: space-between; padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
 .kv:last-child { border-bottom: none; }

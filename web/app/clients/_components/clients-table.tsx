@@ -234,12 +234,15 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
-              <td
-                className={`num tnum ${c.systemCount ? "" : "muted"}`}
-                style={{ cursor: c.systemCount ? "help" : "default" }}
-                title={c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)"}
-              >
-                {c.systemCount || "—"}
+              <td className={`num tnum ${c.systemCount ? "" : "muted"}`}>
+                {c.systemCount ? (
+                  <span className="tip" tabIndex={0}>
+                    {c.systemCount}
+                    <span className="tip-pop">{c.systemKeys.join(", ")}</span>
+                  </span>
+                ) : (
+                  "—"
+                )}
               </td>
               <td>
                 {c.status === "archived" ? (
