@@ -2,9 +2,10 @@
   "schemaVersion": "2.0",
 
   "client": {
-    "id": "marketscience",
+    "id": "core1028",
     "name": "MarketScience",
-    "primaryDomain": "marketscience.co"
+    "primaryDomain": "marketscience.co",
+    "domains": ["market.science"]
   },
 
   "identity": {
