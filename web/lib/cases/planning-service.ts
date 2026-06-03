@@ -5,6 +5,7 @@ import { planCase, type PlannedJob } from "../orchestrator";
 import { deriveIdentity } from "../servicenow/intake-mapper";
 import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
+import type { ResolveClient } from "../clients/email-domain";
 
 export type PlanOutcome = {
   caseId: string;
@@ -24,20 +25,27 @@ export function deriveStatus(jobs: PlannedJob[]): CaseStatus {
 export async function createAndPlanCase(
   repo: CaseRepository,
   input: NewCaseInput,
-  actor: string
+  actor: string,
+  // Optional: resolve the email/UPN domain from the client's ServiceNow contacts (+ per-case
+  // override). When omitted (e.g. manual cases) the cached emailDomain or website domain is used.
+  opts?: { resolveDomain?: (client: ResolveClient) => Promise<string> }
 ): Promise<PlanOutcome> {
   const client = await repo.clientForPlanning(input.clientSlug);
   if (!client) throw new Error(`client not found: ${input.clientSlug}`);
 
-  // For onboarding, derive the user's identity (UPN/SamAccountName/work email) from the
-  // client's username pattern + primary domain so the runner modules receive ready-to-use
-  // fields. Offboarding identifies an existing user, so no derivation is needed.
+  // For onboarding, derive the user's identity (UPN/SamAccountName/work email) from the client's
+  // username pattern + EMAIL domain so the runner modules receive ready-to-use fields. Prefer the
+  // contact-derived emailDomain over the website-derived primaryDomain; a resolver (when supplied)
+  // refreshes it from contacts and applies any per-case override. Offboarding identifies an
+  // existing user, so no derivation is needed.
   const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null };
+  let domain = client.emailDomain ?? client.primaryDomain;
+  if (input.action === "onboard" && opts?.resolveDomain) domain = await opts.resolveDomain(client);
   const payload =
     input.action === "onboard"
       ? deriveIdentity(input.payload, {
           usernamePatterns: identity.usernamePatterns ?? null,
-          primaryDomain: client.primaryDomain,
+          primaryDomain: domain,
         })
       : input.payload;
 

@@ -6,6 +6,7 @@ import { fetchUserManagementCase } from "../servicenow/intake";
 import { normalizeIntake } from "../servicenow/intake-mapper";
 import { makeCaseRepository } from "./repository";
 import { createAndPlanCase, type PlanOutcome } from "./planning-service";
+import { makeEmailDomainResolver } from "./plan-domain";
 
 export type ImportResult =
   | { ok: true; outcome: PlanOutcome; caseNumber: string; alreadyImported?: boolean }
@@ -14,7 +15,8 @@ export type ImportResult =
 export async function importCaseFromServiceNow(
   db: PrismaClient,
   number: string,
-  actor: string
+  actor: string,
+  opts?: { emailDomainOverride?: string }
 ): Promise<ImportResult> {
   const repo = makeCaseRepository(db);
 
@@ -49,6 +51,7 @@ export async function importCaseFromServiceNow(
     };
   }
 
+  const resolver = makeEmailDomainResolver(db);
   const outcome = await createAndPlanCase(
     repo,
     {
@@ -58,7 +61,8 @@ export async function importCaseFromServiceNow(
       subject: intake.subject,
       payload: intake.payload,
     },
-    actor
+    actor,
+    { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
   );
 
   return { ok: true, outcome, caseNumber: intake.caseNumber };

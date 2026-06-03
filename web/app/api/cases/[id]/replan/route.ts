@@ -7,9 +7,16 @@ import { SnGatewayError } from "@/lib/servicenow/gateway";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: { id: string } }) {
+  let override: string | undefined;
   try {
-    const res = await replanCase(db, params.id, "ui");
+    const body = (await req.json()) as { emailDomain?: string };
+    if (typeof body?.emailDomain === "string") override = body.emailDomain;
+  } catch {
+    // no body / not JSON — re-plan without an override
+  }
+  try {
+    const res = await replanCase(db, params.id, "ui", override);
     if (!res.ok) {
       const status = res.code === "not_found" ? 404 : 409;
       return NextResponse.json({ error: res.error, code: res.code }, { status });

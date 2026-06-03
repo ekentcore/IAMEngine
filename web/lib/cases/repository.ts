@@ -11,11 +11,20 @@ export function makeCaseRepository(db: PrismaClient) {
     // Client + its systems + identity, needed to plan a case (identity/domain drive the UPN/
     // SamAccountName derivation). null if the client doesn't exist.
     async clientForPlanning(slug: string): Promise<
-      { id: string; name: string; slug: string; primaryDomain: string; identity: unknown; systems: ClientSystem[] } | null
+      | {
+          id: string; name: string; slug: string; primaryDomain: string;
+          emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
+          identity: unknown; systems: ClientSystem[];
+        }
+      | null
     > {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, name: true, slug: true, primaryDomain: true, identity: true, systems: true },
+        select: {
+          id: true, name: true, slug: true, primaryDomain: true,
+          emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
+          identity: true, systems: true,
+        },
       });
       return c;
     },
@@ -76,14 +85,24 @@ export function makeCaseRepository(db: PrismaClient) {
     // identity + systems), and whether any job has already started (re-plan is pre-execution only).
     async replanInputs(caseId: string): Promise<
       | { serviceNowCaseNumber: string | null; action: Action; payload: Record<string, unknown>;
-          client: { id: string; slug: string; primaryDomain: string; identity: unknown; systems: ClientSystem[] }; started: boolean }
+          client: {
+            id: string; slug: string; primaryDomain: string;
+            emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
+            identity: unknown; systems: ClientSystem[];
+          }; started: boolean }
       | null
     > {
       const c = await db.caseRequest.findUnique({
         where: { id: caseId },
         select: {
           serviceNowCaseNumber: true, action: true, payload: true,
-          client: { select: { id: true, slug: true, primaryDomain: true, identity: true, systems: true } },
+          client: {
+            select: {
+              id: true, slug: true, primaryDomain: true,
+              emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
+              identity: true, systems: true,
+            },
+          },
           jobs: { select: { status: true } },
         },
       });

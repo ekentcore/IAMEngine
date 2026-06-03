@@ -134,6 +134,21 @@ export function makeClientRepository(db: PrismaClient) {
       });
     },
 
+    // Cache a contact-derived email domain (best-effort, from the domain resolver). Never touches a
+    // locked value — the resolver only calls this on the unlocked path.
+    async setEmailDomain(clientId: string, emailDomain: string): Promise<void> {
+      await db.client.update({ where: { id: clientId }, data: { emailDomain } });
+    },
+
+    // Human curation: set (or clear) the email domain and its lock. A locked value is authoritative
+    // — the contact-derivation won't overwrite it.
+    async setCuratedEmailDomain(slug: string, emailDomain: string | null, lock: boolean) {
+      return db.client.update({
+        where: { slug },
+        data: { emailDomain, emailDomainLocked: lock },
+      });
+    },
+
     // Replace a client's whole system set (and optionally its backbone) in one transaction:
     // upsert each desired system, delete any the client has that aren't in the new set.
     async replaceSystems(

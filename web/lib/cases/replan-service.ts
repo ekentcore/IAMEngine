@@ -11,12 +11,13 @@ import { fetchUserManagementCase } from "../servicenow/intake";
 import { makeCaseRepository } from "./repository";
 import { deriveStatus, type PlanOutcome } from "./planning-service";
 import { CaseAlreadyStartedError } from "./job-status";
+import { makeEmailDomainResolver } from "./plan-domain";
 
 export type ReplanResult =
   | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean }
   | { ok: false; error: string; code: "not_found" | "already_started" };
 
-export async function replanCase(db: PrismaClient, caseId: string, actor: string): Promise<ReplanResult> {
+export async function replanCase(db: PrismaClient, caseId: string, actor: string, override?: string): Promise<ReplanResult> {
   const repo = makeCaseRepository(db);
   const info = await repo.replanInputs(caseId);
   if (!info) return { ok: false, error: "case not found", code: "not_found" };
@@ -45,10 +46,12 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
     }
   }
 
-  // Re-derive the identity for onboarding from the client's CURRENT username pattern + domain.
+  // Re-derive the identity for onboarding from the client's CURRENT username pattern + the resolved
+  // EMAIL domain (contact-derived, with any per-case override), falling back to the website domain.
   if (action === "onboard") {
     const identity = (info.client.identity ?? {}) as { usernamePatterns?: string[] | null };
-    payload = deriveIdentity(payload, { usernamePatterns: identity.usernamePatterns ?? null, primaryDomain: info.client.primaryDomain });
+    const { domain } = await makeEmailDomainResolver(db)(info.client, override);
+    payload = deriveIdentity(payload, { usernamePatterns: identity.usernamePatterns ?? null, primaryDomain: domain });
   }
 
   const planned = planCase(info.client.systems, action, payload);

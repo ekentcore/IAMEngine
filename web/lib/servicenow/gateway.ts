@@ -54,6 +54,31 @@ export async function fetchSnAccounts(
   return all;
 }
 
+// Email addresses of an account's ACTIVE contacts — the ground truth for the org's email domain
+// (vs the website-derived primaryDomain). display_value=false so each field is a plain string.
+export async function fetchAccountContactEmails(
+  config: SnConfig,
+  accountSysId: string,
+  fetcher: Fetcher = fetch
+): Promise<string[]> {
+  if (!accountSysId) return [];
+  assertConfig(config);
+  const rows = await snGet<Array<{ email?: string | { value?: string } }>>(
+    config,
+    "/api/now/table/customer_contact",
+    {
+      sysparm_query: `account=${accountSysId}^active=true`,
+      sysparm_fields: "email",
+      sysparm_display_value: "false",
+      sysparm_limit: "200",
+    },
+    fetcher
+  );
+  return rows
+    .map((r) => (typeof r.email === "string" ? r.email : r.email?.value ?? ""))
+    .filter((e) => e.trim() !== "");
+}
+
 // Build SnConfig from environment (server-side only).
 export function snConfigFromEnv(): SnConfig {
   return {

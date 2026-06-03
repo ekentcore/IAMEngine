@@ -69,8 +69,13 @@ model Client {
   id            String         @id @default(cuid())
   slug          String         @unique
   name          String
-  primaryDomain String
+  primaryDomain String         // website domain (from SN `website`) — informational
   domains       String[]
+  // Email/UPN domain, derived from the dominant domain of the client's SN contacts (ground truth,
+  // vs the website which often differs). Used for identity derivation. emailDomainLocked = a human
+  // curated it; sync + contact-derivation must not overwrite a locked value.
+  emailDomain        String?
+  emailDomainLocked  Boolean   @default(false)
   backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
   identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
