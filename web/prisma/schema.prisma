@@ -83,6 +83,11 @@ model Client {
   backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
   identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
+  // v2.1 plan-time resolution inputs (from the profile): role/persona bundles, every-user config
+  // fragments, and the location data table. The planner merges these into each job's config.
+  personas      Json?
+  globals       Json?
+  locations     Json?
   status        ClientStatus   @default(active)
   createdAt     DateTime       @default(now())
   archivedAt    DateTime?

@@ -14,7 +14,7 @@ export function makeCaseRepository(db: PrismaClient) {
       | {
           id: string; name: string; slug: string; primaryDomain: string;
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
-          identity: unknown; systems: ClientSystem[];
+          identity: unknown; personas: unknown; globals: unknown; locations: unknown; systems: ClientSystem[];
         }
       | null
     > {
@@ -23,7 +23,7 @@ export function makeCaseRepository(db: PrismaClient) {
         select: {
           id: true, name: true, slug: true, primaryDomain: true,
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
-          identity: true, systems: true,
+          identity: true, personas: true, globals: true, locations: true, systems: true,
         },
       });
       return c;
@@ -88,7 +88,7 @@ export function makeCaseRepository(db: PrismaClient) {
           client: {
             id: string; slug: string; primaryDomain: string;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
-            identity: unknown; systems: ClientSystem[];
+            identity: unknown; personas: unknown; globals: unknown; locations: unknown; systems: ClientSystem[];
           }; started: boolean }
       | null
     > {
@@ -100,7 +100,7 @@ export function makeCaseRepository(db: PrismaClient) {
             select: {
               id: true, slug: true, primaryDomain: true,
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
-              identity: true, systems: true,
+              identity: true, personas: true, globals: true, locations: true, systems: true,
             },
           },
           jobs: { select: { status: true } },
