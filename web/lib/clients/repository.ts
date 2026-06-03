@@ -159,6 +159,14 @@ export function makeClientRepository(db: PrismaClient) {
       });
     },
 
+    // Inline table edits.
+    async setPrimaryDomain(slug: string, primaryDomain: string) {
+      return db.client.update({ where: { slug }, data: { primaryDomain } });
+    },
+    async setBackbone(slug: string, backbone: Backbone | null) {
+      return db.client.update({ where: { slug }, data: { backbone } });
+    },
+
     // Cache a contact-derived email domain (best-effort, from the domain resolver). Never touches a
     // locked value — the resolver only calls this on the unlocked path.
     async setEmailDomain(clientId: string, emailDomain: string): Promise<void> {

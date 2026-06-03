@@ -132,6 +132,11 @@ td.num, th.num { text-align: right; }
 
 .empty-state { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
 
+/* double-click-to-edit table cells */
+td.editable { cursor: cell; }
+td.editable:hover { background: var(--bg-soft); box-shadow: inset 0 0 0 1px var(--line); }
+td.editable input, td.editable select { font: inherit; }
+
 /* hoverable help affordance (tooltip via title=) */
 .help { cursor: help; }
 th.help { text-decoration: underline dotted; text-underline-offset: 3px; }

@@ -1,9 +1,12 @@
 // GET   /api/clients/:slug — client detail (systems + secrets).
 // PATCH /api/clients/:slug — { action: "archive" | "restore" | "set-email-domain" }.
 import { NextResponse } from "next/server";
+import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
+
+const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
 type Ctx = { params: { slug: string } };
 
@@ -15,7 +18,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -25,6 +28,26 @@ export async function PATCH(req: Request, { params }: Ctx) {
   const repo = makeClientRepository(db);
   const existing = await repo.getClientBySlug(params.slug);
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Inline table edit: the website domain.
+  if (body.action === "set-domain") {
+    const domain = normalizeDomainInput(typeof body.domain === "string" ? body.domain : "");
+    if (!domain) return NextResponse.json({ error: "domain must be a domain like acme.com" }, { status: 422 });
+    const client = await repo.setPrimaryDomain(params.slug, domain);
+    await repo.writeAudit({ actor: "ui", action: "client.domain.set", clientId: client.id, detail: { primaryDomain: domain } });
+    return NextResponse.json(client);
+  }
+
+  // Inline table edit: the backbone (or "" / null to clear).
+  if (body.action === "set-backbone") {
+    let backbone: Backbone | null;
+    if (body.backbone === null || body.backbone === "") backbone = null;
+    else if (typeof body.backbone === "string" && BACKBONES.includes(body.backbone)) backbone = body.backbone as Backbone;
+    else return NextResponse.json({ error: `backbone must be one of ${BACKBONES.join(", ")} (or empty)` }, { status: 422 });
+    const client = await repo.setBackbone(params.slug, backbone);
+    await repo.writeAudit({ actor: "ui", action: "client.backbone.set", clientId: client.id, detail: { backbone } });
+    return NextResponse.json(client);
+  }
 
   // Curate (and lock) the email/UPN domain — a locked value the contact-derivation won't overwrite.
   if (body.action === "set-email-domain") {

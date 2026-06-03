@@ -72,9 +72,31 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [editSlug, setEditSlug] = useState<string | null>(null);
 
+  // inline cell editing (double-click)
+  const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" } | null>(null);
+  const [savingCell, setSavingCell] = useState(false);
+
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
   const [pending, setPending] = useState<ClientVM | null>(null);
+
+  async function saveCell(slug: string, action: string, payload: Record<string, unknown>) {
+    setSavingCell(true);
+    try {
+      const res = await fetch(`/api/clients/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      if (!res.ok) alert(`Failed: ${(await res.json()).error ?? res.statusText}`);
+      else {
+        setCell(null);
+        router.refresh();
+      }
+    } finally {
+      setSavingCell(false);
+    }
+  }
 
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
@@ -173,7 +195,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <span className="search-icon" aria-hidden>⌕</span>
           <input
             className="search"
-            placeholder="Search name, CORE id, domain, region, backbone, system…"
+            placeholder="Search name, CORE id, domain, backbone, system…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             spellCheck={false}
@@ -197,6 +219,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           {visible.length === clients.length ? `${clients.length} clients` : `${visible.length} of ${clients.length}`}
         </span>
       </div>
+      <p className="note" style={{ margin: "0.35rem 0 0" }}>Double-click a domain or backbone cell to edit it.</p>
 
       {hiddenByStatus > 0 && (
         <p className="note filter-hint">
@@ -210,7 +233,6 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <tr>
             <SortHead k="name" label="Name" />
             <SortHead k="coreId" label="CORE id" />
-            <SortHead k="region" label="Region" />
             <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
             <SortHead k="onboardingRating" label="On / Off" num />
@@ -224,10 +246,46 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
             <tr key={c.id}>
               <td><Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
-              <td className="muted">{c.region ?? "—"}</td>
-              <td className="muted mono">{c.primaryDomain || "—"}</td>
-              <td>
-                {c.backbone ? (
+              <td
+                className="muted mono editable"
+                title="Double-click to edit the domain"
+                onDoubleClick={() => setCell({ slug: c.slug, field: "domain" })}
+              >
+                {cell?.slug === c.slug && cell.field === "domain" ? (
+                  <input
+                    autoFocus
+                    defaultValue={c.primaryDomain}
+                    disabled={savingCell}
+                    style={{ width: 150, padding: "2px 6px" }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveCell(c.slug, "set-domain", { domain: (e.target as HTMLInputElement).value });
+                      else if (e.key === "Escape") setCell(null);
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value.trim() && e.target.value !== c.primaryDomain) saveCell(c.slug, "set-domain", { domain: e.target.value });
+                      else setCell(null);
+                    }}
+                  />
+                ) : (
+                  c.primaryDomain || "—"
+                )}
+              </td>
+              <td className="editable" title="Double-click to edit the backbone" onDoubleClick={() => setCell({ slug: c.slug, field: "backbone" })}>
+                {cell?.slug === c.slug && cell.field === "backbone" ? (
+                  <select
+                    autoFocus
+                    defaultValue={c.backbone ?? ""}
+                    disabled={savingCell}
+                    onChange={(e) => saveCell(c.slug, "set-backbone", { backbone: e.target.value || null })}
+                    onBlur={() => setCell(null)}
+                  >
+                    <option value="">not modeled</option>
+                    <option value="entra">Entra</option>
+                    <option value="google">Google</option>
+                    <option value="ad_synced">AD synced</option>
+                    <option value="ad_standalone">AD standalone</option>
+                  </select>
+                ) : c.backbone ? (
                   <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
                 ) : (
                   <span className="badge unmodeled">not modeled</span>
@@ -263,7 +321,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={9}>
+              <td colSpan={8}>
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
