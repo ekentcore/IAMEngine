@@ -63,6 +63,27 @@ Describe 'Connect-CtgExchange' {
     }
 }
 
+Describe 'Connect-CtgExchangeOnPrem' {
+    BeforeAll {
+        function global:New-PSSession { [CmdletBinding()] param($ConfigurationName, $ConnectionUri, $Authentication, $Credential) }
+        function global:Import-PSSession { [CmdletBinding()] param($Session, $CommandName, [switch]$AllowClobber, [switch]$DisableNameChecking) }
+        Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
+    }
+
+    It 'opens a Kerberos Exchange remote session and imports only the *RemoteMailbox cmdlets' {
+        $cred = [pscredential]::new('CORE\svc-ex', (ConvertTo-SecureString 'p' -AsPlainText -Force))
+        Mock New-PSSession    -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Id = 7; Name = 'exch' } }
+        Mock Import-PSSession -ModuleName Coretelligent.Exchange -MockWith { }
+        $s = Connect-CtgExchangeOnPrem -ConnectionUri 'http://core-cce1-ex01.coretelligent.local/PowerShell/' -Credential $cred
+        $s.Id | Should -Be 7
+        Should -Invoke New-PSSession -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter {
+            $ConfigurationName -eq 'Microsoft.Exchange' -and $ConnectionUri -eq 'http://core-cce1-ex01.coretelligent.local/PowerShell/' -and $Authentication -eq 'Kerberos'
+        }
+        # selective import avoids clobbering EXO's Get-Mailbox / Set-MailboxRegionalConfiguration
+        Should -Invoke Import-PSSession -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $CommandName -contains '*RemoteMailbox' -and $AllowClobber }
+    }
+}
+
 Describe 'Confirm-CtgExchange' {
     BeforeEach {
         function global:Get-Mailbox { [CmdletBinding()] param($Identity) }

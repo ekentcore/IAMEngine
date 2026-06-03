@@ -21,6 +21,8 @@ function Get-CtgProp {
     return $null
 }
 
+# Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
+# offboard (convert-to-shared, CAS), the post-sync mailbox wait, and regional/calendar finishing.
 function Connect-CtgExchange {
     [CmdletBinding()]
     param(
@@ -30,6 +32,23 @@ function Connect-CtgExchange {
     )
     Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false
     Write-Verbose "Connected to Exchange Online for $Organization."
+}
+
+# On-prem Exchange management session (hybrid only) — the *RemoteMailbox cmdlets (Enable/Get/Set-
+# RemoteMailbox) live ON-PREM, not in EXO, so the hybrid enable step needs a remote PowerShell
+# session to the client's Exchange server over Kerberos. We import ONLY *RemoteMailbox so the EXO
+# cmdlets already in scope (Get-Mailbox, Set-MailboxRegionalConfiguration, …) are not clobbered.
+# Returns the session so the caller can Remove-PSSession when the agent shuts down.
+function Connect-CtgExchangeOnPrem {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ConnectionUri,   # e.g. http://exch01.client.local/PowerShell/
+        [Parameter(Mandatory)][pscredential]$Credential
+    )
+    $session = New-PSSession -ConfigurationName 'Microsoft.Exchange' -ConnectionUri $ConnectionUri -Authentication 'Kerberos' -Credential $Credential
+    Import-PSSession -Session $session -CommandName '*RemoteMailbox' -AllowClobber -DisableNameChecking | Out-Null
+    Write-Verbose "Connected to on-prem Exchange at $ConnectionUri (imported *RemoteMailbox)."
+    $session
 }
 
 # Mailbox size in GB, parsed from Get-MailboxStatistics TotalItemSize ("75 GB (80,530,…bytes)").
@@ -252,4 +271,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

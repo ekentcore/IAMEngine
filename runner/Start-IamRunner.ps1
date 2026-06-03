@@ -62,8 +62,15 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action }
     }
     'exchange' = @{
-        # EXO app-only needs certificate auth; the m365-admin secret carries the cert thumbprint.
-        Connect  = { param($job, $creds) $s = $creds['m365-admin']; Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint'] }
+        # EXO app-only needs certificate auth (m365-admin carries the cert thumbprint). A hybrid
+        # onboard ALSO needs an on-prem Exchange session for Enable-RemoteMailbox — established only
+        # when the job brokered the `exchange-onprem` secret (its Fields carry the PowerShell URI).
+        Connect  = { param($job, $creds)
+            $s = $creds['m365-admin']; Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint']
+            # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only.
+            $op = $creds['exchange-onprem']
+            if ($op -and $job.action -ne 'offboard') { Connect-CtgExchangeOnPrem -ConnectionUri $op.Fields['ConnectionUri'] -Credential $op.Credential }
+        }
         # Hybrid onboard across the AAD Connect sync boundary: enable remote mailbox -> wait for sync -> regional/calendar (one job).
         Onboard  = { param($job, $creds) Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
