@@ -24,6 +24,14 @@ export function resolveGroups(list: unknown, ctx: PlanContext): string[] {
   return out.filter((g) => { const k = g.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
+// Interpolate a template; return undefined if it still has an unresolved {token} (the value's data
+// wasn't in context — e.g. {location.city} for a location with no city), so the attribute is OMITTED
+// rather than written with a literal token. Matches the script (null attrs are skipped).
+function resolvedTemplate(template: string, ctx: PlanContext): string | undefined {
+  const out = interpolate(template, ctx);
+  return /\{[a-zA-Z]/.test(out) ? undefined : out;
+}
+
 // attributeMap value: a template scalar, or a conditional list (first matching `when` wins).
 export function resolveAttributes(map: unknown, ctx: PlanContext): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
@@ -31,9 +39,12 @@ export function resolveAttributes(map: unknown, ctx: PlanContext): Record<string
   for (const [attr, value] of Object.entries(map as Record<string, unknown>)) {
     if (Array.isArray(value)) {
       const hit = (value as Array<{ value: unknown; when?: string }>).find((e) => e && typeof e === "object" && evalCondition(e.when, ctx));
-      if (hit !== undefined) out[attr] = typeof hit.value === "string" ? interpolate(hit.value, ctx) : (hit.value as string | number | boolean);
+      if (hit === undefined) continue;
+      if (typeof hit.value === "string") { const r = resolvedTemplate(hit.value, ctx); if (r !== undefined) out[attr] = r; }
+      else out[attr] = hit.value as string | number | boolean;
     } else if (typeof value === "string") {
-      out[attr] = interpolate(value, ctx);
+      const r = resolvedTemplate(value, ctx);
+      if (r !== undefined) out[attr] = r;
     } else if (typeof value === "number" || typeof value === "boolean") {
       out[attr] = value;
     }

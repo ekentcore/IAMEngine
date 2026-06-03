@@ -99,6 +99,12 @@
       "additionalProperties": { "$ref": "#/$defs/persona" }
     },
 
+    "locations": {
+      "type": "object",
+      "description": "Location data (replaces the script's $locations table). Keyed by location name (matched to the intake's location). Each entry enriches the plan context as location.* and country.* — so conditions ('location.name == CA', 'country.short == US') and templates ('{location.timezone}', '{country.code}') resolve. Optional; clients without location-driven logic omit it.",
+      "additionalProperties": { "$ref": "#/$defs/location" }
+    },
+
     "delivery": {
       "type": "object",
       "required": ["method"],
@@ -126,6 +132,28 @@
         "provider": { "enum": ["delinea"] },
         "id":       { "type": "string" },
         "label":    { "type": "string" }
+      }
+    },
+
+    "location": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "A location's data, merged into the plan context as location.* (and country.*). All fields optional; unknown keys allowed.",
+      "properties": {
+        "timezone": { "type": "string", "description": "Windows time-zone id, e.g. 'Pacific Standard Time'. Defaults handled by the module/profile." },
+        "country":  {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "short": { "type": "string", "description": "ISO-3166 alpha-2, e.g. US, IN." },
+            "name":  { "type": "string" },
+            "code":  { "type": ["string", "number"], "description": "ISO numeric, e.g. 840, 356." }
+          }
+        },
+        "address": { "type": "string" },
+        "city":    { "type": "string" },
+        "state":   { "type": "string" },
+        "zip":     { "type": "string" }
       }
     },
 
