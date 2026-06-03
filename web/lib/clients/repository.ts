@@ -70,6 +70,7 @@ export function makeClientRepository(db: PrismaClient) {
           snLastSyncedAt: true,
           editedFields: true,
           identity: true,
+          emailDomain: true,
           systems: { select: { systemKey: true } },
           // the runbook seq is the documented run order; used to list systems in execution order
           runbook: { select: { systemKey: true, action: true, seq: true } },
@@ -89,6 +90,7 @@ export function makeClientRepository(db: PrismaClient) {
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
         editedFields: r.editedFields,
+        emailDomain: r.emailDomain,
         usernamePattern: ((r.identity as { usernamePatterns?: string[] } | null)?.usernamePatterns?.[0] ?? "{first}.{last}@{domain}").split("@")[0],
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,

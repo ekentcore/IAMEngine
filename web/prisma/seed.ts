@@ -87,15 +87,31 @@ async function upsertSecretsAndSystems(clientId: string, p: any): Promise<void> 
   }
 }
 
+// Drop fields a human edited in the UI (Client.editedFields) from a seed update, so a reseed
+// doesn't clobber manual corrections — matching the routine sync's behaviour. A field that was
+// never edited is written normally.
+function stripEdited<T extends Record<string, any>>(data: T, editedFields: string[]): Partial<T> {
+  const d: Record<string, any> = { ...data };
+  if (editedFields.includes("primaryDomain")) { delete d.primaryDomain; delete d.domains; }
+  if (editedFields.includes("backbone")) delete d.backbone;
+  if (editedFields.includes("usernamePattern")) delete d.identity; // identity holds usernamePatterns
+  return d as Partial<T>;
+}
+
 // Hand-authored profiles are authoritative: upsert the client by its own slug (create
 // allowed). Returns the client id (so the generated pass can protect it by id, not name).
 async function applyAuthored(p: any): Promise<string | null> {
   if (p.schemaVersion !== "2.0") return null;
   const backbone = backboneMap[p.identity.backbone];
   if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return null; }
+  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true } });
+  const update = stripEdited(
+    { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], identity: p.identity ?? undefined },
+    existing?.editedFields ?? []
+  );
   const client = await prisma.client.upsert({
     where: { slug: p.client.id },
-    update: { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], identity: p.identity ?? undefined },
+    update,
     create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined },
   });
   await upsertSecretsAndSystems(client.id, p);
@@ -125,7 +141,8 @@ async function main() {
   // authored systems but STILL gets its KB runbook (the steps are informational).
   let enriched = 0, curatedRb = 0, nonV2 = 0, unmatched = 0, runbook = 0;
   if (existsSync(GENERATED)) {
-    const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true } });
+    const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true, editedFields: true } });
+    const editedById = new Map(clients.map((c) => [c.id, c.editedFields]));
     const byName = new Map<string, string>();
     const byDomain = new Map<string, string>();
     const strippedGroups = new Map<string, Set<string>>();
@@ -152,7 +169,8 @@ async function main() {
         curatedRb++;
       } else {
         const backbone = backboneMap[p.identity.backbone];
-        await prisma.client.update({ where: { id: clientId }, data: { ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined } });
+        const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined }, editedById.get(clientId) ?? []);
+        await prisma.client.update({ where: { id: clientId }, data: update });
         await upsertSecretsAndSystems(clientId, p);
         runbook += await loadRunbook(clientId, p.client.id);
         enriched++;

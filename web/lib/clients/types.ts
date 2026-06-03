@@ -16,6 +16,7 @@ export type ClientListItem = {
   offboardingRating: number | null;
   snLastSyncedAt: Date | null;
   editedFields: string[]; // fields hand-edited in the UI (sync skips them)
+  emailDomain: string | null; // resolved email/UPN domain (for the format preview)
   usernamePattern: string; // email/UPN local-part format, e.g. "{first}.{last}"
   systemKeys: string[];
   systemCount: number;

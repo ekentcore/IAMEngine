@@ -22,6 +22,7 @@ export type ClientVM = {
   offboardingRating: number | null;
   snLastSyncedAt: string | null;
   editedFields: string[];
+  emailDomain: string | null;
   usernamePattern: string;
   systemKeys: string[];
   systemCount: number;
@@ -51,6 +52,19 @@ function haystack(c: ClientVM): string {
     .toLowerCase();
 }
 
+// Live preview of an email/UPN name format using a fixed sample person, "John Jason Doe"
+// (first John, middle Jason, last Doe). Mirrors the runner's applyUsernamePattern tokens.
+function formatPreview(localPattern: string, domain: string | null): string {
+  const v: Record<string, string> = {
+    first: "john", last: "doe", mi: "j", f: "j", l: "d", firstinitial: "j", lastinitial: "d",
+  };
+  const local = localPattern.replace(/\{[a-zA-Z]+\}/g, (tok) => {
+    const k = tok.slice(1, -1).toLowerCase();
+    return k in v ? v[k] : tok;
+  });
+  return `${local}@${domain || "domain.com"}`;
+}
+
 // null/empty sorts last regardless of direction.
 function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
   const av = a[key];
@@ -77,6 +91,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   // inline cell editing (double-click)
   const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
   const [savingCell, setSavingCell] = useState(false);
+  const [draft, setDraft] = useState(""); // live value while editing the email-format cell
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -381,23 +396,33 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   </>
                 )}
               </td>
-              <td className="mono editable" title="Double-click to edit the email name format" onDoubleClick={() => setCell({ slug: c.slug, field: "username" })}>
+              <td
+                className="mono editable"
+                title="Double-click to edit the email name format"
+                onDoubleClick={() => { setCell({ slug: c.slug, field: "username" }); setDraft(c.usernamePattern); }}
+              >
                 {cell?.slug === c.slug && cell.field === "username" ? (
-                  <input
-                    autoFocus
-                    list="username-patterns"
-                    defaultValue={c.usernamePattern}
-                    disabled={savingCell}
-                    style={{ width: 130, padding: "2px 6px" }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") saveCell(c.slug, "set-username-pattern", { pattern: (e.target as HTMLInputElement).value });
-                      else if (e.key === "Escape") setCell(null);
-                    }}
-                    onBlur={(e) => {
-                      if (e.target.value.trim() && e.target.value !== c.usernamePattern) saveCell(c.slug, "set-username-pattern", { pattern: e.target.value });
-                      else setCell(null);
-                    }}
-                  />
+                  <div>
+                    <input
+                      autoFocus
+                      list="username-patterns"
+                      value={draft}
+                      disabled={savingCell}
+                      style={{ width: 130, padding: "2px 6px" }}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveCell(c.slug, "set-username-pattern", { pattern: draft });
+                        else if (e.key === "Escape") setCell(null);
+                      }}
+                      onBlur={() => {
+                        if (draft.trim() && draft !== c.usernamePattern) saveCell(c.slug, "set-username-pattern", { pattern: draft });
+                        else setCell(null);
+                      }}
+                    />
+                    <div className="note" style={{ marginTop: 2, whiteSpace: "nowrap" }}>
+                      John Jason Doe → {formatPreview(draft, c.emailDomain ?? c.primaryDomain)}
+                    </div>
+                  </div>
                 ) : (
                   <>
                     {c.usernamePattern}
