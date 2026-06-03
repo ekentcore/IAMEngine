@@ -9,11 +9,13 @@ import { join } from "node:path";
 import { loadClientKb, type ClientKb } from "./generator/kb";
 import { buildProfile, slugify, normalizeDomain, type DraftProfile } from "./generator/build";
 import { azureConfigFromEnv, azureConfigured } from "../lib/generator/llm";
-import { enrichProfile, applyEnrichment } from "./generator/enrich";
+import { enrichProfile, applyEnrichment, enrichV21 } from "./generator/enrich";
+import { applyV21Enrichment } from "../lib/generator/enrich-v21";
 
 const prisma = new PrismaClient();
 const OUT_DIR = join(process.cwd(), "..", "profiles", "generated");
 const ENRICH = process.argv.includes("--enrich");
+const V21 = process.argv.includes("--v21"); // extract v2.1 groups/attributes/personas/locations
 const ENRICH_ALL = process.argv.includes("--all");
 const CONCURRENCY = 6;
 
@@ -67,7 +69,7 @@ async function main() {
     if (nk) byName.set(nk, c);
   }
 
-  const kbClients = loadClientKb(ENRICH); // only retain runbook text when we'll enrich
+  const kbClients = loadClientKb(ENRICH || V21); // only retain runbook text when an LLM pass needs it
   if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
@@ -80,6 +82,7 @@ async function main() {
     byConfidence: { high: 0, medium: 0, low: 0 } as Record<string, number>,
     backboneCounts: {} as Record<string, number>,
     enrichedCount: 0, backboneChanged: 0,
+    v21: V21, v21Count: 0, v21Stats: { groups: 0, attributes: 0, personas: 0, locations: 0 },
     unmodeledHeaders: {} as Record<string, number>,
     clients: [] as Array<Record<string, unknown>>,
   };
@@ -159,6 +162,32 @@ async function main() {
     }
   }
 
+  // v2.1 extraction pass: pull the group/attribute/persona/location signal the heuristic dropped.
+  if (V21) {
+    const cfg = azureConfigFromEnv();
+    if (!azureConfigured(cfg)) {
+      console.warn("--v21 set but Azure OpenAI not configured (AZUREAI_BASE/AZUREAI_API); skipping.");
+    } else {
+      const targets = entries.filter((e) => ENRICH_ALL || e.matched);
+      console.log(`v2.1 extraction on ${targets.length} profiles via ${cfg.deployment}…`);
+      let done = 0;
+      await pool(targets, CONCURRENCY, async (e) => {
+        const v = await enrichV21(cfg, e.kb);
+        if (v) {
+          applyV21Enrichment(e.profile as never, v);
+          report.v21Count++;
+          report.v21Stats.groups += v.identityGroups.length;
+          report.v21Stats.attributes += Object.keys(v.attributes).length;
+          report.v21Stats.personas += v.personas.length;
+          report.v21Stats.locations += v.locations.length;
+          e.entry.schemaVersion = e.profile.schemaVersion;
+          e.entry.v21 = { groups: v.identityGroups.length, attributes: Object.keys(v.attributes).length, personas: v.personas.length, locations: v.locations.length };
+        }
+        if (++done % 25 === 0) console.log(`  v2.1 extracted ${done}/${targets.length}`);
+      });
+    }
+  }
+
   // Write all profiles (post-enrichment) + tally backbones.
   for (const e of entries) {
     writeFileSync(join(OUT_DIR, `${e.slug}.json`), JSON.stringify(e.profile, null, 2));
@@ -175,6 +204,7 @@ async function main() {
   console.log(`  matched to roster: ${report.matched}   unmatched: ${report.unmatched}`);
   console.log(`  confidence: ${report.byConfidence.high} high / ${report.byConfidence.medium} medium / ${report.byConfidence.low} low`);
   if (ENRICH) console.log(`  enriched: ${report.enrichedCount}   backbone changed by LLM: ${report.backboneChanged}`);
+  if (V21) console.log(`  v2.1: ${report.v21Count} profiles gained signal — ${report.v21Stats.groups} groups, ${report.v21Stats.attributes} attributes, ${report.v21Stats.personas} personas, ${report.v21Stats.locations} locations`);
   console.log(`  backbones:`, report.backboneCounts);
 }
 

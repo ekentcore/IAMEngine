@@ -5,7 +5,7 @@ import { CATALOG, inferBackbone, type Lane } from "../../lib/generator/system-ma
 import type { ClientKb } from "./kb";
 
 export type DraftProfile = {
-  schemaVersion: "2.0";
+  schemaVersion: "2.0" | "2.1";
   client: { id: string; name: string; primaryDomain: string; domains?: string[] };
   identity: Record<string, unknown>;
   secrets: Record<string, { provider: "delinea"; id: string; label?: string }>;

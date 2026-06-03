@@ -1,8 +1,21 @@
 // LLM enrichment: read a client's runbook text and correct the load-bearing field
 // (backbone) + extract light per-system config the header heuristic can't see.
 import { azureChatJson, type AzureConfig } from "../../lib/generator/llm";
+import { V21_SYSTEM_PROMPT, coerceV21Enrichment, type V21Enrichment } from "../../lib/generator/enrich-v21";
 import type { ClientKb } from "./kb";
 import type { DraftProfile } from "./build";
+
+// v2.1 pass: pull the dropped group/attribute/persona/location signal from the runbook text.
+// Returns null when the client's runbook carries no such signal (stays valid v2.0).
+export async function enrichV21(cfg: AzureConfig, kb: ClientKb): Promise<V21Enrichment | null> {
+  const user = `Client: ${kb.clientLeaf}
+=== ONBOARDING RUNBOOK ===
+${kb.onboardText || "(none)"}
+=== OFFBOARDING RUNBOOK ===
+${kb.offboardText || "(none)"}`;
+  const raw = await azureChatJson(cfg, V21_SYSTEM_PROMPT, user, 1500);
+  return raw ? coerceV21Enrichment(raw) : null;
+}
 
 const SYSTEM_PROMPT = `You are analyzing a Coretelligent IT onboarding/offboarding runbook for ONE client.
 Return STRICT JSON only. Determine the identity "backbone" and extract light config.

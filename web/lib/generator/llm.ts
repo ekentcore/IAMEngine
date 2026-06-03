@@ -9,12 +9,15 @@ export type AzureConfig = {
   apiVersion: string;
 };
 
+// Reads the AZUREAI_* vars (the env.env convention) first, falling back to the older
+// AZURE_OPENAI_* names so existing setups keep working.
 export function azureConfigFromEnv(): AzureConfig {
+  const e = process.env;
   return {
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT ?? "",
-    apiKey: process.env.AZURE_OPENAI_KEY ?? "",
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini",
-    apiVersion: process.env.AZURE_OPENAI_VERSION ?? "2025-01-01-preview",
+    endpoint: e.AZUREAI_BASE ?? e.AZURE_OPENAI_ENDPOINT ?? "",
+    apiKey: e.AZUREAI_API ?? e.AZURE_OPENAI_KEY ?? "",
+    deployment: e.AZUREAI_DEPLOYMENT ?? e.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini",
+    apiVersion: e.AZUREAI_VERSION ?? e.AZURE_OPENAI_VERSION ?? "2025-01-01-preview",
   };
 }
 
@@ -26,7 +29,8 @@ export function azureConfigured(c: AzureConfig): boolean {
 export async function azureChatJson(
   c: AzureConfig,
   system: string,
-  user: string
+  user: string,
+  maxTokens = 600
 ): Promise<Record<string, unknown> | null> {
   const url = `${c.endpoint}/openai/deployments/${c.deployment}/chat/completions?api-version=${c.apiVersion}`;
   try {
@@ -40,7 +44,7 @@ export async function azureChatJson(
           { role: "user", content: redact(user) },
         ],
         temperature: 0,
-        max_tokens: 600,
+        max_tokens: maxTokens,
         response_format: { type: "json_object" },
       }),
       signal: AbortSignal.timeout(60_000),
