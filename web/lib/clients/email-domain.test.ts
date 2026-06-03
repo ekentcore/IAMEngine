@@ -27,6 +27,9 @@ test("normalizeDomainInput accepts a bare domain or a full address", () => {
   assert.equal(normalizeDomainInput("jane@marketscience.co"), "marketscience.co");
   assert.equal(normalizeDomainInput("  Acme.COM "), "acme.com");
   assert.equal(normalizeDomainInput("nonsense"), null);
+  assert.equal(normalizeDomainInput("acme..com"), null); // junk with a dot is rejected
+  assert.equal(normalizeDomainInput("acme. com"), null);
+  assert.equal(normalizeDomainInput("1.2"), null);
   assert.equal(normalizeDomainInput(""), null);
 });
 

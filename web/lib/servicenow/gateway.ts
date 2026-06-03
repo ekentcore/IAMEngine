@@ -55,7 +55,11 @@ export async function fetchSnAccounts(
 }
 
 // Email addresses of an account's ACTIVE contacts — the ground truth for the org's email domain
-// (vs the website-derived primaryDomain). display_value=false so each field is a plain string.
+// (vs the website-derived primaryDomain). Paginated so a large account isn't silently truncated to
+// a non-representative first page (which would skew the dominant-domain vote). display_value=false
+// so each field is a plain string. Hard cap keeps a pathological account from looping forever.
+const CONTACT_PAGE = 200;
+const CONTACT_MAX = 2000;
 export async function fetchAccountContactEmails(
   config: SnConfig,
   accountSysId: string,
@@ -63,20 +67,27 @@ export async function fetchAccountContactEmails(
 ): Promise<string[]> {
   if (!accountSysId) return [];
   assertConfig(config);
-  const rows = await snGet<Array<{ email?: string | { value?: string } }>>(
-    config,
-    "/api/now/table/customer_contact",
-    {
-      sysparm_query: `account=${accountSysId}^active=true`,
-      sysparm_fields: "email",
-      sysparm_display_value: "false",
-      sysparm_limit: "200",
-    },
-    fetcher
-  );
-  return rows
-    .map((r) => (typeof r.email === "string" ? r.email : r.email?.value ?? ""))
-    .filter((e) => e.trim() !== "");
+  const emails: string[] = [];
+  for (let offset = 0; offset < CONTACT_MAX; offset += CONTACT_PAGE) {
+    const page = await snGet<Array<{ email?: string | { value?: string } }>>(
+      config,
+      "/api/now/table/customer_contact",
+      {
+        sysparm_query: `account=${accountSysId}^active=true`,
+        sysparm_fields: "email",
+        sysparm_display_value: "false",
+        sysparm_limit: String(CONTACT_PAGE),
+        sysparm_offset: String(offset),
+      },
+      fetcher
+    );
+    for (const r of page) {
+      const e = typeof r.email === "string" ? r.email : r.email?.value ?? "";
+      if (e.trim() !== "") emails.push(e);
+    }
+    if (page.length < CONTACT_PAGE) break;
+  }
+  return emails;
 }
 
 // Build SnConfig from environment (server-side only).

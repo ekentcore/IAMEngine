@@ -3,7 +3,7 @@
 // → the dominant domain of the client's ServiceNow contacts (ground truth, cached) → the cached
 // value → the website domain (last resort). Pure orchestration over injected I/O so it unit-tests
 // without ServiceNow or a DB.
-import { dominantEmailDomain, emailDomainOf } from "../servicenow/email-domain";
+import { dominantEmailDomain, emailDomainOf, isPlausibleDomain } from "../servicenow/email-domain";
 
 export type ResolveDeps = {
   fetchContactEmails: (accountSysId: string) => Promise<string[]>;
@@ -21,12 +21,14 @@ export type ResolveClient = {
 export type ResolveResult = { domain: string; source: "override" | "locked" | "contacts" | "cached" | "website" };
 
 // Accept either a bare domain ("acme.com") or a full address ("jane@acme.com" / "@acme.com").
+// Returns null for anything that isn't a plausible domain (junk like "acme..com", "acme. com",
+// "1.2", a URL) — callers must treat null as "reject", not "ignore".
 export function normalizeDomainInput(input: string | null | undefined): string | null {
   const v = (input ?? "").trim().toLowerCase();
   if (!v) return null;
   if (v.includes("@")) return emailDomainOf(v.startsWith("@") ? `x${v}` : v);
   const d = v.replace(/\.+$/, "");
-  return d.includes(".") ? d : null;
+  return isPlausibleDomain(d) ? d : null;
 }
 
 export async function resolveEmailDomain(

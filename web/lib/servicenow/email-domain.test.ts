@@ -5,12 +5,23 @@ import { dominantEmailDomain, emailDomainOf } from "./email-domain";
 test("emailDomainOf extracts a clean domain, or null for malformed input", () => {
   assert.equal(emailDomainOf("Jane.Doe@Acme.COM"), "acme.com");
   assert.equal(emailDomainOf("  a@b.co  "), "b.co");
+  assert.equal(emailDomainOf("bob@mail.acme.com"), "mail.acme.com"); // subdomain kept (no PSL offline)
   assert.equal(emailDomainOf("noatsign"), null);
   assert.equal(emailDomainOf("x@"), null); // empty domain
   assert.equal(emailDomainOf("@y.com"), null); // empty local part
   assert.equal(emailDomainOf("a@b@c.com"), null); // two @
+  assert.equal(emailDomainOf("a@acme..com"), null); // double dot
+  assert.equal(emailDomainOf("a@acme"), null); // no TLD
+  assert.equal(emailDomainOf("a@-acme.com"), null); // leading hyphen label
   assert.equal(emailDomainOf(""), null);
   assert.equal(emailDomainOf(null), null);
+});
+
+test("dominantEmailDomain denylists the managing MSP's domain so it can't win a small client", () => {
+  // 3 MSP engineers + 1 employee — without the MSP denylist the MSP domain would win 3/4.
+  const r = dominantEmailDomain(["a@coretelligent.com", "b@core.tech", "c@zirkeltech.com", "jane@tinyco.io"]);
+  assert.equal(r.counted, 1); // only the real employee survives
+  assert.equal(r.domain, null); // and one contact is below the floor → abstain
 });
 
 // MarketScience's real customer_contact distribution (verified live): 36 marketscience.co,

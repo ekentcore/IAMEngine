@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { importCaseFromServiceNow } from "@/lib/cases/import-service";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
+import { normalizeDomainInput } from "@/lib/clients/email-domain";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,15 @@ export async function POST(req: Request) {
   if (typeof body.number !== "string" || !body.number.trim()) {
     return NextResponse.json({ error: "number is required (e.g. UM0028698)" }, { status: 422 });
   }
-  const emailDomainOverride = typeof body.emailDomain === "string" ? body.emailDomain : undefined;
+  // A provided override must be a real domain — reject loudly rather than silently ignoring the
+  // engineer's explicit choice.
+  let emailDomainOverride: string | undefined;
+  if (typeof body.emailDomain === "string" && body.emailDomain.trim() !== "") {
+    if (!normalizeDomainInput(body.emailDomain)) {
+      return NextResponse.json({ error: "emailDomain must be a domain like acme.com" }, { status: 422 });
+    }
+    emailDomainOverride = body.emailDomain;
+  }
 
   try {
     const result = await importCaseFromServiceNow(db, body.number, "ui:import", { emailDomainOverride });

@@ -2,9 +2,22 @@
 // its ServiceNow contacts — ground truth, vs the company `website` field which is often a
 // different domain (e.g. website market.science, mail marketscience.co). Pure: no I/O.
 
-// Integration / HR / notification senders that appear in customer_contact but are never the org's
-// own mail domain. Denylisted so they can't win the vote even when frequent.
-const DEFAULT_DENYLIST = new Set(["rippling.com", "bamboohr.com", "workday.com", "gusto.com", "adp.com"]);
+// Integration / HR / notification senders + the managing MSP(s) — these appear in a client's
+// customer_contact but are never the client's OWN mail domain. Denylisted so they can't win the
+// vote even when frequent (e.g. a small client whose contacts are mostly its MSP's engineers).
+const DEFAULT_DENYLIST = new Set([
+  // HR / payroll / notification SaaS
+  "rippling.com", "bamboohr.com", "workday.com", "gusto.com", "adp.com", "justworks.com",
+  // managing MSP(s) — Coretelligent runs this fleet; its staff are contacts on many accounts
+  "core.tech", "coretelligent.com", "zirkeltech.com",
+]);
+
+// A plausibly-valid DNS hostname: dot-separated labels (alnum/hyphen, not edge-hyphen), a 2+ char
+// alpha TLD, ≤253 chars. Rejects "acme..com", "acme. com", "1.2", bare labels, URLs.
+const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+export function isPlausibleDomain(d: string): boolean {
+  return DOMAIN_RE.test(d);
+}
 
 // Extract a normalized domain from a single address, or null if it isn't a well-formed address.
 export function emailDomainOf(email: string | null | undefined): string | null {
@@ -15,7 +28,7 @@ export function emailDomainOf(email: string | null | undefined): string | null {
   const [local, domain] = parts;
   if (!local || !domain) return null; // "@x.com" or "x@"
   const d = domain.replace(/\.+$/, ""); // trailing dot
-  return d.includes(".") ? d : null; // must look like a domain
+  return isPlausibleDomain(d) ? d : null;
 }
 
 export type DomainPick = {
@@ -48,14 +61,10 @@ export function dominantEmailDomain(emails: (string | null | undefined)[], opts:
 
   if (counted === 0) return { domain: null, share: 0, counted: 0 };
 
-  let topDomain: string | null = null;
-  let topCount = 0;
-  for (const [d, n] of counts) {
-    if (n > topCount) {
-      topCount = n;
-      topDomain = d;
-    }
-  }
+  // Highest count wins; ties break alphabetically so the result is deterministic regardless of the
+  // order ServiceNow returned contacts (a tie can't clear the share floor anyway, but stable beats
+  // arbitrary for caching/reasoning).
+  const [topDomain, topCount] = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
   const share = topCount / counted;
   const confident = counted >= minContacts && share >= minShare;
   return { domain: confident ? topDomain : null, share, counted };
