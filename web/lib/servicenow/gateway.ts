@@ -65,7 +65,10 @@ export async function fetchAccountContactEmails(
   accountSysId: string,
   fetcher: Fetcher = fetch
 ): Promise<string[]> {
-  if (!accountSysId) return [];
+  // A sys_id is 32 hex chars. Validate before interpolating into sysparm_query: ServiceNow decodes
+  // the query and parses `^` as an operator, so a non-sys_id value could inject query conditions
+  // (defense-in-depth — today this is always a trusted roster sys_id).
+  if (!/^[0-9a-f]{32}$/i.test(accountSysId)) return [];
   assertConfig(config);
   const emails: string[] = [];
   for (let offset = 0; offset < CONTACT_MAX; offset += CONTACT_PAGE) {
