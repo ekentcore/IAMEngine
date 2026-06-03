@@ -1,9 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type ClientOpt = { slug: string; name: string };
+type PlanFields = { personas: { name: string; titles: string[] }[]; locations: string[]; hasPlanConfig: boolean };
+const EMPLOYMENT_TYPES = ["Full-Time", "Part-Time", "Contractor", "Temp"];
 type PlanOutcome = { caseId: string; status: string; jobCount: number; manualCount: number; approvalCount: number };
 
 export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
@@ -85,6 +87,23 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
+  const [clientSlug, setClientSlug] = useState("");
+  const [fields, setFields] = useState<PlanFields | null>(null);
+  const [role, setRole] = useState("");
+
+  // Pull the selected client's personas/locations so the form can offer role-driven onboarding.
+  useEffect(() => {
+    if (!clientSlug) { setFields(null); setRole(""); return; }
+    let cancelled = false;
+    fetch(`/api/clients/${clientSlug}/plan-fields`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) { setFields(d); setRole(""); } })
+      .catch(() => { if (!cancelled) setFields(null); });
+    return () => { cancelled = true; };
+  }, [clientSlug]);
+
+  const roleDriven = action === "onboard" && !!fields?.hasPlanConfig;
+  const titles = fields?.personas.find((p) => p.name === role)?.titles ?? [];
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -93,15 +112,22 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
     const first = String(f.get("first") ?? "").trim();
     const last = String(f.get("last") ?? "").trim();
     const date = String(f.get("date") ?? "").trim();
+    const str = (k: string) => { const v = String(f.get(k) ?? "").trim(); return v || null; };
     const payload = action === "onboard"
-      ? { firstName: first, lastName: last, startDate: date || null, emailAddressNeeded: f.get("email") === "on", officeLineRequired: f.get("phone") === "on" }
+      ? {
+          firstName: first, lastName: last, startDate: date || null,
+          // v2.1 role-driven fields (drive persona/location/attribute resolution)
+          department: str("role"), officeLocation: str("location"), jobTitle: str("title"),
+          employmentType: str("employmentType"), managerName: str("manager"),
+          emailAddressNeeded: f.get("email") === "on", officeLineRequired: f.get("phone") === "on",
+        }
       : { userToOffboard: `${first} ${last}`.trim(), dateOfOffboarding: date || null, allowedToMaintainEmail: f.get("email") === "on" };
     const subject = `${action === "onboard" ? "New User" : "Offboard"} - ${first} ${last}`.trim();
     try {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientSlug: f.get("clientSlug"), action, subject, payload }),
+        body: JSON.stringify({ clientSlug, action, subject, payload }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? res.statusText);
@@ -118,7 +144,7 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
         <h2>New case</h2>
         <form onSubmit={submit}>
           <label htmlFor="clientSlug">Client</label>
-          <select id="clientSlug" name="clientSlug" required defaultValue="">
+          <select id="clientSlug" required value={clientSlug} onChange={(e) => setClientSlug(e.target.value)}>
             <option value="" disabled>Select a client…</option>
             {clients.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
           </select>
@@ -134,6 +160,35 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
           <label htmlFor="last">Last name</label>
           <input id="last" name="last" required />
 
+          {roleDriven && (
+            <>
+              <label htmlFor="role">Role</label>
+              <select id="role" name="role" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="">Select a role…</option>
+                {fields!.personas.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+              </select>
+
+              <label htmlFor="title">Title</label>
+              <input id="title" name="title" list="nc-titles" placeholder={titles.length ? "Pick or type…" : "Type a title"} />
+              <datalist id="nc-titles">{titles.map((t) => <option key={t} value={t} />)}</datalist>
+
+              <label htmlFor="location">Location</label>
+              <select id="location" name="location" defaultValue="">
+                <option value="">Select a location…</option>
+                {fields!.locations.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+
+              <label htmlFor="employmentType">Employment type</label>
+              <select id="employmentType" name="employmentType" defaultValue="">
+                <option value="">Select…</option>
+                {EMPLOYMENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+
+              <label htmlFor="manager">Manager (name or DN)</label>
+              <input id="manager" name="manager" placeholder="Jane Boss" />
+            </>
+          )}
+
           <label htmlFor="date">{action === "onboard" ? "Start date" : "Offboarding date"}</label>
           <input id="date" name="date" type="date" />
 
@@ -147,6 +202,7 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
             </label>
           )}
 
+          {roleDriven && <p className="note" style={{ marginTop: "0.5rem" }}>Role/location/title drive the resolved OU, groups, and attributes — review them in the playbook after planning.</p>}
           {error && <p className="note danger">{error}</p>}
           <div className="dialog-actions">
             <button type="button" onClick={() => ref.current?.close()} disabled={busy}>Cancel</button>
