@@ -21,6 +21,7 @@ export type ClientVM = {
   onboardingRating: number | null;
   offboardingRating: number | null;
   snLastSyncedAt: string | null;
+  editedFields: string[];
   systemKeys: string[];
   systemCount: number;
   modeled: boolean;
@@ -79,6 +80,44 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
   const [pending, setPending] = useState<ClientVM | null>(null);
+
+  // multi-select + hard refresh
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const hrRef = useRef<HTMLDialogElement>(null);
+  const [hrTarget, setHrTarget] = useState<{ slugs: string[]; label: string } | null>(null);
+  const [hrBusy, setHrBusy] = useState(false);
+
+  function toggleSelect(slug: string) {
+    setSelected((s) => { const n = new Set(s); n.has(slug) ? n.delete(slug) : n.add(slug); return n; });
+  }
+  function askHardRefresh(target: { slugs: string[]; label: string }) {
+    setHrTarget(target);
+    hrRef.current?.showModal();
+  }
+  async function confirmHardRefresh() {
+    const t = hrTarget;
+    if (!t) return;
+    setHrBusy(true);
+    try {
+      if (t.slugs.length === 1) {
+        await fetch(`/api/clients/${t.slugs[0]}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "hard-refresh" }),
+        });
+      } else {
+        await fetch(`/api/clients/hard-refresh`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slugs: t.slugs }),
+        });
+      }
+      hrRef.current?.close();
+      setHrTarget(null);
+      setSelected(new Set());
+      router.refresh();
+    } finally {
+      setHrBusy(false);
+    }
+  }
 
   async function saveCell(slug: string, action: string, payload: Record<string, unknown>) {
     setSavingCell(true);
@@ -188,6 +227,14 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
       <div className="toolbar" style={{ marginTop: "1rem" }}>
         <SyncButton />
         <AddClientDialog />
+        {selected.size > 0 && (
+          <button
+            className="btn-danger"
+            onClick={() => askHardRefresh({ slugs: [...selected], label: `${selected.size} selected client${selected.size > 1 ? "s" : ""}` })}
+          >
+            ↻ Hard refresh {selected.size} selected
+          </button>
+        )}
       </div>
 
       <div className="filters">
@@ -231,6 +278,16 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
       <table className="data-table clients-table">
         <thead>
           <tr>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                aria-label="Select all visible"
+                style={{ width: "auto" }}
+                checked={visible.length > 0 && visible.every((c) => selected.has(c.slug))}
+                ref={(el) => { if (el) el.indeterminate = visible.some((c) => selected.has(c.slug)) && !visible.every((c) => selected.has(c.slug)); }}
+                onChange={(e) => setSelected(e.target.checked ? new Set(visible.map((c) => c.slug)) : new Set())}
+              />
+            </th>
             <SortHead k="name" label="Name" />
             <SortHead k="coreId" label="CORE id" />
             <SortHead k="primaryDomain" label="Domain" />
@@ -243,7 +300,16 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
         </thead>
         <tbody>
           {visible.map((c) => (
-            <tr key={c.id}>
+            <tr key={c.id} className={selected.has(c.slug) ? "row-selected" : undefined}>
+              <td>
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${c.name}`}
+                  style={{ width: "auto" }}
+                  checked={selected.has(c.slug)}
+                  onChange={() => toggleSelect(c.slug)}
+                />
+              </td>
               <td><Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
               <td
@@ -267,7 +333,12 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                     }}
                   />
                 ) : (
-                  c.primaryDomain || "—"
+                  <>
+                    {c.primaryDomain || "—"}
+                    {c.editedFields.includes("primaryDomain") && (
+                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                    )}
+                  </>
                 )}
               </td>
               <td className="editable" title="Double-click to edit the backbone" onDoubleClick={() => setCell({ slug: c.slug, field: "backbone" })}>
@@ -285,10 +356,17 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                     <option value="ad_synced">AD synced</option>
                     <option value="ad_standalone">AD standalone</option>
                   </select>
-                ) : c.backbone ? (
-                  <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
                 ) : (
-                  <span className="badge unmodeled">not modeled</span>
+                  <>
+                    {c.backbone ? (
+                      <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
+                    ) : (
+                      <span className="badge unmodeled">not modeled</span>
+                    )}
+                    {c.editedFields.includes("backbone") && (
+                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                    )}
+                  </>
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
@@ -311,6 +389,12 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
               </td>
               <td className="row-actions">
                 <button onClick={() => setEditSlug(c.slug)}>Edit</button>
+                <button
+                  title="Re-pull this client from ServiceNow, discarding manual edits"
+                  onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}
+                >
+                  ↻
+                </button>
                 {c.status === "archived" ? (
                   <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
                 ) : (
@@ -321,7 +405,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={8}>
+              <td colSpan={9}>
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
@@ -346,6 +430,21 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
         <div className="dialog-actions">
           <button onClick={() => { confirmRef.current?.close(); setPending(null); }}>Cancel</button>
           <button className="btn-danger" onClick={confirmArchive}>Archive</button>
+        </div>
+      </dialog>
+
+      <dialog ref={hrRef}>
+        <h2>Hard refresh from ServiceNow</h2>
+        <p>
+          Overwrite <strong>{hrTarget?.label}</strong> with the latest ServiceNow data — including
+          the website domain — and <strong>discard any manual edits</strong> (the ● fields). This
+          can&apos;t be undone.
+        </p>
+        <div className="dialog-actions">
+          <button onClick={() => { hrRef.current?.close(); setHrTarget(null); }} disabled={hrBusy}>Cancel</button>
+          <button className="btn-danger" onClick={confirmHardRefresh} disabled={hrBusy}>
+            {hrBusy ? "Refreshing…" : `Hard refresh${hrTarget && hrTarget.slugs.length > 1 ? ` ${hrTarget.slugs.length}` : ""}`}
+          </button>
         </div>
       </dialog>
 

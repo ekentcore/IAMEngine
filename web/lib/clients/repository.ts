@@ -27,6 +27,12 @@ function orderByRunSequence(
   });
 }
 
+// Add a field to a client's editedFields (deduped), returning the new array to set in an update.
+async function addEdited(db: PrismaClient, slug: string, field: string): Promise<string[]> {
+  const c = await db.client.findUnique({ where: { slug }, select: { editedFields: true } });
+  return Array.from(new Set([...(c?.editedFields ?? []), field]));
+}
+
 // SN-owned fields written on both create and update (never touches backbone or systems).
 // Return type is inferred (plain scalars) so it spreads into both create and update inputs.
 function snData(c: NormalizedSnClient) {
@@ -62,6 +68,7 @@ export function makeClientRepository(db: PrismaClient) {
           onboardingRating: true,
           offboardingRating: true,
           snLastSyncedAt: true,
+          editedFields: true,
           systems: { select: { systemKey: true } },
           // the runbook seq is the documented run order; used to list systems in execution order
           runbook: { select: { systemKey: true, action: true, seq: true } },
@@ -80,6 +87,7 @@ export function makeClientRepository(db: PrismaClient) {
         onboardingRating: r.onboardingRating,
         offboardingRating: r.offboardingRating,
         snLastSyncedAt: r.snLastSyncedAt,
+        editedFields: r.editedFields,
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
         modeled: r.systems.length > 0,
@@ -101,18 +109,19 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Lightweight index for reconciliation: who already exists and how they're keyed.
     async indexExisting(): Promise<
-      Array<{ id: string; slug: string; primaryDomain: string; serviceNowSysId: string | null }>
+      Array<{ id: string; slug: string; primaryDomain: string; serviceNowSysId: string | null; editedFields: string[] }>
     > {
       return db.client.findMany({
-        select: { id: true, slug: true, primaryDomain: true, serviceNowSysId: true },
+        select: { id: true, slug: true, primaryDomain: true, serviceNowSysId: true, editedFields: true },
       });
     },
 
-    async refreshSnFields(clientId: string, c: NormalizedSnClient): Promise<void> {
-      await db.client.update({
-        where: { id: clientId },
-        data: { ...snData(c), serviceNowSysId: c.serviceNowSysId },
-      });
+    // Routine sync: refresh SN-owned fields (incl. the website-derived primaryDomain) EXCEPT any a
+    // human edited in the UI (editedFields) — those stay until a hard refresh clears them.
+    async refreshSnFields(clientId: string, c: NormalizedSnClient, editedFields: string[] = []): Promise<void> {
+      const data: Record<string, unknown> = { ...snData(c), serviceNowSysId: c.serviceNowSysId, primaryDomain: c.primaryDomain };
+      for (const f of editedFields) delete data[f];
+      await db.client.update({ where: { id: clientId }, data });
     },
 
     // Idempotent: keyed on serviceNowSysId so re-runs and concurrent syncs converge
@@ -159,12 +168,21 @@ export function makeClientRepository(db: PrismaClient) {
       });
     },
 
-    // Inline table edits.
+    // Inline table edits — also record the field as hand-edited so routine sync won't clobber it.
     async setPrimaryDomain(slug: string, primaryDomain: string) {
-      return db.client.update({ where: { slug }, data: { primaryDomain } });
+      return db.client.update({ where: { slug }, data: { primaryDomain, editedFields: await addEdited(db, slug, "primaryDomain") } });
     },
     async setBackbone(slug: string, backbone: Backbone | null) {
-      return db.client.update({ where: { slug }, data: { backbone } });
+      return db.client.update({ where: { slug }, data: { backbone, editedFields: await addEdited(db, slug, "backbone") } });
+    },
+
+    // Hard refresh: overwrite ALL SN-owned fields from a freshly-fetched account (incl. the
+    // website domain) and clear the edited markers. The caller supplies the normalized account.
+    async overwriteFromSn(clientId: string, c: NormalizedSnClient): Promise<void> {
+      await db.client.update({
+        where: { id: clientId },
+        data: { ...snData(c), serviceNowSysId: c.serviceNowSysId, primaryDomain: c.primaryDomain, editedFields: [] },
+      });
     },
 
     // Cache a contact-derived email domain (best-effort, from the domain resolver). Never touches a

@@ -76,6 +76,10 @@ model Client {
   // curated it; sync + contact-derivation must not overwrite a locked value.
   emailDomain        String?
   emailDomainLocked  Boolean   @default(false)
+  // Field names hand-edited in the UI (e.g. "primaryDomain", "backbone"). The routine ServiceNow
+  // sync skips these so a manual correction isn't clobbered; a "hard refresh" clears them and
+  // overwrites from ServiceNow.
+  editedFields       String[]  @default([])
   backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
   identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview

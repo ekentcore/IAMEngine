@@ -5,6 +5,8 @@ import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
+import { hardRefreshClient } from "@/lib/clients/hard-refresh";
+import { SnGatewayError } from "@/lib/servicenow/gateway";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
@@ -38,6 +40,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
+  // Hard refresh: overwrite this client's SN-owned fields from ServiceNow, discarding manual edits.
+  if (body.action === "hard-refresh") {
+    try {
+      const res = await hardRefreshClient(db, params.slug, "ui");
+      if (!res.ok) return NextResponse.json({ error: res.reason }, { status: res.reason === "not found" ? 404 : 422 });
+      return NextResponse.json(res);
+    } catch (e) {
+      const msg = e instanceof SnGatewayError ? `ServiceNow: ${e.message}` : (e as Error).message;
+      return NextResponse.json({ error: `hard refresh failed: ${msg}` }, { status: 502 });
+    }
+  }
+
   // Inline table edit: the backbone (or "" / null to clear).
   if (body.action === "set-backbone") {
     let backbone: Backbone | null;
@@ -68,7 +82,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
 
   if (body.action !== "archive" && body.action !== "restore") {
-    return NextResponse.json({ error: 'action must be "archive", "restore", or "set-email-domain"' }, { status: 422 });
+    return NextResponse.json(
+      { error: 'action must be one of: archive, restore, set-domain, set-backbone, set-email-domain, hard-refresh' },
+      { status: 422 }
+    );
   }
 
   const status = body.action === "archive" ? "archived" : "active";

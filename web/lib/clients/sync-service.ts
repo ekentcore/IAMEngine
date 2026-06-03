@@ -54,7 +54,8 @@ export async function syncClientsFromSn(
       const bySys = bySysId.get(c.serviceNowSysId);
       if (bySys) {
         // Already linked — routine field refresh (not audited per-client to avoid noise).
-        await repo.refreshSnFields(bySys.id, c);
+        // Skip fields the user hand-edited (editedFields).
+        await repo.refreshSnFields(bySys.id, c, bySys.editedFields);
         result.updated++;
         continue;
       }
@@ -62,7 +63,7 @@ export async function syncClientsFromSn(
       const byDom = c.primaryDomain ? byDomain.get(c.primaryDomain) : undefined;
       if (byDom) {
         // A profile/manual client we hadn't linked yet — stamp it (don't duplicate).
-        await repo.refreshSnFields(byDom.id, c);
+        await repo.refreshSnFields(byDom.id, c, byDom.editedFields);
         bySysId.set(c.serviceNowSysId, byDom);
         result.reconciled++;
         await repo.writeAudit({

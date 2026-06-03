@@ -54,6 +54,23 @@ export async function fetchSnAccounts(
   return all;
 }
 
+// One account by sys_id (for a per-client hard refresh). Returns null if it isn't found.
+export async function fetchSnAccountById(
+  config: SnConfig,
+  sysId: string,
+  fetcher: Fetcher = fetch
+): Promise<SnAccount | null> {
+  if (!/^[0-9a-f]{32}$/i.test(sysId)) return null;
+  assertConfig(config);
+  const rows = await snGet<SnAccount[]>(
+    config,
+    "/api/now/table/customer_account",
+    { sysparm_query: `sys_id=${sysId}`, sysparm_fields: FIELDS, sysparm_display_value: "all", sysparm_limit: "1" },
+    fetcher
+  );
+  return rows[0] ?? null;
+}
+
 // Email addresses of an account's ACTIVE contacts — the ground truth for the org's email domain
 // (vs the website-derived primaryDomain). Paginated so a large account isn't silently truncated to
 // a non-representative first page (which would skew the dominant-domain vote). display_value=false
