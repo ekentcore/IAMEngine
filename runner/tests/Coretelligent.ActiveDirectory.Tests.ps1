@@ -58,6 +58,29 @@ Describe 'Invoke-CtgADOnboarding' {
         $r = Invoke-CtgADOnboarding -User $user -Config $config
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $HomeDrive -eq 'H:' -and $HomeDirectory -match 'jdoe' }
     }
+
+    It 'mirrors the reference user''s live groups (union with base groups)' {
+        # New user absent (SamAccountName filter -> $null); the mirror reference resolves with 2 groups.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            if ($Filter -like '*Christine Holleran*') {
+                [pscustomobject]@{ MemberOf = @('CN=Finance-Team,OU=Groups,DC=x', 'CN=VPN-Users,OU=Groups,DC=x') }
+            } else { $null }
+        }
+        $config = [pscustomobject]@{ ou='Finance'; groups=@('DEPT-Finance'); mirrorFromUser='Christine Holleran' }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'DEPT-Finance' } -Times 1
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Finance-Team,OU=Groups,DC=x' } -Times 1
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=VPN-Users,OU=Groups,DC=x' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'mirrored 2 group'
+    }
+
+    It 'flags a missing mirror user without failing the onboard' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null } # nobody matches
+        $config = [pscustomobject]@{ ou='Finance'; groups=@('DEPT-Finance'); mirrorFromUser='Nobody Here' }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match "mirror user 'Nobody Here' not found"
+    }
 }
 
 Describe 'Invoke-CtgADOffboarding' {

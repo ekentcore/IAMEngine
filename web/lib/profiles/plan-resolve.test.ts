@@ -58,3 +58,26 @@ test("a v2.0 client (no personas/globals) passes through unchanged", () => {
   const resolved = resolvePlannedConfigs({ personas: null, globals: null, locations: null }, payload, "onboard", planned);
   assert.deepEqual((resolved[0].config as Record<string, unknown>), { licenses: ["E3"] });
 });
+
+test("mirror directive → mirrorFromUser injected onto the directory job (v2.1)", () => {
+  const planned = [job("active-directory", sys("active-directory").onboard.config), job("servicenow", { x: 1 })];
+  const resolved = resolvePlannedConfigs(client, { ...payload, mirrorPermissionsFromUser: "Christine Holleran" }, "onboard", planned);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.equal(ad.mirrorFromUser, "Christine Holleran");
+  assert.ok(Array.isArray(ad.groups)); // persona/global resolution still applied
+  // non-directory systems don't get a mirror directive
+  const snow = resolved.find((j) => j.systemKey === "servicenow")!.config as Record<string, unknown>;
+  assert.equal("mirrorFromUser" in snow, false);
+});
+
+test("mirror injected even for a v2.0 client (no personas/globals)", () => {
+  const planned = [job("active-directory", { enabled: true })];
+  const resolved = resolvePlannedConfigs({ personas: null, globals: null, locations: null }, { ...payload, mirrorPermissionsFromUser: "Jane Boss" }, "onboard", planned);
+  assert.deepEqual(resolved[0].config, { enabled: true, mirrorFromUser: "Jane Boss" });
+});
+
+test("no mirror directive → no mirrorFromUser key", () => {
+  const planned = [job("active-directory", { enabled: true })];
+  const resolved = resolvePlannedConfigs({ personas: null, globals: null, locations: null }, payload, "onboard", planned);
+  assert.equal("mirrorFromUser" in (resolved[0].config as Record<string, unknown>), false);
+});

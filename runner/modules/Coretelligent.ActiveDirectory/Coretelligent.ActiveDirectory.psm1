@@ -98,6 +98,21 @@ function Set-CtgADAttributes {
     return $applied.ToArray()
 }
 
+# Resolve the "mirror <user>" directive to that reference user's live group memberships (DNs).
+# Tries DisplayName, then Name, then SamAccountName. Returns the group-DN array (possibly empty)
+# when the user is found, or $null when no such user — so the caller can flag a miss vs. an
+# intentionally-empty membership.
+function Get-CtgMirrorGroups {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ReferenceUser)
+    $esc = $ReferenceUser -replace "'", "''"
+    foreach ($filter in @("DisplayName -eq '$esc'", "Name -eq '$esc'", "SamAccountName -eq '$esc'")) {
+        $ref = Get-ADUser -Filter $filter -Properties MemberOf -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($ref) { return ,@($ref.MemberOf) }
+    }
+    return $null
+}
+
 function Invoke-CtgADOnboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -147,6 +162,21 @@ function Invoke-CtgADOnboarding {
     foreach ($cg in @(Get-CtgProp $Config 'conditionalGroups')) {
         if (Test-CtgCondition (Get-CtgProp $cg 'when') $User) {
             foreach ($g in @(Get-CtgProp $cg 'groups')) { if ($g) { $groups.Add([string]$g) } }
+        }
+    }
+    # Mirror: union the reference user's live memberships (the "make them like <X>" request). Deduped
+    # against the groups already chosen; Add-ADGroupMember below is idempotent, and DNs add fine.
+    $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
+    if ($mirrorUser) {
+        $mirrorGroups = Get-CtgMirrorGroups -ReferenceUser ([string]$mirrorUser)
+        if ($null -eq $mirrorGroups) {
+            $actions.Add("mirror user '$mirrorUser' not found — mirror groups not applied")
+        }
+        else {
+            $seen = [System.Collections.Generic.HashSet[string]]::new([string[]]$groups, [System.StringComparer]::OrdinalIgnoreCase)
+            $added = 0
+            foreach ($dn in $mirrorGroups) { if ($dn -and $seen.Add([string]$dn)) { $groups.Add([string]$dn); $added++ } }
+            $actions.Add("mirrored $added group(s) from '$mirrorUser'")
         }
     }
     foreach ($group in $groups) {
@@ -298,4 +328,4 @@ function Confirm-CtgAD {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Set-CtgADAttributes, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
