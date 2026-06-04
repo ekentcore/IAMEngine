@@ -6,6 +6,20 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
+import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
+
+// Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
+export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
+  if (input.scope === "client_network" && !input.clientSlug) {
+    return { ok: false as const, error: "pick a client for a client-network runner" };
+  }
+  const token = mintEnrollToken(
+    { scope: input.scope, client: input.scope === "client_network" ? input.clientSlug : null },
+    enrollSecret(),
+    Date.now()
+  );
+  return { ok: true as const, token };
+}
 
 export async function enrollAgent(input: { name: string; scope: AgentScope; clientSlug?: string | null }) {
   try {
