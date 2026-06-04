@@ -20,7 +20,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -93,9 +93,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
+  // Mark the client internal (incident intake) vs external (UM intake) — drives case scanning.
+  if (body.action === "set-intake-source") {
+    const src = body.intakeSource;
+    if (src !== "um" && src !== "incident") return NextResponse.json({ error: 'intakeSource must be "um" or "incident"' }, { status: 422 });
+    const client = await repo.setIntakeSource(params.slug, src);
+    await repo.writeAudit({ actor: "ui", action: "client.intake_source.set", clientId: client.id, detail: { intakeSource: src } });
+    return NextResponse.json(client);
+  }
+
   if (body.action !== "archive" && body.action !== "restore") {
     return NextResponse.json(
-      { error: 'action must be one of: archive, restore, set-domain, set-backbone, set-email-domain, hard-refresh' },
+      { error: 'action must be one of: archive, restore, set-domain, set-backbone, set-email-domain, set-intake-source, hard-refresh' },
       { status: 422 }
     );
   }

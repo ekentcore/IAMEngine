@@ -6,7 +6,8 @@
     "name": "Coretelligent",
     "primaryDomain": "coretelligent.com",
     "emailDomain": "core.tech",
-    "domains": ["core.tech"]
+    "domains": ["core.tech"],
+    "intakeSource": "incident"
   },
 
   "identity": {

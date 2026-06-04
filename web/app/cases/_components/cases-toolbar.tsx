@@ -53,7 +53,8 @@ function ImportButton() {
         <h2>Import from ServiceNow</h2>
         <form onSubmit={submit}>
           <label htmlFor="um">Case number</label>
-          <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698" autoFocus />
+          <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698 or INC0836187" autoFocus />
+          <p className="note" style={{ marginTop: "0.25rem" }}>UM = external client case · INC = internal Coretelligent onboarding incident</p>
           {busy && <p className="note"><span className="spinner" />Fetching and planning…</p>}
           {error && <p className="note danger">{error}</p>}
           {result && (

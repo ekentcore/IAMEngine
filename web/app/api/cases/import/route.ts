@@ -1,7 +1,7 @@
 // POST /api/cases/import — import + plan a case from a ServiceNow ticket number (UM…).
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { importCaseFromServiceNow } from "@/lib/cases/import-service";
+import { importByNumber } from "@/lib/cases/import-service";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await importCaseFromServiceNow(db, body.number, "ui:import", { emailDomainOverride });
+    const result = await importByNumber(db, body.number, "ui:import", { emailDomainOverride });
     if (!result.ok) {
       const status = result.code === "not_found" || result.code === "no_client" ? 404 : 422;
       return NextResponse.json({ error: result.error }, { status });

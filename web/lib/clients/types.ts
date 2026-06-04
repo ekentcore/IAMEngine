@@ -9,6 +9,7 @@ export type ClientListItem = {
   primaryDomain: string;
   backbone: Backbone | null;
   status: ClientStatus;
+  intakeSource: string; // "um" (external) | "incident" (internal) — which SN table to scan for cases
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;

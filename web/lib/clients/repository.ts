@@ -62,6 +62,7 @@ export function makeClientRepository(db: PrismaClient) {
           primaryDomain: true,
           backbone: true,
           status: true,
+          intakeSource: true,
           coreId: true,
           region: true,
           supportStatus: true,
@@ -83,6 +84,7 @@ export function makeClientRepository(db: PrismaClient) {
         primaryDomain: r.primaryDomain,
         backbone: r.backbone,
         status: r.status,
+        intakeSource: r.intakeSource,
         coreId: r.coreId,
         region: r.region,
         supportStatus: r.supportStatus,
@@ -178,6 +180,11 @@ export function makeClientRepository(db: PrismaClient) {
     },
     async setBackbone(slug: string, backbone: Backbone | null) {
       return db.client.update({ where: { slug }, data: { backbone, editedFields: await addEdited(db, slug, "backbone") } });
+    },
+    // Mark where this client's onboarding/offboarding requests come from: "um" (external) or
+    // "incident" (internal). Drives which ServiceNow table case-scanning reads.
+    async setIntakeSource(slug: string, intakeSource: "um" | "incident") {
+      return db.client.update({ where: { slug }, data: { intakeSource } });
     },
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses

@@ -15,6 +15,7 @@ export type ClientVM = {
   primaryDomain: string;
   backbone: Backbone | null;
   status: ClientStatus;
+  intakeSource: string;
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;
@@ -337,7 +338,22 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   onChange={() => toggleSelect(c.slug)}
                 />
               </td>
-              <td><Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link></td>
+              <td>
+                <Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link>
+                {" "}
+                <span
+                  className="badge"
+                  role="button"
+                  tabIndex={0}
+                  title="Intake source — internal scans onboarding incidents, external scans UM cases. Click to toggle."
+                  onClick={() => saveCell(c.slug, "set-intake-source", { intakeSource: c.intakeSource === "incident" ? "um" : "incident" })}
+                  style={{ cursor: "pointer", ...(c.intakeSource === "incident"
+                    ? { color: "#7b3fa0", borderColor: "#e0cef0", background: "#f8f3fc" }
+                    : { color: "var(--muted)", opacity: 0.65 }) }}
+                >
+                  {c.intakeSource === "incident" ? "internal" : "external"}
+                </span>
+              </td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
               <td
                 className="muted mono editable"

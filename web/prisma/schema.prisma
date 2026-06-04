@@ -89,6 +89,11 @@ model Client {
   globals       Json?
   locations     Json?
   status        ClientStatus   @default(active)
+  // Where this client's onboarding/offboarding requests come from, so case-scanning hits the right
+  // ServiceNow table: "um" = external clients (sn_customerservice_user_management cases, the default),
+  // "incident" = internal (Coretelligent's own onboarding incidents, subcategory "User / On-Boarding",
+  // whose form data lives in record-producer variables, not columns).
+  intakeSource  String         @default("um")
   createdAt     DateTime       @default(now())
   archivedAt    DateTime?
 

@@ -109,14 +109,15 @@ async function applyAuthored(p: any): Promise<string | null> {
   const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
   // Don't overwrite an email domain a human locked in the UI.
   const emailDomain = existing?.emailDomainLocked ? undefined : (p.client.emailDomain ?? undefined);
+  const intakeSource = p.client.intakeSource ?? undefined; // "incident" for internal clients (Coretelligent)
   const update = stripEdited(
-    { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, identity: p.identity ?? undefined, ...planBlocks },
+    { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, identity: p.identity ?? undefined, ...(intakeSource ? { intakeSource } : {}), ...planBlocks },
     existing?.editedFields ?? []
   );
   const client = await prisma.client.upsert({
     where: { slug: p.client.id },
     update,
-    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined, ...planBlocks },
+    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined, ...(intakeSource ? { intakeSource } : {}), ...planBlocks },
   });
   await upsertSecretsAndSystems(client.id, p);
   return client.id;
