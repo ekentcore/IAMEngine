@@ -161,7 +161,7 @@ async function main() {
 
     for (const file of readdirSync(GENERATED).filter((f) => f.endsWith(".json") && !f.endsWith(".runbook.json") && !f.startsWith("_"))) {
       const p = JSON.parse(readFileSync(join(GENERATED, file), "utf8"));
-      if (p.schemaVersion !== "2.0") { nonV2++; continue; }
+      if (p.schemaVersion !== "2.0" && p.schemaVersion !== "2.1") { nonV2++; continue; }
       const nn = normName(p.client.name);
       const clientId =
         byName.get(nn) ??
@@ -173,14 +173,17 @@ async function main() {
         curatedRb++;
       } else {
         const backbone = backboneMap[p.identity.backbone];
-        const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined }, editedById.get(clientId) ?? []);
+        // v2.1 plan-time blocks the extractor recovered (groups/attributes -> globals, plus
+        // personas/locations). undefined for a v2.0 draft → column left as-is.
+        const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
+        const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined, ...planBlocks }, editedById.get(clientId) ?? []);
         await prisma.client.update({ where: { id: clientId }, data: update });
         await upsertSecretsAndSystems(clientId, p);
         runbook += await loadRunbook(clientId, p.client.id);
         enriched++;
       }
     }
-    console.log(`generated: ${enriched} enriched, ${curatedRb} curated (runbook only), ${nonV2} non-2.0, ${unmatched} no roster match; ${runbook} runbook sections loaded`);
+    console.log(`generated: ${enriched} enriched, ${curatedRb} curated (runbook only), ${nonV2} unknown-schema, ${unmatched} no roster match; ${runbook} runbook sections loaded`);
   }
 }
 
