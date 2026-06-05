@@ -11,6 +11,7 @@ import { PlaybookView } from "../_components/playbook-view";
 import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
+import { DryRunToggle } from "../_components/dry-run-toggle";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
@@ -39,6 +40,10 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           </p>
         </div>
         <ReplanButton caseId={c.id} canReplan={canReplan} />
+      </div>
+
+      <div style={{ margin: "0.5rem 0 1rem" }}>
+        <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={!canReplan} />
       </div>
 
       {playbook && playbook.steps.length > 0 && (

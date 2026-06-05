@@ -7,6 +7,7 @@ export type NewCaseInput = {
   serviceNowCaseNumber?: string | null;
   subject?: string | null;
   payload: Record<string, unknown>;
+  dryRun?: boolean; // plan jobs in -WhatIf (read-only) mode
 };
 
 export type CaseListItem = {
@@ -37,6 +38,7 @@ export type CaseDetail = {
   action: Action;
   status: CaseStatus;
   subject: string | null;
+  dryRun: boolean;
   serviceNowCaseNumber: string | null;
   createdAt: Date;
   client: { name: string; slug: string };

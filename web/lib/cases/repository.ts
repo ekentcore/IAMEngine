@@ -54,6 +54,7 @@ export function makeCaseRepository(db: PrismaClient) {
             serviceNowCaseNumber: input.serviceNowCaseNumber ?? null,
             subject: input.subject ?? null,
             status,
+            dryRun: input.dryRun ?? false,
             payload: input.payload as Prisma.InputJsonValue,
           },
           select: { id: true },
@@ -72,6 +73,7 @@ export function makeCaseRepository(db: PrismaClient) {
                 requiresApproval: p.requiresApproval,
                 captureEvidence: p.captureEvidence,
                 secretNames: p.secretNames,
+                dryRun: input.dryRun ?? false,
               } as Prisma.InputJsonValue,
             })),
           });
@@ -129,6 +131,8 @@ export function makeCaseRepository(db: PrismaClient) {
         // (no jobs lost), surfaced to the caller as `already_started`.
         await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: STARTED_STATUSES } } });
         if ((await tx.job.count({ where: { caseRequestId: caseId } })) > 0) throw new CaseAlreadyStartedError();
+        const existing = await tx.caseRequest.findUnique({ where: { id: caseId }, select: { dryRun: true } });
+        const dryRun = existing?.dryRun ?? false; // replanned jobs inherit the case's current mode
         await tx.caseRequest.update({
           where: { id: caseId },
           data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status },
@@ -146,10 +150,22 @@ export function makeCaseRepository(db: PrismaClient) {
                 requiresApproval: p.requiresApproval,
                 captureEvidence: p.captureEvidence,
                 secretNames: p.secretNames,
+                dryRun,
               } as Prisma.InputJsonValue,
             })),
           });
         }
+      });
+    },
+
+    // Toggle a case's dry-run mode and propagate it onto every not-yet-started job's request.dryRun
+    // (atomic jsonb merge), so a runner that later claims one runs -WhatIf. Started jobs are left
+    // alone. Returns the number of pending jobs updated.
+    async setCaseDryRun(caseId: string, dryRun: boolean): Promise<number> {
+      return db.$transaction(async (tx) => {
+        await tx.caseRequest.update({ where: { id: caseId }, data: { dryRun } });
+        const updated = await tx.$executeRaw`UPDATE "Job" SET "request" = COALESCE("request", '{}'::jsonb) || ${JSON.stringify({ dryRun })}::jsonb WHERE "caseRequestId" = ${caseId} AND "status" NOT IN ('dispatched', 'running', 'succeeded', 'failed', 'skipped')`;
+        return updated;
       });
     },
 
@@ -189,7 +205,7 @@ export function makeCaseRepository(db: PrismaClient) {
       const nameByKey = new Map(catalog.map((s) => [s.key, s.name]));
 
       return {
-        id: c.id, action: c.action, status: c.status, subject: c.subject,
+        id: c.id, action: c.action, status: c.status, subject: c.subject, dryRun: c.dryRun,
         serviceNowCaseNumber: c.serviceNowCaseNumber, createdAt: c.createdAt,
         client: c.client,
         payload: (c.payload ?? {}) as Record<string, unknown>,

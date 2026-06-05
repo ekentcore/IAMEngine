@@ -28,7 +28,7 @@ function fakeDb(caseRow: unknown, startedLeftAfterDelete = 0) {
           createMany: async () => { calls.createMany++; },
           count: async () => startedLeftAfterDelete,
         },
-        caseRequest: { update: async () => { calls.update++; } },
+        caseRequest: { findUnique: async () => caseRow, update: async () => { calls.update++; } },
       }),
   };
   return { db: db as unknown as PrismaClient, calls };

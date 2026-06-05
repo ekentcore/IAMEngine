@@ -177,6 +177,9 @@ model CaseRequest {
   serviceNowCaseNumber String?   @unique // e.g. UM0028698 — used to make import idempotent
   subject             String?            // short description for list display
   status              CaseStatus @default(queued)
+  // When true, dispatched jobs run -WhatIf (read-only validation, NO mutations). Propagated onto
+  // each pending job's request.dryRun; toggled on the case before dispatch for a safe first run.
+  dryRun              Boolean    @default(false)
   payload             Json       // the ServiceNow intake form (see DATA_MODEL.md)
   // Per-case secret-reference overrides: { "<secretName>": "<delinea externalId>" }. The credential
   // broker prefers these over the client's default reference — for a one-off cred or to fill one the

@@ -37,6 +37,7 @@ export async function POST(req: Request) {
         subject: typeof body.subject === "string" ? body.subject : null,
         serviceNowCaseNumber: typeof body.serviceNowCaseNumber === "string" ? body.serviceNowCaseNumber : null,
         payload,
+        dryRun: body.dryRun === true,
       },
       "ui:new-case"
     );

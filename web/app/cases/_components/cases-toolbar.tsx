@@ -128,7 +128,7 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientSlug, action, subject, payload }),
+        body: JSON.stringify({ clientSlug, action, subject, payload, dryRun: f.get("dryRun") === "on" }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? res.statusText);
@@ -202,6 +202,9 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
               <input type="checkbox" name="phone" style={{ width: "auto" }} /> Office line required
             </label>
           )}
+          <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginTop: "0.4rem" }}>
+            <input type="checkbox" name="dryRun" style={{ width: "auto" }} /> Dry run (-WhatIf — no changes; you can flip this on the case later)
+          </label>
 
           {roleDriven && <p className="note" style={{ marginTop: "0.5rem" }}>Role/location/title drive the resolved OU, groups, and attributes — review them in the playbook after planning.</p>}
           {error && <p className="note danger">{error}</p>}
