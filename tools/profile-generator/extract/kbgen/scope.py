@@ -9,6 +9,11 @@ PARKED: list[tuple[str, str]] = [
     ("boys & girls club", "parked: missing offboard doc"),
     ("boys and girls club", "parked: missing offboard doc"),
     ("atlanta opera", "parked: doc needs cleanup"),
+    # Coretelligent is the MSP, not a client. KB articles filed under the "Coretelligent"
+    # company are actually OTHER clients' guides (e.g. Triangle Veterinary, YMCA Atlanta), so
+    # grouping them by client_leaf makes a nonsense merged profile. Coretelligent's own internal
+    # onboarding is hand-authored (profiles/coretelligent.json), not KB-generated.
+    ("coretelligent", "the MSP itself — internal onboarding is hand-authored, not KB-generated"),
 ]
 
 # clients we only generate the offboard lane for.
