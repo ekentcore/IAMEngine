@@ -62,16 +62,25 @@ if (-not $pwsh) {
   if (-not (Test-Path $pwsh)) { Write-Error "PowerShell 7 not found after install — install it from https://aka.ms/powershell and re-run."; return }
 }
 
-# 2. Required modules
-Step "installing modules (Graph, ExchangeOnlineManagement$(if ($NeedAd) { ', ActiveDirectory (RSAT)' }))"
-if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+# 2. Cloud modules (Graph, EXO) — BEST EFFORT. A blocked/failed install must NOT abort the install:
+# the runner loads each module only if present, so a missing one just means those jobs skip. AD works
+# without them. (-AcceptLicense isn't on Server's built-in PowerShellGet 1.x, so it's omitted.)
+Step "installing cloud modules (best-effort: Graph, ExchangeOnlineManagement)"
+try { Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default -ErrorAction SilentlyContinue }
 Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
 foreach ($m in @('Microsoft.Graph','ExchangeOnlineManagement')) {
-  if (-not (Get-Module -ListAvailable -Name $m)) { Install-Module $m -Scope AllUsers -Force -AcceptLicense }
+  if (-not (Get-Module -ListAvailable -Name $m)) {
+    try { Install-Module $m -Scope AllUsers -Force -ErrorAction Stop }
+    catch { Write-Warning "skipped $m (its jobs will be skipped): $($_.Exception.Message)" }
+  }
 }
+# On a domain controller the ActiveDirectory module is already present (AD DS role).
 if ($NeedAd -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-  $cap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory*' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($cap) { Add-WindowsCapability -Online -Name $cap.Name } else { Write-Warning "RSAT ActiveDirectory not available here — install it on a domain-joined host." }
+  try {
+    $cap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory*' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cap) { Add-WindowsCapability -Online -Name $cap.Name } else { Write-Warning "ActiveDirectory module not found — install RSAT or run on a domain-joined host." }
+  } catch { Write-Warning "could not add the ActiveDirectory module: $($_.Exception.Message)" }
 }
 
 # ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
