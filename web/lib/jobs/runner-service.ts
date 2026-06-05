@@ -28,9 +28,10 @@ export function makeRunnerService(db: PrismaClient) {
   return {
     async enroll(input: { name: string; scope: AgentScope; clientSlug?: string | null }): Promise<{ id: string; scope: AgentScope; clientId: string | null }> {
       let clientId: string | null = null;
-      if (input.clientSlug) {
-        const c = await db.client.findUnique({ where: { slug: input.clientSlug }, select: { id: true } });
-        if (!c) throw new HttpError(404, `unknown client ${input.clientSlug}`);
+      const slug = input.clientSlug?.trim() || null; // tolerate a stray space in a token's client
+      if (slug) {
+        const c = await db.client.findUnique({ where: { slug }, select: { id: true } });
+        if (!c) throw new HttpError(404, `unknown client ${slug}`);
         clientId = c.id;
       }
       if (input.scope === "client_network" && !clientId) {

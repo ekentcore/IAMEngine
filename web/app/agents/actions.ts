@@ -10,11 +10,12 @@ import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 
 // Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
 export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
-  if (input.scope === "client_network" && !input.clientSlug) {
+  const slug = input.clientSlug?.trim() || null; // trim — a stray space breaks the client lookup
+  if (input.scope === "client_network" && !slug) {
     return { ok: false as const, error: "pick a client for a client-network runner" };
   }
   const token = mintEnrollToken(
-    { scope: input.scope, client: input.scope === "client_network" ? input.clientSlug : null },
+    { scope: input.scope, client: input.scope === "client_network" ? slug : null },
     enrollSecret(),
     Date.now()
   );
