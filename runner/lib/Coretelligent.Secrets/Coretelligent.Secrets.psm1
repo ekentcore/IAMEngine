@@ -44,7 +44,12 @@ function Get-CtgSecret {
         pscustomobject with .Username, .Password (SecureString), .Credential, .Fields
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$Reference)
+    param(
+        [Parameter(Mandatory)][hashtable]$Reference,
+        # Reason recorded in Delinea's audit + supplied for secrets with a "require comment on view"
+        # policy (passed as ?autoComment; harmless for secrets without the policy).
+        [string]$AccessComment = 'iam-engine automated provisioning'
+    )
 
     if ($Reference.provider -ne 'delinea') {
         throw "Unsupported secret provider: $($Reference.provider)"
@@ -53,8 +58,9 @@ function Get-CtgSecret {
     if ($Reference.id -eq 'REPLACE_ME') { throw "Secret id is a placeholder — fill it in the profile." }
 
     $headers = @{ Authorization = "Bearer $script:DelineaToken" }
+    $comment = [uri]::EscapeDataString($AccessComment)
     $secret = Invoke-RestMethod -Method Get -Headers $headers `
-        -Uri "$script:DelineaBaseUrl/api/v1/secrets/$($Reference.id)"
+        -Uri "$script:DelineaBaseUrl/api/v1/secrets/$($Reference.id)?autoComment=$comment"
 
     # Flatten the field collection into a simple hashtable.
     $fields = @{}

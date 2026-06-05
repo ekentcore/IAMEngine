@@ -52,7 +52,10 @@ export async function checkSecret(cfg: DelineaConfig, externalId: string, fetche
   if (!delineaConfigured(cfg)) return { ok: false, error: "Delinea not configured (set DELINEA_* on the app)" };
   try {
     const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
-    const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}`, {
+    // Use the metadata-only /summary endpoint: it proves the account can resolve the reference and
+    // returns the secret's name, but carries NO field values — so the secret value never enters the
+    // app, and a "require comment on view" policy isn't triggered (that's a real value-view).
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}/summary`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (res.status === 404) return { ok: false, error: "not found in Delinea" };
