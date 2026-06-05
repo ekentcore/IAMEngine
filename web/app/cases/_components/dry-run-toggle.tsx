@@ -3,7 +3,7 @@
 // Toggle a case between LIVE and DRY RUN. In dry-run, dispatched jobs run -WhatIf — the runner
 // connects, validates read-only, and changes nothing. Disabled once a job has started (you can't
 // switch mode mid-run; re-plan to reset). Persists onto every pending job's request.dryRun.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export function DryRunToggle({ caseId, dryRun, locked }: { caseId: string; dryRun: boolean; locked: boolean }) {
@@ -11,6 +11,9 @@ export function DryRunToggle({ caseId, dryRun, locked }: { caseId: string; dryRu
   const [on, setOn] = useState(dryRun);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reconcile with the server after a router.refresh() (or an external change) — the prop is authoritative.
+  useEffect(() => { setOn(dryRun); }, [dryRun]);
 
   async function set(next: boolean) {
     setBusy(true); setError(null);
