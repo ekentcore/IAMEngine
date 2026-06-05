@@ -177,21 +177,38 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
             </p>
           </div>
         ) : created ? (
-          <div>
-            <h2>Agent enrolled</h2>
-            <p className="note">Manual start (e.g. a Mac smoke test) — copy the id and run the runner with it.</p>
-            <label>Agent id</label>
-            <div className="toolbar">
-              <input readOnly value={created.id} style={{ fontFamily: "monospace" }} onFocus={(e) => e.currentTarget.select()} />
-              <button onClick={() => navigator.clipboard?.writeText(created.id)}>Copy</button>
-            </div>
-            <label style={{ marginTop: "0.75rem" }}>Start the runner</label>
-            <textarea readOnly rows={2} style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
-              value={`pwsh runner/Start-IamRunner.ps1 -AppUrl ${origin} -AgentId ${created.id}`} />
-            <div className="toolbar" style={{ marginTop: "1rem", justifyContent: "flex-end" }}>
-              <button className="primary" onClick={() => ref.current?.close()}>Done</button>
-            </div>
-          </div>
+          (() => {
+            const H = "@{'ngrok-skip-browser-warning'='1'}";
+            const manual = `# Run the runner manually (no scheduled task) — e.g. on a DC or for a quick test.
+# Run these in an ELEVATED PowerShell on the runner host.
+
+# 1. PowerShell 7 (skip if 'pwsh' already works)
+winget install --id Microsoft.PowerShell --silent --accept-package-agreements --accept-source-agreements
+
+# 2. Download the runner to C:\\iam-runner
+$App = "${origin}"
+$Dir = "C:\\iam-runner"; New-Item -ItemType Directory -Force $Dir | Out-Null
+(irm "$App/api/runner/manifest" -Headers ${H}).files | ForEach-Object {
+  $d = Join-Path $Dir ($_ -replace '/','\\'); New-Item -ItemType Directory -Force (Split-Path $d) | Out-Null
+  (iwr "$App/api/runner/file?path=$([uri]::EscapeDataString($_))" -UseBasicParsing -Headers ${H}).Content | Set-Content -LiteralPath $d
+}
+
+# 3. Run it (foreground; Ctrl-C to stop)
+pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created.id}"`;
+            return (
+              <div>
+                <h2>Agent enrolled — run it manually</h2>
+                <p className="note">Agent id <code>{created.id}</code>. Paste the whole block into an <b>elevated PowerShell</b> on the runner host. No scheduled task — it runs in the window until you Ctrl-C.</p>
+                <textarea readOnly rows={14} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }} value={manual} onFocus={(e) => e.currentTarget.select()} />
+                <p className="note" style={{ marginTop: "0.4rem", color: "var(--muted)" }}>On a DC the ActiveDirectory module is already present; for the full chain a host also needs ExchangeOnlineManagement + Microsoft.Graph. AD/Exchange use the brokered secrets, so the host needs no special rights.</p>
+                <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+                  <button onClick={() => navigator.clipboard?.writeText(manual)}>Copy</button>
+                  <span className="grow" />
+                  <button className="primary" onClick={() => ref.current?.close()}>Done</button>
+                </div>
+              </div>
+            );
+          })()
         ) : (
           <form onSubmit={genInstall}>
             <h2>Add a runner</h2>
