@@ -9,6 +9,7 @@ import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
+import { RolesRulesView } from "../_components/roles-rules-view";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -54,6 +55,10 @@ function groupByModule(systems: SysRow[]) {
 export default async function ClientDetailPage({ params }: { params: { slug: string } }) {
   const client = await makeClientRepository(db).getClientBySlug(params.slug);
   if (!client) notFound();
+
+  // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
+  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true } });
+  const hasRules = Boolean((v21?.personas && Object.keys(v21.personas).length) || (v21?.globals && Object.keys(v21.globals).length));
 
   const runbook = await db.runbookSection.findMany({
     where: { clientId: client.id },
@@ -192,6 +197,17 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             )}
           </tbody>
         </table>
+        </>
+      )}
+
+      {hasRules && (
+        <>
+          <h2 style={{ marginTop: "1.5rem" }}>Roles &amp; rules</h2>
+          <RolesRulesView
+            personas={v21?.personas as never}
+            globals={v21?.globals as never}
+            locations={v21?.locations as never}
+          />
         </>
       )}
 
