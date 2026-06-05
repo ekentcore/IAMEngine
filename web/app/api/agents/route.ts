@@ -1,6 +1,7 @@
 // POST /api/agents — enroll a runner. Returns the agent id to configure the runner with.
 // (Production: gate this behind an enrollment token + issue a client cert for mTLS.)
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import type { AgentScope } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
@@ -8,6 +9,13 @@ import { HttpError } from "@/lib/jobs/types";
 import { verifyEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 
 const SCOPES = ["central", "client_network"];
+
+// Constant-time string compare (no early-exit timing oracle on the shared enrollment token).
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 export async function POST(request: Request) {
   let body: { name?: unknown; scope?: unknown; clientSlug?: unknown; enrollToken?: unknown };
@@ -32,7 +40,7 @@ export async function POST(request: Request) {
     clientSlug = claims.client;
   } else {
     const shared = process.env.ENROLLMENT_TOKEN;
-    if (shared && request.headers.get("x-enrollment-token") !== shared) {
+    if (shared && !safeEqual(request.headers.get("x-enrollment-token") ?? "", shared)) {
       return NextResponse.json({ error: "invalid enrollment token" }, { status: 401 });
     }
     scope = body.scope as string;
