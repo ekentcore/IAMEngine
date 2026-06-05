@@ -178,6 +178,10 @@ model CaseRequest {
   subject             String?            // short description for list display
   status              CaseStatus @default(queued)
   payload             Json       // the ServiceNow intake form (see DATA_MODEL.md)
+  // Per-case secret-reference overrides: { "<secretName>": "<delinea externalId>" }. The credential
+  // broker prefers these over the client's default reference — for a one-off cred or to fill one the
+  // client hasn't set. Still a REFERENCE only (a Delinea id), never a value.
+  secretOverrides     Json?
   createdAt           DateTime   @default(now())
   jobs                Job[]
 }

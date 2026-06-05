@@ -5,6 +5,7 @@ import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { checkSecret, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
+import { effectiveExternalId } from "../cases/case-secrets";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 
@@ -151,15 +152,19 @@ export function makeRunnerService(db: PrismaClient) {
     // the secret must be one named on that job. Never returns a secret value (we store only
     // the Delinea reference); production exchanges externalId for a short-TTL scoped cred here.
     async brokerCredential(jobId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true, secretOverrides: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
       if (job.status !== "dispatched" && job.status !== "running") throw new HttpError(409, `job is ${job.status}; credentials only brokered for in-progress jobs`);
       const allowed = req(job).secretNames ?? [];
       if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
-      const secret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
-      if (!secret) throw new HttpError(404, `no secret reference '${secretName}' for this client`);
+      const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
+      // A per-case override reference wins over the client default; either way it's a Delinea id.
+      const { externalId, source } = effectiveExternalId(secretName, job.case.secretOverrides, clientSecret?.externalId ?? null);
+      if (!externalId) throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client or override it on the case)`);
+      // Overrides only replace the reference id, not the provider — every reference is a Delinea id.
+      const secret = { provider: clientSecret?.provider ?? "delinea", externalId, source };
 
       // Preflight against Delinea when configured: prove the app's service account can resolve
       // this reference (reading only the secret's label — the VALUE never enters the app) so a
@@ -176,7 +181,7 @@ export function makeRunnerService(db: PrismaClient) {
         label = check.label;
         note = undefined;
       }
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source } } });
       return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note };
     },
 

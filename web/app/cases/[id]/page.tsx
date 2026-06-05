@@ -8,6 +8,7 @@ import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { writeBackEnabled } from "@/lib/servicenow/worknote";
 import { PlaybookView } from "../_components/playbook-view";
+import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { IntakePanel } from "../_components/intake-panel";
@@ -46,6 +47,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <PlaybookView playbook={playbook} caseId={c.id} />
         </>
       )}
+
+      <h2>Credentials</h2>
+      <CaseSecretsPanel caseId={c.id} />
 
       {runReport && runReport.steps.length > 0 && (
         <>

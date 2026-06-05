@@ -38,6 +38,7 @@ export function PlaybookView({ playbook, caseId }: { playbook: Playbook; caseId:
               {s.dependsOn.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {s.dependsOn.join(", ")}</span>}
             </summary>
             <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>
+              <div className="note">Runs on: <b>{s.runsOn}</b></div>
               {s.secretNames.length > 0 && <div className="note">Secrets: {s.secretNames.join(", ")}</div>}
               {auto && s.willRun ? (
                 <>

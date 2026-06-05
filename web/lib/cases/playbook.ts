@@ -7,6 +7,7 @@
 // DB loader (loadPlaybook) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { automationPreview, validationChecks, type Action } from "../automation";
+import { stepRunsOn, serverHintFromLabel } from "./case-secrets";
 
 export type PlaybookStep = {
   seq: number; // 1-based, in execution order
@@ -15,6 +16,7 @@ export type PlaybookStep = {
   action: Action;
   mode: string; // api | browser | manual
   dependsOn: string[]; // system keys this step runs after (present in this case)
+  runsOn: string; // where it executes — client-network agent (+ server) / central runner / app
   willRun: string | null; // the resolved script for an automated step
   validates: string[]; // the read-back checks the validator will run
   secretNames: string[];
@@ -43,11 +45,12 @@ export type BuildPlaybookInput = {
   caseNumber: string | null;
   subject: string | null;
   action: Action;
-  client: { name: string; slug: string; primaryDomain: string; identity: unknown };
+  client: { name: string; slug: string; primaryDomain: string; identity: unknown; backbone?: string | null };
   payload: Record<string, unknown>;
   jobs: JobRow[];
   systems: SystemRow[];
   names: Map<string, string>; // systemKey -> display name
+  secretServers?: Map<string, string | null>; // secret name -> host hint (from the Delinea label)
   manualText?: Map<string, string>; // systemKey -> runbook step text (manual steps)
 };
 
@@ -74,6 +77,8 @@ export function buildPlaybook(input: BuildPlaybookInput): Playbook {
       const laneDeps = (sys?.config as { dependsOn?: Record<string, string[]> } | null)?.dependsOn?.[action];
       const dependsOn = (laneDeps ?? sys?.dependsOn ?? []).filter((d) => present.has(d));
       const isApi = j.mode === "api";
+      const secretNames = r.secretNames ?? [];
+      const servers = secretNames.map((n) => input.secretServers?.get(n) ?? null).filter((s): s is string => !!s);
       return {
         seq: i + 1,
         systemKey: j.systemKey,
@@ -81,6 +86,7 @@ export function buildPlaybook(input: BuildPlaybookInput): Playbook {
         action,
         mode: j.mode,
         dependsOn,
+        runsOn: stepRunsOn(j.systemKey, client.backbone, servers),
         willRun: isApi ? automationPreview(j.systemKey, action, r.config ?? null, client.identity, client.primaryDomain, payload) : null,
         validates: isApi ? validationChecks(j.systemKey, action) : [],
         secretNames: r.secretNames ?? [],
@@ -115,6 +121,7 @@ export function renderPlaybookMarkdown(pb: Playbook): string {
   out.push("");
   for (const s of pb.steps) {
     out.push(`## ${s.seq}. ${s.systemName} (${s.systemKey}) — ${s.mode}${s.requiresApproval ? " · requires approval" : ""}`);
+    out.push(`Runs on: ${s.runsOn}`);
     if (s.dependsOn.length) out.push(`After: ${s.dependsOn.join(", ")}`);
     if (s.secretNames.length) out.push(`Secrets: ${s.secretNames.join(", ")}`);
     out.push("");
@@ -143,7 +150,7 @@ export async function loadPlaybook(db: PrismaClient, caseId: string): Promise<Pl
   const c = await db.caseRequest.findUnique({
     where: { id: caseId },
     include: {
-      client: { select: { id: true, name: true, slug: true, primaryDomain: true, identity: true, systems: true } },
+      client: { select: { id: true, name: true, slug: true, primaryDomain: true, identity: true, backbone: true, systems: true, secrets: { select: { name: true, label: true } } } },
       jobs: { orderBy: { sequence: "asc" }, select: { systemKey: true, sequence: true, mode: true, request: true } },
     },
   });
@@ -152,6 +159,8 @@ export async function loadPlaybook(db: PrismaClient, caseId: string): Promise<Pl
   const keys = [...new Set(c.jobs.map((j) => j.systemKey))];
   const catalog = await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } });
   const names = new Map(catalog.map((s) => [s.key, s.name]));
+  // secret name -> host hint parsed from its Delinea label (drives "runs on" per step).
+  const secretServers = new Map<string, string | null>(c.client.secrets.map((s) => [s.name, serverHintFromLabel(s.label)]));
 
   // Manual/browser step text: the matching runbook section's joined step lines, if present.
   const sections = await db.runbookSection.findMany({
@@ -170,11 +179,12 @@ export async function loadPlaybook(db: PrismaClient, caseId: string): Promise<Pl
     caseNumber: c.serviceNowCaseNumber,
     subject: c.subject,
     action: c.action as Action,
-    client: { name: c.client.name, slug: c.client.slug, primaryDomain: c.client.primaryDomain, identity: c.client.identity },
+    client: { name: c.client.name, slug: c.client.slug, primaryDomain: c.client.primaryDomain, identity: c.client.identity, backbone: c.client.backbone },
     payload: (c.payload ?? {}) as Record<string, unknown>,
     jobs: c.jobs.map((j) => ({ systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, request: j.request })),
     systems: c.client.systems.map((s) => ({ systemKey: s.systemKey, dependsOn: s.dependsOn, config: s.config })),
     names,
+    secretServers,
     manualText,
   });
 }
