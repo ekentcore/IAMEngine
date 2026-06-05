@@ -1,13 +1,24 @@
-// Agents (runners) — list + enroll + enable/disable. Server component reads Prisma directly.
+// Agents (runners) — list + enroll + enable/disable + trash. Server component reads Prisma directly.
 import { db } from "@/lib/db";
-import { AgentsView, type AgentVM } from "./_components/agents-view";
+import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { trashDaysLeft } from "@/lib/jobs/agent-trash";
+import { AgentsView, type AgentVM, type TrashedAgentVM } from "./_components/agents-view";
 
 export const dynamic = "force-dynamic";
 
 export default async function AgentsPage() {
+  // Purge any trash past the 30-day window on load (no cron infra — lazy purge on visit).
+  await makeRunnerService(db).purgeExpiredTrash();
+
   const agents = await db.agent.findMany({
+    where: { deletedAt: null },
     orderBy: { name: "asc" },
     include: { client: { select: { slug: true, name: true } }, _count: { select: { jobs: true } } },
+  });
+  const trashed = await db.agent.findMany({
+    where: { deletedAt: { not: null } },
+    orderBy: { deletedAt: "desc" },
+    include: { client: { select: { name: true } } },
   });
   const clients = await db.client.findMany({
     where: { status: "active" },
@@ -26,6 +37,15 @@ export default async function AgentsPage() {
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
   }));
+  const now = new Date();
+  const trashVms: TrashedAgentVM[] = trashed.map((a) => ({
+    id: a.id,
+    name: a.name,
+    scope: a.scope,
+    clientName: a.client?.name ?? null,
+    deletedAt: a.deletedAt!.toISOString(),
+    daysLeft: trashDaysLeft(a.deletedAt!, now),
+  }));
 
   return (
     <main>
@@ -38,7 +58,7 @@ export default async function AgentsPage() {
           </p>
         </div>
       </div>
-      <AgentsView agents={vms} clients={clients} />
+      <AgentsView agents={vms} clients={clients} trashed={trashVms} />
     </main>
   );
 }

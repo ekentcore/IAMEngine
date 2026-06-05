@@ -6,6 +6,7 @@ import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { checkSecret, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId } from "../cases/case-secrets";
+import { purgeCutoff } from "./agent-trash";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 
@@ -50,6 +51,42 @@ export function makeRunnerService(db: PrismaClient) {
       await db.agent.update({ where: { id: agentId }, data: { enabled } });
       await db.auditLog.create({ data: { actor: "ui", action: enabled ? "agent.enable" : "agent.disable", detail: { agentId } } });
       return { id: agentId, enabled };
+    },
+
+    // Move a DISABLED agent to the trash (soft delete; restorable for TRASH_RETENTION_DAYS).
+    async trashAgent(agentId: string): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (agent.enabled) throw new HttpError(409, "disable the runner before moving it to the trash");
+      if (agent.deletedAt) return { id: agentId }; // already trashed (idempotent)
+      await db.agent.update({ where: { id: agentId }, data: { deletedAt: new Date() } });
+      await db.auditLog.create({ data: { actor: "ui", action: "agent.trash", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Restore a trashed agent — it comes back DISABLED (re-enable explicitly before use).
+    async restoreAgent(agentId: string): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      await db.agent.update({ where: { id: agentId }, data: { deletedAt: null, enabled: false } });
+      await db.auditLog.create({ data: { actor: "ui", action: "agent.restore", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Permanently delete an agent (jobs keep their history; assignedAgentId is set null).
+    async deleteAgentForever(agentId: string): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      await db.auditLog.create({ data: { actor: "ui", action: "agent.delete", detail: { agentId } } });
+      await db.agent.delete({ where: { id: agentId } });
+      return { id: agentId };
+    },
+
+    // Hard-delete trashed agents past the retention window. Returns how many were purged.
+    async purgeExpiredTrash(now: Date = new Date()): Promise<number> {
+      const res = await db.agent.deleteMany({ where: { deletedAt: { not: null, lte: purgeCutoff(now) } } });
+      if (res.count) await db.auditLog.create({ data: { actor: "system", action: "agent.purge", detail: { count: res.count } } });
+      return res.count;
     },
 
     async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean }> {

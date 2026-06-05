@@ -40,3 +40,17 @@ export async function setAgentEnabled(id: string, enabled: boolean) {
     return { ok: false as const, error: e instanceof HttpError ? e.message : "internal error" };
   }
 }
+
+async function agentOp(fn: () => Promise<unknown>) {
+  try {
+    await fn();
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof HttpError ? e.message : "internal error" };
+  }
+}
+
+export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
+export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
+export const deleteAgentForever = (id: string) => agentOp(() => makeRunnerService(db).deleteAgentForever(id));

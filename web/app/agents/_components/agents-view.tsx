@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -17,6 +17,15 @@ export type AgentVM = {
   jobCount: number;
 };
 
+export type TrashedAgentVM = {
+  id: string;
+  name: string;
+  scope: AgentScope;
+  clientName: string | null;
+  deletedAt: string;
+  daysLeft: number;
+};
+
 function lastSeen(iso: string | null): { text: string; online: boolean } {
   if (!iso) return { text: "never", online: false };
   const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
@@ -27,7 +36,7 @@ function lastSeen(iso: string | null): { text: string; online: boolean } {
   return { text: new Date(iso).toLocaleDateString(), online };
 }
 
-export function AgentsView({ agents, clients }: { agents: AgentVM[]; clients: { slug: string; name: string }[] }) {
+export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[] }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -78,6 +87,14 @@ export function AgentsView({ agents, clients }: { agents: AgentVM[]; clients: { 
     router.refresh();
   }
 
+  async function run(id: string, fn: (id: string) => Promise<{ ok: boolean; error?: string }>) {
+    setToggling(id); setError(null);
+    const res = await fn(id);
+    setToggling(null);
+    if (!res.ok) setError(res.error ?? "failed");
+    router.refresh();
+  }
+
   return (
     <>
       <div className="toolbar" style={{ marginBottom: "1rem" }}>
@@ -101,7 +118,12 @@ export function AgentsView({ agents, clients }: { agents: AgentVM[]; clients: { 
                 <td><span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span></td>
                 <td>{a.jobCount}</td>
                 <td>{a.enabled ? "enabled" : <span className="muted">disabled</span>}</td>
-                <td><button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button></td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                  {!a.enabled && (
+                    <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)" style={{ marginLeft: 6 }}>Trash</button>
+                  )}
+                </td>
               </tr>
             );
           })}
@@ -110,6 +132,31 @@ export function AgentsView({ agents, clients }: { agents: AgentVM[]; clients: { 
           )}
         </tbody>
       </table>
+      {error && <p className="note danger">{error}</p>}
+
+      {trashed.length > 0 && (
+        <details style={{ marginTop: "1.25rem" }}>
+          <summary style={{ cursor: "pointer" }}><b>Trash</b> <span className="note">({trashed.length}) — restorable for 30 days, then permanently deleted</span></summary>
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead><tr><th>Name</th><th>Scope</th><th>Client</th><th>Trashed</th><th>Auto-delete in</th><th></th></tr></thead>
+            <tbody>
+              {trashed.map((a) => (
+                <tr key={a.id}>
+                  <td><div>{a.name}</div><code className="muted" style={{ fontSize: 11 }}>{a.id}</code></td>
+                  <td><span className="badge">{a.scope === "central" ? "central" : "client-network"}</span></td>
+                  <td>{a.clientName ?? <span className="muted">— all —</span>}</td>
+                  <td className="muted">{new Date(a.deletedAt).toLocaleDateString()}</td>
+                  <td style={{ color: a.daysLeft <= 3 ? "#b3261e" : undefined }}>{a.daysLeft} day{a.daysLeft === 1 ? "" : "s"}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button onClick={() => run(a.id, restoreAgent)} disabled={toggling === a.id}>Restore</button>
+                    <button onClick={() => { if (confirm(`Permanently delete runner "${a.name}"? This can't be undone.`)) run(a.id, deleteAgentForever); }} disabled={toggling === a.id} style={{ marginLeft: 6, color: "#b3261e" }}>Delete forever</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
 
       <dialog ref={ref} style={{ maxWidth: 620 }}>
         {install ? (

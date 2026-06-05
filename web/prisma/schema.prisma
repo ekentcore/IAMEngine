@@ -166,7 +166,11 @@ model Agent {
   version    String?
   lastSeenAt DateTime?
   enabled    Boolean    @default(true)
+  // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
+  deletedAt  DateTime?
   jobs       Job[]
+
+  @@index([deletedAt])
 }
 
 model CaseRequest {
