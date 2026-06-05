@@ -66,7 +66,8 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
     const res = await createEnrollToken({ scope, clientSlug: scope === "client_network" ? clientSlug : null });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
-    setInstall({ command: `irm "${origin}/api/runner/install.ps1?token=${res.token}" | iex` });
+    // -Headers skips ngrok-free's browser-warning interstitial (harmless on LAN/Cloudflare).
+    setInstall({ command: `irm -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/install.ps1?token=${res.token}" | iex` });
   }
 
   // Manual enroll (e.g. a Mac smoke test) — creates the agent now and shows its id + start command.

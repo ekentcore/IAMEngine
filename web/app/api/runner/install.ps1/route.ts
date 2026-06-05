@@ -65,20 +65,23 @@ if ($NeedAd -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
   if ($cap) { Add-WindowsCapability -Online -Name $cap.Name } else { Write-Warning "RSAT ActiveDirectory not available here — install it on a domain-joined host." }
 }
 
+# ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
+$H = @{ 'ngrok-skip-browser-warning' = 'true' }
+
 # 3. Download the runner (manifest + per-file)
 Step "downloading runner -> $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest"
+$manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H
 foreach ($rel in $manifest.files) {
   $dest = Join-Path $InstallDir ($rel -replace '/', '\\')
   New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-  $body = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing
+  $body = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
   [System.IO.File]::WriteAllText($dest, $body.Content)
 }
 
 # 4. Auto-enroll (token -> agent id; the token carries scope + client)
 Step "enrolling agent"
-$enroll = Invoke-RestMethod -Method Post -Uri "$AppUrl/api/agents" -ContentType 'application/json' -Body (@{ name = "${agentName}"; enrollToken = $Token } | ConvertTo-Json)
+$enroll = Invoke-RestMethod -Method Post -Uri "$AppUrl/api/agents" -ContentType 'application/json' -Headers $H -Body (@{ name = "${agentName}"; enrollToken = $Token } | ConvertTo-Json)
 $AgentId = $enroll.id
 if (-not $AgentId) { Write-Error "Enrollment failed (no agent id returned)."; return }
 Write-Host "  enrolled: $AgentId" -ForegroundColor Green

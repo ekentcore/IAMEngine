@@ -152,8 +152,10 @@ function Add-ClientContext {
 
 function Invoke-AppApi {
     param([string]$Method, [string]$Path, $Body)
-    $p = @{ Method = $Method; Uri = "$AppUrl$Path"; ContentType = 'application/json' }
-    if ($ApiToken) { $p.Headers = @{ Authorization = "Bearer $ApiToken" } }
+    # ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
+    $headers = @{ 'ngrok-skip-browser-warning' = 'true' }
+    if ($ApiToken) { $headers['Authorization'] = "Bearer $ApiToken" }
+    $p = @{ Method = $Method; Uri = "$AppUrl$Path"; ContentType = 'application/json'; Headers = $headers }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 12) }
     Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
 }
