@@ -35,6 +35,22 @@ if (Get-Module -ListAvailable ExchangeOnlineManagement) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
 }
 
+# Build the AD connection splat from the brokered ad-dc secret (Option 2): the AD module
+# authenticates as the ad-dc account (-Credential) against the DC named in its Fields (-Server),
+# so the runner's own process identity needs no AD rights. Empty when ad-dc isn't brokered (the
+# central runner / a host already running as a domain account).
+function New-CtgAdConnection($creds) {
+    $ad = @{}
+    $s = $creds['ad-dc']
+    if ($s) {
+        if ($s.Credential) { $ad.Credential = $s.Credential }
+        $server = $s.Fields['Server']
+        if (-not $server) { $server = $s.Fields['DomainController'] }
+        if ($server) { $ad.Server = $server }
+    }
+    return $ad
+}
+
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
 # the first job for that system; the action lanes receive ($job, $creds) where $creds maps each
 # named secret to its resolved credential object (.Credential is a pscredential).
@@ -46,9 +62,9 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
     'active-directory' = @{
-        Onboard  = { param($job, $creds) Invoke-CtgADOnboarding  -User (Add-ClientContext $job) -Config $job.config }
-        Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config }
-        Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action }
+        Onboard  = { param($job, $creds) Invoke-CtgADOnboarding  -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action -AdConnection (New-CtgAdConnection $creds) }
     }
     'mimecast' = @{
         Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }

@@ -8,15 +8,16 @@ BeforeAll {
 
     # Param blocks so Pester -ParameterFilter can see the bound args (e.g. $Path, $HomeDrive).
     # CmdletBinding gives -ErrorAction etc. for free; SupportsShouldProcess accepts -Confirm.
-    function global:Get-ADUser { [CmdletBinding()] param($Filter, $Identity, $Properties) }
-    function global:New-ADUser { [CmdletBinding()] param($Name, $SamAccountName, $UserPrincipalName, $GivenName, $Surname, $DisplayName, $Path, $Enabled, $OtherAttributes, $AccountPassword) }
-    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager) }
-    function global:Add-ADGroupMember { [CmdletBinding()] param($Identity, $Members) }
-    function global:Remove-ADGroupMember { [CmdletBinding(SupportsShouldProcess)] param($Identity, $Members) }
-    function global:Get-ADPrincipalGroupMembership { [CmdletBinding()] param($Identity) }
-    function global:Disable-ADAccount { [CmdletBinding()] param($Identity) }
-    function global:Move-ADObject { [CmdletBinding()] param($Identity, $TargetPath) }
-    function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword) }
+    # All stubs accept $Server/$Credential — the module splats @AdConnection (brokered ad-dc auth) onto every cmdlet.
+    function global:Get-ADUser { [CmdletBinding()] param($Filter, $Identity, $Properties, $Server, $Credential) }
+    function global:New-ADUser { [CmdletBinding()] param($Name, $SamAccountName, $UserPrincipalName, $GivenName, $Surname, $DisplayName, $Path, $Enabled, $OtherAttributes, $AccountPassword, $Server, $Credential) }
+    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $Server, $Credential) }
+    function global:Add-ADGroupMember { [CmdletBinding()] param($Identity, $Members, $Server, $Credential) }
+    function global:Remove-ADGroupMember { [CmdletBinding(SupportsShouldProcess)] param($Identity, $Members, $Server, $Credential) }
+    function global:Get-ADPrincipalGroupMembership { [CmdletBinding()] param($Identity, $Server, $Credential) }
+    function global:Disable-ADAccount { [CmdletBinding()] param($Identity, $Server, $Credential) }
+    function global:Move-ADObject { [CmdletBinding()] param($Identity, $TargetPath, $Server, $Credential) }
+    function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword, $Server, $Credential) }
 
     Import-Module $ModulePath -Force
 }
@@ -72,6 +73,15 @@ Describe 'Invoke-CtgADOnboarding' {
         Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Finance-Team,OU=Groups,DC=x' } -Times 1
         Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=VPN-Users,OU=Groups,DC=x' } -Times 1
         ($r.Actions -join ' ') | Should -Match 'mirrored 2 group'
+    }
+
+    It 'threads the brokered ad-dc connection (Server + Credential) onto AD cmdlets' {
+        $cred = [pscredential]::new('CORE\svc-ad', (ConvertTo-SecureString 'p' -AsPlainText -Force))
+        $config = [pscustomobject]@{ ou='Finance'; groups=@('DEPT-Finance'); attributes=[pscustomobject]@{ title='Analyst' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config -AdConnection @{ Server='core-cce-dc01'; Credential=$cred }
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Server -eq 'core-cce-dc01' -and $Credential -eq $cred } -Times 1
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Server -eq 'core-cce-dc01' -and $Credential } -Times 1
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Server -eq 'core-cce-dc01' } -Times 1  # attribute set
     }
 
     It 'flags a missing mirror user without failing the onboard' {

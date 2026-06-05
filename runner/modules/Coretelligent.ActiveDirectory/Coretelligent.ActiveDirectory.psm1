@@ -61,8 +61,10 @@ function Test-CtgCondition {
 # `manager` is special — it's a DN-valued attribute, so a readable name is resolved to a DN first.
 # Returns the list of applied "name=value" pairs (for the actions log).
 function Set-CtgADAttributes {
+    # $AdConnection is splatted onto every AD cmdlet: @{ Server=<dc>; Credential=<pscred> } when the
+    # brokered ad-dc secret drives auth (Option 2), or empty @{} to use the runner's ambient context.
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][string]$Identity, $Attributes)
+    param([Parameter(Mandatory)][string]$Identity, $Attributes, [hashtable]$AdConnection = @{})
     $applied = [System.Collections.Generic.List[string]]::new()
     if (-not $Attributes) { return $applied.ToArray() }
     # Works for a JSON-deserialized pscustomobject (production) or a hashtable (tests).
@@ -77,13 +79,13 @@ function Set-CtgADAttributes {
             }
             else {
                 $safe = "$value" -replace "'", "''"
-                $found = @(Get-ADUser -Filter "Name -eq '$safe'" -ErrorAction SilentlyContinue)
+                $found = @(Get-ADUser -Filter "Name -eq '$safe'" -ErrorAction SilentlyContinue @AdConnection)
                 if ($found.Count -gt 1) { Write-Warning "manager '$value' is ambiguous ($($found.Count) matches) — skipped"; $null }
                 elseif ($found.Count -eq 1) { $found[0].DistinguishedName }
                 else { $null }
             }
             if ($dn -and $PSCmdlet.ShouldProcess($Identity, "Set manager = $dn")) {
-                Set-ADUser -Identity $Identity -Manager $dn -ErrorAction Continue
+                Set-ADUser -Identity $Identity -Manager $dn -ErrorAction Continue @AdConnection
                 $applied.Add("manager=$dn")
             }
             continue
@@ -91,7 +93,7 @@ function Set-CtgADAttributes {
         # countryCode is an Integer-syntax AD attribute; cast so a templated "840" doesn't fail.
         $replaceVal = if ($name -ieq 'countryCode') { [int]$value } else { $value }
         if ($PSCmdlet.ShouldProcess($Identity, "Set $name = $value")) {
-            Set-ADUser -Identity $Identity -Replace @{ $name = $replaceVal } -ErrorAction Continue
+            Set-ADUser -Identity $Identity -Replace @{ $name = $replaceVal } -ErrorAction Continue @AdConnection
             $applied.Add("$name=$value")
         }
     }
@@ -104,10 +106,10 @@ function Set-CtgADAttributes {
 # intentionally-empty membership.
 function Get-CtgMirrorGroups {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$ReferenceUser)
+    param([Parameter(Mandatory)][string]$ReferenceUser, [hashtable]$AdConnection = @{})
     $esc = $ReferenceUser -replace "'", "''"
     foreach ($filter in @("DisplayName -eq '$esc'", "Name -eq '$esc'", "SamAccountName -eq '$esc'")) {
-        $ref = Get-ADUser -Filter $filter -Properties MemberOf -ErrorAction SilentlyContinue | Select-Object -First 1
+        $ref = Get-ADUser -Filter $filter -Properties MemberOf -ErrorAction SilentlyContinue @AdConnection | Select-Object -First 1
         if ($ref) { return ,@($ref.MemberOf) }
     }
     return $null
@@ -117,7 +119,10 @@ function Invoke-CtgADOnboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
-        [Parameter(Mandatory)][pscustomobject]$Config
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        # Brokered AD auth (Option 2): @{ Server=<dc>; Credential=<pscred> } — splatted onto every AD
+        # cmdlet so the runner authenticates as the ad-dc account rather than its own process identity.
+        [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $sam = $User.SamAccountName
@@ -125,7 +130,7 @@ function Invoke-CtgADOnboarding {
     $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
 
     # 1. Ensure the user exists in the OU --------------------------------------
-    $existing = Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue
+    $existing = Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue @AdConnection
     if ($existing) {
         $actions.Add("user exists ($sam) — skipped create")
     }
@@ -136,7 +141,7 @@ function Invoke-CtgADOnboarding {
         New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $User.UserPrincipalName `
             -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
             -Path $ouPath -Enabled $true -AccountPassword $initial `
-            -OtherAttributes @{ proxyAddresses = "SMTP:$($User.UserPrincipalName)" }
+            -OtherAttributes @{ proxyAddresses = "SMTP:$($User.UserPrincipalName)" } @AdConnection
         $actions.Add("created user $sam in $ouPath")
     }
 
@@ -146,13 +151,13 @@ function Invoke-CtgADOnboarding {
         $unc = ((Get-CtgProp $home 'unc') -replace '<username>', $sam)
         $letter = (Get-CtgProp $home 'letter')
         if ($PSCmdlet.ShouldProcess($sam, "Map home drive ${letter}: -> $unc")) {
-            Set-ADUser -Identity $sam -HomeDrive "${letter}:" -HomeDirectory $unc
+            Set-ADUser -Identity $sam -HomeDrive "${letter}:" -HomeDirectory $unc @AdConnection
             $actions.Add("mapped home drive ${letter}: -> $unc")
         }
     }
 
     # 3. Directory attributes (resolved by the planner) ------------------------
-    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'attributes'))) {
+    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'attributes') -AdConnection $AdConnection)) {
         $actions.Add("set attribute: $a")
     }
 
@@ -168,7 +173,7 @@ function Invoke-CtgADOnboarding {
     # against the groups already chosen; Add-ADGroupMember below is idempotent, and DNs add fine.
     $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
     if ($mirrorUser) {
-        $mirrorGroups = Get-CtgMirrorGroups -ReferenceUser ([string]$mirrorUser)
+        $mirrorGroups = Get-CtgMirrorGroups -ReferenceUser ([string]$mirrorUser) -AdConnection $AdConnection
         if ($null -eq $mirrorGroups) {
             $actions.Add("mirror user '$mirrorUser' not found — mirror groups not applied")
         }
@@ -181,7 +186,7 @@ function Invoke-CtgADOnboarding {
     }
     foreach ($group in $groups) {
         if ($PSCmdlet.ShouldProcess($sam, "Add to group $group")) {
-            Add-ADGroupMember -Identity $group -Members $sam -ErrorAction SilentlyContinue
+            Add-ADGroupMember -Identity $group -Members $sam -ErrorAction SilentlyContinue @AdConnection
             $actions.Add("added to group: $group")
         }
     }
@@ -193,12 +198,13 @@ function Invoke-CtgADOffboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
-        [Parameter(Mandatory)][pscustomobject]$Config
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $sam = $User.SamAccountName
 
-    $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue
+    $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
     if (-not $existing) {
         return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("user not found ($sam)"); Evidence=@{ Groups=@() } }
     }
@@ -208,20 +214,20 @@ function Invoke-CtgADOffboarding {
     if ((Get-CtgProp $Config 'resetPassword')) {
         if ($PSCmdlet.ShouldProcess($sam, "Reset password")) {
             $new = ConvertTo-SecureString ([System.Guid]::NewGuid().ToString() + '!Aa9') -AsPlainText -Force
-            Set-ADAccountPassword -Identity $sam -Reset -NewPassword $new
+            Set-ADAccountPassword -Identity $sam -Reset -NewPassword $new @AdConnection
             $actions.Add("reset password")
         }
     }
 
     # 2. Evidence FIRST, then remove groups (primary group can't be removed) ----
-    $memberships = @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue)
+    $memberships = @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection)
     $groupNames = @($memberships | ForEach-Object { $_.Name })
     $actions.Add("captured $($groupNames.Count) group membership(s) as evidence")
     if ((Get-CtgProp $Config 'removeAllGroups')) {
         foreach ($g in $memberships) {
             if ($g.Name -eq 'Domain Users') { continue }   # primary group — not removable this way
             if ($PSCmdlet.ShouldProcess($sam, "Remove from group $($g.Name)")) {
-                Remove-ADGroupMember -Identity $g.Name -Members $sam -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-ADGroupMember -Identity $g.Name -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
                 $actions.Add("removed from group: $($g.Name)")
             }
         }
@@ -232,21 +238,21 @@ function Invoke-CtgADOffboarding {
     if ($hide) {
         $attr = Get-CtgProp $hide 'attribute'; $val = Get-CtgProp $hide 'value'
         if ($attr -and $PSCmdlet.ShouldProcess($sam, "Hide from GAL ($attr=$val)")) {
-            Set-ADUser -Identity $sam -Replace @{ $attr = $val }
+            Set-ADUser -Identity $sam -Replace @{ $attr = $val } @AdConnection
             $actions.Add("hid from GAL: $attr=$val")
         }
     }
 
     # 4. Remove manager --------------------------------------------------------
     if ($PSCmdlet.ShouldProcess($sam, "Clear manager")) {
-        Set-ADUser -Identity $sam -Clear manager
+        Set-ADUser -Identity $sam -Clear manager @AdConnection
         $actions.Add("cleared manager")
     }
 
     # 5. Disable ----------------------------------------------------------------
     if ((Get-CtgProp $Config 'disableAccount') -ne $false) {
         if ($PSCmdlet.ShouldProcess($sam, "Disable account")) {
-            Disable-ADAccount -Identity $sam
+            Disable-ADAccount -Identity $sam @AdConnection
             $actions.Add("disabled account")
         }
     }
@@ -257,7 +263,7 @@ function Invoke-CtgADOffboarding {
         $actions.Add("did not move OU (do-not-move-ou guardrail — moving would delete the synced 365 account)")
     }
     elseif ($disabledOu -and $PSCmdlet.ShouldProcess($sam, "Move to $disabledOu")) {
-        Move-ADObject -Identity $existing.DistinguishedName -TargetPath $disabledOu
+        Move-ADObject -Identity $existing.DistinguishedName -TargetPath $disabledOu @AdConnection
         $actions.Add("moved to $disabledOu")
     }
 
@@ -280,7 +286,8 @@ function Confirm-CtgAD {
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
-        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action,
+        [hashtable]$AdConnection = @{}
     )
 
     $checks = [System.Collections.Generic.List[object]]::new()
@@ -288,9 +295,9 @@ function Confirm-CtgAD {
     $sam = $User.SamAccountName
     $domain = Get-CtgProp $User 'PrimaryDomain'
 
-    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue
+    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue @AdConnection
     $exists = [bool]$u
-    $groupNames = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) } else { @() }
+    $groupNames = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection | ForEach-Object { $_.Name }) } else { @() }
 
     if ($Action -eq 'onboard') {
         $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
