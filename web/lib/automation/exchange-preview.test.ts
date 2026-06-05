@@ -2,8 +2,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { previewExchange } from "./exchange-preview";
 
-test("onboard: notes there is no onboard lane", () => {
-  assert.match(previewExchange("onboard", {}, null, "acme.com"), /no onboard lane/i);
+test("onboard: no remote-mailbox config → skipped note", () => {
+  assert.match(previewExchange("onboard", {}, null, "acme.com"), /skipped/i);
+});
+
+test("onboard: hybrid remote-mailbox → enable, sync-wait, regional", () => {
+  const out = previewExchange(
+    "onboard",
+    { enableRemoteMailbox: { routingDomain: "coretell.mail.onmicrosoft.com", emailAddressPolicyEnabled: true }, regional: { language: "en-us", timezone: "Pacific Standard Time" }, waitForSync: true },
+    null,
+    "core.tech",
+    { samAccountName: "aanand", userPrincipalName: "aanand@core.tech" }
+  );
+  assert.match(out, /Enable-RemoteMailbox/);
+  assert.match(out, /\$Sam   = "aanand"/);
+  assert.match(out, /\$Route = "\$Sam@coretell\.mail\.onmicrosoft\.com"/);
+  assert.match(out, /Wait-CtgMailbox/);
+  assert.match(out, /Set-MailboxRegionalConfiguration.*Pacific Standard Time/s);
 });
 
 test("offboard: converts to shared under threshold + blocks ActiveSync/OWA", () => {

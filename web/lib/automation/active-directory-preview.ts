@@ -8,6 +8,8 @@ type CondGroup = { when?: string; groups?: string[] };
 type ADConfig = {
   ou?: string;
   homeDrive?: Home | null;
+  attributes?: Record<string, unknown>;
+  mirrorFromUser?: string;
   groups?: string[];
   conditionalGroups?: CondGroup[];
   resetPassword?: boolean;
@@ -51,10 +53,23 @@ function onboard(config: ADConfig, domain: string, user: PreviewUser): string {
     const unc = (config.homeDrive.unc ?? "<unc>").replace("<username>", "$Sam");
     lines.push("", "# map the home drive", `Set-ADUser -Identity $Sam -HomeDrive "${config.homeDrive.letter ?? "H"}:" -HomeDirectory "${unc}"`);
   }
+  const attrs = config.attributes && typeof config.attributes === "object" ? config.attributes : null;
+  if (attrs && Object.keys(attrs).length) {
+    lines.push("", "# set directory attributes (resolved from the case + persona/globals)",
+      `$Attributes = @{`);
+    for (const [k, v] of Object.entries(attrs)) lines.push(`  ${k} = "${String(v)}"`);
+    lines.push(`}`, `foreach ($a in $Attributes.GetEnumerator()) { Set-ADUser -Identity $Sam -Replace @{ $a.Key = $a.Value } }`);
+  }
   lines.push("", "# add to base groups (skips if already a member)", `$Groups = ${psArray(groups)}`, `foreach ($g in $Groups) { Add-ADGroupMember -Identity $g -Members $Sam }`);
   if (config.conditionalGroups?.length) {
     lines.push("", "# conditional groups (added when the rule matches the user):");
     for (const cg of config.conditionalGroups) lines.push(`#   when ${cg.when ?? "?"} -> ${(cg.groups ?? []).join(", ")}`);
+  }
+  if (config.mirrorFromUser) {
+    lines.push("",
+      `# mirror — union the LIVE group memberships of "${config.mirrorFromUser}" (resolved at run time)`,
+      `$RefGroups = (Get-ADUser -Filter "DisplayName -eq '${config.mirrorFromUser}'" -Properties MemberOf).MemberOf`,
+      `foreach ($g in $RefGroups) { Add-ADGroupMember -Identity $g -Members $Sam }`);
   }
   return lines.join("\n");
 }
