@@ -143,7 +143,11 @@ export function makeRunnerService(db: PrismaClient) {
           payload: j.case.payload,
           requiresApproval: Boolean(r.requiresApproval),
           captureEvidence: Boolean(r.captureEvidence),
-          dryRun: Boolean(r.dryRun),
+          // case.dryRun is AUTHORITATIVE at claim time (the per-job request.dryRun stamp is only a
+          // planning hint for the UI/playbook). Reading it here means: an absent stamp can't run a
+          // dry-run case LIVE (fail-safe), a job claimed mid-toggle uses the committed case mode (no
+          // TOCTOU), and an approve that rewrites request can't revert the mode. -WhatIf when true.
+          dryRun: Boolean(j.case.dryRun),
         };
       });
     },

@@ -19,12 +19,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   if (body.action === "set-dry-run") {
     if (typeof body.dryRun !== "boolean") return NextResponse.json({ error: "dryRun must be a boolean" }, { status: 422 });
-    const exists = await db.caseRequest.findUnique({ where: { id: params.id }, select: { id: true, clientId: true, jobs: { select: { status: true } } } });
+    const exists = await db.caseRequest.findUnique({ where: { id: params.id }, select: { id: true, clientId: true, dryRun: true, jobs: { select: { status: true } } } });
     if (!exists) return NextResponse.json({ error: "not found" }, { status: 404 });
     // Mode can't change once execution has begun (the UI also disables it; enforce it here too).
     if (hasStartedJobs(exists.jobs)) return NextResponse.json({ error: "a job has already started — re-plan to change the mode" }, { status: 409 });
     const updated = await makeCaseRepository(db).setCaseDryRun(params.id, body.dryRun);
-    await db.auditLog.create({ data: { actor: "ui", action: "case.dry_run.set", clientId: exists.clientId, detail: { caseId: params.id, dryRun: body.dryRun, jobsUpdated: updated } } });
+    await db.auditLog.create({ data: { actor: "ui", action: "case.dry_run.set", clientId: exists.clientId, detail: { caseId: params.id, from: exists.dryRun, to: body.dryRun, jobsUpdated: updated } } });
     return NextResponse.json({ dryRun: body.dryRun, jobsUpdated: updated });
   }
   return NextResponse.json({ error: 'action must be "set-dry-run"' }, { status: 422 });
