@@ -6,6 +6,7 @@
 import { PrismaClient, Prisma } from "@prisma/client";
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { parseRunbookText } from "../lib/clients/runbook-parse";
 
 const prisma = new PrismaClient();
 const PROFILES = join(process.cwd(), "..", "profiles");
@@ -120,6 +121,21 @@ async function applyAuthored(p: any): Promise<string | null> {
     create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined, ...(intakeSource ? { intakeSource } : {}), ...planBlocks },
   });
   await upsertSecretsAndSystems(client.id, p);
+  // Hand-authored runbook (for KB-less clients like Coretelligent): { runbook: { onboard, offboard } }
+  // parsed into RunbookSection rows, replacing any existing for that action.
+  if (p.runbook && typeof p.runbook === "object") {
+    for (const action of ["onboard", "offboard"] as const) {
+      const text = (p.runbook as Record<string, unknown>)[action];
+      if (typeof text !== "string" || !text.trim()) continue;
+      const sections = parseRunbookText(text);
+      await prisma.runbookSection.deleteMany({ where: { clientId: client.id, action } });
+      if (sections.length) {
+        await prisma.runbookSection.createMany({
+          data: sections.map((s) => ({ clientId: client.id, action, seq: s.seq, systemKey: s.systemKey, title: s.title, status: s.status, steps: s.steps })),
+        });
+      }
+    }
+  }
   return client.id;
 }
 

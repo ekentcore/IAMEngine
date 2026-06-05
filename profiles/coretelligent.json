@@ -249,5 +249,10 @@
       "onboard": { "when": "always", "config": {} },
       "offboard": { "when": "always", "config": {} }
     }
-  ]
+  ],
+
+  "runbook": {
+    "onboard": "Active Directory\n- Create the user in the role + location OU (e.g. OU=CA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local).\n- Set directory attributes from the case: title, department, manager, company, c / co / countryCode, employeeType, extensionAttribute4 (start date), ipPhone (DID extension), physicalDeliveryOfficeName.\n- Add to the global groups (Egnyte-CS-CORE, Centrify - Egnyte Power Users, RDS-Users, VPN-Split, Core-ALL, ...) plus the selected persona's role groups.\n- If the request says \"mirror <user>\", union that reference user's live group memberships.\n- Map the home drive if the persona configures one.\n\nEntra Connect sync\n- Trigger an Azure AD Connect delta sync (Start-ADSyncSyncCycle) so the user provisions into Entra / Microsoft 365.\n\nExchange\n- Enable the on-prem remote mailbox (Enable-RemoteMailbox) with the tenant routing address.\n- Wait for the mailbox to land in Exchange Online.\n- Set regional config (language / timezone) and grant the hiring manager Reviewer on the calendar.\n\nMicrosoft 365\n- Assign a seat-aware license: E5 if a seat is available, otherwise E3 (flag the fallback for review).\n- Add to the M365 / seat groups.\n\nServiceNow\n- Post a work note to the ticket and resolve the case.\n\nEquipment & access\n- Order the laptop and any monitor / keyboard / mouse / docking station per the request.\n- Fulfill any app / SaaS access not covered above.",
+    "offboard": "Active Directory\n- Capture the user's group memberships as evidence, then remove them (Domain Users stays).\n- Reset the password and disable the account; set the hide-from-GAL attribute.\n- Do NOT move the OU (moving deletes the synced 365 account).\n\nExchange\n- Convert the mailbox to shared (unless over the size threshold — then keep it licensed).\n- Block ActiveSync / OWA; set out-of-office and forwarding on request.\n\nMicrosoft 365\n- Remove licenses once the mailbox is handled.\n\nServiceNow\n- Post a work note and resolve the case."
+  }
 }

@@ -8,6 +8,7 @@ import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
+import { RunbookEditor } from "../_components/runbook-editor";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -203,10 +204,11 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         steps (manual, or not yet modeled) need a person — those are the module backlog. Expand to see the steps.
       </p>
       {items.length === 0 ? (
-        <p className="note">No generated runbook yet — run <code>tools/profile-generator/run.sh</code> then <code>npm run db:seed</code>.</p>
+        <p className="note">No KB runbook for this client. If it&rsquo;s internal or KB-less (process from a script/doc), paste or type the runbook below — it&rsquo;s parsed into steps and known systems are auto-wired.</p>
       ) : (
         <RunbookView items={items} slug={client.slug} />
       )}
+      <RunbookEditor slug={client.slug} />
     </main>
   );
 }
