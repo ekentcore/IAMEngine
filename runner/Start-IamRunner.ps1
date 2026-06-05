@@ -208,6 +208,24 @@ function Update-CtgRunner {
     exit 0
 }
 
+function Protect-CtgSecretsInText {
+    # Redact brokered secret VALUES out of free text (a failure message) before it's posted to the
+    # app — Job.error is persisted and shown in the run report + ServiceNow work note + audit, and a
+    # failing API call can echo a key/token/password in its exception. Only values of secret-named
+    # fields are scrubbed, so usernames/servers stay visible for diagnosis.
+    param([string]$Text, [hashtable]$Creds)
+    if ([string]::IsNullOrEmpty($Text) -or -not $Creds) { return $Text }
+    foreach ($c in $Creds.Values) {
+        if (-not $c -or -not $c.Fields) { continue }
+        foreach ($k in @($c.Fields.Keys)) {
+            if ($k -notmatch '(?i)pass|secret|key|token|credential') { continue }
+            $v = [string]$c.Fields[$k]
+            if ($v.Length -ge 4 -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+        }
+    }
+    return $Text
+}
+
 function Get-JobCredential {
     # Push-down model: ask the app to broker secret $SecretName for this job. The app resolves the
     # VALUE from Delinea and returns the fields (Username/Password/Server/...), so the runner needs
@@ -241,6 +259,7 @@ while ($true) {
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize }
 
         foreach ($job in @($jobs)) {
+            $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
@@ -256,7 +275,6 @@ while ($true) {
                 }
 
                 # Broker every secret the job names (least-privilege, one call each), keyed by name.
-                $creds = @{}
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
 
                 # Connect once per (system|tenant) before the first job that needs it.
@@ -282,7 +300,8 @@ while ($true) {
                 # cause, not just the outermost message.
                 $msg = $_.Exception.Message
                 if ($_.Exception.InnerException) { $msg += " <- $($_.Exception.InnerException.Message)" }
-                $err = "[$($job.systemKey)] $msg"
+                # Scrub any brokered secret value the exception may have echoed before it's persisted.
+                $err = Protect-CtgSecretsInText "[$($job.systemKey)] $msg" $creds
                 Write-Warning "job $($job.id) failed: $err"
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
