@@ -56,8 +56,16 @@ export async function checkSecret(cfg: DelineaConfig, externalId: string, fetche
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (res.status === 404) return { ok: false, error: "not found in Delinea" };
-    if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied (check the app's Delinea permissions)" };
-    if (!res.ok) return { ok: false, error: `Delinea ${res.status}` };
+    if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied — grant this account Read on the secret" };
+    if (!res.ok) {
+      // Secret Server returns 400 with errorCode "API_AccessDenied" for a secret the account can't
+      // read (existence is hidden), so surface that as access-denied rather than a bare "400".
+      const detail = (await res.json().catch(() => null)) as { errorCode?: string; message?: string } | null;
+      if (detail?.errorCode === "API_AccessDenied" || /access denied/i.test(detail?.message ?? "")) {
+        return { ok: false, error: "access denied — grant this account Read on the secret in Delinea" };
+      }
+      return { ok: false, error: `Delinea ${res.status}${detail?.message ? ` — ${detail.message}` : ""}` };
+    }
     const body = (await res.json()) as { name?: string };
     // Only the secret's name is surfaced — a human label. The value/items are intentionally dropped.
     return { ok: true, label: typeof body?.name === "string" ? body.name : undefined };
