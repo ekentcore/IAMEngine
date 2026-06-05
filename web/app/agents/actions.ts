@@ -52,6 +52,7 @@ async function agentOp(fn: () => Promise<unknown>) {
   }
 }
 
+export const requestAgentUpdate = (id: string) => agentOp(() => makeRunnerService(db).requestUpdate(id));
 export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
 export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
 export const deleteAgentForever = (id: string) => agentOp(() => makeRunnerService(db).deleteAgentForever(id));

@@ -34,6 +34,10 @@ export type BrokeredCredential = {
   expiresInSeconds: number;
   label?: string; // Delinea secret name (a human label) — never the secret value
   note?: string;
+  // The resolved secret VALUE (Username/Password/Server/...), pushed down so the runner doesn't
+  // need its own Delinea creds. Sensitive: returned over TLS to the owning agent, never logged or
+  // persisted. Absent when the app can't resolve (Delinea not configured) — then `note` explains.
+  fields?: Record<string, string>;
 };
 
 // Lets the service signal an HTTP status; routes translate it to a response.

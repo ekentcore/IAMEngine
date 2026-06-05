@@ -4,7 +4,7 @@
 import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
-import { checkSecret, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
+import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId } from "../cases/case-secrets";
 import { purgeCutoff } from "./agent-trash";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
@@ -90,11 +90,31 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, enabled: true } });
+    async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, enabled: true, updateRequested: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
+      // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
+      // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
+      // can't both win (double restart) and a requestUpdate() landing mid-beat isn't clobbered —
+      // exactly one heartbeat flips true->false and gets update=true. A DISABLED agent keeps its
+      // pending update until re-enabled (the runner ignores update when disabled, so consuming it
+      // here would silently drop it).
+      let update = false;
+      if (agent.enabled && agent.updateRequested) {
+        const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false } });
+        update = consumed.count > 0;
+      }
       await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version } });
-      return { ok: true, enabled: agent.enabled };
+      return { ok: true, enabled: agent.enabled, update };
+    },
+
+    // Operator action: queue a self-update. The next heartbeat returns update:true (see above).
+    async requestUpdate(agentId: string): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true } });
+      await db.auditLog.create({ data: { actor: "ui", action: "agent.update_requested", detail: { agentId } } });
+      return { id: agentId };
     },
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
@@ -208,23 +228,26 @@ export function makeRunnerService(db: PrismaClient) {
       // Overrides only replace the reference id, not the provider — every reference is a Delinea id.
       const secret = { provider: clientSecret?.provider ?? "delinea", externalId, source };
 
-      // Preflight against Delinea when configured: prove the app's service account can resolve
-      // this reference (reading only the secret's label — the VALUE never enters the app) so a
-      // dead/misscoped reference fails here with a clear error rather than on the runner. The
-      // runner still exchanges the reference for the real credential via Coretelligent.Secrets.
+      // Push-down model: the app resolves the secret's VALUE from Delinea and returns the fields so
+      // the runner doesn't need Delinea creds of its own (nothing to distribute to client DCs). A
+      // dead/misscoped reference fails here with a clear error rather than deep in the runner. When
+      // the app has no Delinea creds we can't push down — return a note so the runner says so.
       const cfg = delineaConfigFromEnv();
       let brokered = false;
       let label: string | undefined;
-      let note: string | undefined = "Delinea not configured on the app — reference only; the runner resolves the value via Coretelligent.Secrets";
+      let fields: Record<string, string> | undefined;
+      let note: string | undefined = "Delinea not configured on the app — set DELINEA_* so the app can resolve and push the credential to the runner";
       if (delineaConfigured(cfg)) {
-        const check = await checkSecret(cfg, secret.externalId);
-        if (!check.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${check.error ?? "unknown error"}`);
+        const resolved = await resolveSecretFields(cfg, secret.externalId);
+        if (!resolved.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${resolved.error ?? "unknown error"}`);
         brokered = true;
-        label = check.label;
+        label = resolved.label;
+        fields = resolved.fields;
         note = undefined;
       }
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source } } });
-      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note };
+      // Audit records metadata ONLY — the field NAMES, never their values.
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source, fieldNames: fields ? Object.keys(fields) : [] } } });
+      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
     // Record a job result, advance the case, audit, and queue a work note. The posting agent

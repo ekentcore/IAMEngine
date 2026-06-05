@@ -24,7 +24,8 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Zoom/Coretelligent.Zoom.psd1"
 Import-Module "$PSScriptRoot/modules/Coretelligent.Adobe/Coretelligent.Adobe.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Perimeter81.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
-Import-Module "$PSScriptRoot/lib/Coretelligent.Secrets/Coretelligent.Secrets.psm1" -Force
+# (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
+# down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
 # module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
 # where its dependency is present so the central cloud runner doesn't fail to import.
@@ -176,20 +177,59 @@ function Invoke-AppApi {
     Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
 }
 
-function Get-JobCredential {
-    # Ask the app to broker secret $SecretName for this job, then exchange the returned vault
-    # reference for the real credential via Delinea (Coretelligent.Secrets). The app never holds
-    # secret values — only references — so the resolution happens here on the runner.
-    param($JobId, $SecretName)
-    $ref = Invoke-AppApi POST "/api/jobs/$JobId/credential" @{ agentId = $AgentId; secretName = $SecretName }
-    if (-not $ref.externalId) { throw "credential broker returned no externalId for '$SecretName'" }
-    Get-CtgSecret -Reference @{ provider = $ref.provider; id = $ref.externalId }
+function Update-CtgRunner {
+    # Operator clicked "Update": re-pull every runner file from the app's manifest into our own
+    # folder, then relaunch this script (new pwsh process = new code) and exit. Re-runnable and
+    # self-contained so the operator never has to hand-walk a re-pull on the host again.
+    $H = @{ 'ngrok-skip-browser-warning' = 'true' }
+    if ($ApiToken) { $H['Authorization'] = "Bearer $ApiToken" }
+    Write-Host "self-update: pulling latest runner from $AppUrl" -ForegroundColor Yellow
+    $manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H
+    foreach ($rel in $manifest.files) {
+        # Manifest paths are POSIX-style ('a/b/c'); Join-Path accepts '/' on Windows and it's native
+        # on macOS/Linux, so use $rel as-is rather than forcing a backslash (which would corrupt
+        # paths on a non-Windows central runner).
+        $dest = Join-Path $PSScriptRoot $rel
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+        $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
+        [System.IO.File]::WriteAllText($dest, $resp.Content)
+    }
+    Write-Host "self-update: pulled $($manifest.files.Count) files — restarting" -ForegroundColor Green
+    # Relaunch a fresh process running the just-downloaded script, then exit this one. Detached
+    # (Start-Process) so it survives this process exiting; a SYSTEM Scheduled Task launches it the
+    # same way on next boot, so this stays consistent across foreground + task hosting.
+    $pwshPath = (Get-Process -Id $PID).Path
+    $self = Join-Path $PSScriptRoot 'Start-IamRunner.ps1'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', $PollSeconds, '-BatchSize', $BatchSize)
+    # Forward the bearer if it was passed as an explicit arg (env is inherited automatically, but an
+    # explicit -ApiToken would otherwise be lost and the restarted runner would 401 on every call).
+    if ($ApiToken) { $argList += @('-ApiToken', $ApiToken) }
+    Start-Process -FilePath $pwshPath -ArgumentList $argList
+    exit 0
 }
 
-# Bootstrap the Delinea session once (machine identity from env) so Get-CtgSecret can resolve.
-if ($env:DELINEA_USER -and $env:DELINEA_PASSWORD) {
-    $bootstrap = [pscredential]::new($env:DELINEA_USER, (ConvertTo-SecureString $env:DELINEA_PASSWORD -AsPlainText -Force))
-    Connect-CtgSecretStore -Credential $bootstrap
+function Get-JobCredential {
+    # Push-down model: ask the app to broker secret $SecretName for this job. The app resolves the
+    # VALUE from Delinea and returns the fields (Username/Password/Server/...), so the runner needs
+    # no Delinea creds of its own. We rebuild the same shape the executors expect
+    # (.Username/.Password/.Credential/.Fields) from those fields.
+    param($JobId, $SecretName)
+    $ref = Invoke-AppApi POST "/api/jobs/$JobId/credential" @{ agentId = $AgentId; secretName = $SecretName }
+    # $ref.fields is a JSON object -> PSCustomObject; flatten to a hashtable.
+    $fields = @{}
+    if ($ref.fields) { foreach ($p in $ref.fields.PSObject.Properties) { $fields[$p.Name] = $p.Value } }
+    # Treat an absent OR empty field set as unresolved — an empty {} is truthy in PS and would
+    # otherwise slip through and surface much later as an opaque null-credential bind error.
+    if ($fields.Count -eq 0) {
+        $why = if ($ref.note) { $ref.note } else { "the app returned no secret fields" }
+        throw "secret '$SecretName' was not resolved by the app — $why"
+    }
+    $username = $fields['Username']
+    $password = if ($fields.ContainsKey('Password') -and $fields['Password']) {
+        ConvertTo-SecureString ([string]$fields['Password']) -AsPlainText -Force
+    } else { $null }
+    $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
+    [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
 
 Write-Host "iam-engine runner $AgentId polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
@@ -197,6 +237,7 @@ while ($true) {
     try {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = '0.1.0' }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
+        if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize }
 
         foreach ($job in @($jobs)) {
@@ -237,7 +278,13 @@ while ($true) {
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
             }
             catch {
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $_.Exception.Message }
+                # Tag the system and unwrap the inner exception so the run report shows the real
+                # cause, not just the outermost message.
+                $msg = $_.Exception.Message
+                if ($_.Exception.InnerException) { $msg += " <- $($_.Exception.InnerException.Message)" }
+                $err = "[$($job.systemKey)] $msg"
+                Write-Warning "job $($job.id) failed: $err"
+                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
         }
     }

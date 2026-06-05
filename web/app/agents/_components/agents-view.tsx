@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -121,6 +121,9 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
                 <td>{a.enabled ? "enabled" : <span className="muted">disabled</span>}</td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                  {a.enabled && (
+                    <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>Update</button>
+                  )}
                   {!a.enabled && (
                     <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)" style={{ marginLeft: 6 }}>Trash</button>
                   )}
