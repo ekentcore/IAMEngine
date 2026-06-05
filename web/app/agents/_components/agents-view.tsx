@@ -182,8 +182,9 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
             const manual = `# Run the runner manually (no scheduled task) — e.g. on a DC or for a quick test.
 # Run these in an ELEVATED PowerShell on the runner host.
 
-# 1. PowerShell 7 (skip if 'pwsh' already works)
-winget install --id Microsoft.PowerShell --silent --accept-package-agreements --accept-source-agreements
+# 1. PowerShell 7 — skip if 'pwsh' already works. Works on Windows Server (no winget needed);
+#    after it installs, open a NEW elevated PowerShell window so 'pwsh' is on PATH.
+iex "& { $(irm https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
 
 # 2. Download the runner to C:\\iam-runner
 $App = "${origin}"

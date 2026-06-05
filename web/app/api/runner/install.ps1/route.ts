@@ -44,13 +44,22 @@ Write-Host "iam-engine runner install" -ForegroundColor Green
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { Write-Warning "Not elevated — re-run in an *Administrator* PowerShell."; return }
 
-# 1. PowerShell 7 (the runner requires it; we install jobs run under pwsh)
+# 1. PowerShell 7 (the runner requires it; jobs run under pwsh). winget isn't on Windows Server,
+# so fall back to Microsoft's MSI installer script (works on Server / Core / older Windows).
 $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 if (-not $pwsh) {
-  Step "installing PowerShell 7 via winget"
-  winget install --id Microsoft.PowerShell --silent --accept-source-agreements --accept-package-agreements
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    Step "installing PowerShell 7 via winget"
+    winget install --id Microsoft.PowerShell --silent --accept-source-agreements --accept-package-agreements
+  } else {
+    Step "installing PowerShell 7 via Microsoft's MSI script (no winget on this host)"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-Expression "& { $(Invoke-RestMethod https://aka.ms/install-powershell.ps1) } -UseMSI -Quiet"
+  }
+  # PATH isn't refreshed in this session, so resolve pwsh's known install path directly.
   $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
-  if (-not $pwsh) { Write-Error "PowerShell 7 not found after install — install it and re-run."; return }
+  if (-not $pwsh) { $pwsh = Join-Path (Join-Path (Join-Path $env:ProgramFiles 'PowerShell') '7') 'pwsh.exe' }
+  if (-not (Test-Path $pwsh)) { Write-Error "PowerShell 7 not found after install — install it from https://aka.ms/powershell and re-run."; return }
 }
 
 # 2. Required modules
