@@ -6,11 +6,24 @@
 import { useEffect, useState } from "react";
 import { parseCondition, serializeCondition, validateCondition, type ConditionModel, type Term, type TermOp } from "@/lib/profiles/condition-builder";
 
-// Suggested fields (the plan context vars). Free text is allowed too — intake payload fields like
-// `avd` pass through — so this is a datalist, not a closed select.
-const VARS = [
-  "country.short", "country.name", "country.code", "employmentType", "role.name",
-  "location.name", "location.city", "location.state", "title", "manager", "startDate", "domain", "upn", "username",
+// Suggested fields to branch ON (the plan context vars; see lib/profiles/context.ts buildPlanContext).
+// Free text is allowed too — intake payload fields like `avd` pass through — so this is a datalist,
+// not a closed select.
+export const VARS = [
+  "country.short", "country.name", "country.code",
+  "employmentType", "role.name", "title", "manager", "startDate",
+  "location.name", "location.city", "location.state", "location.zip", "location.timezone",
+  "first", "last", "mobile", "did", "extension", "domain", "upn", "username",
+];
+
+// Common AD / Entra attribute names to SET (the "then set …" side). Free text still allowed — this
+// is only autocomplete. A static seed; AD discovery (later) can replace it with the DC's real schema.
+export const AD_ATTRIBUTES = [
+  "title", "department", "company", "description", "physicalDeliveryOfficeName", "division",
+  "streetAddress", "l", "st", "postalCode", "c", "co", "countryCode",
+  "telephoneNumber", "mobile", "ipPhone", "facsimileTelephoneNumber", "homePhone", "pager",
+  "employeeID", "employeeNumber", "employeeType", "manager", "wWWHomePage", "info",
+  ...Array.from({ length: 15 }, (_, i) => `extensionAttribute${i + 1}`),
 ];
 const OPS: { v: TermOp; label: string }[] = [
   { v: "==", label: "is" }, { v: "!=", label: "is not" }, { v: "~=", label: "matches (regex)" }, { v: "in", label: "is one of" },

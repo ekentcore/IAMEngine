@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Fragment, Persona, GroupEntry, AttrValue } from "@/lib/clients/rules";
-import { ConditionBuilder, TagList } from "./condition-builder";
+import { ConditionBuilder, TagList, AD_ATTRIBUTES } from "./condition-builder";
 
 type Personas = Record<string, Persona>;
 type Globals = Record<string, Fragment>;
@@ -268,12 +268,13 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
 
   return (
     <div>
+      <datalist id="ad-attrs">{AD_ATTRIBUTES.map((a) => <option key={a} value={a} />)}</datalist>
       {Object.entries(attrs).map(([k, v]) => {
         const isCond = Array.isArray(v);
         return (
           <div key={k} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="toolbar" style={{ gap: 4 }}>
-              <input className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => { if (!rename(k, e.target.value)) e.target.value = k; }} placeholder="attribute" spellCheck={false} />
+              <input list="ad-attrs" className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => { if (!rename(k, e.target.value)) e.target.value = k; }} placeholder="attribute" spellCheck={false} />
               <span className="note">=</span>
               {!isCond && (
                 <input className="inline" style={{ width: 240 }} value={String(v ?? "")} onChange={(e) => setVal(k, e.target.value)} placeholder="value or {token}" spellCheck={false} />
@@ -311,7 +312,7 @@ function AddAttr({ onAdd }: { onAdd: (name: string) => void }) {
   const [name, setName] = useState("");
   return (
     <div className="toolbar" style={{ gap: 4 }}>
-      <input className="inline" style={{ width: 160 }} value={name} placeholder="new attribute (e.g. department)" onChange={(e) => setName(e.target.value)} spellCheck={false}
+      <input list="ad-attrs" className="inline" style={{ width: 160 }} value={name} placeholder="new attribute (e.g. department)" onChange={(e) => setName(e.target.value)} spellCheck={false}
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAdd(name.trim()); setName(""); } }} />
       <button onClick={() => { onAdd(name.trim()); setName(""); }}>+ Add attribute</button>
     </div>
