@@ -63,3 +63,16 @@ test("validateRules accepts empty payload (clearing rules)", () => {
   assert.equal(validateRules({}).ok, true);
   assert.equal(validateRules({ globals: {}, personas: {} }).ok, true);
 });
+
+test("validateRules rejects an oversized payload", () => {
+  const huge = { globals: { ad: { groups: Array.from({ length: 50000 }, (_, i) => `G${i}`) } } };
+  const r = validateRules(huge);
+  assert.equal(r.ok, false);
+  assert.match((r as { error: string }).error, /too large/);
+});
+
+test("validateRules rejects too many personas", () => {
+  const personas: Record<string, unknown> = {};
+  for (let i = 0; i < 201; i++) personas[`p${i}`] = { systems: {} };
+  assert.equal(validateRules({ personas }).ok, false);
+});

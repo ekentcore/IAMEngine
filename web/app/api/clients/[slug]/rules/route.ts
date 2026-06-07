@@ -33,11 +33,21 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const personas = checked.value.personas ?? existing.personas ?? {};
   const globals = checked.value.globals ?? existing.globals ?? {};
   const client = await repo.setRules(params.slug, personas, globals);
+  // Record the unconditionally-added global groups in the audit detail so a config-seeded
+  // privilege grant (e.g. an "always add Domain Admins" rule) is visible/attributable after the
+  // fact — the route has no operator identity yet (actor:"ui"), so the WHAT must be captured.
+  const alwaysGlobalGroups = Object.values((globals ?? {}) as Record<string, { groups?: unknown[] }>)
+    .flatMap((f) => (Array.isArray(f?.groups) ? f.groups : []))
+    .filter((g): g is string => typeof g === "string");
   await repo.writeAudit({
     actor: "ui",
     action: "client.rules.edit",
     clientId: client.id,
-    detail: { personaCount: Object.keys(checked.value.personas ?? {}).length, globalSystems: Object.keys(checked.value.globals ?? {}) },
+    detail: {
+      personaCount: Object.keys(personas as object).length,
+      globalSystems: Object.keys(globals as object),
+      alwaysGlobalGroups,
+    },
   });
   return NextResponse.json({ ok: true });
 }

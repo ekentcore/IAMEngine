@@ -39,7 +39,9 @@ function evalTerm(term: string, ctx: PlanContext): boolean {
 
   if (op === "~=") {
     try {
-      return new RegExp(value, "i").test(norm(actualRaw));
+      // Bound the tested input: a long input string is what turns a catastrophic-backtracking
+      // regex into an actual hang. Real fields (titles, names) are short, so 512 is ample.
+      return new RegExp(value, "i").test(norm(actualRaw).slice(0, 512));
     } catch {
       return false;
     }

@@ -75,7 +75,10 @@ export function validateCondition(expr: string | null | undefined): { ok: true }
     }
     for (const andPart of orPart.split("&&")) {
       if (!andPart.trim()) continue;
-      if (!parseTerm(andPart)) return { ok: false, error: `Unrecognized condition: "${andPart.trim()}" — expected "<field> ==/!=/~= value" or "<field> in [a, b]"` };
+      const term = parseTerm(andPart);
+      if (!term) return { ok: false, error: `Unrecognized condition: "${andPart.trim()}" — expected "<field> ==/!=/~= value" or "<field> in [a, b]"` };
+      // Cap a regex value — a short bound plus the eval-time input bound keep ~= ReDoS in check.
+      if (term.op === "~=" && term.value.length > 200) return { ok: false, error: `regex is too long (>200 chars) in "${andPart.trim()}"` };
     }
   }
   return { ok: true };

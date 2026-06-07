@@ -30,6 +30,12 @@ test("validateCondition: rejects a stray || (empty branch would match everyone)"
   }
 });
 
+test("validateCondition: rejects an over-long ~= regex (ReDoS bound)", () => {
+  const long = "a".repeat(201);
+  assert.equal(validateCondition(`title ~= ${long}`).ok, false);
+  assert.equal(validateCondition(`title ~= ^Remote Support`).ok, true);
+});
+
 test("parseCondition: single term round-trips", () => {
   const m = parseCondition("country.short == IN");
   assert.deepEqual(m, [[{ var: "country.short", op: "==", value: "IN" }]]);

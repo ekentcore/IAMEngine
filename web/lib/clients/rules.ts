@@ -42,10 +42,17 @@ export function collectConditions(payload: RulesPayload): { at: string; expr: st
 }
 
 // Validate structure + all conditions. Returns the first problem found, or ok.
+// Defense-in-depth bounds: the columns are operator config, but the route is reachable without
+// auth, so cap size/counts to avoid storage bloat / slow plan-time merges from a hostile payload.
+const MAX_BYTES = 256_000;
+const MAX_PERSONAS = 200;
+
 export function validateRules(payload: unknown): { ok: true; value: RulesPayload } | { ok: false; error: string } {
   if (!isObj(payload)) return { ok: false, error: "rules payload must be an object" };
+  if (JSON.stringify(payload).length > MAX_BYTES) return { ok: false, error: "rules payload is too large" };
   if (payload.globals !== undefined && !isObj(payload.globals)) return { ok: false, error: "globals must be an object keyed by system" };
   if (payload.personas !== undefined && !isObj(payload.personas)) return { ok: false, error: "personas must be an object keyed by name" };
+  if (isObj(payload.personas) && Object.keys(payload.personas).length > MAX_PERSONAS) return { ok: false, error: `too many personas (max ${MAX_PERSONAS})` };
   const value = payload as RulesPayload;
   for (const { at, expr } of collectConditions(value)) {
     const v = validateCondition(expr);
