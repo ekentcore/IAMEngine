@@ -24,6 +24,8 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   const [personas, setPersonas] = useState<Personas>({});
   const [globals, setGlobals] = useState<Globals>({});
   const [systemKeys, setSystemKeys] = useState<string[]>([]);
+  const [adObjects, setAdObjects] = useState<{ ous: string[]; groups: string[]; discoveredAt?: string }>({ ous: [], groups: [] });
+  const [discovering, setDiscovering] = useState(false);
   const [scope, setScope] = useState<string>("globals"); // "globals" | persona name
   const [activeSystem, setActiveSystem] = useState<string>("");
 
@@ -41,7 +43,9 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         const g = (d.globals ?? {}) as Globals;
         const p = (d.personas ?? {}) as Personas;
         const keys = (d.systemKeys ?? []) as string[];
+        const ad = (d.adObjects ?? {}) as { ous?: string[]; groups?: string[]; discoveredAt?: string };
         setGlobals(g); setPersonas(p); setSystemKeys(keys);
+        setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
         setScope("globals");
         setActiveSystem(Object.keys(g)[0] ?? keys[0] ?? "active-directory");
       })
@@ -107,6 +111,20 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     }
   }
 
+  async function refreshAd() {
+    if (!slug) return;
+    setDiscovering(true); setError(null);
+    try {
+      const res = await fetch(`/api/clients/${slug}/ad-objects`, { method: "POST" });
+      if (!res.ok) setError((await res.json().catch(() => null))?.error ?? `Refresh failed (${res.status})`);
+      else setError("AD discovery requested — the agent will report OUs/groups within ~15s. Re-open this editor to see them.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
   function addSystem() {
     const key = prompt("System key (e.g. active-directory, m365)")?.trim();
     if (!key) return;
@@ -123,6 +141,20 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
       <div className="row-between">
         <h2>Roles &amp; rules</h2>
         <button onClick={onClose} aria-label="Close">×</button>
+      </div>
+
+      {/* AD object pickers: discovered OUs/groups feed the OU + group autocompletes below. */}
+      <datalist id="ad-ous">{adObjects.ous.map((o) => <option key={o} value={o} />)}</datalist>
+      <datalist id="ad-groups">{adObjects.groups.map((g) => <option key={g} value={g} />)}</datalist>
+      <div className="toolbar" style={{ gap: 8, marginBottom: 4 }}>
+        <button onClick={refreshAd} disabled={discovering} title="Have the client's on-prem agent read OUs + groups from the DC">
+          {discovering ? "Requesting…" : "⟳ Refresh AD objects from DC"}
+        </button>
+        <span className="note">
+          {adObjects.discoveredAt
+            ? `${adObjects.ous.length} OUs · ${adObjects.groups.length} groups (discovered ${new Date(adObjects.discoveredAt).toLocaleString()})`
+            : "No AD objects discovered yet — OU/group fields are free text until you refresh."}
+        </span>
       </div>
 
       {loading ? (
@@ -210,7 +242,7 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
       <section>
         <h3 style={{ margin: "0 0 4px" }}>Groups</h3>
         <label>Always add</label>
-        <TagList items={always} onChange={(a) => setGroups(a, conditional)} placeholder="group name…" />
+        <TagList items={always} onChange={(a) => setGroups(a, conditional)} placeholder="group name…" listId="ad-groups" />
         <label style={{ marginTop: 8 }}>Conditional rules</label>
         {conditional.length === 0 && <p className="note">No conditional group rules.</p>}
         {conditional.map((rule, i) => (
@@ -221,7 +253,7 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
             </div>
             <ConditionBuilder value={rule.when ?? ""} onChange={(w) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, when: w || undefined } : r)))} />
             <label style={{ marginTop: 6 }}>…then add to groups</label>
-            <TagList items={rule.groups ?? []} onChange={(gs) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, groups: gs } : r)))} placeholder="group name…" />
+            <TagList items={rule.groups ?? []} onChange={(gs) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, groups: gs } : r)))} placeholder="group name…" listId="ad-groups" />
           </div>
         ))}
         <button onClick={() => setGroups(always, [...conditional, { groups: [], when: "" }])}>+ Add group rule</button>
@@ -234,7 +266,7 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
         {ouRows.map((row, i) => (
           <div key={i} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="row-between">
-              <input className="inline" style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} placeholder="OU=Users,OU=…,DC=…" value={row.path}
+              <input list="ad-ous" className="inline" style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} placeholder="OU=Users,OU=…,DC=…" value={row.path}
                 onChange={(e) => setOu(ouRows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)))} spellCheck={false} />
               <button onClick={() => setOu(ouRows.filter((_, j) => j !== i))} style={{ color: "#b3261e", marginLeft: 6 }}>×</button>
             </div>

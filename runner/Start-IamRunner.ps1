@@ -226,6 +226,22 @@ function Protect-CtgSecretsInText {
     return $Text
 }
 
+function Invoke-CtgAdDiscovery {
+    # Operator clicked "Refresh AD objects": read the DC's OUs + groups (read-only; the agent's own
+    # domain context can read the directory — no brokered credential needed) and report them back so
+    # the rules editor can offer real OU/group pickers instead of hand-typed DNs.
+    if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) { Write-Warning "AD discovery skipped — no ActiveDirectory module on this host"; return }
+    try {
+        $ous = @(Get-ADOrganizationalUnit -Filter * -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
+        $groups = @(Get-ADGroup -Filter * -ErrorAction Stop | Select-Object -ExpandProperty Name)
+        Invoke-AppApi POST '/api/agents/ad-objects' @{ agentId = $AgentId; ous = $ous; groups = $groups } | Out-Null
+        Write-Host "AD discovery: reported $($ous.Count) OUs, $($groups.Count) groups" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "AD discovery failed: $($_.Exception.Message)"
+    }
+}
+
 function Get-JobCredential {
     # Push-down model: ask the app to broker secret $SecretName for this job. The app resolves the
     # VALUE from Delinea and returns the fields (Username/Password/Server/...), so the runner needs
@@ -256,6 +272,7 @@ while ($true) {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = '0.1.0' }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
+        if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize }
 
         foreach ($job in @($jobs)) {

@@ -90,8 +90,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, enabled: true, updateRequested: true } });
+    async heartbeat(agentId: string, version?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; discover: boolean }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, enabled: true, updateRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -104,8 +104,43 @@ export function makeRunnerService(db: PrismaClient) {
         const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false } });
         update = consumed.count > 0;
       }
+      // Tell this (client-network) agent to run AD discovery if its client has a pending request.
+      // Consume atomically so just one of the client's agents runs it (discovery is read-only, so a
+      // double-run would only be wasteful, not wrong).
+      let discover = false;
+      if (agent.enabled && agent.clientId && agent.client?.adDiscoverRequestedAt) {
+        const consumed = await db.client.updateMany({ where: { id: agent.clientId, adDiscoverRequestedAt: { not: null } }, data: { adDiscoverRequestedAt: null } });
+        discover = consumed.count > 0;
+      }
       await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version } });
-      return { ok: true, enabled: agent.enabled, update };
+      return { ok: true, enabled: agent.enabled, update, discover };
+    },
+
+    // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
+    // the next client-network heartbeat for that client consumes it and runs discovery.
+    async requestAdDiscovery(clientSlug: string): Promise<{ clientId: string }> {
+      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+      if (!client) throw new HttpError(404, "unknown client");
+      const agent = await db.agent.findFirst({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null }, select: { id: true } });
+      if (!agent) throw new HttpError(409, "no enabled on-prem agent for this client to read its DC");
+      await db.client.update({ where: { id: client.id }, data: { adDiscoverRequestedAt: new Date() } });
+      await db.auditLog.create({ data: { actor: "ui", action: "client.ad_discovery.request", clientId: client.id } });
+      return { clientId: client.id };
+    },
+
+    // Runner posts the discovered AD objects back; store them on the agent's client for the editor.
+    async recordAdObjects(agentId: string, ous: string[], groups: string[]): Promise<{ clientId: string; ous: number; groups: number }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { clientId: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (!agent.clientId) throw new HttpError(422, "only a client-network agent reports AD objects");
+      await assertAgentEnabled(db, agentId);
+      // Cap + sort + dedupe so a hostile/huge directory can't bloat the row; these are display lists.
+      const clean = (xs: unknown): string[] =>
+        [...new Set((Array.isArray(xs) ? xs : []).filter((x): x is string => typeof x === "string" && x.length > 0))].sort().slice(0, 5000);
+      const adObjects = { ous: clean(ous), groups: clean(groups), discoveredAt: new Date().toISOString() };
+      await db.client.update({ where: { id: agent.clientId }, data: { adObjects } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "client.ad_discovery.result", clientId: agent.clientId, detail: { ous: adObjects.ous.length, groups: adObjects.groups.length } } });
+      return { clientId: agent.clientId, ous: adObjects.ous.length, groups: adObjects.groups.length };
     },
 
     // Operator action: queue a self-update. The next heartbeat returns update:true (see above).

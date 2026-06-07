@@ -88,6 +88,12 @@ model Client {
   personas      Json?
   globals       Json?
   locations     Json?
+  // AD objects discovered from the client's DC by its agent (read-only Get-ADOrganizationalUnit /
+  // Get-ADGroup), to back the rules editor's OU/group pickers. { ous: string[], groups: string[],
+  // discoveredAt }. adDiscoverRequestedAt is set by the "Refresh AD objects" button and consumed by
+  // the next client-network heartbeat (which tells the agent to run discovery).
+  adObjects             Json?
+  adDiscoverRequestedAt DateTime?
   status        ClientStatus   @default(active)
   // Where this client's onboarding/offboarding requests come from, so case-scanning hits the right
   // ServiceNow table: "um" = external clients (sn_customerservice_user_management cases, the default),

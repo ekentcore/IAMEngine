@@ -117,8 +117,9 @@ export function ConditionBuilder({ value, onChange }: { value: string; onChange:
   );
 }
 
-// Chip list with an add input — for group names, titles, etc.
-export function TagList({ items, onChange, placeholder }: { items: string[]; onChange: (next: string[]) => void; placeholder?: string }) {
+// Chip list with an add input — for group names, titles, etc. `listId` points the input at a
+// <datalist> (e.g. discovered AD groups) for autocomplete; free text is still allowed.
+export function TagList({ items, onChange, placeholder, listId }: { items: string[]; onChange: (next: string[]) => void; placeholder?: string; listId?: string }) {
   const [draft, setDraft] = useState("");
   const add = () => {
     const v = draft.trim();
@@ -136,6 +137,7 @@ export function TagList({ items, onChange, placeholder }: { items: string[]; onC
       <input
         className="inline"
         style={{ width: 160 }}
+        list={listId}
         value={draft}
         placeholder={placeholder ?? "add…"}
         onChange={(e) => setDraft(e.target.value)}

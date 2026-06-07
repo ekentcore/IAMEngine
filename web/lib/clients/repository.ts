@@ -201,13 +201,13 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Read the v2.1 rules (personas/globals/locations) for the editor. Separate from getClientBySlug
     // (which omits them) so the editor loads exactly what it round-trips back via setRules.
-    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; locations: unknown; systemKeys: string[] } | null> {
+    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown } | null> {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, personas: true, globals: true, locations: true, systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } } },
+        select: { id: true, personas: true, globals: true, locations: true, adObjects: true, systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } } },
       });
       if (!c) return null;
-      return { id: c.id, personas: c.personas, globals: c.globals, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey) };
+      return { id: c.id, personas: c.personas, globals: c.globals, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects };
     },
 
     // Replace the personas + globals JSON columns wholesale (the editor sends the full objects, so a
