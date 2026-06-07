@@ -10,6 +10,7 @@ import { EditSystemsButton } from "../_components/edit-systems-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
+import { EditRulesButton } from "../_components/edit-rules-button";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -200,15 +201,18 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </>
       )}
 
-      {hasRules && (
-        <>
-          <h2 style={{ marginTop: "1.5rem" }}>Roles &amp; rules</h2>
-          <RolesRulesView
-            personas={v21?.personas as never}
-            globals={v21?.globals as never}
-            locations={v21?.locations as never}
-          />
-        </>
+      <div className="row-between" style={{ marginTop: "1.5rem" }}>
+        <h2 style={{ margin: 0 }}>Roles &amp; rules</h2>
+        <EditRulesButton slug={client.slug} />
+      </div>
+      {hasRules ? (
+        <RolesRulesView
+          personas={v21?.personas as never}
+          globals={v21?.globals as never}
+          locations={v21?.locations as never}
+        />
+      ) : (
+        <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>
       )}
 
       <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>
