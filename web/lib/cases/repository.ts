@@ -290,30 +290,43 @@ export function makeCaseRepository(db: PrismaClient) {
       | { ok: true; subject: string | null; clientId: string }
       | { ok: false; reason: "not_found" | "in_flight" }
     > {
+      const inFlight = (jobs: { status: string }[]) => jobs.some((j) => j.status === "dispatched" || j.status === "running");
       const c = await db.caseRequest.findUnique({
         where: { id },
         select: { id: true, subject: true, clientId: true, deletedAt: true, jobs: { select: { status: true } } },
       });
       if (!c) return { ok: false, reason: "not_found" };
-      if (c.jobs.some((j) => j.status === "dispatched" || j.status === "running")) return { ok: false, reason: "in_flight" };
-      if (!c.deletedAt) await db.caseRequest.update({ where: { id }, data: { deletedAt: new Date() } });
+      if (c.deletedAt) return { ok: true, subject: c.subject, clientId: c.clientId }; // already trashed (idempotent)
+      if (inFlight(c.jobs)) return { ok: false, reason: "in_flight" };
+      // Set deletedAt first — that immediately removes the case from the claim query — then re-check
+      // for a job a runner dispatched in the read->write race window; if one snuck in, roll back.
+      await db.caseRequest.update({ where: { id }, data: { deletedAt: new Date() } });
+      const after = await db.job.findMany({ where: { caseRequestId: id }, select: { status: true } });
+      if (inFlight(after)) {
+        await db.caseRequest.update({ where: { id }, data: { deletedAt: null } });
+        return { ok: false, reason: "in_flight" };
+      }
       return { ok: true, subject: c.subject, clientId: c.clientId };
     },
 
     // Restore a trashed case back to the list. Also used by re-import (re-importing a trashed
     // number brings it back rather than colliding on the unique SN number).
     async restoreCase(id: string): Promise<{ ok: true; clientId: string } | { ok: false; reason: "not_found" }> {
-      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, clientId: true } });
+      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, clientId: true, deletedAt: true } });
       if (!c) return { ok: false, reason: "not_found" };
-      await db.caseRequest.update({ where: { id }, data: { deletedAt: null } });
+      if (c.deletedAt) await db.caseRequest.update({ where: { id }, data: { deletedAt: null } }); // no-op write if not trashed
       return { ok: true, clientId: c.clientId };
     },
 
     // Permanently delete a case and its jobs (Job.case isn't onDelete:Cascade, so remove jobs first
-    // in a transaction). AuditLog rows are an unconstrained log — left intact as history.
-    async deleteCaseForever(id: string): Promise<{ ok: true; subject: string | null; clientId: string } | { ok: false; reason: "not_found" }> {
-      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, subject: true, clientId: true } });
+    // in a transaction). AuditLog rows are an unconstrained log — left intact as history. The case
+    // MUST already be in the trash: that's the only way to reach "delete forever" in the UI, and it
+    // guarantees the case isn't in flight (trashing refuses that), so a direct ?forever=1 call can't
+    // hard-delete a live/running case out from under a runner.
+    async deleteCaseForever(id: string): Promise<{ ok: true; subject: string | null; clientId: string } | { ok: false; reason: "not_found" | "not_trashed" }> {
+      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, subject: true, clientId: true, deletedAt: true } });
       if (!c) return { ok: false, reason: "not_found" };
+      if (!c.deletedAt) return { ok: false, reason: "not_trashed" };
       await db.$transaction([
         db.job.deleteMany({ where: { caseRequestId: id } }),
         db.caseRequest.delete({ where: { id } }),

@@ -44,7 +44,10 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
   if (forever) {
     const res = await repo.deleteCaseForever(params.id);
-    if (!res.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+    if (!res.ok) {
+      if (res.reason === "not_trashed") return NextResponse.json({ error: "move the case to the trash before deleting it forever" }, { status: 409 });
+      return NextResponse.json({ error: "not found" }, { status: 404 });
+    }
     await db.auditLog.create({ data: { actor: "ui", action: "case.delete_forever", clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } } });
     return NextResponse.json({ ok: true });
   }
