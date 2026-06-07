@@ -3,8 +3,64 @@
 import type { PrismaClient, Prisma, ClientSystem, CaseStatus, Action } from "@prisma/client";
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
-import type { CaseDetail, CaseListItem, NewCaseInput } from "./types";
+import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
+
+// One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
+// same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
+type HintJob = { systemKey: string; sequence: number; status: string; mode: string; error: string | null; request: Prisma.JsonValue };
+export function buildCaseStatusHint(
+  status: CaseStatus,
+  jobs: HintJob[],
+  name: (key: string) => string,
+  runnerOnline: boolean
+): string {
+  const req = (j: HintJob) => (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
+  const list = (js: HintJob[]) => js.map((j) => name(j.systemKey)).join(", ");
+
+  switch (status) {
+    case "failed": {
+      const failed = jobs.filter((j) => j.status === "failed");
+      // The runner already prefixes its error with "[systemKey]"; strip it since we prefix the name.
+      const clean = (e: string | null) => (e ?? "no detail").replace(/^\[[^\]]+\]\s*/, "");
+      if (failed.length) return failed.map((j) => `${name(j.systemKey)} failed: ${clean(j.error)}`).join(" · ");
+      return "a step failed";
+    }
+    case "needs_manual": {
+      const manual = jobs.filter((j) => j.mode !== "api" && j.status === "manual");
+      if (manual.length) return `Manual step${manual.length > 1 ? "s" : ""} — no API automation, a person must do: ${list(manual)}`;
+      return "needs a manual step";
+    }
+    case "needs_approval": {
+      const gated = jobs.filter((j) => req(j).requiresApproval && !req(j).approved && !STARTED_STATUSES.includes(j.status as never));
+      return gated.length ? `Waiting for approval on: ${list(gated)} (destructive step)` : "waiting for approval on a destructive step";
+    }
+    case "running": {
+      const active = jobs.filter((j) => j.status === "dispatched" || j.status === "running");
+      return active.length ? `Running: ${list(active)}` : "running";
+    }
+    case "planning":
+      return "being planned…";
+    case "queued": {
+      const pending = jobs.filter((j) => j.mode === "api" && j.status === "pending");
+      if (!pending.length) return "queued";
+      const next = pending.reduce((a, b) => (b.sequence < a.sequence ? b : a));
+      // Predecessors (earlier api jobs) that haven't finished gate the next job — same rule as
+      // dependencyGateOpen.
+      const blockers = jobs.filter(
+        (j) => j.mode === "api" && j.sequence < next.sequence && j.status !== "succeeded" && j.status !== "skipped"
+      );
+      if (blockers.length) return `Waiting on ${list(blockers)} to finish before ${name(next.systemKey)}`;
+      return runnerOnline
+        ? `Ready — waiting for a runner to claim ${name(next.systemKey)}`
+        : `Ready, but no runner is online to claim it (next: ${name(next.systemKey)})`;
+    }
+    case "completed":
+      return "all steps done";
+    default:
+      return "";
+  }
+}
 
 export function makeCaseRepository(db: PrismaClient) {
   return {
@@ -171,19 +227,114 @@ export function makeCaseRepository(db: PrismaClient) {
 
     async listCases(): Promise<CaseListItem[]> {
       const rows = await db.caseRequest.findMany({
+        where: { deletedAt: null }, // trashed cases live in the Trash section, not the main list
         orderBy: { createdAt: "desc" },
         select: {
           id: true, action: true, status: true, subject: true,
-          serviceNowCaseNumber: true, createdAt: true,
+          serviceNowCaseNumber: true, createdAt: true, clientId: true,
           client: { select: { name: true, slug: true } },
-          _count: { select: { jobs: true } },
+          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
+        },
+      });
+
+      // Resolve display names for every system in play (one query) + which clients have a runner
+      // online right now (so a "queued" hint can say "no runner online" — the usual stall cause).
+      const keys = [...new Set(rows.flatMap((r) => r.jobs.map((j) => j.systemKey)))];
+      const catalog = keys.length
+        ? await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } })
+        : [];
+      const nameByKey = new Map(catalog.map((s) => [s.key, s.name]));
+      const onlineCutoff = new Date(Date.now() - 90_000);
+      const onlineAgents = await db.agent.findMany({
+        where: { enabled: true, deletedAt: null, lastSeenAt: { gt: onlineCutoff } },
+        select: { clientId: true },
+      });
+      // A case is servable if a central runner (clientId null) OR a runner bound to its client is up.
+      const centralOnline = onlineAgents.some((a) => a.clientId === null);
+      const clientHasRunner = new Set(onlineAgents.map((a) => a.clientId).filter(Boolean) as string[]);
+
+      return rows.map((r) => ({
+        id: r.id, action: r.action, status: r.status, subject: r.subject,
+        serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt,
+        clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
+        statusHint: buildCaseStatusHint(
+          r.status,
+          r.jobs,
+          (k) => nameByKey.get(k) ?? k,
+          centralOnline || clientHasRunner.has(r.clientId)
+        ),
+      }));
+    },
+
+    // Cases in the trash (soft-deleted) — for the collapsible Trash section. Newest-trashed first.
+    async listTrashedCases(): Promise<TrashedCaseItem[]> {
+      const rows = await db.caseRequest.findMany({
+        where: { deletedAt: { not: null } },
+        orderBy: { deletedAt: "desc" },
+        select: {
+          id: true, action: true, status: true, subject: true, serviceNowCaseNumber: true,
+          deletedAt: true, client: { select: { name: true } }, _count: { select: { jobs: true } },
         },
       });
       return rows.map((r) => ({
         id: r.id, action: r.action, status: r.status, subject: r.subject,
-        serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt,
-        clientName: r.client.name, clientSlug: r.client.slug, jobCount: r._count.jobs,
+        serviceNowCaseNumber: r.serviceNowCaseNumber, deletedAt: r.deletedAt as Date,
+        clientName: r.client.name, jobCount: r._count.jobs,
       }));
+    },
+
+    // Move a case to the trash (soft delete) — removed from the list, restorable for 30 days. Jobs
+    // are kept (so a restore brings back the run history). Refuses while a job is genuinely in
+    // flight so we don't orphan a runner mid-execution. Idempotent if already trashed.
+    async trashCase(id: string): Promise<
+      | { ok: true; subject: string | null; clientId: string }
+      | { ok: false; reason: "not_found" | "in_flight" }
+    > {
+      const c = await db.caseRequest.findUnique({
+        where: { id },
+        select: { id: true, subject: true, clientId: true, deletedAt: true, jobs: { select: { status: true } } },
+      });
+      if (!c) return { ok: false, reason: "not_found" };
+      if (c.jobs.some((j) => j.status === "dispatched" || j.status === "running")) return { ok: false, reason: "in_flight" };
+      if (!c.deletedAt) await db.caseRequest.update({ where: { id }, data: { deletedAt: new Date() } });
+      return { ok: true, subject: c.subject, clientId: c.clientId };
+    },
+
+    // Restore a trashed case back to the list. Also used by re-import (re-importing a trashed
+    // number brings it back rather than colliding on the unique SN number).
+    async restoreCase(id: string): Promise<{ ok: true; clientId: string } | { ok: false; reason: "not_found" }> {
+      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, clientId: true } });
+      if (!c) return { ok: false, reason: "not_found" };
+      await db.caseRequest.update({ where: { id }, data: { deletedAt: null } });
+      return { ok: true, clientId: c.clientId };
+    },
+
+    // Permanently delete a case and its jobs (Job.case isn't onDelete:Cascade, so remove jobs first
+    // in a transaction). AuditLog rows are an unconstrained log — left intact as history.
+    async deleteCaseForever(id: string): Promise<{ ok: true; subject: string | null; clientId: string } | { ok: false; reason: "not_found" }> {
+      const c = await db.caseRequest.findUnique({ where: { id }, select: { id: true, subject: true, clientId: true } });
+      if (!c) return { ok: false, reason: "not_found" };
+      await db.$transaction([
+        db.job.deleteMany({ where: { caseRequestId: id } }),
+        db.caseRequest.delete({ where: { id } }),
+      ]);
+      return { ok: true, subject: c.subject, clientId: c.clientId };
+    },
+
+    // Hard-delete every case that has sat in the trash past the retention window (called on the
+    // cases page load, mirroring the agents purge). Returns the count purged.
+    async purgeExpiredTrashedCases(cutoff: Date): Promise<number> {
+      const expired = await db.caseRequest.findMany({
+        where: { deletedAt: { not: null, lte: cutoff } },
+        select: { id: true },
+      });
+      if (expired.length === 0) return 0;
+      const ids = expired.map((e) => e.id);
+      await db.$transaction([
+        db.job.deleteMany({ where: { caseRequestId: { in: ids } } }),
+        db.caseRequest.deleteMany({ where: { id: { in: ids } } }),
+      ]);
+      return ids.length;
     },
 
     async getCase(id: string): Promise<CaseDetail | null> {

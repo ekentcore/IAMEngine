@@ -20,6 +20,20 @@ export type CaseListItem = {
   clientName: string;
   clientSlug: string;
   jobCount: number;
+  // Human explanation of the status for a hover tooltip: why it failed, what a queued case is
+  // waiting on, which steps need a person / approval. Empty for self-explanatory states.
+  statusHint: string;
+};
+
+export type TrashedCaseItem = {
+  id: string;
+  action: Action;
+  status: CaseStatus;
+  subject: string | null;
+  serviceNowCaseNumber: string | null;
+  deletedAt: Date;
+  clientName: string;
+  jobCount: number;
 };
 
 export type PlannedJobView = {

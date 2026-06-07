@@ -150,7 +150,7 @@ export function makeRunnerService(db: PrismaClient) {
         where: {
           status: "pending",
           mode: "api",
-          case: { status: { notIn: ["failed", "completed"] }, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
+          case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
         select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },

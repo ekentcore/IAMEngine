@@ -1,5 +1,7 @@
-// GET   /api/cases/:id — case detail with planned jobs.
-// PATCH /api/cases/:id — { action: "set-dry-run", dryRun } toggle the case's dry-run mode.
+// GET    /api/cases/:id — case detail with planned jobs.
+// PATCH  /api/cases/:id — { action: "set-dry-run", dryRun } | { action: "restore" }.
+// DELETE /api/cases/:id — move the case to the trash (restorable 30 days). Blocked while in flight.
+//        DELETE /api/cases/:id?forever=1 — permanently delete a trashed case + its jobs.
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
@@ -27,5 +29,31 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     await db.auditLog.create({ data: { actor: "ui", action: "case.dry_run.set", clientId: exists.clientId, detail: { caseId: params.id, from: exists.dryRun, to: body.dryRun, jobsUpdated: updated } } });
     return NextResponse.json({ dryRun: body.dryRun, jobsUpdated: updated });
   }
-  return NextResponse.json({ error: 'action must be "set-dry-run"' }, { status: 422 });
+  if (body.action === "restore") {
+    const res = await makeCaseRepository(db).restoreCase(params.id);
+    if (!res.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+    await db.auditLog.create({ data: { actor: "ui", action: "case.restore", clientId: res.clientId, detail: { caseId: params.id } } });
+    return NextResponse.json({ ok: true });
+  }
+  return NextResponse.json({ error: 'action must be "set-dry-run" or "restore"' }, { status: 422 });
+}
+
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+  const repo = makeCaseRepository(db);
+  const forever = new URL(req.url).searchParams.get("forever") === "1";
+
+  if (forever) {
+    const res = await repo.deleteCaseForever(params.id);
+    if (!res.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+    await db.auditLog.create({ data: { actor: "ui", action: "case.delete_forever", clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } } });
+    return NextResponse.json({ ok: true });
+  }
+
+  const res = await repo.trashCase(params.id);
+  if (!res.ok) {
+    if (res.reason === "not_found") return NextResponse.json({ error: "not found" }, { status: 404 });
+    return NextResponse.json({ error: "a job is in flight — wait for it to finish (or re-plan) before removing" }, { status: 409 });
+  }
+  await db.auditLog.create({ data: { actor: "ui", action: "case.trash", clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } } });
+  return NextResponse.json({ ok: true });
 }

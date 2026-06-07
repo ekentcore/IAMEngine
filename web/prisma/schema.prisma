@@ -193,7 +193,12 @@ model CaseRequest {
   // client hasn't set. Still a REFERENCE only (a Delinea id), never a value.
   secretOverrides     Json?
   createdAt           DateTime   @default(now())
+  // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
+  // purged. Excluded from the active list and from runner claims while trashed.
+  deletedAt           DateTime?
   jobs                Job[]
+
+  @@index([deletedAt])
 }
 
 model Job {

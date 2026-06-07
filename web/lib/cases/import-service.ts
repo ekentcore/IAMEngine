@@ -28,6 +28,9 @@ export async function importCaseFromServiceNow(
   // Idempotent: don't re-import the same ticket.
   const existing = await repo.findCaseIdByNumber(trimmed);
   if (existing) {
+    // If the ticket was trashed, re-importing brings it back rather than colliding on the unique
+    // SN number (no-op if it wasn't trashed).
+    await repo.restoreCase(existing);
     return {
       ok: true,
       alreadyImported: true,
@@ -84,6 +87,9 @@ export async function importIncidentCase(
 
   const existing = await repo.findCaseIdByNumber(trimmed);
   if (existing) {
+    // If the ticket was trashed, re-importing brings it back rather than colliding on the unique
+    // SN number (no-op if it wasn't trashed).
+    await repo.restoreCase(existing);
     return { ok: true, alreadyImported: true, caseNumber: trimmed, outcome: { caseId: existing, status: "queued", jobCount: 0, manualCount: 0, approvalCount: 0 } };
   }
 
