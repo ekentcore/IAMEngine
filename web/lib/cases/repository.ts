@@ -337,9 +337,14 @@ export function makeCaseRepository(db: PrismaClient) {
     // Hard-delete every case that has sat in the trash past the retention window (called on the
     // cases page load, mirroring the agents purge). Returns the count purged.
     async purgeExpiredTrashedCases(cutoff: Date): Promise<number> {
+      // Cap the batch so a large backlog (e.g. a mass-trash) can't turn one page load into a single
+      // huge delete transaction that stalls the request and contends with runner writes — the
+      // remainder is purged on subsequent loads.
+      const PURGE_BATCH = 200;
       const expired = await db.caseRequest.findMany({
         where: { deletedAt: { not: null, lte: cutoff } },
         select: { id: true },
+        take: PURGE_BATCH,
       });
       if (expired.length === 0) return 0;
       const ids = expired.map((e) => e.id);
