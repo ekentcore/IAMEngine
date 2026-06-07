@@ -174,7 +174,11 @@ model Agent {
   enabled    Boolean    @default(true)
   // Operator-requested self-update: set true by the "Update" button; the next heartbeat returns
   // update:true (consumed — cleared to false), and the runner re-pulls its files and restarts.
-  updateRequested Boolean @default(false)
+  // The two timestamps drive the UI status: requested (queued) -> delivered (agent pulling/
+  // restarting) -> back online (lastSeenAt > delivered).
+  updateRequested   Boolean   @default(false)
+  updateRequestedAt DateTime?
+  updateDeliveredAt DateTime?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
   deletedAt  DateTime?
   jobs       Job[]

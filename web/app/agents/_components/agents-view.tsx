@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
 
@@ -15,7 +15,25 @@ export type AgentVM = {
   enabled: boolean;
   lastSeenAt: string | null;
   jobCount: number;
+  updateRequested: boolean;
+  updateRequestedAt: string | null;
+  updateDeliveredAt: string | null;
 };
+
+// Live self-update status from the lifecycle timestamps: queued (set, not yet polled) -> updating
+// (agent received it, pulling+restarting) -> updated (agent's heartbeat came back after delivery).
+// Returns null once nothing is in flight (or the delivery is >5 min stale).
+function updateStatus(a: AgentVM): { label: string; color: string } | null {
+  if (a.updateRequested) return { label: "↻ update queued — waiting for the runner to poll…", color: "#8a6d00" };
+  if (a.updateDeliveredAt) {
+    const del = new Date(a.updateDeliveredAt).getTime();
+    if (Date.now() - del > 5 * 60_000) return null;
+    const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+    if (seen > del + 3000) return { label: "✓ updated — runner back online on new code", color: "#2e7d32" };
+    return { label: "↻ updating — pulling files + restarting…", color: "#1565c0" };
+  }
+  return null;
+}
 
 export type TrashedAgentVM = {
   id: string;
@@ -46,6 +64,15 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
   const [install, setInstall] = useState<{ command: string } | null>(null);
   const [clientSlug, setClientSlug] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
+
+  // While any agent's self-update is in flight, poll so the status advances live (queued ->
+  // updating -> updated) without a manual refresh. Stops once nothing is in flight.
+  useEffect(() => {
+    const inFlight = agents.some((a) => a.updateRequested || (a.updateDeliveredAt && Date.now() - new Date(a.updateDeliveredAt).getTime() < 5 * 60_000));
+    if (!inFlight) return;
+    const t = setInterval(() => router.refresh(), 4000);
+    return () => clearInterval(t);
+  }, [agents, router]);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "<APP_URL>";
 
@@ -118,11 +145,16 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
                 <td>{a.version ?? <span className="muted">—</span>}</td>
                 <td><span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span></td>
                 <td>{a.jobCount}</td>
-                <td>{a.enabled ? "enabled" : <span className="muted">disabled</span>}</td>
+                <td>
+                  {a.enabled ? "enabled" : <span className="muted">disabled</span>}
+                  {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
+                </td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
                   {a.enabled && (
-                    <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>Update</button>
+                    <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>
+                      {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
+                    </button>
                   )}
                   {!a.enabled && (
                     <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)" style={{ marginLeft: 6 }}>Trash</button>

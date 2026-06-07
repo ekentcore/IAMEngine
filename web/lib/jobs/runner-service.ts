@@ -101,7 +101,9 @@ export function makeRunnerService(db: PrismaClient) {
       // here would silently drop it).
       let update = false;
       if (agent.enabled && agent.updateRequested) {
-        const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false } });
+        // Stamp updateDeliveredAt on consume → the UI shows "updating…" until the agent restarts and
+        // its next heartbeat pushes lastSeenAt past this timestamp ("updated ✓").
+        const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false, updateDeliveredAt: new Date() } });
         update = consumed.count > 0;
       }
       // Tell this (client-network) agent to run AD discovery if its client has a pending request.
@@ -151,7 +153,7 @@ export function makeRunnerService(db: PrismaClient) {
       // a disabled agent won't heartbeat to consume the flag, so the request would just hang pending.
       if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting an update");
-      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true } });
+      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateDeliveredAt: null } });
       await db.auditLog.create({ data: { actor: "ui", action: "agent.update_requested", detail: { agentId } } });
       return { id: agentId };
     },

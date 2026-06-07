@@ -36,6 +36,9 @@ export default async function AgentsPage() {
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
+    updateRequested: a.updateRequested,
+    updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
+    updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
   }));
   const now = new Date();
   const trashVms: TrashedAgentVM[] = trashed.map((a) => ({
