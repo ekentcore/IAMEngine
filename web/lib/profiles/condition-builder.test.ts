@@ -22,6 +22,14 @@ test("validateCondition: rejects a term with no recognized operator", () => {
   assert.match(r.error ?? "", /country\.short IN/);
 });
 
+test("validateCondition: rejects a stray || (empty branch would match everyone)", () => {
+  for (const expr of ["country.short == IN ||", "|| country.short == IN", "a == 1 || || b == 2"]) {
+    const r = validateCondition(expr);
+    assert.equal(r.ok, false, expr);
+    assert.match((r as { error: string }).error, /empty condition|\|\|/);
+  }
+});
+
 test("parseCondition: single term round-trips", () => {
   const m = parseCondition("country.short == IN");
   assert.deepEqual(m, [[{ var: "country.short", op: "==", value: "IN" }]]);

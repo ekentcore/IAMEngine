@@ -9,6 +9,10 @@ export type TermOp = "==" | "!=" | "~=" | "in";
 export type Term = { var: string; op: TermOp; value: string };
 export type ConditionModel = Term[][]; // outer = OR, inner = AND
 
+// Note: conditions split on `||`/`&&` before values are read (here AND in the evaluator), so a value
+// — including a `~=` regex — cannot itself contain `||` or `&&`. That's an inherent grammar limit,
+// not specific to the builder; such a regex is unrepresentable and validateCondition rejects it.
+
 // `<var> in [a, b, c]` — capture var + the inside of the brackets (without the brackets).
 const IN_RE = /^(.+?)\s+in\s+\[(.*)\]\s*$/i;
 // `<var> (==|!=|~=) value`
@@ -62,7 +66,13 @@ export function serializeCondition(model: ConditionModel): string {
 // fail-closes unparseable terms to false, which would silently never fire — so we surface it).
 export function validateCondition(expr: string | null | undefined): { ok: true } | { ok: false; error: string } {
   if (!expr || !expr.trim()) return { ok: true };
-  for (const orPart of expr.split("||")) {
+  const orParts = expr.split("||");
+  for (const orPart of orParts) {
+    // A stray `||` leaves an empty OR-branch, which the evaluator's `.some()` treats as always-true
+    // — almost never intended. Reject it so the rule can't silently fire for everyone.
+    if (orParts.length > 1 && !orPart.split("&&").some((t) => t.trim())) {
+      return { ok: false, error: "empty condition around '||' — remove the stray '||' (an empty branch would match everyone)" };
+    }
     for (const andPart of orPart.split("&&")) {
       if (!andPart.trim()) continue;
       if (!parseTerm(andPart)) return { ok: false, error: `Unrecognized condition: "${andPart.trim()}" — expected "<field> ==/!=/~= value" or "<field> in [a, b]"` };

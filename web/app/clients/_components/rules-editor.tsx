@@ -75,13 +75,14 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     setPersonas(next);
     setScope("globals");
   }
-  function renamePersona(oldName: string, newName: string) {
+  function renamePersona(oldName: string, newName: string): boolean {
     const nn = newName.trim();
-    if (!nn || nn === oldName || personas[nn]) return;
+    if (!nn || nn === oldName || personas[nn]) return false; // empty/unchanged/collision — caller reverts the input
     const next: Personas = {};
     for (const [k, v] of Object.entries(personas)) next[k === oldName ? nn : k] = v;
     setPersonas(next);
     setScope(nn);
+    return true;
   }
   function setPersonaField(name: string, patch: Partial<Persona>) {
     setPersonas({ ...personas, [name]: { ...personas[name], ...patch } });
@@ -143,7 +144,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
               <div className="row-between">
                 <div style={{ flex: 1 }}>
                   <label>Persona name</label>
-                  <input defaultValue={scope} key={scope} onBlur={(e) => renamePersona(scope, e.target.value)} className="inline" style={{ width: 220 }} />
+                  <input defaultValue={scope} key={scope} onBlur={(e) => { if (!renamePersona(scope, e.target.value)) e.target.value = scope; }} className="inline" style={{ width: 220 }} />
                 </div>
                 <button onClick={() => deletePersona(scope)} style={{ color: "#b3261e", alignSelf: "flex-end" }}>Delete persona</button>
               </div>
@@ -254,12 +255,13 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
 }
 
 function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue>; onChange: (next: Record<string, AttrValue>) => void }) {
-  const rename = (oldK: string, newK: string) => {
+  const rename = (oldK: string, newK: string): boolean => {
     const nk = newK.trim();
-    if (!nk || nk === oldK || attrs[nk]) return;
+    if (!nk || nk === oldK || attrs[nk]) return false; // empty/unchanged/collision — caller reverts the input
     const next: Record<string, AttrValue> = {};
     for (const [k, v] of Object.entries(attrs)) next[k === oldK ? nk : k] = v;
     onChange(next);
+    return true;
   };
   const setVal = (k: string, v: AttrValue) => onChange({ ...attrs, [k]: v });
   const remove = (k: string) => { const next = { ...attrs }; delete next[k]; onChange(next); };
@@ -271,7 +273,7 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
         return (
           <div key={k} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="toolbar" style={{ gap: 4 }}>
-              <input className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => rename(k, e.target.value)} placeholder="attribute" spellCheck={false} />
+              <input className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => { if (!rename(k, e.target.value)) e.target.value = k; }} placeholder="attribute" spellCheck={false} />
               <span className="note">=</span>
               {!isCond && (
                 <input className="inline" style={{ width: 240 }} value={String(v ?? "")} onChange={(e) => setVal(k, e.target.value)} placeholder="value or {token}" spellCheck={false} />
@@ -288,7 +290,7 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
                       <input className="inline" style={{ width: 240 }} value={String(entry.value ?? "")} placeholder="value or {token}"
                         onChange={(e) => setVal(k, arr.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} spellCheck={false} />
                       <span className="grow" />
-                      <button onClick={() => { const left = arr.filter((_, j) => j !== i); setVal(k, left.length ? left : ""); }} style={{ color: "#b3261e" }}>×</button>
+                      <button onClick={() => { const left = arr.filter((_, j) => j !== i); if (left.length) setVal(k, left); else remove(k); }} style={{ color: "#b3261e" }} title="remove this value">×</button>
                     </div>
                     <label style={{ marginTop: 4 }}>when <span className="note">(blank = default)</span></label>
                     <ConditionBuilder value={entry.when ?? ""} onChange={(w) => setVal(k, arr.map((x, j) => (j === i ? { ...x, when: w || undefined } : x)))} />

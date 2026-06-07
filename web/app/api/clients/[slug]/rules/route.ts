@@ -28,7 +28,11 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const existing = await repo.getRules(params.slug);
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const client = await repo.setRules(params.slug, checked.value.personas ?? {}, checked.value.globals ?? {});
+  // Only overwrite a scope that's actually present in the payload — an absent field keeps the
+  // existing rules (a partial PUT must not silently wipe the other column). Sending `{}` clears.
+  const personas = checked.value.personas ?? existing.personas ?? {};
+  const globals = checked.value.globals ?? existing.globals ?? {};
+  const client = await repo.setRules(params.slug, personas, globals);
   await repo.writeAudit({
     actor: "ui",
     action: "client.rules.edit",
