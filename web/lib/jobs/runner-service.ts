@@ -307,6 +307,22 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
+    // Live progress: the runner posts the phase it's entering ("connecting to Exchange Online",
+    // "enabling remote mailbox", …) as it works, so the run report can show what a step is doing
+    // right now instead of an opaque "running". Best-effort + append-only (last 20), and only while
+    // the job is in flight — a late post after the job finished is ignored, not an error.
+    async recordProgress(jobId: string, agentId: string, phase: string): Promise<{ ok: true }> {
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, progress: true } });
+      if (!job) throw new HttpError(404, "unknown job");
+      if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
+      if (job.status !== "dispatched" && job.status !== "running") return { ok: true }; // job already done — drop
+      const trail = Array.isArray(job.progress) ? (job.progress as unknown[]) : [];
+      const next = [...trail, { ts: new Date().toISOString(), phase: String(phase).slice(0, 200) }].slice(-20);
+      // Stamp running on the first progress post so the case/step reflects in-flight immediately.
+      await db.job.update({ where: { id: jobId }, data: { progress: next as Prisma.InputJsonValue, status: "running" } });
+      return { ok: true };
+    },
+
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {

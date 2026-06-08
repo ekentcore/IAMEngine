@@ -13,7 +13,11 @@ param(
     [Parameter(Mandatory)][string]$AgentId,
     [string]$ApiToken = $env:RUNNER_API_TOKEN,    # interim shared bearer (until mTLS)
     [int]$PollSeconds = 15,
-    [int]$BatchSize   = 5
+    [int]$BatchSize   = 5,
+    # ExchangeOnlineManagement 3.10.0's REST cmdlets break on PowerShell 7.6 ("[HttpResponseMessage]
+    # does not contain a method named 'GetResponseHeader'"); 3.9.2 is the known-good build. Pin the
+    # version the runner loads so it never auto-picks a broken one. Override per host if needed.
+    [string]$ExoModuleVersion = '3.9.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,7 +36,19 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent
 if (Get-Module -ListAvailable ActiveDirectory) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psd1" -Force
 }
-if (Get-Module -ListAvailable ExchangeOnlineManagement) {
+$exoAvail = Get-Module -ListAvailable ExchangeOnlineManagement
+if ($exoAvail) {
+    # Load the pinned EXO version FIRST (before Coretelligent.Exchange's RequiredModules auto-picks the
+    # highest) so a broken build (3.10.0 on PS7.6) is never the one in scope. Fall back to the newest
+    # available if the pin isn't installed — with a warning, since that may be the broken one.
+    $exoPick = $exoAvail | Where-Object { $_.Version -eq [version]$ExoModuleVersion } | Select-Object -First 1
+    if ($exoPick) {
+        Import-Module ExchangeOnlineManagement -RequiredVersion $ExoModuleVersion -Force
+    } else {
+        $newest = ($exoAvail | Sort-Object Version -Descending | Select-Object -First 1).Version
+        Write-Warning "ExchangeOnlineManagement $ExoModuleVersion not installed; using $newest (install the pin if EXO cmdlets fail with 'GetResponseHeader')."
+        Import-Module ExchangeOnlineManagement -RequiredVersion $newest -Force
+    }
     Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
 }
 
@@ -83,10 +99,21 @@ $DISPATCH = @{
         # onboard ALSO needs an on-prem Exchange session for Enable-RemoteMailbox — established only
         # when the job brokered the `exchange-onprem` secret (its Fields carry the PowerShell URI).
         Connect  = { param($job, $creds)
-            $s = $creds['m365-admin']; Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint']
-            # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only.
+            $s = $creds['m365-admin']
+            Set-CtgPhase $job.id "connecting to Exchange Online (app-only cert auth, app $($s.Credential.UserName))"
+            Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint']
+            # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only. The
+            # credential comes from the brokered `exchange-onprem` secret (which may point at the same
+            # Delinea id as ad-dc — the domain admin already has Exchange rights). The PowerShell URI
+            # comes from that secret's ConnectionUri field if present, else from the system config
+            # (`onPremExchangeUri`) so reusing the ad-dc secret needs no extra Delinea field.
             $op = $creds['exchange-onprem']
-            if ($op -and $job.action -ne 'offboard') { Connect-CtgExchangeOnPrem -ConnectionUri $op.Fields['ConnectionUri'] -Credential $op.Credential }
+            if ($op -and $job.action -ne 'offboard') {
+                $opUri = if ($op.Fields['ConnectionUri']) { $op.Fields['ConnectionUri'] } else { $job.config.onPremExchangeUri }
+                if (-not $opUri) { throw "on-prem session needs a ConnectionUri (set the exchange system's onPremExchangeUri, e.g. http://core-cce1-ex01.<domain>/PowerShell/)" }
+                Set-CtgPhase $job.id "connecting to on-prem Exchange ($opUri)"
+                Connect-CtgExchangeOnPrem -ConnectionUri $opUri -Credential $op.Credential
+            }
         }
         # Hybrid onboard across the AAD Connect sync boundary: enable remote mailbox -> wait for sync -> regional/calendar (one job).
         Onboard  = { param($job, $creds) Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config }
@@ -179,6 +206,16 @@ function Invoke-AppApi {
     Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
 }
 
+function Set-CtgPhase {
+    # Record what we're doing right now: keep it in $script:Phase (so a thrown error can say WHICH
+    # phase failed instead of a bare "Unauthorized"), and beacon it to the app so the run report can
+    # show live progress. The beacon is best-effort — a failed post must never break the job.
+    param([string]$JobId, [string]$Phase)
+    $script:Phase = $Phase
+    Write-Host "  · $Phase" -ForegroundColor DarkGray
+    if ($JobId) { try { Invoke-AppApi POST "/api/jobs/$JobId/progress" @{ agentId = $AgentId; phase = $Phase } | Out-Null } catch { } }
+}
+
 function Update-CtgRunner {
     # Operator clicked "Update": re-pull every runner file from the app's manifest into our own
     # folder, then relaunch this script (new pwsh process = new code) and exit. Re-runnable and
@@ -208,19 +245,32 @@ function Update-CtgRunner {
     $qq = { param([string]$s) '"' + ($s -replace '"', '\"') + '"' }  # quote args (paths may have spaces)
     $cmd = (& $qq $pwshPath) + ' -NoProfile -ExecutionPolicy Bypass -File ' + (& $qq $self) +
            ' -AppUrl ' + (& $qq $AppUrl) + ' -AgentId ' + (& $qq $AgentId) +
-           ' -PollSeconds ' + $PollSeconds + ' -BatchSize ' + $BatchSize
+           ' -PollSeconds ' + $PollSeconds + ' -BatchSize ' + $BatchSize +
+           ' -ExoModuleVersion ' + (& $qq $ExoModuleVersion)
     # Forward an explicit -ApiToken (env is inherited; an explicit arg would otherwise be lost -> 401).
     if ($ApiToken) { $cmd += ' -ApiToken ' + (& $qq $ApiToken) }
-    try {
-        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
-        if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($r.ReturnValue)" }
-        Write-Host "self-update: relaunched on new code (pid $($r.ProcessId))" -ForegroundColor Green
+    # WMI Win32_Process.Create is Windows-only and is needed specifically to break out of a SYSTEM
+    # Scheduled Task's job object. On macOS/Linux (the central cloud runner) there's no CIM server —
+    # calling it errors or stalls, which left the Mac stuck "updating" (pull ok, restart never landed).
+    # So branch on platform: WMI on Windows, a plain detached relaunch everywhere else.
+    if ($IsWindows) {
+        try {
+            $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
+            if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($r.ReturnValue)" }
+            Write-Host "self-update: relaunched on new code (pid $($r.ProcessId))" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "self-update relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
+            Start-Process -FilePath $pwshPath -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion) | Out-Null
+        }
     }
-    catch {
-        # Fallback for hosts where WMI is unavailable (rare). Start-Process at least works in the
-        # foreground/manual case; under a job-object'd task it may not survive (see above).
-        Write-Warning "self-update relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
-        Start-Process -FilePath $pwshPath -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize) | Out-Null
+    else {
+        # macOS/Linux: no job object to escape, so a detached child survives our exit. Pass args
+        # explicitly (env is inherited, but an explicit -ApiToken arg would otherwise be lost).
+        $a = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion)
+        if ($ApiToken) { $a += @('-ApiToken',$ApiToken) }
+        Start-Process -FilePath $pwshPath -ArgumentList $a | Out-Null
+        Write-Host "self-update: relaunched on new code (Start-Process)" -ForegroundColor Green
     }
     exit 0
 }
@@ -328,6 +378,7 @@ while ($true) {
 
         foreach ($job in @($jobs)) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
+            $script:Phase = 'starting'  # what we're doing now — the catch reports WHICH phase failed
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
@@ -343,16 +394,25 @@ while ($true) {
                 }
 
                 # Broker every secret the job names (least-privilege, one call each), keyed by name.
+                Set-CtgPhase $job.id 'brokering credentials'
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
 
-                # Connect once per (system|tenant) before the first job that needs it.
+                # Connect once per (system|tenant) before the first job that needs it. Mark the key
+                # connected ONLY after Connect succeeds — a throw here (bad cred, unreachable on-prem
+                # Exchange, transient) must NOT poison the cache, or every later job in this long-lived
+                # process would skip Connect and run unconnected (e.g. "Get-RemoteMailbox not recognized").
                 if ($handler.ContainsKey('Connect')) {
                     $tenant = if ($job.client) { $job.client.primaryDomain } else { '' }
                     $key = "$($job.systemKey)|$tenant"
-                    if ($script:Connected.Add($key)) { & $handler.Connect $job $creds }
+                    if (-not $script:Connected.Contains($key)) {
+                        Set-CtgPhase $job.id "connecting to $($job.systemKey)"
+                        & $handler.Connect $job $creds
+                        [void]$script:Connected.Add($key)
+                    }
                 }
 
                 $dryRun = [bool]$job.dryRun
+                Set-CtgPhase $job.id "$($job.action) $($job.systemKey)$(if ($dryRun) { ' (dry run)' })"
                 $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun
                 $body = @{ agentId = $AgentId; status = 'succeeded'; result = $outcome.Result }
                 if ($null -ne $outcome.Validation) { $body.validation = $outcome.Validation }
@@ -372,8 +432,11 @@ while ($true) {
                 while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
                 $msg = (($chain | Select-Object -Unique) -join ' <- ')
                 if (-not $msg) { $msg = $_.Exception.GetType().Name }
+                # Name the phase that failed ("while connecting to on-prem Exchange (…): Unauthorized")
+                # so the operator sees WHAT broke, not just the bare provider message.
+                $where = if ($script:Phase) { " while $($script:Phase)" } else { "" }
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
-                $err = Protect-CtgSecretsInText "[$($job.systemKey)] $msg" $creds
+                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
                 Write-Warning "job $($job.id) failed: $err"
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }

@@ -220,6 +220,7 @@
       "onboard": {
         "when": "always",
         "config": {
+          "onPremExchangeUri": "http://core-cce1-ex01.coretelligent.local/PowerShell/",
           "enableRemoteMailbox": { "routingDomain": "coretell.mail.onmicrosoft.com", "emailAddressPolicyEnabled": true },
           "regional": { "language": "en-us", "timezone": "{location.timezone}", "defaultTimezone": "Eastern Standard Time" },
           "calendar": { "grantManagerReviewer": true }

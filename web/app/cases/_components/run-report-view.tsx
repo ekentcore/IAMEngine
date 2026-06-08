@@ -39,12 +39,14 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   }, [caseId]);
 
   // Poll while the case is in flight (queued/planning/running) so the report tracks execution.
+  // Poll faster (2s) when a step is actively executing so the live phase feels real-time.
   const live = ["queued", "planning", "running"].includes(report.caseStatus);
+  const active = report.steps.some((s) => s.currentPhase);
   useEffect(() => {
     if (!live) { if (timer.current) clearInterval(timer.current); return; }
-    timer.current = setInterval(refresh, 4000);
+    timer.current = setInterval(refresh, active ? 2000 : 4000);
     return () => { if (timer.current) clearInterval(timer.current); };
-  }, [live, refresh]);
+  }, [live, active, refresh]);
 
   const toggle = (n: number) => setOpen((s) => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x; });
 
@@ -76,6 +78,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   const s = report.summary;
   return (
     <div>
+      <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <p className="note" style={{ margin: 0 }}>
           {s.succeeded} verified · {s.warnings} warning · {s.failed} failed · {s.skipped} skipped · {s.manual} manual
@@ -91,12 +94,17 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
 
       {report.steps.map((step) => {
         const isOpen = open.has(step.seq);
-        const hasDetail = step.actions.length > 0 || step.validation || step.error;
+        const hasDetail = step.actions.length > 0 || step.validation || step.error || step.phaseTrail.length > 0;
         return (
           <details key={step.seq} open={isOpen} style={{ margin: "0.2rem 0" }}>
             <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
+              {step.currentPhase && (
+                <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }}>
+                  <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…
+                </span>
+              )}
               {(step.verdict === "warning" || step.verdict === "failed") && step.jobId && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
@@ -130,6 +138,19 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 </div>
               )}
               {step.error && <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>}
+              {step.phaseTrail.length > 0 && (
+                <div style={{ marginTop: "0.4rem" }}>
+                  <div className="note">Progress:</div>
+                  <ul className="muted" style={{ margin: "0.2rem 0 0", listStyle: "none", paddingLeft: 0 }}>
+                    {step.phaseTrail.map((p, i) => (
+                      <li key={i}>
+                        <span style={{ color: "#9ca3af", marginRight: 6 }}>{p.ts ? new Date(p.ts).toLocaleTimeString() : ""}</span>
+                        {p.phase}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </details>
         );

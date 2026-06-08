@@ -137,6 +137,14 @@ function Invoke-CtgExchangeHybridOnboard {
     $actions = [System.Collections.Generic.List[string]]::new()
     if ($enable.Actions) { $actions.AddRange([string[]]$enable.Actions) }
 
+    # Dry run: Enable-RemoteMailbox was WhatIf'd so no mailbox will ever sync — don't block the full
+    # sync timeout (up to 10 min) waiting for something that was never created. Regional/calendar are
+    # ShouldProcess-gated below, so they no-op under -WhatIf too.
+    if ($WhatIfPreference) {
+        $actions.Add("dry run — skipped mailbox sync wait + regional/calendar (nothing was created)")
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
+    }
+
     if ((Get-CtgProp $Config 'waitForSync') -ne $false) {
         $wait = Wait-CtgMailbox -Identity $identity -TimeoutSeconds ([int]((Get-CtgProp $Config 'syncTimeoutSeconds') ?? 600))
         $actions.Add("mailbox sync: $($wait.Status)")

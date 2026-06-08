@@ -20,6 +20,8 @@ export type RunReportStep = {
   validation: { ok: boolean; checks: { name: string; expected?: unknown; actual?: unknown; pass: boolean }[] } | null;
   error: string | null;
   finishedAt: string | null;
+  currentPhase: string | null; // what the runner is doing right now (in-flight steps only)
+  phaseTrail: { ts: string; phase: string }[]; // the phases this step has gone through
 };
 
 export type RunReport = {
@@ -45,6 +47,7 @@ type JobRow = {
   request: unknown;
   result: unknown;
   validation: unknown;
+  progress?: unknown;
   error: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
@@ -83,6 +86,14 @@ function normalizeValidation(v: unknown): RunReportStep["validation"] {
       })
     : [];
   return { ok: Boolean(ok), checks };
+}
+
+function phaseTrailOf(progress: unknown): { ts: string; phase: string }[] {
+  if (!Array.isArray(progress)) return [];
+  return progress
+    .map((p) => (p && typeof p === "object" ? (p as Record<string, unknown>) : {}))
+    .filter((p) => typeof p.phase === "string")
+    .map((p) => ({ ts: String(p.ts ?? ""), phase: String(p.phase) }));
 }
 
 function verdictOf(status: string, validation: RunReportStep["validation"]): StepVerdict {
@@ -127,6 +138,12 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else if (verdict === "needs_approval") summary.needsApproval++;
     else summary.pending++;
 
+    const phaseTrail = phaseTrailOf(j.progress);
+    // Only show a "current phase" while the step is actually in flight — a finished step's last
+    // phase isn't what it's "doing now".
+    const inFlight = j.status === "running" || j.status === "dispatched";
+    const currentPhase = inFlight && phaseTrail.length ? phaseTrail[phaseTrail.length - 1].phase : null;
+
     return {
       seq: i + 1,
       jobId: j.id,
@@ -138,6 +155,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       validation,
       error: j.error,
       finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
+      currentPhase,
+      phaseTrail,
     };
   });
 
@@ -206,7 +225,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     where: { id: caseId },
     include: {
       client: { select: { name: true, slug: true } },
-      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, error: true, startedAt: true, finishedAt: true } },
+      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, error: true, startedAt: true, finishedAt: true } },
     },
   });
   if (!c) return null;

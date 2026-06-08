@@ -111,6 +111,7 @@ export function SecretsPanel({
         Map each secret to its Delinea id, then test that the app can read it. Stores references only —
         the value stays in Delinea and is fetched by the runner at run time.
         {!delineaConfigured && <> · <span className="danger">Test is disabled until DELINEA_* is set on the app.</span></>}
+        {" · "}<a href="/help/cloud-auth" target="_blank" rel="noreferrer">How to set up M365 / Exchange cloud auth →</a>
       </p>
       <table>
         <thead>
