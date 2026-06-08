@@ -32,7 +32,8 @@ function installCommand(a: AgentVM, origin: string): string {
     `$App="${origin}"; $Dir="$HOME/iam-runner"; $H=@{'ngrok-skip-browser-warning'='true'}`,
   ];
   if (a.scope === "central") {
-    lines.push(`Install-Module Microsoft.Graph,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules`);
+    // Just the Graph submodules the M365 executor needs (+ EXO) — far faster than the Microsoft.Graph meta-module.
+    lines.push(`Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Groups,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules`);
   }
   lines.push(
     `New-Item -ItemType Directory -Force $Dir | Out-Null`,
