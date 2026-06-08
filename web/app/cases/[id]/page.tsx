@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { intakeLabel } from "@/lib/cases/intake-labels";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { writeBackEnabled } from "@/lib/servicenow/worknote";
@@ -111,13 +112,20 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </>
       )}
 
-      <h2>Planned identity</h2>
+      <h2>Intake details</h2>
+      <p className="note" style={{ marginTop: "-0.5rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
       <table>
         <tbody>
           {Object.entries(c.payload).map(([k, v]) => (
             <tr key={k}>
-              <th style={{ width: 240 }}>{k}</th>
-              <td>{v === null || v === "" ? <span className="muted">—</span> : String(typeof v === "boolean" ? (v ? "yes" : "no") : v)}</td>
+              <th style={{ width: 240 }}>{intakeLabel(k)}</th>
+              <td>
+                {v === null || v === "" || (Array.isArray(v) && v.length === 0)
+                  ? <span className="muted">—</span>
+                  : typeof v === "boolean" ? (v ? "yes" : "no")
+                  : Array.isArray(v) ? v.map(String).join(", ")
+                  : String(v)}
+              </td>
             </tr>
           ))}
           {Object.keys(c.payload).length === 0 && (

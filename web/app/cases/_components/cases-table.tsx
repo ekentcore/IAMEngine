@@ -13,6 +13,7 @@ export type CaseRowVM = {
   clientName: string;
   jobCount: number;
   statusHint: string;
+  effectiveDate: string | null;
   createdAtIso: string;
 };
 
@@ -46,7 +47,7 @@ const STATUS_COLOR: Record<string, string> = {
   running: "#1565c0",
 };
 
-type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "createdAt";
+type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "createdAt";
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
@@ -167,6 +168,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
             <SortHead k="serviceNowCaseNumber" label="SN case" />
             <SortHead k="jobCount" label="Jobs" num />
             <SortHead k="status" label="Status" />
+            <SortHead k="effectiveDate" label="Start / off date" />
             <SortHead k="createdAt" label="Created" />
             <th></th>
           </tr>
@@ -193,6 +195,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
                   {STATUS_LABEL[c.status] ?? c.status}
                 </span>
               </td>
+              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ?? "—"}</td>
               <td className="muted">{new Date(c.createdAtIso).toLocaleDateString()}</td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                 <button
@@ -208,7 +211,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={8} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
+              <td colSpan={9} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
                 {cases.length === 0 ? "No cases yet. Import a ServiceNow ticket or create one." : "No cases match your search."}
               </td>
             </tr>

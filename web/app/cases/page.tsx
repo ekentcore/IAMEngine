@@ -33,6 +33,7 @@ export default async function CasesPage() {
     clientName: c.clientName,
     jobCount: c.jobCount,
     statusHint: c.statusHint,
+    effectiveDate: c.effectiveDate,
     createdAtIso: c.createdAt.toISOString(),
   }));
 

@@ -117,34 +117,55 @@ export function ConditionBuilder({ value, onChange }: { value: string; onChange:
   );
 }
 
-// Chip list with an add input — for group names, titles, etc. `listId` points the input at a
-// <datalist> (e.g. discovered AD groups) for autocomplete; free text is still allowed.
-export function TagList({ items, onChange, placeholder, listId }: { items: string[]; onChange: (next: string[]) => void; placeholder?: string; listId?: string }) {
+// Chip list with an add input — for group names, titles, etc. When `options` is given (e.g. the
+// groups discovered from the DC), the input shows a click-to-add filtered dropdown; free text is
+// still allowed either way.
+export function TagList({ items, onChange, placeholder, options }: { items: string[]; onChange: (next: string[]) => void; placeholder?: string; options?: string[] }) {
   const [draft, setDraft] = useState("");
-  const add = () => {
-    const v = draft.trim();
-    if (v && !items.includes(v)) onChange([...items, v]);
+  const [focused, setFocused] = useState(false);
+  const add = (v?: string) => {
+    const val = (v ?? draft).trim();
+    if (val && !items.includes(val)) onChange([...items, val]);
     setDraft("");
   };
+  const matches = options
+    ? options.filter((o) => !items.includes(o) && o.toLowerCase().includes(draft.trim().toLowerCase())).slice(0, 14)
+    : [];
+  const showDrop = focused && !!options && matches.length > 0;
   return (
-    <div className="toolbar" style={{ gap: 4, flexWrap: "wrap" }}>
-      {items.map((it) => (
-        <span key={it} className="badge" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-          {it}
-          <button type="button" onClick={() => onChange(items.filter((x) => x !== it))} title="remove" style={{ color: "#b3261e", padding: 0, lineHeight: 1 }}>×</button>
-        </span>
-      ))}
-      <input
-        className="inline"
-        style={{ width: 160 }}
-        list={listId}
-        value={draft}
-        placeholder={placeholder ?? "add…"}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
-        onBlur={add}
-        spellCheck={false}
-      />
+    <div style={{ position: "relative" }}>
+      <div className="toolbar" style={{ gap: 4, flexWrap: "wrap" }}>
+        {items.map((it) => (
+          <span key={it} className="badge" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+            {it}
+            <button type="button" onClick={() => onChange(items.filter((x) => x !== it))} title="remove" style={{ color: "#b3261e", padding: 0, lineHeight: 1 }}>×</button>
+          </span>
+        ))}
+        <input
+          className="inline"
+          style={{ width: 180 }}
+          value={draft}
+          placeholder={placeholder ?? (options ? "search / add…" : "add…")}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); add(); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          spellCheck={false}
+        />
+      </div>
+      {showDrop && (
+        <div style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, minWidth: 260, maxHeight: 220, overflowY: "auto", background: "#fff", border: "1px solid #ccc", borderRadius: 4, boxShadow: "0 2px 8px rgba(0,0,0,0.15)" }}>
+          {matches.map((m) => (
+            // onMouseDown (not click) so it fires before the input blur, and preventDefault keeps focus
+            <div key={m} onMouseDown={(e) => { e.preventDefault(); add(m); }}
+              style={{ padding: "3px 8px", cursor: "pointer", fontSize: 13 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#eef")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+              {m}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

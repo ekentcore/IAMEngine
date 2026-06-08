@@ -201,21 +201,25 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Read the v2.1 rules (personas/globals/locations) for the editor. Separate from getClientBySlug
     // (which omits them) so the editor loads exactly what it round-trips back via setRules.
-    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown } | null> {
+    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown } | null> {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, personas: true, globals: true, locations: true, adObjects: true, systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } } },
+        select: { id: true, personas: true, globals: true, globalsOffboard: true, locations: true, adObjects: true, systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } } },
       });
       if (!c) return null;
-      return { id: c.id, personas: c.personas, globals: c.globals, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects };
+      return { id: c.id, personas: c.personas, globals: c.globals, globalsOffboard: c.globalsOffboard, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects };
     },
 
-    // Replace the personas + globals JSON columns wholesale (the editor sends the full objects, so a
-    // partial save can't drop sibling rules). locations is left untouched (not edited here).
-    async setRules(slug: string, personas: unknown, globals: unknown) {
+    // Replace the personas + globals (onboard) + globalsOffboard JSON columns wholesale (the editor
+    // sends the full objects, so a partial save can't drop sibling rules). locations untouched.
+    async setRules(slug: string, personas: unknown, globals: unknown, globalsOffboard: unknown) {
       return db.client.update({
         where: { slug },
-        data: { personas: personas as Prisma.InputJsonValue, globals: globals as Prisma.InputJsonValue },
+        data: {
+          personas: personas as Prisma.InputJsonValue,
+          globals: globals as Prisma.InputJsonValue,
+          globalsOffboard: globalsOffboard as Prisma.InputJsonValue,
+        },
       });
     },
 

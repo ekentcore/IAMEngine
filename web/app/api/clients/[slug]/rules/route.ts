@@ -32,7 +32,8 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   // existing rules (a partial PUT must not silently wipe the other column). Sending `{}` clears.
   const personas = checked.value.personas ?? existing.personas ?? {};
   const globals = checked.value.globals ?? existing.globals ?? {};
-  const client = await repo.setRules(params.slug, personas, globals);
+  const globalsOffboard = checked.value.globalsOffboard ?? existing.globalsOffboard ?? {};
+  const client = await repo.setRules(params.slug, personas, globals, globalsOffboard);
   // Record the unconditionally-added global groups in the audit detail so a config-seeded
   // privilege grant (e.g. an "always add Domain Admins" rule) is visible/attributable after the
   // fact — the route has no operator identity yet (actor:"ui"), so the WHAT must be captured.

@@ -86,7 +86,8 @@ model Client {
   // v2.1 plan-time resolution inputs (from the profile): role/persona bundles, every-user config
   // fragments, and the location data table. The planner merges these into each job's config.
   personas      Json?
-  globals       Json?
+  globals       Json?          // every-user ONBOARD rules (add groups, place OU, set attributes)
+  globalsOffboard Json?        // every-user OFFBOARD rules (remove groups, move OU, set attributes)
   locations     Json?
   // AD objects discovered from the client's DC by its agent (read-only Get-ADOrganizationalUnit /
   // Get-ADGroup), to back the rules editor's OU/group pickers. { ous: string[], groups: string[],

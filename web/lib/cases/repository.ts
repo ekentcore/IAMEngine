@@ -70,7 +70,7 @@ export function makeCaseRepository(db: PrismaClient) {
       | {
           id: string; name: string; slug: string; primaryDomain: string;
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
-          identity: unknown; personas: unknown; globals: unknown; locations: unknown; systems: ClientSystem[];
+          identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
         }
       | null
     > {
@@ -79,7 +79,7 @@ export function makeCaseRepository(db: PrismaClient) {
         select: {
           id: true, name: true, slug: true, primaryDomain: true,
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
-          identity: true, personas: true, globals: true, locations: true, systems: true,
+          identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
         },
       });
       return c;
@@ -146,7 +146,7 @@ export function makeCaseRepository(db: PrismaClient) {
           client: {
             id: string; slug: string; primaryDomain: string;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
-            identity: unknown; personas: unknown; globals: unknown; locations: unknown; systems: ClientSystem[];
+            identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
           }; started: boolean }
       | null
     > {
@@ -158,7 +158,7 @@ export function makeCaseRepository(db: PrismaClient) {
             select: {
               id: true, slug: true, primaryDomain: true,
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
-              identity: true, personas: true, globals: true, locations: true, systems: true,
+              identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
             },
           },
           jobs: { select: { status: true } },
@@ -231,7 +231,7 @@ export function makeCaseRepository(db: PrismaClient) {
         orderBy: { createdAt: "desc" },
         select: {
           id: true, action: true, status: true, subject: true,
-          serviceNowCaseNumber: true, createdAt: true, clientId: true,
+          serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true,
           client: { select: { name: true, slug: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
         },
@@ -253,17 +253,24 @@ export function makeCaseRepository(db: PrismaClient) {
       const centralOnline = onlineAgents.some((a) => a.clientId === null);
       const clientHasRunner = new Set(onlineAgents.map((a) => a.clientId).filter(Boolean) as string[]);
 
-      return rows.map((r) => ({
-        id: r.id, action: r.action, status: r.status, subject: r.subject,
-        serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt,
-        clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
-        statusHint: buildCaseStatusHint(
-          r.status,
-          r.jobs,
-          (k) => nameByKey.get(k) ?? k,
-          centralOnline || clientHasRunner.has(r.clientId)
-        ),
-      }));
+      return rows.map((r) => {
+        // Contextual date: a new hire's start date for onboarding, the offboarding date for offboards
+        // (both come date-only from the intake — u_start_date / u_end_date).
+        const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown };
+        const raw = r.action === "offboard" ? p.dateOfOffboarding : p.startDate;
+        const effectiveDate = typeof raw === "string" && raw ? raw : null;
+        return {
+          id: r.id, action: r.action, status: r.status, subject: r.subject,
+          serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
+          clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
+          statusHint: buildCaseStatusHint(
+            r.status,
+            r.jobs,
+            (k) => nameByKey.get(k) ?? k,
+            centralOnline || clientHasRunner.has(r.clientId)
+          ),
+        };
+      });
     },
 
     // Cases in the trash (soft-deleted) — for the collapsible Trash section. Newest-trashed first.

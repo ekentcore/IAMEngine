@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Fragment, Persona, GroupEntry, AttrValue } from "@/lib/clients/rules";
 import { ConditionBuilder, TagList, AD_ATTRIBUTES } from "./condition-builder";
+import { OuTreePicker } from "./ad-pickers";
 
 type Personas = Record<string, Persona>;
 type Globals = Record<string, Fragment>;
@@ -23,6 +24,8 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   const [error, setError] = useState<string | null>(null);
   const [personas, setPersonas] = useState<Personas>({});
   const [globals, setGlobals] = useState<Globals>({});
+  const [globalsOffboard, setGlobalsOffboard] = useState<Globals>({});
+  const [action, setAction] = useState<"onboard" | "offboard">("onboard");
   const [systemKeys, setSystemKeys] = useState<string[]>([]);
   const [adObjects, setAdObjects] = useState<{ ous: string[]; groups: string[]; discoveredAt?: string }>({ ous: [], groups: [] });
   const [discovering, setDiscovering] = useState(false);
@@ -44,7 +47,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         const p = (d.personas ?? {}) as Personas;
         const keys = (d.systemKeys ?? []) as string[];
         const ad = (d.adObjects ?? {}) as { ous?: string[]; groups?: string[]; discoveredAt?: string };
-        setGlobals(g); setPersonas(p); setSystemKeys(keys);
+        setGlobals(g); setGlobalsOffboard((d.globalsOffboard ?? {}) as Globals); setPersonas(p); setSystemKeys(keys);
         setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
         setScope("globals");
         setActiveSystem(Object.keys(g)[0] ?? keys[0] ?? "active-directory");
@@ -53,18 +56,24 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
       .finally(() => setLoading(false));
   }, [open, slug]);
 
-  // Systems offered for the current scope = the client's systems ∪ whatever already has a fragment.
-  const scopeFragments = scope === "globals" ? globals : personas[scope]?.systems ?? {};
+  // Fragments for the current scope + action (onboard vs offboard live in separate columns/keys).
+  const personaSysKey = action === "onboard" ? "systems" : "offboardSystems";
+  const scopeFragments: Record<string, Fragment> = scope === "globals"
+    ? (action === "onboard" ? globals : globalsOffboard)
+    : (personas[scope]?.[personaSysKey] ?? {});
   const systems = [...new Set([...systemKeys, ...Object.keys(scopeFragments)])].sort();
   const fragment: Fragment = scopeFragments[activeSystem] ?? {};
 
-  function setFragment(frag: Fragment) {
-    if (scope === "globals") setGlobals({ ...globals, [activeSystem]: frag });
-    else {
+  function setFragmentFor(sys: string, frag: Fragment) {
+    if (scope === "globals") {
+      if (action === "onboard") setGlobals({ ...globals, [sys]: frag });
+      else setGlobalsOffboard({ ...globalsOffboard, [sys]: frag });
+    } else {
       const persona = personas[scope] ?? {};
-      setPersonas({ ...personas, [scope]: { ...persona, systems: { ...(persona.systems ?? {}), [activeSystem]: frag } } });
+      setPersonas({ ...personas, [scope]: { ...persona, [personaSysKey]: { ...(persona[personaSysKey] ?? {}), [sys]: frag } } });
     }
   }
+  function setFragment(frag: Fragment) { setFragmentFor(activeSystem, frag); }
 
   function addPersona() {
     const name = prompt("New persona / role name (e.g. Field Services)")?.trim();
@@ -99,7 +108,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
       const res = await fetch(`/api/clients/${slug}/rules`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ personas, globals }),
+        body: JSON.stringify({ personas, globals, globalsOffboard }),
       });
       if (!res.ok) { setError((await res.json().catch(() => null))?.error ?? `Save failed (${res.status})`); return; }
       router.refresh();
@@ -116,8 +125,21 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     setDiscovering(true); setError(null);
     try {
       const res = await fetch(`/api/clients/${slug}/ad-objects`, { method: "POST" });
-      if (!res.ok) setError((await res.json().catch(() => null))?.error ?? `Refresh failed (${res.status})`);
-      else setError("AD discovery requested — the agent will report OUs/groups within ~15s. Re-open this editor to see them.");
+      if (!res.ok) { setError((await res.json().catch(() => null))?.error ?? `Refresh failed (${res.status})`); setDiscovering(false); return; }
+      // Poll for the agent to report back (it discovers on its next heartbeat), then update the
+      // pickers live — no need to re-open the editor.
+      const before = adObjects.discoveredAt;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const d = await fetch(`/api/clients/${slug}/rules`).then((r) => r.json()).catch(() => null);
+        const ad = d?.adObjects as { ous?: string[]; groups?: string[]; discoveredAt?: string } | undefined;
+        if (ad?.discoveredAt && ad.discoveredAt !== before) {
+          setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
+          setDiscovering(false);
+          return;
+        }
+      }
+      setError("Requested, but the agent hasn't reported yet — is the client's on-prem runner online and up to date?");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -131,10 +153,6 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     setFragmentFor(key, scopeFragments[key] ?? {});
     setActiveSystem(key);
   }
-  function setFragmentFor(sys: string, frag: Fragment) {
-    if (scope === "globals") setGlobals({ ...globals, [sys]: frag });
-    else { const persona = personas[scope] ?? {}; setPersonas({ ...personas, [scope]: { ...persona, systems: { ...(persona.systems ?? {}), [sys]: frag } } }); }
-  }
 
   return (
     <dialog ref={ref} onClose={onClose} style={{ width: 860, maxWidth: "94vw" }}>
@@ -144,8 +162,6 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
       </div>
 
       {/* AD object pickers: discovered OUs/groups feed the OU + group autocompletes below. */}
-      <datalist id="ad-ous">{adObjects.ous.map((o) => <option key={o} value={o} />)}</datalist>
-      <datalist id="ad-groups">{adObjects.groups.map((g) => <option key={g} value={g} />)}</datalist>
       <div className="toolbar" style={{ gap: 8, marginBottom: 4 }}>
         <button onClick={refreshAd} disabled={discovering} title="Have the client's on-prem agent read OUs + groups from the DC">
           {discovering ? "Requesting…" : "⟳ Refresh AD objects from DC"}
@@ -161,6 +177,14 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         <p className="note"><span className="spinner" /> Loading…</p>
       ) : (
         <>
+          {/* Onboard vs offboard rule set */}
+          <div className="toolbar" style={{ gap: 4, marginBottom: 8 }}>
+            <button className={action === "onboard" ? "primary" : ""} onClick={() => setAction("onboard")}>Onboarding rules</button>
+            <button className={action === "offboard" ? "primary" : ""} onClick={() => setAction("offboard")}>Offboarding rules</button>
+            <span className="note" style={{ marginLeft: 6 }}>
+              {action === "onboard" ? "What a new user gets: add groups, place OU, set attributes." : "What happens on offboard: remove groups, move OU, set attributes."}
+            </span>
+          </div>
           {/* Scope tabs */}
           <div className="toolbar" style={{ flexWrap: "wrap", gap: 4, borderBottom: "1px solid #eee", paddingBottom: 8 }}>
             <button className={scope === "globals" ? "primary" : ""} onClick={() => setScope("globals")}>Everyone</button>
@@ -197,7 +221,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
 
           {activeSystem ? (
-            <FragmentEditor frag={fragment} onChange={setFragment} />
+            <FragmentEditor frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={adObjects.groups} action={action} />
           ) : (
             <p className="note" style={{ marginTop: 12 }}>Add a system to start adding rules.</p>
           )}
@@ -214,7 +238,15 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
 }
 
 // ---- one system's fragment: GROUP rules, OU rules, ATTRIBUTES ----
-function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Fragment) => void }) {
+function FragmentEditor({ frag, onChange, ous, groupOptions, action }: { frag: Fragment; onChange: (f: Fragment) => void; ous: string[]; groupOptions: string[]; action: "onboard" | "offboard" }) {
+  const [ouPick, setOuPick] = useState<number | null>(null);
+  const off = action === "offboard";
+  const L = {
+    groups: off ? "Groups to remove" : "Groups",
+    always: off ? "Always remove from" : "Always add",
+    thenGroups: off ? "…then remove from groups" : "…then add to groups",
+    ou: off ? "Move to OU" : "OU placement",
+  };
   const groups = Array.isArray(frag.groups) ? frag.groups : [];
   const always = groups.filter((g): g is string => typeof g === "string");
   const conditional = groups.filter((g): g is { groups: string[]; when?: string } => !!g && typeof g === "object");
@@ -240,9 +272,9 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
     <div style={{ marginTop: 10, display: "grid", gap: 16 }}>
       {/* GROUPS */}
       <section>
-        <h3 style={{ margin: "0 0 4px" }}>Groups</h3>
-        <label>Always add</label>
-        <TagList items={always} onChange={(a) => setGroups(a, conditional)} placeholder="group name…" listId="ad-groups" />
+        <h3 style={{ margin: "0 0 4px" }}>{L.groups}</h3>
+        <label>{L.always}</label>
+        <TagList items={always} onChange={(a) => setGroups(a, conditional)} placeholder="group name…" options={groupOptions} />
         <label style={{ marginTop: 8 }}>Conditional rules</label>
         {conditional.length === 0 && <p className="note">No conditional group rules.</p>}
         {conditional.map((rule, i) => (
@@ -252,8 +284,8 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
               <button onClick={() => setGroups(always, conditional.filter((_, j) => j !== i))} style={{ color: "#b3261e" }}>Delete rule</button>
             </div>
             <ConditionBuilder value={rule.when ?? ""} onChange={(w) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, when: w || undefined } : r)))} />
-            <label style={{ marginTop: 6 }}>…then add to groups</label>
-            <TagList items={rule.groups ?? []} onChange={(gs) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, groups: gs } : r)))} placeholder="group name…" listId="ad-groups" />
+            <label style={{ marginTop: 6 }}>{L.thenGroups}</label>
+            <TagList items={rule.groups ?? []} onChange={(gs) => setGroups(always, conditional.map((r, j) => (j === i ? { ...r, groups: gs } : r)))} placeholder="group name…" options={groupOptions} />
           </div>
         ))}
         <button onClick={() => setGroups(always, [...conditional, { groups: [], when: "" }])}>+ Add group rule</button>
@@ -261,15 +293,25 @@ function FragmentEditor({ frag, onChange }: { frag: Fragment; onChange: (f: Frag
 
       {/* OU */}
       <section>
-        <h3 style={{ margin: "0 0 4px" }}>OU placement <span className="note">(first matching rule wins; a rule with no condition is the default)</span></h3>
+        <h3 style={{ margin: "0 0 4px" }}>{L.ou} <span className="note">(first matching rule wins; a rule with no condition is the default)</span></h3>
         {ouRows.length === 0 && <p className="note">No OU rule (uses the system default).</p>}
         {ouRows.map((row, i) => (
           <div key={i} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="row-between">
-              <input list="ad-ous" className="inline" style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} placeholder="OU=Users,OU=…,DC=…" value={row.path}
+              <input className="inline" style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} placeholder="OU=Users,OU=…,DC=…" value={row.path}
                 onChange={(e) => setOu(ouRows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)))} spellCheck={false} />
+              {ous.length > 0 && (
+                <button type="button" onClick={() => setOuPick(ouPick === i ? null : i)} title="Pick from OUs discovered on the DC" style={{ marginLeft: 6, whiteSpace: "nowrap" }}>
+                  {ouPick === i ? "Close" : "📁 Browse"}
+                </button>
+              )}
               <button onClick={() => setOu(ouRows.filter((_, j) => j !== i))} style={{ color: "#b3261e", marginLeft: 6 }}>×</button>
             </div>
+            {ouPick === i && (
+              <div style={{ marginTop: 4 }}>
+                <OuTreePicker ous={ous} onPick={(dn) => { setOu(ouRows.map((r, j) => (j === i ? { ...r, path: dn } : r))); setOuPick(null); }} />
+              </div>
+            )}
             <label style={{ marginTop: 6 }}>When <span className="note">(blank = default placement)</span></label>
             <ConditionBuilder value={row.when ?? ""} onChange={(w) => setOu(ouRows.map((r, j) => (j === i ? { ...r, when: w || undefined } : r)))} />
           </div>

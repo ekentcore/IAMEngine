@@ -23,6 +23,8 @@ export type CaseListItem = {
   // Human explanation of the status for a hover tooltip: why it failed, what a queued case is
   // waiting on, which steps need a person / approval. Empty for self-explanatory states.
   statusHint: string;
+  // Onboarding start date / offboarding date (date-only string from intake), per the action.
+  effectiveDate: string | null;
 };
 
 export type TrashedCaseItem = {

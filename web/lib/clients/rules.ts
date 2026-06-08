@@ -8,8 +8,14 @@ export type GroupEntry = string | { groups: string[]; when?: string };
 export type OuEntry = string | Array<{ path: string; when?: string }>;
 export type AttrValue = string | number | boolean | Array<{ value: string | number | boolean; when?: string }>;
 export type Fragment = { groups?: GroupEntry[]; ou?: OuEntry; attributes?: Record<string, AttrValue>; licenses?: string[]; [k: string]: unknown };
-export type Persona = { label?: string; titles?: string[]; match?: string; systems?: Record<string, Fragment> };
-export type RulesPayload = { personas?: Record<string, Persona>; globals?: Record<string, Fragment> };
+// `systems` = ONBOARD fragments (add groups / place OU / set attrs); `offboardSystems` = OFFBOARD
+// fragments (remove groups / move OU / set attrs) — same shape, offboard semantics.
+export type Persona = { label?: string; titles?: string[]; match?: string; systems?: Record<string, Fragment>; offboardSystems?: Record<string, Fragment> };
+export type RulesPayload = {
+  personas?: Record<string, Persona>;
+  globals?: Record<string, Fragment>;
+  globalsOffboard?: Record<string, Fragment>;
+};
 
 const isObj = (v: unknown): v is Record<string, unknown> => v != null && typeof v === "object" && !Array.isArray(v);
 
@@ -33,10 +39,12 @@ function* fragmentConditions(where: string, frag: unknown): Generator<{ at: stri
 // Every condition string in the payload (for validation + for tests).
 export function collectConditions(payload: RulesPayload): { at: string; expr: string }[] {
   const out: { at: string; expr: string }[] = [];
-  for (const [sys, frag] of Object.entries(payload.globals ?? {})) out.push(...fragmentConditions(`Everyone · ${sys}`, frag));
+  for (const [sys, frag] of Object.entries(payload.globals ?? {})) out.push(...fragmentConditions(`Everyone (onboard) · ${sys}`, frag));
+  for (const [sys, frag] of Object.entries(payload.globalsOffboard ?? {})) out.push(...fragmentConditions(`Everyone (offboard) · ${sys}`, frag));
   for (const [name, persona] of Object.entries(payload.personas ?? {})) {
     if (persona && typeof persona.match === "string" && persona.match.trim()) out.push({ at: `Persona "${name}" match`, expr: persona.match });
-    for (const [sys, frag] of Object.entries(persona?.systems ?? {})) out.push(...fragmentConditions(`Persona "${name}" · ${sys}`, frag));
+    for (const [sys, frag] of Object.entries(persona?.systems ?? {})) out.push(...fragmentConditions(`Persona "${name}" (onboard) · ${sys}`, frag));
+    for (const [sys, frag] of Object.entries(persona?.offboardSystems ?? {})) out.push(...fragmentConditions(`Persona "${name}" (offboard) · ${sys}`, frag));
   }
   return out;
 }
@@ -51,6 +59,7 @@ export function validateRules(payload: unknown): { ok: true; value: RulesPayload
   if (!isObj(payload)) return { ok: false, error: "rules payload must be an object" };
   if (JSON.stringify(payload).length > MAX_BYTES) return { ok: false, error: "rules payload is too large" };
   if (payload.globals !== undefined && !isObj(payload.globals)) return { ok: false, error: "globals must be an object keyed by system" };
+  if (payload.globalsOffboard !== undefined && !isObj(payload.globalsOffboard)) return { ok: false, error: "globalsOffboard must be an object keyed by system" };
   if (payload.personas !== undefined && !isObj(payload.personas)) return { ok: false, error: "personas must be an object keyed by name" };
   if (isObj(payload.personas) && Object.keys(payload.personas).length > MAX_PERSONAS) return { ok: false, error: `too many personas (max ${MAX_PERSONAS})` };
   const value = payload as RulesPayload;

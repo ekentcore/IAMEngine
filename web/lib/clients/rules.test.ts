@@ -43,7 +43,7 @@ test("validateRules rejects a bad condition and says where", () => {
   const bad = { globals: { "active-directory": { groups: [{ groups: ["X"], when: "country.short IN" }] } } };
   const r = validateRules(bad);
   assert.equal(r.ok, false);
-  assert.match((r as { error: string }).error, /Everyone · active-directory group rule/);
+  assert.match((r as { error: string }).error, /Everyone \(onboard\) · active-directory group rule/);
 });
 
 test("validateRules rejects a bad persona match condition", () => {
@@ -75,4 +75,14 @@ test("validateRules rejects too many personas", () => {
   const personas: Record<string, unknown> = {};
   for (let i = 0; i < 201; i++) personas[`p${i}`] = { systems: {} };
   assert.equal(validateRules({ personas }).ok, false);
+});
+
+test("validateRules validates OFFBOARD conditions (globalsOffboard + persona.offboardSystems)", () => {
+  assert.equal(validateRules({ globalsOffboard: { "active-directory": { groups: [{ groups: ["X"], when: "employmentType == Contractor" }] } } }).ok, true);
+  const badGlobal = validateRules({ globalsOffboard: { "active-directory": { groups: [{ groups: ["X"], when: "bad cond" }] } } });
+  assert.equal(badGlobal.ok, false);
+  assert.match((badGlobal as { error: string }).error, /Everyone \(offboard\)/);
+  const badPersona = validateRules({ personas: { Sales: { offboardSystems: { "active-directory": { ou: [{ path: "OU=x", when: "no op here" }] } } } } });
+  assert.equal(badPersona.ok, false);
+  assert.match((badPersona as { error: string }).error, /Persona "Sales" \(offboard\)/);
 });
