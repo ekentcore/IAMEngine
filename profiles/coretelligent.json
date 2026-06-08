@@ -233,8 +233,8 @@
       "mode": "api",
       "secrets": ["ad-dc"],
       "dependsOn": ["exchange"],
-      "onboard": { "when": "always", "config": { "host": "CORE-CCE-AZSYNC.coretelligent.local", "command": "Start-ADSyncSyncCycle -PolicyType Delta", "waitForMailbox": true } },
-      "offboard": { "when": "always", "config": { "host": "CORE-CCE-AZSYNC.coretelligent.local", "command": "Start-ADSyncSyncCycle -PolicyType Delta" } }
+      "onboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta", "waitForMailbox": true } },
+      "offboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta" } }
     },
     {
       "key": "m365",

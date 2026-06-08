@@ -65,14 +65,20 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
 }
 
 Describe 'Confirm-CtgDirectorySync' {
-    It 'passes when no sync cycle is in progress (settled)' {
-        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
+    It 'passes when the scheduler is enabled and a cycle is settled' {
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $true; SyncCycleInProgress = $false } }
         $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeTrue
     }
 
-    It 'fails while a sync cycle is still running' {
-        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $true } }
+    It 'still passes while a cycle is in progress (we just triggered it — not a miss)' {
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $true; SyncCycleInProgress = $true } }
+        $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'fails when the sync scheduler is disabled' {
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $false; SyncCycleInProgress = $false } }
         $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'offboard'
         $r.ok | Should -BeFalse
     }

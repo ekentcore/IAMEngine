@@ -117,8 +117,14 @@ $DISPATCH = @{
                 Connect-CtgExchangeOnPrem -ConnectionUri $opUri -Credential $op.Credential
             }
         }
-        # Hybrid onboard across the AAD Connect sync boundary: enable remote mailbox -> wait for sync -> regional/calendar (one job).
-        Onboard  = { param($job, $creds) Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config }
+        # Hybrid onboard, one pass across the sync boundary: enable remote mailbox -> trigger an Entra
+        # Connect delta sync (so the mailbox provisions now) -> wait for it -> regional/calendar. The
+        # sync trigger reuses the on-prem (ad-dc) credential and auto-discovers the Entra Connect host.
+        Onboard  = { param($job, $creds)
+            $syncCred = ($creds['exchange-onprem']).Credential
+            $trigger = if ($syncCred) { { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $syncCred | Out-Null }.GetNewClosure() } else { $null }
+            Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config -TriggerSync $trigger
+        }
         Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
     }

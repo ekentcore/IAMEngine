@@ -128,8 +128,8 @@ function Invoke-CtgDirectorySync {
 function Confirm-CtgDirectorySync {
     <#
     .SYNOPSIS
-        Post-action read-back for Azure AD Connect: the delta sync has settled (no cycle in
-        progress). No mutations; returns { ok; checks[] }. Runs local or remote like the action.
+        Post-action read-back for Azure AD Connect: the sync scheduler is healthy (enabled). A cycle
+        that's IN PROGRESS is success, not a miss — we just triggered it. No mutations; { ok; checks }.
     #>
     [CmdletBinding()]
     param(
@@ -139,17 +139,23 @@ function Confirm-CtgDirectorySync {
         [pscredential]$Credential
     )
     $syncHost = Get-CtgProp $Config 'host'
-    $remoteScript = { Import-Module ADSync -ErrorAction Stop; [bool]((Get-ADSyncScheduler).SyncCycleInProgress) }
+    # Return scheduler health, not just in-progress. Enabled = the sync mechanism is working; a cycle
+    # in progress right after we triggered one is the expected, healthy state.
+    $remoteScript = { Import-Module ADSync -ErrorAction Stop; $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
     try {
         $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
-        $inProgress =
-            if ($target.Remote) { [bool](Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop) }
-            else { [bool]((Get-ADSyncScheduler).SyncCycleInProgress) }
+        $state =
+            if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
+            else { $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
     } catch {
         return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
     }
-    $check = @{ name = 'delta sync settled'; expected = $false; actual = $inProgress; pass = (-not $inProgress) }
-    [pscustomobject]@{ ok = $check.pass; checks = @($check) }
+    $enabled = [bool]$state.Enabled
+    $checks = @(
+        @{ name = 'Entra Connect sync scheduler enabled'; expected = $true; actual = $enabled; pass = $enabled },
+        @{ name = 'sync cycle running (informational)'; expected = $null; actual = [bool]$state.InProgress; pass = $true }
+    )
+    [pscustomobject]@{ ok = $enabled; checks = $checks }
 }
 
 Export-ModuleMember -Function Invoke-CtgDirectorySync, Confirm-CtgDirectorySync

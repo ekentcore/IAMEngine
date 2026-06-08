@@ -142,7 +142,14 @@ function Set-CtgMailboxRegional {
 # regional/calendar step is deferred (re-running the idempotent job finishes it once sync catches up).
 function Invoke-CtgExchangeHybridOnboard {
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        # Optional: a scriptblock that triggers an Entra Connect delta sync. Called AFTER the remote
+        # mailbox is enabled and BEFORE the mailbox-sync wait, so the new mailbox provisions into the
+        # cloud in this same pass instead of waiting on the next scheduled sync (or a manual re-run).
+        [scriptblock]$TriggerSync
+    )
     $enable = Invoke-CtgExchangeOnboarding -User $User -Config $Config
     $identity = $User.SamAccountName
     $actions = [System.Collections.Generic.List[string]]::new()
@@ -152,9 +159,21 @@ function Invoke-CtgExchangeHybridOnboard {
     # sync timeout (up to 10 min) waiting for something that was never created. Regional/calendar are
     # ShouldProcess-gated below, so they no-op under -WhatIf too.
     if ($WhatIfPreference) {
-        $actions.Add("dry run — skipped mailbox sync wait + regional/calendar (nothing was created)")
-        Write-CtgStep "✓ dry run complete — would enable remote mailbox $($enable.Email) (no changes made)"
+        $actions.Add("dry run — skipped sync trigger + mailbox wait + regional/calendar (nothing was created)")
+        Write-CtgStep "✓ dry run complete — would enable remote mailbox $($enable.Email), trigger a delta sync, then set regional/calendar (no changes made)"
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
+    }
+
+    # Push the just-enabled mailbox up to the cloud now (3b), so the wait below actually finds it.
+    if ($TriggerSync) {
+        try {
+            Write-CtgStep "triggering Entra Connect delta sync so the new mailbox provisions in Exchange Online"
+            & $TriggerSync
+            $actions.Add("triggered Entra Connect delta sync")
+        } catch {
+            # A sync failure isn't fatal here — the wait/timeout + deferral path still applies.
+            $actions.Add("delta sync trigger failed ($($_.Exception.Message)) — falling back to the scheduled sync")
+        }
     }
 
     if ((Get-CtgProp $Config 'waitForSync') -ne $false) {
