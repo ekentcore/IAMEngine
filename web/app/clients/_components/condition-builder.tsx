@@ -148,7 +148,10 @@ export function TagList({ items, onChange, placeholder, options }: { items: stri
           placeholder={placeholder ?? (options ? "search / add…" : "add…")}
           onChange={(e) => setDraft(e.target.value)}
           onFocus={() => setFocused(true)}
-          onBlur={() => { setFocused(false); add(); }}
+          // With a picker (`options`), blurring after typing a *filter* must not commit that filter
+          // text as a literal tag — add only via Enter or a dropdown click. Free-text lists keep
+          // blur-to-add.
+          onBlur={() => { setFocused(false); if (!options) add(); }}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
           spellCheck={false}
         />

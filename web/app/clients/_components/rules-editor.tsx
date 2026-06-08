@@ -32,9 +32,10 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   const [scope, setScope] = useState<string>("globals"); // "globals" | persona name
   const [activeSystem, setActiveSystem] = useState<string>("");
 
+  const pollCancelled = useRef(false);
   useEffect(() => {
-    if (open) ref.current?.showModal();
-    else ref.current?.close();
+    if (open) { pollCancelled.current = false; ref.current?.showModal(); }
+    else { pollCancelled.current = true; ref.current?.close(); }
   }, [open]);
 
   useEffect(() => {
@@ -131,7 +132,9 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
       const before = adObjects.discoveredAt;
       for (let i = 0; i < 15; i++) {
         await new Promise((r) => setTimeout(r, 4000));
+        if (pollCancelled.current) return; // dialog closed mid-poll — stop fetching/setState
         const d = await fetch(`/api/clients/${slug}/rules`).then((r) => r.json()).catch(() => null);
+        if (pollCancelled.current) return;
         const ad = d?.adObjects as { ous?: string[]; groups?: string[]; discoveredAt?: string } | undefined;
         if (ad?.discoveredAt && ad.discoveredAt !== before) {
           setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
@@ -180,18 +183,20 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           {/* Onboard vs offboard rule set */}
           <div className="toolbar" style={{ gap: 4, marginBottom: 8 }}>
             <button className={action === "onboard" ? "primary" : ""} onClick={() => setAction("onboard")}>Onboarding rules</button>
-            <button className={action === "offboard" ? "primary" : ""} onClick={() => setAction("offboard")}>Offboarding rules</button>
+            <button className={action === "offboard" ? "primary" : ""} onClick={() => { setAction("offboard"); setScope("globals"); }}>Offboarding rules</button>
             <span className="note" style={{ marginLeft: 6 }}>
               {action === "onboard" ? "What a new user gets: add groups, place OU, set attributes." : "What happens on offboard: remove groups, move OU, set attributes."}
             </span>
           </div>
-          {/* Scope tabs */}
+          {/* Scope tabs. Offboard is Everyone-only: an offboard ticket carries no role, so a persona
+              can't be selected at plan time — per-persona offboard rules would silently never fire. */}
           <div className="toolbar" style={{ flexWrap: "wrap", gap: 4, borderBottom: "1px solid #eee", paddingBottom: 8 }}>
             <button className={scope === "globals" ? "primary" : ""} onClick={() => setScope("globals")}>Everyone</button>
-            {Object.keys(personas).map((name) => (
+            {action === "onboard" && Object.keys(personas).map((name) => (
               <button key={name} className={scope === name ? "primary" : ""} onClick={() => setScope(name)}>{name}</button>
             ))}
-            <button onClick={addPersona} title="Add a persona/role">+ persona</button>
+            {action === "onboard" && <button onClick={addPersona} title="Add a persona/role">+ persona</button>}
+            {action === "offboard" && <span className="note" style={{ alignSelf: "center" }}>Offboard rules apply to everyone (offboard tickets carry no role to match a persona).</span>}
           </div>
 
           {/* Persona header (name / titles / match / delete) */}
@@ -221,7 +226,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
 
           {activeSystem ? (
-            <FragmentEditor frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={adObjects.groups} action={action} />
+            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={adObjects.groups} action={action} />
           ) : (
             <p className="note" style={{ marginTop: 12 }}>Add a system to start adding rules.</p>
           )}
