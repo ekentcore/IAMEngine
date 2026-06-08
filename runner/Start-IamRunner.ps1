@@ -194,7 +194,9 @@ function Update-CtgRunner {
         $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
         [System.IO.File]::WriteAllText($dest, $resp.Content)
     }
-    Write-Host "self-update: pulled $($manifest.files.Count) files — restarting" -ForegroundColor Green
+    # Record which build we just pulled so the next heartbeat reports it (UI "up to date" signal).
+    if ($manifest.buildId) { [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot '.build'), [string]$manifest.buildId) }
+    Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
     # Relaunch a fresh process running the just-downloaded script, then exit this one. Detached
     # (Start-Process) so it survives this process exiting; a SYSTEM Scheduled Task launches it the
     # same way on next boot, so this stays consistent across foreground + task hosting.
@@ -266,10 +268,15 @@ function Get-JobCredential {
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
 
-Write-Host "iam-engine runner $AgentId polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
+# The build id we're running = whatever the last pull recorded (written by Update-CtgRunner / the
+# installer). Reported on every heartbeat so the app can show "up to date" vs "update available".
+$buildFile = Join-Path $PSScriptRoot '.build'
+$script:RunnerBuild = if (Test-Path $buildFile) { (Get-Content $buildFile -Raw).Trim() } else { 'unknown' }
+
+Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
 while ($true) {
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = '0.1.0' }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery

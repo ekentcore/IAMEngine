@@ -96,6 +96,8 @@ foreach ($rel in $manifest.files) {
   $body = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
   [System.IO.File]::WriteAllText($dest, $body.Content)
 }
+# Record the build id so the runner reports it on heartbeat (UI "up to date" signal).
+if ($manifest.buildId) { [System.IO.File]::WriteAllText((Join-Path $InstallDir '.build'), [string]$manifest.buildId) }
 
 # 4. Auto-enroll (token -> agent id; the token carries scope + client)
 Step "enrolling agent"

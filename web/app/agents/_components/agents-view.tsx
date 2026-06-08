@@ -54,7 +54,7 @@ function lastSeen(iso: string | null): { text: string; online: boolean } {
   return { text: new Date(iso).toLocaleDateString(), online };
 }
 
-export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[] }) {
+export function AgentsView({ agents, clients, trashed, currentBuild }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -142,7 +142,28 @@ export function AgentsView({ agents, clients, trashed }: { agents: AgentVM[]; cl
                 <td><div>{a.name}</div><code className="muted" style={{ fontSize: 11 }}>{a.id}</code></td>
                 <td><span className="badge">{a.scope === "central" ? "central" : "client-network"}</span></td>
                 <td>{a.clientName ?? <span className="muted">— all —</span>}</td>
-                <td>{a.version ?? <span className="muted">—</span>}</td>
+                <td>
+                  {(() => {
+                    const v = a.version;
+                    const isBuild = !!v && /^[0-9a-f]{6,}$/.test(v); // a build hash vs legacy "0.1.0"/"unknown"
+                    if (isBuild) {
+                      return (
+                        <>
+                          <code className="muted" style={{ fontSize: 11 }}>{v.slice(0, 7)}</code>
+                          {v === currentBuild
+                            ? <div className="note" style={{ color: "#2e7d32" }}>✓ up to date</div>
+                            : <div className="note" style={{ color: "#8a6d00" }}>⚠ update available</div>}
+                        </>
+                      );
+                    }
+                    return (
+                      <>
+                        <span className="muted">{v ?? "—"}</span>
+                        {a.enabled && <div className="note" style={{ color: "#8a6d00" }}>⚠ pre-build runner — Update to report its build</div>}
+                      </>
+                    );
+                  })()}
+                </td>
                 <td><span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span></td>
                 <td>{a.jobCount}</td>
                 <td>
