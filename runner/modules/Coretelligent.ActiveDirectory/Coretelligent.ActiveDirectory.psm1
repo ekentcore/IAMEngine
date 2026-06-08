@@ -233,6 +233,21 @@ function Invoke-CtgADOffboarding {
         }
     }
 
+    # 2b. Remove the SPECIFIC groups named by the offboard rules (config.removeGroups), if the user
+    # is actually a member. Independent of removeAllGroups (and a no-op once that already stripped all).
+    $removeGroups = @(Get-CtgProp $Config 'removeGroups')
+    if ($removeGroups.Count) {
+        $memberByLower = @{}; foreach ($g in $memberships) { $memberByLower["$($g.Name)".ToLower()] = $g.Name }
+        foreach ($name in $removeGroups) {
+            if (-not $name -or "$name" -ieq 'Domain Users') { continue }
+            if (-not $memberByLower.ContainsKey("$name".ToLower())) { $actions.Add("not a member of $name (skip)"); continue }
+            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $name")) {
+                Remove-ADGroupMember -Identity $name -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
+                $actions.Add("removed from group: $name")
+            }
+        }
+    }
+
     # 3. Hide from GAL ---------------------------------------------------------
     $hide = Get-CtgProp $Config 'hideFromGal'
     if ($hide) {
@@ -241,6 +256,11 @@ function Invoke-CtgADOffboarding {
             Set-ADUser -Identity $sam -Replace @{ $attr = $val } @AdConnection
             $actions.Add("hid from GAL: $attr=$val")
         }
+    }
+
+    # 3b. Offboard attributes from the rules (config.offboardAttributes) — e.g. description.
+    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'offboardAttributes') -AdConnection $AdConnection)) {
+        $actions.Add("set $a")
     }
 
     # 4. Remove manager --------------------------------------------------------
@@ -257,14 +277,16 @@ function Invoke-CtgADOffboarding {
         }
     }
 
-    # 6. Move to Disabled Users OU — UNLESS the guardrail forbids it ------------
-    $disabledOu = Get-CtgProp $Config 'disabledUsersOu'
+    # 6. Move OU — UNLESS the guardrail forbids it. A rule-driven moveToOu (offboard rules) wins over
+    # the system default disabledUsersOu.
+    $targetOu = Get-CtgProp $Config 'moveToOu'
+    if (-not $targetOu) { $targetOu = Get-CtgProp $Config 'disabledUsersOu' }
     if ($guardrails -contains 'do-not-move-ou') {
         $actions.Add("did not move OU (do-not-move-ou guardrail — moving would delete the synced 365 account)")
     }
-    elseif ($disabledOu -and $PSCmdlet.ShouldProcess($sam, "Move to $disabledOu")) {
-        Move-ADObject -Identity $existing.DistinguishedName -TargetPath $disabledOu @AdConnection
-        $actions.Add("moved to $disabledOu")
+    elseif ($targetOu -and $PSCmdlet.ShouldProcess($sam, "Move to $targetOu")) {
+        Move-ADObject -Identity $existing.DistinguishedName -TargetPath $targetOu @AdConnection
+        $actions.Add("moved to $targetOu")
     }
 
     [pscustomobject]@{

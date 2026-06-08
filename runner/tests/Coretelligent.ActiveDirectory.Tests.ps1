@@ -136,6 +136,27 @@ Describe 'Invoke-CtgADOffboarding' {
         $r = Invoke-CtgADOffboarding -User $user -Config $config
         Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $TargetPath -match 'Disabled Users' }
     }
+
+    It 'offboard rules: removes only the specific rule-named groups the user belongs to (config.removeGroups)' {
+        $config = [pscustomobject]@{ disableAccount=$true; removeGroups=@('VPN Users','Nonexistent Group'); guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        # member of 'VPN Users' -> removed; not a member of 'Nonexistent Group' -> skipped
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'VPN Users' }
+        ($r.Actions -join ' ') | Should -Match 'not a member of Nonexistent Group'
+    }
+
+    It 'offboard rules: moveToOu wins over the system default disabledUsersOu' {
+        $config = [pscustomobject]@{ disableAccount=$true; moveToOu='OU=Rule Disabled,DC=x'; disabledUsersOu='OU=Default Disabled,DC=x' }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $TargetPath -eq 'OU=Rule Disabled,DC=x' }
+    }
+
+    It 'offboard rules: sets offboard attributes (config.offboardAttributes)' {
+        $config = [pscustomobject]@{ disableAccount=$true; offboardAttributes=[pscustomobject]@{ description='Offboarded' }; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.description -eq 'Offboarded' }
+        ($r.Actions -join ' ') | Should -Match 'description=Offboarded'
+    }
 }
 
 Describe 'Confirm-CtgAD' {
