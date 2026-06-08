@@ -21,6 +21,12 @@ function Get-CtgProp {
     return $null
 }
 
+# Narrate a step into the live run-report progress. Send-CtgProgress is the runner's global poster;
+# it's absent under Pester, so guard it — narration must never affect the executor's behavior.
+function Write-CtgStep([string]$Message) {
+    if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
+}
+
 # Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
 # offboard (convert-to-shared, CAS), the post-sync mailbox wait, and regional/calendar finishing.
 function Connect-CtgExchange {
@@ -84,14 +90,17 @@ function Invoke-CtgExchangeOnboarding {
 
     $existing = Get-RemoteMailbox -Identity $identity -ErrorAction SilentlyContinue
     if ($existing) {
+        Write-CtgStep "remote mailbox already enabled for $identity — skipping"
         $actions.Add("remote mailbox already enabled ($identity)")
     }
     elseif ($PSCmdlet.ShouldProcess($identity, "Enable remote mailbox -> $routing")) {
+        Write-CtgStep "running: Enable-RemoteMailbox -Identity $identity -RemoteRoutingAddress $routing -PrimarySmtpAddress $smtp"
         Enable-RemoteMailbox -Identity $identity -RemoteRoutingAddress $routing -Alias $alias -DisplayName $User.DisplayName -PrimarySmtpAddress $smtp | Out-Null
         $actions.Add("enabled remote mailbox: $smtp (routing $routing)")
     }
 
     if ((Get-CtgProp $cfg 'emailAddressPolicyEnabled') -ne $false -and $PSCmdlet.ShouldProcess($identity, "EmailAddressPolicyEnabled = true")) {
+        Write-CtgStep "running: Set-RemoteMailbox -Identity $identity -EmailAddressPolicyEnabled `$true"
         Set-RemoteMailbox -Identity $identity -EmailAddressPolicyEnabled $true
         $actions.Add("email address policy enabled")
     }
@@ -112,6 +121,7 @@ function Set-CtgMailboxRegional {
         $tz = [string](Get-CtgProp $regional 'timezone')
         if ([string]::IsNullOrWhiteSpace($tz) -or $tz -match '\{') { $tz = [string]((Get-CtgProp $regional 'defaultTimezone') ?? 'Eastern Standard Time') }
         if ($PSCmdlet.ShouldProcess($Identity, "Regional: $lang / $tz")) {
+            Write-CtgStep "running: Set-MailboxRegionalConfiguration -Identity $Identity -Language $lang -TimeZone `"$tz`""
             Set-MailboxRegionalConfiguration -Identity $Identity -Language $lang -TimeZone $tz
             $actions.Add("regional set: $lang / $tz")
         }
@@ -119,6 +129,7 @@ function Set-CtgMailboxRegional {
 
     $cal = Get-CtgProp $Config 'calendar'
     if ($cal -and (Get-CtgProp $cal 'grantManagerReviewer') -and $ManagerEmail -and $PSCmdlet.ShouldProcess($Identity, "Grant $ManagerEmail Reviewer on calendar")) {
+        Write-CtgStep "running: Add-MailboxFolderPermission -Identity ${Identity}:\Calendar -User $ManagerEmail -AccessRights Reviewer"
         Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $ManagerEmail -AccessRights Reviewer -Confirm:$false | Out-Null
         $actions.Add("granted $ManagerEmail Reviewer on calendar")
     }
@@ -142,6 +153,7 @@ function Invoke-CtgExchangeHybridOnboard {
     # ShouldProcess-gated below, so they no-op under -WhatIf too.
     if ($WhatIfPreference) {
         $actions.Add("dry run — skipped mailbox sync wait + regional/calendar (nothing was created)")
+        Write-CtgStep "✓ dry run complete — would enable remote mailbox $($enable.Email) (no changes made)"
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
     }
 
@@ -149,12 +161,14 @@ function Invoke-CtgExchangeHybridOnboard {
         $wait = Wait-CtgMailbox -Identity $identity -TimeoutSeconds ([int]((Get-CtgProp $Config 'syncTimeoutSeconds') ?? 600))
         $actions.Add("mailbox sync: $($wait.Status)")
         if (-not $wait.Found) {
+            Write-CtgStep "⚠ remote mailbox enabled ($($enable.Email)) but it hasn't synced to Exchange Online yet — regional/calendar deferred; run a directory sync, then re-run this step"
             return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray(); Warning = 'mailbox not synced before timeout — regional/calendar deferred to a re-run' }
         }
     }
 
     $regional = Set-CtgMailboxRegional -Identity $identity -Config $Config -ManagerEmail ([string](Get-CtgProp $User 'ManagerEmail'))
     if ($regional.Actions) { $actions.AddRange([string[]]$regional.Actions) }
+    Write-CtgStep "✓ exchange onboard complete — mailbox $($enable.Email) live; $($actions -join '; ')"
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
 }
 
