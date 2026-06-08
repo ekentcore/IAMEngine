@@ -132,11 +132,13 @@ $MaxRevalidate = 2
 function Invoke-JobWithValidation {
     param($Job, $Handler, [scriptblock]$Fn, $Creds, [bool]$DryRun)
 
-    # Dry run: set WhatIf so every module's SupportsShouldProcess short-circuits the mutations,
-    # then run the validators read-only — the executable confirmation of the app-side playbook.
-    if ($DryRun) { $WhatIfPreference = $true }
+    # Dry run: set WhatIf so every module's SupportsShouldProcess short-circuits the mutations, then
+    # run the validators read-only. MUST be $global: — module functions (Coretelligent.*) resolve
+    # preference variables from their own/module/GLOBAL scope, NOT the caller's, so a local
+    # $WhatIfPreference here would be ignored and the executors would run LIVE despite dry-run.
+    if ($DryRun) { $global:WhatIfPreference = $true }
     try { $result = & $Fn $Job $Creds }
-    finally { if ($DryRun) { $WhatIfPreference = $false } }
+    finally { if ($DryRun) { $global:WhatIfPreference = $false } }
 
     $validate = if ($Handler.ContainsKey('Validate')) { $Handler['Validate'] } else { $null }
     $validation = $null
