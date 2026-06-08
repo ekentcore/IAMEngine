@@ -33,6 +33,23 @@ export function stepRunsOn(systemKey: string, backbone: string | null | undefine
   return server ? `${where} · ${server}` : where;
 }
 
+// Preflight: which of a job's required secrets have NO usable reference (case override > client
+// default, both missing/REPLACE_ME). A non-empty result means the job can't run — the broker can't
+// hand the runner a credential — so it shouldn't be claimed. clientSecretByName maps the client's
+// secret name -> its stored externalId.
+export function missingRequiredSecrets(
+  secretNames: string[] | undefined,
+  overrides: unknown,
+  clientSecretByName: Map<string, string | null>
+): string[] {
+  const missing: string[] = [];
+  for (const name of secretNames ?? []) {
+    const { externalId } = effectiveExternalId(name, overrides, clientSecretByName.get(name) ?? null);
+    if (!externalId) missing.push(name);
+  }
+  return missing;
+}
+
 // The reference the broker should use for a secret on this case: a case override wins over the
 // client default; null when neither is set (the step can't run until it's filled).
 export function effectiveExternalId(

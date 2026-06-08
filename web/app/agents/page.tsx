@@ -27,6 +27,20 @@ export default async function AgentsPage() {
     select: { slug: true, name: true },
   });
 
+  // Active (pending/in-flight) api jobs, to show per agent on hover: what each runner is doing or
+  // about to do. A job is relevant to an agent if it's assigned to it (in flight) OR it's pending and
+  // in the agent's claim scope (central sees all; a client agent sees only its client's).
+  const activeJobs = await db.job.findMany({
+    where: { mode: "api", status: { in: ["pending", "dispatched", "running"] }, case: { deletedAt: null, status: { notIn: ["failed", "completed"] } } },
+    orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
+    select: { status: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, subject: true, action: true } } },
+  });
+  const jobsForAgent = (id: string, clientId: string | null) =>
+    activeJobs
+      .filter((j) => j.assignedAgentId === id || (j.status === "pending" && (clientId === null || j.case.clientId === clientId)))
+      .slice(0, 30)
+      .map((j) => ({ systemKey: j.systemKey, subject: j.case.subject, action: j.case.action, status: j.status }));
+
   const vms: AgentVM[] = agents.map((a) => ({
     id: a.id,
     name: a.name,
@@ -37,6 +51,7 @@ export default async function AgentsPage() {
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
+    pendingJobs: jobsForAgent(a.id, a.clientId),
     updateRequested: a.updateRequested,
     updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
     updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,

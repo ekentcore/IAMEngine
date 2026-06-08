@@ -1,6 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { serverHintFromLabel, stepRunsOn, effectiveExternalId } from "./case-secrets";
+import { serverHintFromLabel, stepRunsOn, effectiveExternalId, missingRequiredSecrets } from "./case-secrets";
+
+test("missingRequiredSecrets: flags names with no usable reference (case override > client default)", () => {
+  const clientSecrets = new Map<string, string | null>([["ad-dc", "55501"], ["m365-admin", "REPLACE_ME"], ["mimecast", null]]);
+  // ad-dc set on client, m365-admin overridden on case, mimecast + exchange-onprem unset
+  const missing = missingRequiredSecrets(["ad-dc", "m365-admin", "mimecast", "exchange-onprem"], { "m365-admin": "55502" }, clientSecrets);
+  assert.deepEqual(missing.sort(), ["exchange-onprem", "mimecast"]);
+});
+
+test("missingRequiredSecrets: empty / no required secrets -> nothing missing", () => {
+  assert.deepEqual(missingRequiredSecrets([], {}, new Map()), []);
+  assert.deepEqual(missingRequiredSecrets(undefined, undefined, new Map()), []);
+});
 
 test("serverHintFromLabel: pulls the host from a parenthetical", () => {
   assert.equal(serverHintFromLabel("Domain controller (core-cce-dc01) admin"), "core-cce-dc01");

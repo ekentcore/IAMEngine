@@ -5,7 +5,7 @@ import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
-import { effectiveExternalId } from "../cases/case-secrets";
+import { effectiveExternalId, missingRequiredSecrets } from "../cases/case-secrets";
 import { purgeCutoff } from "./agent-trash";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
@@ -210,9 +210,24 @@ export function makeRunnerService(db: PrismaClient) {
         byCase.set(j.caseRequestId, arr);
       }
 
+      // Preflight: don't claim a job whose required secrets aren't set — the broker couldn't resolve a
+      // credential, so it would just fail. Load the candidate cases' client refs + overrides once.
+      const caseMeta = await db.caseRequest.findMany({ where: { id: { in: caseIds } }, select: { id: true, clientId: true, secretOverrides: true } });
+      const caseMetaById = new Map(caseMeta.map((c) => [c.id, c]));
+      const clientSecrets = await db.secret.findMany({ where: { clientId: { in: [...new Set(caseMeta.map((c) => c.clientId))] } }, select: { clientId: true, name: true, externalId: true } });
+      const secretsByClient = new Map<string, Map<string, string | null>>();
+      for (const s of clientSecrets) {
+        const m = secretsByClient.get(s.clientId) ?? new Map<string, string | null>();
+        m.set(s.name, s.externalId);
+        secretsByClient.set(s.clientId, m);
+      }
+
       const eligible: string[] = [];
       for (const c of candidates) {
         if (!isClaimable(lite(c), byCase.get(c.caseRequestId) ?? [], c.case.status)) continue;
+        const meta = caseMetaById.get(c.caseRequestId);
+        const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
+        if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap).length > 0) continue; // secrets not set — skip
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }

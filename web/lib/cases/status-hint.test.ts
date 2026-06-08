@@ -38,6 +38,11 @@ test("queued: ready with a runner online", () => {
   assert.match(h, /waiting for a runner to claim Active Directory/i);
 });
 
+test("queued: a missing required secret blocks and is named first", () => {
+  const h = buildCaseStatusHint("queued", [job({ systemKey: "active-directory", sequence: 0, status: "pending" })], name, true, ["ad-dc"]);
+  assert.match(h, /Blocked — credential not set: ad-dc/);
+});
+
 test("needs_approval: names the gated step", () => {
   const h = buildCaseStatusHint("needs_approval", [job({ systemKey: "active-directory", status: "pending", request: { requiresApproval: true } })], name, true);
   assert.match(h, /Waiting for approval on: Active Directory/);

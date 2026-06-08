@@ -5,6 +5,7 @@ import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
+import { missingRequiredSecrets } from "./case-secrets";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -13,7 +14,8 @@ export function buildCaseStatusHint(
   status: CaseStatus,
   jobs: HintJob[],
   name: (key: string) => string,
-  runnerOnline: boolean
+  runnerOnline: boolean,
+  missingSecrets: string[] = []
 ): string {
   const req = (j: HintJob) => (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
   const list = (js: HintJob[]) => js.map((j) => name(j.systemKey)).join(", ");
@@ -42,6 +44,8 @@ export function buildCaseStatusHint(
     case "planning":
       return "being planned…";
     case "queued": {
+      // A required credential isn't set → the runner won't claim it (preflight). Surface that first.
+      if (missingSecrets.length) return `Blocked — credential not set: ${missingSecrets.join(", ")}. Fill it on the case Credentials panel.`;
       const pending = jobs.filter((j) => j.mode === "api" && j.status === "pending");
       if (!pending.length) return "queued";
       const next = pending.reduce((a, b) => (b.sequence < a.sequence ? b : a));
@@ -231,7 +235,7 @@ export function makeCaseRepository(db: PrismaClient) {
         orderBy: { createdAt: "desc" },
         select: {
           id: true, action: true, status: true, subject: true,
-          serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true,
+          serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
         },
@@ -253,12 +257,27 @@ export function makeCaseRepository(db: PrismaClient) {
       const centralOnline = onlineAgents.some((a) => a.clientId === null);
       const clientHasRunner = new Set(onlineAgents.map((a) => a.clientId).filter(Boolean) as string[]);
 
+      // Required-secret preflight per case: which named secrets aren't set (so the runner won't claim).
+      const clientIds = [...new Set(rows.map((r) => r.clientId))];
+      const clientSecretRows = clientIds.length
+        ? await db.secret.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, name: true, externalId: true } })
+        : [];
+      const secretsByClient = new Map<string, Map<string, string | null>>();
+      for (const s of clientSecretRows) {
+        const m = secretsByClient.get(s.clientId) ?? new Map<string, string | null>();
+        m.set(s.name, s.externalId);
+        secretsByClient.set(s.clientId, m);
+      }
+
       return rows.map((r) => {
         // Contextual date: a new hire's start date for onboarding, the offboarding date for offboards
         // (both come date-only from the intake — u_start_date / u_end_date).
         const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown };
         const raw = r.action === "offboard" ? p.dateOfOffboarding : p.startDate;
         const effectiveDate = typeof raw === "string" && raw ? raw : null;
+        // Distinct secret names across the case's api jobs, then which of those aren't set.
+        const neededSecrets = [...new Set(r.jobs.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
+        const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
         return {
           id: r.id, action: r.action, status: r.status, subject: r.subject,
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
@@ -267,7 +286,8 @@ export function makeCaseRepository(db: PrismaClient) {
             r.status,
             r.jobs,
             (k) => nameByKey.get(k) ?? k,
-            centralOnline || clientHasRunner.has(r.clientId)
+            centralOnline || clientHasRunner.has(r.clientId),
+            missingSecrets
           ),
         };
       });

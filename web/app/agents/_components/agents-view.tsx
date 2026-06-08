@@ -15,6 +15,7 @@ export type AgentVM = {
   enabled: boolean;
   lastSeenAt: string | null;
   jobCount: number;
+  pendingJobs: { systemKey: string; subject: string | null; action: string; status: string }[];
   updateRequested: boolean;
   updateRequestedAt: string | null;
   updateDeliveredAt: string | null;
@@ -64,6 +65,7 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   const [install, setInstall] = useState<{ command: string } | null>(null);
   const [clientSlug, setClientSlug] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
+  const [jobsHover, setJobsHover] = useState<string | null>(null);
 
   // While any agent's self-update is in flight, poll so the status advances live (queued ->
   // updating -> updated) without a manual refresh. Stops once nothing is in flight.
@@ -168,7 +170,27 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
                   })()}
                 </td>
                 <td><span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span></td>
-                <td>{a.jobCount}</td>
+                <td
+                  style={{ position: "relative", cursor: a.pendingJobs.length ? "help" : undefined }}
+                  onMouseEnter={() => setJobsHover(a.id)}
+                  onMouseLeave={() => setJobsHover((h) => (h === a.id ? null : h))}
+                >
+                  {a.jobCount}
+                  {a.pendingJobs.length > 0 && (
+                    <span className="note" style={{ marginLeft: 4, color: "#1565c0" }}>({a.pendingJobs.length} active)</span>
+                  )}
+                  {jobsHover === a.id && a.pendingJobs.length > 0 && (
+                    <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, minWidth: 320, maxHeight: 280, overflowY: "auto", background: "#fff", border: "1px solid #ccc", borderRadius: 4, boxShadow: "0 2px 10px rgba(0,0,0,0.18)", padding: 6, fontSize: 12, whiteSpace: "normal", textAlign: "left" }}>
+                      <div className="note" style={{ marginBottom: 4 }}>Pending / in-flight jobs ({a.pendingJobs.length}):</div>
+                      {a.pendingJobs.map((j, i) => (
+                        <div key={i} style={{ padding: "2px 0", borderTop: i ? "1px solid #f0f0f0" : undefined, display: "flex", gap: 6, justifyContent: "space-between" }}>
+                          <span><code style={{ fontSize: 11 }}>{j.systemKey}</code> <span className="muted">· {j.subject ?? "—"}</span></span>
+                          <span style={{ color: j.status === "pending" ? "#8a6d00" : "#1565c0", whiteSpace: "nowrap" }}>{j.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </td>
                 <td>
                   {a.enabled ? "enabled" : <span className="muted">disabled</span>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
