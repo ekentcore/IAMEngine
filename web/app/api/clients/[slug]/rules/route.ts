@@ -40,6 +40,14 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const alwaysGlobalGroups = Object.values((globals ?? {}) as Record<string, { groups?: unknown[] }>)
     .flatMap((f) => (Array.isArray(f?.groups) ? f.groups : []))
     .filter((g): g is string => typeof g === "string");
+  // Summarize the OFFBOARD rules too, so a tampered offboard edit (a deliberately-thin removeGroups
+  // that leaves admin access, or a moveToOu to a privileged OU) is visible/attributable in the audit
+  // even without an operator identity.
+  const offboardSummary = Object.entries((globalsOffboard ?? {}) as Record<string, { groups?: unknown[]; ou?: unknown }>).map(([sys, f]) => ({
+    sys,
+    removeGroups: Array.isArray(f?.groups) ? f.groups.filter((g): g is string => typeof g === "string") : [],
+    moveToOu: typeof f?.ou === "string" ? f.ou : undefined,
+  }));
   await repo.writeAudit({
     actor: "ui",
     action: "client.rules.edit",
@@ -48,6 +56,7 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
       personaCount: Object.keys(personas as object).length,
       globalSystems: Object.keys(globals as object),
       alwaysGlobalGroups,
+      offboard: offboardSummary,
     },
   });
   return NextResponse.json({ ok: true });

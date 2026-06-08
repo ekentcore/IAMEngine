@@ -136,9 +136,10 @@ export function makeRunnerService(db: PrismaClient) {
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.clientId) throw new HttpError(422, "only a client-network agent reports AD objects");
       await assertAgentEnabled(db, agentId);
-      // Cap + sort + dedupe so a hostile/huge directory can't bloat the row; these are display lists.
+      // Cap count AND per-string length, sort + dedupe — a hostile/spoofed runner can't bloat the row
+      // or DoS the editor's substring filter with huge strings (a real DN/group name is well < 512).
       const clean = (xs: unknown): string[] =>
-        [...new Set((Array.isArray(xs) ? xs : []).filter((x): x is string => typeof x === "string" && x.length > 0))].sort().slice(0, 5000);
+        [...new Set((Array.isArray(xs) ? xs : []).filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 512))].sort().slice(0, 5000);
       const adObjects = { ous: clean(ous), groups: clean(groups), discoveredAt: new Date().toISOString() };
       await db.client.update({ where: { id: agent.clientId }, data: { adObjects } });
       await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "client.ad_discovery.result", clientId: agent.clientId, detail: { ous: adObjects.ous.length, groups: adObjects.groups.length } } });
