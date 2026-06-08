@@ -137,6 +137,9 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
         <tbody>
           {agents.map((a) => {
             const ls = lastSeen(a.lastSeenAt);
+            // Up to date = it reports a build hash that matches what the app serves. Only offer
+            // Update when there's actually something to apply (or it's mid-update).
+            const upToDate = !!a.version && /^[0-9a-f]{6,}$/.test(a.version) && a.version === currentBuild;
             return (
               <tr key={a.id}>
                 <td><div>{a.name}</div><code className="muted" style={{ fontSize: 11 }}>{a.id}</code></td>
@@ -172,7 +175,7 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
                 </td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
-                  {a.enabled && (
+                  {a.enabled && !upToDate && (
                     <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>
                       {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
                     </button>
