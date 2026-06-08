@@ -24,6 +24,24 @@ export type AgentVM = {
 // Live self-update status from the lifecycle timestamps: queued (set, not yet polled) -> updating
 // (agent received it, pulling+restarting) -> updated (agent's heartbeat came back after delivery).
 // Returns null once nothing is in flight (or the delivery is >5 min stale).
+// A single copy-paste install for an EXISTING agent: download the runner from the app + run it with
+// this agent's id. Cross-platform (pwsh 7 on Windows/macOS/Linux). Central runners also install the
+// cloud modules. No re-enroll, no manual file fiddling.
+function installCommand(a: AgentVM, origin: string): string {
+  const lines = [
+    `$App="${origin}"; $Dir="$HOME/iam-runner"; $H=@{'ngrok-skip-browser-warning'='true'}`,
+  ];
+  if (a.scope === "central") {
+    lines.push(`Install-Module Microsoft.Graph,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules`);
+  }
+  lines.push(
+    `New-Item -ItemType Directory -Force $Dir | Out-Null`,
+    `(Invoke-RestMethod "$App/api/runner/manifest" -Headers $H).files | ForEach-Object { $d=Join-Path $Dir $_; New-Item -ItemType Directory -Force (Split-Path $d) | Out-Null; [IO.File]::WriteAllText($d,(Invoke-WebRequest "$App/api/runner/file?path=$([uri]::EscapeDataString($_))" -UseBasicParsing -Headers $H).Content) }`,
+    `& "$Dir/Start-IamRunner.ps1" -AppUrl "$App" -AgentId "${a.id}"`,
+  );
+  return lines.join("\n");
+}
+
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
   if (a.updateRequested) return { label: "↻ update queued — waiting for the runner to poll…", color: "#8a6d00" };
   if (a.updateDeliveredAt) {
@@ -66,6 +84,9 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   const [clientSlug, setClientSlug] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
   const [jobsHover, setJobsHover] = useState<string | null>(null);
+  const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
+  const installRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
 
   // While any agent's self-update is in flight, poll so the status advances live (queued ->
   // updating -> updated) without a manual refresh. Stops once nothing is in flight.
@@ -194,7 +215,8 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
                 </td>
                 <td style={{ whiteSpace: "nowrap" }}>
-                  <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                  <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
+                  <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id} style={{ marginLeft: 6 }}>{a.enabled ? "Disable" : "Enable"}</button>
                   {a.enabled && !upToDate && (
                     <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>
                       {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
@@ -318,6 +340,36 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               <button type="submit" className="primary" disabled={busy}>{busy ? "Generating…" : "Generate install command"}</button>
             </div>
           </form>
+        )}
+      </dialog>
+
+      {/* Per-agent install: one copy-paste to download + run THIS runner on a host. */}
+      <dialog ref={installRef} onClose={() => setInstallAgent(null)} style={{ maxWidth: 680 }}>
+        {installAgent && (
+          <div>
+            <div className="row-between">
+              <h2>Install runner: {installAgent.name}</h2>
+              <button onClick={() => setInstallAgent(null)} aria-label="Close">×</button>
+            </div>
+            <p className="note">
+              Run this in a <b>PowerShell 7 (pwsh)</b> session on the host that should run this{" "}
+              {installAgent.scope === "central" ? "central (cloud) runner" : "client-network runner"}. It downloads the
+              runner and starts it with this agent&apos;s id — no re-enroll.
+              {installAgent.scope === "central" && " The cloud modules (Graph, Exchange) install on first run (can take a few minutes)."}
+            </p>
+            <textarea readOnly rows={installAgent.scope === "central" ? 6 : 5} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
+              value={installCommand(installAgent, origin)} onFocus={(e) => e.currentTarget.select()} />
+            <p className="note" style={{ color: "var(--muted)" }}>
+              On macOS, start pwsh first with <code>~/.local/pwsh/pwsh</code> (or your pwsh path), then paste. It runs in
+              the foreground; the runner appears <b>Online</b> here within ~30s. For an unattended Windows service, use{" "}
+              <b>Add runner</b> instead (it registers a Scheduled Task).
+            </p>
+            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+              <button onClick={() => navigator.clipboard?.writeText(installCommand(installAgent, origin))}>Copy command</button>
+              <span className="grow" />
+              <button className="primary" onClick={() => setInstallAgent(null)}>Done</button>
+            </div>
+          </div>
         )}
       </dialog>
     </>
