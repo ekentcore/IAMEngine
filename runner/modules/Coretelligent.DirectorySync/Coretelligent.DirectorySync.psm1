@@ -36,19 +36,49 @@ function Initialize-CtgADSync {
     return $false
 }
 
+# Auto-discover the Entra Connect server from AD — no hard-coding. Azure AD Connect creates a sync
+# account (legacy MSOL_*, newer AAD_*) whose Description records the install host:
+# "...running on computer <NAME> configured to synchronize to tenant...". We read that and return an
+# FQDN. Needs the ActiveDirectory module (present on the DC agent) + a credential to read AD.
+function Find-CtgADSyncHost {
+    [CmdletBinding()]
+    param([pscredential]$Credential)
+    if (-not (Get-Command Get-ADUser -ErrorAction SilentlyContinue)) {
+        try { Import-Module ActiveDirectory -ErrorAction Stop } catch { return $null }
+    }
+    $p = @{ Filter = "samAccountName -like 'MSOL_*' -or samAccountName -like 'AAD_*'"; Properties = 'Description'; ErrorAction = 'Stop' }
+    if ($Credential) { $p.Credential = $Credential }
+    try { $accts = @(Get-ADUser @p) } catch { return $null }
+    foreach ($a in $accts) {
+        if ($a.Description -and $a.Description -match 'running on computer (\S+)') {
+            $name = $matches[1].TrimEnd('.', ',')
+            if ($name -notmatch '\.') {
+                $domP = @{ ErrorAction = 'SilentlyContinue' }; if ($Credential) { $domP.Credential = $Credential }
+                $dom = (Get-ADDomain @domP).DNSRoot
+                if ($dom) { $name = "$name.$dom" }
+            }
+            return $name
+        }
+    }
+    return $null
+}
+
 # Resolve whether to run ADSync locally or remote into the Entra Connect host. Returns
-# @{ Remote=bool; Host=string }. Remote when ADSync isn't installed here AND a host is configured
-# (Model A: one runner on the DC remotes into Core-CCE-AzSync, like the Exchange on-prem session).
+# @{ Remote; Host; Discovered }. Local when ADSync is installed here. Otherwise (Model A: one DC
+# runner) remote into the host — taken from config.host if set, else auto-discovered from AD.
 function Resolve-CtgADSyncTarget {
     param([string]$SyncHost, [pscredential]$Credential)
-    if (Initialize-CtgADSync) { return @{ Remote = $false; Host = $null } }
-    if (-not $SyncHost) {
-        throw "the ADSync module (Azure AD Connect) isn't installed on this host and no directory-sync 'host' is set to remote to. Set it to the Entra Connect server (e.g. Core-CCE-AzSync), or run this step on that server."
+    if (Initialize-CtgADSync) { return @{ Remote = $false; Host = $null; Discovered = $false } }
+    $discovered = $false
+    $h = $SyncHost
+    if (-not $h) { $h = Find-CtgADSyncHost -Credential $Credential; if ($h) { $discovered = $true } }
+    if (-not $h) {
+        throw "the ADSync module (Azure AD Connect) isn't installed on this host, and the Entra Connect server couldn't be auto-discovered from AD. Set the directory-sync 'host' explicitly, or make sure the MSOL_/AAD_ sync account is readable."
     }
     if (-not $Credential) {
-        throw "remoting to the Entra Connect host '$SyncHost' needs a credential — add the ad-dc secret to the directory-sync step so it's brokered (and that account must be in ADSyncOperators on $SyncHost)."
+        throw "remoting to the Entra Connect host '$h' needs a credential — add the ad-dc secret to the directory-sync step so it's brokered (and that account must be allowed to run ADSync on $h)."
     }
-    return @{ Remote = $true; Host = $SyncHost }
+    return @{ Remote = $true; Host = $h; Discovered = $discovered }
 }
 
 function Invoke-CtgDirectorySync {
@@ -68,7 +98,7 @@ function Invoke-CtgDirectorySync {
     $actions = [System.Collections.Generic.List[string]]::new()
     $syncHost = Get-CtgProp $Config 'host'
     $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
-    if ($target.Remote) { $actions.Add("remoting into Entra Connect host: $($target.Host)") }
+    if ($target.Remote) { $actions.Add("remoting into Entra Connect host: $($target.Host)$(if ($target.Discovered) { ' (auto-discovered from AD)' })") }
 
     if ($WhatIfPreference) {
         $actions.Add("dry run — would Start-ADSyncSyncCycle -PolicyType Delta$(if ($target.Remote) { " on $($target.Host)" } else { ' locally' })")

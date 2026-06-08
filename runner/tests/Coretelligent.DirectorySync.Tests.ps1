@@ -6,6 +6,8 @@
 BeforeAll {
     function global:Get-ADSyncScheduler {}
     function global:Start-ADSyncSyncCycle { [CmdletBinding()] param([string]$PolicyType) }
+    function global:Get-ADUser { param($Filter, $Properties, $Credential) }
+    function global:Get-ADDomain { param($Credential) }
     Import-Module "$PSScriptRoot/../modules/Coretelligent.DirectorySync/Coretelligent.DirectorySync.psm1" -Force
 }
 
@@ -39,8 +41,20 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
         ($r.Actions -join ' ') | Should -Match 'remoting into Entra Connect host'
     }
 
-    It 'throws a clear error when ADSync is not local and no host is configured' {
+    It 'auto-discovers the Entra Connect host from the sync account when no host is configured' {
         Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        Mock Get-ADUser -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ Description = 'Account created by Microsoft Entra Connect ... running on computer CORE-CCE-AZSYNC configured to synchronize to tenant coretell.onmicrosoft.com.' } }
+        Mock Get-ADDomain -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ DNSRoot = 'coretelligent.local' } }
+        Mock Invoke-Command -ModuleName Coretelligent.DirectorySync -MockWith { 'started' }
+        $cred = [pscredential]::new('CORP\svc', (ConvertTo-SecureString 'x' -AsPlainText -Force))
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $cred
+        Should -Invoke Invoke-Command -ModuleName Coretelligent.DirectorySync -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'CORE-CCE-AZSYNC.coretelligent.local' }
+        ($r.Actions -join ' ') | Should -Match 'auto-discovered from AD'
+    }
+
+    It 'throws a clear error when ADSync is not local and the host cannot be determined' {
+        Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        Mock Get-ADUser -ModuleName Coretelligent.DirectorySync -MockWith { @() }
         { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) } | Should -Throw -ExpectedMessage '*host*'
     }
 
