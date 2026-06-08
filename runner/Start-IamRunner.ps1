@@ -362,10 +362,14 @@ while ($true) {
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
             }
             catch {
-                # Tag the system and unwrap the inner exception so the run report shows the real
-                # cause, not just the outermost message.
-                $msg = $_.Exception.Message
-                if ($_.Exception.InnerException) { $msg += " <- $($_.Exception.InnerException.Message)" }
+                # Walk the FULL inner-exception chain (deduped) so the real cause surfaces — a generic
+                # outer like "Authentication failed, see inner exception" usually wraps the actual
+                # logon/LDAP error (e.g. "The user name or password is incorrect", "account locked").
+                $chain = [System.Collections.Generic.List[string]]::new()
+                $ex = $_.Exception
+                while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
+                $msg = (($chain | Select-Object -Unique) -join ' <- ')
+                if (-not $msg) { $msg = $_.Exception.GetType().Name }
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
                 $err = Protect-CtgSecretsInText "[$($job.systemKey)] $msg" $creds
                 Write-Warning "job $($job.id) failed: $err"
