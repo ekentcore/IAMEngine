@@ -105,7 +105,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…
                 </span>
               )}
-              {(step.verdict === "warning" || step.verdict === "failed") && step.jobId && (
+              {/* Any finished automated step can be re-run — incl. "verified" (e.g. re-run exchange to
+                  finish regional/calendar deferred when the mailbox hadn't synced yet). */}
+              {["verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
                   disabled={busy === `rerun-${step.seq}`}
