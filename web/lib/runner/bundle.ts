@@ -31,14 +31,18 @@ export function listRunnerFiles(dir = RUNNER_ROOT): string[] {
 // it on heartbeat, so the UI can show "up to date" vs "update available" — a real signal, unlike the
 // hard-coded version. Cached per process (files only change on deploy/restart).
 let buildIdCache: string | null = null;
+const NUL = Buffer.from([0]);
 export function runnerBuildId(): string {
   if (buildIdCache) return buildIdCache;
   const h = createHash("sha256");
+  // Hash RAW BYTES (not decoded text) of each file so the runner's PowerShell computation matches
+  // exactly — text decoding diverges on a UTF-8 BOM or line endings, raw bytes don't. Order = the
+  // ordinal-sorted POSIX relpaths from listRunnerFiles().
   for (const rel of listRunnerFiles()) {
-    h.update(rel);
-    h.update("\0");
-    h.update(readRunnerFile(rel) ?? "");
-    h.update("\0");
+    h.update(rel, "utf8");
+    h.update(NUL);
+    h.update(readFileSync(resolve(RUNNER_ROOT, rel))); // Buffer (raw bytes)
+    h.update(NUL);
   }
   buildIdCache = h.digest("hex").slice(0, 12);
   return buildIdCache;

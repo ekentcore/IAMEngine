@@ -194,8 +194,6 @@ function Update-CtgRunner {
         $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
         [System.IO.File]::WriteAllText($dest, $resp.Content)
     }
-    # Record which build we just pulled so the next heartbeat reports it (UI "up to date" signal).
-    if ($manifest.buildId) { [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot '.build'), [string]$manifest.buildId) }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
     # Relaunch a fresh process on the just-downloaded script, then exit this one. Spawn it via WMI
     # (Win32_Process.Create), NOT Start-Process: the WMI host creates the process, so it BREAKS AWAY
@@ -243,6 +241,35 @@ function Protect-CtgSecretsInText {
     return $Text
 }
 
+function Get-CtgBuildId {
+    # This runner's build id = SHA-256 over its own files (raw bytes, ordinal-sorted POSIX relpaths),
+    # truncated to 12 hex. EXACTLY the hash the app computes over the bundle it serves (lib/runner/
+    # bundle.ts runnerBuildId), so the app can show "up to date" vs "update available" with no version
+    # string to bump and no marker file to keep in sync. 'unknown' if anything goes wrong.
+    $root = $PSScriptRoot
+    $skip = 'tests', 'dist', '.git', 'node_modules'
+    try {
+        $rels = foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File) {
+            $rel = ([System.IO.Path]::GetRelativePath($root, $f.FullName)) -replace '\\', '/'
+            if ($rel.Split('/') | Where-Object { $skip -contains $_ }) { continue }
+            if ($f.Name -like '*.Tests.ps1' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build') { continue }
+            $rel
+        }
+        $arr = @($rels); [Array]::Sort($arr, [System.StringComparer]::Ordinal)
+        $ms = New-Object System.IO.MemoryStream
+        foreach ($rel in $arr) {
+            $rb = [System.Text.Encoding]::UTF8.GetBytes($rel)
+            $cb = [System.IO.File]::ReadAllBytes((Join-Path $root $rel))
+            $ms.Write($rb, 0, $rb.Length); $ms.WriteByte(0); $ms.Write($cb, 0, $cb.Length); $ms.WriteByte(0)
+        }
+        $ms.Position = 0
+        $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($ms)
+        $ms.Dispose()
+        return (-join ($h | ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
+    }
+    catch { return 'unknown' }
+}
+
 function Invoke-CtgAdDiscovery {
     # Operator clicked "Refresh AD objects": read the DC's OUs + groups (read-only; the agent's own
     # domain context can read the directory — no brokered credential needed) and report them back so
@@ -283,10 +310,10 @@ function Get-JobCredential {
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
 
-# The build id we're running = whatever the last pull recorded (written by Update-CtgRunner / the
-# installer). Reported on every heartbeat so the app can show "up to date" vs "update available".
-$buildFile = Join-Path $PSScriptRoot '.build'
-$script:RunnerBuild = if (Test-Path $buildFile) { (Get-Content $buildFile -Raw).Trim() } else { 'unknown' }
+# Build id of the code we're actually running = hash of our own files (matches the app's hash of the
+# bundle it serves). Reported on every heartbeat → accurate even if a past restart half-landed, with
+# no marker file to keep in sync.
+$script:RunnerBuild = Get-CtgBuildId
 
 Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
 while ($true) {
