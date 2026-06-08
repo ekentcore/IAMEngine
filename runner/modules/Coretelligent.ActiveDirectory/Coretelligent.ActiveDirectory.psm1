@@ -235,15 +235,16 @@ function Invoke-CtgADOffboarding {
 
     # 2b. Remove the SPECIFIC groups named by the offboard rules (config.removeGroups), if the user
     # is actually a member. Independent of removeAllGroups (and a no-op once that already stripped all).
-    $removeGroups = @(Get-CtgProp $Config 'removeGroups')
+    $removeGroups = @(Get-CtgProp $Config 'removeGroups' | Where-Object { $_ })
     if ($removeGroups.Count) {
         $memberByLower = @{}; foreach ($g in $memberships) { $memberByLower["$($g.Name)".ToLower()] = $g.Name }
         foreach ($name in $removeGroups) {
-            if (-not $name -or "$name" -ieq 'Domain Users') { continue }
-            if (-not $memberByLower.ContainsKey("$name".ToLower())) { $actions.Add("not a member of $name (skip)"); continue }
-            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $name")) {
-                Remove-ADGroupMember -Identity $name -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
-                $actions.Add("removed from group: $name")
+            if ("$name" -ieq 'Domain Users') { continue }
+            $actual = $memberByLower["$name".ToLower()]   # the real group name (authoritative case)
+            if (-not $actual) { $actions.Add("not a member of $name (skip)"); continue }
+            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $actual")) {
+                Remove-ADGroupMember -Identity $actual -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
+                $actions.Add("removed from group: $actual")
             }
         }
     }
@@ -258,15 +259,16 @@ function Invoke-CtgADOffboarding {
         }
     }
 
-    # 3b. Offboard attributes from the rules (config.offboardAttributes) — e.g. description.
-    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'offboardAttributes') -AdConnection $AdConnection)) {
-        $actions.Add("set $a")
-    }
-
     # 4. Remove manager --------------------------------------------------------
     if ($PSCmdlet.ShouldProcess($sam, "Clear manager")) {
         Set-ADUser -Identity $sam -Clear manager @AdConnection
         $actions.Add("cleared manager")
+    }
+
+    # 4b. Offboard attributes from the rules (config.offboardAttributes) — e.g. description. AFTER the
+    # manager clear so a rule that intentionally re-points 'manager' on offboard isn't undone.
+    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'offboardAttributes') -AdConnection $AdConnection)) {
+        $actions.Add("set $a")
     }
 
     # 5. Disable ----------------------------------------------------------------
@@ -284,9 +286,16 @@ function Invoke-CtgADOffboarding {
     if ($guardrails -contains 'do-not-move-ou') {
         $actions.Add("did not move OU (do-not-move-ou guardrail — moving would delete the synced 365 account)")
     }
-    elseif ($targetOu -and $PSCmdlet.ShouldProcess($sam, "Move to $targetOu")) {
-        Move-ADObject -Identity $existing.DistinguishedName -TargetPath $targetOu @AdConnection
-        $actions.Add("moved to $targetOu")
+    elseif ($targetOu) {
+        # Move-ADObject needs a full DN; a bare/typo'd OU value would throw and abort the offboard.
+        # Skip with a clear note instead (group removal + disable still completed above).
+        if ("$targetOu" -notmatch '(?i)dc=') {
+            $actions.Add("skipped move: '$targetOu' is not a full OU DN (expected OU=…,DC=…)")
+        }
+        elseif ($PSCmdlet.ShouldProcess($sam, "Move to $targetOu")) {
+            Move-ADObject -Identity $existing.DistinguishedName -TargetPath $targetOu @AdConnection
+            $actions.Add("moved to $targetOu")
+        }
     }
 
     [pscustomobject]@{
