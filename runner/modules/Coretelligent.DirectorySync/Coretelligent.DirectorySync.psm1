@@ -17,6 +17,25 @@ function Get-CtgProp {
     return $null
 }
 
+# Make the ADSync cmdlets available. They ship with Azure AD Connect but aren't on the default
+# PSModulePath, and the module is a Windows PowerShell module — under PowerShell 7 it needs the
+# compatibility shim. Try by name, then the WinPS compat load, then the standard install path.
+# Returns $true if Get-ADSyncScheduler is callable afterward. Throws a clear, host-pointed error at
+# the call sites when it can't be loaded (i.e. Azure AD Connect isn't installed on this host).
+function Initialize-CtgADSync {
+    if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
+    $attempts = @(
+        { Import-Module ADSync -ErrorAction Stop },
+        { Import-Module ADSync -UseWindowsPowerShell -ErrorAction Stop },
+        { Import-Module "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1" -ErrorAction Stop }
+    )
+    foreach ($a in $attempts) {
+        try { & $a } catch { }
+        if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
+    }
+    return $false
+}
+
 function Invoke-CtgDirectorySync {
     <#
     .SYNOPSIS
@@ -33,6 +52,10 @@ function Invoke-CtgDirectorySync {
     $actions = [System.Collections.Generic.List[string]]::new()
     $syncHost = Get-CtgProp $Config 'host'
     if ($syncHost) { $actions.Add("AAD Connect host: $syncHost") }
+
+    if (-not (Initialize-CtgADSync)) {
+        throw "the ADSync module (Azure AD Connect) isn't available on this host$(if ($syncHost) { " — Azure AD Connect is expected on '$syncHost'" }). Run the directory-sync step on the Azure AD Connect server (enroll an agent there), or trigger the sync manually with Start-ADSyncSyncCycle -PolicyType Delta."
+    }
 
     $scheduler = Get-ADSyncScheduler
     if ($scheduler.SyncCycleInProgress) {
@@ -60,6 +83,9 @@ function Confirm-CtgDirectorySync {
         [pscustomobject]$Config,
         [ValidateSet('onboard', 'offboard')][string]$Action
     )
+    if (-not (Initialize-CtgADSync)) {
+        return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync module available'; expected = $true; actual = $false; pass = $false }) }
+    }
     $scheduler = Get-ADSyncScheduler
     $inProgress = [bool](Get-CtgProp $scheduler 'SyncCycleInProgress')
     $check = @{ name = 'delta sync settled'; expected = $false; actual = $inProgress; pass = (-not $inProgress) }

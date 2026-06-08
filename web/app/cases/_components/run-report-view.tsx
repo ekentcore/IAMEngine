@@ -50,9 +50,17 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
 
   const toggle = (n: number) => setOpen((s) => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x; });
 
+  // Auto-expand any step that's actively running so its live progress is visible without a click.
+  // Once opened it stays open (we never auto-collapse) so the operator keeps the context.
+  useEffect(() => {
+    const running = report.steps.filter((s) => s.currentPhase).map((s) => s.seq);
+    if (running.length) setOpen((prev) => { const x = new Set(prev); running.forEach((n) => x.add(n)); return x; });
+  }, [report]);
+
   async function rerun(stepSeq: number, jobId: string | undefined) {
     if (!jobId) return;
     setBusy(`rerun-${stepSeq}`);
+    setOpen((s) => new Set(s).add(stepSeq)); // expand immediately so the operator sees it start
     try {
       await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
       await refresh();
