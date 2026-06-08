@@ -206,14 +206,28 @@ function Invoke-AppApi {
     Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
 }
 
+function global:Send-CtgProgress {
+    # Post one progress line for the current job. GLOBAL on purpose: the Coretelligent.* modules run in
+    # their own scope and can't see the runner's script functions — only global ones — so a long module
+    # operation (e.g. the Exchange mailbox sync-wait) can call this to emit a "still trying" heartbeat.
+    # Reads per-job globals; best-effort (a failed post never breaks the job).
+    param([string]$Message)
+    $jid = $global:CtgProgressJobId
+    if (-not $jid) { return }
+    $h = @{ 'ngrok-skip-browser-warning' = 'true' }
+    if ($global:CtgProgressToken) { $h['Authorization'] = "Bearer $($global:CtgProgressToken)" }
+    try { Invoke-RestMethod -Method POST -Uri "$($global:CtgProgressUrl)/api/jobs/$jid/progress" -ContentType 'application/json' -Headers $h -Body (@{ agentId = $global:CtgProgressAgent; phase = $Message } | ConvertTo-Json) | Out-Null } catch { }
+}
+
 function Set-CtgPhase {
     # Record what we're doing right now: keep it in $script:Phase (so a thrown error can say WHICH
     # phase failed instead of a bare "Unauthorized"), and beacon it to the app so the run report can
-    # show live progress. The beacon is best-effort — a failed post must never break the job.
+    # show live progress. Routes through the global poster so module + runner share one path.
     param([string]$JobId, [string]$Phase)
     $script:Phase = $Phase
+    if ($JobId) { $global:CtgProgressJobId = $JobId }
     Write-Host "  · $Phase" -ForegroundColor DarkGray
-    if ($JobId) { try { Invoke-AppApi POST "/api/jobs/$JobId/progress" @{ agentId = $AgentId; phase = $Phase } | Out-Null } catch { } }
+    Send-CtgProgress $Phase
 }
 
 function Update-CtgRunner {
@@ -368,6 +382,10 @@ function Get-JobCredential {
 $script:RunnerBuild = Get-CtgBuildId
 
 Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
+# Per-process progress globals, read by Send-CtgProgress (callable from the Coretelligent.* modules).
+$global:CtgProgressUrl   = $AppUrl
+$global:CtgProgressToken = $ApiToken
+$global:CtgProgressAgent = $AgentId
 while ($true) {
     try {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild }
@@ -379,6 +397,7 @@ while ($true) {
         foreach ($job in @($jobs)) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
             $script:Phase = 'starting'  # what we're doing now — the catch reports WHICH phase failed
+            $global:CtgProgressJobId = $job.id  # so module-level Send-CtgProgress targets this job
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
@@ -440,6 +459,7 @@ while ($true) {
                 Write-Warning "job $($job.id) failed: $err"
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
+            finally { $global:CtgProgressJobId = $null }  # don't let a stray post target a finished job
         }
     }
     catch {

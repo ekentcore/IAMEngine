@@ -2,6 +2,7 @@
 // report). Resets the job to pending and clears its prior outcome; the existing claim loop
 // picks it up. The case is nudged off a terminal status so claim doesn't exclude it.
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   await db.job.update({
     where: { id: job.id },
-    data: { status: "pending", assignedAgentId: null, result: undefined, validation: undefined, evidence: undefined, error: null, startedAt: null, finishedAt: null },
+    data: { status: "pending", assignedAgentId: null, result: undefined, validation: undefined, evidence: undefined, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null },
   });
   // Reopen the case so the claim loop (which skips failed/completed cases) can dispatch it.
   await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: "queued" } });

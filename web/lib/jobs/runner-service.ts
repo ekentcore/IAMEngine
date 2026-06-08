@@ -1,7 +1,8 @@
 // Runner coordination: enrollment, heartbeat, atomic claim, credential broker, result +
 // case advance. Factory-style over PrismaClient, mirroring lib/clients/repository.ts.
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
-import type { AgentScope, Prisma, PrismaClient } from "@prisma/client";
+import type { AgentScope, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
@@ -233,10 +234,12 @@ export function makeRunnerService(db: PrismaClient) {
       }
       if (eligible.length === 0) return [];
 
-      // atomic: only rows still pending flip; a racing agent's updateMany skips already-claimed rows
+      // atomic: only rows still pending flip; a racing agent's updateMany skips already-claimed rows.
+      // Clear progress here so every (re-)run starts with a fresh phase trail, not stale phases from a
+      // prior attempt — DbNull writes SQL NULL.
       await db.job.updateMany({
         where: { id: { in: eligible }, status: "pending" },
-        data: { status: "dispatched", assignedAgentId: agent.id, startedAt: new Date() },
+        data: { status: "dispatched", assignedAgentId: agent.id, startedAt: new Date(), progress: Prisma.DbNull },
       });
       const claimed = await db.job.findMany({
         where: { id: { in: eligible }, assignedAgentId: agent.id, status: "dispatched" },

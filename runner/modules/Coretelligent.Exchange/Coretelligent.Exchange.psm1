@@ -166,10 +166,18 @@ function Wait-CtgMailbox {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Identity, [int]$TimeoutSeconds = 600, [int]$IntervalSeconds = 30)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $start = Get-Date
     while ($true) {
         $mbx = Get-Mailbox -Identity $Identity -ErrorAction SilentlyContinue
         if ($mbx) { return [pscustomobject]@{ Status = 'ok'; Found = $true; Identity = $Identity } }
         if ((Get-Date) -ge $deadline) { return [pscustomobject]@{ Status = 'timeout'; Found = $false; Identity = $Identity } }
+        # Heartbeat so the run report shows the wait is alive, not hung (Send-CtgProgress is provided
+        # by the runner; absent under Pester, so guard it). Reports elapsed / remaining each poll.
+        if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) {
+            $elapsed = [int]((Get-Date) - $start).TotalSeconds
+            $remain = [int]($deadline - (Get-Date)).TotalSeconds
+            Send-CtgProgress "waiting for mailbox to sync into Exchange Online — ${elapsed}s elapsed, retrying (timeout in ${remain}s)"
+        }
         Start-Sleep -Seconds $IntervalSeconds
     }
 }
