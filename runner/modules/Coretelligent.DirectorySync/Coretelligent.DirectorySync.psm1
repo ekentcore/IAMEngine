@@ -36,38 +36,62 @@ function Initialize-CtgADSync {
     return $false
 }
 
+# Resolve whether to run ADSync locally or remote into the Entra Connect host. Returns
+# @{ Remote=bool; Host=string }. Remote when ADSync isn't installed here AND a host is configured
+# (Model A: one runner on the DC remotes into Core-CCE-AzSync, like the Exchange on-prem session).
+function Resolve-CtgADSyncTarget {
+    param([string]$SyncHost, [pscredential]$Credential)
+    if (Initialize-CtgADSync) { return @{ Remote = $false; Host = $null } }
+    if (-not $SyncHost) {
+        throw "the ADSync module (Azure AD Connect) isn't installed on this host and no directory-sync 'host' is set to remote to. Set it to the Entra Connect server (e.g. Core-CCE-AzSync), or run this step on that server."
+    }
+    if (-not $Credential) {
+        throw "remoting to the Entra Connect host '$SyncHost' needs a credential — add the ad-dc secret to the directory-sync step so it's brokered (and that account must be in ADSyncOperators on $SyncHost)."
+    }
+    return @{ Remote = $true; Host = $SyncHost }
+}
+
 function Invoke-CtgDirectorySync {
     <#
     .SYNOPSIS
-        Start an Azure AD Connect delta sync, unless one is already running.
+        Start an Azure AD Connect delta sync, unless one is already running. Runs where the ADSync
+        module lives: locally if installed, else remoted (WinRM) into the configured Entra Connect host.
     .PARAMETER Config
-        Optional: { host } — the AAD Connect host (e.g. "61c-dc01"). When the agent isn't on
-        that host, the runner remotes this module to it; the host is informational here.
-    .OUTPUTS
-        Result object with Status and an Actions log.
+        { host } — the Entra Connect server (e.g. "Core-CCE-AzSync"). Used to remote when ADSync
+        isn't on this agent's host.
+    .PARAMETER Credential
+        Domain credential (ad-dc) used to remote into the host; must be in ADSyncOperators there.
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param([pscustomobject]$Config)
+    param([pscustomobject]$Config, [pscredential]$Credential)
 
     $actions = [System.Collections.Generic.List[string]]::new()
     $syncHost = Get-CtgProp $Config 'host'
-    if ($syncHost) { $actions.Add("AAD Connect host: $syncHost") }
+    $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
+    if ($target.Remote) { $actions.Add("remoting into Entra Connect host: $($target.Host)") }
 
-    if (-not (Initialize-CtgADSync)) {
-        throw "the ADSync module (Azure AD Connect) isn't available on this host$(if ($syncHost) { " — Azure AD Connect is expected on '$syncHost'" }). Run the directory-sync step on the Azure AD Connect server (enroll an agent there), or trigger the sync manually with Start-ADSyncSyncCycle -PolicyType Delta."
-    }
-
-    $scheduler = Get-ADSyncScheduler
-    if ($scheduler.SyncCycleInProgress) {
-        $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
+    if ($WhatIfPreference) {
+        $actions.Add("dry run — would Start-ADSyncSyncCycle -PolicyType Delta$(if ($target.Remote) { " on $($target.Host)" } else { ' locally' })")
         return [pscustomobject]@{ System = 'directory-sync'; Status = 'ok'; Actions = $actions.ToArray() }
     }
 
-    if ($PSCmdlet.ShouldProcess('Azure AD Connect', 'Start delta sync')) {
-        Start-ADSyncSyncCycle -PolicyType Delta | Out-Null
+    # Self-contained for remoting (the target imports ADSync itself); local path calls the cmdlets
+    # directly so unit-test mocks of Get-ADSyncScheduler/Start-ADSyncSyncCycle still apply.
+    $remoteScript = {
+        Import-Module ADSync -ErrorAction Stop
+        if ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
+        else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
+    }
+    $outcome =
+        if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
+        elseif ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
+        else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
+
+    if ($outcome -eq 'in-progress') {
+        $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
+    } else {
         $actions.Add("started delta sync (Start-ADSyncSyncCycle -PolicyType Delta)")
     }
-
     [pscustomobject]@{ System = 'directory-sync'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
@@ -75,19 +99,25 @@ function Confirm-CtgDirectorySync {
     <#
     .SYNOPSIS
         Post-action read-back for Azure AD Connect: the delta sync has settled (no cycle in
-        progress). No mutations; returns { ok; checks[] }. Same check for both lanes.
+        progress). No mutations; returns { ok; checks[] }. Runs local or remote like the action.
     #>
     [CmdletBinding()]
     param(
         [pscustomobject]$User,
         [pscustomobject]$Config,
-        [ValidateSet('onboard', 'offboard')][string]$Action
+        [ValidateSet('onboard', 'offboard')][string]$Action,
+        [pscredential]$Credential
     )
-    if (-not (Initialize-CtgADSync)) {
-        return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync module available'; expected = $true; actual = $false; pass = $false }) }
+    $syncHost = Get-CtgProp $Config 'host'
+    $remoteScript = { Import-Module ADSync -ErrorAction Stop; [bool]((Get-ADSyncScheduler).SyncCycleInProgress) }
+    try {
+        $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
+        $inProgress =
+            if ($target.Remote) { [bool](Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop) }
+            else { [bool]((Get-ADSyncScheduler).SyncCycleInProgress) }
+    } catch {
+        return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
     }
-    $scheduler = Get-ADSyncScheduler
-    $inProgress = [bool](Get-CtgProp $scheduler 'SyncCycleInProgress')
     $check = @{ name = 'delta sync settled'; expected = $false; actual = $inProgress; pass = (-not $inProgress) }
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }

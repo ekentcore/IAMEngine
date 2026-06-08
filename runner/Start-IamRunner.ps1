@@ -90,9 +90,11 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }
     }
     'directory-sync' = @{
-        Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
-        Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config }
-        Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action }
+        # ad-dc credential lets the runner remote into the Entra Connect host (config.host) when the
+        # ADSync module isn't on this agent's box (Model A: one DC runner remotes to Core-CCE-AzSync).
+        Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential ($creds['ad-dc']).Credential }
+        Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential ($creds['ad-dc']).Credential }
+        Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action -Credential ($creds['ad-dc']).Credential }
     }
     'exchange' = @{
         # EXO app-only needs certificate auth (m365-admin carries the cert thumbprint). A hybrid

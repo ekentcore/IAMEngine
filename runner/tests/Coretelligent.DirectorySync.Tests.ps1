@@ -28,6 +28,28 @@ Describe 'Invoke-CtgDirectorySync' {
     }
 }
 
+Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
+    It 'remotes into the configured host when ADSync is not installed locally' {
+        Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        Mock Invoke-Command -ModuleName Coretelligent.DirectorySync -MockWith { 'started' }
+        $cred = [pscredential]::new('CORP\svc', (ConvertTo-SecureString 'x' -AsPlainText -Force))
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync' }) -Credential $cred
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-Command -ModuleName Coretelligent.DirectorySync -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'Core-CCE-AzSync' }
+        ($r.Actions -join ' ') | Should -Match 'remoting into Entra Connect host'
+    }
+
+    It 'throws a clear error when ADSync is not local and no host is configured' {
+        Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) } | Should -Throw -ExpectedMessage '*host*'
+    }
+
+    It 'throws when remoting is needed but no credential was brokered' {
+        Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        { Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync' }) } | Should -Throw -ExpectedMessage '*credential*'
+    }
+}
+
 Describe 'Confirm-CtgDirectorySync' {
     It 'passes when no sync cycle is in progress (settled)' {
         Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
