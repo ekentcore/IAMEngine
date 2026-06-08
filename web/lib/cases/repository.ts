@@ -275,8 +275,14 @@ export function makeCaseRepository(db: PrismaClient) {
         const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown };
         const raw = r.action === "offboard" ? p.dateOfOffboarding : p.startDate;
         const effectiveDate = typeof raw === "string" && raw ? raw : null;
-        // Distinct secret names across the case's api jobs, then which of those aren't set.
-        const neededSecrets = [...new Set(r.jobs.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
+        // Match the claim preflight exactly: only the jobs the runner could claim NOW gate the case
+        // — pending api jobs whose earlier api jobs are all done. (A later job's unset secret, or a
+        // manual job's secret, must NOT show the case as blocked while an earlier step can still run.)
+        const apiJobs = r.jobs.filter((j) => j.mode === "api");
+        const claimableNow = apiJobs.filter(
+          (j) => j.status === "pending" && apiJobs.every((o) => o.sequence >= j.sequence || o.status === "succeeded" || o.status === "skipped")
+        );
+        const neededSecrets = [...new Set(claimableNow.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
         const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
         return {
           id: r.id, action: r.action, status: r.status, subject: r.subject,

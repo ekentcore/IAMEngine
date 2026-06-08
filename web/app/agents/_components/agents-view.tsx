@@ -175,13 +175,11 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
                   onMouseEnter={() => setJobsHover(a.id)}
                   onMouseLeave={() => setJobsHover((h) => (h === a.id ? null : h))}
                 >
-                  {a.jobCount}
-                  {a.pendingJobs.length > 0 && (
-                    <span className="note" style={{ marginLeft: 4, color: "#1565c0" }}>({a.pendingJobs.length} active)</span>
-                  )}
+                  <span style={{ textDecoration: a.pendingJobs.length ? "underline dotted" : undefined, textUnderlineOffset: 3 }}>{a.jobCount}</span>
+                  {a.pendingJobs.length > 0 && <span className="muted" style={{ marginLeft: 4, fontSize: 11 }}>· {a.pendingJobs.length} queued/active</span>}
                   {jobsHover === a.id && a.pendingJobs.length > 0 && (
                     <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, minWidth: 320, maxHeight: 280, overflowY: "auto", background: "#fff", border: "1px solid #ccc", borderRadius: 4, boxShadow: "0 2px 10px rgba(0,0,0,0.18)", padding: 6, fontSize: 12, whiteSpace: "normal", textAlign: "left" }}>
-                      <div className="note" style={{ marginBottom: 4 }}>Pending / in-flight jobs ({a.pendingJobs.length}):</div>
+                      <div className="note" style={{ marginBottom: 4 }}>{a.jobCount} total assigned · {a.pendingJobs.length} queued/in-flight for this runner:</div>
                       {a.pendingJobs.map((j, i) => (
                         <div key={i} style={{ padding: "2px 0", borderTop: i ? "1px solid #f0f0f0" : undefined, display: "flex", gap: 6, justifyContent: "space-between" }}>
                           <span><code style={{ fontSize: 11 }}>{j.systemKey}</code> <span className="muted">· {j.subject ?? "—"}</span></span>

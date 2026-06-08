@@ -51,7 +51,8 @@ export default async function AgentsPage() {
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
-    pendingJobs: jobsForAgent(a.id, a.clientId),
+    // Only an enabled agent can claim — don't imply pending work on a disabled/down one.
+    pendingJobs: a.enabled ? jobsForAgent(a.id, a.clientId) : [],
     updateRequested: a.updateRequested,
     updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
     updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
