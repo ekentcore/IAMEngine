@@ -197,16 +197,31 @@ function Update-CtgRunner {
     # Record which build we just pulled so the next heartbeat reports it (UI "up to date" signal).
     if ($manifest.buildId) { [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot '.build'), [string]$manifest.buildId) }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
-    # Relaunch a fresh process running the just-downloaded script, then exit this one. Detached
-    # (Start-Process) so it survives this process exiting; a SYSTEM Scheduled Task launches it the
-    # same way on next boot, so this stays consistent across foreground + task hosting.
+    # Relaunch a fresh process on the just-downloaded script, then exit this one. Spawn it via WMI
+    # (Win32_Process.Create), NOT Start-Process: the WMI host creates the process, so it BREAKS AWAY
+    # from this process's job object and survives our exit. Under a SYSTEM Scheduled Task a
+    # Start-Process child lives in the task's job object and is KILLED when this process exits — which
+    # silently left the runner on the OLD code (the pull succeeded but the restart never landed).
     $pwshPath = (Get-Process -Id $PID).Path
+    if (-not $pwshPath) { $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
     $self = Join-Path $PSScriptRoot 'Start-IamRunner.ps1'
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', $PollSeconds, '-BatchSize', $BatchSize)
-    # Forward the bearer if it was passed as an explicit arg (env is inherited automatically, but an
-    # explicit -ApiToken would otherwise be lost and the restarted runner would 401 on every call).
-    if ($ApiToken) { $argList += @('-ApiToken', $ApiToken) }
-    Start-Process -FilePath $pwshPath -ArgumentList $argList
+    $qq = { param([string]$s) '"' + ($s -replace '"', '\"') + '"' }  # quote args (paths may have spaces)
+    $cmd = (& $qq $pwshPath) + ' -NoProfile -ExecutionPolicy Bypass -File ' + (& $qq $self) +
+           ' -AppUrl ' + (& $qq $AppUrl) + ' -AgentId ' + (& $qq $AgentId) +
+           ' -PollSeconds ' + $PollSeconds + ' -BatchSize ' + $BatchSize
+    # Forward an explicit -ApiToken (env is inherited; an explicit arg would otherwise be lost -> 401).
+    if ($ApiToken) { $cmd += ' -ApiToken ' + (& $qq $ApiToken) }
+    try {
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
+        if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($r.ReturnValue)" }
+        Write-Host "self-update: relaunched on new code (pid $($r.ProcessId))" -ForegroundColor Green
+    }
+    catch {
+        # Fallback for hosts where WMI is unavailable (rare). Start-Process at least works in the
+        # foreground/manual case; under a job-object'd task it may not survive (see above).
+        Write-Warning "self-update relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
+        Start-Process -FilePath $pwshPath -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize) | Out-Null
+    }
     exit 0
 }
 
