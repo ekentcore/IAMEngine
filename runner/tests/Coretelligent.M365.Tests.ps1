@@ -81,6 +81,18 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly
     }
 
+    It 'leaves the user unlicensed with a Procurement warning when a license has no available seats' {
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }   # no licenses yet
+        Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { throw "Subscription with SKU cbdc14ab does not have any available licenses." }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US' }
+        $config = [pscustomobject]@{ licenses = @('Microsoft 365 E3'); groups = @() }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'   # warning, not a failure
+        ($r.Actions -join ' ') | Should -Match "no available 'Microsoft 365 E3' license seats"
+        ($r.Actions -join ' ') | Should -Match 'Procurement Case'
+    }
+
     It 'omits a blank / unresolved job title on create (Graph rejects empty values)' {
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone='{token}'; UsageLocation='US' }
         $config = [pscustomobject]@{ licenses = @(); groups = @() }

@@ -388,10 +388,19 @@ function Invoke-CtgM365Onboarding {
         }
         if ($PSCmdlet.ShouldProcess($upn, "Assign license $name")) {
             Write-CtgM365Step "assigning license: $name"
-            Set-MgUserLicense -UserId $userId `
-                -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() | Out-Null
-            $actions.Add("assigned license: $name")
-            Write-CtgM365Step "✓ assigned license: $name"
+            try {
+                Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() -ErrorAction Stop | Out-Null
+                $actions.Add("assigned license: $name")
+                Write-CtgM365Step "✓ assigned license: $name"
+            } catch {
+                # No seats left in the tenant: don't fail the onboard — the account is already created,
+                # it just needs a license ordered. Surface a clear procurement action; the step is a
+                # warning, not a failure.
+                if ($_.Exception.Message -match 'does not have any available licenses|no available licenses|not have any available') {
+                    $actions.Add("WARN no available '$name' license seats — user CREATED UNLICENSED. Open a Procurement Case to order a $name license, then re-run this step to assign it.")
+                    Write-CtgM365Step "⚠ $name — no seats available; user left unlicensed. Order a license (Procurement Case)."
+                } else { throw }
+            }
         }
     }
 
