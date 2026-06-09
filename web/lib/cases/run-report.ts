@@ -33,6 +33,7 @@ export type RunReport = {
   client: { name: string; slug: string };
   caseStatus: string;
   verifiedAt: string | null; // when the auto-verify sweep completed (null until verified)
+  verifying: boolean; // a validate-only sweep is in flight right now (persistent across step gaps)
   user: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -181,6 +182,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     client: input.client,
     caseStatus: input.caseStatus,
     verifiedAt: input.verifiedAt ?? null,
+    // A sweep is in flight when a validate-only job is still pending/dispatched/running.
+    verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),
     user: userHeader(input.action, input.payload),
     startedAt: times.length ? new Date(Math.min(...times.map((d) => d.getTime()))).toISOString() : null,
     finishedAt: ends.length ? new Date(Math.max(...ends.map((d) => d.getTime()))).toISOString() : null,

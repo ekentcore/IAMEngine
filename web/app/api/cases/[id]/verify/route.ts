@@ -32,8 +32,9 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       });
     })
   );
-  // Reopen the case so the claim loop (which skips failed/completed cases) dispatches the verify jobs.
-  await db.caseRequest.update({ where: { id: c.id }, data: { status: "queued" } });
+  // Reopen the case so the claim loop dispatches the verify jobs; clear verifiedAt so the UI shows
+  // "verifying" (not a stale "Account verified" from a prior sweep) until this one finishes.
+  await db.caseRequest.update({ where: { id: c.id }, data: { status: "queued", verifiedAt: null } });
   // Preserve what we cleared (prior errors on failed steps) so a verify pass doesn't erase the
   // forensic trail of why a step originally failed.
   const cleared = targets.filter((j) => j.status === "failed").map((j) => ({ jobId: j.id, error: j.error }));

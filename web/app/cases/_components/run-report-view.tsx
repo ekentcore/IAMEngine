@@ -106,8 +106,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
 
   const s = report.summary;
   // Verification banner: the case auto-runs a read-only validation sweep once the automated work
-  // finishes (and the operator can re-run it). Show whether the account has been verified.
-  const verifying = active && !report.verifiedAt;
+  // finishes (and the operator can re-run it). `verifying` is server-driven (a validate-only job is
+  // in flight) so the banner stays put across the gaps between steps instead of flickering.
+  const verifying = report.verifying;
   // The step executing right now (for a prominent "what's happening" banner) — easier to follow than
   // scanning the per-step trails.
   const running = report.steps.find((st) => st.currentPhase);
@@ -124,14 +125,15 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           <span><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
         </div>
       )}
-      {(report.verifiedAt || verifying) && (
-        <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: report.verifiedAt ? "#bbf7d0" : "#bfdbfe", background: report.verifiedAt ? "#f0fdf4" : "#eff6ff", color: report.verifiedAt ? "#15803d" : "#1d4ed8" }}>
+      {(verifying || report.verifiedAt) && (
+        <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: verifying ? "#bfdbfe" : "#bbf7d0", background: verifying ? "#eff6ff" : "#f0fdf4", color: verifying ? "#1d4ed8" : "#15803d" }}>
           <div>
-            {report.verifiedAt
-              ? <>🔎 Account verified {new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>
-              : <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>}
+            {verifying
+              ? <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>
+              : <>🔎 Account verified {report.verifiedAt && new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>}
           </div>
-          {mirrorCheck && (
+          {/* Mirror coverage only makes sense once the sweep has produced fresh validation. */}
+          {!verifying && mirrorCheck && (
             <div style={{ marginTop: 4, fontWeight: 600, color: mirrorCheck.pass ? "#15803d" : "#b45309" }}>
               👥 {mirrorCheck.pass ? "✓" : "⚠"} {mirrorCheck.name}
             </div>
