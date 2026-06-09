@@ -39,7 +39,11 @@ export function buildCaseStatusHint(
     }
     case "running": {
       const active = jobs.filter((j) => j.status === "dispatched" || j.status === "running");
-      return active.length ? `Running: ${list(active)}` : "running";
+      if (active.length) return `Running: ${list(active)}`;
+      // Nothing is actually executing. If a required credential is missing the runner won't claim
+      // the pending work (preflight) — it's paused, not running.
+      if (missingSecrets.length) return `Paused — credentials needed: ${missingSecrets.join(", ")}. Fill them on the case Credentials panel.`;
+      return "running";
     }
     case "planning":
       return "being planned…";
@@ -284,8 +288,12 @@ export function makeCaseRepository(db: PrismaClient) {
         );
         const neededSecrets = [...new Set(claimableNow.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
         const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
+        // "Paused": the case looks running/queued but nothing is actually executing and a required
+        // credential is missing, so the runner won't claim it — surface that as paused, not running.
+        const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
+        const paused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
         return {
-          id: r.id, action: r.action, status: r.status, subject: r.subject,
+          id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: buildCaseStatusHint(

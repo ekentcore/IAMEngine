@@ -8,6 +8,7 @@ export type CaseRowVM = {
   id: string;
   action: string;
   status: string;
+  paused?: boolean; // running/queued but blocked on missing credentials — shown as "paused"
   subject: string | null;
   serviceNowCaseNumber: string | null;
   clientName: string;
@@ -186,13 +187,13 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
                   className="badge"
                   title={c.statusHint || undefined}
                   style={{
-                    color: STATUS_COLOR[c.status],
+                    color: c.paused ? "#8a6d00" : STATUS_COLOR[c.status],
                     cursor: c.statusHint ? "help" : undefined,
                     textDecoration: c.statusHint ? "underline dotted" : undefined,
                     textUnderlineOffset: 3,
                   }}
                 >
-                  {STATUS_LABEL[c.status] ?? c.status}
+                  {c.paused ? "paused — needs creds" : (STATUS_LABEL[c.status] ?? c.status)}
                 </span>
               </td>
               <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ?? "—"}</td>

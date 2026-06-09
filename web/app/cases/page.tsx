@@ -28,6 +28,7 @@ export default async function CasesPage() {
     id: c.id,
     action: c.action,
     status: c.status,
+    paused: c.paused,
     subject: c.subject,
     serviceNowCaseNumber: c.serviceNowCaseNumber,
     clientName: c.clientName,

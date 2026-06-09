@@ -14,6 +14,8 @@ export type CaseListItem = {
   id: string;
   action: Action;
   status: CaseStatus;
+  // Running/queued but blocked on a missing required credential — shown as "paused" in the list.
+  paused: boolean;
   subject: string | null;
   serviceNowCaseNumber: string | null;
   createdAt: Date;
