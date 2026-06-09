@@ -58,7 +58,7 @@ function simulateCase(systems: ClientSystem[], action: Action, payload: Record<s
       const runnerJob: RunnerJob = {
         id: j.id, action, systemKey: j.systemKey, mode: j.mode, client,
         config: (j.request as { config?: unknown }).config ?? null, secretNames: [],
-        payload, requiresApproval: j.requiresApproval, captureEvidence: false, dryRun: false,
+        payload, requiresApproval: j.requiresApproval, captureEvidence: false, dryRun: false, validateOnly: false,
       };
       const r = simulateJob(runnerJob);
       j.status = r.status; j.result = r.result ?? null; j.validation = r.validation ?? null; j.error = r.error ?? null;

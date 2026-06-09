@@ -487,6 +487,21 @@ while ($true) {
                     }
                 }
 
+                # Verify pass: run ONLY the read-only validator (Confirm-Ctg*), no executor/mutation.
+                if ([bool]$job.validateOnly) {
+                    Set-CtgPhase $job.id "verifying $($job.systemKey)"
+                    $vfn = $handler.Validate
+                    $vbody = @{ agentId = $AgentId; status = 'succeeded' }
+                    if ($vfn) {
+                        $validation = & $vfn $job $creds
+                        if ($null -ne $validation) { $vbody.validation = $validation }
+                    } else {
+                        $vbody.result = @{ System = $job.systemKey; Status = 'ok'; Actions = @('no validator for this system — nothing to verify') }
+                    }
+                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" $vbody
+                    continue
+                }
+
                 $dryRun = [bool]$job.dryRun
                 Set-CtgPhase $job.id "$($job.action) $($job.systemKey)$(if ($dryRun) { ' (dry run)' })"
                 # Self-heal once: if execution fails because a cmdlet's module isn't installed, find +

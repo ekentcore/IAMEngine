@@ -80,6 +80,16 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  async function verifyAll() {
+    setBusy("verify");
+    try {
+      await fetch(`/api/cases/${caseId}/verify`, { method: "POST" });
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function postWorkNote() {
     setBusy("worknote");
     setWriteMsg(null);
@@ -106,6 +116,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           {live && <span className="muted"> · refreshing…</span>}
         </p>
         <div className="toolbar">
+          <button onClick={verifyAll} disabled={busy === "verify"} title="Re-run every step's read-only validation to confirm the whole account is correct — no changes are made">
+            {busy === "verify" ? "verifying…" : "✓ Verify everything"}
+          </button>
           <button onClick={refresh}>Refresh</button>
           <a href={`/api/cases/${caseId}/report?format=md`} download className="note">download .md →</a>
         </div>

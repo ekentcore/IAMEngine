@@ -11,7 +11,7 @@ import { purgeCutoff } from "./agent-trash";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 
-type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean };
+type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
 
@@ -266,6 +266,9 @@ export function makeRunnerService(db: PrismaClient) {
           // dry-run case LIVE (fail-safe), a job claimed mid-toggle uses the committed case mode (no
           // TOCTOU), and an approve that rewrites request can't revert the mode. -WhatIf when true.
           dryRun: Boolean(j.case.dryRun),
+          // Verify pass: run only the read-only validator (Confirm-Ctg*), no mutations. Per-job stamp
+          // set by the case-level "Verify" action.
+          validateOnly: Boolean(r.validateOnly),
         };
       });
     },

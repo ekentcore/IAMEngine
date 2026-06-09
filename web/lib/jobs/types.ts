@@ -14,6 +14,7 @@ export type RunnerJob = {
   requiresApproval: boolean;
   captureEvidence: boolean;
   dryRun: boolean; // when true the runner runs -WhatIf (no mutations) + validation-only read-backs
+  validateOnly: boolean; // "Verify" pass — run ONLY the Confirm-Ctg* validator, no executor
 };
 
 export type ResultInput = {
