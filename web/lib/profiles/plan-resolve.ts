@@ -10,8 +10,10 @@ import type { PlannedJob } from "../orchestrator";
 type PlanClient = { personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown };
 
 // Directory systems whose groups can be mirrored from a reference user (the runner resolves the
-// reference user's live memberOf at execution time and unions it in).
-const DIRECTORY_SYSTEMS = new Set(["active-directory", "entra"]);
+// reference user's live memberOf at execution time and unions it in). AD/entra mirror on-prem +
+// synced groups; m365 mirrors the reference user's CLOUD-only Entra groups (cloud licensing groups,
+// distribution/M365 groups) that AD sync never covers.
+const DIRECTORY_SYSTEMS = new Set(["active-directory", "entra", "m365"]);
 
 // OFFBOARD resolution: resolve globalsOffboard + persona.offboardSystems and map the onboard-shaped
 // keys to offboard semantics on the job config (groups -> removeGroups, ou -> moveToOu, attributes ->

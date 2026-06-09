@@ -18,7 +18,7 @@ BeforeAll {
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
     function global:Update-MgUser {}
-    function global:Get-MgUserMemberOf {}
+    function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef {}
     function global:Get-MgUserDefaultDrive {}
 
@@ -160,6 +160,34 @@ Describe 'Confirm-CtgM365' {
         $config = [pscustomobject]@{ removeAllGroups = $true }
         $r = Confirm-CtgM365 -User $user -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Invoke-CtgM365CloudMirror' {
+    It 'mirrors cloud-only groups, skipping on-prem-synced and dynamic groups' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'ref-1'; UserPrincipalName = 'jsmith@x.com' } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -ParameterFilter { $UserId -eq 'ref-1' } -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'g-cloud';  AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'APP - M365 E3'; onPremisesSyncEnabled = $false } }
+                [pscustomobject]@{ Id = 'g-onprem'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'RDS-Users'; onPremisesSyncEnabled = $true } }
+                [pscustomobject]@{ Id = 'g-dyn';    AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Dyn'; onPremisesSyncEnabled = $false; groupTypes = @('DynamicMembership') } }
+                [pscustomobject]@{ Id = 'g-role';   AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.directoryRole'; displayName = 'Helpdesk Admin' } }
+            )
+        }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -ParameterFilter { $UserId -eq 'uid-1' } -MockWith { @() }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'g' } }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
+
+        $acts = Invoke-CtgM365CloudMirror -MirrorUser 'jsmith@x.com' -UserId 'uid-1'
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $GroupId -eq 'g-cloud' }
+        ($acts -join ' ') | Should -Match 'mirrored cloud group: APP - M365 E3'
+        ($acts -join ' ') | Should -Match '1 added, 2 skipped'
+    }
+
+    It 'warns when the mirror user is not found in Entra' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }
+        $acts = Invoke-CtgM365CloudMirror -MirrorUser 'ghost@x.com' -UserId 'uid-1'
+        ($acts -join ' ') | Should -Match 'mirror user not found'
     }
 }
 

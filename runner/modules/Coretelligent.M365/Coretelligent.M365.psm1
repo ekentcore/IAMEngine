@@ -74,6 +74,45 @@ function Add-CtgGroupMember {
     return $last
 }
 
+# Resolve a reference user in Entra by UPN, then displayName as a fallback.
+function Resolve-CtgEntraUser {
+    param([Parameter(Mandatory)][string]$Identity)
+    $u = Get-MgUser -Filter "userPrincipalName eq '$Identity'" -ErrorAction SilentlyContinue
+    if (-not $u) { $u = Get-MgUser -Filter "displayName eq '$Identity'" -Top 1 -ErrorAction SilentlyContinue }
+    $u
+}
+
+# Mirror the reference user's CLOUD-ONLY Entra groups onto the new user — the piece that "mirror
+# <user>" misses for hybrid clients. AD-synced groups are managed on-prem (the AD lane's mirror
+# handles them and Graph can't edit them) and dynamic-membership groups can't be assigned, so both
+# are skipped. This is what pulls in cloud licensing groups (e.g. "APP - M365 E3"), distribution and
+# M365 groups. Returns an actions array.
+function Invoke-CtgM365CloudMirror {
+    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$UserId)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $ref = Resolve-CtgEntraUser -Identity $MirrorUser
+    if (-not $ref) { $actions.Add("WARN mirror user not found in Entra: $MirrorUser"); return $actions.ToArray() }
+
+    Write-CtgM365Step "mirroring cloud groups from $($ref.UserPrincipalName)"
+    $refGroups = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue)
+    $mine = @(Get-MgUserMemberOf -UserId $UserId -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $copied = 0; $skipped = 0
+    foreach ($mg in $refGroups) {
+        $ap = $mg.AdditionalProperties
+        $otype = [string](Get-CtgProp $ap '@odata.type')
+        if ($otype -and $otype -notmatch 'microsoft\.graph\.group') { continue }              # only groups (not roles/AUs)
+        $gname = [string](Get-CtgProp $ap 'displayName')
+        if ((Get-CtgProp $ap 'onPremisesSyncEnabled') -eq $true) { $skipped++; continue }      # AD-managed → AD lane
+        if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { $skipped++; continue }  # rule-based
+        if ($mine -contains $mg.Id) { continue }                                                # already a member
+        $err = Add-CtgGroupMember -GroupId $mg.Id -UserId $UserId
+        if ($err) { $actions.Add("WARN mirror group '$gname': $err"); Write-CtgM365Step "✗ mirror group: $gname — $err" }
+        else { $actions.Add("mirrored cloud group: $gname"); Write-CtgM365Step "✓ mirrored cloud group: $gname"; $copied++ }
+    }
+    $actions.Add("cloud mirror from ${MirrorUser}: $copied added, $skipped skipped (on-prem/dynamic)")
+    return $actions.ToArray()
+}
+
 # Friendly license name -> Entra SkuPartNumber, for the SKUs that appear in client profiles.
 # Unknown names fall through to a direct SkuPartNumber match against the tenant.
 $script:LicenseSkuMap = @{
@@ -335,6 +374,12 @@ function Invoke-CtgM365Onboarding {
         }
     }
 
+    # 3c. Mirror the reference user's cloud-only Entra groups (incl. cloud licensing groups) ---------
+    $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
+    if ($mirrorUser -and $PSCmdlet.ShouldProcess($upn, "Mirror cloud groups from $mirrorUser")) {
+        foreach ($a in (Invoke-CtgM365CloudMirror -MirrorUser ([string]$mirrorUser) -UserId $userId)) { $actions.Add($a) }
+    }
+
     # 3b. Seat-aware E5/E3 fallback (live SKU consumption) ----------------------
     $licenseFallbackAdGroup = $null
     $seatAware = Get-CtgProp $Config 'seatAwareLicense'
@@ -509,10 +554,27 @@ function Confirm-CtgM365 {
                 $skuId = Resolve-CtgSkuId $lic
                 & $add "license: $name" $true ([bool]($skuId -and $assigned -contains $skuId))
             }
-            $memberNames = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue |
-                ForEach-Object { Get-CtgProp $_.AdditionalProperties 'displayName' })
+            $myMemberships = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue)
+            $memberNames = @($myMemberships | ForEach-Object { Get-CtgProp $_.AdditionalProperties 'displayName' })
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
                 & $add "group: $g" $true ([bool]($memberNames -contains $g))
+            }
+            # Mirror coverage: of the reference user's cloud-only (non-synced, non-dynamic) groups, how
+            # many is the new user in? Passes only when ALL are covered, so a missed mirror group shows.
+            $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
+            if ($mirrorUser) {
+                $ref = Resolve-CtgEntraUser -Identity ([string]$mirrorUser)
+                if ($ref) {
+                    $refCloud = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue | Where-Object {
+                        $ap = $_.AdditionalProperties
+                        ([string](Get-CtgProp $ap '@odata.type')) -match 'microsoft\.graph\.group' -and
+                        (Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true -and
+                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership')
+                    } | ForEach-Object { $_.Id })
+                    $myIds = @($myMemberships | ForEach-Object { $_.Id })
+                    $have = @($refCloud | Where-Object { $myIds -contains $_ }).Count
+                    & $add "mirrored cloud groups ($have/$($refCloud.Count))" $refCloud.Count $have
+                }
             }
         }
     }
@@ -530,4 +592,4 @@ function Confirm-CtgM365 {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365
