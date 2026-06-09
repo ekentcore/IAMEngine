@@ -44,6 +44,12 @@ function Get-CtgProp {
 # present"). Retries with backoff; "already a member" counts as success. Returns $null on success or
 # the error message on persistent failure, so the caller records a visible WARN instead of letting a
 # raw Graph error dump to the console while the step still reports "verified".
+# Narrate into the live run-report progress (Send-CtgProgress is the runner's global poster; absent
+# under Pester, so guard it). Narration must never change behaviour.
+function Write-CtgM365Step([string]$Message) {
+    if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
+}
+
 function Add-CtgGroupMember {
     param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3)
     $last = $null
@@ -296,9 +302,11 @@ function Invoke-CtgM365Onboarding {
             continue
         }
         if ($PSCmdlet.ShouldProcess($upn, "Assign license $name")) {
+            Write-CtgM365Step "assigning license: $name"
             Set-MgUserLicense -UserId $userId `
                 -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() | Out-Null
             $actions.Add("assigned license: $name")
+            Write-CtgM365Step "✓ assigned license: $name"
         }
     }
 
@@ -313,9 +321,10 @@ function Invoke-CtgM365Onboarding {
         if ($isMember) { $actions.Add("already in group: $groupName"); continue }
 
         if ($PSCmdlet.ShouldProcess($upn, "Add to group $groupName")) {
+            Write-CtgM365Step "adding to group: $groupName"
             $err = Add-CtgGroupMember -GroupId $group.Id -UserId $userId
-            if ($err) { $actions.Add("WARN could not add to group ${groupName}: $err") }
-            else { $actions.Add("added to group: $groupName") }
+            if ($err) { $actions.Add("WARN could not add to group ${groupName}: $err"); Write-CtgM365Step "✗ group: $groupName — $err" }
+            else { $actions.Add("added to group: $groupName"); Write-CtgM365Step "✓ added to group: $groupName" }
         }
     }
 
@@ -346,6 +355,8 @@ function Invoke-CtgM365Onboarding {
         }
     }
 
+    $warned = @($actions | Where-Object { $_ -like 'WARN*' }).Count
+    Write-CtgM365Step "$(if ($warned) { "⚠ m365 onboard finished with $warned warning(s)" } else { '✓ m365 onboard complete' }) — $($actions -join '; ')"
     [pscustomobject]@{
         System  = 'm365'
         Status  = 'ok'
