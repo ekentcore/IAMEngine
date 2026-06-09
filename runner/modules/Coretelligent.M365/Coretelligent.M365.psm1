@@ -33,7 +33,10 @@ function Get-CtgRandomChar {
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Object) { return $null }
-    if ($Object -is [hashtable]) { return $Object[$Name] }
+    # IDictionary (not just [hashtable]) so it also reads the Graph SDK's AdditionalProperties, which
+    # is a generic Dictionary[string,object] — [hashtable] alone returned $null for every key there
+    # (blank group names, broken on-prem/dynamic filters).
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
@@ -101,15 +104,22 @@ function Invoke-CtgM365CloudMirror {
     Write-CtgM365Step "mirroring cloud groups from $($ref.UserPrincipalName)"
     $refGroups = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue)
     $mine = @(Get-MgUserMemberOf -UserId $UserId -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-    $copied = 0; $skipped = 0
+    $copied = 0; $skipped = 0; $exch = 0
     foreach ($mg in $refGroups) {
         $ap = $mg.AdditionalProperties
         $otype = [string](Get-CtgProp $ap '@odata.type')
         if ($otype -and $otype -notmatch 'microsoft\.graph\.group') { continue }              # only groups (not roles/AUs)
-        $gname = [string](Get-CtgProp $ap 'displayName')
-        if ((Get-CtgProp $ap 'onPremisesSyncEnabled') -eq $true) { $skipped++; continue }      # AD-managed → AD lane
-        if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { $skipped++; continue }  # rule-based
-        if ($mine -contains $mg.Id) { continue }                                                # already a member
+        $gname = [string](Get-CtgProp $ap 'displayName'); if (-not $gname) { $gname = $mg.Id }
+        if ((Get-CtgProp $ap 'onPremisesSyncEnabled') -eq $true) { $skipped++; Write-CtgM365Step "– on-prem group (AD lane owns it): $gname"; continue }
+        if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { $skipped++; Write-CtgM365Step "– dynamic group (rule-based): $gname"; continue }
+        # Distribution lists + mail-enabled security groups are managed in Exchange, NOT Graph —
+        # New-MgGroupMember errors on them. Unified (M365) groups ARE mail-enabled but Graph-addable.
+        $mailEnabled = (Get-CtgProp $ap 'mailEnabled') -eq $true
+        $isUnified = @(Get-CtgProp $ap 'groupTypes') -contains 'Unified'
+        if ($mailEnabled -and -not $isUnified) {
+            $exch++; $actions.Add("needs Exchange (distribution/mail-enabled): $gname"); Write-CtgM365Step "↷ $gname — distribution/mail-enabled, add via Exchange"; continue
+        }
+        if ($mine -contains $mg.Id) { $actions.Add("already in group: $gname"); Write-CtgM365Step "– already a member: $gname"; continue }
         $err = Add-CtgGroupMember -GroupId $mg.Id -UserId $UserId
         if ($err) {
             # If Graph rejects because the group is AD-synced / read-only (a memberOf response that
@@ -123,7 +133,7 @@ function Invoke-CtgM365CloudMirror {
         }
         else { $actions.Add("mirrored cloud group: $gname"); Write-CtgM365Step "✓ mirrored cloud group: $gname"; $copied++ }
     }
-    $actions.Add("cloud mirror from ${MirrorUser}: $copied added, $skipped skipped (on-prem/dynamic)")
+    $actions.Add("cloud mirror from ${MirrorUser}: $copied added, $skipped skipped (on-prem/dynamic)$(if ($exch) { ", $exch need Exchange (distribution/mail-enabled)" })")
     return $actions.ToArray()
 }
 
@@ -579,11 +589,15 @@ function Confirm-CtgM365 {
             if ($mirrorUser) {
                 $ref = Resolve-CtgEntraUser -Identity ([string]$mirrorUser)
                 if ($ref) {
+                    # Same filter the mirror applies: cloud-only, non-dynamic, and Graph-addable
+                    # (exclude Exchange-managed distribution / mail-enabled security groups) so the
+                    # coverage count reflects what the mirror could actually add.
                     $refCloud = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue | Where-Object {
                         $ap = $_.AdditionalProperties
                         ([string](Get-CtgProp $ap '@odata.type')) -match 'microsoft\.graph\.group' -and
                         (Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true -and
-                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership')
+                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership') -and
+                        -not ((Get-CtgProp $ap 'mailEnabled') -eq $true -and (@(Get-CtgProp $ap 'groupTypes') -notcontains 'Unified'))
                     } | ForEach-Object { $_.Id })
                     $myIds = @($myMemberships | ForEach-Object { $_.Id })
                     $have = @($refCloud | Where-Object { $myIds -contains $_ }).Count

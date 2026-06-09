@@ -189,6 +189,26 @@ Describe 'Invoke-CtgM365CloudMirror' {
         $acts = Invoke-CtgM365CloudMirror -MirrorUser 'ghost@x.com' -UserId 'uid-1'
         ($acts -join ' ') | Should -Match 'mirror user not found'
     }
+
+    It 'skips Exchange-managed (distribution/mail-enabled) and already-member groups; adds Unified + security' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'ref-1'; UserPrincipalName = 'jsmith@x.com' } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -ParameterFilter { $UserId -eq 'ref-1' } -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'g-dl';      AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Billing Team'; onPremisesSyncEnabled = $false; mailEnabled = $true; groupTypes = @() } }
+                [pscustomobject]@{ Id = 'g-unified'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Calendar Billing'; onPremisesSyncEnabled = $false; mailEnabled = $true; groupTypes = @('Unified') } }
+                [pscustomobject]@{ Id = 'g-have';    AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'US FTEs'; onPremisesSyncEnabled = $false } }
+            )
+        }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -ParameterFilter { $UserId -eq 'uid-1' } -MockWith { @([pscustomobject]@{ Id = 'g-have' }) }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'g' } }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
+
+        $acts = Invoke-CtgM365CloudMirror -MirrorUser 'jsmith@x.com' -UserId 'uid-1'
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $GroupId -eq 'g-unified' }
+        ($acts -join ' ') | Should -Match 'needs Exchange.*Billing Team'
+        ($acts -join ' ') | Should -Match 'already in group: US FTEs'
+        ($acts -join ' ') | Should -Match 'mirrored cloud group: Calendar Billing'
+    }
 }
 
 Describe 'Set-CtgSeatAwareLicense' {
