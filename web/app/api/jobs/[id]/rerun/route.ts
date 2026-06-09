@@ -23,7 +23,9 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   await db.job.update({
     where: { id: job.id },
-    data: { status: "pending", assignedAgentId: null, request: req as Prisma.InputJsonValue, result: undefined, validation: undefined, evidence: undefined, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null },
+    // Prisma.DbNull actually CLEARS the columns (undefined would leave them unchanged) — so the run
+    // report shows a clean slate immediately on re-run instead of the previous run's stale actions.
+    data: { status: "pending", assignedAgentId: null, request: req as Prisma.InputJsonValue, result: Prisma.DbNull, validation: Prisma.DbNull, evidence: Prisma.DbNull, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null },
   });
   // Reopen the case so the claim loop (which skips failed/completed cases) can dispatch it. Also clear
   // verifiedAt so the auto-verify sweep runs again after this real re-run settles.

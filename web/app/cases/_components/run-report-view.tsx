@@ -108,9 +108,19 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   // Verification banner: the case auto-runs a read-only validation sweep once the automated work
   // finishes (and the operator can re-run it). Show whether the account has been verified.
   const verifying = active && !report.verifiedAt;
+  // The step executing right now (for a prominent "what's happening" banner) — easier to follow than
+  // scanning the per-step trails.
+  const running = report.steps.find((st) => st.currentPhase);
+  const pendingCount = report.steps.filter((st) => st.verdict === "pending" || st.verdict === "needs_approval").length;
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
+      {running && (
+        <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
+          <span><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
+        </div>
+      )}
       {(report.verifiedAt || verifying) && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: report.verifiedAt ? "#bbf7d0" : "#bfdbfe", background: report.verifiedAt ? "#f0fdf4" : "#eff6ff", color: report.verifiedAt ? "#15803d" : "#1d4ed8" }}>
           {report.verifiedAt
