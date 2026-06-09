@@ -25,6 +25,12 @@ function Get-CtgProp {
     return $null
 }
 
+# Narrate into the live run-report progress (Send-CtgProgress is the runner's global poster; absent
+# under Pester, so guard it). Narration must never change behaviour.
+function Write-CtgADStep([string]$Message) {
+    if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
+}
+
 # Domain FQDN -> distinguished name: "61commodities.com" -> "DC=61commodities,DC=com".
 function ConvertTo-CtgDomainDn {
     param([string]$Domain)
@@ -186,8 +192,22 @@ function Invoke-CtgADOnboarding {
     }
     foreach ($group in $groups) {
         if ($PSCmdlet.ShouldProcess($sam, "Add to group $group")) {
-            Add-ADGroupMember -Identity $group -Members $sam -ErrorAction SilentlyContinue @AdConnection
-            $actions.Add("added to group: $group")
+            # -ErrorAction Stop so a real failure is visible (was SilentlyContinue, which claimed
+            # success even when the add failed). "Already a member" is success. ✓/✗ to the live status.
+            try {
+                Add-ADGroupMember -Identity $group -Members $sam -ErrorAction Stop @AdConnection
+                $actions.Add("added to group: $group")
+                Write-CtgADStep "✓ added to group: $group"
+            } catch {
+                $msg = $_.Exception.Message
+                if ($msg -match 'already a member') {
+                    $actions.Add("already in group: $group")
+                    Write-CtgADStep "✓ already in group: $group"
+                } else {
+                    $actions.Add("WARN could not add to group ${group}: $msg")
+                    Write-CtgADStep "✗ group: $group — $msg"
+                }
+            }
         }
     }
 
