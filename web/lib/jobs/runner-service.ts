@@ -18,6 +18,11 @@ const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobReq
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
 
+// Systems that can only run on a client-network (on-prem) agent — they need the ActiveDirectory/RSAT
+// module, the on-prem Exchange session, or the ADSync module, none of which exist on the central
+// cloud runner. The central runner skips these at claim time so it can't grab a job it can't execute.
+const ON_PREM_SYSTEMS = ["active-directory", "exchange", "directory-sync"];
+
 // An agent disabled mid-flight must not keep brokering credentials or posting results.
 async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<void> {
   const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
@@ -185,11 +190,16 @@ export function makeRunnerService(db: PrismaClient) {
 
       // central runner (clientId null) sees all clients' api jobs; a client agent sees only
       // its own. Jobs on a failed/completed case are excluded so a dead case can't run more.
+      // Host affinity: the central (cloud) runner must NOT claim systems that require on-prem
+      // execution (the ActiveDirectory/RSAT module, the EXO cert + on-prem Exchange session, the
+      // ADSync module) — those only work on the client-network agent. Otherwise it grabs an AD job it
+      // can't run ("Invoke-CtgADOnboarding not recognized"). Client agents still claim everything.
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
           mode: "api",
           case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
+          ...(agent.clientId ? {} : { systemKey: { notIn: ON_PREM_SYSTEMS } }),
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
         select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },

@@ -514,6 +514,12 @@ while ($true) {
                     try { $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun; break }
                     catch {
                         $missing = Get-CtgMissingCommandName $_
+                        # A missing '*-Ctg*' function is one of OUR bundled module functions — it means
+                        # the Coretelligent.* module didn't load on this host (a missing host dependency),
+                        # NOT a gallery module to install. Surface a clear, actionable error instead.
+                        if ($missing -like '*-Ctg*') {
+                            throw "the Coretelligent module providing '$missing' isn't loaded on this host — it needs a host-specific dependency (the ActiveDirectory/RSAT module for AD, ExchangeOnlineManagement for Exchange, the ADSync module for directory-sync). This step must run on the client-network agent that has it, not the central/cloud runner."
+                        }
                         if ($try -eq 0 -and $missing) {
                             Set-CtgPhase $job.id "missing command '$missing' — locating + installing its module"
                             $mod = Repair-CtgMissingModule $missing
