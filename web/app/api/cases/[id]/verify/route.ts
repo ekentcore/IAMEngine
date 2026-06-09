@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const c = await db.caseRequest.findUnique({
     where: { id: params.id },
-    select: { id: true, jobs: { select: { id: true, mode: true, status: true, request: true } } },
+    select: { id: true, jobs: { select: { id: true, mode: true, status: true, request: true, error: true } } },
   });
   if (!c) return NextResponse.json({ error: "unknown case" }, { status: 404 });
 
@@ -34,7 +34,10 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   );
   // Reopen the case so the claim loop (which skips failed/completed cases) dispatches the verify jobs.
   await db.caseRequest.update({ where: { id: c.id }, data: { status: "queued" } });
-  await db.auditLog.create({ data: { actor: "ui", action: "case.verify", caseRequestId: c.id, detail: { steps: targets.length } } });
+  // Preserve what we cleared (prior errors on failed steps) so a verify pass doesn't erase the
+  // forensic trail of why a step originally failed.
+  const cleared = targets.filter((j) => j.status === "failed").map((j) => ({ jobId: j.id, error: j.error }));
+  await db.auditLog.create({ data: { actor: "ui", action: "case.verify", caseRequestId: c.id, detail: { steps: targets.length, clearedFailed: cleared } } });
 
   return NextResponse.json({ ok: true, verifying: targets.length });
 }

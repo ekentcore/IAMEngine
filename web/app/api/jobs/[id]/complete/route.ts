@@ -48,12 +48,20 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     where: { caseRequestId: job.caseRequestId },
     select: { id: true, sequence: true, mode: true, status: true, request: true },
   });
-  const caseStatus = deriveCaseStatus(
+  const derived = deriveCaseStatus(
     caseJobs.map((j) => {
       const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
       return { id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
     })
   );
+  // deriveCaseStatus never returns "queued"/"planning"; don't promote a not-yet-started case to
+  // "running" just because an operator closed a manual step before any runner has claimed work.
+  const current = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
+  const anyStarted = caseJobs.some((j) => j.status === "dispatched" || j.status === "running");
+  const caseStatus =
+    derived === "running" && !anyStarted && (current?.status === "queued" || current?.status === "planning")
+      ? current!.status
+      : derived;
   await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
   await db.auditLog.create({ data: { actor: "ui", action: done ? "job.mark_complete" : "job.unmark_complete", jobId: job.id, caseRequestId: job.caseRequestId } });
 

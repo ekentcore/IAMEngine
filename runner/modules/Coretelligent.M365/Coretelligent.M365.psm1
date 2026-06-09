@@ -54,9 +54,14 @@ function Add-CtgGroupMember {
     param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3)
     # Distinguish a missing GROUP (a stale/wrong configured id — a config error, no point retrying)
     # from the user not yet being replicated in Entra. The Graph "Resource ... does not exist" message
-    # is the same for both, so check the group up front.
-    if (-not (Get-MgGroup -GroupId $GroupId -ErrorAction SilentlyContinue)) {
-        return "group '$GroupId' not found in Entra — the configured group id is wrong or the group was deleted"
+    # is the same for both, so check the group up front. Only a genuine 404 is a config error — a
+    # transient failure falls through to the add attempt (which retries), not a false "not found".
+    try { $null = Get-MgGroup -GroupId $GroupId -ErrorAction Stop }
+    catch {
+        if ($_.Exception.Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b') {
+            return "group '$GroupId' not found in Entra — the configured group id is wrong or the group was deleted"
+        }
+        # transient (throttle/network) — proceed; New-MgGroupMember below has its own retry.
     }
     $last = $null
     for ($i = 0; $i -lt $Retries; $i++) {
@@ -106,7 +111,16 @@ function Invoke-CtgM365CloudMirror {
         if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { $skipped++; continue }  # rule-based
         if ($mine -contains $mg.Id) { continue }                                                # already a member
         $err = Add-CtgGroupMember -GroupId $mg.Id -UserId $UserId
-        if ($err) { $actions.Add("WARN mirror group '$gname': $err"); Write-CtgM365Step "✗ mirror group: $gname — $err" }
+        if ($err) {
+            # If Graph rejects because the group is AD-synced / read-only (a memberOf response that
+            # didn't carry onPremisesSyncEnabled, so the skip above missed it), treat it as a skip,
+            # not a warning — the AD lane owns that group.
+            if ($err -match 'synchroni[sz]ed|on-?prem|cannot be (modified|updated)|not allowed|RequestDenied') {
+                $skipped++; $actions.Add("skipped on-prem/read-only group: $gname"); Write-CtgM365Step "↷ skipped on-prem/read-only group: $gname"
+            } else {
+                $actions.Add("WARN mirror group '$gname': $err"); Write-CtgM365Step "✗ mirror group: $gname — $err"
+            }
+        }
         else { $actions.Add("mirrored cloud group: $gname"); Write-CtgM365Step "✓ mirrored cloud group: $gname"; $copied++ }
     }
     $actions.Add("cloud mirror from ${MirrorUser}: $copied added, $skipped skipped (on-prem/dynamic)")

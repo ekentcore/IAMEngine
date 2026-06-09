@@ -247,8 +247,15 @@ function Invoke-CtgADOffboarding {
         foreach ($g in $memberships) {
             if ($g.Name -eq 'Domain Users') { continue }   # primary group — not removable this way
             if ($PSCmdlet.ShouldProcess($sam, "Remove from group $($g.Name)")) {
-                Remove-ADGroupMember -Identity $g.Name -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
-                $actions.Add("removed from group: $($g.Name)")
+                # -ErrorAction Stop so a failed removal is surfaced, not silently logged as success.
+                try {
+                    Remove-ADGroupMember -Identity $g.Name -Members $sam -Confirm:$false -ErrorAction Stop @AdConnection
+                    $actions.Add("removed from group: $($g.Name)")
+                    Write-CtgADStep "✓ removed from group: $($g.Name)"
+                } catch {
+                    $actions.Add("WARN could not remove from group $($g.Name): $($_.Exception.Message)")
+                    Write-CtgADStep "✗ group: $($g.Name) — $($_.Exception.Message)"
+                }
             }
         }
     }

@@ -132,8 +132,10 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     if (verdict === "pending" && req.requiresApproval && !req.approved) verdict = "needs_approval";
     // A step that succeeded but logged a WARN action (e.g. a group/license it couldn't apply) is a
     // warning, not a clean "verified" — surface it even when the validation read-back passed.
+    // Match WARN anywhere in the action, not just the start — actions are often prefixed
+    // ("license: WARN could not add to E5 group"), which a start-anchored match would miss.
     const stepActions = actionsOf(j.result);
-    if (verdict === "verified" && stepActions.some((a) => /^\s*WARN\b/i.test(a))) verdict = "warning";
+    if (verdict === "verified" && stepActions.some((a) => /\bWARN\b/i.test(a))) verdict = "warning";
 
     if (verdict === "verified") summary.succeeded++;
     else if (verdict === "warning") summary.warnings++;
