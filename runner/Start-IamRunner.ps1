@@ -27,6 +27,7 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.DirectorySync/Coretelligent.D
 Import-Module "$PSScriptRoot/modules/Coretelligent.Zoom/Coretelligent.Zoom.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Adobe/Coretelligent.Adobe.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Perimeter81.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Spanning/Coretelligent.Spanning.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
@@ -145,6 +146,28 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Invoke-CtgPerimeter81Onboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgPerimeter81Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'spanning' = @{
+        # Spanning Backup: HTTP Basic auth, username = the client's domain, password = the access token
+        # (Spanning Admin -> access token). Template-tolerant — works with "Generic API" (token in the
+        # "API Key" field, domain defaults to the client's primary domain) OR "Automation - API"
+        # (ClientSecret = token, AccountID = domain, apiURL = region host). Read PLAIN values from
+        # .Fields (.Password is a SecureString). Picks the first matching field name in each list; the
+        # domain falls back to the secret's Username then the client's primary domain; apiURL (if set)
+        # picks the region, else Region field, else US.
+        Connect  = { param($job, $creds)
+            $s = $creds['spanning']
+            $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
+            $token   = & $pick @('AccessToken', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Key', 'ClientSecret', 'Password')
+            $domain  = & $pick @('Domain', 'AccountID', 'AccountId', 'Account', 'Tenant', 'ClientID', 'ClientId')
+            if (-not $domain) { $domain = if ($s.Username) { $s.Username } else { $job.client.primaryDomain } }
+            $baseUrl = & $pick @('apiURL', 'ApiUrl', 'ApiURL', 'BaseUrl', 'Url')
+            if ($baseUrl) { Connect-CtgSpanning -Domain $domain -AccessToken $token -BaseUrl $baseUrl }
+            else          { Connect-CtgSpanning -Domain $domain -AccessToken $token -Region $s.Fields['Region'] }
+        }
+        Onboard  = { param($job, $creds) Invoke-CtgSpanningOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgSpanningOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgSpanning -User $job.payload -Config $job.config -Action $job.action }
     }
     'google-workspace' = @{
         Connect  = { param($job, $creds) Connect-CtgGoogle -Credential $creds['google-admin'].Credential -CustomerId $creds['google-admin'].Fields['CustomerId'] }

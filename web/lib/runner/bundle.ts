@@ -31,23 +31,35 @@ export function listRunnerFiles(dir = RUNNER_ROOT): string[] {
 // A deterministic build id for the runner bundle the app currently serves: hash of each file's
 // (relpath + content). The runner records the buildId it pulled (in a local .build file) and reports
 // it on heartbeat, so the UI can show "up to date" vs "update available" — a real signal, unlike the
-// hard-coded version. Cached per process (files only change on deploy/restart).
-let buildIdCache: string | null = null;
+// hard-coded version.
+//
+// Cached, but keyed on the newest runner-file mtime so the cache invalidates whenever a runner file
+// changes. A plain process-lifetime cache went stale in dev: a long-running `dev:lan` froze the build
+// id at startup, so after committing runner changes the Agents page kept reporting the OLD id (which
+// the agent already had) and never showed "update available". Re-stat is cheap; re-hash only on change.
+let buildIdCache: { mtimeMs: number; id: string } | null = null;
 const NUL = Buffer.from([0]);
 export function runnerBuildId(): string {
-  if (buildIdCache) return buildIdCache;
+  const files = listRunnerFiles();
+  let newest = 0;
+  for (const rel of files) {
+    const m = statSync(resolve(RUNNER_ROOT, rel)).mtimeMs;
+    if (m > newest) newest = m;
+  }
+  if (buildIdCache && buildIdCache.mtimeMs === newest) return buildIdCache.id;
   const h = createHash("sha256");
   // Hash RAW BYTES (not decoded text) of each file so the runner's PowerShell computation matches
   // exactly — text decoding diverges on a UTF-8 BOM or line endings, raw bytes don't. Order = the
   // ordinal-sorted POSIX relpaths from listRunnerFiles().
-  for (const rel of listRunnerFiles()) {
+  for (const rel of files) {
     h.update(rel, "utf8");
     h.update(NUL);
     h.update(readFileSync(resolve(RUNNER_ROOT, rel))); // Buffer (raw bytes)
     h.update(NUL);
   }
-  buildIdCache = h.digest("hex").slice(0, 12);
-  return buildIdCache;
+  const id = h.digest("hex").slice(0, 12);
+  buildIdCache = { mtimeMs: newest, id };
+  return id;
 }
 
 // Read one runner file by its relative path, refusing anything that escapes RUNNER_ROOT.

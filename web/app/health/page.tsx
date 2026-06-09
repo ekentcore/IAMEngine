@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 type HealthStatus = "ok" | "fail" | "not_configured";
@@ -93,6 +94,14 @@ export default function HealthPage() {
         &ldquo;Not configured&rdquo; means the env vars are absent (the integration is off, not broken).
         &ldquo;Failing&rdquo; means it&rsquo;s configured but the credential/connection didn&rsquo;t work.
       </p>
+
+      <div style={{ marginTop: "1.25rem", borderTop: "1px solid var(--line)", paddingTop: "0.85rem" }}>
+        <b style={{ fontSize: 14 }}>Credential setup guides</b>
+        <ul className="note" style={{ margin: "0.35rem 0 0" }}>
+          <li><Link href="/help/cloud-auth">Cloud auth (M365 + Exchange Online)</Link> — Entra app registration, client secret + certificate.</li>
+          <li><Link href="/help/spanning">Spanning Backup (Microsoft 365)</Link> — access token, Delinea template (Automation - API / Generic API), region + domain.</li>
+        </ul>
+      </div>
     </main>
   );
 }
