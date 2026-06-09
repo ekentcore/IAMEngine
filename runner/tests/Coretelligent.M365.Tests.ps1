@@ -80,6 +80,15 @@ Describe 'Invoke-CtgM365Onboarding' {
         $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly
     }
+
+    It 'omits a blank / unresolved job title on create (Graph rejects empty values)' {
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone='{token}'; UsageLocation='US' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @() }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'no job title'
+    }
 }
 
 Describe 'Invoke-CtgM365Offboarding' {

@@ -349,18 +349,27 @@ function Invoke-CtgM365Onboarding {
                 Password                      = (ConvertFrom-SecureString $InitialPassword -AsPlainText)
                 ForceChangePasswordNextSignIn = $RequireChangeAtSignIn
             }
-            $created = New-MgUser -AccountEnabled `
-                -DisplayName       $User.DisplayName `
-                -UserPrincipalName $upn `
-                -MailNickname      ($upn.Split('@')[0]) `
-                -GivenName         $User.FirstName `
-                -Surname           $User.LastName `
-                -JobTitle          $User.JobTitle `
-                -MobilePhone       $User.MobilePhone `
-                -UsageLocation     ($User.UsageLocation ?? 'US') `
-                -PasswordProfile   $passwordProfile
+            # Required fields always; optional ones (JobTitle/MobilePhone/GivenName/Surname) only when
+            # they hold a real value — Graph rejects an empty string or an unresolved {token} (e.g.
+            # "Invalid value specified for property 'jobTitle'"). Omitting the property = leave it unset.
+            $hasValue = { param($v) -not [string]::IsNullOrWhiteSpace([string]$v) -and ([string]$v) -notmatch '\{' }
+            $params = @{
+                AccountEnabled    = $true
+                DisplayName       = $User.DisplayName
+                UserPrincipalName = $upn
+                MailNickname      = ($upn.Split('@')[0])
+                UsageLocation     = ([string]((Get-CtgProp $User 'UsageLocation') ?? 'US'))
+                PasswordProfile   = $passwordProfile
+            }
+            foreach ($opt in @(
+                @{ K = 'GivenName';   V = (Get-CtgProp $User 'FirstName') }
+                @{ K = 'Surname';     V = (Get-CtgProp $User 'LastName') }
+                @{ K = 'JobTitle';    V = (Get-CtgProp $User 'JobTitle') }
+                @{ K = 'MobilePhone'; V = (Get-CtgProp $User 'MobilePhone') }
+            )) { if (& $hasValue $opt.V) { $params[$opt.K] = [string]$opt.V } }
+            $created = New-MgUser @params
             $userId = $created.Id
-            $actions.Add("created user $upn")
+            $actions.Add("created user $upn" + $(if (-not $params.ContainsKey('JobTitle')) { " (no job title)" } else { "" }))
         }
     }
 
