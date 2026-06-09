@@ -39,6 +39,28 @@ function Get-CtgProp {
     return $null
 }
 
+# Add a user to a group, tolerating Entra's eventual consistency right after a hybrid sync: a
+# just-synced user can briefly be unqueryable for group ops ("...reference-property objects are not
+# present"). Retries with backoff; "already a member" counts as success. Returns $null on success or
+# the error message on persistent failure, so the caller records a visible WARN instead of letting a
+# raw Graph error dump to the console while the step still reports "verified".
+function Add-CtgGroupMember {
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3)
+    $last = $null
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try { New-MgGroupMember -GroupId $GroupId -DirectoryObjectId $UserId -ErrorAction Stop; return $null }
+        catch {
+            $last = $_.Exception.Message
+            if ($last -match 'already exist|references already exist') { return $null }   # idempotent: already a member
+            if ($i -lt $Retries - 1 -and $last -match 'does not exist|not present|ResourceNotFound') {
+                if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress "group add: user not yet replicated in Entra — retrying in 15s ($($i + 2)/$Retries)" }
+                Start-Sleep -Seconds 15
+            } else { break }
+        }
+    }
+    return $last
+}
+
 # Friendly license name -> Entra SkuPartNumber, for the SKUs that appear in client profiles.
 # Unknown names fall through to a direct SkuPartNumber match against the tenant.
 $script:LicenseSkuMap = @{
@@ -115,8 +137,9 @@ function Set-CtgSeatAwareLicense {
         $tier = 'E5'
         $g = Get-CtgProp $Config 'entraGroupWhenAvailable'
         if ($g -and $PSCmdlet.ShouldProcess($UserId, "Add to E5 group $g")) {
-            New-MgGroupMember -GroupId $g -DirectoryObjectId $UserId
-            $actions.Add("E5 seat available ($available) — added to E5 Entra group")
+            $err = Add-CtgGroupMember -GroupId $g -UserId $UserId
+            if ($err) { $actions.Add("WARN could not add to E5 Entra group: $err") }
+            else { $actions.Add("E5 seat available ($available) — added to E5 Entra group") }
         }
     }
     else {
@@ -124,8 +147,9 @@ function Set-CtgSeatAwareLicense {
         $eg = Get-CtgProp $Config 'entraGroupFallback'
         if ($eg) {
             if ($PSCmdlet.ShouldProcess($UserId, "Add to E3 group $eg")) {
-                New-MgGroupMember -GroupId $eg -DirectoryObjectId $UserId
-                $actions.Add("no E5 seat — added to E3 Entra group")
+                $err = Add-CtgGroupMember -GroupId $eg -UserId $UserId
+                if ($err) { $actions.Add("WARN could not add to E3 Entra group: $err") }
+                else { $actions.Add("no E5 seat — added to E3 Entra group") }
             }
         }
         else {
@@ -289,8 +313,9 @@ function Invoke-CtgM365Onboarding {
         if ($isMember) { $actions.Add("already in group: $groupName"); continue }
 
         if ($PSCmdlet.ShouldProcess($upn, "Add to group $groupName")) {
-            New-MgGroupMember -GroupId $group.Id -DirectoryObjectId $userId
-            $actions.Add("added to group: $groupName")
+            $err = Add-CtgGroupMember -GroupId $group.Id -UserId $userId
+            if ($err) { $actions.Add("WARN could not add to group ${groupName}: $err") }
+            else { $actions.Add("added to group: $groupName") }
         }
     }
 
