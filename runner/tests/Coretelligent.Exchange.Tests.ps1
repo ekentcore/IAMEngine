@@ -16,8 +16,35 @@ BeforeAll {
     function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
     function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
     function global:Get-Mailbox { [CmdletBinding()] param($Identity) }
+    # distribution-list mirror (EXO)
+    function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
+    function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
 
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
+}
+
+Describe 'Invoke-CtgExchangeDistListMirror' {
+    It 'adds the new user to the reference user''s distribution + mail-enabled security groups (static only)' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Christine Holleran' } -MockWith { [pscustomobject]@{ DisplayName = 'Christine Holleran'; DistinguishedName = 'CN=Christine,DC=x' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter -like '*Members*' } -MockWith {
+            @(
+                [pscustomobject]@{ DisplayName = 'Billing Team'; Identity = 'Billing Team'; RecipientTypeDetails = 'MailUniversalDistributionGroup' }
+                [pscustomobject]@{ DisplayName = 'Sec Mail';     Identity = 'Sec Mail';     RecipientTypeDetails = 'MailUniversalSecurityGroup' }
+                [pscustomobject]@{ DisplayName = 'Dynamic DL';   Identity = 'Dynamic DL';   RecipientTypeDetails = 'DynamicDistributionGroup' }
+            )
+        }
+        Mock Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $acts = Invoke-CtgExchangeDistListMirror -MirrorUser 'Christine Holleran' -NewUser 'aanand@core.tech'
+        Should -Invoke Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 2 -Exactly
+        ($acts -join ' ') | Should -Match 'mirrored group: Billing Team'
+        ($acts -join ' ') | Should -Match '2 added of 2'
+    }
+
+    It 'warns when the mirror user is not found in Exchange' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $acts = Invoke-CtgExchangeDistListMirror -MirrorUser 'Ghost' -NewUser 'aanand@core.tech'
+        ($acts -join ' ') | Should -Match 'mirror user not found in Exchange'
+    }
 }
 
 Describe 'Invoke-CtgExchangeOffboarding' {

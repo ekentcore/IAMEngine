@@ -136,6 +136,38 @@ function Set-CtgMailboxRegional {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
+# Mirror the reference user's DISTRIBUTION lists and MAIL-ENABLED SECURITY groups — the groups the
+# Graph (m365) lane can't modify. EXO-only: find the reference user's direct static memberships via
+# Get-Recipient's Members filter, then Add-DistributionGroupMember the new user (by primary SMTP).
+# Dynamic distribution groups are computed, not assignable, so they're not returned/handled. Runs in
+# the exchange lane (which already has the EXO session) AFTER the mailbox lands, so the new user is a
+# valid recipient. Idempotent; returns an actions array.
+function Invoke-CtgExchangeDistListMirror {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$NewUser)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $ref = Get-Recipient -Identity $MirrorUser -ErrorAction SilentlyContinue
+    if (-not $ref) { $actions.Add("WARN mirror user not found in Exchange: $MirrorUser"); return $actions.ToArray() }
+
+    Write-CtgStep "mirroring distribution / mail-enabled groups from $($ref.DisplayName)"
+    $groups = @(Get-Recipient -ResultSize Unlimited -Filter "Members -eq '$($ref.DistinguishedName)'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.RecipientTypeDetails -in @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList') })
+    $copied = 0
+    foreach ($g in $groups) {
+        if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to $($g.DisplayName)")) { continue }
+        try {
+            Add-DistributionGroupMember -Identity $g.Identity -Member $NewUser -BypassSecurityGroupManagerCheck -ErrorAction Stop
+            $actions.Add("mirrored group: $($g.DisplayName)"); Write-CtgStep "✓ mirrored group: $($g.DisplayName)"; $copied++
+        } catch {
+            $m = $_.Exception.Message
+            if ($m -match 'already a member') { $actions.Add("already in group: $($g.DisplayName)"); Write-CtgStep "– already a member: $($g.DisplayName)" }
+            else { $actions.Add("WARN dist group '$($g.DisplayName)': $m"); Write-CtgStep "✗ group: $($g.DisplayName) — $m" }
+        }
+    }
+    $actions.Add("distribution/mail-enabled mirror from ${MirrorUser}: $copied added of $($groups.Count)")
+    return $actions.ToArray()
+}
+
 # Combined hybrid onboard, one job across the AAD Connect sync boundary: enable the remote mailbox,
 # block until it lands in EXO (config-gated — skipped when Config.waitForSync is false), then finish
 # regional + manager-calendar. A mailbox that doesn't sync before the timeout is NOT an error: the
@@ -187,6 +219,16 @@ function Invoke-CtgExchangeHybridOnboard {
 
     $regional = Set-CtgMailboxRegional -Identity $identity -Config $Config -ManagerEmail ([string](Get-CtgProp $User 'ManagerEmail'))
     if ($regional.Actions) { $actions.AddRange([string[]]$regional.Actions) }
+
+    # Mirror the reference user's distribution lists + mail-enabled security groups (the EXO-managed
+    # groups the Graph/m365 lane couldn't add). The mailbox now exists, so the new user is a valid
+    # recipient. A failure here is non-fatal (the rest of the onboard already succeeded).
+    $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
+    if ($mirrorUser -and $enable.Email) {
+        try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enable.Email))) { $actions.Add($a) } }
+        catch { $actions.Add("WARN distribution mirror failed: $($_.Exception.Message)") }
+    }
+
     Write-CtgStep "✓ exchange onboard complete — mailbox $($enable.Email) live; $($actions -join '; ')"
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
 }
@@ -320,4 +362,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeDistListMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
