@@ -28,16 +28,19 @@ Describe 'Invoke-CtgExchangeDistListMirror' {
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Christine Holleran' } -MockWith { [pscustomobject]@{ DisplayName = 'Christine Holleran'; DistinguishedName = 'CN=Christine,DC=x' } }
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter -like '*Members*' } -MockWith {
             @(
-                [pscustomobject]@{ DisplayName = 'Billing Team'; Identity = 'Billing Team'; RecipientTypeDetails = 'MailUniversalDistributionGroup' }
-                [pscustomobject]@{ DisplayName = 'Sec Mail';     Identity = 'Sec Mail';     RecipientTypeDetails = 'MailUniversalSecurityGroup' }
-                [pscustomobject]@{ DisplayName = 'Dynamic DL';   Identity = 'Dynamic DL';   RecipientTypeDetails = 'DynamicDistributionGroup' }
+                [pscustomobject]@{ DisplayName = 'Billing Team'; Identity = 'Billing Team'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $false }
+                [pscustomobject]@{ DisplayName = 'Sec Mail';     Identity = 'Sec Mail';     RecipientTypeDetails = 'MailUniversalSecurityGroup'; IsDirSynced = $false }
+                [pscustomobject]@{ DisplayName = 'Dynamic DL';   Identity = 'Dynamic DL';   RecipientTypeDetails = 'DynamicDistributionGroup'; IsDirSynced = $false }
+                [pscustomobject]@{ DisplayName = 'Core-ALL';     Identity = 'Core-ALL';     RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $true }
             )
         }
         Mock Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
         $acts = Invoke-CtgExchangeDistListMirror -MirrorUser 'Christine Holleran' -NewUser 'aanand@core.tech'
+        # 2 cloud-only static groups added; the dynamic one is filtered, the dir-synced one is the AD lane's.
         Should -Invoke Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 2 -Exactly
         ($acts -join ' ') | Should -Match 'mirrored group: Billing Team'
-        ($acts -join ' ') | Should -Match '2 added of 2'
+        ($acts -join ' ') | Should -Not -Match 'Core-ALL'
+        ($acts -join ' ') | Should -Match '2 added,'
     }
 
     It 'warns when the mirror user is not found in Exchange' {

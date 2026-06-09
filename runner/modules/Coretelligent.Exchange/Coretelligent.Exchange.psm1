@@ -150,9 +150,12 @@ function Invoke-CtgExchangeDistListMirror {
     if (-not $ref) { $actions.Add("WARN mirror user not found in Exchange: $MirrorUser"); return $actions.ToArray() }
 
     Write-CtgStep "mirroring distribution / mail-enabled groups from $($ref.DisplayName)"
+    # Skip DIR-SYNCED groups up front — those are AD-managed (the AD lane mirrors them via
+    # Add-ADGroupMember and AAD Connect syncs the membership). EXO can't write them ("the object is
+    # being synchronized from your on-premises organization"). Only cloud-only DLs/groups remain.
     $groups = @(Get-Recipient -ResultSize Unlimited -Filter "Members -eq '$($ref.DistinguishedName)'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.RecipientTypeDetails -in @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList') })
-    $copied = 0
+        Where-Object { $_.RecipientTypeDetails -in @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList') -and -not $_.IsDirSynced })
+    $copied = 0; $skipped = 0
     foreach ($g in $groups) {
         if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to $($g.DisplayName)")) { continue }
         try {
@@ -161,10 +164,14 @@ function Invoke-CtgExchangeDistListMirror {
         } catch {
             $m = $_.Exception.Message
             if ($m -match 'already a member') { $actions.Add("already in group: $($g.DisplayName)"); Write-CtgStep "– already a member: $($g.DisplayName)" }
+            # Belt-and-suspenders: if IsDirSynced missed one, the write-scope/synced error means AD owns it.
+            elseif ($m -match 'being synchronized|out of the current user.s write scope|on-?prem') {
+                $skipped++; $actions.Add("skipped on-prem-synced group (AD lane owns it): $($g.DisplayName)"); Write-CtgStep "– on-prem group (AD lane owns it): $($g.DisplayName)"
+            }
             else { $actions.Add("WARN dist group '$($g.DisplayName)': $m"); Write-CtgStep "✗ group: $($g.DisplayName) — $m" }
         }
     }
-    $actions.Add("distribution/mail-enabled mirror from ${MirrorUser}: $copied added of $($groups.Count)")
+    $actions.Add("distribution/mail-enabled mirror from ${MirrorUser}: $copied added, $skipped on-prem (AD lane) — of $($groups.Count) cloud-only")
     return $actions.ToArray()
 }
 
