@@ -112,6 +112,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   // scanning the per-step trails.
   const running = report.steps.find((st) => st.currentPhase);
   const pendingCount = report.steps.filter((st) => st.verdict === "pending" || st.verdict === "needs_approval").length;
+  // Pull the cross-lane mirror-coverage check (from the m365 validator) up to the banner so the
+  // person handling the case sees mirror completeness without expanding a step.
+  const mirrorCheck = report.steps.flatMap((st) => st.validation?.checks ?? []).find((c) => /mirror coverage/i.test(c.name));
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
@@ -123,9 +126,16 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
       )}
       {(report.verifiedAt || verifying) && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: report.verifiedAt ? "#bbf7d0" : "#bfdbfe", background: report.verifiedAt ? "#f0fdf4" : "#eff6ff", color: report.verifiedAt ? "#15803d" : "#1d4ed8" }}>
-          {report.verifiedAt
-            ? <>🔎 Account verified {new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>
-            : <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>}
+          <div>
+            {report.verifiedAt
+              ? <>🔎 Account verified {new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>
+              : <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>}
+          </div>
+          {mirrorCheck && (
+            <div style={{ marginTop: 4, fontWeight: 600, color: mirrorCheck.pass ? "#15803d" : "#b45309" }}>
+              👥 {mirrorCheck.pass ? "✓" : "⚠"} {mirrorCheck.name}
+            </div>
+          )}
         </div>
       )}
       <div className="row-between" style={{ alignItems: "baseline" }}>
