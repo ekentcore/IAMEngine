@@ -136,6 +136,8 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           {live && <span className="muted"> · refreshing…</span>}
         </p>
         <div className="toolbar">
+          <button onClick={() => setOpen(new Set(report.steps.map((st) => st.seq)))} title="Expand every step">Expand all</button>
+          <button onClick={() => setOpen(new Set())} title="Collapse every step">Collapse all</button>
           <button onClick={verifyAll} disabled={busy === "verify"} title="Re-run every step's read-only validation to confirm the whole account is correct — no changes are made">
             {busy === "verify" ? "verifying…" : "✓ Verify everything"}
           </button>

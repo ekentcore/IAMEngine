@@ -205,7 +205,7 @@ Describe 'Invoke-CtgM365CloudMirror' {
 
         $acts = Invoke-CtgM365CloudMirror -MirrorUser 'jsmith@x.com' -UserId 'uid-1'
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $GroupId -eq 'g-unified' }
-        ($acts -join ' ') | Should -Match 'needs Exchange.*Billing Team'
+        ($acts -join ' ') | Should -Match 'Billing Team.*added by the Exchange step'
         ($acts -join ' ') | Should -Match 'already in group: US FTEs'
         ($acts -join ' ') | Should -Match 'mirrored cloud group: Calendar Billing'
     }

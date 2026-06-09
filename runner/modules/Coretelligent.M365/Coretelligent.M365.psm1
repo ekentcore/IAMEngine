@@ -117,7 +117,13 @@ function Invoke-CtgM365CloudMirror {
         $mailEnabled = (Get-CtgProp $ap 'mailEnabled') -eq $true
         $isUnified = @(Get-CtgProp $ap 'groupTypes') -contains 'Unified'
         if ($mailEnabled -and -not $isUnified) {
-            $exch++; $actions.Add("needs Exchange (distribution/mail-enabled): $gname"); Write-CtgM365Step "↷ $gname — distribution/mail-enabled, add via Exchange"; continue
+            # Graph can't write distribution lists / mail-enabled security groups — the EXCHANGE step
+            # does. But Graph can READ them, so confirm whether the user is already a member (i.e. the
+            # exchange lane already added it) instead of leaving an ambiguous "needs Exchange".
+            $exch++
+            if ($mine -contains $mg.Id) { $actions.Add("distribution/mail-enabled '$gname' — already added by the Exchange step"); Write-CtgM365Step "✓ $gname — distribution, already added (Exchange step)" }
+            else { $actions.Add("distribution/mail-enabled '$gname' — added by the Exchange step (Graph can't); not present yet"); Write-CtgM365Step "↷ $gname — distribution, handled by the Exchange step" }
+            continue
         }
         if ($mine -contains $mg.Id) { $actions.Add("already in group: $gname"); Write-CtgM365Step "– already a member: $gname"; continue }
         $err = Add-CtgGroupMember -GroupId $mg.Id -UserId $UserId
