@@ -583,25 +583,29 @@ function Confirm-CtgM365 {
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
                 & $add "group: $g" $true ([bool]($memberNames -contains $g))
             }
-            # Mirror coverage: of the reference user's cloud-only (non-synced, non-dynamic) groups, how
-            # many is the new user in? Passes only when ALL are covered, so a missed mirror group shows.
+            # Comprehensive mirror coverage: compare the new user's ENTIRE membership to the reference
+            # user's — across ALL group types (cloud security/M365, distribution + mail-enabled added
+            # by the exchange lane, AD-synced added by the AD lane), since Graph reads them all even the
+            # ones it can't write. Excludes dynamic groups (rule-computed, not assignable). The check
+            # NAMES any of the reference user's groups the new user is missing, so a real gap is obvious.
             $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
             if ($mirrorUser) {
                 $ref = Resolve-CtgEntraUser -Identity ([string]$mirrorUser)
                 if ($ref) {
-                    # Same filter the mirror applies: cloud-only, non-dynamic, and Graph-addable
-                    # (exclude Exchange-managed distribution / mail-enabled security groups) so the
-                    # coverage count reflects what the mirror could actually add.
-                    $refCloud = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue | Where-Object {
+                    $refGroups = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue | Where-Object {
                         $ap = $_.AdditionalProperties
                         ([string](Get-CtgProp $ap '@odata.type')) -match 'microsoft\.graph\.group' -and
-                        (Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true -and
-                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership') -and
-                        -not ((Get-CtgProp $ap 'mailEnabled') -eq $true -and (@(Get-CtgProp $ap 'groupTypes') -notcontains 'Unified'))
-                    } | ForEach-Object { $_.Id })
+                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership')
+                    })
                     $myIds = @($myMemberships | ForEach-Object { $_.Id })
-                    $have = @($refCloud | Where-Object { $myIds -contains $_ }).Count
-                    & $add "mirrored cloud groups ($have/$($refCloud.Count))" $refCloud.Count $have
+                    $missing = @($refGroups | Where-Object { $myIds -notcontains $_.Id })
+                    $missingNames = @($missing | ForEach-Object { [string](Get-CtgProp $_.AdditionalProperties 'displayName') }) | Where-Object { $_ }
+                    $label = if ($missing.Count -eq 0) {
+                        "mirror coverage — all $($refGroups.Count) of $($ref.DisplayName)'s groups present"
+                    } else {
+                        "mirror coverage — MISSING $($missing.Count) of $($refGroups.Count): $($missingNames -join ', ')"
+                    }
+                    & $add $label 0 $missing.Count
                 }
             }
         }
