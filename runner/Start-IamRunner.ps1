@@ -291,14 +291,14 @@ function Update-CtgRunner {
     $H = @{ 'ngrok-skip-browser-warning' = 'true' }
     if ($ApiToken) { $H['Authorization'] = "Bearer $ApiToken" }
     Write-Host "self-update: pulling latest runner from $AppUrl" -ForegroundColor Yellow
-    $manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H
+    $manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H -TimeoutSec 30
     foreach ($rel in $manifest.files) {
         # Manifest paths are POSIX-style ('a/b/c'); Join-Path accepts '/' on Windows and it's native
         # on macOS/Linux, so use $rel as-is rather than forcing a backslash (which would corrupt
         # paths on a non-Windows central runner).
         $dest = Join-Path $PSScriptRoot $rel
         New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-        $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H
+        $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H -TimeoutSec 60
         [System.IO.File]::WriteAllText($dest, $resp.Content)
     }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
