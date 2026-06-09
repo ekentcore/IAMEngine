@@ -352,12 +352,39 @@ export function makeRunnerService(db: PrismaClient) {
         data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
       });
 
-      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, sequence: true, mode: true, status: true, request: true } });
-      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
+      let caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
       // (their dependency gate could never open behind a failed predecessor anyway).
       if (caseStatus === "failed") {
         await db.job.updateMany({ where: { caseRequestId: job.caseRequestId, status: "pending" }, data: { status: "skipped" } });
+      }
+
+      // Auto-verify: when the automated work first finishes, run a read-only validation sweep across
+      // every step (re-run each Confirm-Ctg*) once — confirming accounts/licensing/mirroring/access
+      // all landed after everything settled — before the case is "done" and the operator resolves it.
+      // validateOnly = the sweep itself; verifiedAt guards against looping.
+      if (caseStatus === "completed") {
+        const cr = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { verifiedAt: true } });
+        if (!cr?.verifiedAt) {
+          const thisJob = caseJobs.find((j) => j.id === jobId);
+          const thisWasVerify = Boolean(thisJob && req(thisJob).validateOnly);
+          if (thisWasVerify) {
+            await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { verifiedAt: new Date() } });
+          } else {
+            // Re-validate every succeeded automated step that has a validator (skip servicenow/case-resolution).
+            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution"].includes(j.systemKey));
+            if (sweep.length) {
+              await db.$transaction(sweep.map((j) =>
+                db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: { ...((j.request ?? {}) as object), validateOnly: true } as Prisma.InputJsonValue } })
+              ));
+              caseStatus = "running"; // verifying
+              await db.auditLog.create({ data: { actor: "system", action: "case.auto_verify", caseRequestId: job.caseRequestId, detail: { steps: sweep.length } } });
+            } else {
+              await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { verifiedAt: new Date() } });
+            }
+          }
+        }
       }
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
 

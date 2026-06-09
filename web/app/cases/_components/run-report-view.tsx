@@ -105,9 +105,19 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   }
 
   const s = report.summary;
+  // Verification banner: the case auto-runs a read-only validation sweep once the automated work
+  // finishes (and the operator can re-run it). Show whether the account has been verified.
+  const verifying = active && !report.verifiedAt;
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
+      {(report.verifiedAt || verifying) && (
+        <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: report.verifiedAt ? "#bbf7d0" : "#bfdbfe", background: report.verifiedAt ? "#f0fdf4" : "#eff6ff", color: report.verifiedAt ? "#15803d" : "#1d4ed8" }}>
+          {report.verifiedAt
+            ? <>🔎 Account verified {new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>
+            : <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>}
+        </div>
+      )}
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <p className="note" style={{ margin: 0 }}>
           {s.succeeded} verified · {s.warnings} warning · {s.failed} failed · {s.skipped} skipped · {s.manual} manual

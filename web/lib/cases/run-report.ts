@@ -32,6 +32,7 @@ export type RunReport = {
   action: string;
   client: { name: string; slug: string };
   caseStatus: string;
+  verifiedAt: string | null; // when the auto-verify sweep completed (null until verified)
   user: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -60,6 +61,7 @@ export type BuildRunReportInput = {
   subject: string | null;
   action: string;
   caseStatus: string;
+  verifiedAt?: string | null;
   client: { name: string; slug: string };
   payload: Record<string, unknown>;
   jobs: JobRow[];
@@ -178,6 +180,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     action: input.action,
     client: input.client,
     caseStatus: input.caseStatus,
+    verifiedAt: input.verifiedAt ?? null,
     user: userHeader(input.action, input.payload),
     startedAt: times.length ? new Date(Math.min(...times.map((d) => d.getTime()))).toISOString() : null,
     finishedAt: ends.length ? new Date(Math.max(...ends.map((d) => d.getTime()))).toISOString() : null,
@@ -249,6 +252,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     subject: c.subject,
     action: c.action,
     caseStatus: c.status,
+    verifiedAt: c.verifiedAt ? c.verifiedAt.toISOString() : null,
     client: c.client,
     payload: (c.payload ?? {}) as Record<string, unknown>,
     jobs: c.jobs,
