@@ -103,6 +103,45 @@ Describe 'Invoke-CtgSpanningOffboarding' {
     }
 }
 
+Describe 'Test-CtgSpanningSeatError' {
+    It 'classifies a real out-of-seats message as a seat error' {
+        Test-CtgSpanningSeatError 'Subscription does not have any available licenses' | Should -BeTrue
+    }
+
+    It 'does NOT classify a rate-limit error as a seat error' {
+        Test-CtgSpanningSeatError 'rate limit exceeded — retry later' | Should -BeFalse
+    }
+}
+
+Describe 'Invoke-CtgSpanningOffboarding (response honesty)' {
+    It 'reports licensed=false honestly instead of claiming the swap happened' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false } }
+            return [pscustomobject]@{ licensed = $false }   # vendor: "already had a license" — tier may not have changed
+        }
+        $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ from = 'Standard'; to = 'Archive' } }
+        $r = Invoke-CtgSpanningOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config
+        ($r.Actions -join ' ') | Should -Match 'licensed=false'
+        ($r.Actions -join ' ') | Should -Not -Match 'swapped Spanning license:'
+    }
+}
+
+Describe 'Confirm-CtgSpanning (config-aware)' {
+    It 'onboard: passes when assignLicense is disabled in config' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { throw '404 not found' }
+        $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{ assignLicense = $false }) -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'offboard: passes when the user was never in Spanning (nothing to retain)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { throw '404 not found' }
+        $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ to = 'Archive' } }
+        $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'gone@medipost.com' }) -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+}
+
 Describe 'Confirm-CtgSpanning' {
     It 'onboard: passes when the user is present and licensed' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false } }

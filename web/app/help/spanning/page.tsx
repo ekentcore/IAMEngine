@@ -67,9 +67,12 @@ export default function SpanningSetupPage() {
         </tbody>
       </table>
       <p className="note">
-        Field-name matching, in case a template differs: token ← <code>AccessToken / ApiToken / API Key / ClientSecret / Password</code>;
-        {" "}domain ← <code>Domain / AccountID / Account / Tenant / ClientID</code> (else the secret&rsquo;s Username, else the
-        client&rsquo;s primary domain); base URL ← <code>apiURL / BaseUrl / Url</code> (else a <code>Region</code> field, else US).
+        Field-name matching, in case a template differs (spacing/casing variants accepted): token ←
+        {" "}<code>AccessToken / Access Token / ApiToken / API Key / Token / Key / ClientSecret / Password</code>;
+        {" "}domain ← <code>Domain / AccountID / Account / Tenant</code> (else the secret&rsquo;s Username, else the
+        client&rsquo;s primary domain — <code>ClientID</code> is deliberately ignored); base URL ←
+        {" "}<code>apiURL / BaseUrl / Url</code> (else a <code>Region</code> field, else US). If no token field is found
+        the step fails with a message listing the field names it looked for.
       </p>
       <p className="note">Grant the app&rsquo;s Delinea service account <b>Read</b> on the secret, or the Test shows &ldquo;access denied&rdquo;.</p>
 

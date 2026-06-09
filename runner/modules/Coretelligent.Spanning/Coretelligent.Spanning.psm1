@@ -84,7 +84,16 @@ function Test-CtgSpanning404 {
         $resp = $ErrorRecord.Exception.Response
         if ($resp) { return ([int]$resp.StatusCode) -eq 404 }
     } catch { }
-    return ($ErrorRecord.Exception.Message -match '\b404\b|not found|does not exist|not exist')
+    return ($ErrorRecord.Exception.Message -match '\b404\b|not found|not exist')
+}
+
+function Test-CtgSpanningSeatError {
+    # Is this vendor error an out-of-seats condition (-> procurement warning) rather than a real
+    # failure? Require BOTH a license/seat word AND a shortage word, so transient errors like
+    # "rate limit exceeded" are NOT swallowed into a procurement note. Defensive — Spanning is
+    # usage-billed, so assigns normally just succeed.
+    param([Parameter(Mandatory)][string]$Message)
+    ($Message -match 'licen[cs]e|seat') -and ($Message -match 'available|limit|exceed|quota|insufficient|out of')
 }
 
 function Find-CtgSpanningUser {
@@ -93,11 +102,6 @@ function Find-CtgSpanningUser {
     try { return Invoke-CtgSpanningApi -Method GET -Path "/users/$Email" }
     catch { if (Test-CtgSpanning404 $_) { return $null } throw }
 }
-
-# Vendor messages that would mean "out of seats". Spanning is usage-billed (assign normally just
-# succeeds), so this guard is defensive — it converts any seat/quota error into a procurement
-# warning instead of failing the case.
-$script:SpanningNoSeats = 'available licenses|no available|out of|limit|exceeded|no seats|quota|insufficient'
 
 function Set-CtgSpanningLicense {
     # POST /users/assign with a license type. Returns the parsed response ({ licensed }).
@@ -118,6 +122,13 @@ function Invoke-CtgSpanningOnboarding {
     $actions = [System.Collections.Generic.List[string]]::new()
     $email   = $User.UserPrincipalName
 
+    # Some profiles set syncList:true expecting a manual sync trigger. The Spanning API has no sync
+    # endpoint — it discovers M365 users on its own schedule — so acknowledge the setting explicitly
+    # rather than ignoring it silently.
+    if ((Get-CtgProp $Config 'syncList')) {
+        $actions.Add("syncList: Spanning discovers M365 users on its own schedule (the API has no sync trigger) — nothing to do")
+    }
+
     if ((Get-CtgProp $Config 'assignLicense') -eq $false) {
         $actions.Add("assignLicense disabled in config — no license assigned")
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
@@ -137,11 +148,17 @@ function Invoke-CtgSpanningOnboarding {
 
     if ($PSCmdlet.ShouldProcess($email, "assign Spanning Backup Standard license")) {
         try {
-            Set-CtgSpanningLicense -Email $email -LicenseType 'STANDARD' | Out-Null
-            $actions.Add("assigned Spanning Backup Standard license — backup enabled for $email")
+            $resp = Set-CtgSpanningLicense -Email $email -LicenseType 'STANDARD'
+            # The API reports licensed=true when a license was actually assigned, false when the user
+            # "already had a license". Don't claim success the vendor didn't report — the validation
+            # read-back checks the licensed flag either way.
+            if ((Get-CtgProp $resp 'licensed') -eq $false) {
+                $actions.Add("Spanning reported no license change for $email (it considers the user already licensed) — the validation read-back confirms the final state")
+            }
+            else { $actions.Add("assigned Spanning Backup Standard license — backup enabled for $email") }
         }
         catch {
-            if ((Get-CtgProp $Config 'procureIfUnavailable') -and $_.Exception.Message -match $script:SpanningNoSeats) {
+            if ((Get-CtgProp $Config 'procureIfUnavailable') -and (Test-CtgSpanningSeatError $_.Exception.Message)) {
                 $actions.Add("WARN no available Spanning backup seats — backup NOT enabled for $email. Open a Procurement Case to order a Spanning license, then re-run this step.")
             }
             else { throw }
@@ -202,12 +219,18 @@ function Invoke-CtgSpanningOffboarding {
     }
     elseif ($PSCmdlet.ShouldProcess($email, "swap Spanning license to $type")) {
         try {
-            Set-CtgSpanningLicense -Email $email -LicenseType $type | Out-Null
+            $resp = Set-CtgSpanningLicense -Email $email -LicenseType $type
             $from = if ($swap) { [string](Get-CtgProp $swap 'from') } else { 'Standard' }
-            $actions.Add("swapped Spanning license: $from -> $to (kept an archive seat for retention)")
+            # The vendor docs leave a tier swap ambiguous: assign returns licensed=false when the user
+            # "already had a license", which may mean the tier was NOT converted. Report what the API
+            # said; the validation read-back checks the archived flag and will flag a real miss.
+            if ((Get-CtgProp $resp 'licensed') -eq $false) {
+                $actions.Add("requested Spanning license swap $from -> $to; Spanning reported licensed=false (user already had a license) — the validation read-back confirms whether the tier actually changed")
+            }
+            else { $actions.Add("swapped Spanning license: $from -> $to (kept an archive seat for retention)") }
         }
         catch {
-            if ((Get-CtgProp $Config 'procureIfUnavailable') -and $_.Exception.Message -match $script:SpanningNoSeats) {
+            if ((Get-CtgProp $Config 'procureIfUnavailable') -and (Test-CtgSpanningSeatError $_.Exception.Message)) {
                 $actions.Add("WARN no available Spanning $type seats — license NOT swapped for $email. Open a Procurement Case to order an Archive seat, then re-run this step.")
             }
             else { throw }
@@ -221,8 +244,10 @@ function Confirm-CtgSpanning {
     <#
     .SYNOPSIS
         Post-action read-back (GET /users/{email}). No mutations; returns { ok; checks[] }.
-        onboard  -> user present AND licensed=true (Standard backup enabled).
-        offboard -> backups retained (user still present) AND, for a swap-to-Archive, archived=true.
+        Honors the SAME config flags the executors honor, so a deliberately-benign executor branch
+        (assignLicense=false, user never in Spanning) doesn't produce a permanent validation miss.
+        onboard  -> user present AND licensed=true (skipped entirely when assignLicense=false).
+        offboard -> user absent = pass (nothing to retain); present -> archived/removed per config.
     #>
     [CmdletBinding()]
     param(
@@ -233,22 +258,32 @@ function Confirm-CtgSpanning {
     $found = Find-CtgSpanningUser -Email $User.UserPrincipalName
 
     if ($Action -eq 'offboard') {
-        $checks = @(@{ name = 'Spanning backups retained (user present)'; expected = $true; actual = [bool]$found; pass = [bool]$found })
+        if (-not $found) {
+            # Spanning never deletes data on offboard, so an absent user means they were never in
+            # Spanning — nothing to retain or convert. That's a pass, not a miss.
+            $check = @{ name = 'Spanning user absent — nothing to retain'; expected = $true; actual = $true; pass = $true }
+            return [pscustomobject]@{ ok = $true; checks = @($check) }
+        }
+        $checks = @(@{ name = 'Spanning backups retained (user present)'; expected = $true; actual = $true; pass = $true })
         if ((Get-CtgProp $Config 'removeLicense') -or (Get-CtgProp $Config 'unassign')) {
-            $lic = [bool]($found -and (Get-CtgProp $found 'licensed'))
+            $lic = [bool](Get-CtgProp $found 'licensed')
             $checks += @{ name = 'Spanning license removed'; expected = $false; actual = $lic; pass = (-not $lic) }
         }
         else {
             $swap = Get-CtgProp $Config 'swapLicense'
             $to   = if ($swap) { [string](Get-CtgProp $swap 'to') } else { 'Archive' }
             if ($to -match 'archive') {
-                $arch = [bool]($found -and (Get-CtgProp $found 'archived'))
+                $arch = [bool](Get-CtgProp $found 'archived')
                 $checks += @{ name = 'Spanning license = Archive'; expected = $true; actual = $arch; pass = $arch }
             }
         }
         return [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
     }
 
+    if ((Get-CtgProp $Config 'assignLicense') -eq $false) {
+        $check = @{ name = 'license assignment disabled in config — nothing to verify'; expected = $true; actual = $true; pass = $true }
+        return [pscustomobject]@{ ok = $true; checks = @($check) }
+    }
     $licensed = [bool]($found -and (Get-CtgProp $found 'licensed'))
     $checks = @(
         @{ name = 'Spanning user present';                       expected = $true; actual = [bool]$found; pass = [bool]$found },
@@ -257,4 +292,4 @@ function Confirm-CtgSpanning {
     [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
 }
 
-Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning
+Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning

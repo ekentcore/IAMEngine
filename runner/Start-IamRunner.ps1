@@ -158,8 +158,14 @@ $DISPATCH = @{
         Connect  = { param($job, $creds)
             $s = $creds['spanning']
             $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
-            $token   = & $pick @('AccessToken', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Key', 'ClientSecret', 'Password')
-            $domain  = & $pick @('Domain', 'AccountID', 'AccountId', 'Account', 'Tenant', 'ClientID', 'ClientId')
+            $tokenNames = @('AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key', 'ClientSecret', 'Password')
+            $token = & $pick $tokenNames
+            # Fail actionably, not with an opaque parameter-binding error: name the fields we looked
+            # for AND the ones the secret actually has, so the fix (rename a Delinea field) is obvious.
+            if (-not $token) { throw "the 'spanning' secret has no access-token field — looked for $($tokenNames -join ', '); the secret has: $(@($s.Fields.Keys) -join ', '). Put the Spanning access token in one of those fields (see /help/spanning)." }
+            # NOTE: no ClientID here on purpose — the help page documents ClientID as ignored, and an
+            # app-id GUID half-matching as the Basic-auth domain would 401 confusingly.
+            $domain  = & $pick @('Domain', 'AccountID', 'AccountId', 'Account', 'Tenant')
             if (-not $domain) { $domain = if ($s.Username) { $s.Username } else { $job.client.primaryDomain } }
             $baseUrl = & $pick @('apiURL', 'ApiUrl', 'ApiURL', 'BaseUrl', 'Url')
             if ($baseUrl) { Connect-CtgSpanning -Domain $domain -AccessToken $token -BaseUrl $baseUrl }
@@ -213,8 +219,12 @@ function Invoke-JobWithValidation {
     [pscustomobject]@{ Result = $result; Validation = $validation }
 }
 
-# Track which (system|tenant) Connect blocks have already run this process.
-$script:Connected = [System.Collections.Generic.HashSet[string]]::new()
+# Track which tenant each system's Connect block is CURRENTLY connected to. The Coretelligent.*
+# modules hold exactly one connection in module state (Connect-Ctg* overwrites it), so a
+# per-(system|tenant) "already connected" set is wrong on a multi-client runner: an A->B->A job
+# interleave would skip A's reconnect and silently run A's job against B's tenant. Keying
+# system -> connected tenant reconnects on every tenant switch instead.
+$script:ConnectedTenant = @{}
 
 # The on-prem AD module needs the client's primary domain to build the OU DN; fold it in from
 # the job's client context if the intake payload didn't carry it.
@@ -498,17 +508,18 @@ while ($true) {
                 Set-CtgPhase $job.id 'brokering credentials'
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
 
-                # Connect once per (system|tenant) before the first job that needs it. Mark the key
-                # connected ONLY after Connect succeeds — a throw here (bad cred, unreachable on-prem
-                # Exchange, transient) must NOT poison the cache, or every later job in this long-lived
-                # process would skip Connect and run unconnected (e.g. "Get-RemoteMailbox not recognized").
+                # Connect before the first job for this system, and RE-connect whenever the job's
+                # tenant differs from the one the module is currently connected to (modules hold one
+                # connection; see $script:ConnectedTenant). Record the tenant ONLY after Connect
+                # succeeds — a throw here (bad cred, unreachable on-prem Exchange, transient) must NOT
+                # poison the cache, or every later job in this long-lived process would skip Connect
+                # and run unconnected (e.g. "Get-RemoteMailbox not recognized").
                 if ($handler.ContainsKey('Connect')) {
                     $tenant = if ($job.client) { $job.client.primaryDomain } else { '' }
-                    $key = "$($job.systemKey)|$tenant"
-                    if (-not $script:Connected.Contains($key)) {
+                    if ($script:ConnectedTenant[$job.systemKey] -ne $tenant) {
                         Set-CtgPhase $job.id "connecting to $($job.systemKey)"
                         & $handler.Connect $job $creds
-                        [void]$script:Connected.Add($key)
+                        $script:ConnectedTenant[$job.systemKey] = $tenant
                     }
                 }
 
