@@ -35,6 +35,14 @@ test("summary tallies each verdict", () => {
   assert.deepEqual(rr.summary, { succeeded: 1, warnings: 1, failed: 1, skipped: 0, manual: 1, needsApproval: 0, pending: 0 });
 });
 
+test("succeeded + validation ok but a WARN action => warning (not a clean verified)", () => {
+  const rr = buildRunReport(input({
+    jobs: [{ systemKey: "m365", sequence: 0, mode: "api", status: "succeeded", request: {}, result: { Actions: ["assigned license: E5", "WARN could not add to E5 Entra group: group not found"] }, validation: { ok: true, checks: [{ name: "user exists", pass: true }] }, error: null, startedAt: null, finishedAt: null }],
+    names: new Map([["m365", "Microsoft 365"]]),
+  }));
+  assert.equal(rr.steps[0].verdict, "warning");
+});
+
 test("a pending approval-gated job surfaces as needs_approval", () => {
   const rr = buildRunReport(input({
     jobs: [{ systemKey: "ad", sequence: 0, mode: "api", status: "pending", request: { requiresApproval: true, approved: false }, result: null, validation: null, error: null, startedAt: null, finishedAt: null }],

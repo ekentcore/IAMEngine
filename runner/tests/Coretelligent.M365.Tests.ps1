@@ -166,6 +166,8 @@ Describe 'Confirm-CtgM365' {
 Describe 'Set-CtgSeatAwareLicense' {
     BeforeEach {
         $script:cfg = [pscustomobject]@{ skuId='sku-e5'; entraGroupWhenAvailable='e5-group'; adGroupFallback='M365 E3 Users Group' }
+        # The group-add pre-checks the group exists before adding — return a group for any id.
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'g' } }
     }
 
     It 'adds to the E5 Entra group when a seat is available' {

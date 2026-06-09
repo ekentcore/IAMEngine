@@ -52,12 +52,19 @@ function Write-CtgM365Step([string]$Message) {
 
 function Add-CtgGroupMember {
     param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3)
+    # Distinguish a missing GROUP (a stale/wrong configured id — a config error, no point retrying)
+    # from the user not yet being replicated in Entra. The Graph "Resource ... does not exist" message
+    # is the same for both, so check the group up front.
+    if (-not (Get-MgGroup -GroupId $GroupId -ErrorAction SilentlyContinue)) {
+        return "group '$GroupId' not found in Entra — the configured group id is wrong or the group was deleted"
+    }
     $last = $null
     for ($i = 0; $i -lt $Retries; $i++) {
         try { New-MgGroupMember -GroupId $GroupId -DirectoryObjectId $UserId -ErrorAction Stop; return $null }
         catch {
             $last = $_.Exception.Message
             if ($last -match 'already exist|references already exist') { return $null }   # idempotent: already a member
+            # Group exists (checked above), so a "not present" now means the USER hasn't replicated yet.
             if ($i -lt $Retries - 1 -and $last -match 'does not exist|not present|ResourceNotFound') {
                 if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress "group add: user not yet replicated in Entra — retrying in 15s ($($i + 2)/$Retries)" }
                 Start-Sleep -Seconds 15
