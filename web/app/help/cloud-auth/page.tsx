@@ -21,6 +21,16 @@ export default function CloudAuthSetupPage() {
         step). Do this once per client.
       </p>
 
+      <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
+        <b>Does this client need a certificate?</b>
+        <ul style={{ margin: "0.4rem 0 0" }}>
+          <li><b>Cloud-only client</b> (<code>entra</code> backbone — no on-prem AD/Exchange, e.g. the only step is <b>m365</b>):
+            {" "}<b>No certificate.</b> Just a <b>client secret</b> — do steps 1–3 only, then store Username = app id, Password = secret. Skip the cert + Exchange-role steps.</li>
+          <li><b>Hybrid client</b> (has an <b>exchange</b> step — on-prem Exchange): <b>also needs a certificate</b> (Exchange Online app-only is cert-based) + the Exchange Administrator role. Do all the steps below.</li>
+        </ul>
+        <span className="note">The client&apos;s backbone shows on its page; if there&apos;s no <code>exchange</code> step in the plan, it&apos;s cloud-only.</span>
+      </div>
+
       <h2>1. Register the app</h2>
       <ol>
         <li>Entra ID → <b>App registrations</b> → <b>New registration</b>.</li>
@@ -30,8 +40,8 @@ export default function CloudAuthSetupPage() {
 
       <h2>2. API permissions (application, not delegated)</h2>
       <ul>
-        <li><b>Microsoft Graph</b> → Application permissions → <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code> (add <code>Directory.Read.All</code> if you resolve managers by name).</li>
-        <li><b>APIs my organization uses</b> → <b>Office 365 Exchange Online</b> → Application permissions → <code>Exchange.ManageAsApp</code>.</li>
+        <li><b>Microsoft Graph</b> → Application permissions → <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>, <code>Organization.Read.All</code> (license/seat counts; add <code>Directory.Read.All</code> if you resolve managers by name).</li>
+        <li><b>Exchange only (hybrid clients):</b> <b>APIs my organization uses</b> → <b>Office 365 Exchange Online</b> → Application permissions → <code>Exchange.ManageAsApp</code>.</li>
         <li>Click <b>Grant admin consent</b> (the statuses must show a green check).</li>
       </ul>
 
