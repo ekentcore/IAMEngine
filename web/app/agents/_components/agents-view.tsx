@@ -33,7 +33,7 @@ function installCommand(a: AgentVM, origin: string): string {
   ];
   if (a.scope === "central") {
     // Just the Graph submodules the M365 executor needs (+ EXO) — far faster than the Microsoft.Graph meta-module.
-    lines.push(`Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Groups,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules`);
+    lines.push(`Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Groups,Microsoft.Graph.Identity.DirectoryManagement,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules (the agent also self-installs any missing module on demand)`);
   }
   lines.push(
     `New-Item -ItemType Directory -Force $Dir | Out-Null`,

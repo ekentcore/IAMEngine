@@ -238,6 +238,44 @@ function Set-CtgPhase {
     Send-CtgProgress $Phase
 }
 
+# Self-heal: only auto-install modules that are part of our trusted IAM toolchain — never an arbitrary
+# gallery module conjured from a typo'd cmdlet name.
+$script:CtgAutoInstallModules = @('Microsoft.Graph.*', 'ExchangeOnlineManagement', 'MSOnline', 'AzureAD', 'AzureADPreview', 'Az.*', 'ADSync', 'ActiveDirectory')
+
+function Get-CtgMissingCommandName {
+    # Pull the unresolved command name out of a CommandNotFoundException (or its "The term 'X' is not
+    # recognized" message). Returns $null when the error isn't a missing-command.
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+    while ($ex) {
+        if ($ex -is [System.Management.Automation.CommandNotFoundException]) { return $ex.CommandName }
+        $ex = $ex.InnerException
+    }
+    $m = "$($ErrorRecord.Exception.Message)"
+    if ($m -match "[Tt]he term '([^']+)' is not recognized") { return $matches[1] }
+    return $null
+}
+
+function Repair-CtgMissingModule {
+    # Given a missing cmdlet, find the gallery module that provides it and install+import it — but only
+    # if that module is in our trusted allowlist. Returns the module name on success, else $null.
+    param([string]$CommandName)
+    if (-not $CommandName) { return $null }
+    if (-not (Get-Command Find-Command -ErrorAction SilentlyContinue)) { return $null }  # needs PowerShellGet
+    $mod = $null
+    try { $mod = (Find-Command -Name $CommandName -ErrorAction Stop | Select-Object -First 1).ModuleName } catch { return $null }
+    if (-not $mod) { return $null }
+    $trusted = $false
+    foreach ($p in $script:CtgAutoInstallModules) { if ($mod -like $p) { $trusted = $true; break } }
+    if (-not $trusted) { Write-Warning "self-heal: '$CommandName' is in module '$mod', not on the auto-install allowlist — skipping"; return $null }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Install-Module $mod -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Import-Module $mod -Force -ErrorAction Stop
+        return $mod
+    } catch { Write-Warning "self-heal: failed to install '$mod' for '$CommandName': $($_.Exception.Message)"; return $null }
+}
+
 function Update-CtgRunner {
     # Operator clicked "Update": re-pull every runner file from the app's manifest into our own
     # folder, then relaunch this script (new pwsh process = new code) and exit. Re-runnable and
@@ -420,6 +458,9 @@ while ($true) {
                     continue
                 }
 
+                # First thing the operator sees for this step — it has started.
+                Set-CtgPhase $job.id "starting $($job.action) $($job.systemKey)"
+
                 # Broker every secret the job names (least-privilege, one call each), keyed by name.
                 Set-CtgPhase $job.id 'brokering credentials'
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
@@ -440,7 +481,22 @@ while ($true) {
 
                 $dryRun = [bool]$job.dryRun
                 Set-CtgPhase $job.id "$($job.action) $($job.systemKey)$(if ($dryRun) { ' (dry run)' })"
-                $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun
+                # Self-heal once: if execution fails because a cmdlet's module isn't installed, find +
+                # install it (trusted modules only) and retry — so a missing Graph/EXO submodule fixes
+                # itself instead of failing the step.
+                $outcome = $null
+                for ($try = 0; $try -lt 2; $try++) {
+                    try { $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun; break }
+                    catch {
+                        $missing = Get-CtgMissingCommandName $_
+                        if ($try -eq 0 -and $missing) {
+                            Set-CtgPhase $job.id "missing command '$missing' — locating + installing its module"
+                            $mod = Repair-CtgMissingModule $missing
+                            if ($mod) { Set-CtgPhase $job.id "installed $mod — retrying $($job.systemKey)"; continue }
+                        }
+                        throw
+                    }
+                }
                 $body = @{ agentId = $AgentId; status = 'succeeded'; result = $outcome.Result }
                 if ($null -ne $outcome.Validation) { $body.validation = $outcome.Validation }
                 # Surface the module's evidence snapshot (e.g. group memberships captured before an
