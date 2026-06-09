@@ -82,6 +82,9 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const toggleSel = (id: string) => setSelected((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
 
   async function call(id: string, init: RequestInit, url = `/api/cases/${id}`) {
     setBusyId(id);
@@ -103,6 +106,23 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
     call(c.id, { method: "DELETE" });
   }
 
+  async function bulkTrash(ids: string[]) {
+    if (ids.length === 0) return;
+    if (!confirm(`Move ${ids.length} case${ids.length > 1 ? "s" : ""} to the trash? They leave the list and are restorable for 30 days.`)) return;
+    setBusyId("bulk");
+    setError(null);
+    try {
+      for (const id of ids) {
+        const res = await fetch(`/api/cases/${id}`, { method: "DELETE" });
+        if (!res.ok) { setError((await res.json().catch(() => null))?.error ?? `Failed to trash a case (${res.status})`); break; }
+      }
+      setSelected(new Set());
+      router.refresh();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
 
   const visible = useMemo(() => {
@@ -116,6 +136,16 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
     if (sortDir === "desc") sorted.reverse();
     return sorted;
   }, [cases, terms, statusFilter, sortKey, sortDir]);
+
+  const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
+  const selectedVisible = visibleIds.filter((id) => selected.has(id));
+  const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+  const toggleAll = () => setSelected((s) => {
+    const x = new Set(s);
+    if (allSelected) visibleIds.forEach((id) => x.delete(id));
+    else visibleIds.forEach((id) => x.add(id));
+    return x;
+  });
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -158,11 +188,24 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
         </select>
         <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {cases.length}</span>
       </div>
+      {selected.size > 0 && (
+        <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
+          <b>{selected.size} selected</b>
+          <button className="danger" disabled={busyId === "bulk"} onClick={() => bulkTrash([...selected])}>
+            {busyId === "bulk" ? "moving…" : "🗑 Send to trash"}
+          </button>
+          <button onClick={() => setSelected(new Set())}>Clear selection</button>
+        </div>
+      )}
       {error && <p className="note danger">{error}</p>}
 
       <table>
         <thead>
           <tr>
+            <th style={{ width: 24 }}>
+              <input type="checkbox" checked={allSelected} aria-label="Select all" onChange={toggleAll}
+                ref={(el) => { if (el) el.indeterminate = selectedVisible.length > 0 && !allSelected; }} />
+            </th>
             <SortHead k="subject" label="Subject" />
             <SortHead k="clientName" label="Client" />
             <SortHead k="action" label="Action" />
@@ -176,7 +219,8 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
         </thead>
         <tbody>
           {visible.map((c) => (
-            <tr key={c.id}>
+            <tr key={c.id} style={selected.has(c.id) ? { background: "#eff6ff" } : undefined}>
+              <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
               <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
               <td className="muted">{c.clientName}</td>
               <td><span className="badge">{c.action}</span></td>
