@@ -372,7 +372,9 @@ function Get-CtgBuildId {
         $rels = foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File) {
             $rel = ([System.IO.Path]::GetRelativePath($root, $f.FullName)) -replace '\\', '/'
             if ($rel.Split('/') | Where-Object { $skip -contains $_ }) { continue }
-            if ($f.Name -like '*.Tests.ps1' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build') { continue }
+            # Skip runtime/non-bundle files (logs, build marker) — they aren't in the app's bundle, so
+            # counting them makes the hash drift forever vs the app ("update available" that never clears).
+            if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build') { continue }
             $rel
         }
         $arr = @($rels); [Array]::Sort($arr, [System.StringComparer]::Ordinal)

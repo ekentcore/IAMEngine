@@ -8,7 +8,9 @@ import { join, resolve, relative, sep } from "node:path";
 export const RUNNER_ROOT = resolve(process.cwd(), "..", "runner");
 
 const SKIP_DIRS = new Set(["tests", "dist", ".git", "node_modules"]);
-const isSkippedFile = (name: string) => name.endsWith(".Tests.ps1") || name === ".DS_Store";
+// Keep this in lockstep with Get-CtgBuildId's skip-list in Start-IamRunner.ps1, or the agent's
+// self-computed hash won't match the bundle's. Runtime files (logs, the .build marker) are excluded.
+const isSkippedFile = (name: string) => name.endsWith(".Tests.ps1") || name.endsWith(".log") || name === ".DS_Store" || name === ".build";
 
 // All runner files the host needs, as POSIX-style relative paths.
 export function listRunnerFiles(dir = RUNNER_ROOT): string[] {

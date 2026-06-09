@@ -42,11 +42,15 @@ while IFS= read -r rel; do
 done <<< "$files"
 
 echo "==> launching runner ($AGENT)"
+# Log OUTSIDE the runner dir — a log file inside it would be folded into the runner's self-computed
+# build id and make it drift forever vs the app ("update available" that never clears).
+LOG="${RUNNER_LOG:-$HOME/iam-runner.log}"
+rm -f "$DIR/runner.log" 2>/dev/null || true   # clean up any old in-dir log from earlier runs
 args=(-NoProfile -ExecutionPolicy Bypass -File "$DIR/Start-IamRunner.ps1" -AppUrl "$APP" -AgentId "$AGENT")
 [ -n "$TOKEN" ] && args+=(-ApiToken "$TOKEN")
-nohup "$PWSH" "${args[@]}" > "$DIR/runner.log" 2>&1 &
+nohup "$PWSH" "${args[@]}" > "$LOG" 2>&1 &
 pid=$!
-echo "    started detached (pid $pid). Log: $DIR/runner.log"
+echo "    started detached (pid $pid). Log: $LOG"
 sleep 2
 echo "==> tailing the log (Ctrl-C to stop watching — the runner keeps running):"
-tail -f "$DIR/runner.log"
+tail -f "$LOG"
