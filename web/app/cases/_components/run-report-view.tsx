@@ -69,6 +69,17 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  async function markComplete(stepSeq: number, jobId: string | undefined, done: boolean) {
+    if (!jobId) return;
+    setBusy(`complete-${stepSeq}`);
+    try {
+      await fetch(`/api/jobs/${jobId}/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done }) });
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function postWorkNote() {
     setBusy("worknote");
     setWriteMsg(null);
@@ -123,6 +134,29 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 >
                   {busy === `rerun-${step.seq}` ? "re-running…" : "re-run / re-validate"}
                 </button>
+              )}
+              {/* Manual / skipped steps an operator does by hand — mark them done so the case can
+                  reach "completed"; unmark if it was closed by mistake. */}
+              {(step.verdict === "manual" || step.verdict === "skipped") && step.jobId && (
+                <button
+                  style={{ marginLeft: 8, fontSize: 11 }}
+                  disabled={busy === `complete-${step.seq}`}
+                  onClick={(e) => { e.preventDefault(); markComplete(step.seq, step.jobId, true); }}
+                >
+                  {busy === `complete-${step.seq}` ? "marking…" : "✓ mark complete"}
+                </button>
+              )}
+              {step.manualCompleted && step.jobId && (
+                <>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "#15803d" }}>done by hand</span>
+                  <button
+                    style={{ marginLeft: 6, fontSize: 11 }}
+                    disabled={busy === `complete-${step.seq}`}
+                    onClick={(e) => { e.preventDefault(); markComplete(step.seq, step.jobId, false); }}
+                  >
+                    {busy === `complete-${step.seq}` ? "…" : "unmark"}
+                  </button>
+                </>
               )}
             </summary>
             <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>

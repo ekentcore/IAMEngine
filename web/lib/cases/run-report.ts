@@ -22,6 +22,7 @@ export type RunReportStep = {
   finishedAt: string | null;
   currentPhase: string | null; // what the runner is doing right now (in-flight steps only)
   phaseTrail: { ts: string; phase: string }[]; // the phases this step has gone through
+  manualCompleted: boolean; // marked done by an operator (a manual/skipped step closed by hand)
 };
 
 export type RunReport = {
@@ -142,6 +143,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else if (verdict === "needs_approval") summary.needsApproval++;
     else summary.pending++;
 
+    const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
     const phaseTrail = phaseTrailOf(j.progress);
     // Only show a "current phase" while the step is actually in flight — a finished step's last
     // phase isn't what it's "doing now".
@@ -161,6 +163,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
       currentPhase,
       phaseTrail,
+      manualCompleted,
     };
   });
 
