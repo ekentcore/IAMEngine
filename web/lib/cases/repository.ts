@@ -223,11 +223,14 @@ export function makeCaseRepository(db: PrismaClient) {
       planned: PlannedJob[]
     ): Promise<{ mode: "full" | "incremental"; kept: number; added: number }> {
       return db.$transaction(async (tx) => {
-        // Drop every job that hasn't started; whatever survives is started/terminal work that must
-        // be KEPT (the account exists — its history can't be re-planned away). An empty survivor
-        // set = the classic full re-plan; survivors = INCREMENTAL: only systems without a kept job
-        // get fresh jobs, so a mid-run case can pick up new/changed systems without losing the run.
-        await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: STARTED_STATUSES } } });
+        // Drop every job that hasn't ACTUALLY run; whatever survives is real work that must be
+        // KEPT (the account exists — its history can't be re-planned away). SKIPPED jobs are
+        // replaced too: nothing executed (no-executor skips, failure-cancelled pendings), and
+        // keeping them would pin their old sequence + stale dependsOn forever (a skipped
+        // case-resolution stayed at position 2 with no deps across every re-plan). An empty
+        // survivor set = the classic full re-plan; survivors = INCREMENTAL: only systems without
+        // a kept job get fresh jobs, so a mid-run case picks up changes without losing the run.
+        await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: ["dispatched", "running", "succeeded", "failed"] } } });
         const kept = await tx.job.findMany({
           where: { caseRequestId: caseId },
           select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
