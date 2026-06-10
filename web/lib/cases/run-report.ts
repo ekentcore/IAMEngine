@@ -92,6 +92,19 @@ function normalizeValidation(v: unknown): RunReportStep["validation"] {
   return { ok: Boolean(ok), checks };
 }
 
+// The warning lines a single (succeeded) job contributes: its WARN-tagged actions plus any failed
+// validation checks. Shared with the cases list so a "completed" case can show orange + the
+// warnings on hover, with exactly the same definition of "warning" as the run report.
+export function jobWarningLines(result: unknown, validation: unknown): string[] {
+  const lines = actionsOf(result).filter((a) => /\bWARN\b/i.test(a));
+  const v = normalizeValidation(validation);
+  if (v && !v.ok) {
+    const missed = v.checks.filter((c) => !c.pass).map((c) => c.name).filter(Boolean);
+    lines.push(missed.length ? `validation missed: ${missed.join(", ")}` : "validation missed");
+  }
+  return lines;
+}
+
 function phaseTrailOf(progress: unknown): { ts: string; phase: string }[] {
   if (!Array.isArray(progress)) return [];
   return progress

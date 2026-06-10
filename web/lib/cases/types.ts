@@ -16,6 +16,10 @@ export type CaseListItem = {
   status: CaseStatus;
   // Running/queued but blocked on a missing required credential — shown as "paused" in the list.
   paused: boolean;
+  // For completed cases: the steps' warning lines (WARN actions / missed validations), with the
+  // system name prefixed. Empty = a clean green "completed"; non-empty renders orange with these
+  // on hover. Always [] for non-completed cases.
+  warnings: string[];
   subject: string | null;
   serviceNowCaseNumber: string | null;
   createdAt: Date;

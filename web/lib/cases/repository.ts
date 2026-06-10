@@ -6,6 +6,7 @@ import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
 import { missingRequiredSecrets } from "./case-secrets";
+import { jobWarningLines } from "./run-report";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -241,7 +242,7 @@ export function makeCaseRepository(db: PrismaClient) {
           id: true, action: true, status: true, subject: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
-          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
+          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, result: true, validation: true } },
         },
       });
 
@@ -292,8 +293,19 @@ export function makeCaseRepository(db: PrismaClient) {
         // credential is missing, so the runner won't claim it — surface that as paused, not running.
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
         const paused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
+        // A completed case is only "green done" when no step carries a warning (a WARN action or a
+        // missed validation) — same definition as the run report. The list shows those completed-
+        // with-warnings cases in orange with the warning lines on hover.
+        const warnings =
+          r.status === "completed"
+            ? r.jobs.flatMap((j) =>
+                j.status === "succeeded"
+                  ? jobWarningLines(j.result, j.validation).map((w) => `${nameByKey.get(j.systemKey) ?? j.systemKey}: ${w}`)
+                  : []
+              )
+            : [];
         return {
-          id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
+          id: r.id, action: r.action, status: r.status, subject: r.subject, paused, warnings,
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: buildCaseStatusHint(

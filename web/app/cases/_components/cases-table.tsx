@@ -9,6 +9,7 @@ export type CaseRowVM = {
   action: string;
   status: string;
   paused?: boolean; // running/queued but blocked on missing credentials — shown as "paused"
+  warnings?: string[]; // completed-with-warnings: badge goes orange, these show on hover
   subject: string | null;
   serviceNowCaseNumber: string | null;
   clientName: string;
@@ -52,10 +53,18 @@ type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "j
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
-  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, STATUS_LABEL[c.status] ?? c.status, c.statusHint]
+  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, STATUS_LABEL[c.status] ?? c.status, c.statusHint, ...(c.warnings ?? [])]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+// Render a date-only intake string ("2026-06-15") in the same locale format as the Created column.
+// Parse the components locally — new Date("2026-06-15") is UTC midnight and shifts a day west of UTC.
+function fmtDateOnly(d: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  if (!m) return d;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString();
 }
 
 function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
@@ -227,20 +236,32 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
               <td className="muted">{c.jobCount}</td>
               <td>
-                <span
-                  className="badge"
-                  title={c.statusHint || undefined}
-                  style={{
-                    color: c.paused ? "#8a6d00" : STATUS_COLOR[c.status],
-                    cursor: c.statusHint ? "help" : undefined,
-                    textDecoration: c.statusHint ? "underline dotted" : undefined,
-                    textUnderlineOffset: 3,
-                  }}
-                >
-                  {c.paused ? "paused — needs creds" : (STATUS_LABEL[c.status] ?? c.status)}
-                </span>
+                {(() => {
+                  // Completed is only green when 100% clean; any step warning turns it orange and
+                  // the hover lists the warnings (one per line).
+                  const warns = c.status === "completed" ? (c.warnings ?? []) : [];
+                  const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
+                  return (
+                    <span
+                      className="badge"
+                      title={title}
+                      style={{
+                        color: c.paused ? "#8a6d00" : warns.length ? "#b26a00" : STATUS_COLOR[c.status],
+                        cursor: title ? "help" : undefined,
+                        textDecoration: title ? "underline dotted" : undefined,
+                        textUnderlineOffset: 3,
+                      }}
+                    >
+                      {c.paused
+                        ? "paused — needs creds"
+                        : warns.length
+                          ? `completed — ${warns.length} warning${warns.length > 1 ? "s" : ""}`
+                          : (STATUS_LABEL[c.status] ?? c.status)}
+                    </span>
+                  );
+                })()}
               </td>
-              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ?? "—"}</td>
+              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ? fmtDateOnly(c.effectiveDate) : "—"}</td>
               <td className="muted">{new Date(c.createdAtIso).toLocaleDateString()}</td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                 <button

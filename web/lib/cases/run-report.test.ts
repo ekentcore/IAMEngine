@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunReport, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
+import { buildRunReport, jobWarningLines, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
 
 function input(overrides: Partial<BuildRunReportInput> = {}): BuildRunReportInput {
   return {
@@ -58,4 +58,19 @@ test("markdown surfaces actions, validation misses, and errors", () => {
   assert.match(md, /⚠️ warning/);
   assert.match(md, /✗ internal domain verified/);
   assert.match(md, /Error: token expired/);
+});
+
+test("jobWarningLines collects WARN actions and missed validation checks", () => {
+  const lines = jobWarningLines(
+    { Actions: ["created user", "license: WARN no available seats — open a Procurement Case"] },
+    { ok: false, checks: [{ name: "backup enabled", expected: true, actual: false, pass: false }, { name: "user present", expected: true, actual: true, pass: true }] }
+  );
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /WARN no available seats/);
+  assert.equal(lines[1], "validation missed: backup enabled");
+});
+
+test("jobWarningLines is empty for a clean result", () => {
+  assert.deepEqual(jobWarningLines({ Actions: ["created user"] }, { ok: true, checks: [] }), []);
+  assert.deepEqual(jobWarningLines(null, null), []);
 });
