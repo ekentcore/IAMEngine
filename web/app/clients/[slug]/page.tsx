@@ -7,6 +7,7 @@ import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
+import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
@@ -132,7 +133,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             {client.status}
           </p>
         </div>
-        <EditSystemsButton slug={client.slug} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <ReplanCasesButton slug={client.slug} />
+          <EditSystemsButton slug={client.slug} />
+        </div>
       </div>
 
       <table>
