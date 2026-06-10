@@ -9,7 +9,9 @@
 #   Base URL  : https://o365-api-{region}.spanningbackup.com/external   (region: US, EU, AP, UK, CA)
 #   Auth      : HTTP Basic over HTTPS — username = the CLIENT ID, password = the CLIENT SECRET
 #               (both from the API section of the Spanning admin console).
-#   Get user  : GET  /users/{email}            -> user (incl. licensed/archived flags) | 404
+#   Get user  : GET  /users/{email} | list GET /users?size=N -> user objects: { displayName,
+#               userPrincipalName, email, assigned:bool, isArchive:bool, isAdmin, isDeleted, msId }
+#               (legacy docs call the flags licensed/archived — both shapes are read)
 #   Assign    : POST /users/assign   { userPrincipalNames:[..], licenseType:"STANDARD"|"ARCHIVE" } -> { licensed }
 #   Unassign  : POST /users/unassign { userPrincipalNames:[..] }                                    -> { licensed }
 # (Endpoint existence confirmed by probe: /external/{tenant,users,users/assign,users/unassign} 401
@@ -105,6 +107,20 @@ function Test-CtgSpanning404 {
     return ($ErrorRecord.Exception.Message -match '\b404\b|not found|not exist')
 }
 
+function Test-CtgSpanningLicensed {
+    # Does this user object carry a backup license? The external API's field is `assigned`
+    # (verified live: { assigned, isArchive, isAdmin, isDeleted, msId, ... }); the legacy docs
+    # call it `licensed`. Read whichever is present.
+    param($User)
+    [bool]((Get-CtgProp $User 'assigned') ?? (Get-CtgProp $User 'licensed'))
+}
+
+function Test-CtgSpanningArchived {
+    # Archive-tier flag: `isArchive` on the external API, `archived` in the legacy docs.
+    param($User)
+    [bool]((Get-CtgProp $User 'isArchive') ?? (Get-CtgProp $User 'archived'))
+}
+
 function Test-CtgSpanningSeatError {
     # Is this vendor error an out-of-seats condition (-> procurement warning) rather than a real
     # failure? Require BOTH a license/seat word AND a shortage word, so transient errors like
@@ -132,8 +148,10 @@ function Find-CtgSpanningUser {
         if ($null -eq $list) { $list = Get-CtgProp $resp 'items' }
         if ($null -eq $list) { $list = $resp }
         $hit = @($list) | Where-Object {
-            ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
-            ([string](Get-CtgProp $_ 'userPrincipalName')).ToLower() -eq $needle
+            -not (Get-CtgProp $_ 'isDeleted') -and (
+                ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
+                ([string](Get-CtgProp $_ 'userPrincipalName')).ToLower() -eq $needle
+            )
         } | Select-Object -First 1
         if ($hit) { return $hit }
         # nextLink is an absolute URL; the seam takes a path — strip our base, else we're done.
@@ -183,7 +201,7 @@ function Invoke-CtgSpanningOnboarding {
         $actions.Add("Spanning has not discovered $email yet (it syncs M365 users on its own schedule) — re-run this step once the user appears to assign the backup license")
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
-    if ((Get-CtgProp $found 'licensed')) {
+    if (Test-CtgSpanningLicensed $found) {
         $actions.Add("backup already enabled for $email (Standard license already assigned)")
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
@@ -191,10 +209,10 @@ function Invoke-CtgSpanningOnboarding {
     if ($PSCmdlet.ShouldProcess($email, "assign Spanning Backup Standard license")) {
         try {
             $resp = Set-CtgSpanningLicense -Email $email -LicenseType 'STANDARD'
-            # The API reports licensed=true when a license was actually assigned, false when the user
-            # "already had a license". Don't claim success the vendor didn't report — the validation
-            # read-back checks the licensed flag either way.
-            if ((Get-CtgProp $resp 'licensed') -eq $false) {
+            # The API reports licensed/assigned=true when a license was actually assigned, false when
+            # the user "already had a license". Don't claim success the vendor didn't report — the
+            # validation read-back checks the real flag either way.
+            if (((Get-CtgProp $resp 'licensed') ?? (Get-CtgProp $resp 'assigned')) -eq $false) {
                 $actions.Add("Spanning reported no license change for $email (it considers the user already licensed) — the validation read-back confirms the final state")
             }
             else { $actions.Add("assigned Spanning Backup Standard license — backup enabled for $email") }
@@ -239,7 +257,7 @@ function Invoke-CtgSpanningOffboarding {
     # Default action: swap to ARCHIVE (keeps the backup as an archive). An explicit unassign/removeLicense
     # flag instead frees the seat entirely.
     if ((Get-CtgProp $Config 'removeLicense') -or (Get-CtgProp $Config 'unassign')) {
-        if ((Get-CtgProp $found 'licensed') -eq $false -and (Get-CtgProp $found 'archived') -eq $false) {
+        if (-not (Test-CtgSpanningLicensed $found) -and -not (Test-CtgSpanningArchived $found)) {
             $actions.Add("Spanning license already removed for $email — no change")
         }
         elseif ($PSCmdlet.ShouldProcess($email, "unassign Spanning license (free the seat)")) {
@@ -253,10 +271,10 @@ function Invoke-CtgSpanningOffboarding {
     $to   = if ($swap) { [string](Get-CtgProp $swap 'to') } else { 'Archive' }
     $type = if ($to -match 'archive') { 'ARCHIVE' } elseif ($to -match 'standard') { 'STANDARD' } else { 'ARCHIVE' }
 
-    if ($type -eq 'ARCHIVE' -and (Get-CtgProp $found 'archived')) {
+    if ($type -eq 'ARCHIVE' -and (Test-CtgSpanningArchived $found)) {
         $actions.Add("Spanning license already Archive for $email — no swap needed")
     }
-    elseif ($type -eq 'STANDARD' -and (Get-CtgProp $found 'licensed')) {
+    elseif ($type -eq 'STANDARD' -and (Test-CtgSpanningLicensed $found) -and -not (Test-CtgSpanningArchived $found)) {
         $actions.Add("Spanning license already Standard for $email — no swap needed")
     }
     elseif ($PSCmdlet.ShouldProcess($email, "swap Spanning license to $type")) {
@@ -266,7 +284,7 @@ function Invoke-CtgSpanningOffboarding {
             # The vendor docs leave a tier swap ambiguous: assign returns licensed=false when the user
             # "already had a license", which may mean the tier was NOT converted. Report what the API
             # said; the validation read-back checks the archived flag and will flag a real miss.
-            if ((Get-CtgProp $resp 'licensed') -eq $false) {
+            if (((Get-CtgProp $resp 'licensed') ?? (Get-CtgProp $resp 'assigned')) -eq $false) {
                 $actions.Add("requested Spanning license swap $from -> $to; Spanning reported licensed=false (user already had a license) — the validation read-back confirms whether the tier actually changed")
             }
             else { $actions.Add("swapped Spanning license: $from -> $to (kept an archive seat for retention)") }
@@ -308,14 +326,14 @@ function Confirm-CtgSpanning {
         }
         $checks = @(@{ name = 'Spanning backups retained (user present)'; expected = $true; actual = $true; pass = $true })
         if ((Get-CtgProp $Config 'removeLicense') -or (Get-CtgProp $Config 'unassign')) {
-            $lic = [bool](Get-CtgProp $found 'licensed')
+            $lic = Test-CtgSpanningLicensed $found
             $checks += @{ name = 'Spanning license removed'; expected = $false; actual = $lic; pass = (-not $lic) }
         }
         else {
             $swap = Get-CtgProp $Config 'swapLicense'
             $to   = if ($swap) { [string](Get-CtgProp $swap 'to') } else { 'Archive' }
             if ($to -match 'archive') {
-                $arch = [bool](Get-CtgProp $found 'archived')
+                $arch = Test-CtgSpanningArchived $found
                 $checks += @{ name = 'Spanning license = Archive'; expected = $true; actual = $arch; pass = $arch }
             }
         }
@@ -326,7 +344,7 @@ function Confirm-CtgSpanning {
         $check = @{ name = 'license assignment disabled in config — nothing to verify'; expected = $true; actual = $true; pass = $true }
         return [pscustomobject]@{ ok = $true; checks = @($check) }
     }
-    $licensed = [bool]($found -and (Get-CtgProp $found 'licensed'))
+    $licensed = [bool]($found -and (Test-CtgSpanningLicensed $found))
     $checks = @(
         @{ name = 'Spanning user present';                       expected = $true; actual = [bool]$found; pass = [bool]$found },
         @{ name = 'Spanning backup enabled (Standard license)';  expected = $true; actual = $licensed;     pass = $licensed }
@@ -334,4 +352,4 @@ function Confirm-CtgSpanning {
     [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
 }
 
-Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning
+Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning

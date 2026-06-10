@@ -1,7 +1,8 @@
 #Requires -Modules @{ ModuleName='Pester'; ModuleVersion='5.0.0' }
 # Unit tests for Coretelligent.Spanning. Mocks the HTTP seam (Invoke-CtgSpanningApi). Endpoints +
-# shapes are verified against the live Spanning Backup reference (api.spanningbackup.com):
-#   GET  /users/{email}            -> { type, email, licensed:bool, archived:bool } | 404
+# shapes verified LIVE against a real tenant (external API):
+#   user objects: { displayName, userPrincipalName, email, assigned:bool, isArchive:bool,
+#                   isAdmin, isDeleted, msId }   (legacy docs: licensed/archived — also read)
 #   POST /users/assign   { userPrincipalNames, licenseType: STANDARD|ARCHIVE }
 #   POST /users/unassign { userPrincipalNames }
 # The BEHAVIOUR these tests pin: onboard assigns a STANDARD license (idempotent; clean no-op when the
@@ -15,7 +16,7 @@ Describe 'Invoke-CtgSpanningOnboarding' {
     It 'assigns a STANDARD license when the user is present and unlicensed' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET') { return [pscustomobject]@{ type = 'user'; email = 'jdoe@medipost.com'; licensed = $false; archived = $false } }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ userPrincipalName = 'jdoe@medipost.com'; email = 'jdoe@medipost.com'; assigned = $false; isArchive = $false; isDeleted = $false } }
             return [pscustomobject]@{ licensed = $true }
         }
         $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }
@@ -25,8 +26,8 @@ Describe 'Invoke-CtgSpanningOnboarding' {
         ($r.Actions -join ' ') | Should -Match 'assigned Spanning Backup Standard'
     }
 
-    It 'is idempotent — no assign when the user is already licensed' {
-        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false } }
+    It 'is idempotent — no assign when the user is already licensed (external assigned field)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
         $r = Invoke-CtgSpanningOnboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{ assignLicense = $true })
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' } -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'already enabled'
@@ -61,7 +62,7 @@ Describe 'Invoke-CtgSpanningOffboarding' {
     It 'retains backups and swaps the user to the ARCHIVE license' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false } }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
             return [pscustomobject]@{ licensed = $true }
         }
         $config = [pscustomobject]@{ afterMailboxConvertAndLicenseRemoval = $true; swapLicense = [pscustomobject]@{ from = 'Shared Mailbox'; to = 'Archive' }; procureIfUnavailable = $true }
@@ -72,7 +73,7 @@ Describe 'Invoke-CtgSpanningOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'Archive'
     }
 
-    It 'is idempotent — no swap when already on the Archive license' {
+    It 'is idempotent — no swap when already on the Archive license (legacy archived field still read)' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $false; archived = $true } }
         $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ from = 'Standard'; to = 'Archive' } }
         $r = Invoke-CtgSpanningOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config
@@ -108,10 +109,14 @@ Describe 'Find-CtgSpanningUser (list fallback)' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
             if ($Path -match '^/users/') { throw 'Spanning API: GET https://o365-api-us.spanningbackup.com/external/users/x -> HTTP 400 — Bad Request' }
-            return [pscustomobject]@{ users = @([pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false }) }
+            return [pscustomobject]@{ users = @(
+                [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $false; isDeleted = $true },
+                [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false }
+            ) }
         }
         $u = Find-CtgSpanningUser -Email 'JDOE@medipost.com'
         $u.email | Should -Be 'jdoe@medipost.com'
+        $u.isDeleted | Should -BeFalse
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match '^/users\?size=' } -Times 1
     }
 
@@ -167,20 +172,20 @@ Describe 'Confirm-CtgSpanning (config-aware)' {
 }
 
 Describe 'Confirm-CtgSpanning' {
-    It 'onboard: passes when the user is present and licensed' {
-        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false } }
+    It 'onboard: passes when the user is present and licensed (external assigned field)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeTrue
     }
 
     It 'onboard: fails when the user is unlicensed' {
-        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $false; archived = $false } }
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $false; isArchive = $false; isDeleted = $false } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeFalse
     }
 
-    It 'offboard: passes when backups are retained on the Archive license' {
-        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $false; archived = $true } }
+    It 'offboard: passes when backups are retained on the Archive license (external isArchive field)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $true; isDeleted = $false } }
         $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ to = 'Archive' } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
