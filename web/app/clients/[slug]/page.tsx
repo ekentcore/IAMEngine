@@ -17,6 +17,12 @@ import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
 
 export const dynamic = "force-dynamic";
 
+// Tab title = the client's name, so open client tabs are tellable apart.
+export async function generateMetadata({ params }: { params: { slug: string } }) {
+  const c = await db.client.findUnique({ where: { slug: params.slug }, select: { name: true } });
+  return { title: c?.name ?? params.slug };
+}
+
 // Hover help for the systems table — explains the columns + flags that aren't self-evident.
 const HELP = {
   module:

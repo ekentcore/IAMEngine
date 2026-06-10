@@ -4,6 +4,8 @@
 // `spanning` dispatch block in runner/Start-IamRunner.ps1.
 import Link from "next/link";
 
+export const metadata = { title: "Spanning Backup setup" };
+
 const Code = ({ children }: { children: string }) => (
   <pre style={{ background: "#f6f6f6", border: "1px solid #e2e2e2", borderRadius: 4, padding: "8px 10px", overflowX: "auto", fontSize: 12 }}>
     <code>{children}</code>
@@ -47,7 +49,10 @@ export default function SpanningSetupPage() {
       </p>
 
       <h2>2. Store it in Delinea</h2>
-      <p className="note">Either template works — the runner reads the token / domain / region by field name.</p>
+      <p className="note">
+        Either template works — the runner reads the token / domain / region by field name. Unsure which template your
+        org uses? Open an existing Spanning secret in Delinea and create yours with the same one.
+      </p>
 
       <h3>Recommended: <code>Automation - API</code> (use when the domain or region varies per client)</h3>
       <table>

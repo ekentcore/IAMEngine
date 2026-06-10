@@ -18,6 +18,12 @@ import { hasStartedJobs } from "@/lib/cases/job-status";
 
 export const dynamic = "force-dynamic";
 
+// Tab title = the UM number (or subject), so open case tabs are tellable apart.
+export async function generateMetadata({ params }: { params: { id: string } }) {
+  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { serviceNowCaseNumber: true, subject: true } });
+  return { title: c?.serviceNowCaseNumber ?? c?.subject ?? "Case" };
+}
+
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
   const c = await makeCaseRepository(db).getCase(params.id);
   if (!c) notFound();

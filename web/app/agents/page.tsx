@@ -6,6 +6,7 @@ import { runnerBuildId } from "@/lib/runner/bundle";
 import { AgentsView, type AgentVM, type TrashedAgentVM } from "./_components/agents-view";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Agents" };
 
 export default async function AgentsPage() {
   // Purge any trash past the 30-day window on load (no cron infra — lazy purge on visit).

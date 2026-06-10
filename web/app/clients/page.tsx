@@ -7,6 +7,7 @@ import type { ClientListItem } from "@/lib/clients/types";
 import { ClientsTable, type ClientVM } from "./_components/clients-table";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Clients" };
 
 export default async function ClientsPage() {
   await syncIfStale(db, "system:auto");

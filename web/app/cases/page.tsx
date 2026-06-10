@@ -6,6 +6,7 @@ import { CasesToolbar } from "./_components/cases-toolbar";
 import { CasesTable } from "./_components/cases-table";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Cases" };
 
 export default async function CasesPage() {
   const repo = makeCaseRepository(db);

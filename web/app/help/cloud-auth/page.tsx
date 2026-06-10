@@ -5,6 +5,8 @@
 // Keep in sync with Connect-CtgM365 / Connect-CtgExchange in the runner.
 import Link from "next/link";
 
+export const metadata = { title: "M365 auth setup" };
+
 const Code = ({ children }: { children: string }) => (
   <pre style={{ background: "#f6f6f6", border: "1px solid #e2e2e2", borderRadius: 4, padding: "8px 10px", overflowX: "auto", fontSize: 12 }}>
     <code>{children}</code>
@@ -44,10 +46,12 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
       <h1>M365 auth setup — {hybrid ? "hybrid client" : "cloud-only client"}</h1>
       <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
         {hybrid ? (
-          <>This client has <b>on-prem Exchange</b>, so the app registration needs a <b>client secret</b> (for the M365 / Graph step)
-            {" "}<b>and a certificate + the Exchange Administrator role</b> (Exchange Online app-only is certificate-based). Do all the steps below, once.</>
+          <>Based on this client&rsquo;s steps (its plan includes an <b>exchange</b> step — on-prem Exchange), it
+            {" "}<b>needs a certificate</b> in addition to the client secret, plus the Exchange Administrator role
+            (Exchange Online app-only is certificate-based). Do all the steps below, once.</>
         ) : (
-          <>This client is <b>cloud-only</b> — <b>no certificate needed</b>. Just an app registration with a <b>client secret</b>. Do the steps below, once.</>
+          <>Based on this client&rsquo;s steps (no <b>exchange</b> step — cloud-only), it does <b>not need a certificate</b>.
+            Just an app registration with a <b>client secret</b>. Do the steps below, once.</>
         )}
       </div>
 
@@ -97,7 +101,13 @@ Export-Certificate -Cert $cert -FilePath C:\\iam-engine-exo.cer   # upload this 
       )}
 
       <h2>{step()}. Store it in Delinea + wire it to the client</h2>
-      <p className="note">One secret holds everything the runner needs. Point the client&apos;s <code>m365-admin</code> reference at it (on the client/case Credentials panel).</p>
+      <p className="note">
+        One secret holds everything the runner needs. <b>Template:</b> use <b>Entra Azure AD Account</b> — the same
+        template the existing <code>m365-admin</code> secrets use. If you don&rsquo;t see that template (or aren&rsquo;t sure),
+        open another client&rsquo;s <code>m365-admin</code> secret in Delinea and create yours with whatever template it uses —
+        the runner matches the field names below, not the template name. Then point the client&rsquo;s
+        {" "}<code>m365-admin</code> reference at it (on the client/case Credentials panel).
+      </p>
       <table>
         <tbody>
           <tr><th style={{ width: 220 }}>Username</th><td>the <b>Application (client) ID</b></td></tr>

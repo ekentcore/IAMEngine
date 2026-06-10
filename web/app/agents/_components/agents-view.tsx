@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -84,6 +84,8 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   const [install, setInstall] = useState<{ command: string } | null>(null);
   const [clientSlug, setClientSlug] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [jobsHover, setJobsHover] = useState<string | null>(null);
   const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
   const installRef = useRef<HTMLDialogElement>(null);
@@ -147,25 +149,81 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
     router.refresh();
   }
 
+  // An agent can take an update when it's enabled, doesn't already have one queued, and isn't
+  // already on the build the app serves (pre-build runners count as updatable).
+  const isUpToDate = (a: AgentVM) => !!a.version && /^[0-9a-f]{6,}$/.test(a.version) && a.version === currentBuild;
+  const updatable = (a: AgentVM) => a.enabled && !a.updateRequested && !isUpToDate(a);
+  const updatableAgents = agents.filter(updatable);
+  const selectedUpdatable = updatableAgents.filter((a) => selected.has(a.id));
+
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function bulkUpdate(ids: string[]) {
+    if (ids.length === 0) return;
+    setBulkBusy(true); setError(null);
+    const res = await requestAgentUpdates(ids);
+    setBulkBusy(false);
+    if (!res.ok) setError(res.error ?? "failed");
+    setSelected(new Set());
+    router.refresh();
+  }
+
   return (
     <>
       <div className="toolbar" style={{ marginBottom: "1rem" }}>
+        {selectedUpdatable.length > 0 && (
+          <button onClick={() => bulkUpdate(selectedUpdatable.map((a) => a.id))} disabled={bulkBusy}
+            title="Queue a self-update for the selected runners">
+            {bulkBusy ? "Queuing…" : `Update selected (${selectedUpdatable.length})`}
+          </button>
+        )}
+        <button onClick={() => bulkUpdate(updatableAgents.map((a) => a.id))} disabled={bulkBusy || updatableAgents.length === 0}
+          title={updatableAgents.length === 0 ? "All enabled runners are up to date" : `Queue a self-update for every enabled runner that isn't on the current build (${updatableAgents.length})`}>
+          {bulkBusy ? "Queuing…" : "Update all"}
+        </button>
         <span className="grow" />
         <button className="primary" onClick={open}>Add runner</button>
       </div>
 
       <table>
         <thead>
-          <tr><th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Jobs</th><th>Status</th><th></th></tr>
+          <tr>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                title="Select all runners that can take an update"
+                checked={updatableAgents.length > 0 && selectedUpdatable.length === updatableAgents.length}
+                disabled={updatableAgents.length === 0}
+                onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
+              />
+            </th>
+            <th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Jobs</th><th>Status</th><th></th>
+          </tr>
         </thead>
         <tbody>
           {agents.map((a) => {
             const ls = lastSeen(a.lastSeenAt);
             // Up to date = it reports a build hash that matches what the app serves. Only offer
             // Update when there's actually something to apply (or it's mid-update).
-            const upToDate = !!a.version && /^[0-9a-f]{6,}$/.test(a.version) && a.version === currentBuild;
+            const upToDate = isUpToDate(a);
             return (
               <tr key={a.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(a.id)}
+                    disabled={!updatable(a)}
+                    title={updatable(a) ? "Select for bulk update" : !a.enabled ? "Disabled — enable it first" : a.updateRequested ? "Update already queued" : "Already up to date"}
+                    onChange={() => toggleSelect(a.id)}
+                  />
+                </td>
                 <td><div>{a.name}</div><code className="muted" style={{ fontSize: 11 }}>{a.id}</code></td>
                 <td><span className="badge">{a.scope === "central" ? "central" : "client-network"}</span></td>
                 <td>{a.clientName ?? <span className="muted">— all —</span>}</td>
@@ -231,7 +289,7 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
             );
           })}
           {agents.length === 0 && (
-            <tr><td colSpan={8} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
+            <tr><td colSpan={9} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
           )}
         </tbody>
       </table>

@@ -53,6 +53,24 @@ async function agentOp(fn: () => Promise<unknown>) {
 }
 
 export const requestAgentUpdate = (id: string) => agentOp(() => makeRunnerService(db).requestUpdate(id));
+
+// Queue self-updates for several agents at once (Update selected / Update all). Per-agent failures
+// don't stop the rest; the first error is surfaced alongside how many actually queued.
+export async function requestAgentUpdates(ids: string[]) {
+  const svc = makeRunnerService(db);
+  let queued = 0;
+  let firstError: string | null = null;
+  for (const id of ids) {
+    try {
+      await svc.requestUpdate(id);
+      queued++;
+    } catch (e) {
+      firstError ??= e instanceof HttpError ? e.message : "internal error";
+    }
+  }
+  revalidatePath("/agents");
+  return firstError ? { ok: false as const, queued, error: `${firstError} (${queued}/${ids.length} queued)` } : { ok: true as const, queued };
+}
 export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
 export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
 export const deleteAgentForever = (id: string) => agentOp(() => makeRunnerService(db).deleteAgentForever(id));
