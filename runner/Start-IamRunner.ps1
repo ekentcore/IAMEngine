@@ -136,7 +136,20 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action -AdConnection (New-CtgAdConnection $creds) }
     }
     'mimecast' = @{
-        Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }
+        # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
+        # Username OR a ClientID-style field ("Automation - API" template), the client secret in
+        # Password OR a ClientSecret-style field. Fails with the fields it saw, never a null-binding.
+        Connect  = { param($job, $creds)
+            $s = $creds['mimecast']
+            if (-not $s) { throw "the job did not broker a 'mimecast' secret — make sure the client's mimecast system lists 'mimecast' in its secrets" }
+            $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
+            $id = & $pick @('ClientID', 'ClientId', 'Client ID', 'AppId', 'Application ID', 'Username')
+            $secret = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'API Key', 'ApiKey', 'AccessToken', 'Token', 'Password')
+            if (-not $id -or -not $secret) {
+                throw "the 'mimecast' secret needs a CLIENT ID (Username or ClientID field) + CLIENT SECRET (Password or ClientSecret field) from the API 2.0 application; the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/mimecast)"
+            }
+            Connect-CtgMimecast -Credential ([pscredential]::new([string]$id, (ConvertTo-SecureString ([string]$secret) -AsPlainText -Force)))
+        }
         Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }

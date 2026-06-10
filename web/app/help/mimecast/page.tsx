@@ -46,11 +46,14 @@ export default function MimecastSetupPage() {
       <h2>2. Store it in Delinea</h2>
       <table>
         <tbody>
-          <tr><th style={{ width: 200 }}>Username</th><td>the <b>Client ID</b></td></tr>
-          <tr><th>Password</th><td>the <b>Client Secret</b></td></tr>
+          <tr><th style={{ width: 200 }}>Username <span className="note">(or ClientID field)</span></th><td>the <b>Client ID</b></td></tr>
+          <tr><th>Password <span className="note">(or ClientSecret field)</span></th><td>the <b>Client Secret</b></td></tr>
         </tbody>
       </table>
-      <p className="note">A plain username/password template works — the runner reads Username/Password directly. Unsure which template to use? Copy whichever an existing <code>mimecast</code> secret uses.</p>
+      <p className="note">
+        Both common templates work: a plain <b>username/password</b> secret, or <b>Automation - API</b>
+        (ClientID + ClientSecret fields). If neither pair is found the step fails naming the fields it saw.
+      </p>
 
       <h2>3. Wire + verify</h2>
       <ul>
