@@ -12,7 +12,7 @@ param(
     [Parameter(Mandatory)][string]$AppUrl,        # https://iam-engine.internal
     [Parameter(Mandatory)][string]$AgentId,
     [string]$ApiToken = $env:RUNNER_API_TOKEN,    # interim shared bearer (until mTLS)
-    [int]$PollSeconds = 15,
+    [int]$PollSeconds = 5,
     [int]$BatchSize   = 5,
     # ExchangeOnlineManagement 3.10.0's REST cmdlets break on PowerShell 7.6 ("[HttpResponseMessage]
     # does not contain a method named 'GetResponseHeader'"); 3.9.2 is the known-good build. Pin the
@@ -547,6 +547,7 @@ $global:CtgProgressUrl   = $AppUrl
 $global:CtgProgressToken = $ApiToken
 $global:CtgProgressAgent = $AgentId
 while ($true) {
+    $jobs = @()   # reset BEFORE try: a heartbeat/claim throw must not leave a stale value driving the drain check below
     try {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
@@ -673,5 +674,7 @@ while ($true) {
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"
     }
-    Start-Sleep -Seconds $PollSeconds
+    # Drain: if this cycle claimed work, more may have just unblocked (dependency chains, an
+    # operator's re-run) — poll again immediately and only sleep once the queue is empty.
+    if (@($jobs).Count -eq 0) { Start-Sleep -Seconds $PollSeconds }
 }
