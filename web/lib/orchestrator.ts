@@ -10,6 +10,9 @@ export type PlannedJob = {
   captureEvidence: boolean;
   secretNames: string[];
   config: unknown;
+  // Effective dependencies (lane-specific override applied, filtered to systems in this plan).
+  // Persisted on the job so the claim gate runs the DAG, not strict sequence order.
+  dependsOn: string[];
 };
 
 // The per-lane config shape seed.ts writes into ClientSystem.config.
@@ -79,6 +82,7 @@ export function planCase(
       systemKey: s.systemKey,
       sequence: i,
       mode: s.mode,
+      dependsOn: depsOf(s),
       requiresApproval: ra ? Boolean(ra[action]) : s.requiresApproval,
       captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
       secretNames: s.secretNames,

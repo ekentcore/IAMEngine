@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { dependencyGateOpen, deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 
 function j(over: Partial<JobLite>): JobLite {
-  return { id: "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
+  return { id: "j", systemKey: over.id ?? "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
 }
 
 test("dependency gate: open only when all earlier api jobs have succeeded/skipped", () => {
@@ -60,4 +60,40 @@ test("isClaimable: approval-gated job not claimable unless approved", () => {
 test("isClaimable: closed dependency gate -> not claimable", () => {
   const t = j({ id: "m365", sequence: 1 });
   assert.equal(isClaimable(t, [j({ sequence: 0, status: "running" }), t], "running"), false);
+});
+
+test("DAG gate: a job waits only on its OWN dependencies, not unrelated earlier steps", () => {
+  // mimecast depends on m365 only; egnyte (earlier sequence, still pending) must NOT block it.
+  const m365 = j({ id: "m365", sequence: 1, status: "succeeded" });
+  const egnyte = j({ id: "egnyte", sequence: 2, status: "pending" });
+  const mimecast = j({ id: "mimecast", sequence: 3, dependsOn: ["m365"] });
+  assert.equal(dependencyGateOpen(mimecast, [m365, egnyte, mimecast]), true);
+});
+
+test("DAG gate: still blocked while a declared dependency is unfinished", () => {
+  const m365 = j({ id: "m365", sequence: 1, status: "running" });
+  const mimecast = j({ id: "mimecast", sequence: 3, dependsOn: ["m365"] });
+  assert.equal(dependencyGateOpen(mimecast, [m365, mimecast]), false);
+});
+
+test("DAG gate: independent branches are claimable in parallel once the shared root succeeds", () => {
+  const m365 = j({ id: "m365", sequence: 0, status: "succeeded" });
+  const a = j({ id: "mimecast", sequence: 1, dependsOn: ["m365"] });
+  const b = j({ id: "spanning", sequence: 2, dependsOn: ["m365"] });
+  const c = j({ id: "egnyte", sequence: 3, dependsOn: [] });
+  const all = [m365, a, b, c];
+  assert.equal(dependencyGateOpen(a, all), true);
+  assert.equal(dependencyGateOpen(b, all), true);
+  assert.equal(dependencyGateOpen(c, all), true);
+});
+
+test("DAG gate: a dependency on a system not in the case is vacuously satisfied", () => {
+  const only = j({ id: "mimecast", sequence: 0, dependsOn: ["m365"] });
+  assert.equal(dependencyGateOpen(only, [only]), true);
+});
+
+test("legacy gate (no persisted dependsOn) keeps strict sequence order", () => {
+  const early = j({ id: "egnyte", sequence: 1, status: "pending" });
+  const late = j({ id: "mimecast", sequence: 2 }); // dependsOn undefined -> legacy rule
+  assert.equal(dependencyGateOpen(late, [early, late]), false);
 });

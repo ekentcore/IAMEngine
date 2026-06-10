@@ -207,7 +207,7 @@ export function makeRunnerService(db: PrismaClient) {
           ...(agent.clientId ? {} : { systemKey: { notIn: ON_PREM_SYSTEMS } }),
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
-        select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },
+        select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },
       });
       if (candidates.length === 0) return [];
 
@@ -215,10 +215,13 @@ export function makeRunnerService(db: PrismaClient) {
       const caseIds = [...new Set(candidates.map((c) => c.caseRequestId))];
       const allJobs = await db.job.findMany({
         where: { caseRequestId: { in: caseIds } },
-        select: { id: true, caseRequestId: true, sequence: true, mode: true, status: true, request: true },
+        select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
       });
-      const lite = (j: { id: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite =>
-        ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) });
+      const lite = (j: { id: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
+        const r = req(j) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown };
+        const deps = Array.isArray(r.dependsOn) ? (r.dependsOn as unknown[]).filter((d): d is string => typeof d === "string") : null;
+        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps };
+      };
       const byCase = new Map<string, JobLite[]>();
       for (const j of allJobs) {
         const arr = byCase.get(j.caseRequestId) ?? [];
@@ -368,7 +371,7 @@ export function makeRunnerService(db: PrismaClient) {
       });
 
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
-      let caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      let caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
       // (their dependency gate could never open behind a failed predecessor anyway).
       if (caseStatus === "failed") {
@@ -434,8 +437,8 @@ export function makeRunnerService(db: PrismaClient) {
       if (job.status !== "pending") throw new HttpError(409, `job is ${job.status}; only a pending job can be approved`);
 
       await db.job.update({ where: { id: jobId }, data: { request: { ...r, approved: true } as Prisma.InputJsonValue } });
-      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, sequence: true, mode: true, status: true, request: true } });
-      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
+      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
       await db.auditLog.create({ data: { actor: approvedBy, action: "job.approve", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { approvedBy } } });
       return { jobId, caseStatus };

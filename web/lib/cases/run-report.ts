@@ -172,12 +172,15 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
 
     const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
     // Why is a pending api step not running yet? Same gating rule as the runner's claim
-    // (dependencyGateOpen): every EARLIER api job must be succeeded/skipped first.
+    // (blockingJobs): a job with persisted dependsOn waits ONLY on those systems; legacy jobs
+    // (planned before deps were persisted) wait on every earlier api job.
     let pendingReason: string | null = null;
     if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
-      const blockers = jobs.filter(
-        (o) => o.mode === "api" && o.sequence < j.sequence && o.status !== "succeeded" && o.status !== "skipped"
-      );
+      const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
+      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped";
+      const blockers = Array.isArray(deps)
+        ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
+        : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
       pendingReason = blockers.length
         ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
         : "ready — waiting for a runner to claim it";

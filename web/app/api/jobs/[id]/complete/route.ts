@@ -46,12 +46,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // Recompute the case status now that a step changed terminal state.
   const caseJobs = await db.job.findMany({
     where: { caseRequestId: job.caseRequestId },
-    select: { id: true, sequence: true, mode: true, status: true, request: true },
+    select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
   });
   const derived = deriveCaseStatus(
     caseJobs.map((j) => {
       const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
-      return { id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
+      return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
     })
   );
   // deriveCaseStatus never returns "queued"/"planning"; don't promote a not-yet-started case to

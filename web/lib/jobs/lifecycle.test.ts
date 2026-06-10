@@ -46,7 +46,7 @@ function simulateCase(systems: ClientSystem[], action: Action, payload: Record<s
     result: null, validation: null, error: null, startedAt: null, finishedAt: null,
   }));
 
-  const lite = (j: MemJob): JobLite => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: j.requiresApproval, approved: j.approved });
+  const lite = (j: MemJob): JobLite => ({ id: j.id, systemKey: j.systemKey ?? j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: j.requiresApproval, approved: j.approved });
   const order: string[] = [];
 
   for (let round = 0; round < 200; round++) {

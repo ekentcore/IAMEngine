@@ -36,11 +36,14 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
   if (step.procurement) {
     const p = step.procurement;
     const when = p.lastCheckedAt ? new Date(p.lastCheckedAt).toLocaleTimeString() : "not yet";
+    // The sweep re-checks a watch ~5 minutes after its last check (heartbeat-driven, so up to a
+    // minute of jitter). The watch lives SERVER-SIDE — closing this page doesn't stop it.
+    const next = p.lastCheckedAt ? `~${new Date(new Date(p.lastCheckedAt).getTime() + 5 * 60_000).toLocaleTimeString()}` : "within a minute";
     const color = p.state === "watching" ? "#8a6d00" : p.state === "resolved" ? "#15803d" : "#b91c1c";
     return (
       <div className="note" style={{ marginTop: 4 }}>
         <span style={{ color }}>
-          {p.state === "watching" && `⏳ Watching procurement case ${p.number} — last checked ${when}${p.note ? ` (SN state: ${p.note})` : ""}. When it resolves, this step re-runs and verifies automatically.`}
+          {p.state === "watching" && `⏳ Watching procurement case ${p.number} — last checked ${when}${p.note ? ` (SN state: ${p.note})` : ""} · next check ${next}. Watched server-side (safe to close this page); on resolve the step re-runs and verifies automatically.`}
           {p.state === "resolved" && `✓ Procurement case ${p.number} resolved — the step was re-queued automatically.`}
           {p.state === "cancelled" && `✗ Procurement case ${p.number} was cancelled — license not procured, the step was NOT re-run.`}
           {p.state === "error" && `Procurement case ${p.number}: ${p.note ?? "error"}`}

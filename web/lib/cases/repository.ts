@@ -51,18 +51,26 @@ export function buildCaseStatusHint(
     case "queued": {
       // A required credential isn't set → the runner won't claim it (preflight). Surface that first.
       if (missingSecrets.length) return `Blocked — credential not set: ${missingSecrets.join(", ")}. Fill it on the case Credentials panel.`;
-      const pending = jobs.filter((j) => j.mode === "api" && j.status === "pending");
+      const pending = [...jobs.filter((j) => j.mode === "api" && j.status === "pending")].sort((a, b) => a.sequence - b.sequence);
       if (!pending.length) return "queued";
-      const next = pending.reduce((a, b) => (b.sequence < a.sequence ? b : a));
-      // Predecessors (earlier api jobs) that haven't finished gate the next job — same rule as
-      // dependencyGateOpen.
-      const blockers = jobs.filter(
-        (j) => j.mode === "api" && j.sequence < next.sequence && j.status !== "succeeded" && j.status !== "skipped"
-      );
-      if (blockers.length) return `Waiting on ${list(blockers)} to finish before ${name(next.systemKey)}`;
-      return runnerOnline
-        ? `Ready — waiting for a runner to claim ${name(next.systemKey)}`
-        : `Ready, but no runner is online to claim it (next: ${name(next.systemKey)})`;
+      // DAG-aware (same rule as blockingJobs): a job with persisted dependsOn waits only on those
+      // systems; legacy jobs wait on every earlier api job. Some pending job may be READY even
+      // while others are blocked — report the ready one.
+      const blockersOf = (job: HintJob) => {
+        const deps = ((job.request ?? {}) as { dependsOn?: unknown }).dependsOn;
+        const unmet = (j: HintJob) => j.mode === "api" && j.status !== "succeeded" && j.status !== "skipped";
+        return Array.isArray(deps)
+          ? jobs.filter((j) => unmet(j) && (deps as unknown[]).includes(j.systemKey))
+          : jobs.filter((j) => unmet(j) && j.sequence < job.sequence);
+      };
+      const ready = pending.find((p) => blockersOf(p).length === 0);
+      if (ready) {
+        return runnerOnline
+          ? `Ready — waiting for a runner to claim ${name(ready.systemKey)}`
+          : `Ready, but no runner is online to claim it (next: ${name(ready.systemKey)})`;
+      }
+      const next = pending[0];
+      return `Waiting on ${list(blockersOf(next))} to finish before ${name(next.systemKey)}`;
     }
     case "completed":
       return "all steps done";
@@ -161,6 +169,7 @@ export function makeCaseRepository(db: PrismaClient) {
                 requiresApproval: p.requiresApproval,
                 captureEvidence: p.captureEvidence,
                 secretNames: p.secretNames,
+                dependsOn: p.dependsOn,
                 dryRun: input.dryRun ?? false,
               } as Prisma.InputJsonValue,
             })),

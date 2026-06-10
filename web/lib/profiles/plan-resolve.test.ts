@@ -12,7 +12,7 @@ const client = { personas: profile.personas, globals: profile.globals, locations
 const sys = (k: string) => profile.systems.find((s: { key: string }) => s.key === k);
 
 function job(systemKey: string, config: unknown): PlannedJob {
-  return { systemKey, sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, secretNames: [], config };
+  return { systemKey, sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, secretNames: [], dependsOn: [], config };
 }
 
 const payload = {
