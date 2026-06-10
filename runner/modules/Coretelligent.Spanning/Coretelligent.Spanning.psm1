@@ -80,7 +80,17 @@ function Invoke-CtgSpanningApi {
         ContentType = 'application/json'
     }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
-    Invoke-RestMethod @p
+    try { Invoke-RestMethod @p }
+    catch {
+        # Surface WHAT was attempted — method + full URL + HTTP status + response body — but NEVER
+        # the credential. A bare "400 Bad Request" with no URL is undebuggable from the run report.
+        $status = $null
+        try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+        $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { ([string]$_.ErrorDetails.Message).Trim() } else { $null }
+        if ($detail -and $detail.Length -gt 400) { $detail = $detail.Substring(0, 400) + '…' }
+        $what = if ($status) { "HTTP $status" } else { $_.Exception.Message }
+        throw "Spanning API: $Method $($p.Uri) -> $what$(if ($detail) { " — $detail" })"
+    }
 }
 
 function Test-CtgSpanning404 {
@@ -105,10 +115,32 @@ function Test-CtgSpanningSeatError {
 }
 
 function Find-CtgSpanningUser {
-    # GET /users/{email}; 404 -> $null (the user isn't in Spanning's domain yet).
+    # GET /users/{email}; 404 -> $null (the user isn't in Spanning's domain yet). Some tenants'
+    # external API rejects the per-user route with a 400 — fall back to paging the user LIST
+    # (verified working: GET /users?size=1000) and matching the email locally.
     param([Parameter(Mandatory)][string]$Email)
-    try { return Invoke-CtgSpanningApi -Method GET -Path "/users/$Email" }
-    catch { if (Test-CtgSpanning404 $_) { return $null } throw }
+    try { return Invoke-CtgSpanningApi -Method GET -Path "/users/$([uri]::EscapeDataString($Email))" }
+    catch {
+        if (Test-CtgSpanning404 $_) { return $null }
+        if ($_.Exception.Message -notmatch '\b400\b|bad request') { throw }
+    }
+    $needle = $Email.ToLower()
+    $path = '/users?size=1000'
+    while ($path) {
+        $resp = Invoke-CtgSpanningApi -Method GET -Path $path
+        $list = Get-CtgProp $resp 'users'
+        if ($null -eq $list) { $list = Get-CtgProp $resp 'items' }
+        if ($null -eq $list) { $list = $resp }
+        $hit = @($list) | Where-Object {
+            ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
+            ([string](Get-CtgProp $_ 'userPrincipalName')).ToLower() -eq $needle
+        } | Select-Object -First 1
+        if ($hit) { return $hit }
+        # nextLink is an absolute URL; the seam takes a path — strip our base, else we're done.
+        $next = [string](Get-CtgProp $resp 'nextLink')
+        $path = if ($next -and $next.StartsWith($script:SpanningApiUrl)) { $next.Substring($script:SpanningApiUrl.Length) } else { $null }
+    }
+    return $null
 }
 
 function Set-CtgSpanningLicense {

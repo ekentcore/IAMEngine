@@ -103,6 +103,30 @@ Describe 'Invoke-CtgSpanningOffboarding' {
     }
 }
 
+Describe 'Find-CtgSpanningUser (list fallback)' {
+    It 'falls back to paging the user list when the per-user route returns 400' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
+            param($Method, $Path, $Body)
+            if ($Path -match '^/users/') { throw 'Spanning API: GET https://o365-api-us.spanningbackup.com/external/users/x -> HTTP 400 — Bad Request' }
+            return [pscustomobject]@{ users = @([pscustomobject]@{ email = 'jdoe@medipost.com'; licensed = $true; archived = $false }) }
+        }
+        $u = Find-CtgSpanningUser -Email 'JDOE@medipost.com'
+        $u.email | Should -Be 'jdoe@medipost.com'
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match '^/users\?size=' } -Times 1
+    }
+
+    It 'still treats 404 as user-not-present (no fallback, returns null)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { throw 'Spanning API: GET .../users/x -> HTTP 404' }
+        Find-CtgSpanningUser -Email 'gone@medipost.com' | Should -BeNullOrEmpty
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -Times 1 -Exactly
+    }
+
+    It 'rethrows non-400/404 errors (e.g. 401) instead of swallowing them' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { throw 'Spanning API: GET .../users/x -> HTTP 401' }
+        { Find-CtgSpanningUser -Email 'jdoe@medipost.com' } | Should -Throw '*401*'
+    }
+}
+
 Describe 'Test-CtgSpanningSeatError' {
     It 'classifies a real out-of-seats message as a seat error' {
         Test-CtgSpanningSeatError 'Subscription does not have any available licenses' | Should -BeTrue
