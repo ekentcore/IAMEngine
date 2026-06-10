@@ -10,8 +10,8 @@
 #   Auth      : HTTP Basic over HTTPS — username = the CLIENT ID, password = the CLIENT SECRET
 #               (both from the API section of the Spanning admin console).
 #   Get user  : GET  /users/{email}            -> user (incl. licensed/archived flags) | 404
-#   Assign    : POST /users/assign   { emails:[..], licenseType:"STANDARD"|"ARCHIVE" } -> { licensed }
-#   Unassign  : POST /users/unassign { emails:[..] }                                    -> { licensed }
+#   Assign    : POST /users/assign   { userPrincipalNames:[..], licenseType:"STANDARD"|"ARCHIVE" } -> { licensed }
+#   Unassign  : POST /users/unassign { userPrincipalNames:[..] }                                    -> { licensed }
 # (Endpoint existence confirmed by probe: /external/{tenant,users,users/assign,users/unassign} 401
 # unauthenticated vs 404 for unknown paths. The PUBLIC docs at api.spanningbackup.com describe a
 # LEGACY surface — api-{region}.../api/v1 with domain:access-token Basic auth — which rejected a
@@ -145,8 +145,10 @@ function Find-CtgSpanningUser {
 
 function Set-CtgSpanningLicense {
     # POST /users/assign with a license type. Returns the parsed response ({ licensed }).
+    # The external API's body key is userPrincipalNames (verified: sending `emails` returns
+    # FST_ERR_VALIDATION "body must have required property 'userPrincipalNames'").
     param([Parameter(Mandatory)][string]$Email, [Parameter(Mandatory)][ValidateSet('STANDARD', 'ARCHIVE')][string]$LicenseType)
-    Invoke-CtgSpanningApi -Method POST -Path '/users/assign' -Body @{ emails = @($Email); licenseType = $LicenseType }
+    Invoke-CtgSpanningApi -Method POST -Path '/users/assign' -Body @{ userPrincipalNames = @($Email); licenseType = $LicenseType }
 }
 
 function Invoke-CtgSpanningOnboarding {
@@ -241,7 +243,7 @@ function Invoke-CtgSpanningOffboarding {
             $actions.Add("Spanning license already removed for $email — no change")
         }
         elseif ($PSCmdlet.ShouldProcess($email, "unassign Spanning license (free the seat)")) {
-            Invoke-CtgSpanningApi -Method POST -Path '/users/unassign' -Body @{ emails = @($email) } | Out-Null
+            Invoke-CtgSpanningApi -Method POST -Path '/users/unassign' -Body @{ userPrincipalNames = @($email) } | Out-Null
             $actions.Add("unassigned Spanning license for $email (seat freed)")
         }
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }

@@ -26,7 +26,7 @@ export function previewSpanning(action: "onboard" | "offboard", config: unknown,
     if (cfg.removeLicense || cfg.unassign) {
       lines.push(
         "# unassign the license entirely (frees the seat); backups are retained by Spanning",
-        `Invoke-CtgSpanningApi -Method POST -Path '/users/unassign' -Body @{ emails = @($Email) }`
+        `Invoke-CtgSpanningApi -Method POST -Path '/users/unassign' -Body @{ userPrincipalNames = @($Email) }`
       );
     } else {
       const to = cfg.swapLicense?.to ?? "Archive";

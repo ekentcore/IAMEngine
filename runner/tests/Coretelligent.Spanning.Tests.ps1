@@ -2,8 +2,8 @@
 # Unit tests for Coretelligent.Spanning. Mocks the HTTP seam (Invoke-CtgSpanningApi). Endpoints +
 # shapes are verified against the live Spanning Backup reference (api.spanningbackup.com):
 #   GET  /users/{email}            -> { type, email, licensed:bool, archived:bool } | 404
-#   POST /users/assign   { emails, licenseType: STANDARD|ARCHIVE }
-#   POST /users/unassign { emails }
+#   POST /users/assign   { userPrincipalNames, licenseType: STANDARD|ARCHIVE }
+#   POST /users/unassign { userPrincipalNames }
 # The BEHAVIOUR these tests pin: onboard assigns a STANDARD license (idempotent; clean no-op when the
 # user isn't discovered yet); offboard retains backups and swaps to ARCHIVE (never deletes data).
 
@@ -21,7 +21,7 @@ Describe 'Invoke-CtgSpanningOnboarding' {
         $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }
         $r = Invoke-CtgSpanningOnboarding -User $user -Config ([pscustomobject]@{ syncList = $true; assignLicense = $true; procureIfUnavailable = $true })
         $r.Status | Should -Be 'ok'
-        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/assign' -and $Body.licenseType -eq 'STANDARD' } -Times 1
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/assign' -and $Body.licenseType -eq 'STANDARD' -and $Body.userPrincipalNames -contains 'jdoe@medipost.com' } -Times 1
         ($r.Actions -join ' ') | Should -Match 'assigned Spanning Backup Standard'
     }
 
@@ -66,7 +66,7 @@ Describe 'Invoke-CtgSpanningOffboarding' {
         }
         $config = [pscustomobject]@{ afterMailboxConvertAndLicenseRemoval = $true; swapLicense = [pscustomobject]@{ from = 'Shared Mailbox'; to = 'Archive' }; procureIfUnavailable = $true }
         $r = Invoke-CtgSpanningOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config
-        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/assign' -and $Body.licenseType -eq 'ARCHIVE' } -Times 1
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/assign' -and $Body.licenseType -eq 'ARCHIVE' -and $Body.userPrincipalNames -contains 'jdoe@medipost.com' } -Times 1
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match 'unassign' } -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'retaining existing backups'
         ($r.Actions -join ' ') | Should -Match 'Archive'
@@ -87,7 +87,7 @@ Describe 'Invoke-CtgSpanningOffboarding' {
             return [pscustomobject]@{ licensed = $false }
         }
         $r = Invoke-CtgSpanningOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{ removeLicense = $true })
-        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/unassign' } -Times 1
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/unassign' -and $Body.userPrincipalNames -contains 'jdoe@medipost.com' } -Times 1
         ($r.Actions -join ' ') | Should -Match 'seat freed'
     }
 

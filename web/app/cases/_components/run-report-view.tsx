@@ -23,6 +23,21 @@ function Badge({ verdict }: { verdict: StepVerdict }) {
   return <span className="badge" style={{ color: v.color, borderColor: v.color }}>{v.label}</span>;
 }
 
+// One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
+// careful drag-selecting inside a scrollable <pre>.
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      title="Copy the full error text"
+      style={{ fontSize: 11, padding: "1px 8px", marginTop: 3 }}
+    >
+      {copied ? "Copied ✓" : "Copy error"}
+    </button>
+  );
+}
+
 // The after-action run report: per-step verdicts, actions, validation read-backs, and errors.
 // Auto-refreshes while the case is still running; offers per-step re-run + a gated SN write-back.
 export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunReport; caseId: string; writeEnabled: boolean }) {
@@ -228,7 +243,12 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   </ul>
                 </div>
               )}
-              {step.error && <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>}
+              {step.error && (
+                <div>
+                  <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>
+                  <CopyButton text={step.error} />
+                </div>
+              )}
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>
                   <div className="note">Progress:</div>
