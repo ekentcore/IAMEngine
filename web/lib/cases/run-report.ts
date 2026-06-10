@@ -6,6 +6,7 @@
 // Pure core (buildRunReport) takes already-loaded rows so it's unit-testable without a DB; the
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
+import { missingRequiredSecrets } from "./case-secrets";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending";
 
@@ -26,6 +27,10 @@ export type RunReportStep = {
   // Procurement-case watch on this step (license blocked on seats): when the PC resolves in SN the
   // job auto-re-queues. null = no watch.
   procurement: { number: string; state: string; note: string | null; lastCheckedAt: string | null } | null;
+  // For a step sitting at "pending": WHY it hasn't started — waiting on predecessors, a missing
+  // credential, or no runner online. The ordering part is computed here; loadRunReport refines the
+  // "ready" case with credential/runner checks. null when the step isn't pending.
+  pendingReason: string | null;
 };
 
 export type RunReport = {
@@ -166,6 +171,17 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else summary.pending++;
 
     const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
+    // Why is a pending api step not running yet? Same gating rule as the runner's claim
+    // (dependencyGateOpen): every EARLIER api job must be succeeded/skipped first.
+    let pendingReason: string | null = null;
+    if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
+      const blockers = jobs.filter(
+        (o) => o.mode === "api" && o.sequence < j.sequence && o.status !== "succeeded" && o.status !== "skipped"
+      );
+      pendingReason = blockers.length
+        ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
+        : "ready — waiting for a runner to claim it";
+    }
     const phaseTrail = phaseTrailOf(j.progress);
     // Only show a "current phase" while the step is actually in flight — a finished step's last
     // phase isn't what it's "doing now".
@@ -189,6 +205,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       currentPhase,
       phaseTrail,
       manualCompleted,
+      pendingReason,
     };
   });
 
@@ -259,7 +276,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const c = await db.caseRequest.findUnique({
     where: { id: caseId },
     include: {
-      client: { select: { name: true, slug: true } },
+      client: { select: { id: true, name: true, slug: true } },
       jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
     },
   });
@@ -269,7 +286,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const catalog = await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } });
   const names = new Map(catalog.map((sc) => [sc.key, sc.name]));
 
-  return buildRunReport({
+  const report = buildRunReport({
     caseId: c.id,
     caseNumber: c.serviceNowCaseNumber,
     subject: c.subject,
@@ -281,4 +298,33 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     jobs: c.jobs,
     names,
   });
+
+  // Refine the "ready — waiting for a runner" pending steps with the two REAL blockers the
+  // ordering rule can't see: an unset required credential (the claim preflight skips the job) and
+  // no runner being online to claim it. This is the on-page answer to "it's just sitting at
+  // pending with no feedback".
+  const ready = report.steps.filter((st) => st.pendingReason === "ready — waiting for a runner to claim it");
+  if (ready.length > 0) {
+    const [clientSecrets, onlineAgents] = await Promise.all([
+      db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } }),
+      db.agent.findMany({
+        where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
+        select: { clientId: true },
+      }),
+    ]);
+    const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+    const runnerOnline = onlineAgents.some((a) => a.clientId === null || a.clientId === c.client.id);
+    for (const st of ready) {
+      const job = c.jobs.find((j) => j.id === st.jobId);
+      const needed = ((job?.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
+      // Same preflight rule the claim loop uses (case override > client default, REPLACE_ME = unset).
+      const missing = missingRequiredSecrets(needed, c.secretOverrides, byName);
+      if (missing.length) {
+        st.pendingReason = `blocked — credential not set: ${missing.join(", ")}. Fill it on the Credentials panel; the runner skips this step until it resolves.`;
+      } else if (!runnerOnline) {
+        st.pendingReason = "ready, but no runner is online to claim it — check the Agents page";
+      }
+    }
+  }
+  return report;
 }

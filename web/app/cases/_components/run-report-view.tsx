@@ -46,15 +46,30 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
           {p.state === "error" && `Procurement case ${p.number}: ${p.note ?? "error"}`}
         </span>
         {p.state === "watching" && (
-          <button style={{ marginLeft: 8, fontSize: 11 }} disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try { await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "DELETE" }); await refresh(); }
-              catch { /* network blip — button stays usable for a retry */ }
-              finally { setBusy(false); }
-            }}>
-            Stop watching
-          </button>
+          <>
+            <button style={{ marginLeft: 8, fontSize: 11 }} disabled={busy} title="Check the PC's state in ServiceNow right now instead of waiting for the next 5-minute sweep"
+              onClick={async () => {
+                setBusy(true); setErr(null);
+                try {
+                  const r = await fetch(`/api/jobs/${step.jobId}/procurement/check`, { method: "POST" });
+                  if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "check failed");
+                  await refresh();
+                } catch (e) { setErr((e as Error).message); }
+                finally { setBusy(false); }
+              }}>
+              {busy ? "…" : "Check now"}
+            </button>
+            <button style={{ marginLeft: 6, fontSize: 11 }} disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try { await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "DELETE" }); await refresh(); }
+                catch { /* network blip — button stays usable for a retry */ }
+                finally { setBusy(false); }
+              }}>
+              Stop watching
+            </button>
+            {err && <span style={{ marginLeft: 6, color: "#b91c1c" }}>{err}</span>}
+          </>
         )}
       </div>
     );
@@ -246,6 +261,13 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.currentPhase && (
                 <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }}>
                   <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…
+                </span>
+              )}
+              {/* A pending step says WHY it hasn't started — waiting on predecessors, a missing
+                  credential, or no runner — right on the row, no expanding needed. */}
+              {step.pendingReason && (
+                <span style={{ marginLeft: 8, fontSize: 12, color: step.pendingReason.startsWith("blocked") ? "#b3261e" : "#8a6d00" }}>
+                  ⏳ {step.pendingReason}
                 </span>
               )}
               {/* Any finished automated step can be re-run — incl. "verified" (e.g. re-run exchange to

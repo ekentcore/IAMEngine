@@ -31,7 +31,7 @@ export default function MimecastSetupPage() {
       <h2>1. Register the API 2.0 application</h2>
       <ol>
         <li>Sign in to the client&rsquo;s <b>Mimecast Administration Console</b> as an admin.</li>
-        <li>Go to <b>Services → API and Platform Integrations</b> (on newer consoles: <b>Integrations → API</b>).</li>
+        <li>Go to <b>Integrations → API and Platform Integrations</b>.</li>
         <li><b>Add API Application</b> → name it <code>iam-engine — &lt;client&gt;</code>, category <b>SIEM/Integration</b>,
           fill the contact details, and <b>enable</b> it. (New applications can take a few minutes to activate.)</li>
         <li>Open the application → <b>Manage API 2.0 credentials</b> → <b>Generate</b> → copy the
