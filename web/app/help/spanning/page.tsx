@@ -22,57 +22,45 @@ export default function SpanningSetupPage() {
       <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
         <b>How it authenticates</b>
         <p style={{ margin: "0.4rem 0 0" }}>
-          The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the client&rsquo;s domain</b>,
-          {" "}<b>password = an access token</b>, against a region-specific host
-          {" "}(<code>https://api-&#123;region&#125;.spanningbackup.com</code>, region = US/EU/AP/UK/CA). There is no
-          certificate and no key pair.
+          The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the Client ID</b>,
+          {" "}<b>password = the Client Secret</b> (both from the API section of the Spanning admin console), against
+          {" "}<code>https://o365-api-&#123;region&#125;.spanningbackup.com</code> (region = US/EU/AP/UK/CA; the runner
+          appends <code>/external</code>). Older tenants may instead use the legacy pair
+          {" "}<b>domain : access token</b> against <code>api-&#123;region&#125;…/api/v1</code> — the runner supports both.
         </p>
       </div>
 
-      <h2>1. Get the access token</h2>
+      <h2>1. Get the Client ID + Client Secret</h2>
       <ol>
         <li>Sign in to the <b>Spanning Backup admin console</b> for the client&rsquo;s tenant.</li>
         <li>Open <b>Settings</b> (direct link: <code>https://spanningbackup.com/auth/redirectTo?initialPath=/app/settings/backup</code>)
-          and copy the <b>API access token</b> — a single opaque string.</li>
-        <li>Note the tenant&rsquo;s <b>region</b> (US/EU/AP/UK/CA) and the <b>domain</b> Spanning is registered under
-          (usually the primary M365 email domain).</li>
+          and find the <b>API</b> section — it issues a <b>Client ID</b> and a <b>Client Secret</b> pair.</li>
+        <li>Note the tenant&rsquo;s <b>region</b> from the console URL (e.g. <code>o365-us…</code> → US).</li>
       </ol>
       <p className="note">
-        ⚠ A <b>public/private key pair + password</b> shown in settings is <b>not</b> this token — that&rsquo;s the
-        credential Spanning uses to connect to Microsoft 365. The REST access token is a separate, single-string item.
-        Only <b>Regenerate</b> if you have to: it invalidates the current token.
+        Only <b>Regenerate</b> if you have to: it invalidates the current credential immediately, everywhere it&rsquo;s used.
       </p>
 
       <h2>2. Store it in Delinea</h2>
       <p className="note">
-        Either template works — the runner reads the token / domain / region by field name. Unsure which template your
-        org uses? Open an existing Spanning secret in Delinea and create yours with the same one.
+        Use the <code>Automation - API</code> template — its fields map one-to-one. Unsure which template your org uses?
+        Open an existing Spanning secret in Delinea and create yours with the same one.
       </p>
-
-      <h3>Recommended: <code>Automation - API</code> (use when the domain or region varies per client)</h3>
       <table>
         <tbody>
-          <tr><th style={{ width: 160 }}>ClientSecret</th><td>the Spanning <b>access token</b></td></tr>
-          <tr><th>AccountID</th><td>the Spanning <b>domain</b> (Basic-auth username). <b>Leave blank</b> to fall back to the client&rsquo;s primary M365 domain — only fill it when Spanning&rsquo;s domain differs.</td></tr>
-          <tr><th>apiURL</th><td>the region host, e.g. <code>https://api-us.spanningbackup.com</code> (swap <code>us</code> for the region). You can paste just the host — the runner appends <code>/api/v1</code>. Omit to default to US.</td></tr>
-          <tr><th>Secret name / ClientID</th><td>label / unused — ignored by the runner.</td></tr>
-        </tbody>
-      </table>
-
-      <h3>Simpler: <code>Generic API</code> (only for a US tenant whose Spanning domain = primary domain)</h3>
-      <table>
-        <tbody>
-          <tr><th style={{ width: 160 }}>API Key</th><td>the Spanning <b>access token</b></td></tr>
-          <tr><th>Secret Name</th><td>label — ignored. (No domain/region fields: domain defaults to the primary M365 domain, region defaults to US.)</td></tr>
+          <tr><th style={{ width: 160 }}>ClientID</th><td>the Spanning <b>Client ID</b> (the Basic-auth username)</td></tr>
+          <tr><th>ClientSecret</th><td>the Spanning <b>Client Secret</b></td></tr>
+          <tr><th>apiURL</th><td>the region host, e.g. <code>https://o365-api-us.spanningbackup.com</code> (swap <code>us</code> for the region). Paste just the host — the runner appends <code>/external</code>. Omit to default to US.</td></tr>
+          <tr><th>Secret name / AccountID</th><td>label / legacy only — <code>AccountID</code> is the account <b>domain</b> for old domain:access-token tenants; leave blank otherwise.</td></tr>
         </tbody>
       </table>
       <p className="note">
-        Field-name matching, in case a template differs (spacing/casing variants accepted): token ←
-        {" "}<code>AccessToken / Access Token / ApiToken / API Key / Token / Key / ClientSecret / Password</code>;
-        {" "}domain ← <code>Domain / AccountID / Account / Tenant</code> (else the secret&rsquo;s Username, else the
-        client&rsquo;s primary domain — <code>ClientID</code> is deliberately ignored); base URL ←
-        {" "}<code>apiURL / BaseUrl / Url</code> (else a <code>Region</code> field, else US). If no token field is found
-        the step fails with a message listing the field names it looked for.
+        Field-name matching, in case a template differs (spacing/casing variants accepted): secret ←
+        {" "}<code>ClientSecret / AccessToken / ApiToken / API Key / Token / Key / Password</code>;
+        {" "}username ← <code>ClientID / Domain / AccountID / Account / Tenant</code> (else the secret&rsquo;s Username,
+        else the client&rsquo;s primary domain); base URL ← <code>apiURL / BaseUrl / Url</code> (else a <code>Region</code>
+        {" "}field, else US). If no secret field is found the step fails with a message listing the field names it
+        looked for.
       </p>
       <p className="note">Grant the app&rsquo;s Delinea service account <b>Read</b> on the secret, or the Test shows &ldquo;access denied&rdquo;.</p>
 
@@ -88,9 +76,9 @@ export default function SpanningSetupPage() {
         <li>Run the <code>spanning</code> step <b>dry-run first</b>. A green dry-run confirms the domain, region and token are all correct.</li>
         <li>You can also confirm by hand:</li>
       </ul>
-      <Code>{`curl --user <domain>:<accessToken> \\
-  https://api-<region>.spanningbackup.com/api/v1/users
-# 200 + a JSON list of users = the credential is correct; 401 = wrong domain/token`}</Code>
+      <Code>{`curl -u "<clientID>:<clientSecret>" -H "Accept: application/json" \\
+  https://o365-api-<region>.spanningbackup.com/external/tenant
+# 200 + tenant JSON = the credential is correct; 401 = wrong Client ID/Secret (or wrong region)`}</Code>
 
       <h2>Notes</h2>
       <ul>

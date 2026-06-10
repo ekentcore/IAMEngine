@@ -5,13 +5,17 @@
 # user's mailbox/OneDrive/SharePoint is protected; offboarding RETAINS the departed user's backups
 # (legal/retention) by swapping them to the ARCHIVE license instead of deleting data.
 #
-# API: https://api.spanningbackup.com  (verified against the live reference)
-#   Base URL  : https://api-{region}.spanningbackup.com/api/v1   (region: US, EU, AP, UK, CA)
-#   Auth      : HTTP Basic over HTTPS — username = the client's domain, password = the access token
-#               (generated in Spanning Backup's Administrator section).
-#   Get user  : GET  /users/{email}            -> { type, email, licensed:bool, archived:bool } | 404
+# API (verified live against a real tenant, 2026-06):
+#   Base URL  : https://o365-api-{region}.spanningbackup.com/external   (region: US, EU, AP, UK, CA)
+#   Auth      : HTTP Basic over HTTPS — username = the CLIENT ID, password = the CLIENT SECRET
+#               (both from the API section of the Spanning admin console).
+#   Get user  : GET  /users/{email}            -> user (incl. licensed/archived flags) | 404
 #   Assign    : POST /users/assign   { emails:[..], licenseType:"STANDARD"|"ARCHIVE" } -> { licensed }
 #   Unassign  : POST /users/unassign { emails:[..] }                                    -> { licensed }
+# (Endpoint existence confirmed by probe: /external/{tenant,users,users/assign,users/unassign} 401
+# unauthenticated vs 404 for unknown paths. The PUBLIC docs at api.spanningbackup.com describe a
+# LEGACY surface — api-{region}.../api/v1 with domain:access-token Basic auth — which rejected a
+# freshly-issued credential; pass a legacy base via -BaseUrl if a tenant still needs it.)
 # Assign/unassign are bulk + idempotent server-side; assigning an already-licensed user returns 200
 # with licensed=false ("already had it"). 404 = the user isn't in the caller's domain yet (Spanning
 # discovers M365 users on its own schedule — re-run once they appear).
@@ -19,8 +23,8 @@
 Set-StrictMode -Version Latest
 
 $script:SpanningRegions = @('us', 'eu', 'ap', 'uk', 'ca')
-$script:SpanningApiUrl  = 'https://api-us.spanningbackup.com/api/v1'
-$script:SpanningDomain  = $null
+$script:SpanningApiUrl  = 'https://o365-api-us.spanningbackup.com/external'
+$script:SpanningUser    = $null
 $script:SpanningToken   = $null
 
 function Get-CtgProp {
@@ -37,38 +41,42 @@ function Get-CtgProp {
 function Connect-CtgSpanning {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Domain,        # Basic-auth username (the client's domain)
-        [Parameter(Mandatory)][string]$AccessToken,   # Basic-auth password (Spanning access token)
+        # Basic-auth username: the CLIENT ID from the Spanning console's API section. (Legacy
+        # domain:access-token tenants pass the account domain here instead — same slot.)
+        [Parameter(Mandatory)][Alias('Domain')][string]$Username,
+        # Basic-auth password: the CLIENT SECRET (legacy: the access token).
+        [Parameter(Mandatory)][string]$AccessToken,
         [string]$Region = 'us',
-        [string]$BaseUrl                               # full override, incl. /api/v1, if ever needed
+        [string]$BaseUrl                               # full override (host, or host + /external | /api/v1)
     )
     if ($BaseUrl) {
-        # Accept a host with or without the API path: append /api/v1 when it's missing so an operator
-        # can store just "https://api-eu.spanningbackup.com" in the secret's apiURL field.
+        # Accept a bare host or a full base: append /external (the verified prefix) when the operator
+        # stored just "https://o365-api-us.spanningbackup.com" in apiURL. An explicit /external or
+        # legacy /api/v1 suffix is kept as-is.
         $u = $BaseUrl.TrimEnd('/')
-        if ($u -notmatch '/api/v\d+$') { $u = "$u/api/v1" }
+        if ($u -notmatch '/(external|api/v\d+)$') { $u = "$u/external" }
         $script:SpanningApiUrl = $u
     }
     else {
         $r = ([string]$Region).ToLower().Trim()
         if ($script:SpanningRegions -notcontains $r) { $r = 'us' }
-        $script:SpanningApiUrl = "https://api-$r.spanningbackup.com/api/v1"
+        $script:SpanningApiUrl = "https://o365-api-$r.spanningbackup.com/external"
     }
-    $script:SpanningDomain = $Domain
-    $script:SpanningToken  = $AccessToken
+    $script:SpanningUser  = $Username
+    $script:SpanningToken = $AccessToken
 }
 
 function Invoke-CtgSpanningApi {
-    # Single HTTP seam (mocked in tests). HTTP Basic: domain:token, base64 in the Authorization header.
+    # Single HTTP seam (mocked in tests). HTTP Basic: clientId:clientSecret (legacy: domain:token).
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Path, $Body)
     if (-not $script:SpanningToken) { throw "Call Connect-CtgSpanning first." }
-    $pair = "$($script:SpanningDomain):$($script:SpanningToken)"
+    $pair = "$($script:SpanningUser):$($script:SpanningToken)"
     $b64  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($pair))
     $p = @{
         Method      = $Method
         Uri         = "$script:SpanningApiUrl$Path"
-        Headers     = @{ Authorization = "Basic $b64" }
+        Headers     = @{ Authorization = "Basic $b64"; Accept = 'application/json' }
         ContentType = 'application/json'
     }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }

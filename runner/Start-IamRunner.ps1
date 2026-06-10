@@ -69,27 +69,27 @@ function New-CtgAdConnection($creds) {
     return $ad
 }
 
-# Point the Spanning module at this job's brokered secret. Template-tolerant — works with
-# "Generic API" (token in the "API Key" field, domain defaults to the client's primary domain) OR
-# "Automation - API" (ClientSecret = token, AccountID = domain, apiURL = region host). Reads PLAIN
-# values from .Fields (.Password is a SecureString). Called at the START OF EVERY spanning lane
-# (not a cached Connect) so a rotated API key takes effect on the next job, no restart needed.
+# Point the Spanning module at this job's brokered secret. The verified API authenticates with
+# Basic clientId:clientSecret against o365-api-{region}.spanningbackup.com/external — so with the
+# "Automation - API" template, ClientID is the Basic USERNAME and ClientSecret the password. Legacy
+# tenants (domain:access-token) still work: Domain/AccountID, or the client's primary domain, fill
+# the username slot when no ClientID is present. Reads PLAIN values from .Fields (.Password is a
+# SecureString). Called at the START OF EVERY spanning lane (not a cached Connect) so a rotated
+# credential takes effect on the next job, no restart needed.
 function Use-CtgSpanningSecret {
     param($Job, $Creds)
     $s = $Creds['spanning']
     $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
-    $tokenNames = @('AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key', 'ClientSecret', 'Password')
+    $tokenNames = @('ClientSecret', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key', 'Password')
     $token = & $pick $tokenNames
     # Fail actionably, not with an opaque parameter-binding error: name the fields we looked
     # for AND the ones the secret actually has, so the fix (rename a Delinea field) is obvious.
-    if (-not $token) { throw "the 'spanning' secret has no access-token field — looked for $($tokenNames -join ', '); the secret has: $(@($s.Fields.Keys) -join ', '). Put the Spanning access token in one of those fields (see /help/spanning)." }
-    # NOTE: no ClientID here on purpose — the help page documents ClientID as ignored, and an
-    # app-id GUID half-matching as the Basic-auth domain would 401 confusingly.
-    $domain  = & $pick @('Domain', 'AccountID', 'AccountId', 'Account', 'Tenant')
-    if (-not $domain) { $domain = if ($s.Username) { $s.Username } else { $Job.client.primaryDomain } }
+    if (-not $token) { throw "the 'spanning' secret has no client-secret/token field — looked for $($tokenNames -join ', '); the secret has: $(@($s.Fields.Keys) -join ', '). Put the Spanning client secret in one of those fields (see /help/spanning)." }
+    $user = & $pick @('ClientID', 'ClientId', 'Client ID', 'Domain', 'AccountID', 'AccountId', 'Account', 'Tenant')
+    if (-not $user) { $user = if ($s.Username) { $s.Username } else { $Job.client.primaryDomain } }
     $baseUrl = & $pick @('apiURL', 'ApiUrl', 'ApiURL', 'BaseUrl', 'Url')
-    if ($baseUrl) { Connect-CtgSpanning -Domain $domain -AccessToken $token -BaseUrl $baseUrl }
-    else          { Connect-CtgSpanning -Domain $domain -AccessToken $token -Region $s.Fields['Region'] }
+    if ($baseUrl) { Connect-CtgSpanning -Username $user -AccessToken $token -BaseUrl $baseUrl }
+    else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
 }
 
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
