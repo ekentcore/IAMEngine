@@ -65,6 +65,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
   const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true } });
+
+  // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
+  // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled.
+  const parentInfo = client.systems.length === 0
+    ? (await db.client.findUnique({ where: { id: client.id }, select: { parent: { select: { slug: true, name: true, _count: { select: { systems: true } } } } } }))?.parent ?? null
+    : null;
   const hasRules = Boolean((v21?.personas && Object.keys(v21.personas).length) || (v21?.globals && Object.keys(v21.globals).length));
 
   const runbook = await db.runbookSection.findMany({
@@ -157,7 +163,17 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </p>
       )}
       {client.systems.length === 0 ? (
-        <p className="note">No profile applied yet — this client is roster-only.</p>
+        parentInfo && parentInfo._count.systems > 0 ? (
+          <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem" }}>
+            <b>Inherits the parent&rsquo;s runbook.</b>{" "}
+            This client has no modeled systems of its own, so cases plan with the parent account&rsquo;s systems:{" "}
+            <Link href={`/clients/${parentInfo.slug}`}>{parentInfo.name}</Link> ({parentInfo._count.systems} systems).
+            {" "}Credentials still resolve on <i>this</i> client — wire its secrets (or override per case).
+            {" "}Add systems here to diverge from the parent.
+          </div>
+        ) : (
+          <p className="note">No profile applied yet — this client is roster-only.</p>
+        )
       ) : (
         <>
         <p className="note" style={{ marginTop: 0 }}>

@@ -13,6 +13,9 @@ export type NormalizedSnClient = {
   coManaged: boolean;
   onboardingRating: number | null; // 1|2|3, null if the choice is text
   offboardingRating: number | null;
+  // sys_id of the SN parent account (account hierarchy), or null. Resolved to Client.parentId in a
+  // second sync pass (the parent row may not exist yet during the batch).
+  parentSysId: string | null;
   // Raw choice labels kept for parked-lane badges (e.g. "Document Missing", "Needs Cleanup").
   metadata: { onboardingLabel: string | null; offboardingLabel: string | null };
 };
@@ -55,6 +58,7 @@ export function normalizeAccount(raw: SnAccount): NormalizedSnClient {
     coManaged: (raw.u_comanaged_it?.value ?? "false") === "true",
     onboardingRating: parseRating(onValue),
     offboardingRating: parseRating(offValue),
+    parentSysId: blankToNull(raw.parent?.value),
     metadata: {
       // keep the human label only when it isn't just the numeric rating
       onboardingLabel: parseRating(onValue) === null ? blankToNull(raw.u_onboarding?.display_value) : null,

@@ -21,6 +21,7 @@ const FIELDS = [
   "u_comanaged_it",
   "u_onboarding",
   "u_offboarding",
+  "parent",
 ].join(",");
 
 const PAGE_SIZE = 100;

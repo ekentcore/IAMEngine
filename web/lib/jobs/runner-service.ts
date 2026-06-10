@@ -8,6 +8,7 @@ import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } 
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId, missingRequiredSecrets } from "../cases/case-secrets";
 import { purgeCutoff } from "./agent-trash";
+import { sweepProcurementWatches } from "./procurement-watch";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 
@@ -121,6 +122,10 @@ export function makeRunnerService(db: PrismaClient) {
         discover = consumed.count > 0;
       }
       await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version } });
+      // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
+      // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
+      // sweep self-throttles to ~1/min and checks each watch every ~5 min.
+      void sweepProcurementWatches(db).catch(() => {});
       return { ok: true, enabled: agent.enabled, update, discover };
     },
 

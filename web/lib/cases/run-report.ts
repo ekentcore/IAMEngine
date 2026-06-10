@@ -23,6 +23,9 @@ export type RunReportStep = {
   currentPhase: string | null; // what the runner is doing right now (in-flight steps only)
   phaseTrail: { ts: string; phase: string }[]; // the phases this step has gone through
   manualCompleted: boolean; // marked done by an operator (a manual/skipped step closed by hand)
+  // Procurement-case watch on this step (license blocked on seats): when the PC resolves in SN the
+  // job auto-re-queues. null = no watch.
+  procurement: { number: string; state: string; note: string | null; lastCheckedAt: string | null } | null;
 };
 
 export type RunReport = {
@@ -42,6 +45,7 @@ export type RunReport = {
 };
 
 type JobRow = {
+  procurementWatch?: { number: string; state: string; note: string | null; lastCheckedAt: Date | null } | null;
   id?: string;
   systemKey: string;
   sequence: number;
@@ -171,6 +175,9 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     return {
       seq: i + 1,
       jobId: j.id,
+      procurement: j.procurementWatch
+        ? { number: j.procurementWatch.number, state: j.procurementWatch.state, note: j.procurementWatch.note ?? null, lastCheckedAt: j.procurementWatch.lastCheckedAt ? new Date(j.procurementWatch.lastCheckedAt).toISOString() : null }
+        : null,
       systemKey: j.systemKey,
       systemName: input.names.get(j.systemKey) ?? j.systemKey,
       status: j.status,
@@ -253,7 +260,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     where: { id: caseId },
     include: {
       client: { select: { name: true, slug: true } },
-      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, error: true, startedAt: true, finishedAt: true } },
+      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
     },
   });
   if (!c) return null;

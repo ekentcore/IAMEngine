@@ -23,6 +23,57 @@ function Badge({ verdict }: { verdict: StepVerdict }) {
   return <span className="badge" style={{ color: v.color, borderColor: v.color }}>{v.label}</span>;
 }
 
+// Procurement-case watch: shown on steps blocked on license seats (a WARN naming a Procurement
+// Case). Saving a PC number starts a server-side watch (checked ~every 5 min via runner
+// heartbeats); when the PC resolves in ServiceNow, the job re-queues and verifies automatically.
+function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][number]; refresh: () => Promise<void> | void }) {
+  const [num, setNum] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const wantsWatch = step.actions.some((a) => /procurement case/i.test(a));
+  if (!step.jobId || (!step.procurement && !wantsWatch)) return null;
+
+  if (step.procurement) {
+    const p = step.procurement;
+    const when = p.lastCheckedAt ? new Date(p.lastCheckedAt).toLocaleTimeString() : "not yet";
+    const color = p.state === "watching" ? "#8a6d00" : p.state === "resolved" ? "#15803d" : "#b91c1c";
+    return (
+      <div className="note" style={{ marginTop: 4 }}>
+        <span style={{ color }}>
+          {p.state === "watching" && `⏳ Watching procurement case ${p.number} — last checked ${when}${p.note ? ` (SN state: ${p.note})` : ""}. When it resolves, this step re-runs and verifies automatically.`}
+          {p.state === "resolved" && `✓ Procurement case ${p.number} resolved — the step was re-queued automatically.`}
+          {p.state === "cancelled" && `✗ Procurement case ${p.number} was cancelled — license not procured, the step was NOT re-run.`}
+          {p.state === "error" && `Procurement case ${p.number}: ${p.note ?? "error"}`}
+        </span>
+        {p.state === "watching" && (
+          <button style={{ marginLeft: 8, fontSize: 11 }} disabled={busy}
+            onClick={async () => { setBusy(true); await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "DELETE" }); setBusy(false); await refresh(); }}>
+            Stop watching
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="note" style={{ marginTop: 4, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <span>Procurement case:</span>
+      <input value={num} onChange={(e) => setNum(e.target.value)} placeholder="PC0012345" style={{ width: 110, fontSize: 12 }} />
+      <button disabled={busy || !num.trim()} style={{ fontSize: 11 }}
+        onClick={async () => {
+          setBusy(true); setErr(null);
+          const r = await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: num }) });
+          if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed");
+          else setNum("");
+          setBusy(false); await refresh();
+        }}>
+        {busy ? "…" : "Watch"}
+      </button>
+      <span className="muted" style={{ fontSize: 11 }}>checked every ~5 min — on resolve, this step re-runs + verifies automatically</span>
+      {err && <span style={{ color: "#b91c1c" }}>{err}</span>}
+    </div>
+  );
+}
+
 // One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
 // careful drag-selecting inside a scrollable <pre>.
 function CopyButton({ text }: { text: string }) {
@@ -249,6 +300,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   <CopyButton text={step.error} />
                 </div>
               )}
+              <ProcurementWatchRow step={step} refresh={refresh} />
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>
                   <div className="note">Progress:</div>

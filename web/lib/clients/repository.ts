@@ -153,6 +153,28 @@ export function makeClientRepository(db: PrismaClient) {
       return (await db.client.count({ where: { slug } })) > 0;
     },
 
+    // Second sync pass: link children to parents by SN sys_id (the parent row may not have existed
+    // during the main loop). Only SETS links — never clears one — so an SN hiccup that drops the
+    // parent field for a sync can't sever an established inheritance.
+    async linkParentsBySysId(links: Array<{ childSysId: string; parentSysId: string }>): Promise<number> {
+      if (links.length === 0) return 0;
+      const sysIds = [...new Set(links.flatMap((l) => [l.childSysId, l.parentSysId]))];
+      const rows = await db.client.findMany({
+        where: { serviceNowSysId: { in: sysIds } },
+        select: { id: true, serviceNowSysId: true, parentId: true },
+      });
+      const bySys = new Map(rows.map((r) => [r.serviceNowSysId!, r]));
+      let linked = 0;
+      for (const l of links) {
+        const child = bySys.get(l.childSysId);
+        const parent = bySys.get(l.parentSysId);
+        if (!child || !parent || child.id === parent.id || child.parentId === parent.id) continue;
+        await db.client.update({ where: { id: child.id }, data: { parentId: parent.id } });
+        linked++;
+      }
+      return linked;
+    },
+
     async createClient(input: CreateClientInput, slug: string) {
       return db.client.create({
         data: {

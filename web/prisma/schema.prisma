@@ -82,6 +82,12 @@ model Client {
   editedFields       String[]  @default([])
   backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
   pod           String?
+  // ServiceNow account hierarchy: children (e.g. CORE2181..89 under CORE1456) share the parent's
+  // onboarding. When a child has NO modeled systems, planning falls back to the parent's systems +
+  // modeling (see clientForPlanning). Synced from customer_account.parent.
+  parentId      String?
+  parent        Client?        @relation("ClientParent", fields: [parentId], references: [id])
+  children      Client[]       @relation("ClientParent")
   identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
   // v2.1 plan-time resolution inputs (from the profile): role/persona bundles, every-user config
   // fragments, and the location data table. The planner merges these into each job's config.
@@ -233,6 +239,22 @@ model Job {
   error         String?
   startedAt     DateTime?
   finishedAt    DateTime?
+  procurementWatch ProcurementWatch?
+}
+
+// A Procurement Case (SN) being watched for a job that couldn't finish for lack of license seats.
+// Heartbeat-driven sweep checks the PC's state every ~5 minutes; when it resolves, the job is
+// automatically re-queued (re-runs the assignment + verifies). One watch per job.
+model ProcurementWatch {
+  id            String    @id @default(cuid())
+  job           Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId         String    @unique
+  number        String    // e.g. PC0012345
+  state         String    @default("watching") // watching | resolved | cancelled | error
+  note          String?   // last observed SN state / error detail
+  lastCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 // The full per-client runbook, generated from the KB by tools/profile-generator and loaded
