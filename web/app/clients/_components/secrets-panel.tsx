@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { secretHelp } from "@/lib/help/secret-help";
 
 export type SecretRowVM = {
   name: string;
@@ -109,9 +110,9 @@ export function SecretsPanel({
     <div>
       <p className="note">
         Map each secret to its Delinea id, then test that the app can read it. Stores references only —
-        the value stays in Delinea and is fetched by the runner at run time.
+        the value stays in Delinea and is fetched by the runner at run time. Credentials that need more
+        than a username + password have a setup guide next to their name.
         {!delineaConfigured && <> · <span className="danger">Test is disabled until DELINEA_* is set on the app.</span></>}
-        {" · "}<a href="/help/cloud-auth" target="_blank" rel="noreferrer">How to set up M365 / Exchange cloud auth →</a>
       </p>
       <table>
         <thead>
@@ -126,9 +127,19 @@ export function SecretsPanel({
         <tbody>
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
+            const help = secretHelp(r.name, r.referencedBy);
             return (
               <tr key={r.name}>
-                <td><code>{r.name}</code></td>
+                <td>
+                  <code>{r.name}</code>
+                  {help && (
+                    <div style={{ fontSize: 11, marginTop: 2 }}>
+                      <a href={help.href} target="_blank" rel="noreferrer" title={`This credential is an ${help.kind} — the guide shows exactly what to set up`}>
+                        {help.kind} — setup guide ↗
+                      </a>
+                    </div>
+                  )}
+                </td>
                 <td className="muted">
                   {r.referencedBy.length > 0 ? r.referencedBy.join(", ") : <span title="No system references this secret — orphaned mapping">unused</span>}
                 </td>

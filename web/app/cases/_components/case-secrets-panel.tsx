@@ -4,6 +4,7 @@
 // from (client default / overridden / missing) and the host the step runs on. You can override or
 // fill one inline, and preflight (test) it — references only; the value never enters the app.
 import { useEffect, useState } from "react";
+import { secretHelp } from "@/lib/help/secret-help";
 
 type CaseSecret = {
   name: string;
@@ -84,11 +85,19 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
           {secrets.map((s) => {
             const val = edit[s.name] ?? s.externalId ?? "";
             const res = results[s.name];
+            const help = secretHelp(s.name, s.systems);
             return (
               <tr key={s.name}>
                 <td>
                   <div style={{ fontWeight: 500 }}>{s.name}</div>
                   <div className="muted" style={{ fontSize: 11 }}>{s.label ?? s.systems.join(", ")}</div>
+                  {help && (
+                    <div style={{ fontSize: 11 }}>
+                      <a href={help.href} target="_blank" rel="noreferrer" title={`This credential is an ${help.kind} — the guide shows exactly what to set up`}>
+                        {help.kind} — setup guide ↗
+                      </a>
+                    </div>
+                  )}
                 </td>
                 <td className="muted" style={{ fontSize: 12 }}>{s.server ? <b>{s.server}</b> : <span className="muted">—</span>}<div style={{ fontSize: 11 }}>{s.systems.join(", ")}</div></td>
                 <td>
