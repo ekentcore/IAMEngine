@@ -5,6 +5,7 @@ import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
+import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
 
@@ -220,26 +221,37 @@ export function makeCaseRepository(db: PrismaClient) {
       caseId: string,
       upd: { action: Action; payload: Record<string, unknown>; status: CaseStatus },
       planned: PlannedJob[]
-    ): Promise<void> {
-      await db.$transaction(async (tx) => {
-        // Race-safe guard (closes the TOCTOU window after replanInputs' pre-check): delete only
-        // the not-yet-started jobs, then assert none remain. If a runner claimed a job between the
-        // pre-check and here, a started job survives the delete → throw to roll the whole tx back
-        // (no jobs lost), surfaced to the caller as `already_started`.
+    ): Promise<{ mode: "full" | "incremental"; kept: number; added: number }> {
+      return db.$transaction(async (tx) => {
+        // Drop every job that hasn't started; whatever survives is started/terminal work that must
+        // be KEPT (the account exists — its history can't be re-planned away). An empty survivor
+        // set = the classic full re-plan; survivors = INCREMENTAL: only systems without a kept job
+        // get fresh jobs, so a mid-run case can pick up new/changed systems without losing the run.
         await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: STARTED_STATUSES } } });
-        if ((await tx.job.count({ where: { caseRequestId: caseId } })) > 0) throw new CaseAlreadyStartedError();
-        const existing = await tx.caseRequest.findUnique({ where: { id: caseId }, select: { dryRun: true } });
+        const kept = await tx.job.findMany({
+          where: { caseRequestId: caseId },
+          select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
+        });
+        const existing = await tx.caseRequest.findUnique({ where: { id: caseId }, select: { dryRun: true, action: true } });
         const dryRun = existing?.dryRun ?? false; // replanned jobs inherit the case's current mode
+        // Flipping onboard<->offboard mid-run would graft offboard steps onto a half-finished
+        // onboard (or vice versa) — refuse; the operator should finish or trash the case instead.
+        if (kept.length > 0 && existing && existing.action !== upd.action) throw new CaseAlreadyStartedError();
+
+        const keptKeys = new Set(kept.map((k) => k.systemKey));
+        const fresh = kept.length === 0 ? planned : planned.filter((p) => !keptKeys.has(p.systemKey));
+        const seqBase = kept.length ? Math.max(...kept.map((k) => k.sequence)) + 1 : 0;
+
         await tx.caseRequest.update({
           where: { id: caseId },
-          data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status },
+          data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status, verifiedAt: null },
         });
-        if (planned.length > 0) {
+        if (fresh.length > 0) {
           await tx.job.createMany({
-            data: planned.map((p) => ({
+            data: fresh.map((p, i) => ({
               caseRequestId: caseId,
               systemKey: p.systemKey,
-              sequence: p.sequence,
+              sequence: kept.length ? seqBase + i : p.sequence,
               mode: p.mode,
               status: p.mode === "api" ? "pending" : "manual",
               request: {
@@ -247,11 +259,27 @@ export function makeCaseRepository(db: PrismaClient) {
                 requiresApproval: p.requiresApproval,
                 captureEvidence: p.captureEvidence,
                 secretNames: p.secretNames,
+                dependsOn: p.dependsOn,
                 dryRun,
               } as Prisma.InputJsonValue,
             })),
           });
         }
+        if (kept.length > 0) {
+          // Incremental: the plan-derived status ignores the kept jobs — recompute from ALL of them.
+          const all = await tx.job.findMany({
+            where: { caseRequestId: caseId },
+            select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
+          });
+          const st = deriveCaseStatus(
+            all.map((j) => {
+              const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
+              return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
+            })
+          );
+          await tx.caseRequest.update({ where: { id: caseId }, data: { status: st } });
+        }
+        return { mode: kept.length ? ("incremental" as const) : ("full" as const), kept: kept.length, added: fresh.length };
       });
     },
 
@@ -271,7 +299,7 @@ export function makeCaseRepository(db: PrismaClient) {
         where: { deletedAt: null }, // trashed cases live in the Trash section, not the main list
         orderBy: { createdAt: "desc" },
         select: {
-          id: true, action: true, status: true, subject: true,
+          id: true, action: true, status: true, subject: true, pausedAt: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
@@ -345,19 +373,24 @@ export function makeCaseRepository(db: PrismaClient) {
         // "Paused": the case looks running/queued but nothing is actually executing and a required
         // credential is missing, so the runner won't claim it — surface that as paused, not running.
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
-        const paused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
+        const operatorPaused = Boolean(r.pausedAt) && !["completed", "failed"].includes(r.status);
+        const credsPaused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
+        const paused = operatorPaused || credsPaused;
         return {
           id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
+          pausedBy: operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
-          statusHint: buildCaseStatusHint(
-            r.status,
-            r.jobs,
-            (k) => nameByKey.get(k) ?? k,
-            centralOnline || clientHasRunner.has(r.clientId),
-            missingSecrets
-          ),
+          statusHint: operatorPaused
+            ? "Paused by an operator — runners won't claim its steps. Resume on the case page."
+            : buildCaseStatusHint(
+                r.status,
+                r.jobs,
+                (k) => nameByKey.get(k) ?? k,
+                centralOnline || clientHasRunner.has(r.clientId),
+                missingSecrets
+              ),
         };
       });
     },

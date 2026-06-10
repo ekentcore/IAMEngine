@@ -15,16 +15,16 @@ import { makeEmailDomainResolver } from "./plan-domain";
 import { resolvePlannedConfigs } from "../profiles/plan-resolve";
 
 export type ReplanResult =
-  | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean }
+  | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean; mode: "full" | "incremental"; kept: number; added: number }
   | { ok: false; error: string; code: "not_found" | "already_started" };
 
 export async function replanCase(db: PrismaClient, caseId: string, actor: string, override?: string): Promise<ReplanResult> {
   const repo = makeCaseRepository(db);
   const info = await repo.replanInputs(caseId);
   if (!info) return { ok: false, error: "case not found", code: "not_found" };
-  if (info.started) {
-    return { ok: false, error: "this case has already started executing — re-plan is only available before dispatch", code: "already_started" };
-  }
+  // A started case is fine: replanCaseJobs runs INCREMENTALLY (finished/in-flight jobs are kept;
+  // only systems without a kept job get fresh jobs) — so KB/system changes can be picked up
+  // mid-run. The only hard stop is the action flipping (guarded in the transaction).
 
   let action = info.action;
   let payload = info.payload;
@@ -57,24 +57,28 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
 
   const planned = resolvePlannedConfigs(info.client, payload, action, planCase(info.client.systems, action, payload));
   const status = deriveStatus(planned);
+  let result: { mode: "full" | "incremental"; kept: number; added: number };
   try {
-    await repo.replanCaseJobs(caseId, { action, payload, status }, planned);
+    result = await repo.replanCaseJobs(caseId, { action, payload, status }, planned);
   } catch (e) {
-    // A job started executing in the TOCTOU window between the pre-check and the replace.
+    // Only thrown when the ACTION flipped on a started case (onboard<->offboard mid-run).
     if (e instanceof CaseAlreadyStartedError) {
-      return { ok: false, error: "this case started executing while re-planning — refresh and try again", code: "already_started" };
+      return { ok: false, error: "the action changed (onboard/offboard) but this case already started — finish or trash it instead of re-planning across actions", code: "already_started" };
     }
     throw e;
   }
 
   await repo.writeAudit({
     actor, action: "case.replan", clientId: info.client.id, caseRequestId: caseId,
-    detail: { refreshedFromServiceNow, action, jobs: planned.length },
+    detail: { refreshedFromServiceNow, action, jobs: planned.length, mode: result.mode, kept: result.kept, added: result.added },
   });
 
   return {
     ok: true,
     refreshedFromServiceNow,
+    mode: result.mode,
+    kept: result.kept,
+    added: result.added,
     outcome: {
       caseId, status, jobCount: planned.length,
       manualCount: planned.filter((j) => j.mode !== "api").length,

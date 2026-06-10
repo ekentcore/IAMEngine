@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 
 type Section = { seq: number; systemKey: string | null; title: string; status: string; steps: string[] };
 
-export function RunbookEditor({ slug }: { slug: string }) {
+export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArticles?: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
@@ -30,12 +30,38 @@ export function RunbookEditor({ slug }: { slug: string }) {
     else setPreview(d.sections ?? []);
   }
 
+  // Pull the article's CURRENT body from ServiceNow into the textarea — then the normal
+  // parse-preview -> save flow applies (a KB edit never silently rewrites the client).
+  async function fetchKb(article: string) {
+    setBusy(true); setError(null);
+    try {
+      const r = await fetch(`/api/clients/${slug}/runbook/kb-text?article=${encodeURIComponent(article)}`);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+      setText(d.text ?? "");
+      setPreview(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!open) {
     return <button onClick={() => setOpen(true)} style={{ marginTop: "0.5rem" }}>Paste / edit runbook</button>;
   }
 
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 4, padding: "0.75rem", marginTop: "0.5rem" }}>
+      {kbArticles.length > 0 && (
+        <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
+          <span className="note">KB changed in ServiceNow?</span>
+          {kbArticles.map((a) => (
+            <button key={a} disabled={busy} onClick={() => fetchKb(a)} title={`Fetch ${a}'s current body from ServiceNow into the editor`}>
+              ⟳ Fetch {a}
+            </button>
+          ))}
+          <span className="note muted">then Preview the parse and Save to update the runbook + systems</span>
+        </div>
+      )}
       <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
         <label htmlFor="rb-action">Action</label>
         <select id="rb-action" value={action} onChange={(e) => { setAction(e.target.value as never); setPreview(null); }}>

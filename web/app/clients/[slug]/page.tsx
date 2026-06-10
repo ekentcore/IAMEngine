@@ -250,7 +250,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       ) : (
         <RunbookView items={items} slug={client.slug} />
       )}
-      <RunbookEditor slug={client.slug} />
+      <RunbookEditor slug={client.slug} kbArticles={[...new Set(runbook.map((r) => r.kbArticle).filter((a): a is string => Boolean(a)))]} />
     </main>
   );
 }

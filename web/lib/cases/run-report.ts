@@ -302,6 +302,14 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     names,
   });
 
+  // An operator-paused case: every pending step is held by the pause, whatever else is true.
+  if (c.pausedAt) {
+    for (const st of report.steps) {
+      if (st.pendingReason) st.pendingReason = "case is paused — resume it to dispatch this step";
+    }
+    return report;
+  }
+
   // Refine the "ready — waiting for a runner" pending steps with the two REAL blockers the
   // ordering rule can't see: an unset required credential (the claim preflight skips the job) and
   // no runner being online to claim it. This is the on-page answer to "it's just sitting at

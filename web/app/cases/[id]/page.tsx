@@ -13,6 +13,7 @@ import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
+import { PauseButton } from "../_components/pause-button";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
@@ -33,7 +34,10 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
   const manual = c.jobs.filter((j) => j.isManual);
   const automated = c.jobs.filter((j) => !j.isManual);
-  const canReplan = !hasStartedJobs(c.jobs);
+  // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
+  // incrementally (kept steps survive, new/changed systems get fresh jobs).
+  const started = hasStartedJobs(c.jobs);
+  const paused = Boolean((await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true } }))?.pausedAt);
 
   return (
     <main>
@@ -46,11 +50,19 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
           </p>
         </div>
-        <ReplanButton caseId={c.id} canReplan={canReplan} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <PauseButton caseId={c.id} paused={paused} />
+          <ReplanButton caseId={c.id} canReplan={true} started={started} />
+        </div>
       </div>
+      {paused && (
+        <p className="note" style={{ color: "#8a6d00" }}>
+          ⏸ This case is paused — runners won&rsquo;t claim its steps until you resume (a step already running finishes normally).
+        </p>
+      )}
 
       <div style={{ margin: "0.5rem 0 1rem" }}>
-        <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={!canReplan} />
+        <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={started} />
       </div>
 
       {playbook && playbook.steps.length > 0 && (

@@ -30,6 +30,7 @@ export default async function CasesPage() {
     action: c.action,
     status: c.status,
     paused: c.paused,
+    pausedBy: c.pausedBy,
     warnings: c.warnings,
     subject: c.subject,
     serviceNowCaseNumber: c.serviceNowCaseNumber,

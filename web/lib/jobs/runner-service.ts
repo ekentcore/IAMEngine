@@ -203,7 +203,7 @@ export function makeRunnerService(db: PrismaClient) {
         where: {
           status: "pending",
           mode: "api",
-          case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
+          case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, pausedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
           ...(agent.clientId ? {} : { systemKey: { notIn: ON_PREM_SYSTEMS } }),
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
