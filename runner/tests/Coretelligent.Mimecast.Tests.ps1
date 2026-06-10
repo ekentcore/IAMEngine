@@ -1,87 +1,122 @@
 #Requires -Modules @{ ModuleName='Pester'; ModuleVersion='5.0.0' }
 # Unit tests for Coretelligent.Mimecast. We mock the single HTTP seam (Invoke-CtgMimecastApi)
-# so no live Mimecast tenant is needed. API shape per the Mimecast 2.0 cloud-gateway docs:
-#   POST /directory/cloud-gateway/v1/integrations/sync-requests   (trigger directory sync)
-#   GET  /domain/cloud-gateway/v1/internal-domains                (verify the client's domain)
+# so no live tenant is needed. Endpoints are the classic set served by API 2.0 with Bearer auth:
+#   POST /api/directory/get-connection / execute-sync
+#   POST /api/user/get-profile (fail[] = user unknown) / create-user
+#   POST /api/directory/find-groups / remove-group-member / get-group-members
+# The seam returns the response's data ARRAY (or the raw envelope with -AllowFail).
 
 BeforeAll {
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psm1" -Force
 }
 
 Describe 'Invoke-CtgMimecastOnboarding' {
-    BeforeEach {
-        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
+    It 'verifies a sync connection exists, triggers a sync, and sees the user' {
         Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
-            param($Method, $Path, $Body)
-            if ($Path -like '*internal-domains*') {
-                return [pscustomobject]@{ data = @([pscustomobject]@{ domain = '61commodities.com'; status = 'verified' }) }
+            param($Path, $Data, [switch]$AllowFail)
+            switch -Wildcard ($Path) {
+                '*get-connection*' { return @([pscustomobject]@{ name = 'AzureAD sync' }) }
+                '*get-profile*'    { return [pscustomobject]@{ fail = @(); data = @([pscustomobject]@{ emailAddress = 'jdoe@drakestar.com' }) } }
+                default            { return @() }
             }
-            return [pscustomobject]@{ data = @() }
         }
-    }
-
-    It 'triggers a directory sync when syncAll is set' {
-        $config = [pscustomobject]@{ syncAll = $true; verifyInternalDirectory = '@61commodities.com' }
-        $r = Invoke-CtgMimecastOnboarding -User $user -Config $config
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }
+        $r = Invoke-CtgMimecastOnboarding -User $user -Config ([pscustomobject]@{})
         $r.Status | Should -Be 'ok'
-        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Method -eq 'POST' -and $Path -match 'sync-requests' } -Times 1
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/directory/execute-sync' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'Mimecast user present'
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/user/create-user' } -Times 0 -Exactly
     }
 
-    It 'verifies the client domain is an internal verified domain' {
-        $config = [pscustomobject]@{ syncAll = $true; verifyInternalDirectory = '@61commodities.com' }
-        $r = Invoke-CtgMimecastOnboarding -User $user -Config $config
-        ($r.Actions -join ' ') | Should -Match 'internal domain verified: 61commodities.com'
-    }
-
-    It 'flags partial status when the domain is not an internal domain' {
+    It 'creates a cloud user when missing and createIfMissing is set' {
         Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
-            [pscustomobject]@{ data = @([pscustomobject]@{ domain = 'someoneelse.com'; status = 'verified' }) }
+            param($Path, $Data, [switch]$AllowFail)
+            switch -Wildcard ($Path) {
+                '*get-connection*' { return @() }
+                '*get-profile*'    { return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_user_not_found'; message = 'unknown user' }) }); data = @() } }
+                default            { return @() }
+            }
         }
-        $config = [pscustomobject]@{ verifyInternalDirectory = '@61commodities.com' }
-        $r = Invoke-CtgMimecastOnboarding -User $user -Config $config
-        $r.Status | Should -Be 'partial'
-        ($r.Actions -join ' ') | Should -Match 'not found'
+        $user = [pscustomobject]@{ UserPrincipalName = 'new@drakestar.com'; DisplayName = 'New Hire' }
+        $r = Invoke-CtgMimecastOnboarding -User $user -Config ([pscustomobject]@{ createIfMissing = $true }) -InitialPassword 'Xx!long-password-1'
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/user/create-user' -and $Data.emailAddress -eq 'new@drakestar.com' -and $Data.forcePasswordChange -eq $true } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'created Mimecast cloud user'
+    }
+
+    It 'notes (not creates) when the user is missing and createIfMissing is off' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Path, $Data, [switch]$AllowFail)
+            switch -Wildcard ($Path) {
+                '*get-connection*' { return @([pscustomobject]@{ name = 'AD sync' }) }
+                '*get-profile*'    { return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @() }); data = @() } }
+                default            { return @() }
+            }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'new@drakestar.com' }
+        $r = Invoke-CtgMimecastOnboarding -User $user -Config ([pscustomobject]@{})
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/user/create-user' } -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'not visible yet'
+    }
+
+    It 'warns when no sync connection exists and createIfMissing is off' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Path, $Data, [switch]$AllowFail)
+            if ($Path -like '*get-profile*') { return [pscustomobject]@{ fail = @(); data = @([pscustomobject]@{ emailAddress = 'jdoe@drakestar.com' }) } }
+            return @()
+        }
+        $r = Invoke-CtgMimecastOnboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }) -Config ([pscustomobject]@{})
+        ($r.Actions -join ' ') | Should -Match 'WARN no directory-sync connection'
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/directory/execute-sync' } -Times 0 -Exactly
     }
 }
 
-Describe 'Connect-CtgMimecast' {
-    It 'requests an OAuth2 client-credentials token and stores it' {
-        Mock Invoke-RestMethod -ModuleName Coretelligent.Mimecast -MockWith { [pscustomobject]@{ access_token = 'tok-123' } }
-        $cred = [pscredential]::new('client-id', (ConvertTo-SecureString 'secret' -AsPlainText -Force))
-        Connect-CtgMimecast -Credential $cred -BaseUrl 'https://api.services.mimecast.com'
-        Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Mimecast -ParameterFilter { $Uri -match '/oauth/token' } -Times 1
+Describe 'Invoke-CtgMimecastOffboarding' {
+    It 'resolves group names and removes the user' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Path, $Data, [switch]$AllowFail)
+            if ($Path -like '*find-groups*') { return @([pscustomobject]@{ id = 'AAAAAAAAAAAAAAAAAAAAAAAAAA'; description = 'All Staff' }) }
+            return @()
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }
+        $r = Invoke-CtgMimecastOffboarding -User $user -Config ([pscustomobject]@{ groups = @('All Staff') })
+        Should -Invoke Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -ParameterFilter { $Path -eq '/api/directory/remove-group-member' -and $Data.emailAddress -eq 'jdoe@drakestar.com' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'removed from Mimecast group'
+    }
+
+    It 'no-ops cleanly with no configured groups' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith { @() }
+        $r = Invoke-CtgMimecastOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }) -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no Mimecast group removals configured'
     }
 }
 
 Describe 'Confirm-CtgMimecast' {
-    It 'onboard: verifies the internal domain is registered' {
+    It 'onboard: passes when the user profile is visible' {
         Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
-            param($Method, $Path, $Body)
-            if ($Path -like '*internal-domains*') { return [pscustomobject]@{ data = @([pscustomobject]@{ domain = '61commodities.com'; status = 'verified' }) } }
-            return [pscustomobject]@{ data = @() }
+            param($Path, $Data, [switch]$AllowFail)
+            return [pscustomobject]@{ fail = @(); data = @([pscustomobject]@{ emailAddress = 'jdoe@drakestar.com' }) }
         }
-        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
-        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ verifyInternalDirectory = '@61commodities.com' }) -Action 'onboard'
+        $r = Confirm-CtgMimecast -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeTrue
     }
 
-    It 'offboard: passes when the user is absent from each configured group' {
+    It 'onboard: fails when the user is not visible yet' {
         Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
-            param($Method, $Path, $Body)
-            return [pscustomobject]@{ data = @([pscustomobject]@{ emailAddress = 'someone-else@61commodities.com' }) }
+            param($Path, $Data, [switch]$AllowFail)
+            return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @() }); data = @() }
         }
-        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
-        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ groups = @('grp-1') }) -Action 'offboard'
-        $r.ok | Should -BeTrue
-    }
-
-    It 'offboard: fails when the user is still a group member' {
-        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
-            param($Method, $Path, $Body)
-            return [pscustomobject]@{ data = @([pscustomobject]@{ emailAddress = 'jdoe@61commodities.com' }) }
-        }
-        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }
-        $r = Confirm-CtgMimecast -User $user -Config ([pscustomobject]@{ groups = @('grp-1') }) -Action 'offboard'
+        $r = Confirm-CtgMimecast -User ([pscustomobject]@{ UserPrincipalName = 'new@drakestar.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeFalse
+    }
+
+    It 'offboard: passes when the user is absent from the configured groups' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Path, $Data, [switch]$AllowFail)
+            if ($Path -like '*find-groups*') { return @([pscustomobject]@{ id = 'BBBBBBBBBBBBBBBBBBBBBBBBBB'; description = 'All Staff' }) }
+            return @()   # get-group-members: empty
+        }
+        $r = Confirm-CtgMimecast -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }) -Config ([pscustomobject]@{ groups = @('All Staff') }) -Action 'offboard'
+        $r.ok | Should -BeTrue
     }
 }

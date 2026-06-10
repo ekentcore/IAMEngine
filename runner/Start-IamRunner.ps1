@@ -28,6 +28,7 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Zoom/Coretelligent.Zoom.psd1"
 Import-Module "$PSScriptRoot/modules/Coretelligent.Adobe/Coretelligent.Adobe.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Perimeter81.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Spanning/Coretelligent.Spanning.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Egnyte/Coretelligent.Egnyte.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
@@ -136,7 +137,7 @@ $DISPATCH = @{
     }
     'mimecast' = @{
         Connect  = { param($job, $creds) Connect-CtgMimecast -Credential $creds['mimecast'].Credential }
-        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config }
+        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }
     }
@@ -196,6 +197,29 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Invoke-CtgPerimeter81Onboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgPerimeter81Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'egnyte' = @{
+        # Egnyte: per-tenant host https://{Domain}.egnyte.com, OAuth2 bearer. Secret fields:
+        # Domain (the tenant subdomain, e.g. "drakestar") + either a long-lived Token (preferred —
+        # Egnyte tokens don't expire) or ClientID (the API key) + Username/Password (service
+        # account) for the password grant. Template-tolerant field matching; actionable errors.
+        Connect  = { param($job, $creds)
+            $s = $creds['egnyte']
+            if (-not $s) { throw "the job did not broker an 'egnyte' secret — make sure the client's egnyte system lists 'egnyte' in its secrets" }
+            $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
+            $domain = & $pick @('Domain', 'EgnyteDomain', 'Tenant', 'AccountID', 'AccountId')
+            if (-not $domain) { throw "the 'egnyte' secret has no Domain field — set it to the tenant subdomain (e.g. 'drakestar' for drakestar.egnyte.com); the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)" }
+            $token = & $pick @('Token', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Bearer')
+            if ($token) { Connect-CtgEgnyte -Domain $domain -Token $token }
+            else {
+                $clientId = & $pick @('ClientID', 'ClientId', 'Client ID', 'Key')
+                if (-not $clientId -or -not $s.Credential) { throw "the 'egnyte' secret needs either a Token field (preferred) or ClientID + Username/Password for the password grant; the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)" }
+                Connect-CtgEgnyte -Domain $domain -ClientId $clientId -Credential $s.Credential
+            }
+        }
+        Onboard  = { param($job, $creds) Invoke-CtgEgnyteOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgEgnyteOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgEgnyte -User $job.payload -Config $job.config -Action $job.action }
     }
     'spanning' = @{
         # Spanning Backup: HTTP Basic auth, username = the CLIENT ID, password = the CLIENT SECRET

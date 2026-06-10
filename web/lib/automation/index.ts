@@ -11,6 +11,7 @@ import { previewZoom } from "./zoom-preview";
 import { previewAdobe } from "./adobe-preview";
 import { previewPerimeter81 } from "./perimeter81-preview";
 import { previewSpanning } from "./spanning-preview";
+import { previewEgnyte } from "./egnyte-preview";
 import { previewGoogleWorkspace } from "./google-workspace-preview";
 
 export type Action = "onboard" | "offboard";
@@ -37,6 +38,7 @@ const PREVIEWERS: Record<string, Previewer> = {
   adobe: previewAdobe,
   perimeter81: previewPerimeter81,
   spanning: previewSpanning,
+  egnyte: previewEgnyte,
   "google-workspace": previewGoogleWorkspace,
 };
 
@@ -83,7 +85,7 @@ const VALIDATES: Record<string, Record<Action, string[]>> = {
     offboard: ["account disabled", "groups removed", "hidden from GAL", "not moved (do-not-move-ou)"],
   },
   mimecast: {
-    onboard: ["internal domain registered + verified"],
+    onboard: ["Mimecast user profile visible", "internal domain registered (if configured)"],
     offboard: ["removed from configured Mimecast groups"],
   },
   exchange: {
@@ -109,6 +111,10 @@ const VALIDATES: Record<string, Record<Action, string[]>> = {
   spanning: {
     onboard: ["Spanning user present", "Standard backup license assigned"],
     offboard: ["backups retained (never deleted)", "Archive license (or removed, per config)"],
+  },
+  egnyte: {
+    onboard: ["Egnyte user present + active", "license tier matches config (e.g. power)"],
+    offboard: ["Egnyte user deactivated (or deleted, per config)"],
   },
 };
 

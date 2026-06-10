@@ -99,7 +99,9 @@ export default function HealthPage() {
         <b style={{ fontSize: 14 }}>Credential setup guides</b>
         <ul className="note" style={{ margin: "0.35rem 0 0" }}>
           <li><Link href="/help/cloud-auth">Cloud auth (M365 + Exchange Online)</Link> — Entra app registration, client secret + certificate.</li>
-          <li><Link href="/help/spanning">Spanning Backup (Microsoft 365)</Link> — access token, Delinea template (Automation - API / Generic API), region + domain.</li>
+          <li><Link href="/help/spanning">Spanning Backup (Microsoft 365)</Link> — Client ID + Secret, region host, Delinea template.</li>
+          <li><Link href="/help/mimecast">Mimecast</Link> — API 2.0 application (client ID + secret), directory sync + user checks.</li>
+          <li><Link href="/help/egnyte">Egnyte</Link> — API token (or API key + service account), per-tenant domain, license tiers.</li>
         </ul>
       </div>
     </main>

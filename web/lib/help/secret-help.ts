@@ -19,5 +19,11 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "spanning") {
     return { kind: "API key", href: "/help/spanning" };
   }
+  if (name === "mimecast") {
+    return { kind: "API 2.0 application (client ID + secret)", href: "/help/mimecast" };
+  }
+  if (name === "egnyte") {
+    return { kind: "API token", href: "/help/egnyte" };
+  }
   return null;
 }
