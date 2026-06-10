@@ -217,8 +217,9 @@ function Invoke-CtgSpanningOnboarding {
     # first so a not-yet-synced user produces a clear "re-run" note rather than an error.
     $found = Find-CtgSpanningUser -Email $email
     if (-not $found) {
-        $actions.Add("Spanning has not discovered $email yet (it syncs M365 users on its own schedule) — re-run this step once the user appears to assign the backup license")
-        return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+        $actions.Add("Spanning has not discovered $email yet (it syncs M365 users on its own schedule) — auto-retrying every 15 minutes until the user appears, then the license assigns")
+        # RetryAfterMinutes: the app re-queues this job automatically (capped) — see sweepAutoRetries.
+        return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray(); RetryAfterMinutes = 15 }
     }
     if (Test-CtgSpanningLicensed $found) {
         $actions.Add("backup already enabled for $email (Standard license already assigned)")

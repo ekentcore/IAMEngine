@@ -61,10 +61,27 @@ export async function checkProcurementWatch(
   }
 }
 
+// Re-queue succeeded jobs whose self-scheduled retry (request.autoRetry.at) is due — e.g. a
+// Spanning/Mimecast step waiting for the vendor's directory sync to discover a new user. The
+// requeue clears the marker; the re-run either finishes the work or schedules the next wait.
+export async function sweepAutoRetries(db: PrismaClient): Promise<void> {
+  const due = await db.job.findMany({
+    where: { status: "succeeded", mode: "api", request: { path: ["autoRetry", "at"], lt: Date.now() } },
+    take: 10,
+    select: { id: true },
+  });
+  for (const j of due) {
+    const out = await requeueJob(db, j.id, "system:auto-retry");
+    if (!out.ok) continue; // mid-flight (operator re-ran) — the fresh run re-decides anyway
+    await db.auditLog.create({ data: { actor: "system:auto-retry", action: "job.autoretry.requeued", jobId: j.id } });
+  }
+}
+
 export async function sweepProcurementWatches(db: PrismaClient): Promise<void> {
   const now = Date.now();
   if (now - lastSweepAt < 60_000) return;
   lastSweepAt = now;
+  await sweepAutoRetries(db).catch(() => {});
 
   const due = await db.procurementWatch.findMany({
     where: {

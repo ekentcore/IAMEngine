@@ -16,6 +16,7 @@ export async function requeueJob(db: PrismaClient, jobId: string, actor: string)
   // stale actions never refresh.
   const req = { ...((job.request ?? {}) as Record<string, unknown>) };
   delete req.validateOnly;
+  delete req.autoRetry; // the fresh run re-decides whether another wait is needed
 
   await db.job.update({
     where: { id: job.id },

@@ -54,6 +54,20 @@ if ($exoAvail) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
 }
 
+# Persistent troubleshooting log: errors/warnings/failures append to runner.log next to the
+# script (build-id + bundle walks skip *.log), rotating at 5 MB. Pull a line from here when
+# reporting an issue — it has the timestamp, job id and full error the console may have scrolled.
+$script:CtgLogPath = Join-Path $PSScriptRoot 'runner.log'
+function Write-CtgLog {
+    param([ValidateSet('ERROR', 'WARN', 'INFO')][string]$Level = 'INFO', [Parameter(Mandatory)][string]$Message)
+    try {
+        if ((Test-Path $script:CtgLogPath) -and (Get-Item $script:CtgLogPath).Length -gt 5MB) {
+            Move-Item $script:CtgLogPath "$($script:CtgLogPath).1" -Force
+        }
+        Add-Content -Path $script:CtgLogPath -Value "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) [$Level] $Message"
+    } catch { }  # logging must never break the runner
+}
+
 # Build the AD connection splat from the brokered ad-dc secret (Option 2): the AD module
 # authenticates as the ad-dc account (-Credential) against the DC named in its Fields (-Server),
 # so the runner's own process identity needs no AD rights. Empty when ad-dc isn't brokered (the
@@ -679,6 +693,7 @@ while ($true) {
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
                 $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
                 Write-Warning "job $($job.id) failed: $err"
+                Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
                 Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
             finally { $global:CtgProgressJobId = $null }  # don't let a stray post target a finished job
@@ -686,6 +701,7 @@ while ($true) {
     }
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"
+        Write-CtgLog -Level WARN -Message "poll cycle error: $($_.Exception.Message)"
     }
     # Drain: if this cycle claimed work, more may have just unblocked (dependency chains, an
     # operator's re-run) — poll again immediately and only sleep once the queue is empty.

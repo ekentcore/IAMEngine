@@ -28,6 +28,9 @@ export type RunReportStep = {
   // Procurement-case watch on this step (license blocked on seats): when the PC resolves in SN the
   // job auto-re-queues. null = no watch.
   procurement: { number: string; state: string; note: string | null; lastCheckedAt: string | null } | null;
+  // Self-scheduled retry (request.autoRetry): the step is waiting for a vendor-side sync (e.g.
+  // Spanning discovering a new M365 user) and re-runs itself when `at` arrives. null = none.
+  autoRetry: { at: string; count: number; firstAt: string } | null;
   // For a step sitting at "pending": WHY it hasn't started — waiting on predecessors, a missing
   // credential, or no runner online. The ordering part is computed here; loadRunReport refines the
   // "ready" case with credential/runner checks. null when the step isn't pending.
@@ -210,6 +213,10 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       phaseTrail,
       manualCompleted,
       pendingReason,
+      autoRetry: (() => {
+        const ar = ((j.request ?? {}) as { autoRetry?: { at?: number; count?: number; firstAt?: number } }).autoRetry;
+        return ar?.at ? { at: new Date(ar.at).toISOString(), count: ar.count ?? 1, firstAt: new Date(ar.firstAt ?? ar.at).toISOString() } : null;
+      })(),
     };
   });
 

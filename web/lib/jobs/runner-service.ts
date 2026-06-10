@@ -350,7 +350,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, serviceNowCaseNumber: true } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -369,6 +369,27 @@ export function makeRunnerService(db: PrismaClient) {
         where: { id: jobId },
         data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
       });
+
+      // AUTO-RETRY: a succeeded result carrying RetryAfterMinutes (e.g. Spanning/Mimecast "user not
+      // discovered yet") schedules its own re-run; sweepAutoRetries re-queues it when due. A result
+      // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time.
+      if (status === "succeeded" && !req(job).validateOnly) {
+        const marker = (input.result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
+        const mins = Number(marker.RetryAfterMinutes ?? marker.retryAfterMinutes ?? 0);
+        const reqJson = { ...(job.request as Record<string, unknown> ?? {}) };
+        const prev = (reqJson.autoRetry ?? null) as { count?: number; firstAt?: number } | null;
+        if (mins > 0 && (prev?.count ?? 0) < 16) {
+          reqJson.autoRetry = { at: Date.now() + mins * 60_000, count: (prev?.count ?? 0) + 1, firstAt: prev?.firstAt ?? Date.now() };
+          await db.job.update({ where: { id: jobId }, data: { request: reqJson as Prisma.InputJsonValue } });
+        } else if (prev) {
+          delete reqJson.autoRetry;
+          await db.job.update({ where: { id: jobId }, data: { request: reqJson as Prisma.InputJsonValue } });
+          if (mins === 0) {
+            await db.auditLog.create({ data: { actor: "system:auto-retry", action: "job.autoretry.resolved", jobId, caseRequestId: job.caseRequestId, detail: { attempts: prev.count ?? 0, elapsedMinutes: prev.firstAt ? Math.round((Date.now() - prev.firstAt) / 60_000) : null } } });
+          }
+        }
+      }
+
 
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
       let caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));

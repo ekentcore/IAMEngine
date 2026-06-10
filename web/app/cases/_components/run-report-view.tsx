@@ -336,6 +336,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   <CopyButton text={step.error} />
                 </div>
               )}
+              {step.autoRetry && (
+                <div className="note" style={{ marginTop: 4, color: "#8a6d00" }}>
+                  ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
+                </div>
+              )}
               <ProcurementWatchRow step={step} refresh={refresh} />
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>

@@ -26,6 +26,7 @@ Set-StrictMode -Version Latest
 
 $script:MimecastBaseUrl = 'https://api.services.mimecast.com'
 $script:MimecastToken   = $null
+$script:MimecastCredential = $null  # kept so an expired token (~30 min life) can re-mint mid-job
 
 function Get-CtgProp {
     # Read a property whether $Object is a hashtable, a generic IDictionary, or a PSObject.
@@ -57,8 +58,9 @@ function Connect-CtgMimecast {
     }
     $resp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/oauth/token" `
         -Body $body -ContentType 'application/x-www-form-urlencoded'
-    $script:MimecastToken   = $resp.access_token
-    $script:MimecastBaseUrl = $BaseUrl
+    $script:MimecastToken      = $resp.access_token
+    $script:MimecastBaseUrl    = $BaseUrl
+    $script:MimecastCredential = $Credential
     Write-Verbose "Mimecast session established."
 }
 
@@ -90,14 +92,23 @@ function Invoke-CtgMimecastApi {
         Body        = (@{ data = $items } | ConvertTo-Json -Depth 8)
     }
     $resp = $null
-    try { $resp = Invoke-RestMethod @p }
-    catch {
-        $status = $null
-        try { $status = [int]$_.Exception.Response.StatusCode } catch { }
-        $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { ([string]$_.ErrorDetails.Message).Trim() } else { $null }
-        if ($detail -and $detail.Length -gt 400) { $detail = $detail.Substring(0, 400) + '…' }
-        $what = if ($status) { "HTTP $status" } else { $_.Exception.Message }
-        throw "Mimecast API: POST $($p.Uri) -> $what$(if ($detail) { " — $detail" })"
+    foreach ($attempt in 1, 2) {
+        try { $resp = Invoke-RestMethod @p; break }
+        catch {
+            $status = $null
+            try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+            $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { ([string]$_.ErrorDetails.Message).Trim() } else { $null }
+            # Bearer tokens last ~30 min — on token_expired/401, re-mint from the stored credential
+            # and retry ONCE instead of failing a long-running job mid-flight.
+            if ($attempt -eq 1 -and $script:MimecastCredential -and ($status -eq 401 -or $detail -match 'token_expired')) {
+                Connect-CtgMimecast -Credential $script:MimecastCredential -BaseUrl $script:MimecastBaseUrl
+                $p.Headers = @{ Authorization = "Bearer $script:MimecastToken"; Accept = 'application/json' }
+                continue
+            }
+            if ($detail -and $detail.Length -gt 400) { $detail = $detail.Substring(0, 400) + '…' }
+            $what = if ($status) { "HTTP $status" } else { $_.Exception.Message }
+            throw "Mimecast API: POST $($p.Uri) -> $what$(if ($detail) { " — $detail" })"
+        }
     }
     if ($AllowFail) { return $resp }
     $fail = Get-CtgProp $resp 'fail'
@@ -174,7 +185,8 @@ function Invoke-CtgMimecastOnboarding {
         }
     }
     else {
-        $actions.Add("Mimecast user not visible yet: $email — directory sync runs on Mimecast's schedule; the validation read-back (and a re-run) confirms once it lands")
+        $actions.Add("Mimecast user not visible yet: $email — directory sync runs on Mimecast's schedule; auto-retrying every 15 minutes until the user appears")
+        $retryAfter = 15
     }
 
     # 3. Optional: the client's internal domain is registered ------------------------------------
@@ -190,7 +202,9 @@ function Invoke-CtgMimecastOnboarding {
         catch { $actions.Add("WARN could not check internal domains: $($_.Exception.Message)") }
     }
 
-    [pscustomobject]@{ System = 'mimecast'; Status = 'ok'; Upn = $email; Actions = $actions.ToArray() }
+    $out = @{ System = 'mimecast'; Status = 'ok'; Upn = $email; Actions = $actions.ToArray() }
+    if (Get-Variable -Name retryAfter -Scope Local -ErrorAction SilentlyContinue) { $out.RetryAfterMinutes = $retryAfter }
+    [pscustomobject]$out
 }
 
 function Find-CtgMimecastGroup {
