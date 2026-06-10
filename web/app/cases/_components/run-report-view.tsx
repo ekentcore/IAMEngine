@@ -47,7 +47,12 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
         </span>
         {p.state === "watching" && (
           <button style={{ marginLeft: 8, fontSize: 11 }} disabled={busy}
-            onClick={async () => { setBusy(true); await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "DELETE" }); setBusy(false); await refresh(); }}>
+            onClick={async () => {
+              setBusy(true);
+              try { await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "DELETE" }); await refresh(); }
+              catch { /* network blip — button stays usable for a retry */ }
+              finally { setBusy(false); }
+            }}>
             Stop watching
           </button>
         )}
@@ -61,10 +66,16 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
       <button disabled={busy || !num.trim()} style={{ fontSize: 11 }}
         onClick={async () => {
           setBusy(true); setErr(null);
-          const r = await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: num }) });
-          if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed");
-          else setNum("");
-          setBusy(false); await refresh();
+          try {
+            const r = await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: num }) });
+            if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed");
+            else setNum("");
+            await refresh();
+          } catch (e) {
+            setErr((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
         }}>
         {busy ? "…" : "Watch"}
       </button>

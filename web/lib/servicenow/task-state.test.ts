@@ -13,6 +13,11 @@ test("cancelled never counts as done — even 'Closed Cancelled'", () => {
   assert.equal(classifyTaskState("Closed Cancelled"), "cancelled");
 });
 
+test("closed-without-doing-the-work states are NOT done", () => {
+  assert.equal(classifyTaskState("Closed Incomplete"), "cancelled");
+  assert.equal(classifyTaskState("Closed Skipped"), "cancelled");
+});
+
 test("working states stay open", () => {
   assert.equal(classifyTaskState("New"), "open");
   assert.equal(classifyTaskState("In Progress"), "open");

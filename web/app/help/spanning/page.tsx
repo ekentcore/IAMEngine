@@ -25,8 +25,9 @@ export default function SpanningSetupPage() {
           The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the Client ID</b>,
           {" "}<b>password = the Client Secret</b> (both from the API section of the Spanning admin console), against
           {" "}<code>https://o365-api-&#123;region&#125;.spanningbackup.com</code> (region = US/EU/AP/UK/CA; the runner
-          appends <code>/external</code>). Older tenants may instead use the legacy pair
-          {" "}<b>domain : access token</b> against <code>api-&#123;region&#125;…/api/v1</code> — the runner supports both.
+          appends <code>/external</code>). The old public docs describe a legacy pair (<b>domain : access token</b>
+          {" "}against <code>api-&#123;region&#125;…/api/v1</code>) — a freshly-issued credential was rejected there, so
+          treat legacy as unsupported; if you hit a tenant that only works that way, flag it.
         </p>
       </div>
 

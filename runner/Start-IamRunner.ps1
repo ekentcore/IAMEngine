@@ -79,6 +79,7 @@ function New-CtgAdConnection($creds) {
 function Use-CtgSpanningSecret {
     param($Job, $Creds)
     $s = $Creds['spanning']
+    if (-not $s) { throw "the job did not broker a 'spanning' secret — make sure the client's spanning system lists 'spanning' in its secrets" }
     $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
     $tokenNames = @('ClientSecret', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key', 'Password')
     $token = & $pick $tokenNames
@@ -197,11 +198,10 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
     }
     'spanning' = @{
-        # Spanning Backup: HTTP Basic auth, username = the client's domain, password = the access token
-        # (Spanning Admin -> access token). NO Connect block ON PURPOSE: Connect-CtgSpanning is a pure
-        # local assignment (no network), and the runner's per-tenant connect cache would otherwise pin
-        # the FIRST brokered token for the process lifetime — a rotated/regenerated API key would keep
-        # 401ing until a runner restart. Each lane re-reads the brokered secret instead (free).
+        # Spanning Backup: HTTP Basic auth, username = the CLIENT ID, password = the CLIENT SECRET
+        # (see Use-CtgSpanningSecret). NO Connect block ON PURPOSE: Connect-CtgSpanning is a pure
+        # local assignment (no network), so each lane just re-reads the brokered secret (free) —
+        # which also means a rotated credential applies on the very next job.
         Onboard  = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Confirm-CtgSpanning -User $job.payload -Config $job.config -Action $job.action }
@@ -250,12 +250,28 @@ function Invoke-JobWithValidation {
     [pscustomobject]@{ Result = $result; Validation = $validation }
 }
 
-# Track which tenant each system's Connect block is CURRENTLY connected to. The Coretelligent.*
-# modules hold exactly one connection in module state (Connect-Ctg* overwrites it), so a
-# per-(system|tenant) "already connected" set is wrong on a multi-client runner: an A->B->A job
-# interleave would skip A's reconnect and silently run A's job against B's tenant. Keying
-# system -> connected tenant reconnects on every tenant switch instead.
+# Track which tenant+credential each system's Connect block is CURRENTLY connected with. The
+# Coretelligent.* modules hold exactly one connection in module state (Connect-Ctg* overwrites it),
+# so a per-(system|tenant) "already connected" set is wrong on a multi-client runner: an A->B->A
+# job interleave would skip A's reconnect and silently run A's job against B's tenant. Keying
+# system -> "tenant|credential-fingerprint" reconnects on every tenant switch AND on credential
+# rotation (and keeps blank-domain clients with different secret TenantIds apart).
 $script:ConnectedTenant = @{}
+
+# A short, non-reversible fingerprint of every brokered secret's fields for this job. Used ONLY as
+# a connect-cache key component — never logged, never sent anywhere. SHA-256 over sorted
+# name.field=value pairs, truncated.
+function Get-CtgCredFingerprint {
+    param($Creds)
+    $sb = [System.Text.StringBuilder]::new()
+    foreach ($name in (@($Creds.Keys) | Sort-Object)) {
+        $c = $Creds[$name]
+        if (-not $c -or -not $c.Fields) { continue }
+        foreach ($k in (@($c.Fields.Keys) | Sort-Object)) { [void]$sb.Append("$name.$k=$($c.Fields[$k]);") }
+    }
+    $hash = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($sb.ToString()))
+    ([BitConverter]::ToString($hash) -replace '-', '').Substring(0, 16)
+}
 
 # The on-prem AD module needs the client's primary domain to build the OU DN; fold it in from
 # the job's client context if the intake payload didn't carry it.
@@ -540,17 +556,22 @@ while ($true) {
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
 
                 # Connect before the first job for this system, and RE-connect whenever the job's
-                # tenant differs from the one the module is currently connected to (modules hold one
-                # connection; see $script:ConnectedTenant). Record the tenant ONLY after Connect
-                # succeeds — a throw here (bad cred, unreachable on-prem Exchange, transient) must NOT
-                # poison the cache, or every later job in this long-lived process would skip Connect
-                # and run unconnected (e.g. "Get-RemoteMailbox not recognized").
+                # tenant OR its brokered credentials differ from what the module is currently
+                # connected with (modules hold one connection; see $script:ConnectedTenant). The key
+                # includes a fingerprint of the brokered secret fields so that (a) two clients that
+                # both lack a primaryDomain but carry different secret TenantIds can NEVER share a
+                # connection (the raw-domain key would collide on ''), and (b) rotating a credential
+                # in Delinea reconnects on the very next job — no runner restart. Record the key ONLY
+                # after Connect succeeds — a throw here (bad cred, unreachable on-prem Exchange,
+                # transient) must NOT poison the cache, or every later job in this long-lived process
+                # would skip Connect and run unconnected (e.g. "Get-RemoteMailbox not recognized").
                 if ($handler.ContainsKey('Connect')) {
                     $tenant = if ($job.client) { $job.client.primaryDomain } else { '' }
-                    if ($script:ConnectedTenant[$job.systemKey] -ne $tenant) {
+                    $connectKey = "$tenant|$(Get-CtgCredFingerprint $creds)"
+                    if ($script:ConnectedTenant[$job.systemKey] -ne $connectKey) {
                         Set-CtgPhase $job.id "connecting to $($job.systemKey)"
                         & $handler.Connect $job $creds
-                        $script:ConnectedTenant[$job.systemKey] = $tenant
+                        $script:ConnectedTenant[$job.systemKey] = $connectKey
                     }
                 }
 

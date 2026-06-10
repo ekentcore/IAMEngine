@@ -16,8 +16,10 @@
 #   Unassign  : POST /users/unassign { userPrincipalNames:[..] }                                    -> { licensed }
 # (Endpoint existence confirmed by probe: /external/{tenant,users,users/assign,users/unassign} 401
 # unauthenticated vs 404 for unknown paths. The PUBLIC docs at api.spanningbackup.com describe a
-# LEGACY surface — api-{region}.../api/v1 with domain:access-token Basic auth — which rejected a
-# freshly-issued credential; pass a legacy base via -BaseUrl if a tenant still needs it.)
+# LEGACY surface — api-{region}.../api/v1 with domain:access-token Basic auth and an `emails` body —
+# which rejected a freshly-issued credential. The Connect/read paths tolerate legacy shapes, but the
+# WRITE bodies here are external-API only (userPrincipalNames): if a real legacy tenant ever turns
+# up, assign/unassign need a body switch keyed off the base URL — don't claim legacy support.)
 # Assign/unassign are bulk + idempotent server-side; assigning an already-licensed user returns 200
 # with licensed=false ("already had it"). 404 = the user isn't in the caller's domain yet (Spanning
 # discovers M365 users on its own schedule — re-run once they appear).
@@ -28,6 +30,8 @@ $script:SpanningRegions = @('us', 'eu', 'ap', 'uk', 'ca')
 $script:SpanningApiUrl  = 'https://o365-api-us.spanningbackup.com/external'
 $script:SpanningUser    = $null
 $script:SpanningToken   = $null
+# Some tenants 400 the per-user GET route; remember that per process so lookups skip it (reset on Connect).
+$script:SpanningUserRouteBroken = $false
 
 function Get-CtgProp {
     # Read a property whether $Object is a hashtable, a generic IDictionary, or a PSObject.
@@ -66,6 +70,7 @@ function Connect-CtgSpanning {
     }
     $script:SpanningUser  = $Username
     $script:SpanningToken = $AccessToken
+    $script:SpanningUserRouteBroken = $false  # new connection may be a different tenant/API build
 }
 
 function Invoke-CtgSpanningApi {
@@ -130,15 +135,31 @@ function Test-CtgSpanningSeatError {
     ($Message -match 'licen[cs]e|seat') -and ($Message -match 'available|limit|exceed|quota|insufficient|out of')
 }
 
+# Convert a nextLink (absolute URL, or a path relative to the host) into a path the seam can take
+# (relative to $script:SpanningApiUrl, which already carries /external). Returns $null when the
+# link can't be mapped — better to stop paging visibly than to silently re-request page 1.
+function ConvertTo-CtgSpanningPath {
+    param([string]$Link)
+    if (-not $Link) { return $null }
+    $basePath = ([uri]$script:SpanningApiUrl).AbsolutePath.TrimEnd('/')
+    $pq = if ($Link -match '^https?://') { ([uri]$Link).PathAndQuery } elseif ($Link.StartsWith('/')) { $Link } else { return $null }
+    if ($pq.StartsWith($basePath)) { return $pq.Substring($basePath.Length) }
+    return $pq  # already relative to the API base (e.g. "/users?page=2")
+}
+
 function Find-CtgSpanningUser {
     # GET /users/{email}; 404 -> $null (the user isn't in Spanning's domain yet). Some tenants'
-    # external API rejects the per-user route with a 400 — fall back to paging the user LIST
-    # (verified working: GET /users?size=1000) and matching the email locally.
+    # external API rejects the per-user route with a 400 — remember that verdict for the process
+    # (reset on Connect) so every later lookup skips the guaranteed-failing request and goes
+    # straight to paging the user LIST (verified working: GET /users?size=1000).
     param([Parameter(Mandatory)][string]$Email)
-    try { return Invoke-CtgSpanningApi -Method GET -Path "/users/$([uri]::EscapeDataString($Email))" }
-    catch {
-        if (Test-CtgSpanning404 $_) { return $null }
-        if ($_.Exception.Message -notmatch '\b400\b|bad request') { throw }
+    if (-not $script:SpanningUserRouteBroken) {
+        try { return Invoke-CtgSpanningApi -Method GET -Path "/users/$([uri]::EscapeDataString($Email))" }
+        catch {
+            if (Test-CtgSpanning404 $_) { return $null }
+            if ($_.Exception.Message -notmatch '\b400\b|bad request') { throw }
+            $script:SpanningUserRouteBroken = $true
+        }
     }
     $needle = $Email.ToLower()
     $path = '/users?size=1000'
@@ -154,9 +175,7 @@ function Find-CtgSpanningUser {
             )
         } | Select-Object -First 1
         if ($hit) { return $hit }
-        # nextLink is an absolute URL; the seam takes a path — strip our base, else we're done.
-        $next = [string](Get-CtgProp $resp 'nextLink')
-        $path = if ($next -and $next.StartsWith($script:SpanningApiUrl)) { $next.Substring($script:SpanningApiUrl.Length) } else { $null }
+        $path = ConvertTo-CtgSpanningPath ([string](Get-CtgProp $resp 'nextLink'))
     }
     return $null
 }

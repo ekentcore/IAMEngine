@@ -29,10 +29,11 @@ export async function fetchTaskState(config: SnConfig, number: string, fetcher: 
   };
 }
 
-// Classify a task state label. "Cancelled" must NOT count as done — a cancelled procurement case
-// means the license was never bought, so the blocked step should not auto-re-run.
+// Classify a task state label. "Cancelled" / "Closed Incomplete" / "Closed Skipped" must NOT count
+// as done — those closures mean the work (the license purchase) did NOT happen, so the blocked
+// step must not auto-re-run. Only an affirmative resolution counts.
 export function classifyTaskState(state: string): "open" | "done" | "cancelled" {
-  if (/cancel/i.test(state)) return "cancelled";
+  if (/cancel|incomplete|skip/i.test(state)) return "cancelled";
   if (/resolv|closed|complete/i.test(state)) return "done";
   return "open";
 }

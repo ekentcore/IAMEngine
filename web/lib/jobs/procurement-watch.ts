@@ -60,6 +60,12 @@ export async function sweepProcurementWatches(db: PrismaClient): Promise<void> {
       }
       // done -> re-run the blocked job; the executor is idempotent and now has seats to assign.
       const out = await requeueJob(db, w.jobId, "system:procurement-watch");
+      if (!out.ok && out.status === 409) {
+        // The job is mid-flight right now (operator re-run / validate pass). That's TRANSIENT —
+        // keep watching so the next interval retries the requeue once the job settles.
+        await db.procurementWatch.update({ where: { id: w.id }, data: { note: `${task.state} — job busy, will retry` } });
+        continue;
+      }
       await db.procurementWatch.update({
         where: { id: w.id },
         data: { state: out.ok ? "resolved" : "error", note: out.ok ? `${task.state} — job re-queued` : `${task.state} — requeue failed: ${out.error}` },

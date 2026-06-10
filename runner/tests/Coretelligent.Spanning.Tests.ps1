@@ -13,6 +13,7 @@ BeforeAll {
 }
 
 Describe 'Invoke-CtgSpanningOnboarding' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'assigns a STANDARD license when the user is present and unlicensed' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
@@ -59,6 +60,7 @@ Describe 'Invoke-CtgSpanningOnboarding' {
 }
 
 Describe 'Invoke-CtgSpanningOffboarding' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'retains backups and swaps the user to the ARCHIVE license' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
@@ -105,6 +107,7 @@ Describe 'Invoke-CtgSpanningOffboarding' {
 }
 
 Describe 'Find-CtgSpanningUser (list fallback)' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'falls back to paging the user list when the per-user route returns 400' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
@@ -133,6 +136,7 @@ Describe 'Find-CtgSpanningUser (list fallback)' {
 }
 
 Describe 'Test-CtgSpanningSeatError' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'classifies a real out-of-seats message as a seat error' {
         Test-CtgSpanningSeatError 'Subscription does not have any available licenses' | Should -BeTrue
     }
@@ -143,6 +147,7 @@ Describe 'Test-CtgSpanningSeatError' {
 }
 
 Describe 'Invoke-CtgSpanningOffboarding (response honesty)' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'reports licensed=false honestly instead of claiming the swap happened' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
@@ -157,6 +162,7 @@ Describe 'Invoke-CtgSpanningOffboarding (response honesty)' {
 }
 
 Describe 'Confirm-CtgSpanning (config-aware)' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'onboard: passes when assignLicense is disabled in config' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { throw '404 not found' }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{ assignLicense = $false }) -Action 'onboard'
@@ -172,6 +178,7 @@ Describe 'Confirm-CtgSpanning (config-aware)' {
 }
 
 Describe 'Confirm-CtgSpanning' {
+    BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'onboard: passes when the user is present and licensed (external assigned field)' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'

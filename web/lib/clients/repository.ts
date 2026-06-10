@@ -325,12 +325,25 @@ export function makeClientRepository(db: PrismaClient) {
         where: { slug },
         select: {
           id: true,
+          parentId: true,
           systems: { select: { systemKey: true, secretNames: true } },
           secrets: { select: { name: true, externalId: true, label: true, provider: true } },
         },
       });
       if (!c) return null;
-      return { clientId: c.id, systems: c.systems, secrets: c.secrets };
+      // A system-less child plans with its PARENT's runbook (clientForPlanning), so its cases
+      // broker the parent's secret NAMES against THIS client's Secret rows. Mirror that fallback
+      // here so the child's Secrets panel lists exactly the names its cases will need — otherwise
+      // the panel is empty and the operator has no way to wire the child's credentials at all.
+      let systems = c.systems;
+      if (systems.length === 0 && c.parentId) {
+        const p = await db.client.findUnique({
+          where: { id: c.parentId },
+          select: { systems: { select: { systemKey: true, secretNames: true } } },
+        });
+        if (p && p.systems.length > 0) systems = p.systems;
+      }
+      return { clientId: c.id, systems, secrets: c.secrets };
     },
 
     // Upsert the client's Delinea references (name -> id + label). Stores only references.
