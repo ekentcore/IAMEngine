@@ -92,15 +92,23 @@ function Use-CtgSpanningSecret {
     else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
 }
 
-# The M365/Exchange tenant for this job: the client's primary domain, else the Domain field on its
-# m365-admin secret (the cloud-auth setup guide says to fill it). A newly added client can have an
-# empty primaryDomain — without this guard that surfaced as the opaque "Cannot bind argument to
-# parameter 'TenantId' because it is an empty string".
+# The M365/Exchange tenant identifier for this job, in priority order:
+#   1. the m365-admin secret's TenantId field — the Directory (tenant) ID GUID from the app
+#      registration; unambiguous and ALWAYS accepted by Entra, even when domain names are mis-set
+#   2. the client's primary domain (set on the client page)
+#   3. the m365-admin secret's Domain field (the cloud-auth guide's table includes it)
+# A newly added client can have all three blank — without this guard that surfaced as the opaque
+# "Cannot bind argument to parameter 'TenantId' because it is an empty string".
 function Get-CtgTenantDomain {
     param($Job, $Creds)
-    $t = $Job.client.primaryDomain
-    if (-not $t -and $Creds['m365-admin']) { $t = $Creds['m365-admin'].Fields['Domain'] }
-    if (-not $t) { throw "this client has no primary domain set — fill it on the client page, or put the tenant domain in the m365-admin secret's Domain field (see /help/cloud-auth)" }
+    $s = $Creds['m365-admin']
+    $t = if ($s -and $s.Fields['TenantId']) { $s.Fields['TenantId'] }
+         elseif ($Job.client.primaryDomain) { $Job.client.primaryDomain }
+         elseif ($s) { $s.Fields['Domain'] }
+    if (-not $t) {
+        $have = if ($s) { @($s.Fields.Keys) -join ', ' } else { 'no m365-admin secret brokered' }
+        throw "no tenant for client '$($Job.client.slug)': client.primaryDomain is empty and the m365-admin secret has no TenantId/Domain field (its fields: $have). Best fix: put the Directory (tenant) ID from the app registration in a TenantId field on the secret, or set the client's primary domain (see /help/cloud-auth)."
+    }
     $t
 }
 
@@ -109,7 +117,13 @@ function Get-CtgTenantDomain {
 # named secret to its resolved credential object (.Credential is a pscredential).
 $DISPATCH = @{
     'm365' = @{
-        Connect  = { param($job, $creds) Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId (Get-CtgTenantDomain $job $creds) }
+        Connect  = { param($job, $creds)
+            $tenant = Get-CtgTenantDomain $job $creds
+            # Phase carries WHAT we're attempting (tenant + app id, never the secret) so a failure
+            # reads "while connecting to m365 (tenant X, app Y): <error>" instead of a bare error.
+            Set-CtgPhase $job.id "connecting to m365 (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
+            Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
+        }
         Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }

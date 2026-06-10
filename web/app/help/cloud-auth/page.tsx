@@ -110,6 +110,7 @@ Export-Certificate -Cert $cert -FilePath C:\\iam-engine-exo.cer   # upload this 
       </p>
       <table>
         <tbody>
+          <tr><th style={{ width: 220 }}>TenantId <span className="note">(field)</span></th><td>the <b>Directory (tenant) ID</b> you copied in step 1 — the most reliable tenant identifier (a GUID always works, even when domain names are mis-set); the runner prefers it</td></tr>
           <tr><th style={{ width: 220 }}>Domain</th><td>the client&rsquo;s <b>main (primary) M365 domain</b>, e.g. <code>medi-post.com</code></td></tr>
           <tr><th>Username</th><td>the <b>Application (client) ID</b></td></tr>
           <tr><th>Password</th><td>the <b>client secret value</b> — used by the M365 / Graph step</td></tr>
