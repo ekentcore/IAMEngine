@@ -92,9 +92,15 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
 
   // While any agent's self-update is in flight, poll so the status advances live (queued ->
-  // updating -> updated) without a manual refresh. Stops once nothing is in flight.
+  // updating -> updated) without a manual refresh. Stops once nothing is in flight. A queued
+  // request only counts as in-flight for 10 minutes — an offline agent never consumes its
+  // updateRequested flag, and without the cap one dead agent would keep every open /agents tab
+  // refreshing (full force-dynamic re-render) every 4s forever.
   useEffect(() => {
-    const inFlight = agents.some((a) => a.updateRequested || (a.updateDeliveredAt && Date.now() - new Date(a.updateDeliveredAt).getTime() < 5 * 60_000));
+    const fresh = (iso: string | null, ms: number) => !!iso && Date.now() - new Date(iso).getTime() < ms;
+    const inFlight = agents.some(
+      (a) => (a.updateRequested && fresh(a.updateRequestedAt, 10 * 60_000)) || fresh(a.updateDeliveredAt, 5 * 60_000)
+    );
     if (!inFlight) return;
     const t = setInterval(() => router.refresh(), 4000);
     return () => clearInterval(t);
@@ -154,7 +160,22 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   const isUpToDate = (a: AgentVM) => !!a.version && /^[0-9a-f]{6,}$/.test(a.version) && a.version === currentBuild;
   const updatable = (a: AgentVM) => a.enabled && !a.updateRequested && !isUpToDate(a);
   const updatableAgents = agents.filter(updatable);
+  const queuedCount = agents.filter((a) => a.enabled && a.updateRequested).length;
   const selectedUpdatable = updatableAgents.filter((a) => selected.has(a.id));
+
+  // Prune ids that are no longer updatable whenever fresh props arrive (the 4s poll, a bulk
+  // queue, a deploy changing currentBuild). Without this, an agent that updated while selected
+  // stays checked-but-disabled (a disabled checkbox can't fire onChange to uncheck) and would
+  // silently re-enter the selection the next time it becomes updatable.
+  useEffect(() => {
+    setSelected((s) => {
+      if (s.size === 0) return s;
+      const valid = new Set(agents.filter(updatable).map((a) => a.id));
+      const next = new Set([...s].filter((id) => valid.has(id)));
+      return next.size === s.size ? s : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, currentBuild]);
 
   function toggleSelect(id: string) {
     setSelected((s) => {
@@ -171,7 +192,8 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
     const res = await requestAgentUpdates(ids);
     setBulkBusy(false);
     if (!res.ok) setError(res.error ?? "failed");
-    setSelected(new Set());
+    // No manual selection clear: the prune effect drops the successfully-queued ids on refresh,
+    // leaving exactly the failed ones selected so the operator can see and retry them.
     router.refresh();
   }
 
@@ -185,7 +207,13 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
           </button>
         )}
         <button onClick={() => bulkUpdate(updatableAgents.map((a) => a.id))} disabled={bulkBusy || updatableAgents.length === 0}
-          title={updatableAgents.length === 0 ? "All enabled runners are up to date" : `Queue a self-update for every enabled runner that isn't on the current build (${updatableAgents.length})`}>
+          title={
+            updatableAgents.length > 0
+              ? `Queue a self-update for every enabled runner that isn't on the current build (${updatableAgents.length})`
+              : queuedCount > 0
+                ? `${queuedCount} update${queuedCount > 1 ? "s" : ""} already queued — waiting for the runner${queuedCount > 1 ? "s" : ""} to poll`
+                : "All enabled runners are up to date"
+          }>
           {bulkBusy ? "Queuing…" : "Update all"}
         </button>
         <span className="grow" />

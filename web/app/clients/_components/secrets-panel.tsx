@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { secretHelp } from "@/lib/help/secret-help";
+import { SecretHelpLink } from "@/app/_components/secret-help-link";
 
 export type SecretRowVM = {
   name: string;
@@ -103,7 +103,14 @@ export function SecretsPanel({
   }
 
   if (rows.length === 0) {
-    return <p className="note">No systems reference a secret yet — add systems with secret references first.</p>;
+    return (
+      <p className="note">
+        No systems reference a secret yet — add systems with secret references first. Setup guides:{" "}
+        <a href="/help/cloud-auth" target="_blank" rel="noreferrer">M365 / Exchange cloud auth</a>
+        {" · "}
+        <a href="/help/spanning" target="_blank" rel="noreferrer">Spanning Backup</a>
+      </p>
+    );
   }
 
   return (
@@ -127,18 +134,11 @@ export function SecretsPanel({
         <tbody>
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
-            const help = secretHelp(r.name, r.referencedBy);
             return (
               <tr key={r.name}>
                 <td>
                   <code>{r.name}</code>
-                  {help && (
-                    <div style={{ fontSize: 11, marginTop: 2 }}>
-                      <a href={help.href} target="_blank" rel="noreferrer" title={`This credential is an ${help.kind} — the guide shows exactly what to set up`}>
-                        {help.kind} — setup guide ↗
-                      </a>
-                    </div>
-                  )}
+                  <SecretHelpLink name={r.name} systems={r.referencedBy} />
                 </td>
                 <td className="muted">
                   {r.referencedBy.length > 0 ? r.referencedBy.join(", ") : <span title="No system references this secret — orphaned mapping">unused</span>}

@@ -13,6 +13,11 @@ export type CaseSecretStatus = {
   overridden: boolean;
   server: string | null; // host hint parsed from the label, e.g. core-cce-dc01
   systems: string[]; // system keys whose jobs need this secret
+  // System keys of ALL the client's systems that reference this secret — not just this case's jobs.
+  // The setup-guide link keys on this: whether m365-admin needs a certificate depends on the CLIENT
+  // having an exchange system wired to it, and exchange is offboard-only, so an onboarding case's
+  // job list would wrongly say "cloud-only" for a hybrid client.
+  clientSystems: string[];
 };
 
 export async function caseSecretStatus(db: PrismaClient, caseId: string): Promise<CaseSecretStatus[] | null> {
@@ -37,11 +42,21 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
   }
   if (usedBy.size === 0) return [];
 
-  const clientSecrets = await db.secret.findMany({
-    where: { clientId: c.clientId, name: { in: [...usedBy.keys()] } },
-    select: { name: true, externalId: true, label: true },
-  });
+  const [clientSecrets, clientSystems] = await Promise.all([
+    db.secret.findMany({
+      where: { clientId: c.clientId, name: { in: [...usedBy.keys()] } },
+      select: { name: true, externalId: true, label: true },
+    }),
+    db.clientSystem.findMany({ where: { clientId: c.clientId }, select: { systemKey: true, secretNames: true } }),
+  ]);
   const byName = new Map(clientSecrets.map((s) => [s.name, s]));
+  // secret name -> ALL the client's systems wired to it (see clientSystems on the type).
+  const clientUsedBy = new Map<string, Set<string>>();
+  for (const s of clientSystems) {
+    for (const n of s.secretNames) {
+      (clientUsedBy.get(n) ?? clientUsedBy.set(n, new Set()).get(n)!).add(s.systemKey);
+    }
+  }
   const overrides = c.secretOverrides;
 
   return [...usedBy.entries()]
@@ -57,6 +72,7 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
         overridden: eff.source === "case",
         server: serverHintFromLabel(cs?.label),
         systems: [...systems].sort(),
+        clientSystems: [...(clientUsedBy.get(name) ?? systems)].sort(),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));

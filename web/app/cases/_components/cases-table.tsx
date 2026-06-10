@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { formatDateOnly } from "@/lib/dates";
 
 export type CaseRowVM = {
   id: string;
@@ -59,12 +60,32 @@ function haystack(c: CaseRowVM): string {
     .toLowerCase();
 }
 
-// Render a date-only intake string ("2026-06-15") in the same locale format as the Created column.
-// Parse the components locally — new Date("2026-06-15") is UTC midnight and shifts a day west of UTC.
-function fmtDateOnly(d: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
-  if (!m) return d;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString();
+// Completed is only green when 100% clean: any step warning turns the badge orange (the run
+// report's warning color) and the hover lists the warning lines. The count is warning STEPS
+// (distinct systems, the lines are "System: …"-prefixed) so it matches the run report's summary
+// — one step with two WARN actions is still one warning.
+function StatusBadge({ c }: { c: CaseRowVM }) {
+  const warns = c.status === "completed" ? (c.warnings ?? []) : [];
+  const steps = new Set(warns.map((w) => w.split(":")[0])).size;
+  const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
+  return (
+    <span
+      className="badge"
+      title={title}
+      style={{
+        color: c.paused ? "#8a6d00" : warns.length ? "#b45309" : STATUS_COLOR[c.status],
+        cursor: title ? "help" : undefined,
+        textDecoration: title ? "underline dotted" : undefined,
+        textUnderlineOffset: 3,
+      }}
+    >
+      {c.paused
+        ? "paused — needs creds"
+        : warns.length
+          ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
+          : (STATUS_LABEL[c.status] ?? c.status)}
+    </span>
+  );
 }
 
 function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
@@ -235,33 +256,8 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
               <td><span className="badge">{c.action}</span></td>
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
               <td className="muted">{c.jobCount}</td>
-              <td>
-                {(() => {
-                  // Completed is only green when 100% clean; any step warning turns it orange and
-                  // the hover lists the warnings (one per line).
-                  const warns = c.status === "completed" ? (c.warnings ?? []) : [];
-                  const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
-                  return (
-                    <span
-                      className="badge"
-                      title={title}
-                      style={{
-                        color: c.paused ? "#8a6d00" : warns.length ? "#b26a00" : STATUS_COLOR[c.status],
-                        cursor: title ? "help" : undefined,
-                        textDecoration: title ? "underline dotted" : undefined,
-                        textUnderlineOffset: 3,
-                      }}
-                    >
-                      {c.paused
-                        ? "paused — needs creds"
-                        : warns.length
-                          ? `completed — ${warns.length} warning${warns.length > 1 ? "s" : ""}`
-                          : (STATUS_LABEL[c.status] ?? c.status)}
-                    </span>
-                  );
-                })()}
-              </td>
-              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ? fmtDateOnly(c.effectiveDate) : "—"}</td>
+              <td><StatusBadge c={c} /></td>
+              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
               <td className="muted">{new Date(c.createdAtIso).toLocaleDateString()}</td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                 <button

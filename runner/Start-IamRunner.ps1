@@ -532,7 +532,10 @@ while ($true) {
                         $validation = & $vfn $job $creds
                         if ($null -ne $validation) { $vbody.validation = $validation }
                     } else {
-                        $vbody.result = @{ System = $job.systemKey; Status = 'ok'; Actions = @('no validator for this system — nothing to verify') }
+                        # No validator: report a passing validation, NOT a result — posting a result
+                        # here would REPLACE the executor's stored result (and its WARN action lines)
+                        # when the auto-verify sweep re-runs a succeeded job.
+                        $vbody.validation = @{ ok = $true; checks = @(@{ name = 'no validator for this system — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
                     }
                     Invoke-AppApi POST "/api/jobs/$($job.id)/result" $vbody
                     continue

@@ -3,14 +3,9 @@
 // the client Secrets panel. Static content — keep in sync with Coretelligent.Spanning + the
 // `spanning` dispatch block in runner/Start-IamRunner.ps1.
 import Link from "next/link";
+import { Code } from "../_components/code";
 
 export const metadata = { title: "Spanning Backup setup" };
-
-const Code = ({ children }: { children: string }) => (
-  <pre style={{ background: "#f6f6f6", border: "1px solid #e2e2e2", borderRadius: 4, padding: "8px 10px", overflowX: "auto", fontSize: 12 }}>
-    <code>{children}</code>
-  </pre>
-);
 
 export default function SpanningSetupPage() {
   return (

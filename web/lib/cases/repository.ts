@@ -242,7 +242,7 @@ export function makeCaseRepository(db: PrismaClient) {
           id: true, action: true, status: true, subject: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
-          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, result: true, validation: true } },
+          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
         },
       });
 
@@ -253,6 +253,27 @@ export function makeCaseRepository(db: PrismaClient) {
         ? await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } })
         : [];
       const nameByKey = new Map(catalog.map((s) => [s.key, s.name]));
+
+      // Warning lines for completed cases — a second, TARGETED query (succeeded jobs of completed
+      // cases only) rather than selecting every job's full result/validation JSON in the list query
+      // above: result envelopes carry evidence snapshots and action lists, and the list is
+      // unpaginated, so dragging them all in grows the page's DB transfer with all-time history.
+      const completedIds = rows.filter((r) => r.status === "completed").map((r) => r.id);
+      const warnJobs = completedIds.length
+        ? await db.job.findMany({
+            where: { caseRequestId: { in: completedIds }, status: "succeeded" },
+            select: { caseRequestId: true, systemKey: true, result: true, validation: true },
+          })
+        : [];
+      // A completed case is only "green done" when no step carries a warning (a WARN action or a
+      // missed validation) — same definition as the run report (jobWarningLines). The list shows
+      // completed-with-warnings cases in orange with these lines on hover.
+      const warningsByCase = new Map<string, string[]>();
+      for (const j of warnJobs) {
+        const lines = jobWarningLines(j.result, j.validation).map((w) => `${nameByKey.get(j.systemKey) ?? j.systemKey}: ${w}`);
+        if (lines.length) warningsByCase.set(j.caseRequestId, [...(warningsByCase.get(j.caseRequestId) ?? []), ...lines]);
+      }
+
       const onlineCutoff = new Date(Date.now() - 90_000);
       const onlineAgents = await db.agent.findMany({
         where: { enabled: true, deletedAt: null, lastSeenAt: { gt: onlineCutoff } },
@@ -293,19 +314,9 @@ export function makeCaseRepository(db: PrismaClient) {
         // credential is missing, so the runner won't claim it — surface that as paused, not running.
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
         const paused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
-        // A completed case is only "green done" when no step carries a warning (a WARN action or a
-        // missed validation) — same definition as the run report. The list shows those completed-
-        // with-warnings cases in orange with the warning lines on hover.
-        const warnings =
-          r.status === "completed"
-            ? r.jobs.flatMap((j) =>
-                j.status === "succeeded"
-                  ? jobWarningLines(j.result, j.validation).map((w) => `${nameByKey.get(j.systemKey) ?? j.systemKey}: ${w}`)
-                  : []
-              )
-            : [];
         return {
-          id: r.id, action: r.action, status: r.status, subject: r.subject, paused, warnings,
+          id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
+          warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: buildCaseStatusHint(

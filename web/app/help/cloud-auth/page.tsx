@@ -4,14 +4,9 @@
 // no "do I need a certificate?" homework. Without the param it asks one question up front.
 // Keep in sync with Connect-CtgM365 / Connect-CtgExchange in the runner.
 import Link from "next/link";
+import { Code } from "../_components/code";
 
 export const metadata = { title: "M365 auth setup" };
-
-const Code = ({ children }: { children: string }) => (
-  <pre style={{ background: "#f6f6f6", border: "1px solid #e2e2e2", borderRadius: 4, padding: "8px 10px", overflowX: "auto", fontSize: 12 }}>
-    <code>{children}</code>
-  </pre>
-);
 
 export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { type?: string } }) {
   const type = searchParams?.type === "cloud" || searchParams?.type === "hybrid" ? searchParams.type : null;
@@ -80,7 +75,12 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
       {hybrid && (
         <>
           <h2>{step()}. Certificate (for the Exchange Online step)</h2>
-          <p className="note">Create it on the <b>host that runs the exchange job</b> — the client&apos;s on-prem agent (the DC) — so the private key lives there. The runner (SYSTEM) can read keys in <code>LocalMachine\My</code>.</p>
+          <p className="note">
+            Create it on the <b>host that runs the exchange job</b>, so the private key lives there — usually the
+            client&apos;s on-prem agent (the DC). If this client has <b>no on-prem agent</b> (cloud-only with Exchange
+            Online steps), create it on the <b>central runner host</b> instead. The runner (SYSTEM) can read keys in{" "}
+            <code>LocalMachine\My</code>.
+          </p>
           <Code>{`# On the DC, in an elevated PowerShell:
 $cert = New-SelfSignedCertificate -Subject "CN=iam-engine-exo" \\
   -CertStoreLocation "Cert:\\LocalMachine\\My" -KeyExportPolicy Exportable \\
@@ -130,6 +130,7 @@ Export-Certificate -Cert $cert -FilePath C:\\iam-engine-exo.cer   # upload this 
           <li><b>Where each step runs:</b> <code>m365</code> on the central / cloud runner (uses the client secret — no cert needed there); <code>exchange</code> on the on-prem agent (uses the cert — must be installed on that host).</li>
         )}
         <li><b>Rotation:</b> the client secret{hybrid ? " and the certificate both expire" : " expires"} — calendar a renewal and update the Delinea secret.</li>
+        <li><b>When we host this:</b> moving the central runner off a laptop to a server changes nothing about the app registration. For tighter security at that point, switch the M365 step from the client secret to certificate auth too (one cert on the central host) — a small runner change.</li>
       </ul>
     </main>
   );

@@ -22,13 +22,15 @@ export async function createEnrollToken(input: { scope: AgentScope; clientSlug: 
   return { ok: true as const, token };
 }
 
+const errMsg = (e: unknown) => (e instanceof HttpError ? e.message : "internal error");
+
 export async function enrollAgent(input: { name: string; scope: AgentScope; clientSlug?: string | null }) {
   try {
     const out = await makeRunnerService(db).enroll(input);
     revalidatePath("/agents");
     return { ok: true as const, ...out };
   } catch (e) {
-    return { ok: false as const, error: e instanceof HttpError ? e.message : "internal error" };
+    return { ok: false as const, error: errMsg(e) };
   }
 }
 
@@ -38,7 +40,7 @@ export async function setAgentEnabled(id: string, enabled: boolean) {
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof HttpError ? e.message : "internal error" };
+    return { ok: false as const, error: errMsg(e) };
   }
 }
 
@@ -48,7 +50,7 @@ async function agentOp(fn: () => Promise<unknown>) {
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof HttpError ? e.message : "internal error" };
+    return { ok: false as const, error: errMsg(e) };
   }
 }
 
@@ -65,11 +67,11 @@ export async function requestAgentUpdates(ids: string[]) {
       await svc.requestUpdate(id);
       queued++;
     } catch (e) {
-      firstError ??= e instanceof HttpError ? e.message : "internal error";
+      firstError ??= errMsg(e);
     }
   }
   revalidatePath("/agents");
-  return firstError ? { ok: false as const, queued, error: `${firstError} (${queued}/${ids.length} queued)` } : { ok: true as const, queued };
+  return firstError ? { ok: false as const, error: `${firstError} (${queued}/${ids.length} queued)` } : { ok: true as const };
 }
 export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
 export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
