@@ -14,7 +14,13 @@ export async function GET(req: Request) {
   }
   try {
     const kb = await fetchKbArticle(snConfigFromEnv(), article);
-    if (!kb) return NextResponse.json({ error: `${article} not found in ServiceNow` }, { status: 404 });
+    if (!kb) {
+      // ServiceNow ACLs FILTER unreadable rows (HTTP 200, zero results) — indistinguishable from
+      // a truly missing article. Most often the integration account simply lacks knowledge read.
+      return NextResponse.json({
+        error: `${article} returned no rows — either it doesn't exist, or the API account can't read kb_knowledge. If the article exists in ServiceNow, grant the integration user knowledge access (the 'knowledge' role, or add it to the knowledge base's "Can Read" criteria).`,
+      }, { status: 404 });
+    }
     return NextResponse.json(kb);
   } catch (e) {
     const msg = e instanceof SnGatewayError ? `ServiceNow: ${e.message}` : (e as Error).message;
