@@ -110,7 +110,8 @@ Export-Certificate -Cert $cert -FilePath C:\\iam-engine-exo.cer   # upload this 
       </p>
       <table>
         <tbody>
-          <tr><th style={{ width: 220 }}>Username</th><td>the <b>Application (client) ID</b></td></tr>
+          <tr><th style={{ width: 220 }}>Domain</th><td>the client&rsquo;s <b>main (primary) M365 domain</b>, e.g. <code>medi-post.com</code></td></tr>
+          <tr><th>Username</th><td>the <b>Application (client) ID</b></td></tr>
           <tr><th>Password</th><td>the <b>client secret value</b> — used by the M365 / Graph step</td></tr>
           {hybrid && (
             <tr><th>CertificateThumbprint <span className="note">(field)</span></th><td>the <b>cert thumbprint</b> — used by the Exchange step</td></tr>
