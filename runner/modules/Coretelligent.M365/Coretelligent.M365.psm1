@@ -338,7 +338,11 @@ function Invoke-CtgM365Onboarding {
     $upn = $User.UserPrincipalName
 
     # 1. Ensure the user exists -------------------------------------------------
-    $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue
+    # Direct GET by UPN first (strongly consistent); the filter query is the fallback — right
+    # after a create the filter index can lag and a throttle is silently swallowed, both of
+    # which made a re-run think the user was missing.
+    $existing = Get-MgUser -UserId $upn -ErrorAction SilentlyContinue
+    if (-not $existing) { $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue }
     if ($existing) {
         $userId = $existing.Id
         $actions.Add("user exists ($upn) — skipped create")
@@ -367,9 +371,24 @@ function Invoke-CtgM365Onboarding {
                 @{ K = 'JobTitle';    V = (Get-CtgProp $User 'JobTitle') }
                 @{ K = 'MobilePhone'; V = (Get-CtgProp $User 'MobilePhone') }
             )) { if (& $hasValue $opt.V) { $params[$opt.K] = [string]$opt.V } }
-            $created = New-MgUser @params
-            $userId = $created.Id
-            $actions.Add("created user $upn" + $(if (-not $params.ContainsKey('JobTitle')) { " (no job title)" } else { "" }))
+            try {
+                $created = New-MgUser @params
+                $userId = $created.Id
+                $actions.Add("created user $upn" + $(if (-not $params.ContainsKey('JobTitle')) { " (no job title)" } else { "" }))
+            }
+            catch {
+                if ($_.Exception.Message -notmatch 'already exists') { throw }
+                # The pre-check missed (throttle / consistency lag) but Graph says the UPN IS taken —
+                # confirm it's our user and carry on to licensing/groups instead of failing the step.
+                $found = $null
+                for ($i = 0; $i -lt 3 -and -not $found; $i++) {
+                    if ($i) { Start-Sleep -Seconds (2 * $i) }
+                    $found = Get-MgUser -UserId $upn -ErrorAction SilentlyContinue
+                }
+                if (-not $found) { throw }
+                $userId = $found.Id
+                $actions.Add("user already exists ($upn) — confirmed by UPN, continuing to licensing/groups")
+            }
         }
     }
 
