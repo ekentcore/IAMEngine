@@ -92,12 +92,24 @@ function Use-CtgSpanningSecret {
     else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
 }
 
+# The M365/Exchange tenant for this job: the client's primary domain, else the Domain field on its
+# m365-admin secret (the cloud-auth setup guide says to fill it). A newly added client can have an
+# empty primaryDomain — without this guard that surfaced as the opaque "Cannot bind argument to
+# parameter 'TenantId' because it is an empty string".
+function Get-CtgTenantDomain {
+    param($Job, $Creds)
+    $t = $Job.client.primaryDomain
+    if (-not $t -and $Creds['m365-admin']) { $t = $Creds['m365-admin'].Fields['Domain'] }
+    if (-not $t) { throw "this client has no primary domain set — fill it on the client page, or put the tenant domain in the m365-admin secret's Domain field (see /help/cloud-auth)" }
+    $t
+}
+
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
 # the first job for that system; the action lanes receive ($job, $creds) where $creds maps each
 # named secret to its resolved credential object (.Credential is a pscredential).
 $DISPATCH = @{
     'm365' = @{
-        Connect  = { param($job, $creds) Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $job.client.primaryDomain }
+        Connect  = { param($job, $creds) Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId (Get-CtgTenantDomain $job $creds) }
         Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
@@ -127,7 +139,7 @@ $DISPATCH = @{
         Connect  = { param($job, $creds)
             $s = $creds['m365-admin']
             Set-CtgPhase $job.id "connecting to Exchange Online (app-only cert auth, app $($s.Credential.UserName))"
-            Connect-CtgExchange -AppId $s.Credential.UserName -Organization $job.client.primaryDomain -CertificateThumbprint $s.Fields['CertificateThumbprint']
+            Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $job $creds) -CertificateThumbprint $s.Fields['CertificateThumbprint']
             # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only. The
             # credential comes from the brokered `exchange-onprem` secret (which may point at the same
             # Delinea id as ad-dc — the domain admin already has Exchange rights). The PowerShell URI
