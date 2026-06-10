@@ -20,6 +20,7 @@ type SystemConfig = {
   onboard?: unknown;
   offboard?: unknown;
   dependsOn?: Record<string, string[]>;
+  runLast?: boolean;
   requestKey?: string;
   requiresApproval?: Record<string, boolean | undefined>;
   captureEvidence?: Record<string, boolean | undefined>;
@@ -55,9 +56,18 @@ export function planCase(
 ): PlannedJob[] {
   const active = systems.filter((s) => included(s, action, payload));
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
+  // Closing steps must run AFTER everything else, whatever the declared deps say — under DAG
+  // gating an under-declared dependsOn would otherwise let case-resolution dispatch first.
+  // runLast systems implicitly depend on every other (non-runLast) active system; among multiple
+  // runLast systems the declared deps/order decide.
+  const runLast = (s: ClientSystem) =>
+    s.systemKey === "case-resolution" || Boolean((s.config as SystemConfig | null)?.runLast);
   const depsOf = (s: ClientSystem): string[] => {
     const laneDeps = (s.config as SystemConfig | null)?.dependsOn?.[action];
-    return (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
+    const declared = (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
+    if (!runLast(s)) return declared;
+    const everyoneElse = active.filter((o) => o.systemKey !== s.systemKey && !runLast(o)).map((o) => o.systemKey);
+    return [...new Set([...declared, ...everyoneElse])];
   };
 
   const order: ClientSystem[] = [];

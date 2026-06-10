@@ -22,7 +22,7 @@ const LEASE_MS = 10 * 60 * 1000;
 // Systems that can only run on a client-network (on-prem) agent — they need the ActiveDirectory/RSAT
 // module, the on-prem Exchange session, or the ADSync module, none of which exist on the central
 // cloud runner. The central runner skips these at claim time so it can't grab a job it can't execute.
-const ON_PREM_SYSTEMS = ["active-directory", "exchange", "directory-sync"];
+export const ON_PREM_SYSTEMS = ["active-directory", "exchange", "directory-sync"];
 
 // An agent disabled mid-flight must not keep brokering credentials or posting results.
 async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<void> {

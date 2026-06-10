@@ -7,6 +7,7 @@
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets } from "./case-secrets";
+import { ON_PREM_SYSTEMS } from "../jobs/runner-service";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending";
 
@@ -320,11 +321,10 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } }),
       db.agent.findMany({
         where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
-        select: { clientId: true },
+        select: { clientId: true, name: true, lastSeenAt: true },
       }),
     ]);
     const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
-    const runnerOnline = onlineAgents.some((a) => a.clientId === null || a.clientId === c.client.id);
     for (const st of ready) {
       const job = c.jobs.find((j) => j.id === st.jobId);
       const needed = ((job?.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
@@ -332,9 +332,23 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       const missing = missingRequiredSecrets(needed, c.secretOverrides, byName);
       if (missing.length) {
         st.pendingReason = `blocked — credential not set: ${missing.join(", ")}. Fill it on the Credentials panel; the runner skips this step until it resolves.`;
-      } else if (!runnerOnline) {
-        st.pendingReason = "ready, but no runner is online to claim it — check the Agents page";
+        continue;
       }
+      // Host affinity, same rule as the claim filter: on-prem systems (AD/Exchange/dir-sync) are
+      // ONLY claimed by the client's own agent — a central runner being online doesn't help them.
+      const needsOnPrem = ON_PREM_SYSTEMS.includes(st.systemKey);
+      const eligible = onlineAgents.filter((a) => (needsOnPrem ? a.clientId === c.client.id : a.clientId === null || a.clientId === c.client.id));
+      if (eligible.length === 0) {
+        st.pendingReason = needsOnPrem
+          ? "ready, but this step runs on the client's ON-PREM agent and none is online — check the Agents page"
+          : "ready, but no runner is online to claim it — check the Agents page";
+        continue;
+      }
+      // Pull model: the runner claims on its next poll (~15s). Name it + show how fresh it is, so
+      // "ready" reads as "about to start" instead of "stuck".
+      const best = [...eligible].sort((x, y) => new Date(y.lastSeenAt ?? 0).getTime() - new Date(x.lastSeenAt ?? 0).getTime())[0];
+      const secs = Math.max(0, Math.round((Date.now() - new Date(best.lastSeenAt ?? 0).getTime()) / 1000));
+      st.pendingReason = `ready — ${best.name} claims it on its next poll (~15s; last polled ${secs}s ago)`;
     }
   }
   return report;

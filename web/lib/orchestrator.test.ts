@@ -64,3 +64,15 @@ test("topological order honors dependsOn", () => {
   const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
   assert.ok(order.indexOf("servicenow") < order.indexOf("m365"));
 });
+
+test("case-resolution always runs last: implicit dependency on every other system", () => {
+  const systems = [
+    sys({ systemKey: "case-resolution" }), // declared FIRST, no deps — would dispatch first under naive DAG
+    sys({ systemKey: "m365" }),
+    sys({ systemKey: "mimecast", dependsOn: ["m365"] }),
+  ];
+  const plan = planCase(systems, "onboard", {});
+  const resolution = plan.find((j) => j.systemKey === "case-resolution")!;
+  assert.equal(plan[plan.length - 1].systemKey, "case-resolution");
+  assert.deepEqual([...resolution.dependsOn].sort(), ["m365", "mimecast"]);
+});
