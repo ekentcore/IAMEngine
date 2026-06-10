@@ -48,7 +48,7 @@ Describe 'Invoke-CtgMimecastOnboarding' {
             param($Path, $Data, [switch]$AllowFail)
             switch -Wildcard ($Path) {
                 '*get-connection*' { return @([pscustomobject]@{ name = 'AD sync' }) }
-                '*get-profile*'    { return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @() }); data = @() } }
+                '*get-profile*'    { return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_xx'; message = 'unknown user address' }) }); data = @() } }
                 default            { return @() }
             }
         }
@@ -104,7 +104,7 @@ Describe 'Confirm-CtgMimecast' {
     It 'onboard: fails when the user is not visible yet' {
         Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
             param($Path, $Data, [switch]$AllowFail)
-            return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @() }); data = @() }
+            return [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_xx'; message = 'unknown user address' }) }); data = @() }
         }
         $r = Confirm-CtgMimecast -User ([pscustomobject]@{ UserPrincipalName = 'new@drakestar.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
         $r.ok | Should -BeFalse
@@ -118,5 +118,32 @@ Describe 'Confirm-CtgMimecast' {
         }
         $r = Confirm-CtgMimecast -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@drakestar.com' }) -Config ([pscustomobject]@{ groups = @('All Staff') }) -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Invoke-CtgMimecastApi (body serialization)' {
+    It 'serializes an empty data payload as [] — never null (err_deserialise guard)' {
+        InModuleScope Coretelligent.Mimecast {
+            $script:MimecastToken = 't'
+            Mock Invoke-RestMethod { param($Method, $Uri, $Headers, $ContentType, $Body) [pscustomobject]@{ fail = @(); data = @() } }
+            Invoke-CtgMimecastApi -Path '/api/directory/get-connection' | Out-Null
+            Should -Invoke Invoke-RestMethod -ParameterFilter { $Body -match '"data":\s*\[\s*\]' -and $Body -notmatch 'null' } -Times 1
+        }
+    }
+}
+
+Describe 'Get-CtgMimecastProfile (fail classification)' {
+    It 'treats a user-not-found fail as a lookup miss (null)' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_xx'; message = 'unknown user' }) }); data = @() }
+        }
+        Get-CtgMimecastProfile -Email 'x@y.com' | Should -BeNullOrEmpty
+    }
+
+    It 'throws on a non-not-found fail instead of pretending the user is missing' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_deserialise'; message = 'payload contains null objects' }) }); data = @() }
+        }
+        { Get-CtgMimecastProfile -Email 'x@y.com' } | Should -Throw '*err_deserialise*'
     }
 }

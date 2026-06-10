@@ -78,6 +78,10 @@ function Invoke-CtgMimecastApi {
     )
     if (-not $script:MimecastToken) { throw "Call Connect-CtgMimecast first." }
     $items = if ($null -eq $Data) { @() } elseif ($Data -is [array]) { $Data } else { @($Data) }
+    # The if-expression above UNWRAPS an empty array to $null on assignment (PowerShell), which
+    # serialized as {"data": null} — Mimecast rejects that with err_deserialise "payload contains
+    # null objects". Re-array + drop nulls so an empty data is a REAL [].
+    $items = @($items | Where-Object { $null -ne $_ })
     $p = @{
         Method      = 'POST'
         Uri         = "$script:MimecastBaseUrl$Path"
@@ -105,12 +109,18 @@ function Invoke-CtgMimecastApi {
 }
 
 function Get-CtgMimecastProfile {
-    # The user's Mimecast profile, or $null when Mimecast doesn't know them (yet). A missing user
-    # comes back as a fail[] entry, which is a lookup MISS here, not an error.
+    # The user's Mimecast profile, or $null when Mimecast doesn't know them (yet). ONLY a
+    # recognizably user-not-found fail counts as a lookup miss — any other fail (deserialise,
+    # permissions, throttling) THROWS, so a broken request can't masquerade as "user not synced".
     param([Parameter(Mandatory)][string]$Email)
     $resp = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = $Email } -AllowFail
     $fail = @(Get-CtgProp $resp 'fail')
-    if ($fail.Count -gt 0) { return $null }
+    if ($fail.Count -gt 0) {
+        $msgs = @($fail | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { "$(Get-CtgProp $_ 'code'): $(Get-CtgProp $_ 'message')" } })
+        $joined = $msgs -join '; '
+        if ($joined -match 'unknown|not.?found|no such|invalid.*(user|email|address)|user.*invalid') { return $null }
+        throw "Mimecast API: POST $script:MimecastBaseUrl/api/user/get-profile -> request failed — $joined"
+    }
     @(Get-CtgProp $resp 'data') | Select-Object -First 1
 }
 
