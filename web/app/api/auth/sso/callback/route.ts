@@ -4,10 +4,9 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
-import { ssoConfig, exchangeCode, identityFromIdToken, publicOrigin } from "@/lib/auth/sso";
+import { ssoConfig, exchangeCode, identityFromIdToken, publicOrigin, SSO_COOKIE } from "@/lib/auth/sso";
 import { createSession } from "@/lib/auth/session";
 import { recordAudit } from "@/lib/auth/audit";
-import { SSO_COOKIE } from "../login/route";
 
 export const dynamic = "force-dynamic";
 

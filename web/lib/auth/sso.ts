@@ -7,6 +7,10 @@
 // AZURE_SSO_CLIENT_SECRET. Register the redirect URI <origin>/api/auth/sso/callback in the app.
 import { randomBytes, createHash } from "node:crypto";
 
+// Short-lived cookie holding the PKCE state+verifier during the round-trip. Lives here (not in a
+// route file) because Next route modules may only export handlers + a few configs.
+export const SSO_COOKIE = "iam_sso";
+
 export type SsoConfig = { tenantId: string; clientId: string; clientSecret: string };
 
 export function ssoConfig(): SsoConfig | null {

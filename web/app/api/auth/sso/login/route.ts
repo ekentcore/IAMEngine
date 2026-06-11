@@ -3,11 +3,9 @@
 // request origin (must be registered in the Entra app).
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { ssoConfig, newPkce, authorizeUrl, publicOrigin } from "@/lib/auth/sso";
+import { ssoConfig, newPkce, authorizeUrl, publicOrigin, SSO_COOKIE } from "@/lib/auth/sso";
 
 export const dynamic = "force-dynamic";
-
-export const SSO_COOKIE = "iam_sso";
 
 export function GET(req: Request) {
   const cfg = ssoConfig();
