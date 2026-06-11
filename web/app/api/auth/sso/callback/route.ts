@@ -28,9 +28,10 @@ export async function GET(req: Request) {
   const jar = cookies();
   const raw = jar.get(SSO_COOKIE)?.value ?? "";
   jar.delete(SSO_COOKIE);
-  const [cookieState, verifier, redirectEnc] = raw.split(".");
+  const [cookieState, verifier] = raw.split(".");
   if (!cookieState || !verifier || cookieState !== state) return back(req, "sso_state");
-  const redirectUri = decodeURIComponent(redirectEnc ?? "");
+  // Recompute the redirect URI the same way /login did (must match what was sent to Entra exactly).
+  const redirectUri = `${publicOrigin(req)}/api/auth/sso/callback`;
 
   let identity;
   try {

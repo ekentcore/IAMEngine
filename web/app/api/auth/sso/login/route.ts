@@ -16,8 +16,10 @@ export function GET(req: Request) {
   const redirectUri = `${publicOrigin(req)}/api/auth/sso/callback`;
   const { verifier, challenge, state } = newPkce();
 
-  // verifier + state (+ the requested redirect URI) ride in a 10-minute httpOnly cookie.
-  cookies().set(SSO_COOKIE, `${state}.${verifier}.${encodeURIComponent(redirectUri)}`, {
+  // state + verifier ride in a 10-minute httpOnly cookie (both base64url — no dots, so the "."
+  // delimiter is safe). The redirect URI is NOT stored (it contains dots); the callback recomputes
+  // it from publicOrigin, which is identical to here.
+  cookies().set(SSO_COOKIE, `${state}.${verifier}`, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
