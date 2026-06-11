@@ -2,11 +2,13 @@
 // never claimed by runners (claim filters pausedAt: null), so systems can be adjusted / the case
 // re-planned mid-run without a runner grabbing the next step.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   let body: { paused?: unknown };
   try {
     body = await req.json();

@@ -2,6 +2,7 @@
 //                                    reference, merged with the saved Delinea reference (id/label).
 // PUT  /api/clients/:slug/secrets — upsert the references (name -> id + label). Stores only refs.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
@@ -33,6 +34,7 @@ function sanitize(s: unknown): Entry | null {
 }
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   let body: { secrets?: unknown };
   try {
     body = await req.json();

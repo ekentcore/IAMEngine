@@ -2,6 +2,7 @@
 // a ServiceNow work note. Gated: returns 409 when SN_WRITE_ENABLED is off (the POC key is
 // read-only). The on-screen + downloadable report is always available regardless.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
@@ -10,6 +11,7 @@ import { postWorkNote, writeBackEnabled } from "@/lib/servicenow/worknote";
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!writeBackEnabled()) {
     return NextResponse.json({ error: "ServiceNow write-back is disabled (read-only key)" }, { status: 409 });
   }

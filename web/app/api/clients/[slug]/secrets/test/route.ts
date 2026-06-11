@@ -3,6 +3,7 @@
 // engineer's current edits) so "Test" reflects what's on screen, saved or not. Returns pass/fail
 // per secret; the value never leaves Delinea.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { checkSecret, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 type TestItem = { name: string; externalId: string };
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   let body: { secrets?: unknown };
   try {
     body = await req.json();

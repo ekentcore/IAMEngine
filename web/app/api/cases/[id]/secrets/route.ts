@@ -1,6 +1,7 @@
 // GET   /api/cases/:id/secrets        — the case's effective secret references (source/server/systems).
 // PATCH /api/cases/:id/secrets         — { name, externalId } set (or clear with empty) a per-case override.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { caseSecretStatus, setCaseSecretOverride } from "@/lib/cases/case-secrets-repo";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -16,6 +17,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   let body: { name?: unknown; externalId?: unknown };
   try {
     body = await req.json();

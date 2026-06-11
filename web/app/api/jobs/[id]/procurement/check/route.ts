@@ -1,12 +1,14 @@
 // POST /api/jobs/:id/procurement/check — check the watched Procurement Case against ServiceNow
 // RIGHT NOW (the "Check now" button), instead of waiting for the ~5-minute sweep interval.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { checkProcurementWatch } from "@/lib/jobs/procurement-watch";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   const watch = await db.procurementWatch.findUnique({
     where: { jobId: params.id },
     select: { id: true, jobId: true, number: true, state: true },

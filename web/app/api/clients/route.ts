@@ -1,6 +1,7 @@
 // GET  /api/clients  — list clients (roster + modeled), auto-syncing from SN if stale.
 // POST /api/clients  — manually add a client ("onboard a client").
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -18,6 +19,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: Record<string, unknown>;
   try {
     body = await req.json();

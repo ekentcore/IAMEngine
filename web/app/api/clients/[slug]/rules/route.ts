@@ -1,6 +1,7 @@
 // GET /api/clients/:slug/rules — load personas/globals (+ the client's system keys) for the editor.
 // PUT /api/clients/:slug/rules — { personas, globals } — validate every condition, then persist.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { validateRules } from "@/lib/clients/rules";
@@ -14,6 +15,7 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
 }
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: unknown;
   try {
     body = await req.json();

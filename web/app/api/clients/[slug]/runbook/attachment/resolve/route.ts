@@ -4,6 +4,7 @@
 // LLM which groups apply to the user. Deterministic parse + LLM-for-decision; redaction is
 // applied inside azureChatJson. Degrades with clear errors when SN/Azure env is absent.
 import { db } from "@/lib/db";
+import { guard } from "@/lib/auth/route-guard";
 import { asArtifacts, isAttachment } from "@/lib/runbook/artifacts";
 import { fetchAttachment } from "@/lib/servicenow/attachments";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
@@ -13,6 +14,7 @@ import { resolveGroups, type UserAttrs } from "@/lib/automation/group-resolver";
 type Ctx = { params: { slug: string } };
 
 export async function POST(req: Request, { params }: Ctx) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: { action?: string; seq?: number; i?: number; user?: UserAttrs };
   try {
     body = await req.json();

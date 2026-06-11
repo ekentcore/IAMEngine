@@ -4,6 +4,7 @@
 // unmarking reverts to its natural state (manual jobs -> manual, skipped api jobs -> skipped).
 // Recomputes the case status afterward.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
@@ -11,6 +12,7 @@ import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   const body = (await req.json().catch(() => ({}))) as { done?: unknown };
   const done = body.done !== false; // default: mark complete
 

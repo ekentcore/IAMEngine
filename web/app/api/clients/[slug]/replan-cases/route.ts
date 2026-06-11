@@ -2,12 +2,14 @@
 // current systems (after a KB refresh / systems edit, so already-imported cases pick up the
 // change). Started cases re-plan incrementally; future cases plan fresh at creation anyway.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { replanCase } from "@/lib/cases/replan-service";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id?: string; slug: string } }) {
+  const _g = await guard("case.plan"); if (_g.res) return _g.res;
   const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
   const open = await db.caseRequest.findMany({

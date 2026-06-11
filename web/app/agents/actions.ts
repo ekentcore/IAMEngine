@@ -7,9 +7,11 @@ import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
+import { requirePermission, AuthError } from "@/lib/auth/guard";
 
 // Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
 export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
+  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
   const slug = input.clientSlug?.trim() || null; // trim — a stray space breaks the client lookup
   if (input.scope === "client_network" && !slug) {
     return { ok: false as const, error: "pick a client for a client-network runner" };
@@ -22,10 +24,11 @@ export async function createEnrollToken(input: { scope: AgentScope; clientSlug: 
   return { ok: true as const, token };
 }
 
-const errMsg = (e: unknown) => (e instanceof HttpError ? e.message : "internal error");
+const errMsg = (e: unknown) => (e instanceof AuthError ? e.message : e instanceof HttpError ? e.message : "internal error");
 
 export async function enrollAgent(input: { name: string; scope: AgentScope; clientSlug?: string | null }) {
   try {
+    await requirePermission("agent.manage");
     const out = await makeRunnerService(db).enroll(input);
     revalidatePath("/agents");
     return { ok: true as const, ...out };
@@ -36,6 +39,7 @@ export async function enrollAgent(input: { name: string; scope: AgentScope; clie
 
 export async function setAgentEnabled(id: string, enabled: boolean) {
   try {
+    await requirePermission("agent.manage");
     await makeRunnerService(db).setEnabled(id, enabled);
     revalidatePath("/agents");
     return { ok: true as const };
@@ -46,6 +50,7 @@ export async function setAgentEnabled(id: string, enabled: boolean) {
 
 async function agentOp(fn: () => Promise<unknown>) {
   try {
+    await requirePermission("agent.manage");
     await fn();
     revalidatePath("/agents");
     return { ok: true as const };
@@ -59,6 +64,7 @@ export const requestAgentUpdate = (id: string) => agentOp(() => makeRunnerServic
 // Queue self-updates for several agents at once (Update selected / Update all). Per-agent failures
 // don't stop the rest; the first error is surfaced alongside how many actually queued.
 export async function requestAgentUpdates(ids: string[]) {
+  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
   const svc = makeRunnerService(db);
   let queued = 0;
   let firstError: string | null = null;

@@ -1,6 +1,7 @@
 // GET   /api/clients/:slug — client detail (systems + secrets).
 // PATCH /api/clients/:slug — { action: "archive" | "restore" | "set-email-domain" }.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -20,6 +21,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown };
   try {
     body = await req.json();

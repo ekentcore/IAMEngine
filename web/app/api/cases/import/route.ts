@@ -1,5 +1,6 @@
 // POST /api/cases/import — import + plan a case from a ServiceNow ticket number (UM…).
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { importByNumber } from "@/lib/cases/import-service";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
@@ -8,6 +9,7 @@ import { normalizeDomainInput } from "@/lib/clients/email-domain";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const _g = await guard("case.import"); if (_g.res) return _g.res;
   let body: { number?: string; emailDomain?: string };
   try {
     body = await req.json();

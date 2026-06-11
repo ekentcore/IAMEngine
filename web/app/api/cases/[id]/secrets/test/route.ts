@@ -1,6 +1,7 @@
 // POST /api/cases/:id/secrets/test — preflight the case's effective Delinea references (or the
 // on-screen edits passed in the body), proving the app can resolve each WITHOUT pulling the value.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { caseSecretStatus } from "@/lib/cases/case-secrets-repo";
 import { checkSecret, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 type TestItem = { name: string; externalId: string };
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.view"); if (_g.res) return _g.res;
   let body: { secrets?: unknown } = {};
   try { body = await req.json(); } catch { /* empty body = test the saved effective refs */ }
 

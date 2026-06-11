@@ -3,6 +3,7 @@
 // DELETE /api/cases/:id — move the case to the trash (restorable 30 days). Blocked while in flight.
 //        DELETE /api/cases/:id?forever=1 — permanently delete a trashed case + its jobs.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { hasStartedJobs } from "@/lib/cases/job-status";
@@ -16,6 +17,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 }
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   let body: { action?: string; dryRun?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
@@ -39,6 +41,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   const repo = makeCaseRepository(db);
   const forever = new URL(req.url).searchParams.get("forever") === "1";
 

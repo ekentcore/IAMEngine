@@ -1,11 +1,13 @@
 // POST /api/jobs/{id}/approve — { approvedBy }. Releases an approval-gated job so it can be
 // claimed. Server-side gate per CLAUDE.md (destructive steps need a recorded approval).
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.approve_destructive"); if (_g.res) return _g.res;
   let body: { approvedBy?: unknown };
   try {
     body = await request.json();
