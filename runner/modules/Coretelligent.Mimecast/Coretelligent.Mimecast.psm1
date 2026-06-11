@@ -130,6 +130,12 @@ function Get-CtgMimecastProfile {
         $msgs = @($fail | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { "$(Get-CtgProp $_ 'code'): $(Get-CtgProp $_ 'message')" } })
         $joined = $msgs -join '; '
         if ($joined -match 'unknown|not.?found|no such|invalid.*(user|email|address)|user.*invalid') { return $null }
+        # A "forbidden for address" / permissions fail is a Mimecast setup problem, not a transient
+        # miss — say what to fix instead of surfacing the raw code.
+        if ($joined -match 'forbidden|operation_forbidden|not .{0,6}permitted|unauthoriz|permission|denied') {
+            $domain = if ($Email -match '@') { $Email.Split('@')[1] } else { $Email }
+            throw "Mimecast: not permitted to read $Email — the API 2.0 application lacks user/directory read permission (or '$domain' isn't an internal/managed domain on this Mimecast account). In the Mimecast Admin Console, grant the application Directory and User read access, and confirm the domain is added under Internal Directories. (raw: $joined) See /help/mimecast."
+        }
         throw "Mimecast API: POST $script:MimecastBaseUrl/api/user/get-profile -> request failed — $joined"
     }
     @(Get-CtgProp $resp 'data') | Select-Object -First 1
