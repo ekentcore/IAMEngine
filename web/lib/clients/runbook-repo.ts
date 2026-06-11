@@ -7,11 +7,12 @@ export async function saveRunbook(
   db: PrismaClient,
   slug: string,
   action: Action,
-  text: string
+  text: string,
+  presetSections?: ParsedSection[] // AI-extracted sections; falls back to the heuristic parse when absent
 ): Promise<{ count: number; sections: ParsedSection[] } | null> {
   const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
   if (!client) return null;
-  const sections = parseRunbookText(text);
+  const sections = (presetSections ?? parseRunbookText(text)).map((s, i) => ({ ...s, seq: i }));
   await db.$transaction(async (tx) => {
     await tx.runbookSection.deleteMany({ where: { clientId: client.id, action } });
     if (sections.length) {

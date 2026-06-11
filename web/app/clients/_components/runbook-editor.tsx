@@ -17,16 +17,20 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imported, setImported] = useState<{ number: string; title: string; text: string }[] | null>(null);
+  const [useAI, setUseAI] = useState(true);
+  const [usedAI, setUsedAI] = useState(false);
 
-  async function call(persist: boolean) {
+  async function call(persist: boolean, overrideText?: string) {
+    const t = overrideText ?? text;
     setBusy(true); setError(null);
     const r = await fetch(`/api/clients/${slug}/runbook`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, text, preview: !persist }),
+      body: JSON.stringify({ action, text: t, preview: !persist, useAI }),
     });
     setBusy(false);
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+    setUsedAI(Boolean(d.usedAI));
     if (persist) { setOpen(false); setPreview(null); router.refresh(); }
     else setPreview(d.sections ?? []);
   }
@@ -56,8 +60,11 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
       const records: { number: string; title: string; text: string }[] = d.records ?? [];
       setImported(records);
-      setText(records[0]?.text ?? "");
+      const t = records[0]?.text ?? "";
+      setText(t);
       setPreview(null);
+      // Immediately show the structured preview (AI when enabled) so the operator sees the result.
+      if (t.trim()) await call(false, t);
     } finally {
       setBusy(false);
     }
@@ -100,6 +107,10 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
           <option value="onboard">onboard</option>
           <option value="offboard">offboard</option>
         </select>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, margin: 0, color: "var(--fg)" }} title="Use Azure OpenAI to structure messy KB text into sections mapped to systems (recommended for imported KBs)">
+          <input type="checkbox" checked={useAI} onChange={(e) => { setUseAI(e.target.checked); setPreview(null); }} style={{ width: "auto" }} />
+          ✨ Use AI to detect sections
+        </label>
         <span className="note">Headers like “Active Directory”, “Microsoft 365”, “Exchange” auto-map to a system.</span>
       </div>
       <textarea value={text} onChange={(e) => { setText(e.target.value); setPreview(null); }} rows={12}
@@ -114,7 +125,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       </div>
       {preview && (
         <div style={{ marginTop: "0.6rem" }}>
-          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system):</p>
+          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system){usedAI ? " · ✨ structured by AI" : useAI ? " · AI unavailable, used heuristic parse" : ""}:</p>
           {preview.map((s) => (
             <div key={s.seq} style={{ margin: "0.3rem 0" }}>
               <b>{s.seq + 1}. {s.title}</b>{" "}
