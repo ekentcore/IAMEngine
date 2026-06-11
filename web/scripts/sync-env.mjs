@@ -24,6 +24,10 @@ const lines = [
   `AZURE_OPENAI_DEPLOYMENT="${env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini"}"`,
   `AZURE_OPENAI_VERSION="${env.AZURE_OPENAI_VERSION ?? "2025-01-01-preview"}"`,
   "",
+  `# Operator login. "true" requires every operator to sign in at /login (create an admin first:`,
+  `#   npx tsx scripts/auth-user.ts create <email> global_admin). Leave blank to keep the app open.`,
+  `AUTH_ENABLED="${env.AUTH_ENABLED ?? ""}"`,
+  "",
 ];
 
 writeFileSync(OUT, lines.join("\n"));
