@@ -9,7 +9,9 @@ import { replanCase } from "./replan-service";
 // delete inside the transaction ([] = classic full replace; non-empty = INCREMENTAL replan that
 // keeps them and adds only systems without a kept job).
 function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
-  const calls = { deleteMany: 0, createMany: 0, update: 0, audit: 0 };
+  const calls = { deleteMany: 0, createMany: 0, create: 0, jobUpdate: 0, delete: 0, update: 0, audit: 0 };
+  const created: Array<Record<string, unknown>> = [];
+  const updated: Array<Record<string, unknown>> = [];
   const db = {
     caseRequest: {
       findUnique: async () => caseRow,
@@ -25,12 +27,24 @@ function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
         job: {
           deleteMany: async () => { calls.deleteMany++; },
           createMany: async () => { calls.createMany++; },
+          create: async (a: { data: Record<string, unknown> }) => { calls.create++; created.push(a.data); },
+          update: async (a: { data: Record<string, unknown> }) => { calls.jobUpdate++; updated.push(a.data); },
+          delete: async () => { calls.delete++; },
           findMany: async () => keptJobs,
         },
         caseRequest: { findUnique: async () => caseRow, update: async () => { calls.update++; } },
       }),
   };
-  return { db: db as unknown as PrismaClient, calls };
+  return { db: db as unknown as PrismaClient, calls, created, updated };
+}
+
+// A minimal ClientSystem fixture (only the fields planCase reads).
+function sys(systemKey: string, config: unknown) {
+  return {
+    systemKey, mode: "api", onboardWhen: "always", offboardWhen: "always",
+    dependsOn: [] as string[], requiresApproval: false, captureEvidence: false,
+    secretNames: [] as string[], config,
+  };
 }
 
 test("replanCase returns not_found when the case is missing", async () => {
@@ -94,4 +108,30 @@ test("a job claimed in the TOCTOU window flips the replan to incremental instead
   assert.equal(res.ok, true);
   assert.equal(res.ok === true && res.mode, "incremental");
   assert.equal(res.ok === true && res.kept, 1);
+});
+
+test("replan RE-RUNS a kept api step whose config changed (e.g. a new license)", async () => {
+  const kept = [{ id: "j1", systemKey: "m365", sequence: 5, mode: "api", status: "succeeded", request: { config: { licenses: ["E1"] } } }];
+  const { db, updated } = fakeDb({
+    serviceNowCaseNumber: null, action: "onboard", payload: { userPrincipalName: "jane@acme.com" },
+    client: { id: "c1", slug: "acme", primaryDomain: "acme.com", identity: {}, systems: [sys("m365", { onboard: { licenses: ["E3"] } })] },
+    jobs: [{ status: "succeeded" }],
+  }, kept);
+  const res = await replanCase(db, "case-1", "test");
+  assert.equal(res.ok, true);
+  assert.equal(res.ok === true && res.rerun, 1);
+  assert.ok(updated.find((u) => u.status === "pending"), "changed step reset to pending to re-run");
+});
+
+test("replan re-sequences a kept step to its planned position and does NOT re-run when config is unchanged", async () => {
+  const kept = [{ id: "j1", systemKey: "m365", sequence: 9, mode: "api", status: "succeeded", request: { config: { licenses: ["E3"] } } }];
+  const { db, updated } = fakeDb({
+    serviceNowCaseNumber: null, action: "onboard", payload: {},
+    client: { id: "c1", slug: "acme", primaryDomain: "acme.com", identity: {}, systems: [sys("m365", { onboard: { licenses: ["E3"] } })] },
+    jobs: [{ status: "succeeded" }],
+  }, kept);
+  const res = await replanCase(db, "case-1", "test");
+  assert.equal(res.ok, true);
+  assert.equal(res.ok === true && res.rerun, 0);
+  assert.ok(updated.find((u) => u.sequence === 0), "kept step re-sequenced to planned order (was 9 -> 0)");
 });

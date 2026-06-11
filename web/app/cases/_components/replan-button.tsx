@@ -25,7 +25,7 @@ export function ReplanButton({ caseId, canReplan, started = false }: { caseId: s
       setMsg({
         ok: true,
         text: data.mode === "incremental"
-          ? `✓ Re-plan complete — kept ${data.kept} started step${data.kept === 1 ? "" : "s"}, added ${data.added} new.`
+          ? `✓ Re-plan complete — kept ${data.kept} step${data.kept === 1 ? "" : "s"}, added ${data.added} new${data.rerun ? `, re-running ${data.rerun} for config changes` : ""}.`
           : "✓ Re-plan complete.",
       });
       router.refresh();

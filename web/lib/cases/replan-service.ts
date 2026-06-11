@@ -15,7 +15,7 @@ import { makeEmailDomainResolver } from "./plan-domain";
 import { resolvePlannedConfigs } from "../profiles/plan-resolve";
 
 export type ReplanResult =
-  | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean; mode: "full" | "incremental"; kept: number; added: number }
+  | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean; mode: "full" | "incremental"; kept: number; added: number; rerun: number }
   | { ok: false; error: string; code: "not_found" | "already_started" };
 
 export async function replanCase(db: PrismaClient, caseId: string, actor: string, override?: string): Promise<ReplanResult> {
@@ -57,7 +57,7 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
 
   const planned = resolvePlannedConfigs(info.client, payload, action, planCase(info.client.systems, action, payload));
   const status = deriveStatus(planned);
-  let result: { mode: "full" | "incremental"; kept: number; added: number };
+  let result: { mode: "full" | "incremental"; kept: number; added: number; rerun: number };
   try {
     result = await repo.replanCaseJobs(caseId, { action, payload, status }, planned);
   } catch (e) {
@@ -70,7 +70,7 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
 
   await repo.writeAudit({
     actor, action: "case.replan", clientId: info.client.id, caseRequestId: caseId,
-    detail: { refreshedFromServiceNow, action, jobs: planned.length, mode: result.mode, kept: result.kept, added: result.added },
+    detail: { refreshedFromServiceNow, action, jobs: planned.length, mode: result.mode, kept: result.kept, added: result.added, rerun: result.rerun },
   });
 
   return {
@@ -79,6 +79,7 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
     mode: result.mode,
     kept: result.kept,
     added: result.added,
+    rerun: result.rerun,
     outcome: {
       caseId, status, jobCount: planned.length,
       manualCount: planned.filter((j) => j.mode !== "api").length,

@@ -1,6 +1,7 @@
 // Thin Prisma wrapper for the cases domain. Factory-style for testability, mirroring
 // lib/clients/repository.ts.
-import type { PrismaClient, Prisma, ClientSystem, CaseStatus, Action } from "@prisma/client";
+import type { PrismaClient, ClientSystem, CaseStatus, Action } from "@prisma/client";
+import { Prisma } from "@prisma/client"; // value import — Prisma.DbNull is used at runtime
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
@@ -221,7 +222,7 @@ export function makeCaseRepository(db: PrismaClient) {
       caseId: string,
       upd: { action: Action; payload: Record<string, unknown>; status: CaseStatus },
       planned: PlannedJob[]
-    ): Promise<{ mode: "full" | "incremental"; kept: number; added: number }> {
+    ): Promise<{ mode: "full" | "incremental"; kept: number; added: number; rerun: number }> {
       return db.$transaction(async (tx) => {
         // Drop every job that hasn't ACTUALLY run; whatever survives is real work that must be
         // KEPT (the account exists — its history can't be re-planned away). SKIPPED jobs are
@@ -241,33 +242,65 @@ export function makeCaseRepository(db: PrismaClient) {
         // onboard (or vice versa) — refuse; the operator should finish or trash the case instead.
         if (kept.length > 0 && existing && existing.action !== upd.action) throw new CaseAlreadyStartedError();
 
-        const keptKeys = new Set(kept.map((k) => k.systemKey));
-        const fresh = kept.length === 0 ? planned : planned.filter((p) => !keptKeys.has(p.systemKey));
-        const seqBase = kept.length ? Math.max(...kept.map((k) => k.sequence)) + 1 : 0;
+        const keptByKey = new Map(kept.map((k) => [k.systemKey, k]));
+        const plannedKeys = new Set(planned.map((p) => p.systemKey));
+        const reqOf = (p: PlannedJob) => ({
+          config: p.config ?? null,
+          requiresApproval: p.requiresApproval,
+          captureEvidence: p.captureEvidence,
+          secretNames: p.secretNames,
+          dependsOn: p.dependsOn,
+          dryRun,
+        });
+        const isTerminal = (s: string) => s === "succeeded" || s === "failed";
 
         await tx.caseRequest.update({
           where: { id: caseId },
           data: { action: upd.action, payload: upd.payload as Prisma.InputJsonValue, status: upd.status, verifiedAt: null },
         });
-        if (fresh.length > 0) {
-          await tx.job.createMany({
-            data: fresh.map((p, i) => ({
-              caseRequestId: caseId,
-              systemKey: p.systemKey,
-              sequence: kept.length ? seqBase + i : p.sequence,
-              mode: p.mode,
-              status: p.mode === "api" ? "pending" : "manual",
-              request: {
-                config: p.config ?? null,
-                requiresApproval: p.requiresApproval,
-                captureEvidence: p.captureEvidence,
-                secretNames: p.secretNames,
-                dependsOn: p.dependsOn,
-                dryRun,
-              } as Prisma.InputJsonValue,
-            })),
+
+        // Reconcile every planned system against the kept jobs. Kept jobs are RE-SEQUENCED to the
+        // fresh plan (so the displayed order matches the client again) and their config/deps are
+        // refreshed. If a kept job's config actually changed (e.g. a new license) and it's a
+        // finished api job, reset it to pending so the change re-runs (executors are idempotent).
+        let added = 0;
+        let rerun = 0;
+        for (const p of planned) {
+          const k = keptByKey.get(p.systemKey);
+          const newReq = reqOf(p);
+          if (!k) {
+            await tx.job.create({
+              data: {
+                caseRequestId: caseId, systemKey: p.systemKey, sequence: p.sequence, mode: p.mode,
+                status: p.mode === "api" ? "pending" : "manual",
+                request: newReq as Prisma.InputJsonValue,
+              },
+            });
+            added++;
+            continue;
+          }
+          const oldReq = (k.request ?? {}) as { config?: unknown; approved?: boolean };
+          const configChanged = JSON.stringify(oldReq.config ?? null) !== JSON.stringify(p.config ?? null);
+          const willRerun = configChanged && k.mode === "api" && isTerminal(k.status);
+          await tx.job.update({
+            where: { id: k.id },
+            data: {
+              sequence: p.sequence,
+              request: { ...newReq, approved: oldReq.approved } as Prisma.InputJsonValue,
+              ...(willRerun
+                ? { status: "pending", result: Prisma.DbNull, validation: Prisma.DbNull, evidence: Prisma.DbNull, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null, assignedAgentId: null }
+                : {}),
+            },
           });
+          if (willRerun) rerun++;
         }
+        // Systems removed from the plan: drop their not-yet-started kept jobs (started ones stay as history).
+        for (const k of kept) {
+          if (!plannedKeys.has(k.systemKey) && !STARTED_STATUSES.includes(k.status as never)) {
+            await tx.job.delete({ where: { id: k.id } });
+          }
+        }
+
         if (kept.length > 0) {
           // Incremental: the plan-derived status ignores the kept jobs — recompute from ALL of them.
           const all = await tx.job.findMany({
@@ -282,7 +315,7 @@ export function makeCaseRepository(db: PrismaClient) {
           );
           await tx.caseRequest.update({ where: { id: caseId }, data: { status: st } });
         }
-        return { mode: kept.length ? ("incremental" as const) : ("full" as const), kept: kept.length, added: fresh.length };
+        return { mode: kept.length ? ("incremental" as const) : ("full" as const), kept: kept.length, added, rerun };
       });
     },
 
