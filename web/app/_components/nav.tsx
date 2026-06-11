@@ -12,11 +12,12 @@ const ITEMS = [
   ["/health", "Health"],
 ] as const;
 
-export function Nav() {
+export function Nav({ showUsers = false }: { showUsers?: boolean }) {
   const path = usePathname() ?? "";
+  const items: ReadonlyArray<readonly [string, string]> = showUsers ? [...ITEMS, ["/users", "Users"]] : ITEMS;
   return (
     <nav style={{ display: "flex", gap: 2 }}>
-      {ITEMS.map(([href, label]) => {
+      {items.map(([href, label]) => {
         const active = path === href || path.startsWith(`${href}/`);
         return (
           <Link key={href} href={href} className="nav-link" aria-current={active ? "page" : undefined}>

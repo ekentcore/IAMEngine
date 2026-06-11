@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
 import { UserMenu } from "./_components/user-menu";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
+import { can } from "@/lib/auth/permissions";
 
 // Title template: each page sets its own title (e.g. "Agents") and the tab reads "Agents · iam-engine",
 // so people can tell pages apart from the title bar / tab strip.
@@ -31,7 +32,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {!onLogin && (
           <header className="app-header">
             <Link href="/clients" className="brand">iam-engine</Link>
-            <Nav />
+            <Nav showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))} />
             {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
           </header>
         )}
