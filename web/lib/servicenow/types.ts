@@ -16,7 +16,8 @@ export type SnAccount = {
   u_onboarding: SnFieldValue;
   u_offboarding: SnFieldValue;
   // Account hierarchy: children inherit the parent's modeled onboarding when they have none.
-  parent?: SnFieldValue;
+  // SN's field is `account_parent` (NOT `parent`).
+  account_parent?: SnFieldValue;
 };
 
 export type SnListResponse<T> = { result: T[] };

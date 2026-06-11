@@ -58,7 +58,7 @@ export function normalizeAccount(raw: SnAccount): NormalizedSnClient {
     coManaged: (raw.u_comanaged_it?.value ?? "false") === "true",
     onboardingRating: parseRating(onValue),
     offboardingRating: parseRating(offValue),
-    parentSysId: blankToNull(raw.parent?.value),
+    parentSysId: blankToNull(raw.account_parent?.value),
     metadata: {
       // keep the human label only when it isn't just the numeric rating
       onboardingLabel: parseRating(onValue) === null ? blankToNull(raw.u_onboarding?.display_value) : null,
