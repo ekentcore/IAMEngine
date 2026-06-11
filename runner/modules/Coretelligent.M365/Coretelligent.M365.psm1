@@ -172,6 +172,25 @@ $script:LicenseSkuMap = @{
 
 #endregion
 
+function Invoke-CtgM365Write {
+    # Retry a Graph WRITE on transient tenant errors — ConcurrencyViolation (overlapping writes to
+    # the same tenant, e.g. two onboardings at once) and throttling (429/503) — with backoff. The
+    # M365 executors are idempotent, so a retried write is safe. Non-transient errors (e.g. no
+    # available license seats) re-throw immediately so their handlers still see them.
+    param([Parameter(Mandatory)][scriptblock]$Operation, [int]$MaxAttempts = 4)
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try { return (& $Operation) }
+        catch {
+            $msg = "$($_.Exception.Message)"
+            $transient = $msg -match 'ConcurrencyViolation|concurrent requests|TooManyRequests|throttl|\b429\b|\b503\b|ServiceUnavailable|temporarily'
+            if (-not $transient -or $attempt -ge $MaxAttempts) { throw }
+            $delay = [int][Math]::Min(8, [Math]::Pow(2, $attempt))  # 2, 4, 8s
+            if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress "tenant busy (concurrent/throttled) — retrying in ${delay}s ($($attempt + 1)/$MaxAttempts)" }
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 function Resolve-CtgSkuId {
     <#
     .SYNOPSIS
@@ -398,7 +417,7 @@ function Invoke-CtgM365Onboarding {
                 @{ K = 'MobilePhone'; V = (Get-CtgProp $User 'MobilePhone') }
             )) { if (& $hasValue $opt.V) { $params[$opt.K] = [string]$opt.V } }
             try {
-                $created = New-MgUser @params
+                $created = Invoke-CtgM365Write { New-MgUser @params }
                 $userId = $created.Id
                 $actions.Add("created user $upn" + $(if (-not $params.ContainsKey('JobTitle')) { " (no job title)" } else { "" }))
             }
@@ -435,7 +454,7 @@ function Invoke-CtgM365Onboarding {
         if ($PSCmdlet.ShouldProcess($upn, "Assign license $name")) {
             Write-CtgM365Step "assigning license: $name"
             try {
-                Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() -ErrorAction Stop | Out-Null
+                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() -ErrorAction Stop } | Out-Null
                 $actions.Add("assigned license: $name")
                 Write-CtgM365Step "✓ assigned license: $name"
             } catch {
@@ -497,7 +516,7 @@ function Invoke-CtgM365Onboarding {
             $actions.Add("alias present: $address")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Add alias $address")) {
-            Update-MgUser -UserId $userId -ProxyAddresses ($current + $proxy)
+            Invoke-CtgM365Write { Update-MgUser -UserId $userId -ProxyAddresses ($current + $proxy) }
             $actions.Add("added alias: $address")
         }
     }
@@ -564,7 +583,7 @@ function Invoke-CtgM365Offboarding {
             $actions.Add("sign-in already blocked")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Block sign-in")) {
-            Update-MgUser -UserId $userId -AccountEnabled:$false
+            Invoke-CtgM365Write { Update-MgUser -UserId $userId -AccountEnabled:$false }
             $actions.Add("blocked sign-in")
         }
     }
@@ -597,7 +616,7 @@ function Invoke-CtgM365Offboarding {
         elseif ($PSCmdlet.ShouldProcess($upn, "Remove licenses")) {
             $skus = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
             if ($skus.Count) {
-                Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $skus | Out-Null
+                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $skus } | Out-Null
                 $actions.Add("removed $($skus.Count) license(s)")
             } else {
                 $actions.Add("no licenses to remove")
