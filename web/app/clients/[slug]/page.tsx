@@ -10,6 +10,7 @@ import { EditSystemsButton } from "../_components/edit-systems-button";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
+import { M365LicenseEditor } from "../_components/m365-license-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { SecretsPanel } from "../_components/secrets-panel";
@@ -158,6 +159,16 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       </table>
 
       <h2>Systems</h2>
+      {sysByKey.has("m365") && (
+        <M365LicenseEditor
+          slug={client.slug}
+          current={(() => {
+            const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenses?: unknown; defaultLicenses?: unknown } };
+            const lic = cfg.onboard?.licenses ?? cfg.onboard?.defaultLicenses ?? [];
+            return Array.isArray(lic) ? lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean) : [];
+          })()}
+        />
+      )}
       {(onboardKb || offboardKb) && (
         <p className="note">
           Source KB:{" "}
