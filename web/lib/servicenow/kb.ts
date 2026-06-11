@@ -22,6 +22,10 @@ export function htmlToText(html: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#0?39;|&apos;/g, "'")
+    // Numeric character refs (&#64; -> @, &#43; -> +) — common in ServiceNow's encoded KB HTML,
+    // e.g. email addresses come through as jdoe&#64;domain without this.
+    .replace(/&#(\d{1,6});/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]{1,6});/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/\r/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

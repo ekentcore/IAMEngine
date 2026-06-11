@@ -16,6 +16,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
   const [preview, setPreview] = useState<Section[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imported, setImported] = useState<{ number: string; title: string; text: string }[] | null>(null);
 
   async function call(persist: boolean) {
     setBusy(true); setError(null);
@@ -39,6 +40,23 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
       setText(d.text ?? "");
+      setPreview(null); setImported(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Import the KB body from an uploaded ServiceNow JSON export (records[].text) — same parse-preview
+  // -> save flow, but sourced from a file when the integration account can't read kb_knowledge.
+  async function importJson(file: File) {
+    setBusy(true); setError(null);
+    try {
+      const r = await fetch(`/api/clients/${slug}/runbook/kb-json`, { method: "POST", body: await file.text() });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+      const records: { number: string; title: string; text: string }[] = d.records ?? [];
+      setImported(records);
+      setText(records[0]?.text ?? "");
       setPreview(null);
     } finally {
       setBusy(false);
@@ -62,6 +80,20 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
           <span className="note muted">then Preview the parse and Save to update the runbook + systems</span>
         </div>
       )}
+      <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
+        <span className="note">Can&rsquo;t read the KB? Import a ServiceNow JSON export:</span>
+        <label className="button" style={{ display: "inline-flex", alignItems: "center", padding: "0.26rem 0.6rem", fontSize: 12, border: "1px solid var(--line-2)", borderRadius: 8, cursor: busy ? "default" : "pointer", background: "var(--bg)" }}>
+          ⬆ Import KB JSON
+          <input type="file" accept=".json,application/json" disabled={busy} style={{ display: "none" }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ""; }} />
+        </label>
+        {imported && imported.length > 1 && (
+          <select disabled={busy} style={{ width: "auto", fontSize: 12 }} onChange={(e) => { setText(imported[Number(e.target.value)]?.text ?? ""); setPreview(null); }}>
+            {imported.map((r, i) => <option key={i} value={i}>{r.number || `record ${i + 1}`}{r.title ? ` — ${r.title}` : ""}</option>)}
+          </select>
+        )}
+        {imported && <span className="note muted">loaded {imported[0]?.number || "KB"}{imported.length > 1 ? ` (+${imported.length - 1} more — pick above)` : ""} — Preview &amp; Save below</span>}
+      </div>
       <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
         <label htmlFor="rb-action">Action</label>
         <select id="rb-action" value={action} onChange={(e) => { setAction(e.target.value as never); setPreview(null); }}>
