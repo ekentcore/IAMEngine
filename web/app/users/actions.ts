@@ -17,20 +17,23 @@ function fail(e: unknown): { ok: false; error: string } {
   return { ok: false, error: e instanceof AuthError ? e.message : e instanceof Error ? e.message : "failed" };
 }
 
-export async function createUser(input: { email: string; name?: string; role: string; password?: string }): Promise<Result<{ generatedPassword?: string }>> {
+export async function createUser(input: { email: string; name?: string; role: string; authType?: string; password?: string }): Promise<Result<{ generatedPassword?: string }>> {
   try {
     const me = await requirePermission("user.manage");
     const email = input.email.trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, error: "enter a valid email" };
     if (!isRole(input.role)) return { ok: false, error: "invalid role" };
     if (await db.user.findUnique({ where: { email } })) return { ok: false, error: "a user with that email already exists" };
-    const password = input.password?.trim() || generatePassword();
+    // SSO users sign in with Microsoft 365 (no local password). Local users get one (generated if
+    // not supplied), shown once to the admin.
+    const sso = input.authType === "sso";
+    const password = sso ? null : input.password?.trim() || generatePassword();
     await db.user.create({
-      data: { email, name: input.name?.trim() || null, role: input.role, authType: "local", passwordHash: hashPassword(password) },
+      data: { email, name: input.name?.trim() || null, role: input.role, authType: sso ? "sso" : "local", passwordHash: password ? hashPassword(password) : null },
     });
-    await recordAudit("user.create", { user: me, detail: { email, role: input.role } });
+    await recordAudit("user.create", { user: me, detail: { email, role: input.role, authType: sso ? "sso" : "local" } });
     revalidatePath("/users");
-    return { ok: true, generatedPassword: input.password ? undefined : password };
+    return { ok: true, generatedPassword: !sso && !input.password ? (password ?? undefined) : undefined };
   } catch (e) {
     return fail(e);
   }

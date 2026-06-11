@@ -28,6 +28,12 @@ const lines = [
   `#   npx tsx scripts/auth-user.ts create <email> global_admin). Leave blank to keep the app open.`,
   `AUTH_ENABLED="${env.AUTH_ENABLED ?? ""}"`,
   "",
+  `# Microsoft 365 single sign-on (Entra app registration). Set all three to enable the SSO button.`,
+  `# Register the redirect URI <origin>/api/auth/sso/callback in the app.`,
+  `AZURE_SSO_TENANT_ID="${env.AZURE_SSO_TENANT_ID ?? ""}"`,
+  `AZURE_SSO_CLIENT_ID="${env.AZURE_SSO_CLIENT_ID ?? ""}"`,
+  `AZURE_SSO_CLIENT_SECRET="${env.AZURE_SSO_CLIENT_SECRET ?? ""}"`,
+  "",
 ];
 
 writeFileSync(OUT, lines.join("\n"));

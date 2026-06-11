@@ -29,6 +29,7 @@ export function UsersView({ users }: { users: UserVM[] }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("engineer");
+  const [authType, setAuthType] = useState<"sso" | "local">("sso");
 
   async function run<T extends { ok: boolean; error?: string; generatedPassword?: string }>(key: string, fn: () => Promise<T>, who?: string) {
     setBusy(key); setError(null);
@@ -50,19 +51,27 @@ export function UsersView({ users }: { users: UserVM[] }) {
         <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", alignItems: "flex-end", marginTop: "0.5rem" }}>
           <div style={{ flex: "1 1 200px" }}><label htmlFor="nu-email">Email</label><input id="nu-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="person@core.tech" /></div>
           <div style={{ flex: "1 1 160px" }}><label htmlFor="nu-name">Name</label><input id="nu-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="optional" /></div>
-          <div style={{ flex: "0 1 200px" }}><label htmlFor="nu-role">Role</label>
+          <div style={{ flex: "0 1 180px" }}><label htmlFor="nu-role">Role</label>
             <select id="nu-role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
               {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           </div>
+          <div style={{ flex: "0 1 170px" }}><label htmlFor="nu-auth">Sign-in</label>
+            <select id="nu-auth" value={authType} onChange={(e) => setAuthType(e.target.value as "sso" | "local")}>
+              <option value="sso">Microsoft 365 (SSO)</option>
+              <option value="local">Local password</option>
+            </select>
+          </div>
           <button className="primary" disabled={busy === "create" || !email.trim()}
-            onClick={() => run("create", () => createUser({ email, name, role }), email.trim().toLowerCase()).then(() => { setEmail(""); setName(""); })}>
+            onClick={() => run("create", () => createUser({ email, name, role, authType }), email.trim().toLowerCase()).then(() => { setEmail(""); setName(""); })}>
             {busy === "create" ? "Adding…" : "Add user"}
           </button>
         </div>
         <p className="note" style={{ margin: "0.5rem 0 0" }}>
-          A one-time password is generated and shown after you add the user (no email is sent). {ROLE_LABELS[role]} can:{" "}
-          {ROLE_PERMISSIONS[role].join(", ")}.
+          {authType === "sso"
+            ? "They sign in with Microsoft 365 — no password is set; they just click “Sign in with Microsoft 365” (their email must match)."
+            : "A one-time password is generated and shown after you add the user (no email is sent)."}{" "}
+          {ROLE_LABELS[role]} can: {ROLE_PERMISSIONS[role].join(", ")}.
         </p>
       </div>
 

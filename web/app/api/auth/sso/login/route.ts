@@ -1,0 +1,30 @@
+// GET /api/auth/sso/login — begin the O365 sign-in: mint PKCE + state, stash them in a short-lived
+// httpOnly cookie, and redirect to Entra's authorize endpoint. The redirect URI is derived from the
+// request origin (must be registered in the Entra app).
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { ssoConfig, newPkce, authorizeUrl } from "@/lib/auth/sso";
+
+export const dynamic = "force-dynamic";
+
+export const SSO_COOKIE = "iam_sso";
+
+export function GET(req: Request) {
+  const cfg = ssoConfig();
+  if (!cfg) return NextResponse.redirect(new URL("/login?error=sso_unconfigured", req.url));
+
+  const origin = new URL(req.url).origin;
+  const redirectUri = `${origin}/api/auth/sso/callback`;
+  const { verifier, challenge, state } = newPkce();
+
+  // verifier + state (+ the requested redirect URI) ride in a 10-minute httpOnly cookie.
+  cookies().set(SSO_COOKIE, `${state}.${verifier}.${encodeURIComponent(redirectUri)}`, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 600,
+  });
+
+  return NextResponse.redirect(authorizeUrl(cfg, redirectUri, state, challenge));
+}
