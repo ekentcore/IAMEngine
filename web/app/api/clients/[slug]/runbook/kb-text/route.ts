@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { guardAuth } from "@/lib/auth/route-guard";
 import { snConfigFromEnv, SnGatewayError } from "@/lib/servicenow/gateway";
 import { fetchKbArticle } from "@/lib/servicenow/kb";
+import { detectKbAction } from "@/lib/clients/runbook-parse";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export async function GET(req: Request) {
         error: `${article} returned no rows — either it doesn't exist, or the API account can't read kb_knowledge. If the article exists in ServiceNow, grant the integration user knowledge access (the 'knowledge' role, or add it to the knowledge base's "Can Read" criteria).`,
       }, { status: 404 });
     }
-    return NextResponse.json(kb);
+    return NextResponse.json({ ...kb, detectedAction: detectKbAction(kb.title || kb.number, kb.text) });
   } catch (e) {
     const msg = e instanceof SnGatewayError ? `ServiceNow: ${e.message}` : (e as Error).message;
     return NextResponse.json({ error: msg }, { status: 502 });

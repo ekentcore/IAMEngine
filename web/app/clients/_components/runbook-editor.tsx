@@ -108,6 +108,30 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
     }
   }
 
+  // Fetch a specific KB by number (typed in) — for a client with no associated KB (e.g. a child
+  // account with no model of its own). Detects onboard/offboard from the article and links the KB.
+  const [kbInput, setKbInput] = useState("");
+  async function fetchByNumber(num: string) {
+    const article = num.trim().toUpperCase();
+    if (!/^KB\d{4,12}$/.test(article)) { setError("enter a KB number like KB0012345"); return; }
+    setBusy(true); setError(null);
+    try {
+      const r = await fetch(`/api/clients/${slug}/runbook/kb-text?article=${encodeURIComponent(article)}`);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+      setText(d.text ?? "");
+      setKbNumber(article);
+      const det = (d.detectedAction ?? null) as "onboard" | "offboard" | null;
+      setDetectedAction(det);
+      const act = det ?? action;
+      if (det) setAction(det);
+      setImported(null); setPreview(null);
+      if ((d.text ?? "").trim()) await call(false, d.text, act);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Import the KB body from an uploaded ServiceNow JSON export (records[].text) — same parse-preview
   // -> save flow, but sourced from a file when the integration account can't read kb_knowledge.
   async function importJson(file: File) {
@@ -151,6 +175,13 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
           <span className="note muted">then Preview the parse and Save to update the runbook + systems</span>
         </div>
       )}
+      <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
+        <span className="note">Use a specific KB:</span>
+        <input value={kbInput} onChange={(e) => setKbInput(e.target.value)} placeholder="KB0012345" style={{ width: 120, fontSize: 12 }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); fetchByNumber(kbInput); } }} />
+        <button disabled={busy || !kbInput.trim()} onClick={() => fetchByNumber(kbInput)}>⟳ Fetch</button>
+        <span className="note muted">type a KB number to use for this client (e.g. a child with no model of its own)</span>
+      </div>
       <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
         <span className="note">Can&rsquo;t read the KB? Import a ServiceNow JSON export:</span>
         <label className="button" style={{ display: "inline-flex", alignItems: "center", padding: "0.26rem 0.6rem", fontSize: 12, border: "1px solid var(--line-2)", borderRadius: 8, cursor: busy ? "default" : "pointer", background: "var(--bg)" }}>
