@@ -5,30 +5,48 @@ import { guard } from "@/lib/auth/route-guard";
 import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
 import { saveRunbook } from "@/lib/clients/runbook-repo";
-import { parseRunbookText } from "@/lib/clients/runbook-parse";
+import { parseRunbookText, type ParsedSection } from "@/lib/clients/runbook-parse";
 import { extractRunbookAI } from "@/lib/clients/runbook-extract";
+import { CATALOG } from "@/lib/generator/system-map";
 
 export const dynamic = "force-dynamic";
 
 const isAction = (a: unknown): a is Action => a === "onboard" || a === "offboard";
+const KNOWN = new Set(Object.keys(CATALOG));
+
+// Validate + normalize edited sections sent back from the editor (after reordering steps/sections),
+// so a reordered preview is what gets stored — not a re-parse of the stale text.
+function sanitizeSections(arr: unknown[]): ParsedSection[] {
+  const out: ParsedSection[] = [];
+  for (const s of arr) {
+    const sec = s as { title?: unknown; systemKey?: unknown; steps?: unknown };
+    if (typeof sec.title !== "string" || !sec.title.trim()) continue;
+    const systemKey = typeof sec.systemKey === "string" && KNOWN.has(sec.systemKey) ? sec.systemKey : null;
+    const steps = Array.isArray(sec.steps) ? sec.steps.filter((x): x is string => typeof x === "string") : [];
+    out.push({ seq: out.length, systemKey, title: sec.title.trim(), status: systemKey ? "automated" : "unmodeled", steps });
+  }
+  return out;
+}
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
-  let body: { action?: unknown; text?: unknown; preview?: unknown; useAI?: unknown };
+  let body: { action?: unknown; text?: unknown; preview?: unknown; useAI?: unknown; sections?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   if (!isAction(body.action)) return NextResponse.json({ error: 'action must be "onboard" or "offboard"' }, { status: 422 });
   const text = typeof body.text === "string" ? body.text : "";
 
-  // AI extraction (when requested + configured) structures messy KB HTML the heuristic parser can't;
-  // fall back to the heuristic parse otherwise. The SAME sections drive both the preview and the
-  // save, so what you preview is exactly what gets stored.
-  const aiSections = body.useAI ? await extractRunbookAI(text, body.action) : null;
+  // Edited sections (from a reordered preview) win — persist them verbatim.
+  const edited = Array.isArray(body.sections) ? sanitizeSections(body.sections) : null;
+
+  // Otherwise AI extraction (when requested + configured) structures messy KB HTML the heuristic
+  // parser can't; fall back to the heuristic parse. The SAME sections drive preview and save.
+  const aiSections = !edited && body.useAI ? await extractRunbookAI(text, body.action) : null;
 
   if (body.preview) {
-    return NextResponse.json({ sections: aiSections ?? parseRunbookText(text), usedAI: Boolean(aiSections) });
+    return NextResponse.json({ sections: edited ?? aiSections ?? parseRunbookText(text), usedAI: Boolean(aiSections) });
   }
 
-  const res = await saveRunbook(db, params.slug, body.action, text, aiSections ?? undefined);
+  const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined);
   if (!res) return NextResponse.json({ error: "client not found" }, { status: 404 });
   return NextResponse.json({ count: res.count, sections: res.sections, usedAI: Boolean(aiSections) });
 }

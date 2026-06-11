@@ -10,6 +10,17 @@ type Section = { seq: number; systemKey: string | null; title: string; status: s
 
 type KbRef = { number: string; action: "onboard" | "offboard" };
 
+// Compact ▲▼ reorder control used on sections and steps in the preview.
+function Arrows({ up, down, disUp, disDown, title }: { up: () => void; down: () => void; disUp: boolean; disDown: boolean; title: string }) {
+  const btn: React.CSSProperties = { padding: "0 4px", fontSize: 10, lineHeight: 1.1, minWidth: 0 };
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", marginRight: 2 }}>
+      <button type="button" style={btn} disabled={disUp} title={`Move ${title} up`} onClick={up}>▲</button>
+      <button type="button" style={btn} disabled={disDown} title={`Move ${title} down`} onClick={down}>▼</button>
+    </span>
+  );
+}
+
 export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArticles?: KbRef[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -39,6 +50,41 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
     setUsedAI(Boolean(d.usedAI));
     if (persist) { setOpen(false); setPreview(null); router.refresh(); }
     else setPreview(d.sections ?? []);
+  }
+
+  // Persist the (possibly reordered) previewed sections directly — so reordering survives save
+  // instead of being lost to a re-parse of the stale text.
+  async function saveEdited() {
+    if (!preview) return call(true);
+    setBusy(true); setError(null);
+    const r = await fetch(`/api/clients/${slug}/runbook`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, sections: preview }),
+    });
+    setBusy(false);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+    setOpen(false); setPreview(null); router.refresh();
+  }
+
+  // Reorder controls operate on the previewed sections (by index).
+  function moveSection(i: number, dir: -1 | 1) {
+    setPreview((p) => {
+      if (!p) return p;
+      const j = i + dir; if (j < 0 || j >= p.length) return p;
+      const next = [...p]; [next[i], next[j]] = [next[j], next[i]];
+      return next.map((s, k) => ({ ...s, seq: k }));
+    });
+  }
+  function moveStep(si: number, ti: number, dir: -1 | 1) {
+    setPreview((p) => {
+      if (!p) return p;
+      const steps = [...p[si].steps]; const tj = ti + dir;
+      if (tj < 0 || tj >= steps.length) return p;
+      [steps[ti], steps[tj]] = [steps[tj], steps[ti]];
+      const next = [...p]; next[si] = { ...next[si], steps };
+      return next;
+    });
   }
 
   // Pull the article's CURRENT body from ServiceNow into the textarea — then the normal
@@ -138,18 +184,28 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       {error && <p className="note danger">{error}</p>}
       <div className="toolbar" style={{ marginTop: "0.5rem" }}>
         <button onClick={() => call(false)} disabled={busy || !text.trim()}>Preview</button>
-        <button className="primary" onClick={() => call(true)} disabled={busy || !text.trim()}>{busy ? "Saving…" : "Save runbook"}</button>
+        <button className="primary" onClick={saveEdited} disabled={busy || (!text.trim() && !preview)}>{busy ? "Saving…" : preview ? "Save runbook (with your order)" : "Save runbook"}</button>
         <span className="grow" />
         <button onClick={() => { setOpen(false); setPreview(null); }}>Cancel</button>
       </div>
       {preview && (
         <div style={{ marginTop: "0.6rem" }}>
-          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system){usedAI ? " · ✨ structured by AI" : useAI ? " · AI unavailable, used heuristic parse" : ""}:</p>
-          {preview.map((s) => (
-            <div key={s.seq} style={{ margin: "0.3rem 0" }}>
-              <b>{s.seq + 1}. {s.title}</b>{" "}
-              <span className="badge" style={{ color: s.systemKey ? "#2e7d32" : "var(--muted)" }}>{s.systemKey ?? "unmodeled"}</span>
-              <ul className="muted" style={{ margin: "0.2rem 0" }}>{s.steps.map((st, i) => <li key={i} style={{ marginLeft: (st.match(/^ */)?.[0].length ?? 0) * 6 }}>{st.trim()}</li>)}</ul>
+          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system){usedAI ? " · ✨ structured by AI" : useAI ? " · AI unavailable, used heuristic parse" : ""}. Use ▲▼ to reorder, then Save.</p>
+          {preview.map((s, si) => (
+            <div key={si} style={{ margin: "0.4rem 0", paddingLeft: "0.4rem", borderLeft: "2px solid var(--line)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Arrows up={() => moveSection(si, -1)} down={() => moveSection(si, 1)} disUp={si === 0} disDown={si === preview.length - 1} title="section" />
+                <b>{si + 1}. {s.title}</b>{" "}
+                <span className="badge" style={{ color: s.systemKey ? "#2e7d32" : "var(--muted)" }}>{s.systemKey ?? "unmodeled"}</span>
+              </div>
+              <ul className="muted" style={{ margin: "0.2rem 0", listStyle: "none", paddingLeft: 0 }}>
+                {s.steps.map((st, ti) => (
+                  <li key={ti} style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: (st.match(/^ */)?.[0].length ?? 0) * 6 }}>
+                    <Arrows up={() => moveStep(si, ti, -1)} down={() => moveStep(si, ti, 1)} disUp={ti === 0} disDown={ti === s.steps.length - 1} title="step" />
+                    <span>{st.trim()}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           ))}
         </div>
