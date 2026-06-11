@@ -39,6 +39,25 @@ function headerTitle(line: string, next: string | undefined): string | null {
   return null;
 }
 
+// Guess whether a KB article is an onboarding or offboarding runbook, so the editor can auto-pick
+// the right action and warn on an override (prevents saving an offboard KB as the onboard runbook).
+// Title is the strongest signal; body keyword scoring is the tiebreak. Returns null when unsure —
+// better to leave the operator's choice than to flip it on a weak guess.
+export function detectKbAction(title: string, text: string): "onboard" | "offboard" | null {
+  const t = (title ?? "").toLowerCase();
+  if (/\boff[\s-]?board|offboarding|termination|deprovision/.test(t)) return "offboard";
+  if (/\bon[\s-]?board|onboarding|new (user|hire|employee|starter)\b/.test(t)) return "onboard";
+
+  const hay = `${title ?? ""}\n${text ?? ""}`.toLowerCase();
+  const score = (pats: RegExp[]) => pats.reduce((n, p) => n + (hay.match(p)?.length ?? 0), 0);
+  const on = score([/onboard/g, /new user/g, /new hire/g, /create (the )?(new )?user/g, /assign .{0,20}licens/g, /\bjoiner\b/g, /add user/g, /welcome/g]);
+  const off = score([/offboard/g, /terminat/g, /disable .{0,20}(account|user|sign)/g, /remove .{0,20}from/g, /\brevoke\b/g, /\bdepart/g, /\bleaver\b/g, /deprovision/g, /hide .{0,10}gal/g, /convert .{0,20}shared/g]);
+
+  const max = Math.max(on, off);
+  if (max < 2 || Math.abs(on - off) < 2) return null; // too weak / too close — don't auto-switch
+  return on > off ? "onboard" : "offboard";
+}
+
 export function parseRunbookText(text: string): ParsedSection[] {
   const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
   const sections: ParsedSection[] = [];

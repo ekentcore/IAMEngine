@@ -8,7 +8,9 @@ import { useRouter } from "next/navigation";
 
 type Section = { seq: number; systemKey: string | null; title: string; status: string; steps: string[] };
 
-export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArticles?: string[] }) {
+type KbRef = { number: string; action: "onboard" | "offboard" };
+
+export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArticles?: KbRef[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
@@ -19,13 +21,17 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
   const [imported, setImported] = useState<{ number: string; title: string; text: string }[] | null>(null);
   const [useAI, setUseAI] = useState(true);
   const [usedAI, setUsedAI] = useState(false);
+  // The action this content was fetched/detected as — auto-selected, and the basis for the
+  // override warning so a KB isn't accidentally saved to the wrong action's runbook.
+  const [detectedAction, setDetectedAction] = useState<"onboard" | "offboard" | null>(null);
 
-  async function call(persist: boolean, overrideText?: string) {
+  async function call(persist: boolean, overrideText?: string, overrideAction?: "onboard" | "offboard") {
     const t = overrideText ?? text;
+    const a = overrideAction ?? action;
     setBusy(true); setError(null);
     const r = await fetch(`/api/clients/${slug}/runbook`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, text: t, preview: !persist, useAI }),
+      body: JSON.stringify({ action: a, text: t, preview: !persist, useAI }),
     });
     setBusy(false);
     const d = await r.json().catch(() => ({}));
@@ -37,13 +43,15 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
 
   // Pull the article's CURRENT body from ServiceNow into the textarea — then the normal
   // parse-preview -> save flow applies (a KB edit never silently rewrites the client).
-  async function fetchKb(article: string) {
+  async function fetchKb(kb: KbRef) {
     setBusy(true); setError(null);
     try {
-      const r = await fetch(`/api/clients/${slug}/runbook/kb-text?article=${encodeURIComponent(article)}`);
+      const r = await fetch(`/api/clients/${slug}/runbook/kb-text?article=${encodeURIComponent(kb.number)}`);
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
       setText(d.text ?? "");
+      setAction(kb.action);          // this KB belongs to that action — select it automatically
+      setDetectedAction(kb.action);  // and remember it, so flipping the action warns
       setPreview(null); setImported(null);
     } finally {
       setBusy(false);
@@ -58,13 +66,18 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       const r = await fetch(`/api/clients/${slug}/runbook/kb-json`, { method: "POST", body: await file.text() });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
-      const records: { number: string; title: string; text: string }[] = d.records ?? [];
+      const records: { number: string; title: string; text: string; detectedAction?: "onboard" | "offboard" | null }[] = d.records ?? [];
       setImported(records);
       const t = records[0]?.text ?? "";
       setText(t);
       setPreview(null);
+      // Auto-select the detected action (onboard/offboard) so the KB isn't saved to the wrong one.
+      const det = records[0]?.detectedAction ?? null;
+      setDetectedAction(det);
+      const act = det ?? action;
+      if (det) setAction(det);
       // Immediately show the structured preview (AI when enabled) so the operator sees the result.
-      if (t.trim()) await call(false, t);
+      if (t.trim()) await call(false, t, act);
     } finally {
       setBusy(false);
     }
@@ -80,8 +93,8 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
         <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
           <span className="note">KB changed in ServiceNow?</span>
           {kbArticles.map((a) => (
-            <button key={a} disabled={busy} onClick={() => fetchKb(a)} title={`Fetch ${a}'s current body from ServiceNow into the editor`}>
-              ⟳ Fetch {a}
+            <button key={a.number} disabled={busy} onClick={() => fetchKb(a)} title={`Fetch ${a.number} (${a.action}) from ServiceNow into the editor`}>
+              ⟳ Fetch {a.number} <span className="note" style={{ fontSize: 10 }}>({a.action})</span>
             </button>
           ))}
           <span className="note muted">then Preview the parse and Save to update the runbook + systems</span>
@@ -113,6 +126,12 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
         </label>
         <span className="note">Headers like “Active Directory”, “Microsoft 365”, “Exchange” auto-map to a system.</span>
       </div>
+      {detectedAction && action !== detectedAction && (
+        <p className="note" style={{ color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "0.45rem 0.65rem", margin: "0 0 0.5rem" }}>
+          ⚠ This article looks like an <b>{detectedAction}</b> runbook, but you’ve set the action to <b>{action}</b>.
+          Saving will write it to the <b>{action}</b> runbook — switch back to <b>{detectedAction}</b> unless this is intentional.
+        </p>
+      )}
       <textarea value={text} onChange={(e) => { setText(e.target.value); setPreview(null); }} rows={12}
         placeholder={`Active Directory\n- create the user in OU=...\n- add to base groups\n\nMicrosoft 365\n- assign the license\n\nOrder equipment\n- email procurement`}
         style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} />

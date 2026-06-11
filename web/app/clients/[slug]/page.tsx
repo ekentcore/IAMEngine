@@ -254,7 +254,15 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       ) : (
         <RunbookView items={items} slug={client.slug} />
       )}
-      <RunbookEditor slug={client.slug} kbArticles={[...new Set(runbook.map((r) => r.kbArticle).filter((a): a is string => Boolean(a)))]} />
+      <RunbookEditor
+        slug={client.slug}
+        kbArticles={Object.values(
+          runbook.reduce<Record<string, { number: string; action: "onboard" | "offboard" }>>((acc, r) => {
+            if (r.kbArticle && !acc[r.kbArticle]) acc[r.kbArticle] = { number: r.kbArticle, action: r.action };
+            return acc;
+          }, {})
+        )}
+      />
     </main>
   );
 }

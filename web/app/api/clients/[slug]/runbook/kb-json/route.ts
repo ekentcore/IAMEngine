@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { htmlToText } from "@/lib/servicenow/kb";
+import { detectKbAction } from "@/lib/clients/runbook-parse";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,10 @@ export async function POST(req: Request) {
       html: typeof r.text === "string" ? r.text : "",
     }))
     .filter((r) => r.html.trim())
-    .map((r) => ({ number: r.number, title: r.title, text: htmlToText(r.html) }));
+    .map((r) => {
+      const text = htmlToText(r.html);
+      return { number: r.number, title: r.title, text, detectedAction: detectKbAction(r.title || r.number, text) };
+    });
 
   if (records.length === 0) {
     return NextResponse.json({ error: "no KB body found — expected records[].text (the article HTML) in the file" }, { status: 422 });
