@@ -35,6 +35,9 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
   // The action this content was fetched/detected as — auto-selected, and the basis for the
   // override warning so a KB isn't accidentally saved to the wrong action's runbook.
   const [detectedAction, setDetectedAction] = useState<"onboard" | "offboard" | null>(null);
+  // The source KB number for the loaded content (from a fetch or import) — stamped onto the saved
+  // sections so the KB association (and its Fetch button) survives the re-save.
+  const [kbNumber, setKbNumber] = useState<string | null>(null);
 
   async function call(persist: boolean, overrideText?: string, overrideAction?: "onboard" | "offboard") {
     const t = overrideText ?? text;
@@ -42,7 +45,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
     setBusy(true); setError(null);
     const r = await fetch(`/api/clients/${slug}/runbook`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: a, text: t, preview: !persist, useAI }),
+      body: JSON.stringify({ action: a, text: t, preview: !persist, useAI, kbArticle: kbNumber ?? undefined }),
     });
     setBusy(false);
     const d = await r.json().catch(() => ({}));
@@ -59,7 +62,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
     setBusy(true); setError(null);
     const r = await fetch(`/api/clients/${slug}/runbook`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, sections: preview }),
+      body: JSON.stringify({ action, sections: preview, kbArticle: kbNumber ?? undefined }),
     });
     setBusy(false);
     const d = await r.json().catch(() => ({}));
@@ -98,6 +101,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       setText(d.text ?? "");
       setAction(kb.action);          // this KB belongs to that action — select it automatically
       setDetectedAction(kb.action);  // and remember it, so flipping the action warns
+      setKbNumber(kb.number);        // keep the KB linked on save
       setPreview(null); setImported(null);
     } finally {
       setBusy(false);
@@ -116,6 +120,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       setImported(records);
       const t = records[0]?.text ?? "";
       setText(t);
+      setKbNumber(records[0]?.number || null); // stamp the imported KB number onto the saved sections
       setPreview(null);
       // Auto-select the detected action (onboard/offboard) so the KB isn't saved to the wrong one.
       const det = records[0]?.detectedAction ?? null;
@@ -154,7 +159,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
             onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ""; }} />
         </label>
         {imported && imported.length > 1 && (
-          <select disabled={busy} style={{ width: "auto", fontSize: 12 }} onChange={(e) => { setText(imported[Number(e.target.value)]?.text ?? ""); setPreview(null); }}>
+          <select disabled={busy} style={{ width: "auto", fontSize: 12 }} onChange={(e) => { const r = imported[Number(e.target.value)]; setText(r?.text ?? ""); setKbNumber(r?.number || null); setPreview(null); }}>
             {imported.map((r, i) => <option key={i} value={i}>{r.number || `record ${i + 1}`}{r.title ? ` — ${r.title}` : ""}</option>)}
           </select>
         )}

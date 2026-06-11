@@ -30,10 +30,11 @@ function sanitizeSections(arr: unknown[]): ParsedSection[] {
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
-  let body: { action?: unknown; text?: unknown; preview?: unknown; useAI?: unknown; sections?: unknown };
+  let body: { action?: unknown; text?: unknown; preview?: unknown; useAI?: unknown; sections?: unknown; kbArticle?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   if (!isAction(body.action)) return NextResponse.json({ error: 'action must be "onboard" or "offboard"' }, { status: 422 });
   const text = typeof body.text === "string" ? body.text : "";
+  const kbArticle = typeof body.kbArticle === "string" && /^KB\d{4,12}$/i.test(body.kbArticle.trim()) ? body.kbArticle.trim().toUpperCase() : undefined;
 
   // Edited sections (from a reordered preview) win — persist them verbatim.
   const edited = Array.isArray(body.sections) ? sanitizeSections(body.sections) : null;
@@ -46,7 +47,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     return NextResponse.json({ sections: edited ?? aiSections ?? parseRunbookText(text), usedAI: Boolean(aiSections) });
   }
 
-  const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined);
+  const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined, kbArticle);
   if (!res) return NextResponse.json({ error: "client not found" }, { status: 404 });
   return NextResponse.json({ count: res.count, sections: res.sections, usedAI: Boolean(aiSections) });
 }
