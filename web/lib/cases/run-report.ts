@@ -31,6 +31,9 @@ export type RunReportStep = {
   // Self-scheduled retry (request.autoRetry): the step is waiting for a vendor-side sync (e.g.
   // Spanning discovering a new M365 user) and re-runs itself when `at` arrives. null = none.
   autoRetry: { at: string; count: number; firstAt: string } | null;
+  // When an M365 license couldn't be assigned for lack of seats, the tenant's license inventory
+  // (owned SKUs + free seat counts) so the operator can pick another and re-run. null otherwise.
+  licenseOptions: { skuId: string; skuPartNumber: string; name: string; available: number; enabled: number; consumed: number }[] | null;
   // For a step sitting at "pending": WHY it hasn't started — waiting on predecessors, a missing
   // credential, or no runner online. The ordering part is computed here; loadRunReport refines the
   // "ready" case with credential/runner checks. null when the step isn't pending.
@@ -108,6 +111,25 @@ function normalizeValidation(v: unknown): RunReportStep["validation"] {
 // The warning lines a single (succeeded) job contributes: its WARN-tagged actions plus any failed
 // validation checks. Shared with the cases list so a "completed" case can show orange + the
 // warnings on hover, with exactly the same definition of "warning" as the run report.
+// The M365 license inventory returned on a seat shortage (result.AvailableLicenses), or null.
+function licenseOptionsOf(result: unknown): RunReportStep["licenseOptions"] {
+  if (!result || typeof result !== "object") return null;
+  const raw = (result as Record<string, unknown>).AvailableLicenses ?? (result as Record<string, unknown>).availableLicenses;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const opts = raw
+    .map((o) => o as Record<string, unknown>)
+    .filter((o) => typeof o.skuId === "string")
+    .map((o) => ({
+      skuId: String(o.skuId),
+      skuPartNumber: String(o.skuPartNumber ?? ""),
+      name: String(o.name ?? o.skuPartNumber ?? "license"),
+      available: Number(o.available ?? 0),
+      enabled: Number(o.enabled ?? 0),
+      consumed: Number(o.consumed ?? 0),
+    }));
+  return opts.length ? opts : null;
+}
+
 export function jobWarningLines(result: unknown, validation: unknown): string[] {
   const lines = actionsOf(result).filter((a) => /\bWARN\b/i.test(a));
   const v = normalizeValidation(validation);
@@ -213,6 +235,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       phaseTrail,
       manualCompleted,
       pendingReason,
+      licenseOptions: licenseOptionsOf(j.result),
       autoRetry: (() => {
         const ar = ((j.request ?? {}) as { autoRetry?: { at?: number; count?: number; firstAt?: number } }).autoRetry;
         return ar?.at ? { at: new Date(ar.at).toISOString(), count: ar.count ?? 1, firstAt: new Date(ar.firstAt ?? ar.at).toISOString() } : null;

@@ -103,6 +103,50 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
   );
 }
 
+// License picker — shown on an m365 step when an assignment failed for no seats. Lists the tenant's
+// owned SKUs + free seat counts (multi-select); assigning writes the choice into the step config and
+// re-runs it. A pick with 0 free seats is allowed but warned (it'll fall back to a Procurement Case).
+function LicensePicker({ jobId, options, refresh }: { jobId: string; options: NonNullable<RunReport["steps"][number]["licenseOptions"]>; refresh: () => Promise<void> | void }) {
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const chosen = options.filter((o) => sel.has(o.skuId));
+  const noSeatPick = chosen.some((o) => o.available <= 0);
+
+  return (
+    <div className="note" style={{ marginTop: 4, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
+      <div style={{ fontWeight: 600, color: "#92400e" }}>No seats for the requested license — assign a different one:</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0.4rem 0" }}>
+        {options.map((o) => (
+          <label key={o.skuId} style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, color: "var(--fg)", fontSize: 12 }}>
+            <input type="checkbox" style={{ width: "auto" }} checked={sel.has(o.skuId)}
+              onChange={(e) => setSel((s) => { const n = new Set(s); if (e.target.checked) n.add(o.skuId); else n.delete(o.skuId); return n; })} />
+            <span>{o.name} <span className="muted">({o.skuPartNumber})</span></span>
+            <span style={{ marginLeft: "auto", color: o.available > 0 ? "#15803d" : "#b91c1c", fontWeight: 600 }}>
+              {o.available > 0 ? `${o.available} free` : "0 free"}
+            </span>
+            <span className="muted" style={{ width: 70, textAlign: "right" }}>{o.consumed}/{o.enabled} used</span>
+          </label>
+        ))}
+      </div>
+      {noSeatPick && <div style={{ color: "#92400e" }}>⚠ A selected license also has 0 free seats — it&rsquo;ll re-warn and you can open a Procurement Case to order it.</div>}
+      {err && <div style={{ color: "#b91c1c" }}>{err}</div>}
+      <button className="primary" style={{ marginTop: 4, fontSize: 12 }} disabled={busy || chosen.length === 0}
+        onClick={async () => {
+          setBusy(true); setErr(null);
+          try {
+            const r = await fetch(`/api/jobs/${jobId}/license`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ licenses: chosen.map((o) => ({ name: o.skuPartNumber, skuId: o.skuId })) }) });
+            if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+            await refresh();
+          } catch (e) { setErr((e as Error).message); }
+          finally { setBusy(false); }
+        }}>
+        {busy ? "Assigning…" : `Assign ${chosen.length || ""} & re-run`}
+      </button>
+    </div>
+  );
+}
+
 // One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
 // careful drag-selecting inside a scrollable <pre>.
 function CopyButton({ text }: { text: string }) {
@@ -367,6 +411,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
                 </div>
               )}
+              {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} />}
               <ProcurementWatchRow step={step} refresh={refresh} />
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>

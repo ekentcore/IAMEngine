@@ -200,6 +200,32 @@ function Resolve-CtgSkuId {
     return $null
 }
 
+function Get-CtgM365LicenseInventory {
+    <#
+    .SYNOPSIS
+        The tenant's license inventory for the seat-shortage picker: each owned SKU with its free
+        seat count (available = prepaid enabled - consumed). Only SKUs with >0 prepaid seats; the
+        most-available first. Friendly name from the reverse of LicenseSkuMap, else the part number.
+    #>
+    $rev = @{}
+    foreach ($k in $script:LicenseSkuMap.Keys) { $p = $script:LicenseSkuMap[$k]; if (-not $rev.ContainsKey($p)) { $rev[$p] = $k } }
+    @(Get-MgSubscribedSku -All -ErrorAction SilentlyContinue | ForEach-Object {
+        # StrictMode-safe reads — Graph mocks (and trimmed responses) may omit these properties.
+        $pp       = Get-CtgProp $_ 'PrepaidUnits'
+        $enabled  = if ($pp) { [int](Get-CtgProp $pp 'Enabled') } else { 0 }
+        $consumed = [int](Get-CtgProp $_ 'ConsumedUnits')
+        $part     = [string](Get-CtgProp $_ 'SkuPartNumber')
+        [pscustomobject]@{
+            skuId         = [string](Get-CtgProp $_ 'SkuId')
+            skuPartNumber = $part
+            name          = if ($rev.ContainsKey($part)) { (Get-Culture).TextInfo.ToTitleCase($rev[$part]) } else { $part }
+            enabled       = $enabled
+            consumed      = $consumed
+            available     = [Math]::Max(0, $enabled - $consumed)
+        }
+    }) | Where-Object { $_.enabled -gt 0 } | Sort-Object -Property @{ Expression = 'available'; Descending = $true }, skuPartNumber
+}
+
 # Seat-aware E5/E3 fallback (the internal script's rule): read LIVE SKU consumption — a decision the
 # planner can't make — and add the user to the E5 Entra group when a seat is free, else fall back to
 # E3. Config.seatAwareLicense: { skuId, entraGroupWhenAvailable, entraGroupFallback?, adGroupFallback? }.
@@ -395,6 +421,7 @@ function Invoke-CtgM365Onboarding {
     # 2. Licenses — add only what's missing ------------------------------------
     # Canonical config uses `licenses` (name strings or {name,skuId}); fall back to the older
     # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
+    $seatShortage = $false  # set when an assignment fails for no seats -> return the SKU inventory so the operator can pick another
     $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
     foreach ($lic in $licenseSpecs) {
@@ -416,8 +443,9 @@ function Invoke-CtgM365Onboarding {
                 # it just needs a license ordered. Surface a clear procurement action; the step is a
                 # warning, not a failure.
                 if ($_.Exception.Message -match 'does not have any available licenses|no available licenses|not have any available') {
-                    $actions.Add("WARN no available '$name' license seats — user CREATED UNLICENSED. Open a Procurement Case to order a $name license, then re-run this step to assign it.")
-                    Write-CtgM365Step "⚠ $name — no seats available; user left unlicensed. Order a license (Procurement Case)."
+                    $seatShortage = $true
+                    $actions.Add("WARN no available '$name' license seats — user CREATED UNLICENSED. Pick another license below (owned SKUs + free seats shown), or open a Procurement Case to order a $name license, then re-run.")
+                    Write-CtgM365Step "⚠ $name — no seats available; user left unlicensed. Pick another license or order one."
                 } else { throw }
             }
         }
@@ -482,6 +510,8 @@ function Invoke-CtgM365Onboarding {
         UserId  = $userId
         Upn     = $upn
         LicenseFallbackAdGroup = $licenseFallbackAdGroup  # AD group the runner must add (E3 fallback), or $null
+        # On a seat shortage, return the tenant's SKU inventory so the app can offer a license picker.
+        AvailableLicenses = if ($seatShortage) { Get-CtgM365LicenseInventory } else { @() }
         Actions = $actions.ToArray()
     }
 }
