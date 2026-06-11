@@ -32,7 +32,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {!onLogin && (
           <header className="app-header">
             <Link href="/clients" className="brand">iam-engine</Link>
-            <Nav showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))} />
+            <Nav
+              showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
+              showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
+            />
             {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
           </header>
         )}
