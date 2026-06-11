@@ -14,17 +14,17 @@ export async function extractRunbookAI(text: string, action: "onboard" | "offboa
   if (!azureConfigured(cfg) || !text.trim()) return null;
 
   const system = `You convert a Coretelligent IT ${action === "offboard" ? "offboarding" : "onboarding"} runbook into structured JSON sections.
-Each section is one phase of work — usually one per system or tool (e.g. ServiceNow, Microsoft 365, Mimecast, Case Resolution).
+Create ONE section per distinct system, tool, or major phase of work — e.g. ServiceNow, Microsoft 365, Mimecast, Adobe, Case Resolution. Microsoft 365 is its OWN section even when it contains many sub-steps (create user, licensing, groups, Entra app assignments).
 Map each section to EXACTLY ONE systemKey from this list, or null if none fits:
 ${[...KNOWN].join(", ")}.
 Rules:
 - IGNORE any "Table of Contents" or navigation list — those are not sections.
-- Use the section's heading text as "title".
-- "steps" are the concrete actions performed under that heading, each a short line; keep sub-steps nested by prefixing two spaces per level of indentation.
-- Preserve the original top-to-bottom order. Do not invent steps that aren't in the text.
-Return STRICT JSON of the form: {"sections":[{"title":"Microsoft 365","systemKey":"m365","steps":["Create the user","  Assign E1 license"]}]}`;
+- Include EVERY section, including optional ones. NEVER drop a system. If a section is conditional (e.g. "if requested", "only for <client>"), keep that qualifier in the "title" (e.g. "Adobe (if requested)").
+- Do NOT merge two different systems into one section. Keep them in the original top-to-bottom order.
+- "title" = the heading. "steps" = the concrete actions under it, each a short line; nest sub-steps with two leading spaces per level. Do not invent steps.
+Return STRICT JSON of the form: {"sections":[{"title":"Microsoft 365","systemKey":"m365","steps":["Create the user","  Assign E1 license"]},{"title":"Adobe (if requested)","systemKey":"adobe","steps":["..."]}]}`;
 
-  const raw = await azureChatJson(cfg, system, text.slice(0, 12000), 2500);
+  const raw = await azureChatJson(cfg, system, text.slice(0, 12000), 4000);
   const arr = raw && Array.isArray((raw as { sections?: unknown }).sections) ? ((raw as { sections: unknown[] }).sections) : null;
   if (!arr) return null;
 
