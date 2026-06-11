@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
-import { ssoConfig, exchangeCode, identityFromIdToken } from "@/lib/auth/sso";
+import { ssoConfig, exchangeCode, identityFromIdToken, publicOrigin } from "@/lib/auth/sso";
 import { createSession } from "@/lib/auth/session";
 import { recordAudit } from "@/lib/auth/audit";
 import { SSO_COOKIE } from "../login/route";
@@ -12,7 +12,7 @@ import { SSO_COOKIE } from "../login/route";
 export const dynamic = "force-dynamic";
 
 function back(req: Request, error: string) {
-  return NextResponse.redirect(new URL(`/login?error=${error}`, req.url));
+  return NextResponse.redirect(new URL(`/login?error=${error}`, publicOrigin(req)));
 }
 
 export async function GET(req: Request) {
@@ -65,5 +65,5 @@ export async function GET(req: Request) {
   await createSession(user.id, { ip: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, userAgent: req.headers.get("user-agent") });
   await recordAudit("auth.login.sso", { user: { ...user }, detail: { email: identity.email } });
 
-  return NextResponse.redirect(new URL("/clients", req.url));
+  return NextResponse.redirect(new URL("/clients", publicOrigin(req)));
 }

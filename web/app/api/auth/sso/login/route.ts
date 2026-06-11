@@ -3,7 +3,7 @@
 // request origin (must be registered in the Entra app).
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { ssoConfig, newPkce, authorizeUrl } from "@/lib/auth/sso";
+import { ssoConfig, newPkce, authorizeUrl, publicOrigin } from "@/lib/auth/sso";
 
 export const dynamic = "force-dynamic";
 
@@ -13,8 +13,7 @@ export function GET(req: Request) {
   const cfg = ssoConfig();
   if (!cfg) return NextResponse.redirect(new URL("/login?error=sso_unconfigured", req.url));
 
-  const origin = new URL(req.url).origin;
-  const redirectUri = `${origin}/api/auth/sso/callback`;
+  const redirectUri = `${publicOrigin(req)}/api/auth/sso/callback`;
   const { verifier, challenge, state } = newPkce();
 
   // verifier + state (+ the requested redirect URI) ride in a 10-minute httpOnly cookie.

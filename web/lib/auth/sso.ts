@@ -20,6 +20,15 @@ export function ssoEnabled(): boolean {
   return ssoConfig() !== null;
 }
 
+// The browser-facing origin. Behind a proxy/tunnel (cloudflared, ngrok) Next may see the internal
+// http://localhost host, so AUTH_PUBLIC_ORIGIN forces the public https URL the redirect URI must
+// match. Falls back to the request origin for plain localhost use.
+export function publicOrigin(req: Request): string {
+  const override = process.env.AUTH_PUBLIC_ORIGIN?.trim();
+  if (override) return override.replace(/\/$/, "");
+  return new URL(req.url).origin;
+}
+
 const b64url = (b: Buffer) => b.toString("base64url");
 
 // state binds the round-trip; verifier/challenge are PKCE. The verifier + state ride in a short-
