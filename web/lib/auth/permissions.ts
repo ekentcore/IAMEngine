@@ -48,3 +48,28 @@ export const ROLE_LABELS: Record<Role, string> = {
   importer: "Importer",
   auditor: "Auditor (read-only)",
 };
+
+// One-line plain-English summary of each role (shown on the Users page + as hover text).
+export const ROLE_DESCRIPTIONS: Record<Role, string> = {
+  global_admin: "Full control — everything below, plus managing users, roles, and settings.",
+  ops_manager: "Runs AND approves everything operational, including destructive offboard steps; can edit client systems and manage runners. Cannot manage users.",
+  engineer: "Runs onboardings & offboardings — import, plan, schedule, dispatch, re-run, verify. Cannot approve destructive offboard steps (a manager does that).",
+  importer: "Imports cases and views them. Cannot run anything.",
+  auditor: "Read-only — views cases and the audit log. Makes no changes.",
+};
+
+// Human labels for each capability (so the UI never shows raw "case.dispatch" keys).
+export const PERMISSION_LABELS: Record<Permission, string> = {
+  "case.view": "View cases",
+  "case.import": "Import cases from ServiceNow",
+  "case.plan": "Re-plan cases",
+  "case.dispatch": "Run / re-run / pause / verify steps",
+  "case.approve_destructive": "Approve destructive offboard steps",
+  "case.schedule": "Schedule cases",
+  "client.edit_systems": "Edit client systems & runbooks",
+  "client.edit_secrets": "Wire credential references",
+  "agent.manage": "Manage runners (agents)",
+  "user.manage": "Manage users & roles",
+  "settings.manage": "Manage settings",
+  "audit.view": "View the audit log",
+};

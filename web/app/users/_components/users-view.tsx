@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Role } from "@prisma/client";
-import { ROLE_LABELS, ROLE_PERMISSIONS } from "@/lib/auth/permissions";
+import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS } from "@/lib/auth/permissions";
 import { createUser, setUserRole, setUserStatus, resetUserPassword } from "../actions";
 
 type UserVM = {
@@ -45,6 +45,23 @@ export function UsersView({ users }: { users: UserVM[] }) {
 
   return (
     <div>
+      {/* role guide */}
+      <details style={{ marginTop: "1rem", border: "1px solid var(--line)", borderRadius: 10, padding: "0.6rem 0.9rem" }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 14 }}>What can each role do?</summary>
+        <div style={{ marginTop: "0.6rem", display: "grid", gap: "0.55rem" }}>
+          {ROLES.map((r) => (
+            <div key={r} style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: "0.6rem", alignItems: "baseline" }}>
+              <div style={{ fontWeight: 600 }}>{ROLE_LABELS[r]}</div>
+              <div className="note" style={{ fontSize: 12.5 }}>{ROLE_DESCRIPTIONS[r]}</div>
+            </div>
+          ))}
+          <p className="note" style={{ margin: "0.3rem 0 0", color: "var(--faint)" }}>
+            To let someone run onboardings & offboardings, use <b>Engineer</b>. If they should also approve the
+            destructive offboard steps themselves (no separate approver), use <b>Operations manager</b>.
+          </p>
+        </div>
+      </details>
+
       {/* add user */}
       <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "0.9rem 1rem", marginTop: "1rem", background: "var(--bg-soft)" }}>
         <b style={{ fontSize: 14 }}>Add user</b>
@@ -52,7 +69,7 @@ export function UsersView({ users }: { users: UserVM[] }) {
           <div style={{ flex: "1 1 200px" }}><label htmlFor="nu-email">Email</label><input id="nu-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="person@core.tech" /></div>
           <div style={{ flex: "1 1 160px" }}><label htmlFor="nu-name">Name</label><input id="nu-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="optional" /></div>
           <div style={{ flex: "0 1 180px" }}><label htmlFor="nu-role">Role</label>
-            <select id="nu-role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+            <select id="nu-role" value={role} onChange={(e) => setRole(e.target.value as Role)} title={ROLE_DESCRIPTIONS[role]}>
               {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           </div>
@@ -71,7 +88,7 @@ export function UsersView({ users }: { users: UserVM[] }) {
           {authType === "sso"
             ? "They sign in with Microsoft 365 — no password is set; they just click “Sign in with Microsoft 365” (their email must match)."
             : "A one-time password is generated and shown after you add the user (no email is sent)."}{" "}
-          {ROLE_LABELS[role]} can: {ROLE_PERMISSIONS[role].join(", ")}.
+          <b>{ROLE_LABELS[role]}</b>: {ROLE_DESCRIPTIONS[role]}
         </p>
       </div>
 
@@ -97,7 +114,7 @@ export function UsersView({ users }: { users: UserVM[] }) {
                 <div className="note" style={{ fontSize: 11 }}>{u.email}{u.isBreakGlass && " · break-glass"}{u.authType === "sso" && " · SSO"}</div>
               </td>
               <td>
-                <select value={u.role} disabled={busy === `role-${u.id}`} onChange={(e) => run(`role-${u.id}`, () => setUserRole(u.id, e.target.value))} style={{ width: "auto", fontSize: 12 }}>
+                <select value={u.role} title={ROLE_DESCRIPTIONS[u.role]} disabled={busy === `role-${u.id}`} onChange={(e) => run(`role-${u.id}`, () => setUserRole(u.id, e.target.value))} style={{ width: "auto", fontSize: 12 }}>
                   {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                 </select>
               </td>
