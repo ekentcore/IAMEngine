@@ -16,7 +16,7 @@ export type CatalogEntry = {
 
 // Per-system defaults for a *draft* profile. Hand-tuned from the module specs + six-one.json.
 export const CATALOG: Record<string, CatalogEntry> = {
-  servicenow:        { mode: "api", tier: 1, onboard: "always", offboard: "always" },
+  servicenow:        { mode: "manual", tier: 1, onboard: "always", offboard: "always" }, // no write-back executor yet — manual checklist
   "active-directory":{ mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "ad-dc", dependsOn: ["servicenow"] },
   "directory-sync":  { mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "ad-dc", dependsOn: ["active-directory"] },
   m365:              { mode: "api", tier: 1, onboard: "always", offboard: "always", secret: "m365-admin", dependsOn: ["servicenow"] },
@@ -31,7 +31,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   sharepoint:        { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   zoom:              { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "zoom" },
   slack:             { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "slack" },
-  egnyte:            { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "egnyte" },
+  egnyte:            { mode: "manual", tier: 3, onboard: "on-request", offboard: "on-request", secret: "egnyte" }, // executor exists; set mode:"api" per-client once that client's Egnyte is wired
   mdm:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "mdm" },
   dropbox:           { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "dropbox" },
   perimeter81:       { mode: "api", tier: 3, onboard: "on-request", offboard: "always", secret: "perimeter81", dependsOn: ["m365"] },
@@ -45,7 +45,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   "first-day-call":  { mode: "manual", tier: 3, onboard: "always", offboard: null },
   hardware:          { mode: "manual", tier: 3, onboard: null, offboard: "on-request" },
   workstation:       { mode: "manual", tier: 3, onboard: "on-request", offboard: null },
-  "case-resolution": { mode: "api", tier: 1, onboard: "always", offboard: "always", dependsOn: ["m365"] },
+  "case-resolution": { mode: "manual", tier: 1, onboard: "always", offboard: "always", dependsOn: ["m365"] }, // SN write-back not available — manual
 };
 
 // Ordered header->systemKey rules. First match wins. Headers are stripped of leading

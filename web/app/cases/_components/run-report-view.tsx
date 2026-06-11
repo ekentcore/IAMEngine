@@ -235,6 +235,32 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           )}
         </div>
       )}
+      {(() => {
+        // "All automated steps done" = every non-manual step reached a terminal non-failed state
+        // (verified / warning / skipped); none pending, approval-gated, or failed. The remaining
+        // work is then purely the manual checklist — listed here so the case can be closed by hand.
+        const auto = report.steps.filter((st) => st.verdict !== "manual");
+        const blocking = auto.filter((st) => st.verdict === "pending" || st.verdict === "needs_approval" || st.verdict === "failed");
+        const warns = auto.filter((st) => st.verdict === "warning");
+        const retrying = report.steps.filter((st) => st.autoRetry);
+        const manualLeft = report.steps.filter((st) => st.verdict === "manual" && !st.manualCompleted);
+        if (auto.length === 0 || blocking.length > 0) return null;
+        const clean = warns.length === 0 && retrying.length === 0;
+        return (
+          <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: clean ? "#bbf7d0" : "#fde68a", background: clean ? "#f0fdf4" : "#fffbeb", color: clean ? "#15803d" : "#92400e" }}>
+            <div style={{ fontWeight: 600 }}>
+              ✓ All automated steps completed{clean ? " successfully" : ""}
+              {warns.length > 0 && ` — ${warns.length} with warning${warns.length > 1 ? "s" : ""} to review`}
+              {retrying.length > 0 && ` · ${retrying.length} auto-retrying for vendor sync`}
+            </div>
+            <div style={{ marginTop: 4, color: "#374151" }}>
+              {manualLeft.length === 0
+                ? "No manual steps remaining — the case can be resolved."
+                : <>Remaining manual step{manualLeft.length > 1 ? "s" : ""} (do by hand, then ✓ mark complete): <b>{manualLeft.map((m) => m.systemName).join(", ")}</b></>}
+            </div>
+          </div>
+        );
+      })()}
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <p className="note" style={{ margin: 0 }}>
           {s.succeeded} verified · {s.warnings} warning · {s.failed} failed · {s.skipped} skipped · {s.manual} manual
