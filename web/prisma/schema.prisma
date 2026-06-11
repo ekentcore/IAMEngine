@@ -283,10 +283,66 @@ model RunbookSection {
 model AuditLog {
   id            String   @id @default(cuid())
   at            DateTime @default(now())
-  actor         String   // system | <user> | agent:<id>
+  actor         String   // system | ui | agent:<id> | user:<email> — human label, kept for non-user rows
+  userId        String?  // FK when a logged-in operator performed the action (per-user audit trail)
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   clientId      String?
   caseRequestId String?
   jobId         String?
   action        String
   detail        Json?
+
+  @@index([userId, at])
+  @@index([action, at])
+  @@index([at])
+}
+
+// ── Auth: operators, their roles, and live sessions ──────────────────────────
+// Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
+// authorization is permission-based and roles stay easy to re-compose.
+enum Role {
+  global_admin // everything incl. user/role + settings + approve destructive
+  ops_manager  // all case ops + approve destructive + edit systems + manage agents
+  engineer     // import/plan/dispatch/rerun/pause/verify/schedule; NOT approve destructive
+  importer     // import + view only
+  auditor      // read-only everywhere + audit log
+}
+
+enum AuthType {
+  local // email + password (Admin control, break-glass)
+  sso   // Entra / O365 OIDC
+  both
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  name         String?
+  role         Role       @default(auditor) // least privilege by default; an admin elevates
+  status       String     @default("active") // active | disabled
+  authType     AuthType   @default(local)
+  passwordHash String?    // scrypt(salt:hash); local accounts only
+  isBreakGlass Boolean    @default(false) // emergency local super-admin — use is loudly audited
+  mfaSecret    String?    // TOTP seed (optional; reserved)
+  entraOid     String?    @unique // Entra object id, set when linked to an O365 identity
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  sessions     Session[]
+  auditLogs    AuditLog[]
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  tokenHash String    @unique // sha256 of the opaque cookie token (the token itself is never stored)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  ip        String?
+  userAgent String?
+
+  @@index([userId])
+  @@index([expiresAt])
 }
