@@ -220,12 +220,13 @@ code { font-family: var(--font-mono); font-size: 0.88em; background: var(--bg-so
 .clients-table .client-name { font-weight: 600; text-decoration: none; color: var(--fg); }
 .clients-table .client-name:hover { color: var(--accent-press); }
 .clients-table tbody td { border-bottom-color: var(--line); }
-/* shrink-to-fit: width:1% on a 100%-wide table makes this column hug its buttons, so the flexible
-   columns absorb the slack and the action cluster can never overflow the cell. (Stays a table-cell
-   — no display:flex on the td, or the row layout collapses.) */
-.clients-table td.row-actions, .clients-table th.row-actions { width: 1%; white-space: nowrap; text-align: right; }
-.clients-table .row-actions button { padding: 0.26rem 0.55rem; font-size: 12px; border-radius: 7px; }
-.clients-table .row-actions button + button { margin-left: 0.3rem; }
+/* shrink-to-fit: width:1% on a 100%-wide table makes this column hug its content, so the flexible
+   columns absorb the slack and the actions can never overflow the cell. */
+.clients-table td.row-actions, .clients-table th.row-actions { width: 1%; white-space: nowrap; vertical-align: top; }
+/* stack Edit / Refresh / Archive vertically — equal-width, right-aligned cluster (a wrapper, since
+   a <td> can't be a flex container without breaking the row). */
+.clients-table .action-stack { display: inline-flex; flex-direction: column; gap: 0.3rem; align-items: stretch; }
+.clients-table .action-stack button { padding: 0.26rem 0.6rem; font-size: 12px; border-radius: 7px; text-align: center; }
 
 .empty-state { text-align: center; color: var(--muted); padding: 3rem 1rem; }
 

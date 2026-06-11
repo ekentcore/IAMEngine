@@ -467,18 +467,20 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td className="row-actions">
-                <button onClick={() => setEditSlug(c.slug)}>Edit</button>
-                <button
-                  title="Re-pull this client from ServiceNow, discarding manual edits"
-                  onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}
-                >
-                  ↻
-                </button>
-                {c.status === "archived" ? (
-                  <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
-                ) : (
-                  <button onClick={() => askArchive(c)} disabled={busy === c.slug}>Archive</button>
-                )}
+                <div className="action-stack">
+                  <button onClick={() => setEditSlug(c.slug)}>Edit</button>
+                  <button
+                    title="Re-pull this client from ServiceNow, discarding manual edits"
+                    onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}
+                  >
+                    ↻ Refresh
+                  </button>
+                  {c.status === "archived" ? (
+                    <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
+                  ) : (
+                    <button onClick={() => askArchive(c)} disabled={busy === c.slug}>Archive</button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
