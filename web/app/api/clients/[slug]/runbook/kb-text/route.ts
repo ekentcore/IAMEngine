@@ -2,12 +2,14 @@
 // ServiceNow as plain text, for the runbook editor's "Fetch latest from KB" button. The operator
 // then reviews the parse preview and saves — a KB edit never silently rewrites the client.
 import { NextResponse } from "next/server";
+import { guardAuth } from "@/lib/auth/route-guard";
 import { snConfigFromEnv, SnGatewayError } from "@/lib/servicenow/gateway";
 import { fetchKbArticle } from "@/lib/servicenow/kb";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const article = new URL(req.url).searchParams.get("article")?.trim().toUpperCase() ?? "";
   if (!/^KB\d{4,12}$/.test(article)) {
     return NextResponse.json({ error: "article must be a KB number, e.g. KB0012345" }, { status: 422 });

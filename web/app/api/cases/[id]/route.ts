@@ -3,7 +3,7 @@
 // DELETE /api/cases/:id — move the case to the trash (restorable 30 days). Blocked while in flight.
 //        DELETE /api/cases/:id?forever=1 — permanently delete a trashed case + its jobs.
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { hasStartedJobs } from "@/lib/cases/job-status";
@@ -11,6 +11,7 @@ import { hasStartedJobs } from "@/lib/cases/job-status";
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const c = await makeCaseRepository(db).getCase(params.id);
   if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(c);

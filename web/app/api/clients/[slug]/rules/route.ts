@@ -1,7 +1,7 @@
 // GET /api/clients/:slug/rules — load personas/globals (+ the client's system keys) for the editor.
 // PUT /api/clients/:slug/rules — { personas, globals } — validate every condition, then persist.
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { validateRules } from "@/lib/clients/rules";
@@ -9,6 +9,7 @@ import { validateRules } from "@/lib/clients/rules";
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const rules = await makeClientRepository(db).getRules(params.slug);
   if (!rules) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(rules);

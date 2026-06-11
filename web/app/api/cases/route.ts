@@ -1,7 +1,7 @@
 // GET  /api/cases  — list cases.
 // POST /api/cases  — create a case from a manual intake payload, then plan it into jobs.
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
@@ -10,6 +10,7 @@ import { createAndPlanCase } from "@/lib/cases/planning-service";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const repo = makeCaseRepository(db);
   return NextResponse.json(await repo.listCases());
 }

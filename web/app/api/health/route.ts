@@ -1,6 +1,7 @@
 // GET /api/health — run every integration health check (configured + reachable) and return the
 // results. Used by the /health page. Never throws: a failing check is reported, not 500'd.
 import { NextResponse } from "next/server";
+import { guardAuth } from "@/lib/auth/route-guard";
 import { runHealthChecks } from "@/lib/health/checks";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
 export async function GET() {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const checks = await runHealthChecks();
   const anyFail = checks.some((c) => c.status === "fail");
   return NextResponse.json({ at: new Date().toISOString(), checks }, { status: anyFail ? 503 : 200 });

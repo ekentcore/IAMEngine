@@ -2,6 +2,7 @@
 // filled in (with readable values) + the blanks. Loaded lazily by the case page so a slow/down
 // ServiceNow can't block the render.
 import { NextResponse } from "next/server";
+import { guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
 import { fetchIntakeFields } from "@/lib/servicenow/intake-fields";
@@ -9,6 +10,7 @@ import { fetchIntakeFields } from "@/lib/servicenow/intake-fields";
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { serviceNowCaseNumber: true } });
   if (!c) return NextResponse.json({ error: "case not found" }, { status: 404 });
   if (!c.serviceNowCaseNumber) return NextResponse.json({ error: "no ServiceNow ticket for this case" }, { status: 404 });

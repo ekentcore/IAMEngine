@@ -2,11 +2,13 @@
 // client's personas (role names + their selectable titles) and location names. Empty for v2.0
 // clients (the form then shows only the basic fields).
 import { NextResponse } from "next/server";
+import { guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const c = await db.client.findUnique({ where: { slug: params.slug }, select: { personas: true, locations: true } });
   if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
 

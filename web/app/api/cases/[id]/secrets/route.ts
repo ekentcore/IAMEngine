@@ -1,7 +1,7 @@
 // GET   /api/cases/:id/secrets        — the case's effective secret references (source/server/systems).
 // PATCH /api/cases/:id/secrets         — { name, externalId } set (or clear with empty) a per-case override.
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { caseSecretStatus, setCaseSecretOverride } from "@/lib/cases/case-secrets-repo";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: { id: string } };
 
 export async function GET(_req: Request, { params }: Ctx) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const secrets = await caseSecretStatus(db, params.id);
   if (secrets === null) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ secrets, delineaConfigured: delineaConfigured(delineaConfigFromEnv()) });

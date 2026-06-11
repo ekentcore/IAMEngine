@@ -1,7 +1,7 @@
 // GET  /api/clients  — list clients (roster + modeled), auto-syncing from SN if stale.
 // POST /api/clients  — manually add a client ("onboard a client").
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -13,6 +13,7 @@ export const dynamic = "force-dynamic";
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"] as const;
 
 export async function GET() {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   await syncIfStale(db, "system:auto");
   const repo = makeClientRepository(db);
   return NextResponse.json(await repo.listClients());

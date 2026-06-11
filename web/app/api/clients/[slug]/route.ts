@@ -1,7 +1,7 @@
 // GET   /api/clients/:slug — client detail (systems + secrets).
 // PATCH /api/clients/:slug — { action: "archive" | "restore" | "set-email-domain" }.
 import { NextResponse } from "next/server";
-import { guard } from "@/lib/auth/route-guard";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -14,6 +14,7 @@ const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 type Ctx = { params: { slug: string } };
 
 export async function GET(_req: Request, { params }: Ctx) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const repo = makeClientRepository(db);
   const client = await repo.getClientBySlug(params.slug);
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
