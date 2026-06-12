@@ -22,13 +22,23 @@ export function serverHintFromLabel(label?: string | null): string | null {
   return h && !/\s/.test(h) && /[.-]/.test(h) ? h : null;
 }
 
-const ONPREM_SYSTEMS = new Set(["active-directory", "directory-sync"]);
+// active-directory + directory-sync only exist on the client network — never runnable centrally.
+// exchange is the only AMBIGUOUS one: on-prem Exchange (hybrid) vs Exchange Online (cloud). It's
+// on-prem ONLY for a client that actually has an on-prem AD/sync system. A no-AD client is NOT
+// hybrid — even if a backbone was mislabeled "ad-synced" — so its exchange runs centrally.
+export const ALWAYS_ON_PREM_SYSTEMS = ["active-directory", "directory-sync"];
+
+export function systemIsOnPrem(systemKey: string, clientHasOnPremAd: boolean): boolean {
+  if (ALWAYS_ON_PREM_SYSTEMS.includes(systemKey)) return true;
+  if (systemKey === "exchange") return clientHasOnPremAd;
+  return false;
+}
 
 // Human label for where a step executes: on-prem systems run on the client-network agent (named
 // server if the secret label gives one); cloud systems on the central runner; servicenow/case
-// resolution are app/manual.
-export function stepRunsOn(systemKey: string, backbone: string | null | undefined, serverHints: string[]): string {
-  const onPrem = ONPREM_SYSTEMS.has(systemKey) || (systemKey === "exchange" && !!backbone && backbone.startsWith("ad"));
+// resolution are app/manual. `clientHasOnPremAd` = the client actually has an AD/sync system.
+export function stepRunsOn(systemKey: string, clientHasOnPremAd: boolean, serverHints: string[]): string {
+  const onPrem = systemIsOnPrem(systemKey, clientHasOnPremAd);
   const where = onPrem
     ? "Client-network agent"
     : systemKey === "servicenow" || systemKey === "case-resolution"

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { serverHintFromLabel, stepRunsOn, effectiveExternalId, missingRequiredSecrets } from "./case-secrets";
+import { serverHintFromLabel, stepRunsOn, systemIsOnPrem, effectiveExternalId, missingRequiredSecrets } from "./case-secrets";
 
 test("missingRequiredSecrets: flags names with no usable reference (case override > client default)", () => {
   const clientSecrets = new Map<string, string | null>([["ad-dc", "55501"], ["m365-admin", "REPLACE_ME"], ["mimecast", null]]);
@@ -23,13 +23,23 @@ test("serverHintFromLabel: pulls the host from a parenthetical", () => {
 });
 
 test("stepRunsOn: on-prem systems -> client-network agent (with server); cloud -> central", () => {
-  assert.equal(stepRunsOn("active-directory", "ad_synced", ["core-cce-dc01"]), "Client-network agent · core-cce-dc01");
-  assert.equal(stepRunsOn("exchange", "ad_synced", ["core-cce1-ex01"]), "Client-network agent · core-cce1-ex01");
-  assert.equal(stepRunsOn("m365", "ad_synced", []), "Central / cloud runner");
-  assert.equal(stepRunsOn("entra", "entra", []), "Central / cloud runner");
-  assert.equal(stepRunsOn("servicenow", "ad_synced", []), "App / manual");
-  // exchange is cloud-only for an entra client (no on-prem)
-  assert.equal(stepRunsOn("exchange", "entra", []), "Central / cloud runner");
+  // 2nd arg is clientHasOnPremAd — whether the client actually has an AD/sync system.
+  assert.equal(stepRunsOn("active-directory", true, ["core-cce-dc01"]), "Client-network agent · core-cce-dc01");
+  // exchange is on-prem only for a hybrid (has-AD) client...
+  assert.equal(stepRunsOn("exchange", true, ["core-cce1-ex01"]), "Client-network agent · core-cce1-ex01");
+  // ...and CLOUD (Exchange Online) for a client with no AD — even if a backbone was mislabeled.
+  assert.equal(stepRunsOn("exchange", false, []), "Central / cloud runner");
+  assert.equal(stepRunsOn("m365", true, []), "Central / cloud runner");
+  assert.equal(stepRunsOn("entra", false, []), "Central / cloud runner");
+  assert.equal(stepRunsOn("servicenow", true, []), "App / manual");
+});
+
+test("systemIsOnPrem: AD/sync always on-prem; exchange only when the client has on-prem AD", () => {
+  assert.equal(systemIsOnPrem("active-directory", false), true); // AD never exists in the cloud
+  assert.equal(systemIsOnPrem("directory-sync", false), true);
+  assert.equal(systemIsOnPrem("exchange", true), true);   // hybrid -> on-prem Exchange
+  assert.equal(systemIsOnPrem("exchange", false), false); // cloud-only -> Exchange Online (central)
+  assert.equal(systemIsOnPrem("m365", true), false);
 });
 
 test("effectiveExternalId: case override wins; else client; else missing (REPLACE_ME = unset)", () => {

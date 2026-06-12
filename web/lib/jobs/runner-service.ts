@@ -6,7 +6,7 @@ import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
-import { effectiveExternalId, missingRequiredSecrets } from "../cases/case-secrets";
+import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { purgeCutoff } from "./agent-trash";
 import { sweepProcurementWatches } from "./procurement-watch";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
@@ -19,10 +19,6 @@ const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobReq
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
 
-// Systems that can only run on a client-network (on-prem) agent — they need the ActiveDirectory/RSAT
-// module, the on-prem Exchange session, or the ADSync module, none of which exist on the central
-// cloud runner. The central runner skips these at claim time so it can't grab a job it can't execute.
-export const ON_PREM_SYSTEMS = ["active-directory", "exchange", "directory-sync"];
 
 // An agent disabled mid-flight must not keep brokering credentials or posting results.
 async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<void> {
@@ -204,7 +200,7 @@ export function makeRunnerService(db: PrismaClient) {
           status: "pending",
           mode: "api",
           case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, pausedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
-          ...(agent.clientId ? {} : { systemKey: { notIn: ON_PREM_SYSTEMS } }),
+          ...(agent.clientId ? {} : { systemKey: { notIn: ALWAYS_ON_PREM_SYSTEMS } }),
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
         select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },
@@ -228,6 +224,9 @@ export function makeRunnerService(db: PrismaClient) {
         arr.push(lite(j));
         byCase.set(j.caseRequestId, arr);
       }
+      // A case is "hybrid" — its exchange runs on the on-prem agent — only if it actually has an
+      // AD/sync job. Without one, exchange is Exchange Online and the central runner CAN run it.
+      const hybridCases = new Set(allJobs.filter((j) => ALWAYS_ON_PREM_SYSTEMS.includes(j.systemKey)).map((j) => j.caseRequestId));
 
       // Preflight: don't claim a job whose required secrets aren't set — the broker couldn't resolve a
       // credential, so it would just fail. Load the candidate cases' client refs + overrides once.
@@ -244,6 +243,9 @@ export function makeRunnerService(db: PrismaClient) {
       const eligible: string[] = [];
       for (const c of candidates) {
         if (!isClaimable(lite(c), byCase.get(c.caseRequestId) ?? [], c.case.status)) continue;
+        // Host affinity: the central runner can't run an on-prem step (only exchange reaches here, and
+        // only for a hybrid case). A client agent (agent.clientId set) runs everything for its client.
+        if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
         const meta = caseMetaById.get(c.caseRequestId);
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap).length > 0) continue; // secrets not set — skip

@@ -7,7 +7,7 @@
 // DB loader (loadPlaybook) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { automationPreview, validationChecks, type Action } from "../automation";
-import { stepRunsOn, serverHintFromLabel } from "./case-secrets";
+import { stepRunsOn, serverHintFromLabel, ALWAYS_ON_PREM_SYSTEMS } from "./case-secrets";
 
 export type PlaybookStep = {
   seq: number; // 1-based, in execution order
@@ -67,6 +67,9 @@ export function buildPlaybook(input: BuildPlaybookInput): Playbook {
   const { action, client, payload, jobs, systems, names } = input;
   const present = new Set(jobs.map((j) => j.systemKey));
   const sysByKey = new Map(systems.map((s) => [s.systemKey, s]));
+  // Hybrid = the client actually has an on-prem AD/sync system. Drives whether exchange is on-prem
+  // (vs Exchange Online) — backbone labels can lie, AD presence can't.
+  const clientHasOnPremAd = ALWAYS_ON_PREM_SYSTEMS.some((k) => sysByKey.has(k));
 
   const steps: PlaybookStep[] = [...jobs]
     .sort((a, b) => a.sequence - b.sequence)
@@ -86,7 +89,7 @@ export function buildPlaybook(input: BuildPlaybookInput): Playbook {
         action,
         mode: j.mode,
         dependsOn,
-        runsOn: stepRunsOn(j.systemKey, client.backbone, servers),
+        runsOn: stepRunsOn(j.systemKey, clientHasOnPremAd, servers),
         willRun: isApi ? automationPreview(j.systemKey, action, r.config ?? null, client.identity, client.primaryDomain, payload) : null,
         validates: isApi ? validationChecks(j.systemKey, action) : [],
         secretNames: r.secretNames ?? [],

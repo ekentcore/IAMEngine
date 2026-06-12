@@ -6,8 +6,7 @@
 // Pure core (buildRunReport) takes already-loaded rows so it's unit-testable without a DB; the
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
-import { missingRequiredSecrets } from "./case-secrets";
-import { ON_PREM_SYSTEMS } from "../jobs/runner-service";
+import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending";
 
@@ -416,6 +415,9 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       }),
     ]);
     const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+    // Hybrid (exchange runs on-prem) only when this case actually has an AD/sync job — matches the
+    // claim filter. A cloud-only case's exchange is Exchange Online, claimable by the central runner.
+    const caseHasOnPremAd = c.jobs.some((j) => ALWAYS_ON_PREM_SYSTEMS.includes(j.systemKey));
     for (const st of ready) {
       const job = c.jobs.find((j) => j.id === st.jobId);
       const needed = ((job?.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
@@ -427,7 +429,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       }
       // Host affinity, same rule as the claim filter: on-prem systems (AD/Exchange/dir-sync) are
       // ONLY claimed by the client's own agent — a central runner being online doesn't help them.
-      const needsOnPrem = ON_PREM_SYSTEMS.includes(st.systemKey);
+      const needsOnPrem = systemIsOnPrem(st.systemKey, caseHasOnPremAd);
       const eligible = onlineAgents.filter((a) => (needsOnPrem ? a.clientId === c.client.id : a.clientId === null || a.clientId === c.client.id));
       if (eligible.length === 0) {
         st.pendingReason = needsOnPrem
