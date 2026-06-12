@@ -121,3 +121,20 @@ test("emailTemplateFields fills the .eml variable labels from the payload", () =
   assert.equal(f["Personal Email"], "jane.personal@gmail.com");
   assert.equal(f["Work Email"], "janevandoe@acme.com");
 });
+
+test("deriveIdentity derives fallback UPNs from extra username patterns", () => {
+  const p = deriveIdentity(
+    { firstName: "Jane", lastName: "Doe", mi: "M" },
+    { usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com" }
+  );
+  assert.equal(p.userPrincipalName, "jane.doe@drakestar.com");
+  assert.deepEqual(p.userPrincipalNameFallbacks, ["jane.m@drakestar.com"]);
+});
+
+test("deriveIdentity yields no fallbacks when only one pattern is set", () => {
+  const p = deriveIdentity(
+    { firstName: "Jane", lastName: "Doe" },
+    { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "x.com" }
+  );
+  assert.deepEqual(p.userPrincipalNameFallbacks, []);
+});

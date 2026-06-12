@@ -319,7 +319,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
             <SortHead k="coreId" label="CORE id" />
             <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
-            <th className="help" title="Email/UPN name format — e.g. {first}.{last} → jane.doe@domain">Email format</th>
+            <th className="help" title="Email/UPN name format. Add a conflict fallback after a | — e.g. {first}.{last} | {first}.{mi} (used when the primary username is already taken).">Email format</th>
             <SortHead k="onboardingRating" label="On / Off" num />
             <SortHead k="systemCount" label="Systems" num />
             <SortHead k="status" label="Status" />

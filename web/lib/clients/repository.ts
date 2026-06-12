@@ -93,7 +93,10 @@ export function makeClientRepository(db: PrismaClient) {
         snLastSyncedAt: r.snLastSyncedAt,
         editedFields: r.editedFields,
         emailDomain: r.emailDomain,
-        usernamePattern: ((r.identity as { usernamePatterns?: string[] } | null)?.usernamePatterns?.[0] ?? "{first}.{last}@{domain}").split("@")[0],
+        // primary + any conflict fallbacks, as "{first}.{last} | {first}.{mi}" (local parts).
+        usernamePattern: (((r.identity as { usernamePatterns?: string[] } | null)?.usernamePatterns ?? []).length
+          ? (r.identity as { usernamePatterns: string[] }).usernamePatterns
+          : ["{first}.{last}@{domain}"]).map((p) => p.split("@")[0]).join(" | "),
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
         modeled: r.systems.length > 0,
@@ -211,10 +214,12 @@ export function makeClientRepository(db: PrismaClient) {
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses
     // the left-of-@ part and resolves the domain separately).
-    async setUsernamePattern(slug: string, localPattern: string) {
+    async setUsernamePattern(slug: string, localPattern: string, fallbackPattern?: string) {
       const c = await db.client.findUnique({ where: { slug }, select: { identity: true } });
       const identity = (c?.identity ?? {}) as Record<string, unknown>;
-      const next = { ...identity, usernamePatterns: [`${localPattern}@{domain}`] };
+      // [0] = primary username; [1..] = conflict fallbacks (used when the primary UPN is taken).
+      const patterns = [`${localPattern}@{domain}`, ...(fallbackPattern ? [`${fallbackPattern}@{domain}`] : [])];
+      const next = { ...identity, usernamePatterns: patterns };
       return db.client.update({
         where: { slug },
         data: { identity: next as Prisma.InputJsonValue, editedFields: await addEdited(db, slug, "usernamePattern") },

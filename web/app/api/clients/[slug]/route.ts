@@ -43,15 +43,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
-  // Inline table edit: the email/UPN name format (identity.usernamePatterns[0]).
+  // Inline table edit: the email/UPN name format. Accepts "primary | fallback" — the fallback is
+  // used when the primary UPN is taken by a different person (e.g. "{first}.{last} | {first}.{mi}").
   if (body.action === "set-username-pattern") {
     const raw = typeof body.pattern === "string" ? body.pattern.trim() : "";
-    const local = raw.split("@")[0]; // accept a full pattern or just the local part
-    if (!/\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i.test(local)) {
-      return NextResponse.json({ error: "pattern must include a name token like {first} or {last}" }, { status: 422 });
+    const NAME_TOKEN = /\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i;
+    const parts = raw.split("|").map((s) => s.trim().split("@")[0].trim()).filter(Boolean); // accept full patterns or local parts
+    if (parts.length === 0) return NextResponse.json({ error: "a username pattern is required" }, { status: 422 });
+    for (const p of parts) {
+      if (!NAME_TOKEN.test(p)) return NextResponse.json({ error: `each pattern must include a name token like {first} or {last}: "${p}"` }, { status: 422 });
     }
-    const client = await repo.setUsernamePattern(params.slug, local);
-    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: local } });
+    const client = await repo.setUsernamePattern(params.slug, parts[0], parts[1]);
+    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: parts[0], fallback: parts[1] ?? null } });
     return NextResponse.json(client);
   }
 

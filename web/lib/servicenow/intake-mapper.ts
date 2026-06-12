@@ -255,19 +255,28 @@ export function deriveIdentity(
   const last = String(payload.lastName ?? "");
   const mi = String(payload.mi ?? "");
   const domain = (opts.primaryDomain ?? "").trim().toLowerCase();
-  const pattern = opts.usernamePatterns?.[0] || "{first}.{last}@{domain}";
+  // usernamePatterns[0] is the primary; [1..] are conflict fallbacks tried in order when the primary
+  // UPN is already taken by a DIFFERENT person (e.g. "{first}.{last}" then "{first}.{mi}").
+  const patterns = opts.usernamePatterns?.length ? opts.usernamePatterns : ["{first}.{last}@{domain}"];
 
-  // Build the local part from the pattern's left-of-@ portion so a missing domain still yields
-  // a SamAccountName (the UPN/work email need a domain).
-  const localPattern = pattern.split("@")[0];
-  const localPart = applyUsernamePattern(localPattern, { first, last, mi, domain: "" });
-  const upn = domain && localPart ? `${localPart}@${domain}` : null;
+  // Build a UPN (and the local part) from a pattern's left-of-@ portion so a missing domain still
+  // yields a SamAccountName (the UPN/work email need a domain).
+  const buildLocal = (pat: string) => applyUsernamePattern(pat.split("@")[0], { first, last, mi, domain: "" });
+  const buildUpn = (pat: string) => {
+    const lp = buildLocal(pat);
+    return domain && lp ? `${lp}@${domain}` : null;
+  };
+  const localPart = buildLocal(patterns[0]);
+  const upn = buildUpn(patterns[0]);
+  // Fallback UPNs from the remaining patterns (deduped, excluding the primary).
+  const fallbacks = [...new Set(patterns.slice(1).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
   const displayName = (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
 
   const merged = {
     ...payload,
     displayName,
     userPrincipalName: upn,
+    userPrincipalNameFallbacks: fallbacks, // runner tries these when the primary is taken by another person
     samAccountName: localPart || null,
     mailNickname: localPart || null,
     primaryDomain: domain || null,

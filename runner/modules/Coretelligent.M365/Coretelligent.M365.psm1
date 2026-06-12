@@ -382,15 +382,32 @@ function Invoke-CtgM365Onboarding {
     $actions = [System.Collections.Generic.List[string]]::new()
     $upn = $User.UserPrincipalName
 
-    # 1. Ensure the user exists -------------------------------------------------
-    # Direct GET by UPN first (strongly consistent); the filter query is the fallback — right
-    # after a create the filter index can lag and a throttle is silently swallowed, both of
-    # which made a re-run think the user was missing.
-    $existing = Get-MgUser -UserId $upn -ErrorAction SilentlyContinue
-    if (-not $existing) { $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue }
+    # 1. Choose a username + ensure the user exists ----------------------------
+    # The username is the PRIMARY pattern (e.g. first.last); if that UPN is already taken by a
+    # DIFFERENT person, fall through to the configured fallback patterns (e.g. first.mi), in order.
+    # A candidate whose DisplayName matches this hire is OUR user (a re-run) -> reuse it. Direct GET
+    # by UPN is strongly consistent; the filter query is a post-create-lag fallback.
+    $candidates = @(@($upn) + @(Get-CtgProp $User 'UserPrincipalNameFallbacks') | Where-Object { $_ })
+    $wantName = ([string]$User.DisplayName).Trim()
+    $existing = $null
+    $chosenUpn = $null
+    foreach ($cand in $candidates) {
+        $found = Get-MgUser -UserId $cand -ErrorAction SilentlyContinue
+        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -ErrorAction SilentlyContinue }
+        if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
+        if ($wantName -and ([string]$found.DisplayName).Trim() -ieq $wantName) {
+            $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — same person, skipped create"); break
+        }
+        $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
+        Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"
+    }
+    if (-not $chosenUpn) {
+        throw "all candidate usernames are taken by other users: $($candidates -join ', '). Add another username fallback pattern, or assign one manually."
+    }
+    if ($chosenUpn -ne $upn) { $actions.Add("using fallback username: $chosenUpn (primary $upn taken)"); Write-CtgM365Step "→ using fallback username: $chosenUpn"; $upn = $chosenUpn }
+
     if ($existing) {
         $userId = $existing.Id
-        $actions.Add("user exists ($upn) — skipped create")
     }
     else {
         if ($PSCmdlet.ShouldProcess($upn, "Create M365 user")) {

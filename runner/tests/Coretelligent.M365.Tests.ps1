@@ -60,6 +60,32 @@ Describe 'Invoke-CtgM365Onboarding' {
         Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { }
     }
 
+    It 'uses the fallback username when the primary UPN is taken by a DIFFERENT person' {
+        # Primary jdoe@x.com is taken by John Doe (a different person); fallback j.doe@x.com is free.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'other'; DisplayName = 'John Doe' } }
+            return $null
+        }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match "taken by a different user"
+        ($r.Actions -join ' ') | Should -Match 'fallback username: j.doe@x.com'
+        $r.Upn | Should -Be 'j.doe@x.com'
+    }
+
+    It 'reuses the existing user (no create) when the primary UPN is already THIS person (re-run)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe' } }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'same person, skipped create'
+    }
+
     It 'reads Config.licenses (name strings), assigning only the missing SkuIds' {
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US' }
         $config = [pscustomobject]@{ licenses = @('Microsoft 365 E3', 'Microsoft Entra ID P2'); groups = @('Back Office Users') }
