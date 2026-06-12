@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
 type GroupRow = { name: string; type: "auto" | "dl" | "security" | "m365" };
 const TYPE_LABEL: Record<GroupRow["type"], string> = { auto: "Auto-detect", dl: "Distribution list", security: "Security", m365: "365 Group" };
 
-export function M365GroupsEditor({ slug, current }: { slug: string; current: { name: string; type?: string }[] }) {
+export function M365GroupsEditor({ slug, current, everyUserGroups = [], groupOptions = [] }: { slug: string; current: { name: string; type?: string }[]; everyUserGroups?: string[]; groupOptions?: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<GroupRow[]>([]);
@@ -21,11 +21,25 @@ export function M365GroupsEditor({ slug, current }: { slug: string; current: { n
     setMsg(null); setOpen(true);
   }
 
+  // Groups that ALSO apply from the every-user rules but aren't listed here (so this list doesn't look
+  // like it's missing them). Don't repeat ones already configured here.
+  const extra = everyUserGroups.filter((g) => !current.some((c) => c.name.toLowerCase() === g.toLowerCase()));
+  // Autocomplete pool: discovered/known groups + the every-user ones + whatever's already set.
+  const datalistId = `m365-group-options-${slug}`;
+  const options = [...new Set([...groupOptions, ...everyUserGroups, ...current.map((c) => c.name)].filter(Boolean))];
+
+  const everyUserNote = extra.length > 0 && (
+    <p className="note" style={{ margin: "0.2rem 0 0", color: "var(--muted)" }}>
+      + {extra.length} every-user group{extra.length === 1 ? "" : "s"} from <a href={`/clients/${slug}#rules`}>Roles &amp; rules</a> also apply: {extra.join(", ")} — no need to add them here.
+    </p>
+  );
+
   if (!open) {
     return (
       <div className="note" style={{ marginTop: "0.4rem" }}>
         Onboarding groups: <b>{current.length ? current.map((g) => g.name + (g.type ? ` (${g.type})` : "")).join(", ") : "(none set)"}</b>{" "}
         <button style={{ fontSize: 12, marginLeft: 6 }} onClick={start}>Edit groups</button>
+        {everyUserNote}
       </div>
     );
   }
@@ -36,10 +50,12 @@ export function M365GroupsEditor({ slug, current }: { slug: string; current: { n
     <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "0.7rem 0.9rem", marginTop: "0.4rem", maxWidth: 560 }}>
       <b style={{ fontSize: 14 }}>M365 onboarding groups</b>
       <p className="note" style={{ margin: "0.2rem 0 0.5rem" }}>Groups every new user is added to. The runner determines each group&rsquo;s real type and narrates it; the type hint just helps when the KB is explicit.</p>
+      {everyUserNote}
+      <datalist id={datalistId}>{options.map((g) => <option key={g} value={g} />)}</datalist>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {rows.map((row, i) => (
           <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input value={row.name} placeholder="group name" onChange={(e) => setRow(i, { name: e.target.value })} style={{ fontSize: 12, flex: 1 }} />
+            <input value={row.name} list={datalistId} placeholder="group name" onChange={(e) => setRow(i, { name: e.target.value })} style={{ fontSize: 12, flex: 1 }} />
             <select value={row.type} onChange={(e) => setRow(i, { type: e.target.value as GroupRow["type"] })} style={{ width: "auto", fontSize: 12 }} title="Type hint from the KB (runner verifies the real type)">
               {(Object.keys(TYPE_LABEL) as GroupRow["type"][]).map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
             </select>

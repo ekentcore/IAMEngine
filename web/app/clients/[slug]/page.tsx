@@ -69,7 +69,25 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   if (!client) notFound();
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
-  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true } });
+  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true } });
+
+  // Every-user M365/Entra groups from the globals rules (the always-add string entries) — these are
+  // applied to the m365 job at plan time IN ADDITION to the m365 system's own onboarding groups, so
+  // the groups editor can show they also apply (and not look like a missing duplicate).
+  const everyUserM365Groups = (() => {
+    const g = (v21?.globals ?? {}) as Record<string, { groups?: unknown }>;
+    const names = new Set<string>();
+    for (const key of ["entra", "m365"]) {
+      const groups = g[key]?.groups;
+      if (Array.isArray(groups)) for (const x of groups) if (typeof x === "string" && x.trim()) names.add(x.trim());
+    }
+    return [...names];
+  })();
+  // Known group names to offer as autocomplete when editing onboarding groups: AD-discovered groups,
+  // the every-user rule groups, plus whatever's already configured.
+  const adGroupNames = Array.isArray((v21?.adObjects as { groups?: unknown } | null)?.groups)
+    ? ((v21!.adObjects as { groups: unknown[] }).groups.filter((x): x is string => typeof x === "string"))
+    : [];
 
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
   // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled.
@@ -182,6 +200,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
               ? gs.map((x) => (typeof x === "string" ? { name: x } : { name: String((x as { name?: unknown })?.name ?? ""), type: (x as { type?: string })?.type })).filter((x) => x.name)
               : [];
           })()}
+          everyUserGroups={everyUserM365Groups}
+          groupOptions={adGroupNames}
         />
       )}
       {sysByKey.has("m365") && (
@@ -268,7 +288,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </>
       )}
 
-      <div className="row-between" style={{ marginTop: "1.5rem" }}>
+      <div className="row-between" style={{ marginTop: "1.5rem" }} id="rules">
         <h2 style={{ margin: 0 }}>Roles &amp; rules</h2>
         <EditRulesButton slug={client.slug} />
       </div>

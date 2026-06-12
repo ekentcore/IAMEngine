@@ -92,7 +92,8 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   // inline cell editing (double-click)
   const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
   const [savingCell, setSavingCell] = useState(false);
-  const [draft, setDraft] = useState(""); // live value while editing the email-format cell
+  const [draft, setDraft] = useState(""); // live PRIMARY value while editing the email-format cell
+  const [draftBackup, setDraftBackup] = useState(""); // live BACKUP (conflict fallback) value
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -152,6 +153,14 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     } finally {
       setSavingCell(false);
     }
+  }
+
+  // Commit the email-format edit: combine Primary + optional Backup into "primary | backup" (the
+  // route splits on "|"; the backup is used when the primary UPN is already taken by someone else).
+  function commitUsername(slug: string, currentPattern: string) {
+    const combined = draft.trim() + (draftBackup.trim() ? ` | ${draftBackup.trim()}` : "");
+    if (draft.trim() && combined !== currentPattern) saveCell(slug, "set-username-pattern", { pattern: combined });
+    else setCell(null);
   }
 
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
@@ -415,28 +424,48 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
               <td
                 className="mono editable"
                 title="Double-click to edit the email name format"
-                onDoubleClick={() => { setCell({ slug: c.slug, field: "username" }); setDraft(c.usernamePattern); }}
+                onDoubleClick={() => {
+                  const parts = c.usernamePattern.split("|").map((s) => s.trim());
+                  setCell({ slug: c.slug, field: "username" });
+                  setDraft(parts[0] ?? "");
+                  setDraftBackup(parts.slice(1).join(" | "));
+                }}
               >
                 {cell?.slug === c.slug && cell.field === "username" ? (
-                  <div>
+                  <div
+                    // Save when focus leaves the whole editor — NOT when moving between Primary/Backup.
+                    onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commitUsername(c.slug, c.usernamePattern); }}
+                  >
+                    <label className="muted" style={{ display: "block", fontSize: 10 }}>Primary</label>
                     <input
                       autoFocus
                       list="username-patterns"
                       value={draft}
                       disabled={savingCell}
+                      placeholder="{first}.{last}"
                       style={{ width: 130, padding: "2px 6px" }}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") saveCell(c.slug, "set-username-pattern", { pattern: draft });
+                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
                         else if (e.key === "Escape") setCell(null);
                       }}
-                      onBlur={() => {
-                        if (draft.trim() && draft !== c.usernamePattern) saveCell(c.slug, "set-username-pattern", { pattern: draft });
-                        else setCell(null);
+                    />
+                    <label className="muted" style={{ display: "block", fontSize: 10, marginTop: 4 }}>Backup (if primary is taken)</label>
+                    <input
+                      list="username-patterns"
+                      value={draftBackup}
+                      disabled={savingCell}
+                      placeholder="{first}.{mi} (optional)"
+                      style={{ width: 130, padding: "2px 6px" }}
+                      onChange={(e) => setDraftBackup(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
+                        else if (e.key === "Escape") setCell(null);
                       }}
                     />
                     <div className="note" style={{ marginTop: 2, whiteSpace: "nowrap" }}>
                       John Jason Doe → {formatPreview(draft, c.emailDomain ?? c.primaryDomain)}
+                      {draftBackup.trim() && <> · backup → {formatPreview(draftBackup, c.emailDomain ?? c.primaryDomain)}</>}
                     </div>
                   </div>
                 ) : (
