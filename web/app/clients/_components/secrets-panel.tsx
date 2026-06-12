@@ -14,7 +14,7 @@ export type SecretRowVM = {
   isSet: boolean;
 };
 
-type TestState = { status: "idle" | "testing" | "ok" | "fail"; label?: string; error?: string };
+type TestState = { status: "idle" | "testing" | "ok" | "fail"; label?: string; error?: string; missingFields?: string[] };
 
 // Per-client secret wiring: map each secretName the systems reference to a Delinea secret id, and
 // preflight each one ("test connection") so a tenant is verified before a real run. The app stores
@@ -103,8 +103,8 @@ export function SecretsPanel({
       if (!res.ok) throw new Error(data.error ?? res.statusText);
       setTests((t) => {
         const next = { ...t };
-        for (const r of data.results as { name: string; ok: boolean; label?: string; error?: string }[]) {
-          next[r.name] = r.ok ? { status: "ok", label: r.label } : { status: "fail", error: r.error };
+        for (const r of data.results as { name: string; ok: boolean; label?: string; error?: string; missingFields?: string[] }[]) {
+          next[r.name] = r.ok ? { status: "ok", label: r.label, missingFields: r.missingFields } : { status: "fail", error: r.error };
         }
         return next;
       });
@@ -185,7 +185,9 @@ export function SecretsPanel({
                       <button onClick={() => test([r.name])} disabled={!delineaConfigured || t.status === "testing"} style={{ marginRight: 8 }}>
                         {t.status === "testing" ? "…" : "Test"}
                       </button>
-                      {t.status === "ok" && <span className="badge" title={t.label}>✓ {t.label ?? "fetched"}</span>}
+                      {t.status === "ok" && (t.missingFields && t.missingFields.length > 0
+                        ? <span className="badge" style={{ color: "#92400e" }} title={`Reads OK, but the connector needs: ${t.missingFields.join(", ")}. Add these field(s) to the Delinea secret.`}>⚠ missing: {t.missingFields.join(", ")}</span>
+                        : <span className="badge" title={t.label}>✓ {t.label ?? "fetched"}</span>)}
                       {t.status === "fail" && <span className="badge archived" title={t.error}>✗ {t.error}</span>}
                     </>
                   )}
