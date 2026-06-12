@@ -34,6 +34,13 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   } else if (mode === "secret") {
     const name = typeof body.secretName === "string" ? body.secretName.trim() : "";
     if (!name) return NextResponse.json({ error: "enter the secret name to broker (wire its Delinea id in the Secrets panel)" }, { status: 422 });
+    // The secret must ALREADY be wired (a Secret row with a Delinea id) before we mark it required —
+    // otherwise the m365 onboard job would fail the claim preflight (missing required secret) and
+    // silently stall. Tell the operator to wire it first.
+    const wired = await db.secret.findFirst({ where: { clientId: sys.clientId, name } });
+    if (!wired) {
+      return NextResponse.json({ error: `wire the Delinea id for the secret "${name}" in the Secret wiring panel first, then set this — otherwise onboarding would stall waiting for it.` }, { status: 422 });
+    }
     onboard.initialPasswordSecret = name;
     delete onboard.initialPassword;
     if (!secretNames.includes(name)) secretNames = [...secretNames, name];

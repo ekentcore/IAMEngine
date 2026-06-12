@@ -189,7 +189,7 @@ $DISPATCH = @{
             }
             Connect-CtgMimecast -Credential ([pscredential]::new([string]$id, (ConvertTo-SecureString ([string]$secret) -AsPlainText -Force)))
         }
-        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds) }
+        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (ConvertFrom-SecureString (Resolve-CtgInitialPassword -Job $job -Creds $creds) -AsPlainText) }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }
     }

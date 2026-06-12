@@ -44,7 +44,7 @@ export function M365PasswordEditor({ slug, current }: { slug: string; current: {
       {mode === "secret" && (
         <div>
           <input value={secretName} onChange={(e) => setSecretName(e.target.value)} placeholder="secret name, e.g. m365-initial-password" style={{ maxWidth: 320, fontSize: 13 }} />
-          <p className="note" style={{ margin: "3px 0 0" }}>Then wire this secret&rsquo;s Delinea id in the <b>Secret wiring</b> panel below — it&rsquo;s brokered at run time, never stored here.</p>
+          <p className="note" style={{ margin: "3px 0 0" }}>Wire this secret&rsquo;s Delinea id in the <b>Secret wiring</b> panel <b>first</b>, then save here — it&rsquo;s brokered at run time, never stored here.</p>
         </div>
       )}
       {mode === "fixed" && <p className="note danger" style={{ margin: "4px 0 0" }}>A fixed password is stored in this client&rsquo;s config. Prefer the Delinea option for anything sensitive.</p>}
