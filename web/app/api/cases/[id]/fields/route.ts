@@ -30,7 +30,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
   const remaining = unknown.filter((u) => !filled.includes(u.field));
   payload.unknownFields = remaining;
-  if (filled.includes("usageLocation")) payload.usageLocationDerived = true;
+  if (filled.includes("usageLocation")) { payload.usageLocationDerived = true; payload.usageLocationSource = "operator"; }
+  // An operator-entered value is no longer "AI-filled" — drop the stale provenance note so the
+  // "✨ AI-filled (please verify)" banner doesn't keep showing for a field they just set by hand.
+  if (payload.aiResolved && typeof payload.aiResolved === "object") {
+    const ai = { ...(payload.aiResolved as Record<string, string>) };
+    for (const k of filled) delete ai[k];
+    payload.aiResolved = Object.keys(ai).length ? ai : undefined;
+  }
 
   await db.caseRequest.update({ where: { id: params.id }, data: { payload: payload as Prisma.InputJsonValue } });
 

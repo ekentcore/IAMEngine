@@ -11,6 +11,13 @@ export type AiResolution = {
 };
 
 const CONFIDENCE_FLOOR = 0.7;
+// This runs on the synchronous case-import HTTP path; cap the LLM round-trip well under any gateway
+// timeout (azureChatJson's own AbortSignal is 60s). A timeout returns null → field stays unknown →
+// the case holds for info, which is the safe outcome.
+const AI_TIMEOUT_MS = 8000;
+function withTimeout<T>(p: Promise<T>): Promise<T | null> {
+  return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), AI_TIMEOUT_MS))]);
+}
 
 export async function resolveUnknownsWithAI(payload: Record<string, unknown>): Promise<AiResolution> {
   const unknown = Array.isArray(payload.unknownFields) ? (payload.unknownFields as { field: string }[]) : [];
@@ -25,12 +32,12 @@ export async function resolveUnknownsWithAI(payload: Record<string, unknown>): P
 
   // usageLocation — infer the ISO-3166 alpha-2 country from whatever location signals we have.
   if (has("usageLocation")) {
-    const res = await azureChatJson(
+    const res = await withTimeout(azureChatJson(
       cfg,
       'Map a person\'s work location to the ISO-3166 alpha-2 country code for Microsoft 365 UsageLocation. Return STRICT JSON: {"code":"<2-letter code or empty>","confidence":<0..1>}.',
-      `Office location: "${String(out.officeLocation ?? "")}". Timezone: "${String(out.timezone ?? "")}". Home address: "${String(out.homeAddress ?? "")}". Department: "${String(out.department ?? "")}". Which country (ISO alpha-2) is this person based in?`,
+      `Office location: "${String(out.officeLocation ?? "")}". Timezone: "${String(out.timezone ?? "")}". Department: "${String(out.department ?? "")}". Which country (ISO alpha-2) is this person based in?`,
       120
-    );
+    ));
     const code = typeof res?.code === "string" ? res.code.trim().toUpperCase() : "";
     const confidence = typeof res?.confidence === "number" ? res.confidence : 0;
     if (/^[A-Z]{2}$/.test(code) && confidence >= CONFIDENCE_FLOOR) {
