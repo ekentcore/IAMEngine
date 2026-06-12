@@ -110,10 +110,16 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
   const officeLocation = disp(r, "u_office_location");
   const timezone = disp(r, "u_new_contact_time_zone") ?? val(r, "contact_time_zone");
   const derivedUsage = deriveUsageLocation(officeLocation, timezone);
-  // "Note any unknown data so we can improve" — fields we couldn't confidently derive. Surfaced in
-  // the dry-run/playbook; the runner still uses a safe default (US) so onboarding isn't blocked.
-  const unknownFields: string[] = [];
-  if (!derivedUsage) unknownFields.push(`usageLocation — office location "${officeLocation ?? "—"}" / timezone "${timezone ?? "—"}" not recognized; defaulting to US (verify, or add the location to the map)`);
+  // "Note any unknown data so we can improve" — fields we couldn't confidently derive. Each is an
+  // editable field on the case (the "Needs Information" fill-in); the case holds until they're set.
+  const unknownFields: { field: string; label: string; note: string }[] = [];
+  if (!derivedUsage) {
+    unknownFields.push({
+      field: "usageLocation",
+      label: "Usage location (M365)",
+      note: `couldn't determine from office location "${officeLocation ?? "—"}" / timezone "${timezone ?? "—"}" — enter the ISO country code (e.g. US, GB, CA)`,
+    });
+  }
   return {
     // person
     firstName,

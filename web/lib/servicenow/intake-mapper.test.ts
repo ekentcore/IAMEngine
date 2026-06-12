@@ -58,8 +58,9 @@ test("usageLocation is FLAGGED (not silently US) when neither location nor timez
   const p = normalizeIntake(rec({ number: "UM3", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Mars Office"] })).payload;
   assert.equal(p.usageLocation, "US"); // safe default so onboarding isn't blocked
   assert.equal(p.usageLocationDerived, false);
-  assert.equal((p.unknownFields as string[]).length, 1);
-  assert.match((p.unknownFields as string[])[0], /usageLocation/);
+  const unk = p.unknownFields as { field: string }[];
+  assert.equal(unk.length, 1);
+  assert.equal(unk[0].field, "usageLocation");
 });
 
 test("a non-US country resolves correctly", () => {

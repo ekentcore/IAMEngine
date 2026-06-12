@@ -319,6 +319,15 @@ export function makeCaseRepository(db: PrismaClient) {
       });
     },
 
+    // Hold / release a case. reason "needs_info" auto-holds an imported case whose intake had
+    // unknowns to fill; "operator" is a manual pause. Passing null releases the hold.
+    async setHold(caseId: string, reason: "needs_info" | "operator" | null): Promise<void> {
+      await db.caseRequest.update({
+        where: { id: caseId },
+        data: { pausedAt: reason ? new Date() : null, pausedReason: reason },
+      });
+    },
+
     // Toggle a case's dry-run mode and propagate it onto every not-yet-started job's request.dryRun
     // (atomic jsonb merge), so a runner that later claims one runs -WhatIf. Started jobs are left
     // alone. Returns the number of pending jobs updated.
@@ -335,7 +344,7 @@ export function makeCaseRepository(db: PrismaClient) {
         where: { deletedAt: null }, // trashed cases live in the Trash section, not the main list
         orderBy: { createdAt: "desc" },
         select: {
-          id: true, action: true, status: true, subject: true, pausedAt: true,
+          id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
@@ -411,14 +420,17 @@ export function makeCaseRepository(db: PrismaClient) {
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
         const operatorPaused = Boolean(r.pausedAt) && !["completed", "failed"].includes(r.status);
         const credsPaused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
+        const needsInfo = operatorPaused && r.pausedReason === "needs_info";
         const paused = operatorPaused || credsPaused;
         return {
           id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
-          pausedBy: operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
+          pausedBy: needsInfo ? ("needs_info" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
-          statusHint: operatorPaused
+          statusHint: needsInfo
+            ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."
+            : operatorPaused
             ? "Paused by an operator — runners won't claim its steps. Resume on the case page."
             : buildCaseStatusHint(
                 r.status,

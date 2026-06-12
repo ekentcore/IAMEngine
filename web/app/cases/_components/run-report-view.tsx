@@ -147,6 +147,41 @@ function LicensePicker({ jobId, options, refresh }: { jobId: string; options: No
   );
 }
 
+// "Needs Information": the intake left fields it couldn't determine. When held, the case is paused
+// until they're filled in; saving releases it so it can run.
+function NeedsInfoPanel({ caseId, info, refresh }: { caseId: string; info: NonNullable<RunReport["needsInfo"]>; refresh: () => Promise<void> | void }) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div style={{ margin: "0 0 0.6rem", padding: "0.7rem 0.85rem", borderRadius: 8, border: "1px solid #fcd34d", background: "#fffbeb" }}>
+      <div style={{ fontWeight: 600, color: "#92400e" }}>
+        {info.held ? "⏸ Needs information — case is held until these are filled in" : "Some fields couldn't be determined automatically"}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "0.55rem 0" }}>
+        {info.fields.map((f) => (
+          <div key={f.field}>
+            <label style={{ margin: 0, fontWeight: 500, color: "var(--fg)", fontSize: 13 }}>{f.label}</label>
+            <div className="note" style={{ margin: "1px 0 3px" }}>{f.note}</div>
+            <input value={vals[f.field] ?? ""} onChange={(e) => setVals((v) => ({ ...v, [f.field]: e.target.value }))} placeholder={f.field} style={{ maxWidth: 280, fontSize: 13 }} />
+          </div>
+        ))}
+      </div>
+      {err && <div className="note" style={{ color: "#b91c1c" }}>{err}</div>}
+      <button className="primary" disabled={busy || info.fields.every((f) => !(vals[f.field] ?? "").trim())} onClick={async () => {
+        setBusy(true); setErr(null);
+        try {
+          const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: vals }) });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { setErr(d.error ?? `failed (${r.status})`); return; }
+          await refresh();
+        } catch (e) { setErr((e as Error).message); }
+        finally { setBusy(false); }
+      }}>{busy ? "Saving…" : "Save & continue"}</button>
+    </div>
+  );
+}
+
 // One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
 // careful drag-selecting inside a scrollable <pre>.
 function CopyButton({ text }: { text: string }) {
@@ -258,6 +293,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
+      {report.needsInfo && <NeedsInfoPanel caseId={caseId} info={report.needsInfo} refresh={refresh} />}
       {running && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>

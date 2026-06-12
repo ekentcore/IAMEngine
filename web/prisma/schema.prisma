@@ -215,6 +215,9 @@ model CaseRequest {
   // Operator pause: a paused case's jobs are never claimed (the runner skips them) until resumed.
   // Use it to safely adjust systems / re-plan mid-run without a runner grabbing the next step.
   pausedAt            DateTime?
+  // Why it's held: "operator" (manual pause) or "needs_info" (intake had unknowns to fill before it
+  // can run — the case is auto-held on import and released once the fields are provided).
+  pausedReason        String?
   createdAt           DateTime   @default(now())
   // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
   // purged. Excluded from the active list and from runner claims while trashed.

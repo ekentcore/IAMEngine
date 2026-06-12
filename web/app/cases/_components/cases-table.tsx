@@ -10,7 +10,7 @@ export type CaseRowVM = {
   action: string;
   status: string;
   paused?: boolean; // operator pause or blocked on missing credentials — shown as "paused"
-  pausedBy?: "operator" | "creds" | null;
+  pausedBy?: "needs_info" | "operator" | "creds" | null;
   warnings?: string[]; // completed-with-warnings: badge goes orange, these show on hover
   subject: string | null;
   serviceNowCaseNumber: string | null;
@@ -81,7 +81,7 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
       }}
     >
       {c.paused
-        ? (c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
+        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
         : warns.length
           ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
           : (STATUS_LABEL[c.status] ?? c.status)}

@@ -49,6 +49,9 @@ export type RunReport = {
   caseStatus: string;
   verifiedAt: string | null; // when the auto-verify sweep completed (null until verified)
   verifying: boolean; // a validate-only sweep is in flight right now (persistent across step gaps)
+  // Intake fields the system couldn't determine — editable to fill in. held = the case is paused as
+  // "Needs Information" until they're provided. null when there's nothing to fill.
+  needsInfo: { fields: { field: string; label: string; note: string }[]; held: boolean } | null;
   user: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -79,6 +82,7 @@ export type BuildRunReportInput = {
   action: string;
   caseStatus: string;
   verifiedAt?: string | null;
+  pausedReason?: string | null;
   client: { name: string; slug: string };
   payload: Record<string, unknown>;
   jobs: JobRow[];
@@ -253,6 +257,13 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     client: input.client,
     caseStatus: input.caseStatus,
     verifiedAt: input.verifiedAt ?? null,
+    needsInfo: (() => {
+      const uf = input.payload.unknownFields;
+      const fields = Array.isArray(uf)
+        ? (uf as unknown[]).map((x) => x as { field?: unknown; label?: unknown; note?: unknown }).filter((x) => typeof x.field === "string").map((x) => ({ field: String(x.field), label: String(x.label ?? x.field), note: String(x.note ?? "") }))
+        : [];
+      return fields.length ? { fields, held: input.pausedReason === "needs_info" } : null;
+    })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),
     user: userHeader(input.action, input.payload),
@@ -327,6 +338,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     action: c.action,
     caseStatus: c.status,
     verifiedAt: c.verifiedAt ? c.verifiedAt.toISOString() : null,
+    pausedReason: c.pausedReason,
     client: c.client,
     payload: (c.payload ?? {}) as Record<string, unknown>,
     jobs: c.jobs,

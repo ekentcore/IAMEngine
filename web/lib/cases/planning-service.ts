@@ -55,6 +55,13 @@ export async function createAndPlanCase(
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 
+  // Autonomy gate: if the intake left fields it couldn't determine, HOLD the case as "Needs
+  // Information" instead of running with guesses — an operator fills them in to release it.
+  const unknownFields = Array.isArray((payload as { unknownFields?: unknown }).unknownFields) ? (payload as { unknownFields: unknown[] }).unknownFields : [];
+  if (input.action === "onboard" && unknownFields.length > 0) {
+    await repo.setHold(caseId, "needs_info");
+  }
+
   await repo.writeAudit({
     actor,
     action: "case.plan",
