@@ -648,6 +648,45 @@ function Invoke-CtgConnectionTests {
     }
 }
 
+function Invoke-CtgCloudGroupDiscovery {
+    # Central runner only (the claim endpoint returns nothing to client agents). For each client that
+    # requested it, connect to M365 with the brokered m365 secret and read the tenant's groups, tagged
+    # DL / Security / M365 Group, so the app's pickers can offer cloud groups AD sync never covers.
+    $work = @()
+    try { $work = Invoke-AppApi POST '/api/runner/cloud-groups/claim' @{ agentId = $AgentId } } catch { return }
+    foreach ($w in @($work)) {
+        $global:CtgProgressJobId = $null
+        try {
+            # Rebuild $creds from the pushed fields (push-down model — no Delinea creds on the runner).
+            $creds = @{}
+            if ($w.creds) {
+                foreach ($p in $w.creds.PSObject.Properties) {
+                    $f = @{}
+                    if ($p.Value.fields) { foreach ($q in $p.Value.fields.PSObject.Properties) { $f[$q.Name] = $q.Value } }
+                    $username = $f['Username']
+                    $password = if ($f.ContainsKey('Password') -and $f['Password']) { ConvertTo-SecureString ([string]$f['Password']) -AsPlainText -Force } else { $null }
+                    $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
+                    $creds[$p.Name] = [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $f }
+                }
+            }
+            $job = [pscustomobject]@{ id = ''; systemKey = 'm365'; client = [pscustomobject]@{ slug = $w.clientSlug; primaryDomain = $w.primaryDomain } }
+            & $DISPATCH['m365'].Connect $job $creds
+            if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove('m365') }  # don't let a real job reuse this connection
+            $groups = @()
+            foreach ($g in (Get-MgGroup -All -Property 'DisplayName,GroupTypes,MailEnabled,SecurityEnabled' -ErrorAction Stop)) {
+                $type = if ($g.GroupTypes -contains 'Unified') { 'm365' }
+                        elseif ($g.MailEnabled -and -not $g.SecurityEnabled) { 'dl' }
+                        else { 'security' }
+                if ($g.DisplayName) { $groups += @{ name = [string]$g.DisplayName; type = $type } }
+            }
+            Invoke-AppApi POST '/api/runner/cloud-groups/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; groups = $groups }
+            Write-Host "  cloud groups: reported $($groups.Count) for $($w.clientSlug)" -ForegroundColor Green
+        } catch {
+            Write-Warning "cloud group discovery failed for $($w.clientSlug): $($_.Exception.Message)"
+        }
+    }
+}
+
 # Build id of the code we're actually running = hash of our own files (matches the app's hash of the
 # bundle it serves). Reported on every heartbeat → accurate even if a past restart half-landed, with
 # no marker file to keep in sync.
@@ -787,6 +826,7 @@ while ($true) {
         # Separate, isolated lane: operator-requested connection/permission tests (cloud here on the
         # central runner; on-prem on the client agent). Never affects the job pipeline above.
         Invoke-CtgConnectionTests
+        Invoke-CtgCloudGroupDiscovery
     }
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"

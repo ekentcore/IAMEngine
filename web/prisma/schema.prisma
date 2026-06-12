@@ -101,6 +101,12 @@ model Client {
   // the next client-network heartbeat (which tells the agent to run discovery).
   adObjects             Json?
   adDiscoverRequestedAt DateTime?
+  // Cloud (Entra) groups discovered from the tenant via the m365-admin secret (Get-MgGroup), to back
+  // the same group pickers for cloud-only groups AD sync never covers — DLs, Security, M365 Groups.
+  // { groups: [{ name, type }], discoveredAt }. cloudGroupsRequestedAt is set by "Refresh cloud
+  // groups" and consumed by the CENTRAL runner (it has Graph), which posts the result back.
+  cloudGroups             Json?
+  cloudGroupsRequestedAt  DateTime?
   status        ClientStatus   @default(active)
   // Where this client's onboarding/offboarding requests come from, so case-scanning hits the right
   // ServiceNow table: "um" = external clients (sn_customerservice_user_management cases, the default),

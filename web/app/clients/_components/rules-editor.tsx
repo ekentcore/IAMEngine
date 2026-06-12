@@ -28,6 +28,8 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
   const [systemKeys, setSystemKeys] = useState<string[]>([]);
   const [adObjects, setAdObjects] = useState<{ ous: string[]; groups: string[]; discoveredAt?: string }>({ ous: [], groups: [] });
+  const [cloudGroups, setCloudGroups] = useState<{ name: string; type?: string }[]>([]);
+  const [cloudBusy, setCloudBusy] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [scope, setScope] = useState<string>("globals"); // "globals" | persona name
   const [activeSystem, setActiveSystem] = useState<string>("");
@@ -48,8 +50,10 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         const p = (d.personas ?? {}) as Personas;
         const keys = (d.systemKeys ?? []) as string[];
         const ad = (d.adObjects ?? {}) as { ous?: string[]; groups?: string[]; discoveredAt?: string };
+        const cg = (d.cloudGroups ?? {}) as { groups?: { name: string; type?: string }[] };
         setGlobals(g); setGlobalsOffboard((d.globalsOffboard ?? {}) as Globals); setPersonas(p); setSystemKeys(keys);
         setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
+        setCloudGroups(Array.isArray(cg.groups) ? cg.groups.filter((x) => x && typeof x.name === "string") : []);
         setScope("globals");
         setActiveSystem(Object.keys(g)[0] ?? keys[0] ?? "active-directory");
       })
@@ -164,15 +168,25 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         <button onClick={onClose} aria-label="Close">×</button>
       </div>
 
-      {/* AD object pickers: discovered OUs/groups feed the OU + group autocompletes below. */}
+      {/* Object pickers: discovered AD + cloud (Entra) groups feed the OU + group autocompletes below. */}
       <div className="toolbar" style={{ gap: 8, marginBottom: 4 }}>
         <button onClick={refreshAd} disabled={discovering} title="Have the client's on-prem agent read OUs + groups from the DC">
           {discovering ? "Requesting…" : "⟳ Refresh AD objects from DC"}
         </button>
+        <button
+          onClick={async () => {
+            setCloudBusy(true);
+            try { await fetch(`/api/clients/${slug}/cloud-groups`, { method: "POST" }); } finally { setCloudBusy(false); }
+          }}
+          disabled={cloudBusy}
+          title="Have the central runner read this tenant's groups (DLs/Security/365) via the m365 secret"
+        >
+          {cloudBusy ? "Requesting…" : "⟳ Refresh cloud groups"}
+        </button>
         <span className="note">
-          {adObjects.discoveredAt
-            ? `${adObjects.ous.length} OUs · ${adObjects.groups.length} groups (discovered ${new Date(adObjects.discoveredAt).toLocaleString()})`
-            : "No AD objects discovered yet — OU/group fields are free text until you refresh."}
+          {adObjects.discoveredAt ? `${adObjects.ous.length} OUs · ${adObjects.groups.length} AD groups` : "No AD objects yet"}
+          {cloudGroups.length > 0 ? ` · ${cloudGroups.length} cloud groups (DL/Security/365)` : ""}
+          {" — "}group fields autocomplete from these; queue a refresh then reopen to load new ones.
         </span>
       </div>
 
@@ -226,7 +240,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
 
           {activeSystem ? (
-            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={adObjects.groups} action={action} />
+            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} action={action} />
           ) : (
             <p className="note" style={{ marginTop: 12 }}>Add a system to start adding rules.</p>
           )}

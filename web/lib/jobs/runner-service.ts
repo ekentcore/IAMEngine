@@ -418,6 +418,70 @@ export function makeRunnerService(db: PrismaClient) {
       return { ok: true };
     },
 
+    // --- Cloud (Entra) group discovery -----------------------------------------------------------
+    // Pull the tenant's groups (DLs / Security / M365 Groups) via the m365-admin secret so the group
+    // pickers can offer cloud groups AD sync never sees. Like AD discovery (a request flag + a result
+    // blob on the client), but claimed by the CENTRAL runner — it's the one with Graph.
+
+    async requestCloudGroupDiscovery(clientSlug: string): Promise<{ ok: true }> {
+      const client = await db.client.findUnique({
+        where: { slug: clientSlug },
+        select: { id: true, systems: { where: { systemKey: "m365" }, select: { secretNames: true } } },
+      });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      if (client.systems.length === 0) throw new HttpError(422, "this client has no m365 system to read groups from");
+      await db.client.update({ where: { id: client.id }, data: { cloudGroupsRequestedAt: new Date() } });
+      return { ok: true };
+    },
+
+    // Central runner only. Claim every pending request, resolve its m365 secret(s) inline (push-down),
+    // and clear the flag so it isn't claimed twice. Returns enough for the runner to connect + read.
+    async claimCloudGroupDiscovery(agentId: string): Promise<{ clientSlug: string; primaryDomain: string; creds: Record<string, { fields?: Record<string, string>; note?: string }> }[]> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (!agent.enabled || agent.clientId) return []; // cloud groups come from the central (cloud) runner
+      const pending = await db.client.findMany({
+        where: { cloudGroupsRequestedAt: { not: null }, systems: { some: { systemKey: "m365" } } },
+        select: { id: true, slug: true, primaryDomain: true, systems: { where: { systemKey: "m365" }, select: { secretNames: true } } },
+        take: 5,
+      });
+      if (pending.length === 0) return [];
+      // Claim: clear the flag now (so a second central runner won't re-claim). The runner reports back.
+      await db.client.updateMany({ where: { id: { in: pending.map((c) => c.id) } }, data: { cloudGroupsRequestedAt: null } });
+      const cfg = delineaConfigFromEnv();
+      const out = [];
+      for (const c of pending) {
+        const names = c.systems[0]?.secretNames ?? [];
+        const creds: Record<string, { fields?: Record<string, string>; note?: string }> = {};
+        for (const name of names) {
+          const sec = await db.secret.findUnique({ where: { clientId_name: { clientId: c.id, name } }, select: { externalId: true } });
+          const { externalId } = effectiveExternalId(name, null, sec?.externalId ?? null);
+          if (!externalId) { creds[name] = { note: "no usable secret reference" }; continue; }
+          if (!delineaConfigured(cfg)) { creds[name] = { note: "Delinea not configured on the app" }; continue; }
+          const resolved = await resolveSecretFields(cfg, externalId);
+          creds[name] = resolved.ok ? { fields: resolved.fields } : { note: resolved.error ?? "unresolved" };
+        }
+        out.push({ clientSlug: c.slug, primaryDomain: c.primaryDomain, creds });
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudgroups.claim", detail: { clients: pending.map((c) => c.slug) } } });
+      return out;
+    },
+
+    async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
+      if (!agent || !agent.enabled) throw new HttpError(403, "unknown or disabled agent");
+      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      // Normalize + cap (a big tenant can have thousands) so the picker payload stays sane.
+      const clean = groups
+        .filter((g) => g && typeof g.name === "string" && g.name.trim())
+        .map((g) => ({ name: g.name.trim(), type: ["dl", "security", "m365"].includes(g.type) ? g.type : "security" }))
+        .slice(0, 5000);
+      await db.client.update({ where: { id: client.id }, data: { cloudGroups: { groups: clean, discoveredAt: new Date().toISOString() } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudgroups.result", clientId: client.id, detail: { count: clean.length } } });
+      return { ok: true, count: clean.length };
+    },
+
     // Live progress: the runner posts the phase it's entering ("connecting to Exchange Online",
     // "enabling remote mailbox", …) as it works, so the run report can show what a step is doing
     // right now instead of an opaque "running". Best-effort + append-only (last 20), and only while

@@ -69,7 +69,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   if (!client) notFound();
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
-  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true } });
+  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true } });
 
   // Every-user M365/Entra groups from the globals rules (the always-add string entries) — these are
   // applied to the m365 job at plan time IN ADDITION to the m365 system's own onboarding groups, so
@@ -83,11 +83,22 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     }
     return [...names];
   })();
-  // Known group names to offer as autocomplete when editing onboarding groups: AD-discovered groups,
-  // the every-user rule groups, plus whatever's already configured.
+  // Known groups to offer as autocomplete (with a type when known) when editing onboarding groups:
+  // cloud-discovered Entra groups (DL/Security/365), AD-discovered groups, and the every-user ones.
   const adGroupNames = Array.isArray((v21?.adObjects as { groups?: unknown } | null)?.groups)
     ? ((v21!.adObjects as { groups: unknown[] }).groups.filter((x): x is string => typeof x === "string"))
     : [];
+  const cloudGroups = ((v21?.cloudGroups as { groups?: unknown; discoveredAt?: string } | null) ?? {});
+  const cloudGroupList = Array.isArray(cloudGroups.groups)
+    ? (cloudGroups.groups as unknown[]).filter((g): g is { name: string; type?: string } => !!g && typeof g === "object" && typeof (g as { name?: unknown }).name === "string")
+    : [];
+  // One typed list, cloud first (cloud carries real DL/Security/365 types; AD/every-user are untyped).
+  const knownGroups: { name: string; type?: string }[] = [
+    ...cloudGroupList.map((g) => ({ name: g.name, type: g.type })),
+    ...adGroupNames.map((name) => ({ name })),
+    ...everyUserM365Groups.map((name) => ({ name })),
+  ];
+  const cloudGroupsMeta = { count: cloudGroupList.length, discoveredAt: typeof cloudGroups.discoveredAt === "string" ? cloudGroups.discoveredAt : null };
 
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
   // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled.
@@ -201,7 +212,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
               : [];
           })()}
           everyUserGroups={everyUserM365Groups}
-          groupOptions={adGroupNames}
+          knownGroups={knownGroups}
+          cloudGroupsMeta={cloudGroupsMeta}
         />
       )}
       {sysByKey.has("m365") && (
