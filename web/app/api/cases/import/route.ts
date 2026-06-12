@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   const _g = await guard("case.import"); if (_g.res) return _g.res;
-  let body: { number?: string; emailDomain?: string };
+  let body: { number?: string; emailDomain?: string; dryRun?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await importByNumber(db, body.number, "ui:import", { emailDomainOverride });
+    const result = await importByNumber(db, body.number, "ui:import", { emailDomainOverride, dryRun: body.dryRun === true });
     if (!result.ok) {
       const status = result.code === "not_found" || result.code === "no_client" ? 404 : 422;
       return NextResponse.json({ error: result.error }, { status });

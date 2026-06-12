@@ -21,6 +21,7 @@ function ImportButton() {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [number, setNumber] = useState("");
+  const [dryRun, setDryRun] = useState(true); // default ON for testing — review decisions before anything runs
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<(PlanOutcome & { caseNumber: string; alreadyImported?: boolean }) | null>(null);
@@ -32,7 +33,7 @@ function ImportButton() {
       const res = await fetch("/api/cases/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number }),
+        body: JSON.stringify({ number, dryRun }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? res.statusText);
@@ -55,6 +56,12 @@ function ImportButton() {
           <label htmlFor="um">Case number</label>
           <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698 or INC0836187" autoFocus />
           <p className="note" style={{ marginTop: "0.25rem" }}>UM = external client case · INC = internal Coretelligent onboarding incident</p>
+          {!result && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.5rem 0 0", fontSize: 13, color: "var(--fg)" }}>
+              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} style={{ width: "auto" }} />
+              Import in <b>dry run</b> — plan + show the exact scripts/decisions, change nothing until you turn it off
+            </label>
+          )}
           {busy && <p className="note"><span className="spinner" />Fetching and planning…</p>}
           {error && <p className="note danger">{error}</p>}
           {result && (

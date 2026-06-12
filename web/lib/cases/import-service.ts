@@ -18,7 +18,7 @@ export async function importCaseFromServiceNow(
   db: PrismaClient,
   number: string,
   actor: string,
-  opts?: { emailDomainOverride?: string }
+  opts?: { emailDomainOverride?: string; dryRun?: boolean }
 ): Promise<ImportResult> {
   const repo = makeCaseRepository(db);
 
@@ -65,6 +65,7 @@ export async function importCaseFromServiceNow(
       serviceNowCaseNumber: intake.caseNumber,
       subject: intake.subject,
       payload: intake.payload,
+      dryRun: opts?.dryRun ?? false,
     },
     actor,
     { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
@@ -79,7 +80,7 @@ export async function importIncidentCase(
   db: PrismaClient,
   number: string,
   actor: string,
-  opts?: { emailDomainOverride?: string }
+  opts?: { emailDomainOverride?: string; dryRun?: boolean }
 ): Promise<ImportResult> {
   const repo = makeCaseRepository(db);
   const trimmed = number.trim();
@@ -114,7 +115,7 @@ export async function importIncidentCase(
   const resolver = makeEmailDomainResolver(db);
   const outcome = await createAndPlanCase(
     repo,
-    { clientSlug: slug, action: intake.action, serviceNowCaseNumber: intake.caseNumber, subject: intake.subject, payload: intake.payload },
+    { clientSlug: slug, action: intake.action, serviceNowCaseNumber: intake.caseNumber, subject: intake.subject, payload: intake.payload, dryRun: opts?.dryRun ?? false },
     actor,
     { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
   );
@@ -122,7 +123,7 @@ export async function importIncidentCase(
 }
 
 // Route by number prefix: INCxxxxxxx -> internal incident; everything else (UM/CS) -> UM case.
-export function importByNumber(db: PrismaClient, number: string, actor: string, opts?: { emailDomainOverride?: string }): Promise<ImportResult> {
+export function importByNumber(db: PrismaClient, number: string, actor: string, opts?: { emailDomainOverride?: string; dryRun?: boolean }): Promise<ImportResult> {
   return /^inc/i.test(number.trim())
     ? importIncidentCase(db, number, actor, opts)
     : importCaseFromServiceNow(db, number, actor, opts);
