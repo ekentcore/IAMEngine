@@ -605,16 +605,46 @@ function Get-ConnTestCredential {
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
 
+# Which Graph permissions the M365 onboarder actually exercises, each satisfied by ANY of the listed
+# scopes. Compared against the connection's GRANTED scopes (Get-MgContext) so the test can name the
+# exact permission someone forgot to grant + admin-consent, instead of a bare "Insufficient privileges".
+function Get-CtgGraphScopeGaps {
+    param([string[]]$Granted)
+    $req = @(
+        @{ need = 'create / update users + assign licenses'; anyOf = @('User.ReadWrite.All', 'Directory.ReadWrite.All') }
+        @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
+        @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
+    )
+    $gaps = @()
+    foreach ($r in $req) {
+        $have = $false
+        foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $have = $true; break } }
+        if (-not $have) { $gaps += "$($r.need) — grant one of: $($r.anyOf -join ', ')" }
+    }
+    $gaps
+}
+
 # Connection-test probes: after Connect (auth), one cheap authorized READ proves real access — not
-# just that the credential authenticates. Systems with a $DISPATCH Connect but no probe here are
-# connect-only (a successful Connect is itself meaningful). AD/dir-sync have no session Connect, so
-# their probe binds with the ad-dc credential. Extend freely — keep reads cheap + read-only.
+# just that the credential authenticates. The m365 probe ALSO diffs the granted Graph scopes against
+# what onboarding needs, so a permissions gap is reported by name. Systems with a $DISPATCH Connect
+# but no probe here are connect-only. AD/dir-sync have no session Connect, so their probe binds with
+# the ad-dc credential. Extend freely — keep reads cheap + read-only.
 $CONNTEST_PROBE = @{
-    'm365'             = { param($job, $creds) $o = @(Get-MgOrganization -ErrorAction Stop)[0]; "tenant: $($o.DisplayName)" }
+    'm365'             = { param($job, $creds)
+        $ctx = Get-MgContext
+        $granted = @(); if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
+        $org = $null; try { $org = @(Get-MgOrganization -ErrorAction Stop)[0] } catch { }
+        $base = if ($org) { "tenant: $($org.DisplayName)" } else { "connected" }
+        if ($granted.Count -eq 0) { return "$base · connected (couldn't read granted scopes to verify permissions)" }
+        $gaps = Get-CtgGraphScopeGaps $granted
+        if ($gaps.Count) { throw "$base, but MISSING Graph permissions: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent, then re-test." }
+        "$base · all required Graph permissions present ($($granted.Count) granted)"
+    }
     'exchange'         = { param($job, $creds) $o = Get-OrganizationConfig -ErrorAction Stop; "org: $($o.Name)" }
     'active-directory' = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "domain: $($d.DNSRoot)" }
     'directory-sync'   = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
+$CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's Entra slice — same Graph perms
 
 function Invoke-CtgConnectionTests {
     # Claim + run any queued connection tests for this agent. Fully isolated from the job pipeline:
@@ -811,6 +841,19 @@ while ($true) {
                 while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
                 $msg = (($chain | Select-Object -Unique) -join ' <- ')
                 if (-not $msg) { $msg = $_.Exception.GetType().Name }
+                # A Graph "Insufficient privileges" tells you nothing about WHICH permission is missing.
+                # The m365 connection is still live in this process, so read the granted scopes and name
+                # the gap. Best-effort — never let this enrichment break the real error report.
+                if (($job.systemKey -in @('m365', 'entra')) -and ($msg -match 'Insufficient privileges|Authorization_RequestDenied|Access(Denied| is denied)')) {
+                    try {
+                        $ctx = Get-MgContext
+                        $granted = @(); if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
+                        if ($granted.Count -gt 0) {
+                            $gaps = Get-CtgGraphScopeGaps $granted
+                            if ($gaps.Count) { $msg += " — likely missing Graph permission(s): $($gaps -join ' || '). Grant these APPLICATION permissions + admin consent on the app registration." }
+                        }
+                    } catch { }
+                }
                 # Name the phase that failed ("while connecting to on-prem Exchange (…): Unauthorized")
                 # so the operator sees WHAT broke, not just the bare provider message.
                 $where = if ($script:Phase) { " while $($script:Phase)" } else { "" }
