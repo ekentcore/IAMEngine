@@ -21,7 +21,7 @@ function ImportButton() {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [number, setNumber] = useState("");
-  const [dryRun, setDryRun] = useState(true); // default ON for testing — review decisions before anything runs
+  const [dryRun, setDryRun] = useState(false); // default OFF — imports run normally unless dry-run is opted into
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<(PlanOutcome & { caseNumber: string; alreadyImported?: boolean }) | null>(null);
