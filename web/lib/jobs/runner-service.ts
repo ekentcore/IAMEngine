@@ -305,6 +305,7 @@ export function makeRunnerService(db: PrismaClient) {
       const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
       // A per-case override reference wins over the client default; either way it's a Delinea id.
       const { externalId, source } = effectiveExternalId(secretName, job.case.secretOverrides, clientSecret?.externalId ?? null);
+      if (source === "not_needed") throw new HttpError(409, `secret '${secretName}' is marked not needed (handled as a manual step) — no credential to broker`);
       if (!externalId) throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client or override it on the case)`);
       // Overrides only replace the reference id, not the provider — every reference is a Delinea id.
       const secret = { provider: clientSecret?.provider ?? "delinea", externalId, source };

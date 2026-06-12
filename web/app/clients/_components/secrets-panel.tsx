@@ -34,6 +34,20 @@ export function SecretsPanel({
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
+  // Mark a secret "not needed" (its module is handled as a manual step) so a missing credential
+  // doesn't block the case. Stored as the sentinel id "NOT_NEEDED"; toggling off clears it.
+  function toggleNotNeeded(name: string) {
+    setRows((rs) => rs.map((r) => (r.name === name ? { ...r, externalId: r.externalId === "NOT_NEEDED" ? "" : "NOT_NEEDED" } : r)));
+    setDirty(true);
+    setSaveMsg(null);
+    setTests((t) => {
+      if (!t[name]) return t;
+      const next = { ...t };
+      delete next[name];
+      return next;
+    });
+  }
+
   function edit(name: string, field: "externalId" | "label", value: string) {
     setRows((rs) => rs.map((r) => (r.name === name ? { ...r, [field]: value } : r)));
     setDirty(true);
@@ -134,6 +148,7 @@ export function SecretsPanel({
         <tbody>
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
+            const notNeeded = r.externalId === "NOT_NEEDED";
             return (
               <tr key={r.name}>
                 <td>
@@ -144,12 +159,16 @@ export function SecretsPanel({
                   {r.referencedBy.length > 0 ? r.referencedBy.join(", ") : <span title="No system references this secret — orphaned mapping">unused</span>}
                 </td>
                 <td>
-                  <input
-                    value={r.externalId}
-                    onChange={(e) => edit(r.name, "externalId", e.target.value)}
-                    placeholder="REPLACE_ME"
-                    style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
-                  />
+                  {notNeeded ? (
+                    <span className="badge" title="This module is handled as a manual step — no credential required, won't block the case">manual step — no credential</span>
+                  ) : (
+                    <input
+                      value={r.externalId}
+                      onChange={(e) => edit(r.name, "externalId", e.target.value)}
+                      placeholder="REPLACE_ME"
+                      style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
+                    />
+                  )}
                 </td>
                 <td>
                   <input
@@ -160,11 +179,22 @@ export function SecretsPanel({
                   />
                 </td>
                 <td>
-                  <button onClick={() => test([r.name])} disabled={!delineaConfigured || t.status === "testing"} style={{ marginRight: 8 }}>
-                    {t.status === "testing" ? "…" : "Test"}
+                  {!notNeeded && (
+                    <>
+                      <button onClick={() => test([r.name])} disabled={!delineaConfigured || t.status === "testing"} style={{ marginRight: 8 }}>
+                        {t.status === "testing" ? "…" : "Test"}
+                      </button>
+                      {t.status === "ok" && <span className="badge" title={t.label}>✓ {t.label ?? "fetched"}</span>}
+                      {t.status === "fail" && <span className="badge archived" title={t.error}>✗ {t.error}</span>}
+                    </>
+                  )}
+                  <button
+                    onClick={() => toggleNotNeeded(r.name)}
+                    title={notNeeded ? "This secret is required again" : "Mark not needed — its module is a manual step; won't block the case"}
+                    style={{ marginLeft: notNeeded ? 0 : 8, fontSize: 12 }}
+                  >
+                    {notNeeded ? "Needed" : "Not needed"}
                   </button>
-                  {t.status === "ok" && <span className="badge" title={t.label}>✓ {t.label ?? "fetched"}</span>}
-                  {t.status === "fail" && <span className="badge archived" title={t.error}>✗ {t.error}</span>}
                 </td>
               </tr>
             );
@@ -173,7 +203,7 @@ export function SecretsPanel({
       </table>
       <div className="dialog-actions" style={{ justifyContent: "flex-start", marginTop: "0.75rem" }}>
         <button className="primary" onClick={save} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
-        <button onClick={() => test(rows.map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
+        <button onClick={() => test(rows.filter((r) => r.externalId !== "NOT_NEEDED").map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
         {saveMsg && <span className="note danger">{saveMsg}</span>}
         {dirty && !saveMsg && <span className="note muted">Unsaved changes</span>}
       </div>

@@ -2,11 +2,11 @@
 // (a secret id), never values — see lib/secrets/delinea.ts for the preflight that resolves them.
 
 // A secret reference is "set" once it carries a real Delinea id (not blank, not the REPLACE_ME
-// placeholder the profile generator emits). Get-CtgSecret throws on REPLACE_ME, so this mirrors
-// the runner's fail-safe.
+// placeholder the profile generator emits, not the NOT_NEEDED manual-step sentinel). Get-CtgSecret
+// throws on REPLACE_ME, so this mirrors the runner's fail-safe.
 export function secretIsSet(externalId: string | null | undefined): boolean {
   const v = (externalId ?? "").trim();
-  return v !== "" && v !== "REPLACE_ME";
+  return v !== "" && v !== "REPLACE_ME" && v !== "NOT_NEEDED";
 }
 
 export type SecretRow = {

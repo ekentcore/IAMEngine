@@ -39,3 +39,20 @@ test("effectiveExternalId: case override wins; else client; else missing (REPLAC
   assert.deepEqual(effectiveExternalId("ad-dc", { "ad-dc": "REPLACE_ME" }, "999"), { externalId: "999", source: "client" });
   assert.deepEqual(effectiveExternalId("ad-dc", null, null), { externalId: null, source: "missing" });
 });
+
+test("effectiveExternalId: NOT_NEEDED sentinel -> not-needed (no usable ref, but intentional)", () => {
+  // A secret marked "not needed" (module is a manual step) resolves to no reference but a distinct
+  // source so it is NOT treated as missing.
+  assert.deepEqual(effectiveExternalId("egnyte", null, "NOT_NEEDED"), { externalId: null, source: "not_needed" });
+  // A case override still wins over a client "not needed" marker.
+  assert.deepEqual(effectiveExternalId("egnyte", { egnyte: "222" }, "NOT_NEEDED"), { externalId: "222", source: "case" });
+  // The marker can also come from a case override.
+  assert.deepEqual(effectiveExternalId("egnyte", { egnyte: "NOT_NEEDED" }, null), { externalId: null, source: "not_needed" });
+});
+
+test("missingRequiredSecrets: NOT_NEEDED secrets do not block (manual-step modules)", () => {
+  const clientSecrets = new Map<string, string | null>([["egnyte", "NOT_NEEDED"], ["m365-admin", null]]);
+  // egnyte marked not-needed -> not missing; m365-admin still unset -> missing
+  const missing = missingRequiredSecrets(["egnyte", "m365-admin"], {}, clientSecrets);
+  assert.deepEqual(missing, ["m365-admin"]);
+});
