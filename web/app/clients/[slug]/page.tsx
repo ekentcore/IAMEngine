@@ -188,7 +188,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           slug={client.slug}
           current={(() => {
             const ob = ((sysByKey.get("m365")?.config ?? {}) as { onboard?: { initialPassword?: unknown; initialPasswordSecret?: unknown } }).onboard ?? {};
-            if (typeof ob.initialPasswordSecret === "string" && ob.initialPasswordSecret) return { mode: "secret" as const, secretName: ob.initialPasswordSecret };
+            if (typeof ob.initialPasswordSecret === "string" && ob.initialPasswordSecret) return { mode: "secret" as const };
             if (typeof ob.initialPassword === "string" && ob.initialPassword) return { mode: "fixed" as const };
             return { mode: "generate" as const };
           })()}

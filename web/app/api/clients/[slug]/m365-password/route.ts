@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
 
-  let body: { mode?: unknown; value?: unknown; secretName?: unknown };
+  let body: { mode?: unknown; value?: unknown; delineaId?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   const mode = body.mode === "fixed" || body.mode === "secret" ? body.mode : "generate";
 
@@ -32,15 +32,17 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     onboard.initialPassword = value;
     delete onboard.initialPasswordSecret;
   } else if (mode === "secret") {
-    const name = typeof body.secretName === "string" ? body.secretName.trim() : "";
-    if (!name) return NextResponse.json({ error: "enter the secret name to broker (wire its Delinea id in the Secrets panel)" }, { status: 422 });
-    // The secret must ALREADY be wired (a Secret row with a Delinea id) before we mark it required —
-    // otherwise the m365 onboard job would fail the claim preflight (missing required secret) and
-    // silently stall. Tell the operator to wire it first.
-    const wired = await db.secret.findFirst({ where: { clientId: sys.clientId, name } });
-    if (!wired) {
-      return NextResponse.json({ error: `wire the Delinea id for the secret "${name}" in the Secret wiring panel first, then set this — otherwise onboarding would stall waiting for it.` }, { status: 422 });
-    }
+    // One field: the Delinea secret id/number. We upsert the wiring (a Secret row, name
+    // "default-password", externalId = the id) and mark it required so it's brokered — no separate
+    // Secrets-panel step. externalId is the Delinea reference, NEVER a value.
+    const delineaId = typeof body.delineaId === "string" ? body.delineaId.trim() : "";
+    if (!delineaId) return NextResponse.json({ error: "enter the Delinea secret id/number for the default password" }, { status: 422 });
+    const name = "default-password";
+    await db.secret.upsert({
+      where: { clientId_name: { clientId: sys.clientId, name } },
+      create: { clientId: sys.clientId, name, provider: "delinea", externalId: delineaId, label: "M365 initial password" },
+      update: { externalId: delineaId, provider: "delinea" },
+    });
     onboard.initialPasswordSecret = name;
     delete onboard.initialPassword;
     if (!secretNames.includes(name)) secretNames = [...secretNames, name];
@@ -50,7 +52,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   }
   config.onboard = onboard;
   await db.clientSystem.update({ where: { id: sys.id }, data: { config: config as Prisma.InputJsonValue, secretNames } });
-  await recordAudit("client.m365_password.set", { user: g.user, clientId: sys.clientId, detail: { mode, secretName: mode === "secret" ? body.secretName : undefined } });
+  await recordAudit("client.m365_password.set", { user: g.user, clientId: sys.clientId, detail: { mode } });
 
   return NextResponse.json({ ok: true, mode });
 }
