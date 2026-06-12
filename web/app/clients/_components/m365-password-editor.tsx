@@ -7,22 +7,24 @@ import { useRouter } from "next/navigation";
 
 type Mode = "generate" | "fixed" | "secret";
 
-export function M365PasswordEditor({ slug, current }: { slug: string; current: { mode: Mode } }) {
+export function M365PasswordEditor({ slug, current }: { slug: string; current: { mode: Mode; delineaId?: string } }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>(current.mode);
   const [value, setValue] = useState("");
-  const [delineaId, setDelineaId] = useState("");
+  const [delineaId, setDelineaId] = useState(current.delineaId ?? "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const label = current.mode === "fixed" ? "fixed default" : current.mode === "secret" ? "Delinea default-password secret" : "generated";
+  const label = current.mode === "fixed" ? "fixed default" : current.mode === "secret"
+    ? `Delinea secret${current.delineaId ? ` #${current.delineaId}` : ""}`
+    : "generated";
 
   if (!open) {
     return (
       <div className="note" style={{ marginTop: "0.4rem" }}>
         Initial password: <b>{label}</b>{" "}
-        <button style={{ fontSize: 12, marginLeft: 6 }} onClick={() => { setMode(current.mode); setMsg(null); setOpen(true); }}>Change</button>
+        <button style={{ fontSize: 12, marginLeft: 6 }} onClick={() => { setMode(current.mode); setDelineaId(current.delineaId ?? ""); setMsg(null); setOpen(true); }}>Change</button>
       </div>
     );
   }

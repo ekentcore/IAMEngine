@@ -189,7 +189,11 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           slug={client.slug}
           current={(() => {
             const ob = ((sysByKey.get("m365")?.config ?? {}) as { onboard?: { initialPassword?: unknown; initialPasswordSecret?: unknown } }).onboard ?? {};
-            if (typeof ob.initialPasswordSecret === "string" && ob.initialPasswordSecret) return { mode: "secret" as const };
+            if (typeof ob.initialPasswordSecret === "string" && ob.initialPasswordSecret) {
+              // Surface the wired Delinea id so opening the editor shows the secret number already set.
+              const delineaId = secretRows.find((r) => r.name === ob.initialPasswordSecret)?.externalId ?? "";
+              return { mode: "secret" as const, delineaId };
+            }
             if (typeof ob.initialPassword === "string" && ob.initialPassword) return { mode: "fixed" as const };
             return { mode: "generate" as const };
           })()}

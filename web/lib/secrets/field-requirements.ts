@@ -6,15 +6,16 @@
 // ("the secret has no TenantId field", "mimecast needs a CLIENT ID + CLIENT SECRET", …).
 //
 // Extensible: add a row for a new provider's secret name. An unknown name has no rule (no warning).
-export type FieldReq = { label: string; anyOf: string[] };
+// `orClientDomain` requirements are satisfied either by a matching field OR by the client having a
+// primary domain (the runner falls back to it) — so they don't false-flag a correctly-set secret.
+export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean };
 
 export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
-  // M365 admin (Graph): username + password + a tenant hint. (Tenant can also come from the client's
-  // primary domain — see checkFieldShape's `clientHasTenantHint`.)
+  // M365 admin (Graph): username + password + a tenant hint (tenant can come from the client domain).
   "m365-admin": [
     { label: "admin username", anyOf: ["Username"] },
     { label: "admin password", anyOf: ["Password"] },
-    { label: "tenant id / domain", anyOf: ["TenantId", "Tenant", "Domain"] },
+    { label: "tenant id / domain", anyOf: ["TenantId", "Tenant", "Domain"], orClientDomain: true },
   ],
   // Exchange Online: app-only certificate auth — AppId (stored as the secret username) + thumbprint.
   exchange: [
@@ -32,11 +33,13 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "client id", anyOf: ["ClientID", "ClientId", "Client ID", "AppId", "Application ID", "Username"] },
     { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "API Key", "ApiKey", "AccessToken", "Token", "Password"] },
   ],
-  // Spanning Backup: account/api user + token + region (or base url).
+  // Spanning Backup — synonym lists MIRROR the runner's Use-CtgSpanningSecret $pick exactly (so the
+  // check can't disagree with what actually connects). The api user falls back to the client domain;
+  // the endpoint can be a full URL (apiURL/BaseUrl/Url) OR a Region.
   spanning: [
-    { label: "account / api user", anyOf: ["ClientID", "ClientId", "Client ID", "Domain", "AccountID", "AccountId", "Account", "Tenant", "Username"] },
+    { label: "account / api user", anyOf: ["ClientID", "ClientId", "Client ID", "Domain", "AccountID", "AccountId", "Account", "Tenant", "Username"], orClientDomain: true },
     { label: "api token", anyOf: ["ClientSecret", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Token", "Key", "Password"] },
-    { label: "region or base url", anyOf: ["Region", "BaseUrl", "Base URL", "URL"] },
+    { label: "region or base url", anyOf: ["apiURL", "ApiUrl", "ApiURL", "BaseUrl", "Base URL", "Url", "URL", "Region"] },
   ],
   // On-prem AD / directory-sync service account: username + password + the DC to bind to.
   "ad-dc": [
@@ -62,8 +65,8 @@ export function checkFieldShape(
   const have = new Set(presentFields.map(norm));
   const missing = reqs
     .filter((r) => {
-      // m365 tenant can come from the client's primary domain rather than a secret field.
-      if (secretName === "m365-admin" && r.label === "tenant id / domain" && opts.clientHasTenantHint) return false;
+      // Some requirements (m365 tenant, spanning user) can be supplied by the client's primary domain.
+      if (r.orClientDomain && opts.clientHasTenantHint) return false;
       return !r.anyOf.some((syn) => have.has(norm(syn)));
     })
     .map((r) => r.label);
