@@ -470,21 +470,41 @@ function Invoke-CtgM365Onboarding {
         }
     }
 
-    # 3. Groups — check membership before adding -------------------------------
-    $groupNames = @(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ }
-    foreach ($groupName in $groupNames) {
-        $group = Get-MgGroup -Filter "mail eq '$groupName' or displayName eq '$groupName'" -Top 1 -ErrorAction SilentlyContinue
-        if (-not $group) { $actions.Add("WARN group not found: $groupName"); continue }
-
-        $isMember = Get-MgGroupMember -GroupId $group.Id -All |
-                    Where-Object Id -eq $userId
-        if ($isMember) { $actions.Add("already in group: $groupName"); continue }
-
-        if ($PSCmdlet.ShouldProcess($upn, "Add to group $groupName")) {
-            Write-CtgM365Step "adding to group: $groupName"
+    # 3. Groups — DETERMINE each group's type, then add via the right path, narrating as we go.
+    # Graph (this lane) can add Security groups and Microsoft 365 (Unified) groups. Distribution lists
+    # and mail-enabled security groups are Exchange-managed — the Exchange step adds those. A config
+    # group may be a plain name or { name, type } where type hints dl|security|m365|unsure (from the
+    # KB); we verify the actual type in Entra and narrate it, so an unclear doc still resolves.
+    $groupSpecs = @(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ }
+    foreach ($gspec in $groupSpecs) {
+        $gname = if ($gspec -is [string]) { $gspec } else { [string](Get-CtgProp $gspec 'name') }
+        $hint  = if ($gspec -is [string]) { $null } else { [string](Get-CtgProp $gspec 'type') }
+        if ([string]::IsNullOrWhiteSpace($gname)) { continue }
+        Write-CtgM365Step "checking group: $gname$(if ($hint) { " (documented as $hint)" })"
+        $group = Get-MgGroup -Filter "mail eq '$gname' or displayName eq '$gname'" -Top 1 -ErrorAction SilentlyContinue
+        if (-not $group) {
+            $actions.Add("group '$gname' not a Graph group (security/365) — the Exchange step will check it as a distribution list")
+            Write-CtgM365Step "↷ $gname — not a security/365 group; Exchange step tries it as a distribution list"
+            continue
+        }
+        $isUnified   = @(Get-CtgProp $group 'GroupTypes') -contains 'Unified'
+        $mailEnabled = (Get-CtgProp $group 'MailEnabled') -eq $true
+        $secEnabled  = (Get-CtgProp $group 'SecurityEnabled') -eq $true
+        $kind = if ($isUnified) { 'Microsoft 365 group' } elseif ($mailEnabled) { 'distribution/mail-enabled group' } elseif ($secEnabled) { 'Security group' } else { 'group' }
+        Write-CtgM365Step "→ $gname is a $kind"
+        if ($mailEnabled -and -not $isUnified) {
+            # Graph cannot add DLs / mail-enabled security groups — the Exchange lane does.
+            $actions.Add("$gname → $kind — added by the Exchange step (Graph can't write distribution/mail-enabled groups)")
+            Write-CtgM365Step "↷ $gname — $kind, handled by the Exchange step"
+            continue
+        }
+        $isMember = @(Get-MgGroupMember -GroupId $group.Id -All -ErrorAction SilentlyContinue | ForEach-Object Id) -contains $userId
+        if ($isMember) { $actions.Add("already in $kind`: $gname"); Write-CtgM365Step "✓ already in $gname"; continue }
+        if ($PSCmdlet.ShouldProcess($upn, "Add to $kind $gname")) {
+            Write-CtgM365Step "adding to $kind`: $gname"
             $err = Add-CtgGroupMember -GroupId $group.Id -UserId $userId
-            if ($err) { $actions.Add("WARN could not add to group ${groupName}: $err"); Write-CtgM365Step "✗ group: $groupName — $err" }
-            else { $actions.Add("added to group: $groupName"); Write-CtgM365Step "✓ added to group: $groupName" }
+            if ($err) { $actions.Add("WARN could not add to $kind ${gname}: $err"); Write-CtgM365Step "✗ $gname — $err" }
+            else { $actions.Add("added to $kind`: $gname"); Write-CtgM365Step "✓ added to $kind`: $gname" }
         }
     }
 

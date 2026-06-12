@@ -11,6 +11,7 @@ import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
+import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { SecretsPanel } from "../_components/secrets-panel";
@@ -166,6 +167,18 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenses?: unknown; defaultLicenses?: unknown } };
             const lic = cfg.onboard?.licenses ?? cfg.onboard?.defaultLicenses ?? [];
             return Array.isArray(lic) ? lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean) : [];
+          })()}
+        />
+      )}
+      {sysByKey.has("m365") && (
+        <M365GroupsEditor
+          slug={client.slug}
+          current={(() => {
+            const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { groups?: unknown; defaultGroups?: unknown } };
+            const gs = cfg.onboard?.groups ?? cfg.onboard?.defaultGroups ?? [];
+            return Array.isArray(gs)
+              ? gs.map((x) => (typeof x === "string" ? { name: x } : { name: String((x as { name?: unknown })?.name ?? ""), type: (x as { type?: string })?.type })).filter((x) => x.name)
+              : [];
           })()}
         />
       )}
