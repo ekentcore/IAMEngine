@@ -78,8 +78,8 @@ Describe 'Invoke-CtgM365Onboarding' {
     }
 
     It 'reuses the existing user (no create) when the primary UPN carries OUR provisioning marker (re-run)' {
-        # marker = personalEmail when present; the existing account's employeeId must match it.
-        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; EmployeeId = 'jane.personal@gmail.com' } }
+        # marker = personalEmail when present; the existing account's extensionAttribute1 must match it.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = 'jane.personal@gmail.com' } } }
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane.personal@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
         $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
         $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd

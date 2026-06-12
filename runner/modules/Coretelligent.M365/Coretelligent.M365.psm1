@@ -386,9 +386,11 @@ function Invoke-CtgM365Onboarding {
     # The username is the PRIMARY pattern (e.g. first.last); if that UPN is already taken by a
     # DIFFERENT person, fall through to the configured fallback patterns (e.g. first.mi), in order.
     # To tell a re-run (OUR account) from a same-name COLLISION (a different person), we stamp a
-    # provisioning MARKER (employeeId) on accounts we create and match on it — NOT on display name,
-    # so two "John Smith"s never get cross-assigned. We only ever write employeeId on accounts we
-    # provision, so a stranger's value is never clobbered. Direct GET by UPN is strongly consistent;
+    # provisioning MARKER (onPremisesExtensionAttributes.extensionAttribute1) on accounts we create
+    # and match on it — NOT on display name, so two "John Smith"s never get cross-assigned. (employeeId
+    # is NOT usable for this: Entra caps it at 16 chars, so an email/"ctg:Name|date" marker is rejected
+    # with "invalid value specified for property 'employeeId'".) We only ever write the attribute on
+    # accounts we provision, so a stranger's value is never clobbered. Direct GET by UPN is strongly consistent;
     # the filter query is a post-create-lag fallback.
     if ([string]::IsNullOrWhiteSpace($upn)) {
         throw "no username could be derived for this user — the client's primary domain is missing. Set the client's domain, then re-run."
@@ -399,10 +401,13 @@ function Invoke-CtgM365Onboarding {
     $existing = $null
     $chosenUpn = $null
     foreach ($cand in $candidates) {
-        $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'EmployeeId' -ErrorAction SilentlyContinue
-        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'EmployeeId' -ErrorAction SilentlyContinue }
+        $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue
+        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue }
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
-        $foundMarker = [string](Get-CtgProp $found 'EmployeeId')
+        # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
+        # extensionAttributes at all.
+        $ext = if ($found.PSObject.Properties.Name -contains 'OnPremisesExtensionAttributes') { $found.OnPremisesExtensionAttributes } else { $null }
+        $foundMarker = if ($ext -and ($ext.PSObject.Properties.Name -contains 'ExtensionAttribute1')) { [string]$ext.ExtensionAttribute1 } else { '' }
         if ($foundMarker -and $foundMarker -ieq $marker) {
             $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
         }
@@ -433,7 +438,9 @@ function Invoke-CtgM365Onboarding {
                 UserPrincipalName = $upn
                 MailNickname      = ($upn.Split('@')[0])
                 UsageLocation     = ([string]((Get-CtgProp $User 'UsageLocation') ?? 'US'))
-                EmployeeId        = $marker  # provisioning marker: lets a re-run recognize OUR account vs a same-name collision
+                # provisioning marker: lets a re-run recognize OUR account vs a same-name collision.
+                # extensionAttribute1 (writable for cloud users, up to 1024 chars) — NOT employeeId (16-char cap).
+                OnPremisesExtensionAttributes = @{ ExtensionAttribute1 = $marker }
                 PasswordProfile   = $passwordProfile
             }
             foreach ($opt in @(

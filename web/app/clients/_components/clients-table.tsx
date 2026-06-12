@@ -423,6 +423,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
               </td>
               <td
                 className="mono editable"
+                style={{ position: "relative" }}
                 title="Double-click to edit the email name format"
                 onDoubleClick={() => {
                   const parts = c.usernamePattern.split("|").map((s) => s.trim());
@@ -431,10 +432,20 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   setDraftBackup(parts.slice(1).join(" | "));
                 }}
               >
-                {cell?.slug === c.slug && cell.field === "username" ? (
+                {/* Value stays in the cell so the row never resizes; the editor floats over it. */}
+                {c.usernamePattern}
+                {c.editedFields.includes("usernamePattern") && (
+                  <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                )}
+                {cell?.slug === c.slug && cell.field === "username" && (
                   <div
                     // Save when focus leaves the whole editor — NOT when moving between Primary/Backup.
                     onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commitUsername(c.slug, c.usernamePattern); }}
+                    style={{
+                      position: "absolute", top: "100%", left: 0, zIndex: 40, marginTop: 2,
+                      background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6,
+                      padding: "8px 10px", boxShadow: "0 6px 18px rgba(0,0,0,0.18)", width: 200, textAlign: "left",
+                    }}
                   >
                     <label className="muted" style={{ display: "block", fontSize: 10 }}>Primary</label>
                     <input
@@ -443,38 +454,31 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                       value={draft}
                       disabled={savingCell}
                       placeholder="{first}.{last}"
-                      style={{ width: 130, padding: "2px 6px" }}
+                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
                         else if (e.key === "Escape") setCell(null);
                       }}
                     />
-                    <label className="muted" style={{ display: "block", fontSize: 10, marginTop: 4 }}>Backup (if primary is taken)</label>
+                    <label className="muted" style={{ display: "block", fontSize: 10, marginTop: 6 }}>Backup (if primary is taken)</label>
                     <input
                       list="username-patterns"
                       value={draftBackup}
                       disabled={savingCell}
                       placeholder="{first}.{mi} (optional)"
-                      style={{ width: 130, padding: "2px 6px" }}
+                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
                       onChange={(e) => setDraftBackup(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
                         else if (e.key === "Escape") setCell(null);
                       }}
                     />
-                    <div className="note" style={{ marginTop: 2, whiteSpace: "nowrap" }}>
+                    <div className="note" style={{ marginTop: 4 }}>
                       John Jason Doe → {formatPreview(draft, c.emailDomain ?? c.primaryDomain)}
-                      {draftBackup.trim() && <> · backup → {formatPreview(draftBackup, c.emailDomain ?? c.primaryDomain)}</>}
+                      {draftBackup.trim() && <><br />backup → {formatPreview(draftBackup, c.emailDomain ?? c.primaryDomain)}</>}
                     </div>
                   </div>
-                ) : (
-                  <>
-                    {c.usernamePattern}
-                    {c.editedFields.includes("usernamePattern") && (
-                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
-                    )}
-                  </>
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
