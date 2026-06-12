@@ -842,17 +842,25 @@ while ($true) {
                 $msg = (($chain | Select-Object -Unique) -join ' <- ')
                 if (-not $msg) { $msg = $_.Exception.GetType().Name }
                 # A Graph "Insufficient privileges" tells you nothing about WHICH permission is missing.
-                # The m365 connection is still live in this process, so read the granted scopes and name
-                # the gap. Best-effort — never let this enrichment break the real error report.
+                # Always append the permission the FAILING PHASE needs (reliable across auth modes), and
+                # refine it with the precise gap from granted scopes when we can read them. Best-effort —
+                # never let this enrichment break the real error report.
                 if (($job.systemKey -in @('m365', 'entra')) -and ($msg -match 'Insufficient privileges|Authorization_RequestDenied|Access(Denied| is denied)')) {
+                    $ph = [string]$script:Phase
+                    $need = if ($ph -match 'group') { 'Group.ReadWrite.All (or GroupMember.ReadWrite.All)' }
+                            elseif ($ph -match 'licen') { 'User.ReadWrite.All + Organization.Read.All' }
+                            elseif ($ph -match 'user|creat|onboard|attribute|disable') { 'User.ReadWrite.All' }
+                            else { 'User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All' }
+                    $hint = "the app registration is missing a Graph APPLICATION permission for this step ($ph) — grant + admin-consent: $need"
                     try {
                         $ctx = Get-MgContext
                         $granted = @(); if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
                         if ($granted.Count -gt 0) {
                             $gaps = Get-CtgGraphScopeGaps $granted
-                            if ($gaps.Count) { $msg += " — likely missing Graph permission(s): $($gaps -join ' || '). Grant these APPLICATION permissions + admin consent on the app registration." }
+                            if ($gaps.Count) { $hint = "missing Graph permission(s): $($gaps -join ' || '). Grant + admin-consent (Application permissions on the app registration)." }
                         }
                     } catch { }
+                    $msg += " — $hint"
                 }
                 # Name the phase that failed ("while connecting to on-prem Exchange (…): Unauthorized")
                 # so the operator sees WHAT broke, not just the bare provider message.
