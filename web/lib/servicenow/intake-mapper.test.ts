@@ -41,6 +41,32 @@ test("onboard payload emits the canonical identity fields the modules read", () 
   assert.equal(payload.managerName, "Evan Kent");
 });
 
+test("usageLocation resolves from a US state/city (not blind US default) and flags nothing", () => {
+  const p = normalizeIntake(rec({ number: "UM1", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Atlanta, GA"] })).payload;
+  assert.equal(p.usageLocation, "US");
+  assert.equal(p.usageLocationDerived, true);
+  assert.deepEqual(p.unknownFields, []);
+});
+
+test("usageLocation falls back to the contact timezone when the office location is unclear", () => {
+  const p = normalizeIntake(rec({ number: "UM2", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "HQ"], u_new_contact_time_zone: ["x", "US/Eastern"] })).payload;
+  assert.equal(p.usageLocation, "US");
+  assert.equal(p.usageLocationDerived, true);
+});
+
+test("usageLocation is FLAGGED (not silently US) when neither location nor timezone is recognized", () => {
+  const p = normalizeIntake(rec({ number: "UM3", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Mars Office"] })).payload;
+  assert.equal(p.usageLocation, "US"); // safe default so onboarding isn't blocked
+  assert.equal(p.usageLocationDerived, false);
+  assert.equal((p.unknownFields as string[]).length, 1);
+  assert.match((p.unknownFields as string[])[0], /usageLocation/);
+});
+
+test("a non-US country resolves correctly", () => {
+  const p = normalizeIntake(rec({ number: "UM4", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "London, United Kingdom"] })).payload;
+  assert.equal(p.usageLocation, "GB");
+});
+
 test("deriveAction prefers the coded subcategory value over display text", () => {
   // 30100 = User Offboarding, regardless of the display text / short description.
   const offb = rec({ number: "UM0028680", subcategory: ["30100", "User Offboarding"], short_description: "ONB - typo'd title" });

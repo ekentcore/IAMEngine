@@ -41,18 +41,53 @@ const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => {
   return [];
 };
 
-// Office-location display ("United States") -> M365 UsageLocation (ISO-3166 alpha-2). Default US.
+// Office-location display -> M365 UsageLocation (ISO-3166 alpha-2). The office location is often a
+// CITY or STATE, not a country, so match those too; a US state/city resolves to US by a real match,
+// not by blind default. Returns null when it genuinely can't tell — the caller flags it (so we don't
+// silently mis-stamp a non-US user as US, and so the gap is noted for follow-up / an LLM pass).
 const COUNTRY_TO_ISO2: Record<string, string> = {
-  "united states": "US", "united states of america": "US", "usa": "US",
-  "canada": "CA", "united kingdom": "GB", "uk": "GB", "ireland": "IE",
-  "australia": "AU", "india": "IN", "singapore": "SG", "germany": "DE",
-  "france": "FR", "spain": "ES", "netherlands": "NL", "mexico": "MX",
+  "united states": "US", "united states of america": "US", "usa": "US", "u.s.": "US", "u.s.a.": "US",
+  "canada": "CA", "united kingdom": "GB", "uk": "GB", "great britain": "GB", "england": "GB", "scotland": "GB",
+  "ireland": "IE", "australia": "AU", "india": "IN", "singapore": "SG", "germany": "DE", "france": "FR",
+  "spain": "ES", "netherlands": "NL", "mexico": "MX", "italy": "IT", "switzerland": "CH", "japan": "JP",
+  "china": "CN", "brazil": "BR", "israel": "IL", "united arab emirates": "AE", "uae": "AE",
 };
-function deriveUsageLocation(officeLocation: string | null): string {
-  if (!officeLocation) return "US";
-  const m = officeLocation.trim().toLowerCase();
-  if (/^[a-z]{2}$/.test(m)) return m.toUpperCase(); // already a code
-  return COUNTRY_TO_ISO2[m] ?? "US";
+// US states + DC — a location naming any of these is US.
+const US_STATE_NAMES = "alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia";
+const US_STATE_ABBR = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+const KNOWN_ISO = new Set(Object.values(COUNTRY_TO_ISO2)); // valid 2-letter country codes we recognize
+
+// Timezone as a secondary signal when the office location is unclear (US/Eastern, America/New_York,
+// "Eastern Standard Time" → US; London/GMT → GB; etc.). Returns null when ambiguous.
+function usageLocationFromTimezone(tz: string | null): string | null {
+  if (!tz) return null;
+  const t = tz.toLowerCase();
+  if (/\bcanada\b|toronto|vancouver|halifax|winnipeg/.test(t)) return "CA";
+  if (/london|europe\/london|\bbst\b|\bgmt\b(?!\+)/.test(t)) return "GB";
+  if (/\b(us|usa)\b|america\/(new_york|chicago|denver|los_angeles|phoenix|anchorage)|eastern|central|mountain|pacific|alaska|hawaii/.test(t)) {
+    if (/central america|south america/.test(t)) return null;
+    return "US";
+  }
+  return null;
+}
+
+// Returns the ISO2 code, or null when undeterminable (caller flags it as unknown to resolve).
+function deriveUsageLocation(officeLocation: string | null, timezone: string | null = null): string | null {
+  const loc = officeLocation?.trim();
+  if (loc) {
+    const m = loc.toLowerCase();
+    if (/^[a-z]{2}$/.test(m)) {
+      const up = m.toUpperCase();
+      if (US_STATE_ABBR.has(up)) return "US"; // a 2-letter US state code is US, not a country code
+      if (KNOWN_ISO.has(up)) return up; // a real ISO country code (GB, CA, …)
+      // else: a 2-letter token that's neither (e.g. "HQ") — not a location; fall through
+    }
+    if (COUNTRY_TO_ISO2[m]) return COUNTRY_TO_ISO2[m];
+    for (const [name, iso] of Object.entries(COUNTRY_TO_ISO2)) if (m.includes(name)) return iso; // "London, United Kingdom"
+    if (new RegExp(`\\b(${US_STATE_NAMES})\\b`).test(m)) return "US"; // "Atlanta, Georgia"
+    if (US_STATE_ABBR.has((loc.match(/\b([A-Z]{2})\b/) ?? [])[1] ?? "")) return "US"; // "Tampa, FL"
+  }
+  return usageLocationFromTimezone(timezone); // null when even the timezone is ambiguous → flagged upstream
 }
 
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
@@ -73,6 +108,12 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
   const lastName = trimmed(val(r, "u_last"));
   const title = val(r, "u_title");
   const officeLocation = disp(r, "u_office_location");
+  const timezone = disp(r, "u_new_contact_time_zone") ?? val(r, "contact_time_zone");
+  const derivedUsage = deriveUsageLocation(officeLocation, timezone);
+  // "Note any unknown data so we can improve" — fields we couldn't confidently derive. Surfaced in
+  // the dry-run/playbook; the runner still uses a safe default (US) so onboarding isn't blocked.
+  const unknownFields: string[] = [];
+  if (!derivedUsage) unknownFields.push(`usageLocation — office location "${officeLocation ?? "—"}" / timezone "${timezone ?? "—"}" not recognized; defaulting to US (verify, or add the location to the map)`);
   return {
     // person
     firstName,
@@ -84,7 +125,9 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     displayName: [firstName, lastName].filter(Boolean).join(" ") || null,
     jobTitle: title,
     mobilePhone: val(r, "u_personal_phone"),
-    usageLocation: deriveUsageLocation(officeLocation),
+    usageLocation: derivedUsage ?? "US",
+    usageLocationDerived: Boolean(derivedUsage), // false = fell back to the US default; flagged in unknownFields
+    unknownFields,
     startDate: dateOnly(val(r, "u_start_date")),
     isRehire: yes(r, "u_is_this_a_re_hire"),
     newOrExisting: disp(r, "u_new_or_existing"),
