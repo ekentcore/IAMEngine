@@ -7,6 +7,7 @@ import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
 import type { ResolveClient } from "../clients/email-domain";
 import { resolvePlannedConfigs } from "../profiles/plan-resolve";
+import { resolveUnknownsWithAI } from "./ai-resolve";
 
 export type PlanOutcome = {
   caseId: string;
@@ -42,13 +43,20 @@ export async function createAndPlanCase(
   const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null };
   let domain = client.emailDomain ?? client.primaryDomain;
   if (input.action === "onboard" && opts?.resolveDomain) domain = await opts.resolveDomain(client);
-  const payload =
+  let payload =
     input.action === "onboard"
       ? deriveIdentity(input.payload, {
           usernamePatterns: identity.usernamePatterns ?? null,
           primaryDomain: domain,
         })
       : input.payload;
+
+  // LLM last resort: before holding the case for unknowns, let the AI take a confident guess at the
+  // fields the deterministic mapping couldn't resolve (marked AI-derived for an operator to confirm).
+  if (input.action === "onboard" && Array.isArray((payload as { unknownFields?: unknown }).unknownFields) && (payload as { unknownFields: unknown[] }).unknownFields.length > 0) {
+    const ai = await resolveUnknownsWithAI(payload as Record<string, unknown>);
+    payload = ai.payload;
+  }
 
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
   const planned = resolvePlannedConfigs(client, payload, input.action, planCase(client.systems, input.action, payload));

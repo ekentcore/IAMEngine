@@ -52,6 +52,8 @@ export type RunReport = {
   // Intake fields the system couldn't determine — editable to fill in. held = the case is paused as
   // "Needs Information" until they're provided. null when there's nothing to fill.
   needsInfo: { fields: { field: string; label: string; note: string }[]; held: boolean } | null;
+  // Fields the LLM filled as a last resort (marked for an operator to confirm). null when none.
+  aiResolved: { field: string; note: string }[] | null;
   user: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -263,6 +265,12 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         ? (uf as unknown[]).map((x) => x as { field?: unknown; label?: unknown; note?: unknown }).filter((x) => typeof x.field === "string").map((x) => ({ field: String(x.field), label: String(x.label ?? x.field), note: String(x.note ?? "") }))
         : [];
       return fields.length ? { fields, held: input.pausedReason === "needs_info" } : null;
+    })(),
+    aiResolved: (() => {
+      const ar = input.payload.aiResolved;
+      if (!ar || typeof ar !== "object") return null;
+      const list = Object.entries(ar as Record<string, unknown>).map(([field, note]) => ({ field, note: String(note) }));
+      return list.length ? list : null;
     })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),

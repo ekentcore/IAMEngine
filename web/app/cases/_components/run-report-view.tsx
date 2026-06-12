@@ -294,6 +294,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
       {report.needsInfo && <NeedsInfoPanel caseId={caseId} info={report.needsInfo} refresh={refresh} />}
+      {report.aiResolved && (
+        <div className="note" style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.65rem", borderRadius: 8, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1e40af" }}>
+          ✨ AI-filled (please verify): {report.aiResolved.map((a) => `${a.field} — ${a.note}`).join(" · ")}
+        </div>
+      )}
       {running && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
