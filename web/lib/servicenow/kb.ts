@@ -31,20 +31,38 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+type KbRow = {
+  number?: { display_value?: string };
+  short_description?: { display_value?: string };
+  text?: { display_value?: string; value?: string };
+  workflow_state?: { value?: string; display_value?: string };
+  latest?: { value?: string };
+  sys_updated_on?: { value?: string; display_value?: string };
+};
+
+const truthy = (v?: string) => v === "true" || v === "1";
+
 export async function fetchKbArticle(config: SnConfig, number: string, fetcher: Fetcher = fetch): Promise<KbArticle | null> {
-  const rows = await snGet<Array<{ number?: { display_value?: string }; short_description?: { display_value?: string }; text?: { display_value?: string; value?: string } }>>(
+  // kb_knowledge keeps EVERY revision as its own row under the SAME number (a KB updated 7 times =
+  // 7 rows). Without a version filter, `limit 1` returns an arbitrary — often OUTDATED — revision,
+  // so the runbook can show stale licenses/steps. Pull the candidates newest-first and pick the live
+  // published one (latest=true, else workflow_state=published), falling back to the most recent.
+  const rows = await snGet<Array<KbRow>>(
     config,
     "/api/now/table/kb_knowledge",
     {
-      sysparm_query: `number=${number}`,
-      sysparm_fields: "number,short_description,text",
+      sysparm_query: `number=${number}^ORDERBYDESCsys_updated_on`,
+      sysparm_fields: "number,short_description,text,workflow_state,latest,sys_updated_on",
       sysparm_display_value: "all",
-      sysparm_limit: "1",
+      sysparm_limit: "25",
     },
     fetcher
   );
-  const r = rows[0];
-  if (!r) return null;
+  if (rows.length === 0) return null;
+  const r =
+    rows.find((x) => truthy(x.latest?.value)) ??
+    rows.find((x) => (x.workflow_state?.value ?? "").toLowerCase() === "published") ??
+    rows[0]; // already newest-first by sys_updated_on
   const html = r.text?.value ?? r.text?.display_value ?? "";
   return {
     number: r.number?.display_value ?? number,
