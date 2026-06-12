@@ -20,6 +20,23 @@ test("masks the local part of emails but keeps the domain (backbone signal)", ()
   assert.match(t, /\[user\]@acorecapital\.com/);
 });
 
+test("preserves naming-convention TEMPLATES in emails (not real PII)", () => {
+  // KB documents the username convention, not a real person — keep it readable for the runbook.
+  assert.equal(redact("Username: FirstName.LastName@drakestar.com"), "Username: FirstName.LastName@drakestar.com");
+  assert.equal(redact("conflict -> Firstname.middleinitial@drakestar.com"), "conflict -> Firstname.middleinitial@drakestar.com");
+  assert.equal(redact("use [FirstName].[LastName]@acme.com"), "use [FirstName].[LastName]@acme.com");
+  assert.equal(redact("pattern {first}.{last}@acme.com"), "pattern {first}.{last}@acme.com");
+  // An already-redacted placeholder stays put (idempotent).
+  assert.equal(redact("[user]@acme.com"), "[user]@acme.com");
+});
+
+test("still masks a REAL person's email even alongside templates", () => {
+  const t = redact("e.g. felix.kessler@drakestar.com (pattern FirstName.LastName@drakestar.com)");
+  assert.doesNotMatch(t, /felix\.kessler/);
+  assert.match(t, /\[user\]@drakestar\.com/);
+  assert.match(t, /FirstName\.LastName@drakestar\.com/); // template kept
+});
+
 test("masks phone numbers and SSNs", () => {
   assert.match(redact("call 415-555-0199"), /\[phone\]/);
   assert.match(redact("SSN 123-45-6789"), /\[ssn\]/);
