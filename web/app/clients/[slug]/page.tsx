@@ -16,6 +16,7 @@ import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { SecretsPanel } from "../_components/secrets-panel";
+import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
 
@@ -279,6 +280,9 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
 
       <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>
       <SecretsPanel slug={client.slug} initialRows={secretRows} delineaConfigured={delineaConfigured(delineaConfigFromEnv())} />
+
+      <h2 style={{ marginTop: "1.5rem" }}>Connection tests</h2>
+      <ConnectionTestPanel slug={client.slug} systemNames={Object.fromEntries(client.systems.map((s) => [s.systemKey, s.system.name]))} />
 
       <h2 style={{ marginTop: "1.5rem" }}>Runbook — everything to do</h2>
       <p className="note">

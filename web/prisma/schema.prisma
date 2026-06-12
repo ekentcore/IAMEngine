@@ -127,6 +127,7 @@ model Client {
   agents        Agent[]
   cases         CaseRequest[]
   runbook       RunbookSection[]
+  connectionTests ConnectionTest[]
 }
 
 model SystemCatalog {
@@ -191,6 +192,28 @@ model Agent {
   jobs       Job[]
 
   @@index([deletedAt])
+}
+
+// A one-off "does the credential actually connect, with the right permissions?" probe. ISOLATED
+// from the Job/CaseRequest pipeline so a probe can never affect a real onboarding: its own table,
+// its own claim, its own runner loop. Routed like a job — cloud systems to the central runner, on-
+// prem (AD/sync, hybrid Exchange) to the client agent — via the onPrem flag the app stamps.
+model ConnectionTest {
+  id          String   @id @default(cuid())
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId    String
+  systemKey   String
+  status      String   @default("pending") // pending | running | ok | fail
+  detail      String?  // one-line summary ("tenant Contoso · scopes …") or the error
+  onPrem      Boolean  @default(false)      // true -> only the client's agent claims it
+  secretNames String[] @default([])         // the system's required secrets, brokered at run time
+  requestedAt DateTime @default(now())
+  claimedAt   DateTime?
+  finishedAt  DateTime?
+  assignedAgentId String?
+
+  @@index([status])
+  @@index([clientId])
 }
 
 model CaseRequest {

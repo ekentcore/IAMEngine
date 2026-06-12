@@ -334,6 +334,90 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
+    // --- Connection tests (isolated permission preflight) ----------------------------------------
+    // A separate lane from the Job pipeline: the runner connects with the brokered credential and
+    // does one cheap authorized read, proving the cred not only resolves but actually has access.
+    // Routed like a job (cloud -> central runner, on-prem -> client agent) via the onPrem flag.
+
+    // Queue a fresh set of tests for a client (replaces any prior run). One row per api system that
+    // actually connects to something (has a required secret).
+    async requestConnectionTests(clientSlug: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+      const client = await db.client.findUnique({
+        where: { slug: clientSlug },
+        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true } } },
+      });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
+      const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
+      await db.connectionTest.deleteMany({ where: { clientId: client.id } });
+      if (testable.length === 0) return { tests: [] };
+      const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+      await db.connectionTest.createMany({ data: rows });
+      return { tests: rows.map((r) => ({ systemKey: r.systemKey, onPrem: r.onPrem })) };
+    },
+
+    async listConnectionTests(clientSlug: string) {
+      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      const tests = await db.connectionTest.findMany({
+        where: { clientId: client.id },
+        orderBy: { systemKey: "asc" },
+        select: { systemKey: true, status: true, detail: true, onPrem: true, finishedAt: true },
+      });
+      return { tests };
+    },
+
+    // Atomic claim, same scope rule as job claim: a central runner (no clientId) takes only cloud
+    // tests; a client agent takes its own client's (cloud + on-prem).
+    async claimConnectionTests(agentId: string, max = 5): Promise<{ id: string; systemKey: string; secretNames: string[]; clientSlug: string; primaryDomain: string }[]> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, clientId: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (!agent.enabled) return [];
+      const where = { status: "pending", ...(agent.clientId ? { clientId: agent.clientId } : { onPrem: false }) };
+      const candidates = await db.connectionTest.findMany({ where, orderBy: { requestedAt: "asc" }, take: Math.max(1, Math.min(25, max)), select: { id: true } });
+      if (candidates.length === 0) return [];
+      const ids = candidates.map((c) => c.id);
+      await db.connectionTest.updateMany({ where: { id: { in: ids }, status: "pending" }, data: { status: "running", assignedAgentId: agent.id, claimedAt: new Date() } });
+      const claimed = await db.connectionTest.findMany({
+        where: { id: { in: ids }, assignedAgentId: agent.id, status: "running" },
+        select: { id: true, systemKey: true, secretNames: true, client: { select: { slug: true, primaryDomain: true } } },
+      });
+      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain }));
+    },
+
+    // Same push-down broker as a job, scoped to the test's own secretNames (no case overrides).
+    async brokerConnectionTestCredential(testId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { status: true, assignedAgentId: true, secretNames: true, clientId: true } });
+      if (!t) throw new HttpError(404, "unknown connection test");
+      if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
+      await assertAgentEnabled(db, agentId);
+      if (t.status !== "running") throw new HttpError(409, `connection test is ${t.status}; credentials only brokered while running`);
+      if (!t.secretNames.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this connection test`);
+      const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: t.clientId, name: secretName } }, select: { provider: true, externalId: true } });
+      const { externalId, source } = effectiveExternalId(secretName, null, clientSecret?.externalId ?? null);
+      if (source === "not_needed") throw new HttpError(409, `secret '${secretName}' is marked not needed (manual step) — nothing to test`);
+      if (!externalId) throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client)`);
+      const cfg = delineaConfigFromEnv();
+      let brokered = false; let label: string | undefined; let fields: Record<string, string> | undefined;
+      let note: string | undefined = "Delinea not configured on the app — set DELINEA_* so the app can resolve and push the credential";
+      if (delineaConfigured(cfg)) {
+        const resolved = await resolveSecretFields(cfg, externalId);
+        if (!resolved.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${resolved.error ?? "unknown error"}`);
+        brokered = true; label = resolved.label; fields = resolved.fields; note = undefined;
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.credential", clientId: t.clientId, detail: { secretName, brokered, fieldNames: fields ? Object.keys(fields) : [] } } });
+      return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
+    },
+
+    async reportConnectionTest(testId: string, agentId: string, ok: boolean, detail: string): Promise<{ ok: true }> {
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true } });
+      if (!t) throw new HttpError(404, "unknown connection test");
+      if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
+      await db.connectionTest.update({ where: { id: testId }, data: { status: ok ? "ok" : "fail", detail: (detail ?? "").slice(0, 500), finishedAt: new Date() } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, ok } } });
+      return { ok: true };
+    },
+
     // Live progress: the runner posts the phase it's entering ("connecting to Exchange Online",
     // "enabling remote mailbox", …) as it works, so the run report can show what a step is doing
     // right now instead of an opaque "running". Best-effort + append-only (last 20), and only while

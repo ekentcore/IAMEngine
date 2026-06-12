@@ -588,6 +588,66 @@ function Get-JobCredential {
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
 
+function Get-ConnTestCredential {
+    # Same push-down broker as Get-JobCredential, but for a connection test (no job). Rebuilds the
+    # .Username/.Password/.Credential/.Fields shape the $DISPATCH Connect blocks expect.
+    param($TestId, $SecretName)
+    $ref = Invoke-AppApi POST "/api/runner/conn-tests/$TestId/credential" @{ agentId = $AgentId; secretName = $SecretName }
+    $fields = @{}
+    if ($ref.fields) { foreach ($p in $ref.fields.PSObject.Properties) { $fields[$p.Name] = $p.Value } }
+    if ($fields.Count -eq 0) {
+        $why = if ($ref.note) { $ref.note } else { "the app returned no secret fields" }
+        throw "secret '$SecretName' was not resolved by the app — $why"
+    }
+    $username = $fields['Username']
+    $password = if ($fields.ContainsKey('Password') -and $fields['Password']) { ConvertTo-SecureString ([string]$fields['Password']) -AsPlainText -Force } else { $null }
+    $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
+    [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
+}
+
+# Connection-test probes: after Connect (auth), one cheap authorized READ proves real access — not
+# just that the credential authenticates. Systems with a $DISPATCH Connect but no probe here are
+# connect-only (a successful Connect is itself meaningful). AD/dir-sync have no session Connect, so
+# their probe binds with the ad-dc credential. Extend freely — keep reads cheap + read-only.
+$CONNTEST_PROBE = @{
+    'm365'             = { param($job, $creds) $o = @(Get-MgOrganization -ErrorAction Stop)[0]; "tenant: $($o.DisplayName)" }
+    'exchange'         = { param($job, $creds) $o = Get-OrganizationConfig -ErrorAction Stop; "org: $($o.Name)" }
+    'active-directory' = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "domain: $($d.DNSRoot)" }
+    'directory-sync'   = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
+}
+
+function Invoke-CtgConnectionTests {
+    # Claim + run any queued connection tests for this agent. Fully isolated from the job pipeline:
+    # connect with the brokered credential, run the read probe, report pass/fail + a one-line detail.
+    $tests = @()
+    try { $tests = Invoke-AppApi POST '/api/runner/conn-tests/claim' @{ agentId = $AgentId; max = 5 } } catch { return }
+    foreach ($t in @($tests)) {
+        $global:CtgProgressJobId = $null   # no job -> keep Connect's Set-CtgPhase from posting progress
+        $ok = $true; $detail = ''
+        $creds = @{}
+        $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
+        try {
+            foreach ($sn in @($t.secretNames)) { if ($sn) { $creds[$sn] = Get-ConnTestCredential $t.id $sn } }
+            $handler = $DISPATCH[$t.systemKey]
+            $probe = $CONNTEST_PROBE[$t.systemKey]
+            $hasConnect = $handler -and $handler.ContainsKey('Connect')
+            if (-not $hasConnect -and -not $probe) { throw "no automated connection test available for '$($t.systemKey)' — verify it manually" }
+            if ($hasConnect) { & $handler.Connect $job $creds; $detail = 'connected' }
+            if ($probe) { $detail = & $probe $job $creds }
+        } catch {
+            $ok = $false
+            $ex = $_.Exception; $chain = [System.Collections.Generic.List[string]]::new()
+            while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
+            $detail = Protect-CtgSecretsInText (($chain | Select-Object -Unique) -join ' <- ') $creds
+        } finally {
+            # A conn-test connects OUTSIDE the cached-connection path — drop this system's cache key so
+            # the next REAL job reconnects with its own tenant/creds (never reuses a conn-test session).
+            if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
+        }
+        try { Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; ok = $ok; detail = "$detail" } } catch { }
+    }
+}
+
 # Build id of the code we're actually running = hash of our own files (matches the app's hash of the
 # bundle it serves). Reported on every heartbeat → accurate even if a past restart half-landed, with
 # no marker file to keep in sync.
@@ -723,6 +783,10 @@ while ($true) {
             }
             finally { $global:CtgProgressJobId = $null }  # don't let a stray post target a finished job
         }
+
+        # Separate, isolated lane: operator-requested connection/permission tests (cloud here on the
+        # central runner; on-prem on the client agent). Never affects the job pipeline above.
+        Invoke-CtgConnectionTests
     }
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"
