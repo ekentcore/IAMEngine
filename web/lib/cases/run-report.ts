@@ -54,6 +54,13 @@ export type RunReport = {
   needsInfo: { fields: { field: string; label: string; note: string }[]; held: boolean } | null;
   // Fields the LLM filled as a last resort (marked for an operator to confirm). null when none.
   aiResolved: { field: string; note: string }[] | null;
+  // Dry-run review (onboard): the resolved identity/detail fields that WILL be set (editable), plus
+  // the groups (with type hint) and licenses the plan will apply. null for offboard.
+  review: {
+    fields: { key: string; label: string; value: string; source: "ai" | "operator" | "derived" }[];
+    groups: { name: string; type: string | null }[];
+    licenses: string[];
+  } | null;
   user: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -271,6 +278,27 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       if (!ar || typeof ar !== "object") return null;
       const list = Object.entries(ar as Record<string, unknown>).map(([field, note]) => ({ field, note: String(note) }));
       return list.length ? list : null;
+    })(),
+    review: (() => {
+      if (input.action !== "onboard") return null;
+      const p = input.payload;
+      const ai = (p.aiResolved && typeof p.aiResolved === "object" ? p.aiResolved : {}) as Record<string, unknown>;
+      const defs: [string, string][] = [
+        ["displayName", "Display name"], ["userPrincipalName", "UPN / username"], ["jobTitle", "Job title"],
+        ["department", "Department"], ["managerName", "Manager"], ["officeLocation", "Office location"],
+        ["usageLocation", "Usage location (M365)"], ["timezone", "Timezone"], ["startDate", "Start date"],
+      ];
+      const fields = defs.map(([key, label]) => ({
+        key, label,
+        value: p[key] == null ? "" : String(p[key]),
+        source: (key in ai ? "ai" : key === "usageLocation" && p.usageLocationSource === "operator" ? "operator" : "derived") as "ai" | "operator" | "derived",
+      }));
+      const cfg = (((input.jobs.find((j) => j.systemKey === "m365")?.request ?? {}) as { config?: unknown }).config ?? {}) as { groups?: unknown; defaultGroups?: unknown; licenses?: unknown; defaultLicenses?: unknown };
+      const rawGroups = Array.isArray(cfg.groups) ? cfg.groups : Array.isArray(cfg.defaultGroups) ? cfg.defaultGroups : [];
+      const groups = rawGroups.map((g) => (typeof g === "string" ? { name: g, type: null } : { name: String((g as { name?: unknown }).name ?? ""), type: ((g as { type?: unknown }).type as string) ?? null })).filter((g) => g.name);
+      const rawLic = Array.isArray(cfg.licenses) ? cfg.licenses : Array.isArray(cfg.defaultLicenses) ? cfg.defaultLicenses : [];
+      const licenses = rawLic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown }).name ?? ""))).filter(Boolean);
+      return { fields, groups, licenses };
     })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),

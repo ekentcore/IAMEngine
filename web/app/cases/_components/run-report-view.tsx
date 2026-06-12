@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
@@ -144,6 +144,51 @@ function LicensePicker({ jobId, options, refresh }: { jobId: string; options: No
         {busy ? "Assigning…" : `Assign ${chosen.length || ""} & re-run`}
       </button>
     </div>
+  );
+}
+
+// Dry-run review: the resolved fields that will be set (editable), plus the groups (with type) and
+// licenses the plan will apply. Editing a field PATCHes the case payload (read by the runner at
+// claim time) — so an operator can correct anything before/while it runs.
+function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonNullable<RunReport["review"]>; refresh: () => Promise<void> | void }) {
+  const [open, setOpen] = useState(false);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const dirty = Object.keys(edits).length > 0;
+  const SRC: Record<string, { label: string; color: string }> = { ai: { label: "AI", color: "#1e40af" }, operator: { label: "edited", color: "#15803d" }, derived: { label: "", color: "" } };
+
+  return (
+    <details open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} style={{ margin: "0 0 0.5rem", border: "1px solid var(--line)", borderRadius: 8, padding: "0.5rem 0.75rem" }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 14 }}>Fields to be set (dry run) — review &amp; edit</summary>
+      <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "0.3rem 0.6rem", alignItems: "center", margin: "0.6rem 0" }}>
+        {review.fields.map((f) => (
+          <React.Fragment key={f.key}>
+            <label style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+              {f.label}{f.source !== "derived" && SRC[f.source].label && <span className="badge" style={{ marginLeft: 5, fontSize: 9, color: SRC[f.source].color }}>{SRC[f.source].label}</span>}
+            </label>
+            <input value={edits[f.key] ?? f.value} onChange={(e) => setEdits((s) => ({ ...s, [f.key]: e.target.value }))} style={{ fontSize: 13, maxWidth: 360 }} />
+          </React.Fragment>
+        ))}
+      </div>
+      {(review.groups.length > 0 || review.licenses.length > 0) && (
+        <div className="note" style={{ margin: "0.3rem 0 0.5rem" }}>
+          {review.licenses.length > 0 && <div>Licenses: <b>{review.licenses.join(", ")}</b></div>}
+          {review.groups.length > 0 && <div>Groups: {review.groups.map((g) => `${g.name}${g.type ? ` (${g.type})` : ""}`).join(", ")} <span className="muted">— type confirmed at run time; edit on the client page</span></div>}
+        </div>
+      )}
+      {msg && <p className="note" style={{ color: "#15803d" }}>{msg}</p>}
+      <button className="primary" disabled={busy || !dirty} style={{ fontSize: 12 }} onClick={async () => {
+        setBusy(true); setMsg(null);
+        try {
+          const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: edits }) });
+          if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+          setEdits({}); setMsg("✓ Saved — applies on the next run/claim.");
+          await refresh();
+        } catch (e) { setMsg((e as Error).message); }
+        finally { setBusy(false); }
+      }}>{busy ? "Saving…" : "Save edits"}</button>
+    </details>
   );
 }
 
@@ -294,6 +339,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
       {report.needsInfo && <NeedsInfoPanel caseId={caseId} info={report.needsInfo} refresh={refresh} />}
+      {report.review && <ReviewPanel caseId={caseId} review={report.review} refresh={refresh} />}
       {report.aiResolved && (
         <div className="note" style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.65rem", borderRadius: 8, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1e40af" }}>
           ✨ AI-filled (please verify): {report.aiResolved.map((a) => `${a.field} — ${a.note}`).join(" · ")}
