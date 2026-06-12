@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { SecretHelpLink } from "@/app/_components/secret-help-link";
+import { NOT_NEEDED } from "@/lib/cases/case-secrets";
 
 export type SecretRowVM = {
   name: string;
@@ -35,9 +36,9 @@ export function SecretsPanel({
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
   // Mark a secret "not needed" (its module is handled as a manual step) so a missing credential
-  // doesn't block the case. Stored as the sentinel id "NOT_NEEDED"; toggling off clears it.
+  // doesn't block the case. Stored as the sentinel id NOT_NEEDED; toggling off clears it.
   function toggleNotNeeded(name: string) {
-    setRows((rs) => rs.map((r) => (r.name === name ? { ...r, externalId: r.externalId === "NOT_NEEDED" ? "" : "NOT_NEEDED" } : r)));
+    setRows((rs) => rs.map((r) => (r.name === name ? { ...r, externalId: r.externalId === NOT_NEEDED ? "" : NOT_NEEDED } : r)));
     setDirty(true);
     setSaveMsg(null);
     setTests((t) => {
@@ -148,7 +149,7 @@ export function SecretsPanel({
         <tbody>
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
-            const notNeeded = r.externalId === "NOT_NEEDED";
+            const notNeeded = r.externalId === NOT_NEEDED;
             return (
               <tr key={r.name}>
                 <td>
@@ -203,7 +204,7 @@ export function SecretsPanel({
       </table>
       <div className="dialog-actions" style={{ justifyContent: "flex-start", marginTop: "0.75rem" }}>
         <button className="primary" onClick={save} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
-        <button onClick={() => test(rows.filter((r) => r.externalId !== "NOT_NEEDED").map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
+        <button onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED).map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
         {saveMsg && <span className="note danger">{saveMsg}</span>}
         {dirty && !saveMsg && <span className="note muted">Unsaved changes</span>}
       </div>
