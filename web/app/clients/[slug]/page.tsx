@@ -12,6 +12,7 @@ import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
+import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { SecretsPanel } from "../_components/secrets-panel";
@@ -179,6 +180,17 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             return Array.isArray(gs)
               ? gs.map((x) => (typeof x === "string" ? { name: x } : { name: String((x as { name?: unknown })?.name ?? ""), type: (x as { type?: string })?.type })).filter((x) => x.name)
               : [];
+          })()}
+        />
+      )}
+      {sysByKey.has("m365") && (
+        <M365PasswordEditor
+          slug={client.slug}
+          current={(() => {
+            const ob = ((sysByKey.get("m365")?.config ?? {}) as { onboard?: { initialPassword?: unknown; initialPasswordSecret?: unknown } }).onboard ?? {};
+            if (typeof ob.initialPasswordSecret === "string" && ob.initialPasswordSecret) return { mode: "secret" as const, secretName: ob.initialPasswordSecret };
+            if (typeof ob.initialPassword === "string" && ob.initialPassword) return { mode: "fixed" as const };
+            return { mode: "generate" as const };
           })()}
         />
       )}

@@ -130,6 +130,31 @@ function Get-CtgTenantDomain {
 
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
 # the first job for that system; the action lanes receive ($job, $creds) where $creds maps each
+# The initial password for a new user, in priority order:
+#   1. A brokered Delinea secret — named by config.initialPasswordSecret, else a 'default-password'
+#      secret if one was brokered (the app resolved + pushed it down like any credential).
+#   2. A literal config.initialPassword (a default typed into the KB).
+#   3. A generated policy-compliant password (the default).
+# Always returns a SecureString. No StrictMode at runner scope, so missing config props read $null.
+function Resolve-CtgInitialPassword {
+    param($Job, $Creds)
+    $cfg = $Job.config
+    $secretName = if ($cfg) { [string]$cfg.initialPasswordSecret } else { $null }
+    if ([string]::IsNullOrWhiteSpace($secretName) -and $Creds -and $Creds.ContainsKey('default-password')) { $secretName = 'default-password' }
+    if (-not [string]::IsNullOrWhiteSpace($secretName) -and $Creds -and $Creds.ContainsKey($secretName) -and $Creds[$secretName]) {
+        $s = $Creds[$secretName]
+        $val = $null
+        if ($s.Password) { $val = ConvertFrom-SecureString $s.Password -AsPlainText }
+        if ([string]::IsNullOrWhiteSpace($val) -and $s.Fields) {
+            foreach ($k in @('Password', 'InitialPassword', 'Value', 'Key', 'Secret')) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { $val = [string]$s.Fields[$k]; break } }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($val)) { return (ConvertTo-SecureString $val -AsPlainText -Force) }
+    }
+    $literal = if ($cfg) { [string]$cfg.initialPassword } else { $null }
+    if (-not [string]::IsNullOrWhiteSpace($literal)) { return (ConvertTo-SecureString $literal -AsPlainText -Force) }
+    return (New-CtgCompliantPassword)
+}
+
 # named secret to its resolved credential object (.Credential is a pscredential).
 $DISPATCH = @{
     'm365' = @{
@@ -140,7 +165,7 @@ $DISPATCH = @{
             Set-CtgPhase $job.id "connecting to m365 (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
             Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
         }
-        Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
+        Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds) }
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
@@ -164,7 +189,7 @@ $DISPATCH = @{
             }
             Connect-CtgMimecast -Credential ([pscredential]::new([string]$id, (ConvertTo-SecureString ([string]$secret) -AsPlainText -Force)))
         }
-        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
+        Onboard  = { param($job, $creds) Invoke-CtgMimecastOnboarding  -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds) }
         Offboard = { param($job, $creds) Invoke-CtgMimecastOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgMimecast -User $job.payload -Config $job.config -Action $job.action }
     }
