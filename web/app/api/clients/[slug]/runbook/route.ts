@@ -22,7 +22,9 @@ function sanitizeSections(arr: unknown[]): ParsedSection[] {
     const sec = s as { title?: unknown; systemKey?: unknown; steps?: unknown };
     if (typeof sec.title !== "string" || !sec.title.trim()) continue;
     const systemKey = typeof sec.systemKey === "string" && KNOWN.has(sec.systemKey) ? sec.systemKey : null;
-    const steps = Array.isArray(sec.steps) ? sec.steps.filter((x): x is string => typeof x === "string") : [];
+    // Drop blank steps (an added-but-unfilled line in the editor); keep leading-space indentation on
+    // real ones (sub-steps).
+    const steps = Array.isArray(sec.steps) ? sec.steps.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
     out.push({ seq: out.length, systemKey, title: sec.title.trim(), status: systemKey ? "automated" : "unmodeled", steps });
   }
   return out;

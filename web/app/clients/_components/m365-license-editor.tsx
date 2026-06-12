@@ -5,14 +5,7 @@
 // saving, re-plan open cases to apply the change to in-flight ones.
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-// Common license names the runner resolves to tenant SKUs (Resolve-CtgSkuId / LicenseSkuMap). Free
-// text is allowed too — anything the tenant owns by name or SKU part number.
-const COMMON = [
-  "Office 365 E1", "Office 365 E3", "Office 365 E5",
-  "Microsoft 365 Business Basic", "Microsoft 365 Business Standard", "Microsoft 365 Business Premium",
-  "Microsoft Defender for Office 365 Plan 1", "Exchange Online (Plan 1)",
-];
+import { COMMON_LICENSES as COMMON } from "@/lib/m365/license-catalog";
 
 export function M365LicenseEditor({ slug, current }: { slug: string; current: string[] }) {
   const router = useRouter();

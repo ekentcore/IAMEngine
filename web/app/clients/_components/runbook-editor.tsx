@@ -5,6 +5,7 @@
 // known system (Active Directory, Microsoft 365, Exchange…) get wired to that system automatically.
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { COMMON_LICENSES, COMMON_USERNAME_PATTERNS } from "@/lib/m365/license-catalog";
 
 type Section = { seq: number; systemKey: string | null; title: string; status: string; steps: string[] };
 
@@ -88,6 +89,23 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       const next = [...p]; next[si] = { ...next[si], steps };
       return next;
     });
+  }
+  // Inline edits to the previewed sections — fix a wrong username/license line, drop a step, add one,
+  // or rename a section. Saved verbatim by saveEdited (blank steps are dropped server-side).
+  function editStep(si: number, ti: number, value: string) {
+    setPreview((p) => { if (!p) return p; const steps = [...p[si].steps]; steps[ti] = value; const next = [...p]; next[si] = { ...next[si], steps }; return next; });
+  }
+  function removeStep(si: number, ti: number) {
+    setPreview((p) => { if (!p) return p; const steps = p[si].steps.filter((_, k) => k !== ti); const next = [...p]; next[si] = { ...next[si], steps }; return next; });
+  }
+  function addStep(si: number) {
+    setPreview((p) => { if (!p) return p; const next = [...p]; next[si] = { ...next[si], steps: [...next[si].steps, ""] }; return next; });
+  }
+  function editTitle(si: number, value: string) {
+    setPreview((p) => { if (!p) return p; const next = [...p]; next[si] = { ...next[si], title: value }; return next; });
+  }
+  function removeSection(si: number) {
+    setPreview((p) => { if (!p) return p; return p.filter((_, k) => k !== si).map((s, k) => ({ ...s, seq: k })); });
   }
 
   // Pull the article's CURRENT body from ServiceNow into the textarea — then the normal
@@ -226,21 +244,33 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
       </div>
       {preview && (
         <div style={{ marginTop: "0.6rem" }}>
-          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system){usedAI ? " · ✨ structured by AI" : useAI ? " · AI unavailable, used heuristic parse" : ""}. Use ▲▼ to reorder, then Save.</p>
+          {/* Suggestions for license / username lines — free text still allowed. */}
+          <datalist id="rb-suggest">
+            {[...COMMON_LICENSES, ...COMMON_USERNAME_PATTERNS].map((v) => <option key={v} value={v} />)}
+          </datalist>
+          <p className="note">Preview — {preview.length} section{preview.length === 1 ? "" : "s"} ({preview.filter((s) => s.systemKey).length} mapped to a system){usedAI ? " · ✨ structured by AI" : useAI ? " · AI unavailable, used heuristic parse" : ""}. Edit any line (fix a username or license), ✕ to remove, + add a step, ▲▼ to reorder — then Save.</p>
           {preview.map((s, si) => (
             <div key={si} style={{ margin: "0.4rem 0", paddingLeft: "0.4rem", borderLeft: "2px solid var(--line)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <Arrows up={() => moveSection(si, -1)} down={() => moveSection(si, 1)} disUp={si === 0} disDown={si === preview.length - 1} title="section" />
-                <b>{si + 1}. {s.title}</b>{" "}
+                <span style={{ fontWeight: 700 }}>{si + 1}.</span>
+                <input value={s.title} onChange={(e) => editTitle(si, e.target.value)} aria-label="section title"
+                  style={{ fontWeight: 700, fontSize: 13, flex: 1, minWidth: 0, maxWidth: 320 }} />
                 <span className="badge" style={{ color: s.systemKey ? "#2e7d32" : "var(--muted)" }}>{s.systemKey ?? "unmodeled"}</span>
+                <button onClick={() => removeSection(si)} title="remove this whole section" style={{ fontSize: 11, color: "#b91c1c" }}>✕ section</button>
               </div>
-              <ul className="muted" style={{ margin: "0.2rem 0", listStyle: "none", paddingLeft: 0 }}>
+              <ul style={{ margin: "0.2rem 0", listStyle: "none", paddingLeft: 0 }}>
                 {s.steps.map((st, ti) => (
-                  <li key={ti} style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: (st.match(/^ */)?.[0].length ?? 0) * 6 }}>
+                  <li key={ti} style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: (st.match(/^ */)?.[0].length ?? 0) * 6, marginBottom: 2 }}>
                     <Arrows up={() => moveStep(si, ti, -1)} down={() => moveStep(si, ti, 1)} disUp={ti === 0} disDown={ti === s.steps.length - 1} title="step" />
-                    <span>{st.trim()}</span>
+                    <input value={st} onChange={(e) => editStep(si, ti, e.target.value)} list="rb-suggest" aria-label="step"
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, fontFamily: "monospace" }} />
+                    <button onClick={() => removeStep(si, ti)} title="remove this step" style={{ fontSize: 12, color: "#b91c1c", padding: "0 6px" }}>✕</button>
                   </li>
                 ))}
+                <li style={{ marginTop: 2 }}>
+                  <button onClick={() => addStep(si)} style={{ fontSize: 12 }}>+ add step</button>
+                </li>
               </ul>
             </div>
           ))}
