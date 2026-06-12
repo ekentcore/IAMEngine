@@ -53,8 +53,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
     for (const p of parts) {
       if (!NAME_TOKEN.test(p)) return NextResponse.json({ error: `each pattern must include a name token like {first} or {last}: "${p}"` }, { status: 422 });
     }
-    const client = await repo.setUsernamePattern(params.slug, parts[0], parts[1]);
-    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: parts[0], fallback: parts[1] ?? null } });
+    const client = await repo.setUsernamePattern(params.slug, parts[0], parts.slice(1));
+    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: parts[0], fallbacks: parts.slice(1) } });
     return NextResponse.json(client);
   }
 

@@ -214,11 +214,11 @@ export function makeClientRepository(db: PrismaClient) {
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses
     // the left-of-@ part and resolves the domain separately).
-    async setUsernamePattern(slug: string, localPattern: string, fallbackPattern?: string) {
+    async setUsernamePattern(slug: string, localPattern: string, fallbacks: string[] = []) {
       const c = await db.client.findUnique({ where: { slug }, select: { identity: true } });
       const identity = (c?.identity ?? {}) as Record<string, unknown>;
       // [0] = primary username; [1..] = conflict fallbacks (used when the primary UPN is taken).
-      const patterns = [`${localPattern}@{domain}`, ...(fallbackPattern ? [`${fallbackPattern}@{domain}`] : [])];
+      const patterns = [`${localPattern}@{domain}`, ...fallbacks.filter(Boolean).map((f) => `${f}@{domain}`)];
       const next = { ...identity, usernamePatterns: patterns };
       return db.client.update({
         where: { slug },

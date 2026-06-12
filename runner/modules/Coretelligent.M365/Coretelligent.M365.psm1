@@ -385,24 +385,32 @@ function Invoke-CtgM365Onboarding {
     # 1. Choose a username + ensure the user exists ----------------------------
     # The username is the PRIMARY pattern (e.g. first.last); if that UPN is already taken by a
     # DIFFERENT person, fall through to the configured fallback patterns (e.g. first.mi), in order.
-    # A candidate whose DisplayName matches this hire is OUR user (a re-run) -> reuse it. Direct GET
-    # by UPN is strongly consistent; the filter query is a post-create-lag fallback.
+    # To tell a re-run (OUR account) from a same-name COLLISION (a different person), we stamp a
+    # provisioning MARKER (employeeId) on accounts we create and match on it — NOT on display name,
+    # so two "John Smith"s never get cross-assigned. We only ever write employeeId on accounts we
+    # provision, so a stranger's value is never clobbered. Direct GET by UPN is strongly consistent;
+    # the filter query is a post-create-lag fallback.
+    if ([string]::IsNullOrWhiteSpace($upn)) {
+        throw "no username could be derived for this user — the client's primary domain is missing. Set the client's domain, then re-run."
+    }
+    $marker = [string](Get-CtgProp $User 'PersonalEmail')
+    if ([string]::IsNullOrWhiteSpace($marker)) { $marker = "ctg:$([string]$User.DisplayName)|$([string](Get-CtgProp $User 'StartDate'))" }
     $candidates = @(@($upn) + @(Get-CtgProp $User 'UserPrincipalNameFallbacks') | Where-Object { $_ })
-    $wantName = ([string]$User.DisplayName).Trim()
     $existing = $null
     $chosenUpn = $null
     foreach ($cand in $candidates) {
-        $found = Get-MgUser -UserId $cand -ErrorAction SilentlyContinue
-        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -ErrorAction SilentlyContinue }
+        $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'EmployeeId' -ErrorAction SilentlyContinue
+        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'EmployeeId' -ErrorAction SilentlyContinue }
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
-        if ($wantName -and ([string]$found.DisplayName).Trim() -ieq $wantName) {
-            $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — same person, skipped create"); break
+        $foundMarker = [string](Get-CtgProp $found 'EmployeeId')
+        if ($foundMarker -and $foundMarker -ieq $marker) {
+            $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
         }
         $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
         Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"
     }
     if (-not $chosenUpn) {
-        throw "all candidate usernames are taken by other users: $($candidates -join ', '). Add another username fallback pattern, or assign one manually."
+        throw "all candidate usernames are taken by other users: $($candidates -join ', '). Add another username fallback pattern (e.g. {firstinitial}{last}), or assign one manually."
     }
     if ($chosenUpn -ne $upn) { $actions.Add("using fallback username: $chosenUpn (primary $upn taken)"); Write-CtgM365Step "→ using fallback username: $chosenUpn"; $upn = $chosenUpn }
 
@@ -425,6 +433,7 @@ function Invoke-CtgM365Onboarding {
                 UserPrincipalName = $upn
                 MailNickname      = ($upn.Split('@')[0])
                 UsageLocation     = ([string]((Get-CtgProp $User 'UsageLocation') ?? 'US'))
+                EmployeeId        = $marker  # provisioning marker: lets a re-run recognize OUR account vs a same-name collision
                 PasswordProfile   = $passwordProfile
             }
             foreach ($opt in @(

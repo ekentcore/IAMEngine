@@ -77,13 +77,28 @@ Describe 'Invoke-CtgM365Onboarding' {
         $r.Upn | Should -Be 'j.doe@x.com'
     }
 
-    It 'reuses the existing user (no create) when the primary UPN is already THIS person (re-run)' {
-        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe' } }
-        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+    It 'reuses the existing user (no create) when the primary UPN carries OUR provisioning marker (re-run)' {
+        # marker = personalEmail when present; the existing account's employeeId must match it.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; EmployeeId = 'jane.personal@gmail.com' } }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane.personal@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
         $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
         $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
         Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
-        ($r.Actions -join ' ') | Should -Match 'same person, skipped create'
+        ($r.Actions -join ' ') | Should -Match 'our account .re-run., skipped create'
+    }
+
+    It 'uses the fallback when the primary UPN is a SAME-NAME collision (no marker / different person)' {
+        # jdoe@x.com exists as a different Jane Doe with NO provisioning marker -> not ours -> fallback.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'stranger'; DisplayName = 'Jane Doe' } }
+            return $null
+        }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane.new@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        $r.Upn | Should -Be 'j.doe@x.com'
     }
 
     It 'reads Config.licenses (name strings), assigning only the missing SkuIds' {
