@@ -60,6 +60,7 @@ export type RunReport = {
     fields: { key: string; label: string; value: string; source: "ai" | "operator" | "derived" }[];
     groups: { name: string; type: string | null }[];
     licenses: string[];
+    fallbacks: string[]; // conflict-fallback usernames (payload.userPrincipalNameFallbacks)
   } | null;
   user: string | null;
   startedAt: string | null;
@@ -309,7 +310,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
           if (name) licSet.add(name);
         }
       }
-      return { fields, groups: [...groupMap.values()], licenses: [...licSet] };
+      const fallbacks = Array.isArray(p.userPrincipalNameFallbacks) ? (p.userPrincipalNameFallbacks as unknown[]).filter((x): x is string => typeof x === "string") : [];
+      return { fields, groups: [...groupMap.values()], licenses: [...licSet], fallbacks };
     })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),

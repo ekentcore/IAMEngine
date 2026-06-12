@@ -153,9 +153,11 @@ function LicensePicker({ jobId, options, refresh }: { jobId: string; options: No
 function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonNullable<RunReport["review"]>; refresh: () => Promise<void> | void }) {
   const [open, setOpen] = useState(false);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [lic, setLic] = useState(review.licenses.join(", "));
+  const [fbk, setFbk] = useState(review.fallbacks.join(", "));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const dirty = Object.keys(edits).length > 0;
+  const dirty = Object.keys(edits).length > 0 || lic !== review.licenses.join(", ") || fbk !== review.fallbacks.join(", ");
   const SRC: Record<string, { label: string; color: string }> = { ai: { label: "AI", color: "#1e40af" }, operator: { label: "edited", color: "#15803d" }, derived: { label: "", color: "" } };
 
   return (
@@ -171,18 +173,34 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
           </React.Fragment>
         ))}
       </div>
-      {(review.groups.length > 0 || review.licenses.length > 0) && (
-        <div className="note" style={{ margin: "0.3rem 0 0.5rem" }}>
-          {review.licenses.length > 0 && <div>Licenses: <b>{review.licenses.join(", ")}</b></div>}
-          {review.groups.length > 0 && <div>Groups: {review.groups.map((g) => `${g.name}${g.type ? ` (${g.type})` : ""}`).join(", ")} <span className="muted">— type confirmed at run time; edit on the client page</span></div>}
+      {/* M365 overrides — editable for THIS case in case the imported defaults are wrong. */}
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: "0.5rem", marginTop: "0.3rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "0.3rem 0.6rem", alignItems: "center" }}>
+          <label style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>License(s)</label>
+          <input value={lic} onChange={(e) => setLic(e.target.value)} placeholder="comma-separated, e.g. Microsoft 365 Business Premium" style={{ fontSize: 13, maxWidth: 420 }} />
+          <label style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>Fallback username(s)</label>
+          <input value={fbk} onChange={(e) => setFbk(e.target.value)} placeholder="comma-separated UPNs used if the primary is taken" style={{ fontSize: 13, maxWidth: 420 }} />
         </div>
-      )}
+        {review.groups.length > 0 && <div className="note" style={{ marginTop: 4 }}>Groups: {review.groups.map((g) => `${g.name}${g.type ? ` (${g.type})` : ""}`).join(", ")} <span className="muted">— type confirmed at run time; edit on the client page</span></div>}
+      </div>
       {msg && <p className="note" style={{ color: "#15803d" }}>{msg}</p>}
       <button className="primary" disabled={busy || !dirty} style={{ fontSize: 12 }} onClick={async () => {
         setBusy(true); setMsg(null);
         try {
-          const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: edits }) });
-          if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+          // Generic field edits -> /fields; m365 license/UPN/fallback -> /m365-override.
+          if (Object.keys(edits).length) {
+            const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: edits }) });
+            if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+          }
+          const licArr = lic.split(",").map((s) => s.trim()).filter(Boolean);
+          const fbArr = fbk.split(",").map((s) => s.trim()).filter(Boolean);
+          const licChanged = JSON.stringify(licArr) !== JSON.stringify(review.licenses);
+          const fbChanged = JSON.stringify(fbArr) !== JSON.stringify(review.fallbacks);
+          const upn = edits.userPrincipalName;
+          if (licChanged || fbChanged) {
+            const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(licChanged ? { licenses: licArr } : {}), ...(fbChanged ? { fallbacks: fbArr } : {}), ...(upn ? { userPrincipalName: upn } : {}) }) });
+            if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+          }
           setEdits({}); setMsg("✓ Saved — applies on the next run/claim.");
           await refresh();
         } catch (e) { setMsg((e as Error).message); }
