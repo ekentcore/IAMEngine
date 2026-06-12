@@ -288,17 +288,28 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         ["department", "Department"], ["managerName", "Manager"], ["officeLocation", "Office location"],
         ["usageLocation", "Usage location (M365)"], ["timezone", "Timezone"], ["startDate", "Start date"],
       ];
+      const srcMap = (p.fieldSource && typeof p.fieldSource === "object" ? p.fieldSource : {}) as Record<string, unknown>;
       const fields = defs.map(([key, label]) => ({
         key, label,
         value: p[key] == null ? "" : String(p[key]),
-        source: (key in ai ? "ai" : key === "usageLocation" && p.usageLocationSource === "operator" ? "operator" : "derived") as "ai" | "operator" | "derived",
+        source: (srcMap[key] === "operator" ? "operator" : key in ai ? "ai" : "derived") as "ai" | "operator" | "derived",
       }));
-      const cfg = (((input.jobs.find((j) => j.systemKey === "m365")?.request ?? {}) as { config?: unknown }).config ?? {}) as { groups?: unknown; defaultGroups?: unknown; licenses?: unknown; defaultLicenses?: unknown };
-      const rawGroups = Array.isArray(cfg.groups) ? cfg.groups : Array.isArray(cfg.defaultGroups) ? cfg.defaultGroups : [];
-      const groups = rawGroups.map((g) => (typeof g === "string" ? { name: g, type: null } : { name: String((g as { name?: unknown }).name ?? ""), type: ((g as { type?: unknown }).type as string) ?? null })).filter((g) => g.name);
-      const rawLic = Array.isArray(cfg.licenses) ? cfg.licenses : Array.isArray(cfg.defaultLicenses) ? cfg.defaultLicenses : [];
-      const licenses = rawLic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown }).name ?? ""))).filter(Boolean);
-      return { fields, groups, licenses };
+      // Groups/licenses can live on whichever job carries identity config (m365, entra, ad,
+      // google…), so aggregate across every job rather than only m365.
+      const groupMap = new Map<string, { name: string; type: string | null }>();
+      const licSet = new Set<string>();
+      for (const j of input.jobs) {
+        const cfg = (((j.request ?? {}) as { config?: unknown }).config ?? {}) as { groups?: unknown; defaultGroups?: unknown; licenses?: unknown; defaultLicenses?: unknown };
+        for (const g of (Array.isArray(cfg.groups) ? cfg.groups : Array.isArray(cfg.defaultGroups) ? cfg.defaultGroups : [])) {
+          const name = typeof g === "string" ? g : String((g as { name?: unknown }).name ?? "");
+          if (name && !groupMap.has(name)) groupMap.set(name, { name, type: typeof g === "string" ? null : (((g as { type?: unknown }).type as string) ?? null) });
+        }
+        for (const l of (Array.isArray(cfg.licenses) ? cfg.licenses : Array.isArray(cfg.defaultLicenses) ? cfg.defaultLicenses : [])) {
+          const name = typeof l === "string" ? l : String((l as { name?: unknown }).name ?? "");
+          if (name) licSet.add(name);
+        }
+      }
+      return { fields, groups: [...groupMap.values()], licenses: [...licSet] };
     })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),

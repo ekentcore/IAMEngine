@@ -24,18 +24,37 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const payload = { ...((c.payload ?? {}) as Record<string, unknown>) };
   const unknown = Array.isArray(payload.unknownFields) ? (payload.unknownFields as { field: string }[]) : [];
 
+  // Every key the operator submitted is "touched" (written, even to blank — clearing a wrong value
+  // must take effect); "filled" = non-empty (these release an unknown and re-derive UPN siblings).
+  const touched: string[] = [];
   const filled: string[] = [];
   for (const [k, v] of Object.entries(fields)) {
-    if (typeof v === "string" ? v.trim() !== "" : v != null) { payload[k] = typeof v === "string" ? v.trim() : v; filled.push(k); }
+    const val = typeof v === "string" ? v.trim() : v;
+    payload[k] = val;
+    touched.push(k);
+    if (typeof val === "string" ? val !== "" : val != null) filled.push(k);
+  }
+  // Editing the UPN must keep its siblings consistent (deriveIdentity computed them together) — the
+  // AD lane reads samAccountName independently, so leaving it stale creates an account that doesn't
+  // match the new UPN. Re-derive the local-part-based fields from the new UPN.
+  if (filled.includes("userPrincipalName") && typeof payload.userPrincipalName === "string") {
+    const upn = payload.userPrincipalName;
+    const local = upn.split("@")[0] ?? upn;
+    payload.samAccountName = local.slice(0, 20); // AD samAccountName max length
+    payload.mailNickname = local;
+    payload.workEmail = upn;
   }
   const remaining = unknown.filter((u) => !filled.includes(u.field));
   payload.unknownFields = remaining;
-  if (filled.includes("usageLocation")) { payload.usageLocationDerived = true; payload.usageLocationSource = "operator"; }
-  // An operator-entered value is no longer "AI-filled" — drop the stale provenance note so the
-  // "✨ AI-filled (please verify)" banner doesn't keep showing for a field they just set by hand.
+  if (filled.includes("usageLocation")) payload.usageLocationDerived = true;
+  // Mark every operator-edited field as such (for the review provenance badge) and drop its stale
+  // "AI-filled" note — a hand-entered value is no longer machine-derived.
+  const fieldSource = { ...((payload.fieldSource ?? {}) as Record<string, string>) };
+  for (const k of touched) fieldSource[k] = "operator";
+  payload.fieldSource = fieldSource;
   if (payload.aiResolved && typeof payload.aiResolved === "object") {
     const ai = { ...(payload.aiResolved as Record<string, string>) };
-    for (const k of filled) delete ai[k];
+    for (const k of touched) delete ai[k];
     payload.aiResolved = Object.keys(ai).length ? ai : undefined;
   }
 
