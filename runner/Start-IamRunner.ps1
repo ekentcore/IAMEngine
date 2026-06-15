@@ -108,6 +108,41 @@ function Use-CtgSpanningSecret {
     else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
 }
 
+# Connect Google Workspace from the brokered 'google-admin' secret. Domain-wide-delegated SERVICE
+# ACCOUNT: the secret carries the downloaded JSON key (whole, as ServiceAccountJson, or base64 as
+# ServiceAccountKeyBase64 — Delinea-safe for the multi-line private_key) OR ClientEmail+PrivateKey
+# split out; plus the super-admin to impersonate (Impersonate field, else the secret's Username).
+# Connect-CtgGoogle mints a fresh OAuth token each call, so a rotated key takes effect next job. See
+# /help/google for the Cloud/Workspace setup that produces these fields.
+function Use-CtgGoogleSecret {
+    param($Job, $Creds)
+    $s = $Creds['google-admin']
+    if (-not $s) { throw "the job did not broker a 'google-admin' secret — make sure the client's google-workspace system lists 'google-admin' in its secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $clientEmail = & $pick @('ClientEmail', 'ServiceAccountEmail', 'client_email')
+    $privateKey  = & $pick @('PrivateKey', 'private_key')
+    $json = & $pick @('ServiceAccountJson', 'ServiceAccountKeyJson', 'KeyJson')
+    $b64  = & $pick @('ServiceAccountKeyBase64', 'ServiceAccountJsonBase64', 'KeyBase64')
+    if ($b64 -and -not $json) { $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) }
+    if ($json) {
+        $sa = $json | ConvertFrom-Json
+        if (-not $clientEmail) { $clientEmail = [string]$sa.client_email }
+        if (-not $privateKey)  { $privateKey  = [string]$sa.private_key }
+    }
+    if (-not $clientEmail -or -not $privateKey) {
+        throw "the 'google-admin' secret has no service-account key — set ServiceAccountKeyBase64 (the downloaded JSON key, base64-encoded) or ServiceAccountJson, or split ClientEmail+PrivateKey. The secret has: $(@($f.Keys) -join ', '). See /help/google."
+    }
+    $impersonate = & $pick @('Impersonate', 'AdminEmail', 'Admin', 'Subject', 'DelegatedAdmin', 'AdminUser')
+    if (-not $impersonate -and $s.Username) { $impersonate = [string]$s.Username }
+    if (-not $impersonate) { throw "the 'google-admin' secret has no admin to impersonate — set the Impersonate field to a Workspace super-admin's email (domain-wide delegation acts as a real admin). See /help/google." }
+    $customer = & $pick @('CustomerId', 'Customer'); if (-not $customer) { $customer = 'my_customer' }
+    $scopesRaw = & $pick @('Scopes', 'Scope')
+    $scopes = if ($scopesRaw) { @($scopesRaw -split '[,\s]+' | Where-Object { $_ }) } else { @() }
+    if ($scopes.Count) { Connect-CtgGoogle -ClientEmail $clientEmail -PrivateKey $privateKey -Impersonate $impersonate -CustomerId $customer -Scopes $scopes }
+    else               { Connect-CtgGoogle -ClientEmail $clientEmail -PrivateKey $privateKey -Impersonate $impersonate -CustomerId $customer }
+}
+
 # The M365/Exchange tenant identifier for this job, in priority order:
 #   1. the m365-admin secret's TenantId field — the Directory (tenant) ID GUID from the app
 #      registration; unambiguous and ALWAYS accepted by Entra, even when domain names are mis-set
@@ -359,7 +394,7 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Confirm-CtgSpanning -User $job.payload -Config $job.config -Action $job.action }
     }
     'google-workspace' = @{
-        Connect  = { param($job, $creds) Connect-CtgGoogle -Credential $creds['google-admin'].Credential -CustomerId $creds['google-admin'].Fields['CustomerId'] }
+        Connect  = { param($job, $creds) Use-CtgGoogleSecret -Job $job -Creds $creds }
         Onboard  = { param($job, $creds) Invoke-CtgGoogleOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgGoogleOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgGoogle -User $job.payload -Config $job.config -Action $job.action }

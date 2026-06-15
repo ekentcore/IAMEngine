@@ -7,6 +7,14 @@ clients (UOVO). Heavy offboard (data custody lives here).
 
 ### Auth
 Secret: `google-admin` (Admin SDK / Directory API; domain-wide-delegated service account).
+`Connect-CtgGoogle` mints a short-lived OAuth token by signing an RS256 JWT with the service
+account's private key (`iss`=SA email, `sub`=impersonated super-admin, `scope`=Directory scopes)
+and exchanging it at `oauth2.googleapis.com/token` — pure .NET crypto + REST, no external module,
+cross-platform (central runner on Mac/Linux). Secret fields (`Use-CtgGoogleSecret`):
+`ServiceAccountKeyBase64` (the JSON key, base64 — preferred) **or** `ServiceAccountJson` **or**
+`ClientEmail`+`PrivateKey`; `Impersonate` (super-admin email, required; falls back to the secret's
+Username); optional `CustomerId` (default `my_customer`) and `Scopes`. Full operator setup
+(service account, domain-wide delegation, Delinea storage): **/help/google**.
 
 ### Onboard lane
 `always`. (1) Create user with the username pattern; password generated or shared-default;

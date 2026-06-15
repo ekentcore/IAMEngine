@@ -23,23 +23,77 @@ function Get-CtgProp {
     return $null
 }
 
+# base64url (no padding) — the JWS encoding.
+function ConvertTo-CtgBase64Url {
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+    [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
 function Connect-CtgGoogle {
     <#
     .SYNOPSIS
-        Establish a Directory API session. In production this exchanges the delegated
-        service-account credential for a short-lived OAuth2 access token; the runner brokers
-        the credential reference from the app and resolves it via Coretelligent.Secrets.
+        Establish a Directory API session by minting a short-lived OAuth2 access token from a
+        domain-wide-delegated SERVICE ACCOUNT key. Builds an RS256 JWT (iss = service-account
+        email, sub = the admin to impersonate, scope = the Directory scopes), signs it with the
+        service account's private key, and exchanges it at Google's token endpoint. Pure .NET
+        crypto + REST — no external modules, cross-platform (runs on the Mac/Linux runner).
+    .NOTES
+        Domain-wide delegation: the service account's client ID must be authorized for these
+        scopes in Admin Console → Security → API controls → Domain-wide delegation, and `sub`
+        must be a real super-admin. See /help/google for the full setup.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Key')]
     param(
-        [Parameter(Mandatory)][pscredential]$Credential,
-        [string]$CustomerId = 'my_customer'
+        # The service account's client_email + private_key (PEM) from its downloaded JSON key.
+        [Parameter(Mandatory, ParameterSetName = 'Key')][string]$ClientEmail,
+        [Parameter(Mandatory, ParameterSetName = 'Key')][string]$PrivateKey,
+        # The Workspace super-admin to act as (domain-wide delegation impersonates a real admin).
+        [Parameter(Mandatory, ParameterSetName = 'Key')][string]$Impersonate,
+        # Back-compat / tests: pass an already-minted access token directly.
+        [Parameter(Mandatory, ParameterSetName = 'Token')][string]$AccessToken,
+        [string]$CustomerId = 'my_customer',
+        [string[]]$Scopes = @(
+            'https://www.googleapis.com/auth/admin.directory.user',
+            'https://www.googleapis.com/auth/admin.directory.group',
+            'https://www.googleapis.com/auth/admin.directory.orgunit'
+        )
     )
-    # The OAuth2 service-account JWT assertion flow lives in the production credential resolver;
-    # here we record the token carried on the resolved secret so Invoke-CtgGoogleApi can authenticate.
-    $script:GoogleToken    = ConvertFrom-SecureString $Credential.Password -AsPlainText
     $script:GoogleCustomer = $CustomerId
-    Write-Verbose "Google Workspace session established."
+    if ($PSCmdlet.ParameterSetName -eq 'Token') {
+        $script:GoogleToken = $AccessToken
+        Write-Verbose "Google Workspace session established (token provided)."
+        return
+    }
+
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $header = @{ alg = 'RS256'; typ = 'JWT' }
+    $claims = @{
+        iss   = $ClientEmail
+        sub   = $Impersonate                 # impersonated admin (domain-wide delegation)
+        scope = ($Scopes -join ' ')
+        aud   = 'https://oauth2.googleapis.com/token'
+        iat   = $now
+        exp   = $now + 3600
+    }
+    $enc = { param($o) ConvertTo-CtgBase64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
+    $signingInput = "$(& $enc $header).$(& $enc $claims)"
+
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+        $rsa.ImportFromPem($PrivateKey)      # service-account private_key is PKCS#8 PEM
+        $sigBytes = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signingInput),
+            [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    }
+    finally { $rsa.Dispose() }
+    $jwt = "$signingInput.$(ConvertTo-CtgBase64Url $sigBytes)"
+
+    $resp = Invoke-RestMethod -Method POST -Uri 'https://oauth2.googleapis.com/token' `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $jwt }
+    $token = Get-CtgProp $resp 'access_token'
+    if (-not $token) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
+    $script:GoogleToken = $token
+    Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
 }
 
 function Invoke-CtgGoogleApi {
@@ -78,8 +132,11 @@ function Get-CtgGoogleUserGroups {
 function Invoke-CtgGoogleOnboarding {
     <#
     .SYNOPSIS
-        Idempotently create a Google user, place them in the target OU (never Root) and add
-        group memberships. Config: ou, groups[], password{mode,sharedSecret}.
+        Idempotently provision a Google user. Before creating: check if the username exists, confirm
+        it's the SAME person (name match), and if not fall back to an alternate username (or pause for
+        a decision); if it is, adopt it. Then reconcile the rest — place in the target OU (never Root)
+        and add any missing group memberships. Config: ou, groups[], usernameCollisionPolicy,
+        password{mode,sharedSecret}. User: UserPrincipalName (+ optional UserPrincipalNameFallbacks).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -91,14 +148,58 @@ function Invoke-CtgGoogleOnboarding {
     )
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
     $ou = (Get-CtgProp $Config 'ou') ?? '/Active Users'
-    if ($ou -eq '/' -or $ou -eq '') { throw "refusing to place $email in the Root OU" }
+    if ($ou -eq '/' -or $ou -eq '') { throw "refusing to place a user in the Root OU" }
 
-    if (Get-CtgGoogleUser -Email $email) {
-        $actions.Add("Google user already exists: $email")
+    # Decide WHICH account to use before creating one: check existence, confirm it's the same person,
+    # else fall back to an alternate username (or pause for an operator decision). Mirrors
+    # Invoke-CtgM365Onboarding. Google's email is derived deterministically from the name, so the email
+    # itself encodes identity; the only real ambiguity is two people whose names yield the same address.
+    $primary = $User.UserPrincipalName
+    $candidates = @(@($primary) + @(Get-CtgProp $User 'UserPrincipalNameFallbacks') | Where-Object { $_ })
+    # drop malformed locals (e.g. a "{first}.{mi}" pattern with no middle initial -> "felix.@")
+    $candidates = @($candidates | Where-Object { $lp = ($_ -split '@')[0]; $lp -and ($lp -notmatch '(^[._-]|[._-]$|[._-]{2,})') })
+    $wantFirst = ([string]$User.FirstName).Trim()
+    $wantLast  = ([string]$User.LastName).Trim()
+    # 'adopt' = it's ours, 'new' = different person (use a fallback), unset/'ask' = pause and let an operator decide.
+    $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
+
+    $email = $null; $existing = $null
+    foreach ($cand in $candidates) {
+        $found = Get-CtgGoogleUser -Email $cand
+        if (-not $found) { $email = $cand; Write-Verbose "username available: $cand"; break }
+        $gName  = Get-CtgProp $found 'name'
+        $fGiven = ([string](Get-CtgProp $gName 'givenName')).Trim()
+        $fFamily = ([string](Get-CtgProp $gName 'familyName')).Trim()
+        $haveName = [bool]($fGiven -or $fFamily)
+        if ($haveName -and $wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fFamily -ieq $wantLast) {
+            # Same person — a re-run. Adopt and reconcile the rest below.
+            $email = $cand; $existing = $found
+            $actions.Add("Google user exists ($cand) and matches '$fGiven $fFamily' — same person (re-run), skipped create"); break
+        }
+        if (-not $haveName) {
+            # Existing account has no readable name to compare — the email is deterministic from this
+            # person's name, so treat it as ours (adopt) but say we couldn't verify by name.
+            $email = $cand; $existing = $found
+            $actions.Add("Google user exists ($cand) — adopted by email (no name on the account to confirm), skipped create"); break
+        }
+        # Name present but DIFFERENT = a different person on this username. Operator can force adoption;
+        # otherwise it's NOT the same person — fall back to the next candidate username automatically.
+        if ($collisionPolicy -ieq 'adopt') {
+            $email = $cand; $existing = $found
+            $actions.Add("Google user exists ($cand) as '$fGiven $fFamily' — operator chose ADOPT, skipped create"); break
+        }
+        $actions.Add("username '$cand' is taken by a different user ($fGiven $fFamily) — trying the next pattern")
+        Write-Verbose "↪ $cand taken by $fGiven $fFamily — trying fallback"
     }
-    elseif ($PSCmdlet.ShouldProcess($email, "Create Google user in $ou")) {
+    if (-not $email) {
+        # Every candidate is taken by someone else and no fallback is free — surface it as a decision
+        # the operator can resolve on the case (add a fallback pattern, or Adopt one of the existing accounts).
+        throw "DECISION_NEEDED:username_collision | Every candidate Google username is taken by a different person: $($candidates -join ', '). Add another username fallback pattern (e.g. {firstinitial}{last}), or set usernameCollisionPolicy=adopt to reuse the existing account. | upn=$primary | name=$wantFirst $wantLast"
+    }
+    if ($email -ne $primary) { $actions.Add("using fallback username: $email (primary $primary taken)") }
+
+    if (-not $existing -and $PSCmdlet.ShouldProcess($email, "Create Google user in $ou")) {
         $body = @{
             primaryEmail = $email
             name         = @{ givenName = $User.FirstName; familyName = $User.LastName }
