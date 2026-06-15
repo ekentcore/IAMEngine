@@ -13,9 +13,17 @@ export function resolveGroups(list: unknown, ctx: PlanContext): string[] {
   for (const item of list) {
     if (typeof item === "string") out.push(interpolate(item, ctx));
     else if (item && typeof item === "object") {
-      const b = item as { groups?: unknown; when?: string };
-      if (Array.isArray(b.groups) && evalCondition(b.when, ctx)) {
-        for (const g of b.groups) if (typeof g === "string") out.push(interpolate(g, ctx));
+      const b = item as { name?: unknown; groups?: unknown; when?: string };
+      // A plain group entry { name, type } (the format the M365 groups editor + KB import emit) —
+      // take its name. Without this it falls through and is silently dropped, so adding a globals
+      // rule (which switches on the v2.1 resolver) would wipe a client's own configured groups.
+      if (typeof b.name === "string" && b.name.trim()) {
+        out.push(interpolate(b.name, ctx));
+      } else if (Array.isArray(b.groups) && evalCondition(b.when, ctx)) {
+        for (const g of b.groups) {
+          if (typeof g === "string") out.push(interpolate(g, ctx));
+          else if (g && typeof g === "object" && typeof (g as { name?: unknown }).name === "string") out.push(interpolate((g as { name: string }).name, ctx));
+        }
       }
     }
   }

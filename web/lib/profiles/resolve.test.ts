@@ -22,6 +22,15 @@ test("resolveGroups: plain (interpolated) + conditional bundles, deduped", () =>
   assert.deepEqual(groups, ["All-Staff", "SSO-CA-Users", "AVD-Users"]);
 });
 
+test("resolveGroups: { name, type } entries (M365 editor / KB format) keep their name", () => {
+  // Regression: a globals rule switches on the v2.1 resolver; object groups must NOT be dropped.
+  const groups = resolveGroups(
+    [{ name: "DCG", type: "dl" }, { name: "TEAMDCG", type: "dl" }, "All-Staff", { groups: [{ name: "Nested DL" }], when: "avd == true" }],
+    ctx
+  );
+  assert.deepEqual(groups, ["DCG", "TEAMDCG", "All-Staff", "Nested DL"]);
+});
+
 test("resolveAttributes: plain templates + conditional first-match", () => {
   const attrs = resolveAttributes(
     {
