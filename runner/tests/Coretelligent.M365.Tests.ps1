@@ -150,6 +150,17 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly
     }
 
+    It 'skips a DYNAMIC group (membership is rule-computed) without adding or warning' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'grp-dyn'; SecurityEnabled = $true; GroupTypes = @('DynamicMembership') } }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @('All Users') }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 0 -Exactly   # never added manually
+        ($r.Actions -join ' ') | Should -Match 'skipped dynamic group'
+        $r.Status | Should -Be 'ok'   # not a warning — nothing to do
+    }
+
     It 'leaves the user unlicensed with a Procurement warning when a license has no available seats' {
         Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }   # no licenses yet
         Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { throw "Subscription with SKU cbdc14ab does not have any available licenses." }
@@ -277,6 +288,18 @@ Describe 'Confirm-CtgM365' {
         $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
         ($r.checks | Where-Object { $_.name -eq 'group: TEAMDCG (365 Group)' }).pass | Should -BeTrue
         ($r.checks | Where-Object { $_.name -eq 'group: TeamDCG@dcg.co (365 Group)' }).pass | Should -BeTrue
+    }
+
+    It 'onboard: a configured DYNAMIC group the user is not yet in passes as auto-managed (not a MISS)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }   # not in any group yet
+        # the configured group resolves to a dynamic group — rule-computed, can't be added manually
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'g-dyn'; GroupTypes = @('DynamicMembership') } }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @('All Users') }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        ($r.checks | Where-Object { $_.name -eq 'group: All Users (dynamic — auto-managed)' }).pass | Should -BeTrue
     }
 
     It 'offboard: passes when sign-in is blocked and groups are gone' {

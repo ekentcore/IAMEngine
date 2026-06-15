@@ -572,7 +572,9 @@ function Invoke-CtgM365Onboarding {
         # (Matching only mail+displayName is why a real 365 group read as "not a Graph group" and got
         # deferred.) Double any single quote so a name like O'Brien can't break the OData filter.
         $gesc = $gname -replace "'", "''"
-        $group = Get-MgGroup -Filter "mail eq '$gesc' or mailNickname eq '$gesc' or displayName eq '$gesc'" -Top 1 -ErrorAction SilentlyContinue
+        # Request groupTypes + isAssignableToRole so we can recognize dynamic / role-assignable groups
+        # (neither is a normal manual add) — these aren't all in the default property set.
+        $group = Get-MgGroup -Filter "mail eq '$gesc' or mailNickname eq '$gesc' or displayName eq '$gesc'" -Top 1 -Property "id,displayName,mail,mailNickname,mailEnabled,securityEnabled,groupTypes,isAssignableToRole" -ErrorAction SilentlyContinue
         if (-not $group) {
             $actions.Add("group '$gname' not resolvable as a Graph group by name — adding over Exchange Online (a DL, or a 365 group whose alias differs from its name)")
             Write-CtgM365Step "↷ $gname — not found as a Graph group by name; adding over Exchange Online"
@@ -582,8 +584,18 @@ function Invoke-CtgM365Onboarding {
         $isUnified   = @(Get-CtgProp $group 'GroupTypes') -contains 'Unified'
         $mailEnabled = (Get-CtgProp $group 'MailEnabled') -eq $true
         $secEnabled  = (Get-CtgProp $group 'SecurityEnabled') -eq $true
+        $isDynamic = @(Get-CtgProp $group 'GroupTypes') -contains 'DynamicMembership'
+        $roleAssignable = (Get-CtgProp $group 'IsAssignableToRole') -eq $true
         $kind = if ($isUnified) { 'Microsoft 365 group' } elseif ($mailEnabled) { 'distribution/mail-enabled group' } elseif ($secEnabled) { 'Security group' } else { 'group' }
-        Write-CtgM365Step "→ $gname is a $kind"
+        Write-CtgM365Step "→ $gname is a $kind$(if ($isDynamic) { ' (dynamic)' } elseif ($roleAssignable) { ' (role-assignable)' })"
+        if ($isDynamic) {
+            # Dynamic groups compute membership from a rule — members can't be added manually (Graph
+            # returns Authorization_RequestDenied). The user is included automatically once the rule
+            # matches, so this is a no-op, NOT a failure. Skipping (not a warning, not a deferral).
+            $actions.Add("skipped dynamic group '$gname' — membership is rule-computed; the user is added automatically when the rule matches, not manually")
+            Write-CtgM365Step "↷ $gname — dynamic group; membership is automatic (rule-computed), nothing to add"
+            continue
+        }
         if ($mailEnabled -and -not $isUnified) {
             # Graph cannot add DLs / mail-enabled security groups — finished over Exchange Online (same app).
             $actions.Add("$gname → $kind — adding over Exchange Online (Graph can't write distribution/mail-enabled groups)")
@@ -596,7 +608,16 @@ function Invoke-CtgM365Onboarding {
         if ($PSCmdlet.ShouldProcess($upn, "Add to $kind $gname")) {
             Write-CtgM365Step "adding to $kind`: $gname"
             $err = Add-CtgGroupMember -GroupId $group.Id -UserId $userId
-            if ($err) { $actions.Add("WARN could not add to $kind ${gname}: $err"); Write-CtgM365Step "✗ $gname — $err" }
+            if ($err) {
+                # Name the likely cause when Graph denies the write: a role-assignable group needs
+                # RoleManagement.ReadWrite.Directory (or Privileged Role Admin), not just Group write.
+                $hint = if ($roleAssignable -and $err -match 'Authorization_RequestDenied|Insufficient privileges') {
+                    " — this is a role-assignable group; adding members needs RoleManagement.ReadWrite.Directory or the Privileged Role Administrator role, which the app lacks"
+                } elseif ($err -match 'Authorization_RequestDenied|Insufficient privileges') {
+                    " — the app's service principal lacks rights to write this group's membership (check it isn't on-prem-synced/owner-restricted, and the app has GroupMember.ReadWrite.All)"
+                } else { '' }
+                $actions.Add("WARN could not add to $kind ${gname}: $err$hint"); Write-CtgM365Step "✗ $gname — $err$hint"
+            }
             else { $actions.Add("added to $kind`: $gname"); Write-CtgM365Step "✓ added to $kind`: $gname" }
         }
     }
@@ -824,6 +845,14 @@ function Confirm-CtgM365 {
                 $type = $null
                 foreach ($c in $cands) { $k = & $norm $c; if ($memberIndex.ContainsKey($k)) { $type = $memberIndex[$k]; break } }
                 $present = [bool]$type
+                if (-not $present) {
+                    # Absent from the user's memberships — but a DYNAMIC group is rule-computed and can't
+                    # be added manually, so its absence isn't an operator-fixable failure. If the configured
+                    # group resolves to a dynamic group, report it as auto-managed (pass) rather than a MISS.
+                    $gesc = $gn -replace "'", "''"
+                    $grp = Get-MgGroup -Filter "mail eq '$gesc' or mailNickname eq '$gesc' or displayName eq '$gesc'" -Top 1 -Property "id,groupTypes" -ErrorAction SilentlyContinue
+                    if ($grp -and (@(Get-CtgProp $grp 'GroupTypes') -contains 'DynamicMembership')) { $present = $true; $type = 'dynamic — auto-managed' }
+                }
                 $label = if ($present) { "group: $gn ($type)" } else { "group: $gn" }
                 & $add $label $true $present
             }
