@@ -16,7 +16,7 @@ const strArr = (v: unknown): string[] | null =>
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const g = await guard("case.dispatch"); if (g.res) return g.res;
 
-  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown };
+  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
   const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { payload: true, jobs: { where: { systemKey: "m365" }, select: { id: true, request: true } } } });
@@ -24,6 +24,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   const payload = { ...((c.payload ?? {}) as Record<string, unknown>) };
   const changed: string[] = [];
+
+  // Operator's answer to an ambiguous same-name account: 'adopt' (it's a re-run of this person) or
+  // 'new' (a different person — use a fallback). Written to the m365 job config; the runner reads it.
+  if (body.usernameCollisionPolicy === "adopt" || body.usernameCollisionPolicy === "new") {
+    for (const j of c.jobs) {
+      const reqJson = { ...((j.request ?? {}) as Record<string, unknown>) };
+      reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), usernameCollisionPolicy: body.usernameCollisionPolicy };
+      await db.job.update({ where: { id: j.id }, data: { request: reqJson as Prisma.InputJsonValue } });
+    }
+    changed.push(`collision:${body.usernameCollisionPolicy}`);
+  }
 
   if (typeof body.userPrincipalName === "string" && body.userPrincipalName.trim()) {
     const upn = body.userPrincipalName.trim();

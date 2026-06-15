@@ -87,9 +87,20 @@ Describe 'Invoke-CtgM365Onboarding' {
         ($r.Actions -join ' ') | Should -Match 'our account .re-run., skipped create'
     }
 
-    It 'ADOPTS an existing same-name account with no marker (re-run / manual create) — no create, stamps the marker' {
-        # jdoe@x.com exists with the SAME display name and NO marker -> almost certainly the same person
-        # (a prior run created it before failing). Adopt it: no New-MgUser, stamp the marker, keep the UPN.
+    It 'PAUSES for a decision on an ambiguous same-name no-marker account (no policy = ask)' {
+        # Same display name, NO marker, and no operator decision yet -> throw DECISION_NEEDED, create nothing.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
+            return $null
+        }
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } | Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'ADOPTS the same-name no-marker account when the operator chose adopt (usernameCollisionPolicy=adopt)' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
             param($UserId, $Filter)
             if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
@@ -98,10 +109,10 @@ Describe 'Invoke-CtgM365Onboarding' {
         Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
         $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
-        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy = 'adopt' }) -InitialPassword $pwd
         Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
         $r.Upn | Should -Be 'jdoe@x.com'
-        ($r.Actions -join ' ') | Should -Match 'adopting it as ours'
+        ($r.Actions -join ' ') | Should -Match 'operator chose ADOPT'
     }
 
     It 'uses the fallback when the primary UPN is taken by a DIFFERENT person (different name, no marker)' {

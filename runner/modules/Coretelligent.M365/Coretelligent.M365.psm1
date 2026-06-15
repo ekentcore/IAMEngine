@@ -406,6 +406,10 @@ function Invoke-CtgM365Onboarding {
     $chosenUpn = $null
     $adopt = $false
     $targetName = ([string]$User.DisplayName).Trim()
+    # How to handle a same-name account with NO provisioning marker (ambiguous: our re-run vs a
+    # different person who happens to share a name): 'adopt' = it's ours, 'new' = different person
+    # (use a fallback), unset/'ask' = PAUSE and let an operator decide on the case.
+    $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
     foreach ($cand in $candidates) {
         $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue
         if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue }
@@ -417,15 +421,21 @@ function Invoke-CtgM365Onboarding {
         if ($foundMarker -and $foundMarker -ieq $marker) {
             $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
         }
-        # No marker but the SAME display name = almost certainly the same person we're onboarding (a
-        # prior run created the account before failing, or it was made manually). Adopt it — stamp our
-        # marker so future runs match by marker — instead of refusing as a "different user". A marker
-        # that's present but DIFFERENT means it's genuinely someone else's account, so we don't adopt.
+        # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
+        # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the
+        # operator's decision if one was made; otherwise PAUSE and ask rather than guess.
         if (-not $foundMarker -and $targetName -and ([string]$found.DisplayName).Trim() -ieq $targetName) {
-            $existing = $found; $chosenUpn = $cand; $adopt = $true
-            $actions.Add("user exists ($cand) with no marker but matching name '$($found.DisplayName)' — adopting it as ours (stamping marker), skipping create")
-            Write-CtgM365Step "↪ $cand already exists as '$($found.DisplayName)' — adopting it (same person), continuing with licensing/groups"
-            break
+            if ($collisionPolicy -ieq 'adopt') {
+                $existing = $found; $chosenUpn = $cand; $adopt = $true
+                $actions.Add("user exists ($cand) with no marker but matching name '$($found.DisplayName)' — operator chose ADOPT (stamping marker), skipping create")
+                Write-CtgM365Step "↪ adopting existing '$($found.DisplayName)' ($cand) — continuing with licensing/groups"
+                break
+            }
+            elseif ($collisionPolicy -ine 'new') {
+                # No decision yet -> stop and ask. The app turns this into a case decision (Adopt / Different person).
+                throw "DECISION_NEEDED:username_collision | An account already exists for '$($found.DisplayName)' at $cand with no provisioning marker. If this is a RE-RUN of the same person, choose Adopt; if it's a DIFFERENT person with the same name, choose a new username. Decide on the case and re-run. | upn=$cand | name=$($found.DisplayName)"
+            }
+            # collisionPolicy 'new' -> operator said different person: fall through to the collision path below.
         }
         $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
         Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"

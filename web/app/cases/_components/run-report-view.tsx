@@ -147,6 +147,37 @@ function LicensePicker({ jobId, options, refresh }: { jobId: string; options: No
   );
 }
 
+// When the runner can't tell a re-run from a same-name stranger, it pauses the step with a
+// DECISION_NEEDED error. The operator decides here: Adopt (it's this person — a re-run) writes
+// the choice to the m365 job and re-runs; Different person uses a new username (a fallback).
+function CollisionDecision({ caseId, jobId, error, refresh }: { caseId: string; jobId: string; error: string; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const m = /DECISION_NEEDED:username_collision \| ([^|]+?) \| upn=([^|]+?) \| name=(.+)$/.exec(error);
+  const msg = m?.[1]?.trim() ?? "An account with the same name already exists — is this a re-run of the same person, or a different person?";
+  const upn = m?.[2]?.trim();
+  async function decide(policy: "adopt" | "new") {
+    setBusy(policy); setErr(null);
+    try {
+      const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usernameCollisionPolicy: policy }) });
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+      await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      await refresh();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
+  }
+  return (
+    <div style={{ border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
+      <div style={{ fontSize: 13, color: "#92400e" }}><b>Decision needed</b> — {msg}{upn ? <> (<code>{upn}</code>)</> : null}</div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={!!busy} onClick={() => decide("adopt")}>{busy === "adopt" ? "Adopting…" : "Adopt — it's this person (re-run)"}</button>
+        <button disabled={!!busy} onClick={() => decide("new")}>{busy === "new" ? "…" : "Different person — use a new username"}</button>
+      </div>
+      {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
+    </div>
+  );
+}
+
 // Dry-run review: the resolved fields that will be set (editable), plus the groups (with type) and
 // licenses the plan will apply. Editing a field PATCHes the case payload (read by the runner at
 // claim time) — so an operator can correct anything before/while it runs.
@@ -510,6 +541,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>
                   <CopyButton text={step.error} />
                 </div>
+              )}
+              {step.error?.includes("DECISION_NEEDED:username_collision") && step.jobId && (
+                <CollisionDecision caseId={caseId} jobId={step.jobId} error={step.error} refresh={refresh} />
               )}
               {step.autoRetry && (
                 <div className="note" style={{ marginTop: 4, color: "#8a6d00" }}>
