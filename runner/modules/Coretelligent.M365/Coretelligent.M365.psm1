@@ -756,9 +756,30 @@ function Confirm-CtgM365 {
                 & $add "license: $name" $true ([bool]($skuId -and $assigned -contains $skuId))
             }
             $myMemberships = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue)
-            $memberNames = @($myMemberships | ForEach-Object { Get-CtgProp $_.AdditionalProperties 'displayName' })
+            # Map each membership name -> its real type (so the verification names the type: a
+            # distribution list, security, 365 Group, or mail-enabled security).
+            $groupType = {
+                param($ap)
+                $gt = @(Get-CtgProp $ap 'groupTypes')
+                $mail = [bool](Get-CtgProp $ap 'mailEnabled'); $sec = [bool](Get-CtgProp $ap 'securityEnabled')
+                if ($gt -contains 'Unified') { '365 Group' }
+                elseif ($mail -and $sec) { 'mail-enabled security' }
+                elseif ($mail) { 'distribution list' }
+                elseif ($sec) { 'security' }
+                else { 'group' }
+            }
+            $memberType = @{}
+            foreach ($m in $myMemberships) {
+                $nm = [string](Get-CtgProp $m.AdditionalProperties 'displayName')
+                if ($nm -and -not $memberType.ContainsKey($nm)) { $memberType[$nm] = (& $groupType $m.AdditionalProperties) }
+            }
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
-                & $add "group: $g" $true ([bool]($memberNames -contains $g))
+                # A group spec can be a plain name or an object { name, type } — verify by name.
+                $gn = if ($g -is [string]) { $g } else { [string](Get-CtgProp $g 'name') }
+                if (-not $gn) { continue }
+                $present = $memberType.ContainsKey($gn)
+                $label = if ($present) { "group: $gn ($($memberType[$gn]))" } else { "group: $gn" }
+                & $add $label $true $present
             }
             # Comprehensive mirror coverage: compare the new user's ENTIRE membership to the reference
             # user's — across ALL group types (cloud security/M365, distribution + mail-enabled added

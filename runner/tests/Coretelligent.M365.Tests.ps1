@@ -229,7 +229,8 @@ Describe 'Confirm-CtgM365' {
         $r.ok | Should -BeTrue
         ($r.checks | Where-Object { $_.name -eq 'AccountEnabled' }).pass | Should -BeTrue
         ($r.checks | Where-Object { $_.name -eq 'license: Microsoft 365 E3' }).pass | Should -BeTrue
-        ($r.checks | Where-Object { $_.name -eq 'group: Sales' }).pass | Should -BeTrue
+        # The check now names the group's type, e.g. "group: Sales (group)".
+        ($r.checks | Where-Object { $_.name -like 'group: Sales*' }).pass | Should -BeTrue
     }
 
     It 'onboard: a missing group fails that check and overall ok' {
@@ -240,7 +241,26 @@ Describe 'Confirm-CtgM365' {
         $config = [pscustomobject]@{ licenses = @(); groups = @('Sales') }
         $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
         $r.ok | Should -BeFalse
-        ($r.checks | Where-Object { $_.name -eq 'group: Sales' }).pass | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -like 'group: Sales*' }).pass | Should -BeFalse
+    }
+
+    It 'onboard: each group check NAMES its type (distribution list / security / 365 Group)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith {
+            @(
+                [pscustomobject]@{ AdditionalProperties = @{ displayName = 'All Staff DL';  mailEnabled = $true;  securityEnabled = $false; groupTypes = @() } }
+                [pscustomobject]@{ AdditionalProperties = @{ displayName = 'VPN Users';     mailEnabled = $false; securityEnabled = $true;  groupTypes = @() } }
+                [pscustomobject]@{ AdditionalProperties = @{ displayName = 'Project Alpha'; mailEnabled = $true;  securityEnabled = $false; groupTypes = @('Unified') } }
+            )
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @('All Staff DL', 'VPN Users', 'Project Alpha') }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        $names = @($r.checks | ForEach-Object { $_.name })
+        $names | Should -Contain 'group: All Staff DL (distribution list)'
+        $names | Should -Contain 'group: VPN Users (security)'
+        $names | Should -Contain 'group: Project Alpha (365 Group)'
     }
 
     It 'offboard: passes when sign-in is blocked and groups are gone' {
