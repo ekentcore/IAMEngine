@@ -175,6 +175,58 @@ function Invoke-CtgExchangeDistListMirror {
     return $actions.ToArray()
 }
 
+function Invoke-CtgExchangeNamedGroups {
+    # Add the new user to EXPLICITLY-REQUESTED distribution / mail-enabled groups BY NAME — the
+    # Exchange-Online-only groups the Graph/m365 lane can't write (it defers them here). Each name is
+    # resolved in EXO; only DLs / mail-enabled groups are added (security/365 are Graph's job, skipped),
+    # dir-synced ones are left to the AD lane, and a name EXO doesn't recognize is surfaced (not silent).
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$NewUser, [string[]]$Groups)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @($Groups | Where-Object { $_ })) {
+        $r = Get-Recipient -Identity $name -ErrorAction SilentlyContinue
+        if (-not $r) { $actions.Add("WARN requested group '$name' not found in Exchange Online — check the exact display name / that it's an EXO distribution list"); Write-CtgStep "✗ group not found in EXO: $name"; continue }
+        if ($r.RecipientTypeDetails -notin @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList')) {
+            $actions.Add("skipped '$name' — not a distribution/mail-enabled group ($($r.RecipientTypeDetails)); the m365/Graph lane handles security/365 groups"); continue
+        }
+        if ($r.IsDirSynced) { $actions.Add("skipped on-prem-synced group (AD lane owns it): $name"); continue }
+        if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to $name")) { continue }
+        try {
+            Add-DistributionGroupMember -Identity $r.Identity -Member $NewUser -BypassSecurityGroupManagerCheck -ErrorAction Stop
+            $actions.Add("added to distribution group: $name"); Write-CtgStep "✓ added to DL: $name"
+        } catch {
+            $m = $_.Exception.Message
+            if ($m -match 'already a member') { $actions.Add("already in group: $name"); Write-CtgStep "– already a member: $name" }
+            else { $actions.Add("WARN distribution group '$name': $m"); Write-CtgStep "✗ DL '$name': $m" }
+        }
+    }
+    return $actions.ToArray()
+}
+
+# Names of the requested groups from config (entries may be plain strings or { name, type } objects).
+function Get-CtgRequestedGroupNames {
+    param([pscustomobject]$Config)
+    @(@(Get-CtgProp $Config 'namedGroups') + @(Get-CtgProp $Config 'groups') | ForEach-Object {
+            if ($_ -is [string]) { $_ } else { [string](Get-CtgProp $_ 'name') }
+        } | Where-Object { $_ } | Select-Object -Unique)
+}
+
+# CLOUD (Exchange Online) onboard: no on-prem remote mailbox — the M365 license already created the
+# mailbox. Just do the EXO-only work: add the user to the requested distribution lists by name (+
+# mirror a reference user if set). Used when the job brokered no on-prem Exchange session.
+function Invoke-CtgExchangeCloudOnboard {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $email = $User.UserPrincipalName
+    $names = @(Get-CtgRequestedGroupNames -Config $Config)
+    if ($names.Count -gt 0) { $g = Invoke-CtgExchangeNamedGroups -NewUser $email -Groups $names; if ($g) { $actions.AddRange([string[]]$g) } }
+    else { $actions.Add("no distribution lists requested for this user") }
+    $mirror = Get-CtgProp $Config 'mirrorFromUser'
+    if ($mirror) { $m = Invoke-CtgExchangeDistListMirror -MirrorUser $mirror -NewUser $email; if ($m) { $actions.AddRange([string[]]$m) } }
+    return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+}
+
 # Combined hybrid onboard, one job across the AAD Connect sync boundary: enable the remote mailbox,
 # block until it lands in EXO (config-gated — skipped when Config.waitForSync is false), then finish
 # regional + manager-calendar. A mailbox that doesn't sync before the timeout is NOT an error: the
@@ -230,6 +282,12 @@ function Invoke-CtgExchangeHybridOnboard {
     # Mirror the reference user's distribution lists + mail-enabled security groups (the EXO-managed
     # groups the Graph/m365 lane couldn't add). The mailbox now exists, so the new user is a valid
     # recipient. A failure here is non-fatal (the rest of the onboard already succeeded).
+    # Explicitly-requested distribution lists (by name), then the reference-user mirror.
+    $reqNames = @(Get-CtgRequestedGroupNames -Config $Config)   # @() — an empty function result collapses to $null otherwise
+    if ($reqNames.Count -gt 0 -and $enable.Email) {
+        try { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$enable.Email) -Groups $reqNames)) { $actions.Add($a) } }
+        catch { $actions.Add("WARN requested distribution lists failed: $($_.Exception.Message)") }
+    }
     $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
     if ($mirrorUser -and $enable.Email) {
         try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enable.Email))) { $actions.Add($a) } }
@@ -369,4 +427,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeDistListMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

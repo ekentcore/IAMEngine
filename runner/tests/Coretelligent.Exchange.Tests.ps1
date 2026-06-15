@@ -248,3 +248,25 @@ Describe 'Wait-CtgMailbox' {
         Should -Invoke Get-Mailbox -ModuleName Coretelligent.Exchange -Times 3
     }
 }
+
+Describe 'Invoke-CtgExchangeNamedGroups' {
+    It 'adds the user to a named distribution list; skips a non-DL group and an unknown name' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'DCG' } -MockWith { [pscustomobject]@{ DisplayName = 'DCG'; Identity = 'DCG'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $false } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Team365' } -MockWith { [pscustomobject]@{ DisplayName = 'Team365'; Identity = 'Team365'; RecipientTypeDetails = 'GroupMailbox'; IsDirSynced = $false } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Ghost' } -MockWith { $null }
+        Mock Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $acts = Invoke-CtgExchangeNamedGroups -NewUser 'laura@dcg.co' -Groups @('DCG', 'Team365', 'Ghost')
+        Should -Invoke Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        ($acts -join ' ') | Should -Match 'added to distribution group: DCG'
+        ($acts -join ' ') | Should -Match 'not a distribution/mail-enabled group'
+        ($acts -join ' ') | Should -Match 'not found in Exchange Online'
+    }
+
+    It 'skips a dir-synced distribution list (AD lane owns it)' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Synced DL' } -MockWith { [pscustomobject]@{ DisplayName = 'Synced DL'; Identity = 'Synced DL'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $true } }
+        Mock Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $acts = Invoke-CtgExchangeNamedGroups -NewUser 'laura@dcg.co' -Groups @('Synced DL')
+        Should -Invoke Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($acts -join ' ') | Should -Match 'on-prem-synced group'
+    }
+}

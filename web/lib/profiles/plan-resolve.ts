@@ -72,10 +72,24 @@ export function resolvePlannedConfigs(
         }));
       })();
 
-  if (!mirror) return resolved;
-  return resolved.map((j) =>
-    DIRECTORY_SYSTEMS.has(j.systemKey)
-      ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
+  const withMirror = !mirror
+    ? resolved
+    : resolved.map((j) =>
+        DIRECTORY_SYSTEMS.has(j.systemKey)
+          ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
+          : j
+      );
+
+  // Distribution lists requested on m365 can only be written by the Exchange Online lane (Graph
+  // can't add DL members). Flow the m365/entra requested groups onto the exchange job's config so the
+  // EXO step adds the distribution ones by name (it only sees its own config). It picks the DLs and
+  // skips security/365 groups (those stay Graph's job).
+  const m365Groups = withMirror.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
+  const reqGroups = m365Groups && Array.isArray(m365Groups.groups) ? m365Groups.groups : null;
+  if (!reqGroups || reqGroups.length === 0) return withMirror;
+  return withMirror.map((j) =>
+    j.systemKey === "exchange"
+      ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), namedGroups: reqGroups } }
       : j
   );
 }

@@ -225,9 +225,17 @@ $DISPATCH = @{
         # Connect delta sync (so the mailbox provisions now) -> wait for it -> regional/calendar. The
         # sync trigger reuses the on-prem (ad-dc) credential and auto-discovers the Entra Connect host.
         Onboard  = { param($job, $creds)
-            $syncCred = ($creds['exchange-onprem']).Credential
-            $trigger = if ($syncCred) { { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $syncCred | Out-Null }.GetNewClosure() } else { $null }
-            Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config -TriggerSync $trigger
+            # CLOUD client (no on-prem Exchange session brokered): the M365 license already made the
+            # mailbox, so skip Enable-RemoteMailbox and just do the EXO-only work — add the requested
+            # distribution lists by name. HYBRID (on-prem session present): the full remote-mailbox pass.
+            if (-not $creds['exchange-onprem']) {
+                Invoke-CtgExchangeCloudOnboard -User $job.payload -Config $job.config
+            }
+            else {
+                $syncCred = ($creds['exchange-onprem']).Credential
+                $trigger = if ($syncCred) { { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $syncCred | Out-Null }.GetNewClosure() } else { $null }
+                Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config -TriggerSync $trigger
+            }
         }
         Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
