@@ -740,6 +740,11 @@ while ($true) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
             $script:Phase = 'starting'  # what we're doing now — the catch reports WHICH phase failed
             $global:CtgProgressJobId = $job.id  # so module-level Send-CtgProgress targets this job
+            # A system with no per-user config (mimecast, spanning, …) is planned with config=null; the
+            # executors take a [Mandatory] -Config, which a null fails to bind ("Cannot bind argument to
+            # parameter 'Config' because it is null"). Normalize to an empty object — Get-CtgProp on it
+            # just returns null for absent keys, so base onboarding runs.
+            if ($null -eq $job.config) { $job.config = [pscustomobject]@{} }
             try {
                 $handler = $DISPATCH[$job.systemKey]
                 if (-not $handler) {
