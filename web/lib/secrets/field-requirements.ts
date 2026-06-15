@@ -17,10 +17,11 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "admin password", anyOf: ["Password"] },
     { label: "tenant id / domain", anyOf: ["TenantId", "Tenant", "Domain"], orClientDomain: true },
   ],
-  // Exchange Online: app-only certificate auth — AppId (stored as the secret username) + thumbprint.
+  // Exchange Online: app-only certificate auth — AppId (the secret username) + a cert. The cert is
+  // either a Windows-store thumbprint OR a base64 .pfx (cross-platform: macOS/Linux central runners).
   exchange: [
     { label: "app id (username)", anyOf: ["Username", "AppId", "Application ID", "ClientId", "ClientID"] },
-    { label: "certificate thumbprint", anyOf: ["CertificateThumbprint", "Certificate Thumbprint", "Thumbprint"] },
+    { label: "certificate (thumbprint or .pfx)", anyOf: ["CertificateThumbprint", "Certificate Thumbprint", "Thumbprint", "CertificateBase64", "CertificatePfxBase64"] },
   ],
   // On-prem Exchange: a remote PowerShell connection uri/server + a credential.
   "exchange-onprem": [

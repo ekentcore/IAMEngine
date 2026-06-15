@@ -30,13 +30,32 @@ function Write-CtgStep([string]$Message) {
 # Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
 # offboard (convert-to-shared, CAS), the post-sync mailbox wait, and regional/calendar finishing.
 function Connect-CtgExchange {
+    # App-only Exchange Online. Two auth paths:
+    #   - CertificateBase64 (+ optional password): a PFX (private key) base64-encoded — cross-platform
+    #     (macOS / Linux / Windows). Built in-memory (EphemeralKeySet), never written to disk. PREFERRED
+    #     for a central runner that isn't on Windows.
+    #   - CertificateThumbprint: reads the WINDOWS certificate store — Windows-only.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$AppId,
         [Parameter(Mandatory)][string]$Organization,
-        [Parameter(Mandatory)][string]$CertificateThumbprint
+        [string]$CertificateThumbprint,
+        [string]$CertificateBase64,
+        [string]$CertificatePassword
     )
-    Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false
+    if ($CertificateBase64) {
+        $bytes = [Convert]::FromBase64String(($CertificateBase64 -replace '\s', ''))
+        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes, [string]$CertificatePassword, $flags)
+        if (-not $cert.HasPrivateKey) { throw "the Exchange Online certificate has no private key — store the .pfx (which includes the key), not the .cer, in CertificateBase64." }
+        Connect-ExchangeOnline -AppId $AppId -Organization $Organization -Certificate $cert -ShowBanner:$false
+    }
+    elseif ($CertificateThumbprint) {
+        Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false
+    }
+    else {
+        throw "Connect-CtgExchange needs app-only cert auth: a CertificateBase64 (a .pfx, cross-platform) or a CertificateThumbprint (Windows cert store). The m365-admin secret has neither."
+    }
     Write-Verbose "Connected to Exchange Online for $Organization."
 }
 

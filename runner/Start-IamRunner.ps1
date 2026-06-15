@@ -155,6 +155,23 @@ function Resolve-CtgInitialPassword {
     return (New-CtgCompliantPassword)
 }
 
+# Build the app-only Exchange Online cert args from a brokered secret's Fields — prefer a base64 PFX
+# (cross-platform: macOS/Linux/Windows), else a Windows cert-store thumbprint. Empty when neither set.
+function Get-CtgExoCertArgs {
+    param($Secret)
+    $a = @{}
+    $f = if ($Secret) { $Secret.Fields } else { $null }
+    if ($f) {
+        $b64 = if ($f['CertificateBase64']) { $f['CertificateBase64'] } elseif ($f['CertificatePfxBase64']) { $f['CertificatePfxBase64'] } else { $null }
+        if ($b64) {
+            $a['CertificateBase64'] = [string]$b64
+            if ($f['CertificatePassword']) { $a['CertificatePassword'] = [string]$f['CertificatePassword'] }
+        }
+        elseif ($f['CertificateThumbprint']) { $a['CertificateThumbprint'] = [string]$f['CertificateThumbprint'] }
+    }
+    $a
+}
+
 function Add-CtgM365DistributionLists {
     # Add the new user to the distribution / mail-enabled groups Graph couldn't write, over Exchange
     # Online — app-only auth with the m365-admin certificate (the SAME app), so no separate Exchange
@@ -166,17 +183,17 @@ function Add-CtgM365DistributionLists {
         return $out.ToArray()
     }
     $s = $Creds['m365-admin']
-    $thumb = if ($s -and $s.Fields) { [string]$s.Fields['CertificateThumbprint'] } else { $null }
-    if (-not $thumb) {
-        $out.Add("note: $(@($Names).Count) distribution list(s) not added — the m365-admin secret has no CertificateThumbprint for Exchange Online app-only auth. Add the cert thumbprint to the m365-admin secret (and grant the app the Exchange.ManageAsApp permission) to add DLs without a separate Exchange system.")
+    $certArgs = Get-CtgExoCertArgs $s
+    if ($certArgs.Count -eq 0) {
+        $out.Add("note: $(@($Names).Count) distribution list(s) not added — the m365-admin secret has no Exchange Online cert: set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows). Also grant the app the Exchange.ManageAsApp permission.")
         return $out.ToArray()
     }
     try {
         Set-CtgPhase $Job.id "adding distribution lists over Exchange Online (app-only)"
-        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $Job $Creds) -CertificateThumbprint $thumb
+        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $Job $Creds) @certArgs
         foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$Job.payload.UserPrincipalName) -Groups $Names)) { $out.Add($a) }
     } catch {
-        $out.Add("WARN couldn't add distribution lists over Exchange Online ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + add its cert thumbprint to the secret.")
+        $out.Add("WARN couldn't add distribution lists over Exchange Online ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret.")
     }
     return $out.ToArray()
 }
@@ -242,7 +259,9 @@ $DISPATCH = @{
         Connect  = { param($job, $creds)
             $s = $creds['m365-admin']
             Set-CtgPhase $job.id "connecting to Exchange Online (app-only cert auth, app $($s.Credential.UserName))"
-            Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $job $creds) -CertificateThumbprint $s.Fields['CertificateThumbprint']
+            $exoCert = Get-CtgExoCertArgs $s
+            if ($exoCert.Count -eq 0) { throw "the m365-admin secret has no Exchange Online cert — set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows store), and grant the app Exchange.ManageAsApp." }
+            Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $job $creds) @exoCert
             # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only. The
             # credential comes from the brokered `exchange-onprem` secret (which may point at the same
             # Delinea id as ad-dc — the domain admin already has Exchange rights). The PowerShell URI

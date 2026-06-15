@@ -10,9 +10,10 @@ test("m365-admin: needs username + password + tenant (or client domain)", () => 
   assert.deepEqual(checkFieldShape("m365-admin", ["Username", "Password"]), { ok: false, missing: ["tenant id / domain"] });
 });
 
-test("exchange (online): needs an app id + a certificate thumbprint", () => {
+test("exchange (online): needs an app id + a cert (thumbprint OR .pfx)", () => {
   assert.deepEqual(checkFieldShape("exchange", ["Username", "CertificateThumbprint"]), { ok: true, missing: [] });
-  assert.deepEqual(checkFieldShape("exchange", ["Username"]), { ok: false, missing: ["certificate thumbprint"] });
+  assert.deepEqual(checkFieldShape("exchange", ["Username", "CertificateBase64"]), { ok: true, missing: [] }); // cross-platform .pfx
+  assert.deepEqual(checkFieldShape("exchange", ["Username"]), { ok: false, missing: ["certificate (thumbprint or .pfx)"] });
 });
 
 test("mimecast: synonyms satisfy client id + secret (case/space-insensitive)", () => {
