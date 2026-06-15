@@ -131,23 +131,64 @@ function Invoke-CtgADOnboarding {
         [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $sam = $User.SamAccountName
+    $primarySam = $User.SamAccountName
+    $primaryUpn = [string]$User.UserPrincipalName
     $domain = Get-CtgProp $User 'PrimaryDomain'
     $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
 
-    # 1. Ensure the user exists in the OU --------------------------------------
-    $existing = Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue @AdConnection
-    if ($existing) {
-        $actions.Add("user exists ($sam) — skipped create")
+    # 1. Decide WHICH account to use before creating one: check existence, confirm it's the same
+    # person (name match), else fall back to an alternate username (or pause for a decision); if it
+    # is, adopt it and reconcile the rest below. Mirrors Invoke-CtgM365Onboarding / Google. Candidate
+    # (sam, upn) pairs = the primary plus each UPN fallback (its local part is the SamAccountName).
+    $candPairs = [System.Collections.Generic.List[object]]::new()
+    $candPairs.Add(@($primarySam, $primaryUpn))
+    foreach ($fu in @(Get-CtgProp $User 'UserPrincipalNameFallbacks')) {
+        if ($fu) { $candPairs.Add(@((($fu -split '@')[0]), [string]$fu)) }
     }
-    elseif ($PSCmdlet.ShouldProcess($sam, "Create AD user in $ouPath")) {
+    # drop malformed locals (leading/trailing/double separator — a DC rejects them)
+    $candPairs = @($candPairs | Where-Object { $_[0] -and ($_[0] -notmatch '(^[._-]|[._-]$|[._-]{2,})') })
+    $wantFirst = ([string]$User.FirstName).Trim()
+    $wantLast  = ([string]$User.LastName).Trim()
+    $wantName  = ([string]$User.DisplayName).Trim()
+    # 'adopt' = it's ours, unset = pause for a decision; a different name auto-falls-back regardless.
+    $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
+
+    $sam = $null; $chosenUpn = $null; $existing = $null
+    foreach ($pair in $candPairs) {
+        $cand = $pair[0]; $candUpn = $pair[1]
+        $found = Get-ADUser -Filter "SamAccountName -eq '$cand'" -Properties GivenName, Surname, DisplayName -ErrorAction SilentlyContinue @AdConnection
+        if (-not $found) { $sam = $cand; $chosenUpn = $candUpn; break }
+        $fGiven = ([string](Get-CtgProp $found 'GivenName')).Trim()
+        $fSur   = ([string](Get-CtgProp $found 'Surname')).Trim()
+        $fDisp  = ([string](Get-CtgProp $found 'DisplayName')).Trim()
+        $sameName = ($wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fSur -ieq $wantLast) -or ($wantName -and $fDisp -ieq $wantName)
+        if ($sameName) {
+            $sam = $cand; $chosenUpn = $candUpn; $existing = $found
+            $actions.Add("user exists ($cand) and matches '$(if ($fDisp) { $fDisp } else { "$fGiven $fSur" })' — same person (re-run), skipped create"); break
+        }
+        if (-not ($fGiven -or $fSur -or $fDisp)) {
+            $sam = $cand; $chosenUpn = $candUpn; $existing = $found
+            $actions.Add("user exists ($cand) — adopted (no name on the account to confirm), skipped create"); break
+        }
+        if ($collisionPolicy -ieq 'adopt') {
+            $sam = $cand; $chosenUpn = $candUpn; $existing = $found
+            $actions.Add("user exists ($cand) as '$fDisp' — operator chose ADOPT, skipped create"); break
+        }
+        $actions.Add("SamAccountName '$cand' is taken by a different user ($fDisp) — trying the next pattern")
+    }
+    if (-not $sam) {
+        throw "DECISION_NEEDED:username_collision | Every candidate SamAccountName is taken by a different person: $(@($candPairs | ForEach-Object { $_[0] }) -join ', '). Add a username fallback pattern, or set usernameCollisionPolicy=adopt to reuse the existing account. | upn=$primaryUpn | name=$wantName"
+    }
+    if ($sam -ne $primarySam) { $actions.Add("using fallback username: $sam (primary $primarySam taken)") }
+
+    if (-not $existing -and $PSCmdlet.ShouldProcess($sam, "Create AD user in $ouPath")) {
         # A DC won't enable an account without an initial password. Caller may override later /
         # set the same upstream password for mirror clients; this is a compliant placeholder.
         $initial = ConvertTo-SecureString ([System.Guid]::NewGuid().ToString() + '!Aa9') -AsPlainText -Force
-        New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $User.UserPrincipalName `
+        New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $chosenUpn `
             -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
             -Path $ouPath -Enabled $true -AccountPassword $initial `
-            -OtherAttributes @{ proxyAddresses = "SMTP:$($User.UserPrincipalName)" } @AdConnection
+            -OtherAttributes @{ proxyAddresses = "SMTP:$chosenUpn" } @AdConnection
         $actions.Add("created user $sam in $ouPath")
     }
 

@@ -38,6 +38,27 @@ Describe 'Invoke-CtgADOnboarding' {
         Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Path -match 'Six One Users' }
     }
 
+    It 'adopts an existing account whose NAME matches (same person, re-run) without creating' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; GivenName='Jane'; Surname='Doe'; DisplayName='Jane Doe' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' })
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'same person'
+    }
+
+    It 'uses a FALLBACK SamAccountName when the primary is taken by a different person' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter -match "'jdoe'" } -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; GivenName='John'; Surname='Doe'; DisplayName='John Doe' } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter -match "'jane.doe'" } -MockWith { $null }
+        $u = $user | Select-Object *; $u | Add-Member UserPrincipalNameFallbacks @('jane.doe@61commodities.com') -Force
+        $r = Invoke-CtgADOnboarding -User $u -Config ([pscustomobject]@{ ou='Six One Users' })
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $SamAccountName -eq 'jane.doe' -and $UserPrincipalName -eq 'jane.doe@61commodities.com' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'fallback username'
+    }
+
+    It 'PAUSES for a decision when the only username is taken by a different person' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; GivenName='John'; Surname='Doe'; DisplayName='John Doe' } }
+        { Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' }) } | Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+    }
+
     It 'adds base groups and conditional groups only when their condition holds' {
         $config = [pscustomobject]@{
             ou='Six One Users'; groups=@('Back Office Users')
