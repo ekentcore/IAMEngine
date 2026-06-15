@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
+import { refreshClientName } from "@/lib/clients/refresh-name";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
@@ -33,6 +34,19 @@ export async function PATCH(req: Request, { params }: Ctx) {
   const repo = makeClientRepository(db);
   const existing = await repo.getClientBySlug(params.slug);
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Pull just the name from ServiceNow (a renamed account, e.g. CORE2224) — narrow, doesn't touch
+  // edits or other fields like a hard refresh does.
+  if (body.action === "refresh-name") {
+    try {
+      const r = await refreshClientName(db, params.slug, "ui");
+      if (!r.ok) return NextResponse.json({ error: r.reason ?? "couldn't refresh the name" }, { status: 422 });
+      return NextResponse.json(r);
+    } catch (e) {
+      if (e instanceof SnGatewayError) return NextResponse.json({ error: `ServiceNow: ${e.message}` }, { status: 502 });
+      return NextResponse.json({ error: "internal error" }, { status: 500 });
+    }
+  }
 
   // Inline table edit: the website domain.
   if (body.action === "set-domain") {

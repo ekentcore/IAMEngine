@@ -15,6 +15,7 @@ import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
+import { RefreshNameButton } from "../_components/refresh-name-button";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
@@ -167,6 +168,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
           <EditSystemsButton slug={client.slug} />
         </div>
