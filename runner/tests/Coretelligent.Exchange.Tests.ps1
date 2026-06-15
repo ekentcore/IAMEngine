@@ -19,6 +19,7 @@ BeforeAll {
     # distribution-list mirror (EXO)
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
+    function global:Add-UnifiedGroupLinks { [CmdletBinding()] param($Identity, $LinkType, $Links) }
 
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
 }
@@ -250,15 +251,17 @@ Describe 'Wait-CtgMailbox' {
 }
 
 Describe 'Invoke-CtgExchangeNamedGroups' {
-    It 'adds the user to a named distribution list; skips a non-DL group and an unknown name' {
+    It 'adds a DL via Add-DistributionGroupMember, a 365 group via Add-UnifiedGroupLinks, and warns on an unknown name' {
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'DCG' } -MockWith { [pscustomobject]@{ DisplayName = 'DCG'; Identity = 'DCG'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $false } }
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Team365' } -MockWith { [pscustomobject]@{ DisplayName = 'Team365'; Identity = 'Team365'; RecipientTypeDetails = 'GroupMailbox'; IsDirSynced = $false } }
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Ghost' } -MockWith { $null }
         Mock Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Add-UnifiedGroupLinks -ModuleName Coretelligent.Exchange -MockWith { }
         $acts = Invoke-CtgExchangeNamedGroups -NewUser 'laura@dcg.co' -Groups @('DCG', 'Team365', 'Ghost')
         Should -Invoke Add-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        Should -Invoke Add-UnifiedGroupLinks -ModuleName Coretelligent.Exchange -Times 1 -Exactly
         ($acts -join ' ') | Should -Match 'added to distribution group: DCG'
-        ($acts -join ' ') | Should -Match 'not a distribution/mail-enabled group'
+        ($acts -join ' ') | Should -Match 'added to 365 group: Team365'
         ($acts -join ' ') | Should -Match 'not found in Exchange Online'
     }
 

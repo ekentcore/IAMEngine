@@ -198,20 +198,37 @@ function Invoke-CtgExchangeDistListMirror {
 }
 
 function Invoke-CtgExchangeNamedGroups {
-    # Add the new user to EXPLICITLY-REQUESTED distribution / mail-enabled groups BY NAME — the
-    # Exchange-Online-only groups the Graph/m365 lane can't write (it defers them here). Each name is
-    # resolved in EXO; only DLs / mail-enabled groups are added (security/365 are Graph's job, skipped),
-    # dir-synced ones are left to the AD lane, and a name EXO doesn't recognize is surfaced (not silent).
+    # Add the new user to EXPLICITLY-REQUESTED groups BY NAME over Exchange Online — the groups the
+    # Graph/m365 lane couldn't write (DLs/mail-enabled) or couldn't resolve (a 365 group whose alias
+    # != displayName). Each name is resolved in EXO; a DL/mail-enabled group -> Add-DistributionGroupMember,
+    # a 365 (Unified) group -> Add-UnifiedGroupLinks; dir-synced ones are left to the AD lane; a pure
+    # security group is the Graph lane's job; and a name EXO doesn't recognize is surfaced (not silent).
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][string]$NewUser, [string[]]$Groups)
     $actions = [System.Collections.Generic.List[string]]::new()
     foreach ($name in @($Groups | Where-Object { $_ })) {
         $r = Get-Recipient -Identity $name -ErrorAction SilentlyContinue
         if (-not $r) { $actions.Add("WARN requested group '$name' not found in Exchange Online — check the exact display name / that it's an EXO distribution list"); Write-CtgStep "✗ group not found in EXO: $name"; continue }
-        if ($r.RecipientTypeDetails -notin @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList')) {
-            $actions.Add("skipped '$name' — not a distribution/mail-enabled group ($($r.RecipientTypeDetails)); the m365/Graph lane handles security/365 groups"); continue
-        }
         if ($r.IsDirSynced) { $actions.Add("skipped on-prem-synced group (AD lane owns it): $name"); continue }
+        $type = [string]$r.RecipientTypeDetails
+        if ($type -eq 'GroupMailbox') {
+            # A Microsoft 365 (Unified) group: EXO resolved it (often by alias) where Graph's exact
+            # displayName match missed it, so it landed here. 365 group membership is added via EXO's
+            # Add-UnifiedGroupLinks (NOT Add-DistributionGroupMember).
+            if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to 365 group $name")) { continue }
+            try {
+                Add-UnifiedGroupLinks -Identity $r.Identity -LinkType Members -Links $NewUser -ErrorAction Stop
+                $actions.Add("added to 365 group: $name"); Write-CtgStep "✓ added to 365 group: $name"
+            } catch {
+                $m = $_.Exception.Message
+                if ($m -match 'already') { $actions.Add("already in 365 group: $name"); Write-CtgStep "– already a member: $name" }
+                else { $actions.Add("WARN 365 group '$name': $m"); Write-CtgStep "✗ 365 group '$name': $m" }
+            }
+            continue
+        }
+        if ($type -notin @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList')) {
+            $actions.Add("skipped '$name' — not a distribution / mail-enabled / 365 group ($type); a pure security group is added by the m365/Graph lane"); continue
+        }
         if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to $name")) { continue }
         try {
             Add-DistributionGroupMember -Identity $r.Identity -Member $NewUser -BypassSecurityGroupManagerCheck -ErrorAction Stop
