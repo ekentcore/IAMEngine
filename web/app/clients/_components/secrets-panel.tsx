@@ -124,6 +124,10 @@ export function SecretsPanel({
         <a href="/help/cloud-auth" target="_blank" rel="noreferrer">M365 / Exchange cloud auth</a>
         {" · "}
         <a href="/help/spanning" target="_blank" rel="noreferrer">Spanning Backup</a>
+        {" · "}
+        <a href="/help/mimecast" target="_blank" rel="noreferrer">Mimecast</a>
+        {" · "}
+        <a href="/help/google" target="_blank" rel="noreferrer">Google Workspace</a>
       </p>
     );
   }

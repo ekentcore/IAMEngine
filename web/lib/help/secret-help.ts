@@ -25,5 +25,8 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "egnyte") {
     return { kind: "API token", href: "/help/egnyte" };
   }
+  if (name === "google-admin") {
+    return { kind: "service account + domain-wide delegation", href: "/help/google" };
+  }
   return null;
 }
