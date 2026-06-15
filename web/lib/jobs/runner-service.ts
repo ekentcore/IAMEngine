@@ -199,7 +199,11 @@ export function makeRunnerService(db: PrismaClient) {
         where: {
           status: "pending",
           mode: "api",
-          case: { status: { notIn: ["failed", "completed"] }, deletedAt: null, pausedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
+          // Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand an unrelated
+          // pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are candidates and
+          // the per-job dependency gate (below) blocks any whose prerequisites didn't succeed, so a
+          // failed step can't drag a dependent one in. "completed" is excluded (it has no pending work).
+          case: { status: { not: "completed" }, deletedAt: null, pausedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
           ...(agent.clientId ? {} : { systemKey: { notIn: ALWAYS_ON_PREM_SYSTEMS } }),
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],

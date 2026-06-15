@@ -45,10 +45,14 @@ test("isClaimable: gate open + non-terminal case -> claimable", () => {
   assert.equal(isClaimable(t, [j({ sequence: 0, status: "succeeded" }), t], "running"), true);
 });
 
-test("isClaimable: never claim jobs on a failed or completed case", () => {
+test("isClaimable: completed case blocks; a FAILED case still runs its independent pending jobs", () => {
   const t = j({ id: "m365", sequence: 0 });
-  assert.equal(isClaimable(t, [t], "failed"), false);
   assert.equal(isClaimable(t, [t], "completed"), false);
+  // A failed case must NOT strand a pending job whose own deps are met — a different step failed.
+  assert.equal(isClaimable(t, [t], "failed"), true);
+  // ...but the per-job dependency gate still blocks a pending job whose prerequisite didn't succeed.
+  const dep = j({ id: "egnyte", sequence: 1, dependsOn: ["m365"] });
+  assert.equal(isClaimable(dep, [j({ id: "m365", sequence: 0, status: "failed" }), dep], "failed"), false);
 });
 
 test("isClaimable: approval-gated job not claimable unless approved", () => {

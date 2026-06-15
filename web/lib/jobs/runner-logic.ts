@@ -15,7 +15,11 @@ export type JobLite = {
 };
 
 const OPEN: JobStatus[] = ["pending", "dispatched", "running"];
-const TERMINAL_CASE: CaseStatus[] = ["failed", "completed"];
+// Only "completed" truly blocks claiming. A "failed" case must NOT block its still-pending jobs: a
+// failed step (e.g. egnyte) shouldn't strand an unrelated pending step (e.g. m365) — the per-job
+// dependency gate already stops a job whose OWN prerequisites didn't succeed, so a failed step can't
+// drag a dependent one in.
+const TERMINAL_CASE: CaseStatus[] = ["completed"];
 
 // Whether a pending api job may be dispatched now: its case must be live, an approval gate
 // (if any) must be cleared, and all earlier api jobs must have finished. Centralizes the
