@@ -72,6 +72,25 @@ export async function fetchSnAccountById(
   return rows[0] ?? null;
 }
 
+// One account by CORE id (u_core_id, e.g. "CORE2224") — the fallback when a client has no stored
+// sys_id link. Returns null if it isn't found.
+export async function fetchSnAccountByCoreId(
+  config: SnConfig,
+  coreId: string,
+  fetcher: Fetcher = fetch
+): Promise<SnAccount | null> {
+  const id = (coreId ?? "").trim();
+  if (!id) return null;
+  assertConfig(config);
+  const rows = await snGet<SnAccount[]>(
+    config,
+    "/api/now/table/customer_account",
+    { sysparm_query: `u_core_id=${id}`, sysparm_fields: FIELDS, sysparm_display_value: "all", sysparm_limit: "1" },
+    fetcher
+  );
+  return rows[0] ?? null;
+}
+
 // Email addresses of an account's ACTIVE contacts — the ground truth for the org's email domain
 // (vs the website-derived primaryDomain). Paginated so a large account isn't silently truncated to
 // a non-representative first page (which would skew the dominant-domain vote). display_value=false
