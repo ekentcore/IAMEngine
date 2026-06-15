@@ -179,8 +179,15 @@ function Invoke-CtgMimecastOnboarding {
     if ($connections.Count -gt 0) {
         $actions.Add("directory-sync connections: $($connections.Count)")
         if ((Get-CtgProp $Config 'syncAll') -ne $false -and $PSCmdlet.ShouldProcess('directory', 'Trigger Mimecast sync')) {
-            Invoke-CtgMimecastApi -Path '/api/directory/execute-sync' | Out-Null
-            $actions.Add("triggered directory sync")
+            # The sync TRIGGER is best-effort and the sync runs async server-side, so don't fail the
+            # onboard if the request times out (504) or errors — the user still flows in on this or
+            # Mimecast's next scheduled sync, and a re-run verifies.
+            try { Invoke-CtgMimecastApi -Path '/api/directory/execute-sync' | Out-Null; $actions.Add("triggered directory sync") }
+            catch {
+                $m = $_.Exception.Message
+                if ($m -match '\b504\b|GatewayTimeout|timed out|timeout') { $actions.Add("directory sync request timed out at the gateway (504) — Mimecast likely still started the sync; the user flows in shortly (non-fatal, re-run to verify)") }
+                else { $actions.Add("WARN couldn't trigger directory sync: $m — the user will still flow in on Mimecast's next scheduled sync") }
+            }
         }
     }
     elseif (-not (Get-CtgProp $Config 'createIfMissing')) {
