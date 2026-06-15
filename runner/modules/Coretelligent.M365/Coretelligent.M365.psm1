@@ -357,6 +357,25 @@ function Connect-CtgM365 {
     Write-Verbose "Connected to Graph for tenant $TenantId."
 }
 
+function Resolve-CtgM365User {
+    # Look up a user by UPN, distinguishing a GENUINE absence ($null) from a TRANSIENT Graph error
+    # (throttle 429 / 5xx / timeout). A plain `Get-MgUser -ErrorAction SilentlyContinue` swallows the
+    # transient case and returns $null too — which makes the onboarder think the user doesn't exist
+    # (so it skips the marker/adopt logic and tries to CREATE) and makes the validator false-report
+    # "user exists = false". We retry transient errors and, if they persist, THROW rather than guess.
+    param([Parameter(Mandatory)][string]$Upn, [string[]]$Property = @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes'))
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i) { Start-Sleep -Seconds (2 * $i) }
+        try { return (Get-MgUser -UserId $Upn -Property $Property -ErrorAction Stop) }
+        catch {
+            $m = [string]$_.Exception.Message
+            if ($m -match 'Request_ResourceNotFound|ResourceNotFound|does not exist|\bNotFound\b|\b404\b') { return $null }  # genuinely absent
+            if ($i -eq 3) { throw "Graph lookup of '$Upn' kept failing (transient — throttle/timeout): $m" }  # never assume "absent" on a transient error
+        }
+    }
+    $null
+}
+
 function Invoke-CtgM365Onboarding {
     <#
     .SYNOPSIS
@@ -411,8 +430,9 @@ function Invoke-CtgM365Onboarding {
     # (use a fallback), unset/'ask' = PAUSE and let an operator decide on the case.
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
     foreach ($cand in $candidates) {
-        $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue
-        if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue }
+        # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
+        # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
+        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'OnPremisesExtensionAttributes')
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
         # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
         # extensionAttributes at all.
@@ -747,7 +767,8 @@ function Confirm-CtgM365 {
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
     $upn = $User.UserPrincipalName
 
-    $u = Get-MgUser -Filter "userPrincipalName eq '$upn'" -Property Id, AccountEnabled, UserPrincipalName -ErrorAction SilentlyContinue
+    # Transient-aware lookup: don't let a throttle/timeout false-report "user exists = false" (a MISS).
+    $u = Resolve-CtgM365User -Upn $upn -Property @('Id', 'AccountEnabled', 'UserPrincipalName')
     $exists = [bool]$u
 
     if ($Action -eq 'onboard') {
