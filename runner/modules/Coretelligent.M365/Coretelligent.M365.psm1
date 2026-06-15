@@ -398,6 +398,10 @@ function Invoke-CtgM365Onboarding {
     $marker = [string](Get-CtgProp $User 'PersonalEmail')
     if ([string]::IsNullOrWhiteSpace($marker)) { $marker = "ctg:$([string]$User.DisplayName)|$([string](Get-CtgProp $User 'StartDate'))" }
     $candidates = @(@($upn) + @(Get-CtgProp $User 'UserPrincipalNameFallbacks') | Where-Object { $_ })
+    # Drop malformed candidates — a "{first}.{mi}" pattern with no middle initial yields "felix."
+    # (leading/trailing/double separator in the local part), which Entra rejects on the UPN AND the
+    # mailNickname. Belt-and-suspenders: the app now omits these, but old planned cases may still carry one.
+    $candidates = @($candidates | Where-Object { $lp = ($_ -split '@')[0]; $lp -and ($lp -notmatch '(^[._-]|[._-]$|[._-]{2,})') })
     $existing = $null
     $chosenUpn = $null
     foreach ($cand in $candidates) {

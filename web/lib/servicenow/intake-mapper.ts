@@ -259,17 +259,32 @@ export function deriveIdentity(
   // UPN is already taken by a DIFFERENT person (e.g. "{first}.{last}" then "{first}.{mi}").
   const patterns = opts.usernamePatterns?.length ? opts.usernamePatterns : ["{first}.{last}@{domain}"];
 
+  // A pattern is usable only if every NAME token it references resolved to a non-empty value — so
+  // "{first}.{mi}" is DROPPED when there's no middle initial (it would yield "felix." -> a UPN/
+  // mailNickname Entra rejects with "Invalid value specified for property 'mailNickname'"). Unknown
+  // tokens are left for a reviewer, never treated as empty.
+  const cf = cleanToken(first), cl = cleanToken(last), cm = cleanToken(mi);
+  const EMPTY_TOKEN: Record<string, boolean> = {
+    "{first}": !cf, "{last}": !cl, "{mi}": !cm,
+    "{firstinitial}": !cf, "{lastinitial}": !cl, "{f}": !cf, "{l}": !cl,
+  };
+  const patternUsable = (pat: string) =>
+    (pat.split("@")[0].match(/\{[a-z]+\}/gi) ?? []).every((t) => !(EMPTY_TOKEN[t.toLowerCase()] ?? false));
+  // Trim/collapse stray separators a missing token can leave behind ("felix..k" -> "felix.k",
+  // "felix." -> "felix"), so a local part is never malformed.
+  const sanitizeLocal = (lp: string) => lp.replace(/[._-]{2,}/g, (s) => s[0]).replace(/^[._-]+|[._-]+$/g, "");
+
   // Build a UPN (and the local part) from a pattern's left-of-@ portion so a missing domain still
   // yields a SamAccountName (the UPN/work email need a domain).
-  const buildLocal = (pat: string) => applyUsernamePattern(pat.split("@")[0], { first, last, mi, domain: "" });
+  const buildLocal = (pat: string) => sanitizeLocal(applyUsernamePattern(pat.split("@")[0], { first, last, mi, domain: "" }));
   const buildUpn = (pat: string) => {
     const lp = buildLocal(pat);
     return domain && lp ? `${lp}@${domain}` : null;
   };
   const localPart = buildLocal(patterns[0]);
   const upn = buildUpn(patterns[0]);
-  // Fallback UPNs from the remaining patterns (deduped, excluding the primary).
-  const fallbacks = [...new Set(patterns.slice(1).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
+  // Fallback UPNs from the remaining USABLE patterns (deduped, excluding the primary).
+  const fallbacks = [...new Set(patterns.slice(1).filter(patternUsable).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
   const displayName = (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
 
   const merged = {

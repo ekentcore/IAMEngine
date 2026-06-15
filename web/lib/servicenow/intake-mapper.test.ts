@@ -101,6 +101,22 @@ test("deriveIdentity computes UPN / SamAccountName from the client's pattern + d
   assert.equal(enriched.displayName, "Jane Van Doe");
 });
 
+test("deriveIdentity drops a fallback whose tokens resolve empty (no '{first}.{mi}' -> 'felix.')", () => {
+  // The bug: no middle initial made "{first}.{mi}" yield "felix." -> Entra rejects the UPN/mailNickname.
+  const withMi = deriveIdentity({ firstName: "Felix", lastName: "Kessler", mi: "" }, {
+    usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com",
+  });
+  assert.equal(withMi.userPrincipalName, "felix.kessler@drakestar.com");
+  assert.equal(withMi.mailNickname, "felix.kessler");
+  assert.deepEqual(withMi.userPrincipalNameFallbacks, []); // the "{first}.{mi}" fallback is unusable -> dropped
+
+  // When a middle initial IS present, the fallback is kept and well-formed.
+  const okMi = deriveIdentity({ firstName: "Felix", lastName: "Kessler", mi: "J" }, {
+    usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com",
+  });
+  assert.deepEqual(okMi.userPrincipalNameFallbacks, ["felix.j@drakestar.com"]);
+});
+
 test("deriveIdentity falls back to a default pattern and yields no UPN without a domain", () => {
   const { payload } = normalizeIntake(onboard);
   const noDomain = deriveIdentity(payload, { usernamePatterns: null, primaryDomain: null });
