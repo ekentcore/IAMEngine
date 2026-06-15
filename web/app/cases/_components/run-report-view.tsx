@@ -167,7 +167,7 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
         {review.fields.map((f) => (
           <React.Fragment key={f.key}>
             <label style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-              {f.label}{f.source !== "derived" && SRC[f.source].label && <span className="badge" style={{ marginLeft: 5, fontSize: 9, color: SRC[f.source].color }}>{SRC[f.source].label}</span>}
+              {f.label}{f.source !== "derived" && SRC[f.source]?.label && <span className="badge" style={{ marginLeft: 5, fontSize: 9, color: SRC[f.source]?.color }}>{SRC[f.source]?.label}</span>}
             </label>
             <input value={edits[f.key] ?? f.value} onChange={(e) => setEdits((s) => ({ ...s, [f.key]: e.target.value }))} style={{ fontSize: 13, maxWidth: 360 }} />
           </React.Fragment>

@@ -9,7 +9,7 @@ import { SecretHelpLink } from "@/app/_components/secret-help-link";
 type CaseSecret = {
   name: string;
   label: string | null;
-  source: "case" | "client" | "missing";
+  source: "case" | "client" | "missing" | "not_needed";
   externalId: string | null;
   clientExternalId: string | null;
   overridden: boolean;
@@ -23,7 +23,10 @@ const SRC: Record<CaseSecret["source"], { text: string; color: string }> = {
   client: { text: "from client", color: "var(--muted)" },
   case: { text: "overridden", color: "#7b3fa0" },
   missing: { text: "missing", color: "#b3261e" },
+  not_needed: { text: "not needed", color: "var(--muted)" },
 };
+// Never crash on an unmapped source value (the server may add one before this map does).
+const srcOf = (s: CaseSecret["source"]): { text: string; color: string } => SRC[s] ?? { text: String(s), color: "var(--muted)" };
 
 export function CaseSecretsPanel({ caseId }: { caseId: string }) {
   const [secrets, setSecrets] = useState<CaseSecret[] | null>(null);
@@ -99,7 +102,7 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
                 <td>
                   <input value={val} placeholder="Delinea secret id" onChange={(e) => setEdit((x) => ({ ...x, [s.name]: e.target.value }))}
                     style={{ fontFamily: "monospace", width: "100%", minWidth: 140 }} />
-                  <span className="badge" style={{ marginTop: 2, color: SRC[s.source].color }}>{SRC[s.source].text}</span>
+                  <span className="badge" style={{ marginTop: 2, color: srcOf(s.source).color }}>{srcOf(s.source).text}</span>
                   {s.overridden && s.clientExternalId && (
                     <button className="note" style={{ marginLeft: 6 }} onClick={() => saveOverride(s.name, "")}>reset to client</button>
                   )}
