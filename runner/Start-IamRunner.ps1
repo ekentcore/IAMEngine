@@ -641,6 +641,36 @@ $CONNTEST_PROBE = @{
         "$base · all required Graph permissions present ($($granted.Count) granted)"
     }
     'exchange'         = { param($job, $creds) $o = Get-OrganizationConfig -ErrorAction Stop; "org: $($o.Name)" }
+    'mimecast'         = { param($job, $creds)
+        # Probe the actual operations onboarding needs and report which the API 2.0 app is permitted
+        # to do — so "Test connections" shows the app's real permission map (Mimecast has no API to
+        # list an app's granted permissions; this infers them from what works).
+        $report = @()
+        $try = {
+            param($label, $path)
+            try { Invoke-CtgMimecastApi -Path $path | Out-Null; "$($label): allowed" }
+            catch { if ([string]$_.Exception.Message -match 'forbidden|not .{0,6}permitted|denied|unauthoriz|\b403\b') { "$($label): FORBIDDEN" } else { "$($label): error" } }
+        }
+        $report += & $try 'account read'           '/api/account/get-account'
+        $report += & $try 'directory/domains read' '/api/domain/get-internal-domain'
+        $report += & $try 'directory-sync read'    '/api/directory/get-connection'
+        # USER read is what onboarding actually needs (get-profile). Probe a benign address in an
+        # internal domain: FORBIDDEN = the missing permission; not-found = the permission IS granted.
+        $dom = $null
+        try { $idr = @(Invoke-CtgMimecastApi -Path '/api/domain/get-internal-domain'); $dom = @($idr | ForEach-Object { $d = Get-CtgProp $_ 'domain'; if (-not $d) { $d = Get-CtgProp $_ 'domainName' }; $d } | Where-Object { $_ })[0] } catch { }
+        if ($dom) {
+            try {
+                $resp = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = "postmaster@$dom" } -AllowFail
+                $codes = @(@(Get-CtgProp $resp 'fail') | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { [string](Get-CtgProp $_ 'code') } })
+                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $report += 'user read (get-profile): FORBIDDEN — THIS is the onboarding gap' }
+                else { $report += 'user read (get-profile): allowed' }
+            } catch { $report += 'user read (get-profile): error' }
+        }
+        $detail = "app permissions -> $($report -join ' | ')"
+        # Fail the test (visibly red) when a permission onboarding needs is missing.
+        if (($report -join ' ') -match 'FORBIDDEN') { throw $detail }
+        $detail
+    }
     'active-directory' = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "domain: $($d.DNSRoot)" }
     'directory-sync'   = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
