@@ -41,6 +41,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   notion:            { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "notion" },
   tableau:           { mode: "manual", tier: 3, onboard: "on-request", offboard: null },
   printix:           { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "printix" },
+  uniflow:           { mode: "manual", tier: 3, onboard: "on-request", offboard: null }, // secure pull-printing — manual setup (emails the user a PIN)
   "welcome-letter":  { mode: "manual", tier: 3, onboard: "always", offboard: null, dependsOn: ["m365"] },
   "first-day-call":  { mode: "manual", tier: 3, onboard: "always", offboard: null },
   hardware:          { mode: "manual", tier: 3, onboard: null, offboard: "on-request" },
@@ -78,6 +79,7 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/1 ?password/, "1password"],
   [/notion/, "notion"],
   [/tableau/, "tableau"],
+  [/uni ?flow/, "uniflow"],
   [/printix/, "printix"],
   [/perimeter ?81/, "perimeter81"],
 ];
