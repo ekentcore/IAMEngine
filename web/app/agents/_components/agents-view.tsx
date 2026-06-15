@@ -32,8 +32,11 @@ function installCommand(a: AgentVM, origin: string): string {
     `$App="${origin}"; $Dir="$HOME/iam-runner"; $H=@{'ngrok-skip-browser-warning'='true'}`,
   ];
   if (a.scope === "central") {
-    // Just the Graph submodules the M365 executor needs (+ EXO) — far faster than the Microsoft.Graph meta-module.
-    lines.push(`Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Groups,Microsoft.Graph.Identity.DirectoryManagement,ExchangeOnlineManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # cloud modules (the agent also self-installs any missing module on demand)`);
+    // Just the Graph submodules the M365 executor needs — far faster than the Microsoft.Graph meta-module.
+    lines.push(`Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Groups,Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser -Force -ErrorAction SilentlyContinue   # Graph submodules`);
+    // EXO must be PINNED to 3.9.2 — 3.10.0's REST cmdlets break on PowerShell 7.6, and the runner
+    // imports -RequiredVersion 3.9.2, so an unpinned install (-> 3.10.0) leaves the Exchange module unloaded.
+    lines.push(`Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.2 -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue   # EXO pinned (3.10.0 breaks on PS 7.6) — for distribution-list adds`);
   }
   lines.push(
     `New-Item -ItemType Directory -Force $Dir | Out-Null`,
@@ -219,6 +222,19 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
         <span className="grow" />
         <button className="primary" onClick={open}>Add runner</button>
       </div>
+
+      <details style={{ margin: "0 0 1rem", fontSize: 13 }}>
+        <summary style={{ cursor: "pointer", color: "var(--muted)" }}>Runner maintenance &amp; troubleshooting (restart, Exchange Online module)</summary>
+        <div style={{ padding: "0.5rem 0.2rem", lineHeight: 1.7 }}>
+          <p style={{ margin: "0 0 0.4rem" }}><b>Updating &amp; restarting:</b> click <b>Update</b> on a runner — it re-pulls the latest code <i>and restarts the process automatically</i>. You do <b>not</b> need to restart it yourself. Use a manual restart only if you can&rsquo;t use Update.</p>
+          <p style={{ margin: "0 0 0.2rem" }}><b>Manual restart</b> (the runner usually lives at <code>~/iam-runner/</code>):</p>
+          <pre style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" }}>{`pkill -f Start-IamRunner.ps1
+nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/Start-IamRunner.ps1 \\
+  -AppUrl <app-url> -AgentId <this-agent-id> -PollSeconds 15 -BatchSize 5 >> ~/iam-runner/runner.log 2>&1 &`}</pre>
+          <p style={{ margin: "0.4rem 0 0.2rem" }}><b>Exchange Online module</b> (needed for distribution-list adds; pinned to 3.9.2 — 3.10.0 breaks on PS 7.6). The installer above includes it; to (re)install on a macOS/Linux central runner, then Update/restart:</p>
+          <pre style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" }}>{`~/.local/pwsh/pwsh -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.2 -Scope CurrentUser -Force -AllowClobber"`}</pre>
+        </div>
+      </details>
 
       <table>
         <thead>
