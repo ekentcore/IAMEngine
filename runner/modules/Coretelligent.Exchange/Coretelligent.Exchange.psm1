@@ -32,8 +32,9 @@ function Write-CtgStep([string]$Message) {
 function Connect-CtgExchange {
     # App-only Exchange Online. Two auth paths:
     #   - CertificateBase64 (+ optional password): a PFX (private key) base64-encoded — cross-platform
-    #     (macOS / Linux / Windows). Built in-memory (EphemeralKeySet), never written to disk. PREFERRED
-    #     for a central runner that isn't on Windows.
+    #     (macOS / Linux / Windows). Written to a temp .pfx and passed via -CertificateFilePath, then
+    #     deleted. (An in-memory X509Certificate2 with EphemeralKeySet fails on macOS: "This platform
+    #     does not support loading with EphemeralKeySet.") PREFERRED for a non-Windows central runner.
     #   - CertificateThumbprint: reads the WINDOWS certificate store — Windows-only.
     [CmdletBinding()]
     param(
@@ -44,11 +45,13 @@ function Connect-CtgExchange {
         [string]$CertificatePassword
     )
     if ($CertificateBase64) {
-        $bytes = [Convert]::FromBase64String(($CertificateBase64 -replace '\s', ''))
-        $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
-        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes, [string]$CertificatePassword, $flags)
-        if (-not $cert.HasPrivateKey) { throw "the Exchange Online certificate has no private key — store the .pfx (which includes the key), not the .cer, in CertificateBase64." }
-        Connect-ExchangeOnline -AppId $AppId -Organization $Organization -Certificate $cert -ShowBanner:$false
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-exo-" + [guid]::NewGuid().ToString('N') + ".pfx")
+        try {
+            [System.IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String(($CertificateBase64 -replace '\s', '')))
+            $sec = if ($CertificatePassword) { ConvertTo-SecureString ([string]$CertificatePassword) -AsPlainText -Force } else { [System.Security.SecureString]::new() }
+            Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateFilePath $tmp -CertificatePassword $sec -ShowBanner:$false
+        }
+        finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }  # never leave the private key on disk
     }
     elseif ($CertificateThumbprint) {
         Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false
