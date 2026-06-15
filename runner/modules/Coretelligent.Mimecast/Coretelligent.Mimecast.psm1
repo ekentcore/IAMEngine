@@ -134,7 +134,19 @@ function Get-CtgMimecastProfile {
         # miss — say what to fix instead of surfacing the raw code.
         if ($joined -match 'forbidden|operation_forbidden|not .{0,6}permitted|unauthoriz|permission|denied') {
             $domain = if ($Email -match '@') { $Email.Split('@')[1] } else { $Email }
-            throw "Mimecast: not permitted to read $Email — the API 2.0 application lacks user/directory read permission (or '$domain' isn't an internal/managed domain on this Mimecast account). In the Mimecast Admin Console, grant the application Directory and User read access, and confirm the domain is added under Internal Directories. (raw: $joined) See /help/mimecast."
+            # Discriminate the two causes: best-effort list the account's internal domains. If we CAN
+            # read them and $domain is missing -> it's a DOMAIN-not-internal problem; if $domain IS
+            # listed -> it's a pure permission gap; if we can't read them at all -> permission gap.
+            $internal = $null
+            try {
+                $dr = @(Invoke-CtgMimecastApi -Path '/api/domain/get-internal-domain')
+                $internal = @($dr | ForEach-Object { $d = Get-CtgProp $_ 'domain'; if (-not $d) { $d = Get-CtgProp $_ 'domainName' }; $d } | Where-Object { $_ })
+            } catch { }
+            $hint = if ($internal -and $internal.Count -gt 0) {
+                if ($internal -contains $domain) { " DIAGNOSIS: '$domain' IS an internal domain, so this is a PERMISSIONS gap — grant the API 2.0 application Directory + User READ in its permissions." }
+                else { " DIAGNOSIS: this account's internal domains are [$($internal -join ', ')] — '$domain' is NOT among them. Add/verify '$domain' under Internal Directories (or confirm you're onboarding the right email domain)." }
+            } else { " DIAGNOSIS: couldn't even read the account's domains — the API 2.0 application is missing read permission (grant it Directory + User read), or it's bound to a different Mimecast account than the one managing '$domain'." }
+            throw "Mimecast: not permitted to read $Email — the API 2.0 application lacks user/directory read permission (or '$domain' isn't an internal/managed domain on this Mimecast account).$hint (raw: $joined) See /help/mimecast."
         }
         throw "Mimecast API: POST $script:MimecastBaseUrl/api/user/get-profile -> request failed — $joined"
     }
