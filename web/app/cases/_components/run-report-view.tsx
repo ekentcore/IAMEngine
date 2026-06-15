@@ -296,17 +296,32 @@ function NeedsInfoPanel({ caseId, info, refresh }: { caseId: string; info: NonNu
 
 // One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
 // careful drag-selecting inside a scrollable <pre>.
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, label = "Copy error", title = "Copy the full error text" }: { text: string; label?: string; title?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      onClick={() => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-      title="Copy the full error text"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      title={title}
       style={{ fontSize: 11, padding: "1px 8px", marginTop: 3 }}
     >
-      {copied ? "Copied ✓" : "Copy error"}
+      {copied ? "Copied ✓" : label}
     </button>
   );
+}
+
+// Plain-text dump of a step's full log (actions + validation + error + progress) — for the "Copy
+// log" buttons, so an operator can paste exactly what they see straight into a report or chat.
+function stepLogText(step: RunReport["steps"][number]): string {
+  const L: string[] = [`${step.systemName} (${step.systemKey}) — ${step.verdict}`];
+  if (step.actions.length) { L.push("Actions:"); for (const a of step.actions) L.push(a); }
+  const v = step.validation as { ok?: boolean; checks?: { name: string; expected: unknown; actual: unknown; pass: boolean }[] } | null;
+  if (v?.checks?.length) {
+    L.push(`Validation: ${v.ok ? "OK" : "MISS"}`);
+    for (const c of v.checks) L.push(`${c.pass ? "✓" : "✗"} ${c.name} (expected ${String(c.expected)}, got ${String(c.actual)})`);
+  }
+  if (step.error) L.push(`Error: ${step.error}`);
+  if (step.phaseTrail?.length) { L.push("Progress:"); for (const p of step.phaseTrail) L.push(`${new Date(p.ts).toLocaleTimeString()} ${p.phase}`); }
+  return L.join("\n");
 }
 
 // The after-action run report: per-step verdicts, actions, validation read-backs, and errors.
@@ -474,6 +489,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
             {busy === "verify" ? "verifying…" : "✓ Verify everything"}
           </button>
           <button onClick={refresh}>Refresh</button>
+          <CopyButton text={report.steps.map(stepLogText).join("\n\n")} label="Copy log" title="Copy the whole run report (all steps' actions, validation + progress) as text" />
           <a href={`/api/cases/${caseId}/report?format=md`} download className="note">download .md →</a>
         </div>
       </div>
@@ -534,6 +550,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
             </summary>
             <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>
+              {hasDetail && (
+                <div style={{ marginBottom: 4 }}>
+                  <CopyButton text={stepLogText(step)} label="Copy this step's log" title="Copy this step's actions, validation + progress as text" />
+                </div>
+              )}
               {step.actions.length > 0 && (
                 <div>
                   <div className="note">Actions:</div>
