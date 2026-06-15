@@ -128,6 +128,20 @@ function Get-CtgTenantDomain {
     $t
 }
 
+function Get-CtgExoOrganization {
+    # Exchange Online's -Organization needs a DOMAIN (e.g. dcg.co / dcg.onmicrosoft.com), NOT the
+    # tenant GUID that Get-CtgTenantDomain prefers (the GUID is right for Graph -TenantId but EXO
+    # rejects it: "Organization cannot be a Guid"). Pick the first non-GUID domain we can find.
+    param($Job, $Creds)
+    $cand = [System.Collections.Generic.List[string]]::new()
+    if ($Job.client -and $Job.client.primaryDomain) { $cand.Add([string]$Job.client.primaryDomain) }
+    $s = $Creds['m365-admin']
+    if ($s -and $s.Fields) { foreach ($k in @('Domain', 'TenantDomain', 'Organization')) { if ($s.Fields[$k]) { $cand.Add([string]$s.Fields[$k]) } } }
+    if ($Job.payload -and $Job.payload.UserPrincipalName -and ([string]$Job.payload.UserPrincipalName) -match '@') { $cand.Add(([string]$Job.payload.UserPrincipalName -split '@')[1]) }
+    foreach ($c in $cand) { $d = ([string]$c).Trim(); if ($d -and $d -notmatch '^[0-9a-fA-F-]{36}$') { return $d } }
+    throw "no Exchange Online organization DOMAIN for '$($Job.client.slug)' — EXO needs a domain (e.g. <tenant>.onmicrosoft.com), not the tenant GUID. Set the client's primary domain, or add a Domain field to the m365-admin secret."
+}
+
 # systemKey -> { Connect?; Onboard; Offboard }. Connect (optional) runs once per tenant before
 # the first job for that system; the action lanes receive ($job, $creds) where $creds maps each
 # The initial password for a new user, in priority order:
@@ -190,7 +204,7 @@ function Add-CtgM365DistributionLists {
     }
     try {
         Set-CtgPhase $Job.id "adding distribution lists over Exchange Online (app-only)"
-        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $Job $Creds) @certArgs
+        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $Job $Creds) @certArgs
         foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$Job.payload.UserPrincipalName) -Groups $Names)) { $out.Add($a) }
     } catch {
         $out.Add("WARN couldn't add distribution lists over Exchange Online ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret.")
@@ -261,7 +275,7 @@ $DISPATCH = @{
             Set-CtgPhase $job.id "connecting to Exchange Online (app-only cert auth, app $($s.Credential.UserName))"
             $exoCert = Get-CtgExoCertArgs $s
             if ($exoCert.Count -eq 0) { throw "the m365-admin secret has no Exchange Online cert — set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows store), and grant the app Exchange.ManageAsApp." }
-            Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $job $creds) @exoCert
+            Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $job $creds) @exoCert
             # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only. The
             # credential comes from the brokered `exchange-onprem` secret (which may point at the same
             # Delinea id as ad-dc — the domain admin already has Exchange rights). The PowerShell URI
