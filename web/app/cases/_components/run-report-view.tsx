@@ -26,12 +26,12 @@ function Badge({ verdict }: { verdict: StepVerdict }) {
 // Procurement-case watch: shown on steps blocked on license seats (a WARN naming a Procurement
 // Case). Saving a PC number starts a server-side watch (checked ~every 5 min via runner
 // heartbeats); when the PC resolves in ServiceNow, the job re-queues and verifies automatically.
-function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][number]; refresh: () => Promise<void> | void }) {
+function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunReport["steps"][number]; refresh: () => Promise<void> | void; forceShow?: boolean }) {
   const [num, setNum] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const wantsWatch = step.actions.some((a) => /procurement case/i.test(a));
-  if (!step.jobId || (!step.procurement && !wantsWatch)) return null;
+  if (!step.jobId || (!step.procurement && !wantsWatch && !forceShow)) return null;
 
   if (step.procurement) {
     const p = step.procurement;
@@ -106,16 +106,29 @@ function ProcurementWatchRow({ step, refresh }: { step: RunReport["steps"][numbe
 // License picker — shown on an m365 step when an assignment failed for no seats. Lists the tenant's
 // owned SKUs + free seat counts (multi-select); assigning writes the choice into the step config and
 // re-runs it. A pick with 0 free seats is allowed but warned (it'll fall back to a Procurement Case).
-function LicensePicker({ jobId, options, refresh }: { jobId: string; options: NonNullable<RunReport["steps"][number]["licenseOptions"]>; refresh: () => Promise<void> | void }) {
+function LicensePicker({ jobId, options, refresh, onWait, waiting }: { jobId: string; options: NonNullable<RunReport["steps"][number]["licenseOptions"]>; refresh: () => Promise<void> | void; onWait: () => void; waiting: boolean }) {
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(waiting);
   const chosen = options.filter((o) => sel.has(o.skuId));
   const noSeatPick = chosen.some((o) => o.available <= 0);
 
+  // "I'll wait" — collapse the picker (so the failed step isn't cluttered) but keep it re-openable,
+  // and reveal the procurement-case watcher so they can track the order. Choosing a license later
+  // still works.
+  if (collapsed) {
+    return (
+      <div className="note" style={{ marginTop: 4, color: "#8a6d00" }}>
+        ⏳ Waiting on a license — order it and watch the procurement case below.{" "}
+        <button style={{ fontSize: 12, marginLeft: 4 }} onClick={() => setCollapsed(false)}>Pick a license instead</button>
+      </div>
+    );
+  }
+
   return (
     <div className="note" style={{ marginTop: 4, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
-      <div style={{ fontWeight: 600, color: "#92400e" }}>No seats for the requested license — assign a different one:</div>
+      <div style={{ fontWeight: 600, color: "#92400e" }}>No seats for the requested license — assign a different one, or wait for procurement:</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0.4rem 0" }}>
         {options.map((o) => (
           <label key={o.skuId} style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, color: "var(--fg)", fontSize: 12 }}>
@@ -131,18 +144,23 @@ function LicensePicker({ jobId, options, refresh }: { jobId: string; options: No
       </div>
       {noSeatPick && <div style={{ color: "#92400e" }}>⚠ A selected license also has 0 free seats — it&rsquo;ll re-warn and you can open a Procurement Case to order it.</div>}
       {err && <div style={{ color: "#b91c1c" }}>{err}</div>}
-      <button className="primary" style={{ marginTop: 4, fontSize: 12 }} disabled={busy || chosen.length === 0}
-        onClick={async () => {
-          setBusy(true); setErr(null);
-          try {
-            const r = await fetch(`/api/jobs/${jobId}/license`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ licenses: chosen.map((o) => ({ name: o.skuPartNumber, skuId: o.skuId })) }) });
-            if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
-            await refresh();
-          } catch (e) { setErr((e as Error).message); }
-          finally { setBusy(false); }
-        }}>
-        {busy ? "Assigning…" : `Assign ${chosen.length || ""} & re-run`}
-      </button>
+      <div className="toolbar" style={{ marginTop: 4 }}>
+        <button className="primary" style={{ fontSize: 12 }} disabled={busy || chosen.length === 0}
+          onClick={async () => {
+            setBusy(true); setErr(null);
+            try {
+              const r = await fetch(`/api/jobs/${jobId}/license`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ licenses: chosen.map((o) => ({ name: o.skuPartNumber, skuId: o.skuId })) }) });
+              if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+              await refresh();
+            } catch (e) { setErr((e as Error).message); }
+            finally { setBusy(false); }
+          }}>
+          {busy ? "Assigning…" : `Assign ${chosen.length || ""} & re-run`}
+        </button>
+        <button style={{ fontSize: 12 }} disabled={busy} onClick={() => { setCollapsed(true); onWait(); }} title="Don't assign now — order the license and watch its procurement case">
+          I&rsquo;ll wait
+        </button>
+      </div>
     </div>
   );
 }
@@ -296,6 +314,7 @@ function CopyButton({ text }: { text: string }) {
 export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunReport; caseId: string; writeEnabled: boolean }) {
   const [report, setReport] = useState<RunReport>(initial);
   const [open, setOpen] = useState<Set<number>>(new Set());
+  const [waiting, setWaiting] = useState<Set<number>>(new Set()); // steps where the operator chose "I'll wait" on a license
   const [busy, setBusy] = useState<string | null>(null);
   const [writeBack, setWriteBack] = useState(false);
   const [writeMsg, setWriteMsg] = useState<string | null>(null);
@@ -550,8 +569,8 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
                 </div>
               )}
-              {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} />}
-              <ProcurementWatchRow step={step} refresh={refresh} />
+              {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} waiting={waiting.has(step.seq)} onWait={() => setWaiting((s) => new Set(s).add(step.seq))} />}
+              <ProcurementWatchRow step={step} refresh={refresh} forceShow={waiting.has(step.seq)} />
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>
                   <div className="note">Progress:</div>
