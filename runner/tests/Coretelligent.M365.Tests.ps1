@@ -87,11 +87,28 @@ Describe 'Invoke-CtgM365Onboarding' {
         ($r.Actions -join ' ') | Should -Match 'our account .re-run., skipped create'
     }
 
-    It 'uses the fallback when the primary UPN is a SAME-NAME collision (no marker / different person)' {
-        # jdoe@x.com exists as a different Jane Doe with NO provisioning marker -> not ours -> fallback.
+    It 'ADOPTS an existing same-name account with no marker (re-run / manual create) — no create, stamps the marker' {
+        # jdoe@x.com exists with the SAME display name and NO marker -> almost certainly the same person
+        # (a prior run created it before failing). Adopt it: no New-MgUser, stamp the marker, keep the UPN.
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
             param($UserId, $Filter)
-            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'stranger'; DisplayName = 'Jane Doe' } }
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
+            return $null
+        }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        $r.Upn | Should -Be 'jdoe@x.com'
+        ($r.Actions -join ' ') | Should -Match 'adopting it as ours'
+    }
+
+    It 'uses the fallback when the primary UPN is taken by a DIFFERENT person (different name, no marker)' {
+        # jdoe@x.com exists as "John Smith" with no marker -> NOT our user -> create with the fallback.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'stranger'; DisplayName = 'John Smith'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
             return $null
         }
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane.new@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }

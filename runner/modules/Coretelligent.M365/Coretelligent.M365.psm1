@@ -404,6 +404,8 @@ function Invoke-CtgM365Onboarding {
     $candidates = @($candidates | Where-Object { $lp = ($_ -split '@')[0]; $lp -and ($lp -notmatch '(^[._-]|[._-]$|[._-]{2,})') })
     $existing = $null
     $chosenUpn = $null
+    $adopt = $false
+    $targetName = ([string]$User.DisplayName).Trim()
     foreach ($cand in $candidates) {
         $found = Get-MgUser -UserId $cand -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue
         if (-not $found) { $found = Get-MgUser -Filter "userPrincipalName eq '$cand'" -Property 'Id', 'DisplayName', 'OnPremisesExtensionAttributes' -ErrorAction SilentlyContinue }
@@ -415,6 +417,16 @@ function Invoke-CtgM365Onboarding {
         if ($foundMarker -and $foundMarker -ieq $marker) {
             $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
         }
+        # No marker but the SAME display name = almost certainly the same person we're onboarding (a
+        # prior run created the account before failing, or it was made manually). Adopt it — stamp our
+        # marker so future runs match by marker — instead of refusing as a "different user". A marker
+        # that's present but DIFFERENT means it's genuinely someone else's account, so we don't adopt.
+        if (-not $foundMarker -and $targetName -and ([string]$found.DisplayName).Trim() -ieq $targetName) {
+            $existing = $found; $chosenUpn = $cand; $adopt = $true
+            $actions.Add("user exists ($cand) with no marker but matching name '$($found.DisplayName)' — adopting it as ours (stamping marker), skipping create")
+            Write-CtgM365Step "↪ $cand already exists as '$($found.DisplayName)' — adopting it (same person), continuing with licensing/groups"
+            break
+        }
         $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
         Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"
     }
@@ -425,6 +437,12 @@ function Invoke-CtgM365Onboarding {
 
     if ($existing) {
         $userId = $existing.Id
+        # Adopted an unmarked same-name account: stamp our provisioning marker so the next re-run
+        # recognizes it by marker (and never has to name-match again).
+        if ($adopt -and $PSCmdlet.ShouldProcess($chosenUpn, "Stamp provisioning marker on adopted user")) {
+            try { Update-MgUser -UserId $userId -OnPremisesExtensionAttributes @{ ExtensionAttribute1 = $marker } -ErrorAction Stop }
+            catch { $actions.Add("note: couldn't stamp the provisioning marker on $chosenUpn ($($_.Exception.Message)) — it'll be name-matched again next run") }
+        }
     }
     else {
         if ($PSCmdlet.ShouldProcess($upn, "Create M365 user")) {
