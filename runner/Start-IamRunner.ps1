@@ -155,6 +155,32 @@ function Resolve-CtgInitialPassword {
     return (New-CtgCompliantPassword)
 }
 
+function Add-CtgM365DistributionLists {
+    # Add the new user to the distribution / mail-enabled groups Graph couldn't write, over Exchange
+    # Online — app-only auth with the m365-admin certificate (the SAME app), so no separate Exchange
+    # system is needed. Idempotent + best-effort; returns action lines.
+    param($Job, $Creds, [string[]]$Names)
+    $out = [System.Collections.Generic.List[string]]::new()
+    if (-not (Get-Command Invoke-CtgExchangeNamedGroups -ErrorAction SilentlyContinue)) {
+        $out.Add("note: $(@($Names).Count) distribution list(s) not added — ExchangeOnlineManagement isn't installed on this runner, so the Coretelligent.Exchange module didn't load. Install it (or run this client on a runner that has it).")
+        return $out.ToArray()
+    }
+    $s = $Creds['m365-admin']
+    $thumb = if ($s -and $s.Fields) { [string]$s.Fields['CertificateThumbprint'] } else { $null }
+    if (-not $thumb) {
+        $out.Add("note: $(@($Names).Count) distribution list(s) not added — the m365-admin secret has no CertificateThumbprint for Exchange Online app-only auth. Add the cert thumbprint to the m365-admin secret (and grant the app the Exchange.ManageAsApp permission) to add DLs without a separate Exchange system.")
+        return $out.ToArray()
+    }
+    try {
+        Set-CtgPhase $Job.id "adding distribution lists over Exchange Online (app-only)"
+        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgTenantDomain $Job $Creds) -CertificateThumbprint $thumb
+        foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$Job.payload.UserPrincipalName) -Groups $Names)) { $out.Add($a) }
+    } catch {
+        $out.Add("WARN couldn't add distribution lists over Exchange Online ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + add its cert thumbprint to the secret.")
+    }
+    return $out.ToArray()
+}
+
 # named secret to its resolved credential object (.Credential is a pscredential).
 $DISPATCH = @{
     'm365' = @{
@@ -165,7 +191,16 @@ $DISPATCH = @{
             Set-CtgPhase $job.id "connecting to m365 (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
             Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
         }
-        Onboard  = { param($job, $creds) Invoke-CtgM365Onboarding  -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds) }
+        Onboard  = { param($job, $creds)
+            $r = Invoke-CtgM365Onboarding -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds)
+            # Finish the distribution / mail-enabled groups Graph couldn't add, over Exchange Online,
+            # using the SAME m365-admin app (cert) — no separate Exchange system needed. Best-effort.
+            $dls = @(if ($r.PSObject.Properties['DeferredDistributionGroups']) { $r.DeferredDistributionGroups })
+            if ($dls.Count -gt 0) {
+                foreach ($a in (Add-CtgM365DistributionLists -Job $job -Creds $creds -Names $dls)) { $r.Actions = @($r.Actions) + $a }
+            }
+            $r
+        }
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }

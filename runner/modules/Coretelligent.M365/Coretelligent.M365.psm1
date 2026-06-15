@@ -541,6 +541,7 @@ function Invoke-CtgM365Onboarding {
     # group may be a plain name or { name, type } where type hints dl|security|m365|unsure (from the
     # KB); we verify the actual type in Entra and narrate it, so an unclear doc still resolves.
     $groupSpecs = @(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ }
+    $deferredDls = [System.Collections.Generic.List[string]]::new()  # DL/mail-enabled groups Graph can't write — finished over EXO by the runner
     foreach ($gspec in $groupSpecs) {
         $gname = if ($gspec -is [string]) { $gspec } else { [string](Get-CtgProp $gspec 'name') }
         $hint  = if ($gspec -is [string]) { $null } else { [string](Get-CtgProp $gspec 'type') }
@@ -548,8 +549,9 @@ function Invoke-CtgM365Onboarding {
         Write-CtgM365Step "checking group: $gname$(if ($hint) { " (documented as $hint)" })"
         $group = Get-MgGroup -Filter "mail eq '$gname' or displayName eq '$gname'" -Top 1 -ErrorAction SilentlyContinue
         if (-not $group) {
-            $actions.Add("group '$gname' not a Graph group (security/365) — the Exchange step will check it as a distribution list")
-            Write-CtgM365Step "↷ $gname — not a security/365 group; Exchange step tries it as a distribution list"
+            $actions.Add("group '$gname' not a Graph group (security/365) — adding over Exchange Online as a distribution list")
+            Write-CtgM365Step "↷ $gname — not a security/365 group; will add over Exchange Online as a distribution list"
+            $deferredDls.Add($gname)
             continue
         }
         $isUnified   = @(Get-CtgProp $group 'GroupTypes') -contains 'Unified'
@@ -558,9 +560,10 @@ function Invoke-CtgM365Onboarding {
         $kind = if ($isUnified) { 'Microsoft 365 group' } elseif ($mailEnabled) { 'distribution/mail-enabled group' } elseif ($secEnabled) { 'Security group' } else { 'group' }
         Write-CtgM365Step "→ $gname is a $kind"
         if ($mailEnabled -and -not $isUnified) {
-            # Graph cannot add DLs / mail-enabled security groups — the Exchange lane does.
-            $actions.Add("$gname → $kind — added by the Exchange step (Graph can't write distribution/mail-enabled groups)")
-            Write-CtgM365Step "↷ $gname — $kind, handled by the Exchange step"
+            # Graph cannot add DLs / mail-enabled security groups — finished over Exchange Online (same app).
+            $actions.Add("$gname → $kind — adding over Exchange Online (Graph can't write distribution/mail-enabled groups)")
+            Write-CtgM365Step "↷ $gname — $kind, adding over Exchange Online"
+            $deferredDls.Add($gname)
             continue
         }
         $isMember = @(Get-MgGroupMember -GroupId $group.Id -All -ErrorAction SilentlyContinue | ForEach-Object Id) -contains $userId
@@ -614,6 +617,9 @@ function Invoke-CtgM365Onboarding {
         UserId  = $userId
         Upn     = $upn
         LicenseFallbackAdGroup = $licenseFallbackAdGroup  # AD group the runner must add (E3 fallback), or $null
+        # Distribution / mail-enabled groups Graph couldn't write — the runner finishes these over
+        # Exchange Online using the SAME m365-admin app, so no separate Exchange system is needed.
+        DeferredDistributionGroups = $deferredDls.ToArray()
         # On a seat shortage, return the tenant's SKU inventory so the app can offer a license picker.
         AvailableLicenses = if ($seatShortage) { Get-CtgM365LicenseInventory } else { @() }
         Actions = $actions.ToArray()
