@@ -14,6 +14,10 @@ export const VARS = [
   "employmentType", "role.name", "title", "manager", "startDate",
   "location.name", "location.city", "location.state", "location.zip", "location.timezone",
   "first", "last", "mobile", "did", "extension", "domain", "upn", "username",
+  // requested needs / hardware / software (free-text intake fields — match with "matches (regex)",
+  // e.g. otherNeeds ~= macbook|apple to add a Mac group when a Mac is requested)
+  "otherNeeds", "otherHardware", "otherSoftware", "installedSoftware", "cloudApplications",
+  "needsComputer", "printers", "description",
 ];
 
 // Common AD / Entra attribute names to SET (the "then set …" side). Free text still allowed — this
