@@ -263,6 +263,22 @@ Describe 'Confirm-CtgM365' {
         $names | Should -Contain 'group: Project Alpha (365 Group)'
     }
 
+    It 'onboard: a config name validates against a differently-cased/spaced real name (TEAMDCG -> "Team DCG")' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        # The user IS a member; the group's real identity differs from the config string by space + case
+        # (name "Team DCG", alias "TeamDCG", mail "TeamDCG@dcg.co"). Normalized matching must still pass.
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith {
+            @([pscustomobject]@{ AdditionalProperties = @{ displayName = 'Team DCG'; mailNickname = 'TeamDCG'; mail = 'TeamDCG@dcg.co'; mailEnabled = $true; securityEnabled = $false; groupTypes = @('Unified') } })
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'lshkembi@dcg.co' }
+        # all three spellings (config name, alias, full email) must resolve to the same membership
+        $config = [pscustomobject]@{ licenses = @(); groups = @('TEAMDCG', 'TeamDCG@dcg.co') }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        ($r.checks | Where-Object { $_.name -eq 'group: TEAMDCG (365 Group)' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'group: TeamDCG@dcg.co (365 Group)' }).pass | Should -BeTrue
+    }
+
     It 'offboard: passes when sign-in is blocked and groups are gone' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $false } }
         Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }

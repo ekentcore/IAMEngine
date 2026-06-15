@@ -567,10 +567,15 @@ function Invoke-CtgM365Onboarding {
         $hint  = if ($gspec -is [string]) { $null } else { [string](Get-CtgProp $gspec 'type') }
         if ([string]::IsNullOrWhiteSpace($gname)) { continue }
         Write-CtgM365Step "checking group: $gname$(if ($hint) { " (documented as $hint)" })"
-        $group = Get-MgGroup -Filter "mail eq '$gname' or displayName eq '$gname'" -Top 1 -ErrorAction SilentlyContinue
+        # Match on mail, alias (mailNickname) AND displayName — Graph compares these case-insensitively,
+        # so a config value like "TEAMDCG" resolves the group whose alias is "TeamDCG" / name "Team DCG".
+        # (Matching only mail+displayName is why a real 365 group read as "not a Graph group" and got
+        # deferred.) Double any single quote so a name like O'Brien can't break the OData filter.
+        $gesc = $gname -replace "'", "''"
+        $group = Get-MgGroup -Filter "mail eq '$gesc' or mailNickname eq '$gesc' or displayName eq '$gesc'" -Top 1 -ErrorAction SilentlyContinue
         if (-not $group) {
-            $actions.Add("group '$gname' not a Graph group (security/365) — adding over Exchange Online as a distribution list")
-            Write-CtgM365Step "↷ $gname — not a security/365 group; will add over Exchange Online as a distribution list"
+            $actions.Add("group '$gname' not resolvable as a Graph group by name — adding over Exchange Online (a DL, or a 365 group whose alias differs from its name)")
+            Write-CtgM365Step "↷ $gname — not found as a Graph group by name; adding over Exchange Online"
             $deferredDls.Add($gname)
             continue
         }
@@ -795,17 +800,31 @@ function Confirm-CtgM365 {
                 elseif ($sec) { 'security' }
                 else { 'group' }
             }
-            $memberType = @{}
+            # Index the user's memberships by EVERY identifier a config value might use — display
+            # name, alias (mailNickname) and mail (full + local part) — each NORMALIZED (lowercased,
+            # punctuation/space stripped). Matching only on the exact displayName is why a correctly
+            # added group read back as a MISS: config "TEAMDCG" never equals the real name "Team DCG".
+            # Normalizing makes "TEAMDCG" == "Team DCG" == "TeamDCG" == "TeamDCG@dcg.co" all resolve.
+            $norm = { param($s) (([string]$s) -replace '[^A-Za-z0-9]', '').ToLowerInvariant() }
+            $memberIndex = @{}  # normalized identifier -> type label
             foreach ($m in $myMemberships) {
-                $nm = [string](Get-CtgProp $m.AdditionalProperties 'displayName')
-                if ($nm -and -not $memberType.ContainsKey($nm)) { $memberType[$nm] = (& $groupType $m.AdditionalProperties) }
+                $ap = $m.AdditionalProperties
+                $type = & $groupType $ap
+                $ids = @([string](Get-CtgProp $ap 'displayName'), [string](Get-CtgProp $ap 'mailNickname'))
+                $mailAddr = [string](Get-CtgProp $ap 'mail')
+                if ($mailAddr) { $ids += $mailAddr; $ids += ($mailAddr -split '@')[0] }
+                foreach ($id in $ids) { $k = & $norm $id; if ($k -and -not $memberIndex.ContainsKey($k)) { $memberIndex[$k] = $type } }
             }
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
-                # A group spec can be a plain name or an object { name, type } — verify by name.
+                # A group spec can be a plain name, an object { name, type }, or an email. Verify by
+                # normalized identity (and an email's local part), so the read-back matches the add.
                 $gn = if ($g -is [string]) { $g } else { [string](Get-CtgProp $g 'name') }
                 if (-not $gn) { continue }
-                $present = $memberType.ContainsKey($gn)
-                $label = if ($present) { "group: $gn ($($memberType[$gn]))" } else { "group: $gn" }
+                $cands = @($gn); if ($gn -match '@') { $cands += ($gn -split '@')[0] }
+                $type = $null
+                foreach ($c in $cands) { $k = & $norm $c; if ($memberIndex.ContainsKey($k)) { $type = $memberIndex[$k]; break } }
+                $present = [bool]$type
+                $label = if ($present) { "group: $gn ($type)" } else { "group: $gn" }
                 & $add $label $true $present
             }
             # Comprehensive mirror coverage: compare the new user's ENTIRE membership to the reference
