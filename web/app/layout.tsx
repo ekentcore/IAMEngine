@@ -4,8 +4,11 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
 import { UserMenu } from "./_components/user-menu";
+import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
+import { db } from "@/lib/db";
+import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
 
 // Title template: each page sets its own title (e.g. "Agents") and the tab reads "Agents · iam-engine",
 // so people can tell pages apart from the title bar / tab strip.
@@ -26,6 +29,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const user = authEnabled() ? await getCurrentUser() : null;
   if (authEnabled() && !user && !onLogin) redirect("/login");
 
+  // Global "agents need updating" banner — on every page EXCEPT /agents (which has its own controls)
+  // and /login. Only query when it would actually render (logged in, off those pages).
+  const loggedIn = !authEnabled() || !!user;
+  const onAgents = pathname === "/agents" || pathname.startsWith("/agents/");
+  const canManageAgents = !authEnabled() || (!!user && can(user.role, "agent.manage"));
+  const outdatedAgents = loggedIn && !onLogin && !onAgents ? await outdatedAgentCount(db) : 0;
+
   return (
     <html lang="en">
       <body>
@@ -39,6 +49,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
           </header>
         )}
+        {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
         {children}
       </body>
     </html>

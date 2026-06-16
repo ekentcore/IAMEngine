@@ -8,6 +8,7 @@ import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
+import { runnerBuildId } from "@/lib/runner/bundle";
 
 // Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
 export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
@@ -79,6 +80,30 @@ export async function requestAgentUpdates(ids: string[]) {
   revalidatePath("/agents");
   return firstError ? { ok: false as const, error: `${firstError} (${queued}/${ids.length} queued)` } : { ok: true as const };
 }
+// Queue self-updates for EVERY outdated agent — backs the global "agents need updating" banner so an
+// operator can update all from any page (no agent list in hand). Mirrors outdatedAgentCount's rule:
+// enabled + checked-in + not on the served build. Per-agent failures don't stop the rest.
+export async function updateAllOutdatedAgents() {
+  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
+  const build = runnerBuildId();
+  const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
+  const agents = await db.agent.findMany({
+    where: { enabled: true, deletedAt: null, lastSeenAt: { not: null } },
+    select: { id: true, version: true },
+  });
+  const ids = agents.filter((a) => !upToDate(a.version)).map((a) => a.id);
+  const svc = makeRunnerService(db);
+  let queued = 0;
+  let firstError: string | null = null;
+  for (const id of ids) {
+    try { await svc.requestUpdate(id); queued++; } catch (e) { firstError ??= errMsg(e); }
+  }
+  revalidatePath("/agents");
+  return firstError
+    ? { ok: false as const, error: `${firstError} (${queued}/${ids.length} queued)` }
+    : { ok: true as const, queued };
+}
+
 export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
 export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
 export const deleteAgentForever = (id: string) => agentOp(() => makeRunnerService(db).deleteAgentForever(id));
