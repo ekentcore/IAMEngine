@@ -34,6 +34,7 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["proofpoint", "Proofpoint", 3], ["dropbox", "Dropbox", 3], ["perimeter81", "Perimeter 81", 3],
   ["teams", "Teams Phone", 3], ["avd", "Azure Virtual Desktop", 3], ["1password", "1Password", 3],
   ["tableau", "Tableau", 3], ["notion", "Notion", 3], ["printix", "Printix", 3], ["uniflow", "UniFlow secure printing", 3],
+  ["salesforce", "Salesforce", 3, "Coretelligent.Salesforce"], ["jira", "Jira (Atlassian)", 3, "Coretelligent.Jira"], ["hubspot", "HubSpot", 3, "Coretelligent.HubSpot"],
   ["hardware", "Hardware", 3], ["workstation", "Workstation", 3], ["welcome-letter", "Welcome letter", 3],
   ["first-day-call", "First-day call", 3], ["case-resolution", "Case resolution", 1],
   // long-tail keys the Phase-6 generator can emit; needed so a promoted draft seeds without a FK error

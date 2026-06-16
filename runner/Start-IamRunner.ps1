@@ -30,6 +30,10 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Per
 Import-Module "$PSScriptRoot/modules/Coretelligent.Spanning/Coretelligent.Spanning.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Egnyte/Coretelligent.Egnyte.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Salesforce/Coretelligent.Salesforce.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.KnowBe4/Coretelligent.KnowBe4.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Jira/Coretelligent.Jira.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.HubSpot/Coretelligent.HubSpot.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
@@ -141,6 +145,69 @@ function Use-CtgGoogleSecret {
     $scopes = if ($scopesRaw) { @($scopesRaw -split '[,\s]+' | Where-Object { $_ }) } else { @() }
     if ($scopes.Count) { Connect-CtgGoogle -ClientEmail $clientEmail -PrivateKey $privateKey -Impersonate $impersonate -CustomerId $customer -Scopes $scopes }
     else               { Connect-CtgGoogle -ClientEmail $clientEmail -PrivateKey $privateKey -Impersonate $impersonate -CustomerId $customer }
+}
+
+# Connect Salesforce from the brokered 'salesforce' secret. Connected App JWT bearer: ConsumerKey
+# (the app's client_id), the integration Username to act as, and the cert PrivateKey (PEM, or
+# PrivateKeyBase64 — Delinea-safe). Sandbox tenants set LoginUrl/IsSandbox. Each lane re-connects so
+# a rotated cert applies next job. See /help/salesforce.
+function Use-CtgSalesforceSecret {
+    param($Job, $Creds)
+    $s = $Creds['salesforce']
+    if (-not $s) { throw "the job did not broker a 'salesforce' secret — list 'salesforce' in the client's salesforce system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $consumerKey = & $pick @('ConsumerKey', 'ClientID', 'ClientId', 'ConsumerId')
+    $username    = & $pick @('Username', 'IntegrationUser', 'AdminUser', 'Subject'); if (-not $username -and $s.Username) { $username = [string]$s.Username }
+    $privateKey  = & $pick @('PrivateKey', 'private_key')
+    $b64         = & $pick @('PrivateKeyBase64', 'CertificateBase64', 'KeyBase64')
+    if ($b64 -and -not $privateKey) { $privateKey = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) }
+    if (-not $consumerKey -or -not $username -or -not $privateKey) {
+        throw "the 'salesforce' secret needs ConsumerKey + Username + PrivateKey (or PrivateKeyBase64). The secret has: $(@($f.Keys) -join ', '). See /help/salesforce."
+    }
+    $loginUrl = & $pick @('LoginUrl', 'LoginURL', 'InstanceUrl')
+    if (-not $loginUrl) { $loginUrl = if ((& $pick @('IsSandbox', 'Sandbox')) -match '^(true|1|yes)$') { 'https://test.salesforce.com' } else { 'https://login.salesforce.com' } }
+    Connect-CtgSalesforce -ConsumerKey $consumerKey -Username $username -PrivateKey $privateKey -LoginUrl $loginUrl
+}
+
+# Connect KnowBe4 from the brokered 'knowbe4' secret — the SCIM bearer token (+ optional region BaseUrl).
+function Use-CtgKnowBe4Secret {
+    param($Job, $Creds)
+    $s = $Creds['knowbe4']
+    if (-not $s) { throw "the job did not broker a 'knowbe4' secret — list 'knowbe4' in the client's knowbe4 system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $token = & $pick @('ScimToken', 'SCIMToken', 'Token', 'ApiToken', 'Key', 'Password')
+    if (-not $token) { throw "the 'knowbe4' secret has no SCIM token — set ScimToken (Account Settings > User Management > SCIM). The secret has: $(@($f.Keys) -join ', '). See /help/knowbe4." }
+    $baseUrl = & $pick @('BaseUrl', 'ScimUrl', 'Url')
+    if ($baseUrl) { Connect-CtgKnowBe4 -Token $token -BaseUrl $baseUrl } else { Connect-CtgKnowBe4 -Token $token }
+}
+
+# Connect Jira from the brokered 'jira' secret — Basic (admin email : API token) + the site URL.
+function Use-CtgJiraSecret {
+    param($Job, $Creds)
+    $s = $Creds['jira']
+    if (-not $s) { throw "the job did not broker a 'jira' secret — list 'jira' in the client's jira system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $email = & $pick @('Email', 'AdminEmail', 'Username'); if (-not $email -and $s.Username) { $email = [string]$s.Username }
+    $token = & $pick @('ApiToken', 'Token', 'Key', 'Password')
+    $site  = & $pick @('SiteUrl', 'Site', 'Url', 'BaseUrl')
+    if (-not $email -or -not $token -or -not $site) { throw "the 'jira' secret needs Email + ApiToken + SiteUrl (https://<site>.atlassian.net). The secret has: $(@($f.Keys) -join ', '). See /help/jira." }
+    Connect-CtgJira -Email $email -ApiToken $token -SiteUrl $site
+}
+
+# Connect HubSpot from the brokered 'hubspot' secret — a private-app access token (Bearer).
+function Use-CtgHubSpotSecret {
+    param($Job, $Creds)
+    $s = $Creds['hubspot']
+    if (-not $s) { throw "the job did not broker a 'hubspot' secret — list 'hubspot' in the client's hubspot system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $token = & $pick @('AccessToken', 'Token', 'PrivateAppToken', 'ApiKey', 'Key', 'Password')
+    if (-not $token) { throw "the 'hubspot' secret has no access token — set AccessToken (a private-app token). The secret has: $(@($f.Keys) -join ', '). See /help/hubspot." }
+    $baseUrl = & $pick @('BaseUrl', 'Url')
+    if ($baseUrl) { Connect-CtgHubSpot -Token $token -BaseUrl $baseUrl } else { Connect-CtgHubSpot -Token $token }
 }
 
 # The M365/Exchange tenant identifier for this job, in priority order:
@@ -398,6 +465,28 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Invoke-CtgGoogleOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgGoogleOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgGoogle -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'salesforce' = @{
+        Connect  = { param($job, $creds) Use-CtgSalesforceSecret $job $creds }
+        Onboard  = { param($job, $creds) Invoke-CtgSalesforceOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgSalesforceOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgSalesforce -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'knowbe4' = @{
+        # No network in Connect — re-broker the SCIM token each lane (a rotated token applies next job).
+        Onboard  = { param($job, $creds) Use-CtgKnowBe4Secret $job $creds; Invoke-CtgKnowBe4Onboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgKnowBe4Secret $job $creds; Invoke-CtgKnowBe4Offboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgKnowBe4Secret $job $creds; Confirm-CtgKnowBe4 -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'jira' = @{
+        Onboard  = { param($job, $creds) Use-CtgJiraSecret $job $creds; Invoke-CtgJiraOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgJiraSecret $job $creds; Invoke-CtgJiraOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgJiraSecret $job $creds; Confirm-CtgJira -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'hubspot' = @{
+        Onboard  = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Invoke-CtgHubSpotOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Invoke-CtgHubSpotOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Confirm-CtgHubSpot -User $job.payload -Config $job.config -Action $job.action }
     }
 }
 

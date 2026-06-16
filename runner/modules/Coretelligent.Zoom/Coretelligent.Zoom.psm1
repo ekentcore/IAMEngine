@@ -64,8 +64,9 @@ function Get-CtgZoomUser {
 function Invoke-CtgZoomOnboarding {
     <#
     .SYNOPSIS
-        Idempotently create a Zoom user. Config: type (1=Basic,2=Licensed; default 2), action
-        (create|ssoCreate|autoCreate|custCreate; default 'create').
+        Idempotently create a Zoom user and (if configured) assign a Zoom Phone calling plan + number.
+        Config: type (1=Basic,2=Licensed; default 2), action (create|ssoCreate|autoCreate|custCreate;
+        default 'create'), phone{ callingPlanType, number | numberId } (omit phone to skip).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
@@ -88,6 +89,27 @@ function Invoke-CtgZoomOnboarding {
         }
         Invoke-CtgZoomApi -Method POST -Path '/users' -Body $body | Out-Null
         $actions.Add("created Zoom user: $email (type $($body.user_info.type))")
+    }
+
+    # Zoom Phone: assign a calling plan + number when configured. Idempotent — skips whichever is
+    # already present. Requires Zoom Phone to be licensed on the account; the number must already
+    # exist in the account's number pool (config 'number' or 'numberId').
+    $phone = Get-CtgProp $Config 'phone'
+    if ($phone) {
+        $current  = Invoke-CtgZoomApi -Method GET -Path "/phone/users/$email"   # $null if not yet a phone user
+        $planType = Get-CtgProp $phone 'callingPlanType'
+        $hasPlan  = [bool]($current -and @(Get-CtgProp $current 'calling_plans').Count)
+        if ($planType -and -not $hasPlan -and $PSCmdlet.ShouldProcess($email, "Assign Zoom calling plan $planType")) {
+            Invoke-CtgZoomApi -Method POST -Path "/phone/users/$email/calling_plans" -Body @{ calling_plans = @(@{ type = [int]$planType }) } | Out-Null
+            $actions.Add("assigned Zoom calling plan: $planType")
+        }
+        $numId = [string](Get-CtgProp $phone 'numberId'); $num = [string](Get-CtgProp $phone 'number')
+        $hasNumber = [bool]($current -and @(Get-CtgProp $current 'phone_numbers').Count)
+        if (($numId -or $num) -and -not $hasNumber -and $PSCmdlet.ShouldProcess($email, "Assign Zoom phone number")) {
+            $entry = if ($numId) { @{ id = $numId } } else { @{ number = $num } }
+            Invoke-CtgZoomApi -Method POST -Path "/phone/users/$email/phone_numbers" -Body @{ phone_numbers = @($entry) } | Out-Null
+            $actions.Add("assigned Zoom phone number: $(if ($numId) { $numId } else { $num })")
+        }
     }
 
     [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }

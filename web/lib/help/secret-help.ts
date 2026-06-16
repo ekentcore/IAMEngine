@@ -28,5 +28,17 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "google-admin") {
     return { kind: "service account + domain-wide delegation", href: "/help/google" };
   }
+  if (name === "salesforce") {
+    return { kind: "connected app + JWT certificate", href: "/help/salesforce" };
+  }
+  if (name === "knowbe4") {
+    return { kind: "SCIM token", href: "/help/knowbe4" };
+  }
+  if (name === "jira") {
+    return { kind: "admin email + API token", href: "/help/jira" };
+  }
+  if (name === "hubspot") {
+    return { kind: "private-app access token", href: "/help/hubspot" };
+  }
   return null;
 }

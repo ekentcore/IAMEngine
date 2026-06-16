@@ -103,6 +103,10 @@ export default function HealthPage() {
           <li><Link href="/help/mimecast">Mimecast</Link> — API 2.0 application (client ID + secret), directory sync + user checks.</li>
           <li><Link href="/help/egnyte">Egnyte</Link> — API token (or API key + service account), per-tenant domain, license tiers.</li>
           <li><Link href="/help/google">Google Workspace</Link> — service account + domain-wide delegation (JSON key, base64 into Delinea), impersonated super-admin.</li>
+          <li><Link href="/help/salesforce">Salesforce</Link> — Connected App + JWT certificate, integration user, config-driven Profile.</li>
+          <li><Link href="/help/knowbe4">KnowBe4</Link> — SCIM token (no create-user REST API); skip if provisioned via Entra/Okta sync.</li>
+          <li><Link href="/help/jira">Jira (Atlassian)</Link> — admin email + API token, site URL, product access list.</li>
+          <li><Link href="/help/hubspot">HubSpot</Link> — private-app access token, config-driven role + team.</li>
         </ul>
       </div>
     </main>

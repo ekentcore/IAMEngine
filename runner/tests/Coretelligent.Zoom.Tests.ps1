@@ -31,6 +31,29 @@ Describe 'Invoke-CtgZoomOnboarding' {
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' } -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'already exists'
     }
+
+    It 'assigns a Zoom Phone calling plan + number when phone is configured' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/phone/users/*') { return $null }   # not yet a phone user
+            if ($Method -eq 'GET') { return $null }                                       # zoom user not found
+            return [pscustomobject]@{ id = 'zoom-1' }
+        }
+        $r = Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{ type = 2; phone = @{ callingPlanType = 200; number = '+15551230000' } })
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' -and $Path -like '*/calling_plans' } -Times 1
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' -and $Path -like '*/phone_numbers' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'calling plan'
+    }
+
+    It 'does not touch Zoom Phone when phone is not configured' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return $null }
+            return [pscustomobject]@{ id = 'zoom-1' }
+        }
+        Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{ type = 2 }) | Out-Null
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Path -like '/phone/*' } -Times 0 -Exactly
+    }
 }
 
 Describe 'Invoke-CtgZoomOffboarding' {
