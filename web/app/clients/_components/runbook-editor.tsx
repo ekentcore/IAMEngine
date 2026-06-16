@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { COMMON_LICENSES, COMMON_USERNAME_PATTERNS } from "@/lib/m365/license-catalog";
+import { headerToSystemKey } from "@/lib/generator/system-map";
 
 type Section = { seq: number; systemKey: string | null; title: string; status: string; steps: string[] };
 
@@ -22,7 +23,7 @@ function Arrows({ up, down, disUp, disDown, title }: { up: () => void; down: () 
   );
 }
 
-export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArticles?: KbRef[] }) {
+export function RunbookEditor({ slug, kbArticles = [], current }: { slug: string; kbArticles?: KbRef[]; current?: { onboard: Section[]; offboard: Section[] } }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
@@ -106,6 +107,40 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
   }
   function removeSection(si: number) {
     setPreview((p) => { if (!p) return p; return p.filter((_, k) => k !== si).map((s, k) => ({ ...s, seq: k })); });
+  }
+
+  // Promote a step LINE into its own section, placed right after the current one. Its title maps to a
+  // system automatically (e.g. "Setup Salesforce Account" -> salesforce). Any lines nested UNDER it
+  // (greater indent) move along as the new section's steps. This is how a lumped section like "LOB
+  // Applications" gets split so each app becomes its own modeled section.
+  function promoteStep(si: number, ti: number) {
+    setPreview((p) => {
+      if (!p) return p;
+      const sec = p[si];
+      const line = sec.steps[ti] ?? "";
+      const title = line.trim();
+      if (!title) return p;
+      const indent = line.match(/^ */)?.[0].length ?? 0;
+      // children = the immediately-following lines indented deeper than this one
+      let end = ti + 1;
+      while (end < sec.steps.length && (sec.steps[end].match(/^ */)?.[0].length ?? 0) > indent) end++;
+      const children = sec.steps.slice(ti + 1, end).map((s) => s.replace(new RegExp(`^ {0,${indent}}`), ""));
+      const remaining = [...sec.steps.slice(0, ti), ...sec.steps.slice(end)];
+      const systemKey = headerToSystemKey(title);
+      const newSection: Section = { seq: 0, systemKey, title, status: systemKey ? "automated" : "unmodeled", steps: children };
+      const next = [...p];
+      next[si] = { ...sec, steps: remaining };
+      next.splice(si + 1, 0, newSection);
+      return next.map((s, k) => ({ ...s, seq: k }));
+    });
+  }
+
+  // Load the client's CURRENT saved runbook (for the selected action) into the editor — so an
+  // already-modeled runbook can be restructured (promote lines, reorder, rename) without re-fetching.
+  function loadCurrent() {
+    const secs = current?.[action] ?? [];
+    setPreview(secs.map((s, k) => ({ ...s, seq: k, steps: [...s.steps] })));
+    setError(null);
   }
 
   // Pull the article's CURRENT body from ServiceNow into the textarea — then the normal
@@ -226,6 +261,14 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
         </label>
         <span className="note">Headers like “Active Directory”, “Microsoft 365”, “Exchange” auto-map to a system.</span>
       </div>
+      {current && (current[action]?.length ?? 0) > 0 && (
+        <div className="toolbar" style={{ marginBottom: "0.5rem" }}>
+          <button onClick={loadCurrent} disabled={busy} title={`Load this client's saved ${action} runbook into the editor to restructure it`}>
+            ✎ Edit current {action} runbook
+          </button>
+          <span className="note muted">load the saved sections, then use <b>↥ section</b> on a line to split it out (e.g. each app under “LOB Applications”), reorder, and Save.</span>
+        </div>
+      )}
       {detectedAction && action !== detectedAction && (
         <p className="note" style={{ color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "0.45rem 0.65rem", margin: "0 0 0.5rem" }}>
           ⚠ This article looks like an <b>{detectedAction}</b> runbook, but you’ve set the action to <b>{action}</b>.
@@ -265,6 +308,7 @@ export function RunbookEditor({ slug, kbArticles = [] }: { slug: string; kbArtic
                     <Arrows up={() => moveStep(si, ti, -1)} down={() => moveStep(si, ti, 1)} disUp={ti === 0} disDown={ti === s.steps.length - 1} title="step" />
                     <input value={st} onChange={(e) => editStep(si, ti, e.target.value)} list="rb-suggest" aria-label="step"
                       style={{ flex: 1, minWidth: 0, fontSize: 12, fontFamily: "monospace" }} />
+                    <button onClick={() => promoteStep(si, ti)} title="make this line its own section (auto-maps to a system if the name is recognized, e.g. Salesforce, Zoom)" style={{ fontSize: 11, padding: "0 6px", whiteSpace: "nowrap" }}>↥ section</button>
                     <button onClick={() => removeStep(si, ti)} title="remove this step" style={{ fontSize: 12, color: "#b91c1c", padding: "0 6px" }}>✕</button>
                   </li>
                 ))}
