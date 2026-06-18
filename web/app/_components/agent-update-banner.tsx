@@ -21,9 +21,11 @@ export function AgentUpdateBanner({ count, canManage }: { count: number; canMana
       setBusy(false);
       return;
     }
-    // Switch to the Agents page to watch them update; refresh so its live list reflects the queue.
-    router.push("/agents");
-    router.refresh();
+    // Switch to the Agents page to watch them update. The ?updating=1 flag tells that page to force a
+    // fresh refetch on arrival, so the just-queued state shows (bulk button greys, rows flip to
+    // "queued") instead of a stale router-cache render. (A bare push + refresh here races: refresh
+    // would refetch THIS page, not the one we're navigating to.)
+    router.push("/agents?updating=1");
   }
 
   const n = count;

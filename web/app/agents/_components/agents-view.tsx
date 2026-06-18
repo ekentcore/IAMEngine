@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
@@ -93,6 +93,19 @@ export function AgentsView({ agents, clients, trashed, currentBuild }: { agents:
   const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
   const installRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
+
+  // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
+  // we navigated in with can be stale (the client router cache). Force one server refetch so the
+  // freshly-queued state shows (the bulk button greys out, rows flip to "queued") instead of looking
+  // like nothing happened. Strip the flag without a navigation so a later manual refresh won't re-run.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get("updating") === "1") {
+      router.refresh();
+      window.history.replaceState(null, "", "/agents");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // While any agent's self-update is in flight, poll so the status advances live (queued ->
   // updating -> updated) without a manual refresh. Stops once nothing is in flight. A queued
