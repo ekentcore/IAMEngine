@@ -153,6 +153,23 @@ export function jobWarningLines(result: unknown, validation: unknown): string[] 
   return lines;
 }
 
+// One job's outcome for the append-only RunOutcome log: the same verdict the run report shows, plus
+// the human messages worth tracking (the failure error, WARN actions, and validation misses). A
+// clean success has no messages. Shared so the log and the report can never disagree on "warning".
+export function jobOutcome(
+  status: string,
+  result: unknown,
+  validation: unknown,
+  error: string | null,
+): { verdict: StepVerdict; messages: string[] } {
+  let verdict = verdictOf(status, normalizeValidation(validation));
+  if (verdict === "verified" && actionsOf(result).some((a) => /\bWARN\b/i.test(a))) verdict = "warning";
+  const messages: string[] = [];
+  if (error) messages.push(error);
+  messages.push(...jobWarningLines(result, validation));
+  return { verdict, messages };
+}
+
 function phaseTrailOf(progress: unknown): { ts: string; phase: string }[] {
   if (!Array.isArray(progress)) return [];
   return progress

@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 const ITEMS = [
   ["/clients", "Clients"],
   ["/cases", "Cases"],
+  ["/runs", "Run log"],
   ["/agents", "Agents"],
   ["/health", "Health"],
 ] as const;

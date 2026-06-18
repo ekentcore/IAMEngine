@@ -11,6 +11,7 @@ import { purgeCutoff } from "./agent-trash";
 import { sweepProcurementWatches } from "./procurement-watch";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
+import { jobOutcome } from "../cases/run-report";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -505,7 +506,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -583,6 +584,26 @@ export function makeRunnerService(db: PrismaClient) {
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
+
+      // Append-only outcome log: capture this run's success/warning/error per module, with the case
+      // number + client + messages, so module problems can be tracked across cases (a re-run
+      // overwrites the Job, but each result still lands here). Never fatal to result recording.
+      try {
+        const { verdict, messages } = jobOutcome(status, input.result, input.validation, input.error ?? null);
+        await db.runOutcome.create({
+          data: {
+            caseRequestId: job.caseRequestId,
+            caseNumber: job.case.serviceNowCaseNumber ?? job.caseRequestId,
+            action: job.case.action,
+            clientId: job.case.clientId,
+            clientName: job.case.client.name,
+            systemKey: job.systemKey,
+            verdict, status, messages,
+            error: input.error ?? null,
+            validateOnly: Boolean(req(job).validateOnly),
+          },
+        });
+      } catch { /* an outcome-log failure must never lose the job result */ }
       // Work-note write-back (RUNNER_PROTOCOL): append a note to the UM ticket. postWorkNote
       // resolves the number -> sys_id and PATCHes work_notes; it's gated by SN_WRITE_ENABLED and
       // never fatal to result recording (a ServiceNow outage must not lose the job result).

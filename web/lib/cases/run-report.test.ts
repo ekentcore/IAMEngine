@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunReport, jobWarningLines, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
+import { buildRunReport, jobWarningLines, jobOutcome, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
 
 function input(overrides: Partial<BuildRunReportInput> = {}): BuildRunReportInput {
   return {
@@ -73,4 +73,29 @@ test("jobWarningLines collects WARN actions and missed validation checks", () =>
 test("jobWarningLines is empty for a clean result", () => {
   assert.deepEqual(jobWarningLines({ Actions: ["created user"] }, { ok: true, checks: [] }), []);
   assert.deepEqual(jobWarningLines(null, null), []);
+});
+
+test("jobOutcome: clean success -> verified, no messages", () => {
+  const o = jobOutcome("succeeded", { Actions: ["created user"] }, { ok: true, checks: [] }, null);
+  assert.equal(o.verdict, "verified");
+  assert.deepEqual(o.messages, []);
+});
+
+test("jobOutcome: a succeeded result with a WARN action is a warning, message captured", () => {
+  const o = jobOutcome("succeeded", { Actions: ["license: WARN no available seats"] }, { ok: true, checks: [] }, null);
+  assert.equal(o.verdict, "warning");
+  assert.match(o.messages[0], /WARN no available seats/);
+});
+
+test("jobOutcome: a failed result captures the error first, then any warnings", () => {
+  const o = jobOutcome("failed", { Actions: ["WARN partial"] }, null, "Insufficient privileges");
+  assert.equal(o.verdict, "failed");
+  assert.equal(o.messages[0], "Insufficient privileges");
+  assert.match(o.messages[1], /WARN partial/);
+});
+
+test("jobOutcome: a passed validation but missed check still reads as warning", () => {
+  const o = jobOutcome("succeeded", { Actions: ["added groups"] }, { ok: false, checks: [{ name: "group: TEAMDCG", expected: true, actual: false, pass: false }] }, null);
+  assert.equal(o.verdict, "warning");
+  assert.match(o.messages[0], /validation missed: group: TEAMDCG/);
 });

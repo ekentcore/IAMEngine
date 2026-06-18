@@ -329,6 +329,30 @@ model AuditLog {
   @@index([at])
 }
 
+// Append-only outcome log: one row per job result post. Unlike Job (overwritten in place on a
+// re-run), this preserves the history of successes / warnings / errors so module problems can be
+// tracked and fixed across cases. Backs the /runs page.
+model RunOutcome {
+  id            String   @id @default(cuid())
+  at            DateTime @default(now())
+  caseRequestId String
+  caseNumber    String   // SN UM number (else the case id) — shown in the log
+  action        Action   // onboard | offboard
+  clientId      String
+  clientName    String
+  systemKey     String   // the module / system that ran
+  verdict       String   // verified | warning | failed | skipped | manual
+  status        String   // raw job status: succeeded | failed | skipped
+  messages      String[] // warning / error / validation-miss lines (empty for a clean success)
+  error         String?  // the top-level failure message, if any
+  validateOnly  Boolean  @default(false) // true = an auto-verify read-back, not the action run
+
+  @@index([systemKey, verdict, at])
+  @@index([clientId, at])
+  @@index([verdict, at])
+  @@index([at])
+}
+
 // ── Auth: operators, their roles, and live sessions ──────────────────────────
 // Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
 // authorization is permission-based and roles stay easy to re-compose.
