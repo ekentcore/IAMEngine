@@ -17,7 +17,8 @@ BeforeAll {
     function global:Get-MgGroup {}
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
-    function global:Update-MgUser {}
+    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses) }
+    function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef {}
     function global:Get-MgUserDefaultDrive {}
@@ -148,6 +149,41 @@ Describe 'Invoke-CtgM365Onboarding' {
         $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
         $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
+
+    It 'writes profile attributes (department, office location, address) from the intake' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone='+15551234567'; UsageLocation='US'; Department='Engineering'; OfficeLocation='Boston'; HomeAddress='1 Main St' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config ([pscustomobject]@{ licenses = @() }) -InitialPassword $pwd | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Department -eq 'Engineering' -and $OfficeLocation -eq 'Boston' -and $StreetAddress -eq '1 Main St' } -Times 1
+    }
+
+    It 'sets the manager, resolving a SNOW "First (Nick) Last" to the 365 "Nick Last"' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($Filter -like "*Jim Goodmiller*") { return [pscustomobject]@{ Id = 'mgr-1'; DisplayName = 'Jim Goodmiller' } }
+            return $null  # the new user doesn't exist yet
+        }
+        Mock Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US'; ManagerName='James (Jim) Goodmiller' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $u -Config ([pscustomobject]@{ licenses = @() }) -InitialPassword $pwd
+        Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -ParameterFilter { $BodyParameter['@odata.id'] -like '*mgr-1' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'set manager: Jim Goodmiller'
+    }
+
+    It 'sets the manager by EMAIL when the intake resolved one (stable across SNOW/365)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($Filter -like "*mail eq 'jim.goodmiller@x.com'*") { return [pscustomobject]@{ Id = 'mgr-9'; DisplayName = 'Jim Goodmiller' } }
+            return $null
+        }
+        Mock Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US'; ManagerName='James (Jim) Goodmiller'; ManagerEmail='jim.goodmiller@x.com' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config ([pscustomobject]@{ licenses = @() }) -InitialPassword $pwd | Out-Null
+        Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -ParameterFilter { $BodyParameter['@odata.id'] -like '*mgr-9' } -Times 1
     }
 
     It 'skips a DYNAMIC group (membership is rule-computed) without adding or warning' {

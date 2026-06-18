@@ -84,10 +84,39 @@ function Add-CtgGroupMember {
 
 # Resolve a reference user in Entra by UPN, then displayName as a fallback.
 function Resolve-CtgEntraUser {
+    # Find a reference user (mirror / manager) from whatever the intake carries. Prefer an EMAIL/UPN —
+    # the one identifier that's stable between ServiceNow and 365 — then fall back to the display name,
+    # trying parenthetical-nickname variants because SNOW often shows "James (Jim) Goodmiller" while 365
+    # shows "Jim Goodmiller". Returns the Graph user or $null.
     param([Parameter(Mandatory)][string]$Identity)
-    $u = Get-MgUser -Filter "userPrincipalName eq '$Identity'" -ErrorAction SilentlyContinue
-    if (-not $u) { $u = Get-MgUser -Filter "displayName eq '$Identity'" -Top 1 -ErrorAction SilentlyContinue }
-    $u
+    $id = ([string]$Identity).Trim()
+    if (-not $id) { return $null }
+    $esc = { param($s) ($s -replace "'", "''") }
+
+    # 1. Email / UPN — exact, stable.
+    if ($id -match '@') {
+        $e = & $esc $id
+        $u = Get-MgUser -Filter "userPrincipalName eq '$e' or mail eq '$e'" -Top 1 -ErrorAction SilentlyContinue
+        if ($u) { return $u }
+    }
+
+    # 2. Display-name variants: as given, parens stripped ("James Goodmiller"), and the nickname
+    #    substituted for the first name ("Jim Goodmiller").
+    $variants = [System.Collections.Generic.List[string]]::new()
+    $variants.Add($id)
+    if ($id -match '\(([^)]+)\)') {
+        $nick = $Matches[1].Trim()
+        $stripped = ((($id -replace '\s*\([^)]*\)\s*', ' ').Trim()) -replace '\s+', ' ')
+        $variants.Add($stripped)
+        $rest = ($stripped -replace '^\S+\s*', '').Trim()   # surname(s) after the first word
+        if ($nick -and $rest) { $variants.Add("$nick $rest") }
+    }
+    foreach ($v in @($variants | Where-Object { $_ } | Select-Object -Unique)) {
+        $e = & $esc $v
+        $u = Get-MgUser -Filter "displayName eq '$e'" -Top 1 -ErrorAction SilentlyContinue
+        if ($u) { return $u }
+    }
+    $null
 }
 
 # Mirror the reference user's CLOUD-ONLY Entra groups onto the new user — the piece that "mirror
@@ -520,6 +549,52 @@ function Invoke-CtgM365Onboarding {
                 $actions.Add("user already exists ($upn) — confirmed by UPN, continuing to licensing/groups")
             }
         }
+    }
+
+    # 1b. Profile attributes — write the directory fields from the intake on create AND re-run, so an
+    # existing/adopted user gets any MISSING fields filled (previously only DisplayName/UPN/title/mobile
+    # were ever set, so department/office/address/company never landed). Each is set only when it holds
+    # a real value (Graph rejects an empty string or an unresolved {token}); reads are case-insensitive
+    # so they pick up the camelCase intake payload (department, officeLocation, homeAddress, …).
+    $hasVal = { param($v) -not [string]::IsNullOrWhiteSpace([string]$v) -and ([string]$v) -notmatch '\{' }
+    if ($userId) {
+        $attrMap = @(
+            @{ K = 'JobTitle';       V = (Get-CtgProp $User 'JobTitle') }
+            @{ K = 'Department';     V = (Get-CtgProp $User 'Department') }
+            @{ K = 'CompanyName';    V = ((Get-CtgProp $User 'CompanyName') ?? (Get-CtgProp $Config 'companyName')) }
+            @{ K = 'OfficeLocation'; V = ((Get-CtgProp $User 'OfficeLocation') ?? (Get-CtgProp $User 'OfficeName')) }
+            @{ K = 'MobilePhone';    V = (Get-CtgProp $User 'MobilePhone') }
+            @{ K = 'StreetAddress';  V = ((Get-CtgProp $User 'StreetAddress') ?? (Get-CtgProp $User 'HomeAddress')) }
+            @{ K = 'City';           V = ((Get-CtgProp $User 'City') ?? (Get-CtgProp $User 'Locality')) }
+            @{ K = 'State';          V = (Get-CtgProp $User 'State') }
+            @{ K = 'PostalCode';     V = ((Get-CtgProp $User 'PostalCode') ?? (Get-CtgProp $User 'Zip')) }
+            @{ K = 'Country';        V = (Get-CtgProp $User 'Country') }
+        )
+        $update = @{}
+        foreach ($a in $attrMap) { if (& $hasVal $a.V) { $update[$a.K] = [string]$a.V } }
+        # business / office phone is an ARRAY in Graph
+        $office = (Get-CtgProp $User 'OfficePhone') ?? (Get-CtgProp $User 'BusinessPhone') ?? (Get-CtgProp $User 'Did')
+        if (& $hasVal $office) { $update['BusinessPhones'] = @([string]$office) }
+        if ($update.Count -and $PSCmdlet.ShouldProcess($upn, "Set profile attributes: $($update.Keys -join ', ')")) {
+            try {
+                Invoke-CtgM365Write { Update-MgUser -UserId $userId @update -ErrorAction Stop }
+                $actions.Add("set profile: $($update.Keys -join ', ')"); Write-CtgM365Step "✓ set profile: $($update.Keys -join ', ')"
+            } catch { $actions.Add("WARN could not set profile attributes ($($update.Keys -join ', ')): $($_.Exception.Message)") }
+        }
+    }
+
+    # 1c. Manager — resolve the manager (by email when the intake provided one, else by name — see
+    # Resolve-CtgEntraUser) and set the Graph manager relationship. Without this the org chart /
+    # "Reports to" stays empty even when u_manager_name was filled in.
+    $mgr = (Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerName') ?? (Get-CtgProp $User 'Manager')
+    if ((& $hasVal $mgr) -and $PSCmdlet.ShouldProcess($upn, "Set manager $mgr")) {
+        $mgrUser = Resolve-CtgEntraUser -Identity ([string]$mgr)
+        if ($mgrUser) {
+            try {
+                Invoke-CtgM365Write { Set-MgUserManagerByRef -UserId $userId -BodyParameter @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$($mgrUser.Id)" } -ErrorAction Stop }
+                $actions.Add("set manager: $($mgrUser.DisplayName)"); Write-CtgM365Step "✓ set manager: $($mgrUser.DisplayName)"
+            } catch { $actions.Add("WARN could not set manager '$mgr': $($_.Exception.Message)") }
+        } else { $actions.Add("WARN manager not found in Entra (tried email + name): $mgr"); Write-CtgM365Step "✗ manager not found: $mgr" }
     }
 
     # 2. Licenses — add only what's missing ------------------------------------
