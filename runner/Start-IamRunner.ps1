@@ -58,6 +58,19 @@ if ($exoAvail) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
 }
 
+# Safe property/key read at the RUNNER scope. Each Coretelligent module has its own private copy of
+# this helper, but those aren't exported — so a script-scope call (e.g. reading $job.config) must use
+# this one. Without it, the call is an unresolved command that the dependency guard below mistakes for
+# a missing host-specific module ("the Coretelligent module providing 'Get-CtgProp' isn't loaded…").
+function Get-CtgProp {
+    param($Object, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [hashtable]) { return $Object[$Name] }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
 # Persistent troubleshooting log: errors/warnings/failures append to runner.log next to the
 # script (build-id + bundle walks skip *.log), rotating at 5 MB. Pull a line from here when
 # reporting an issue — it has the timestamp, job id and full error the console may have scrolled.
