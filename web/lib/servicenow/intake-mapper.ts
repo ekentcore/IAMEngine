@@ -20,6 +20,9 @@ const disp = (r: SnUserMgmtRecord, k: string): string | null => {
   const v = r[k]?.display_value;
   return v == null || v === "" ? null : v;
 };
+// The email fetchUserManagementCase resolved for a reference field (manager / mirror user) from the
+// customer_contact table, stashed under "__email:<field>". Null when it couldn't be resolved.
+const contactEmail = (r: SnUserMgmtRecord, k: string): string | null => val(r, `__email:${k}`);
 const bool = (r: SnUserMgmtRecord, k: string): boolean => r[k]?.value === "true";
 const yes = (r: SnUserMgmtRecord, k: string): boolean => (val(r, k) ?? "").toLowerCase() === "yes";
 const trimmed = (s: string | null): string | null => (s ? s.trim() : null);
@@ -142,6 +145,7 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     title,
     department: val(r, "u_department"),
     managerName: disp(r, "u_manager_name"), // readable name, not sys_id
+    managerEmail: contactEmail(r, "u_manager_name"), // resolved from customer_contact — preferred for 365 lookup
     officeLocation,
     personalEmail: val(r, "u_personal_email"),
     personalPhone: val(r, "u_personal_phone"),
@@ -150,7 +154,8 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     isPrimaryWorkspaceWfh: yes(r, "u_is_their_primary_workspace_wfh"),
     hasDirectReports: yes(r, "u_will_this_individual_have_direct_reports"),
     directReports: dispList(r, "u_who_are_direct_reports"),
-    mirrorPermissionsFromUser: disp(r, "u_mirror_existing_user"),
+    // Prefer the resolved email (stable across SNOW & 365); fall back to the display name.
+    mirrorPermissionsFromUser: contactEmail(r, "u_mirror_existing_user") ?? disp(r, "u_mirror_existing_user"),
     roles: dispList(r, "u_role_s"),
     listMembership: dispList(r, "u_coretelligent_list_membership"),
     requestedBy: disp(r, "opened_by"),

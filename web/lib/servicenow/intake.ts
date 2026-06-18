@@ -42,6 +42,36 @@ const INTAKE_FIELDS = [
 ].join(",");
 
 const TABLE = "/api/now/table/sn_customerservice_user_management";
+const CONTACT_TABLE = "/api/now/table/customer_contact";
+
+// Reference fields whose contact email we look up so the runner can match the mirror user / manager
+// by EMAIL (stable across ServiceNow & 365) rather than a display name that's often spelled
+// differently (e.g. "James (Jim) Goodmiller" in SNOW vs "Jim Goodmiller" in 365). The resolved email
+// is stashed on the record under "__email:<field>" for normalizeIntake to read.
+const CONTACT_REF_FIELDS = ["u_manager_name", "u_mirror_existing_user"] as const;
+
+// Resolve a set of customer_contact sys_ids -> their email. Best-effort: any failure (table not
+// readable, a sys_id that isn't a customer_contact) just yields no email, and the caller falls back
+// to the display name.
+async function resolveContactEmails(config: SnConfig, sysIds: string[], fetcher: typeof fetch): Promise<Record<string, string>> {
+  const ids = [...new Set(sysIds.filter(Boolean))];
+  if (!ids.length) return {};
+  try {
+    const rows = await snGet<Array<Record<string, string>>>(
+      config,
+      CONTACT_TABLE,
+      { sysparm_query: `sys_idIN${ids.join(",")}`, sysparm_fields: "sys_id,email", sysparm_display_value: "false", sysparm_limit: String(ids.length) },
+      fetcher
+    );
+    const map: Record<string, string> = {};
+    for (const row of rows ?? []) {
+      if (row.sys_id && row.email) map[row.sys_id] = row.email;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 export async function fetchUserManagementCase(
   config: SnConfig,
@@ -60,5 +90,20 @@ export async function fetchUserManagementCase(
     },
     fetcher
   );
-  return rows[0] ?? null;
+  const row = rows[0] ?? null;
+  if (!row) return null;
+
+  // Look up the manager / mirror-user contact emails and stash them on the record (best-effort).
+  const sysIdOf = (f: string) => row[f]?.value ?? null;
+  const emails = await resolveContactEmails(
+    config,
+    CONTACT_REF_FIELDS.map(sysIdOf).filter((x): x is string => Boolean(x)),
+    fetcher
+  );
+  for (const f of CONTACT_REF_FIELDS) {
+    const sid = sysIdOf(f);
+    const email = sid ? emails[sid] : undefined;
+    if (email) row[`__email:${f}`] = { value: email, display_value: email };
+  }
+  return row;
 }

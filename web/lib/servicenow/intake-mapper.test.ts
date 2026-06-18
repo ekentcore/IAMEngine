@@ -41,6 +41,21 @@ test("onboard payload emits the canonical identity fields the modules read", () 
   assert.equal(payload.managerName, "Evan Kent");
 });
 
+test("manager/mirror resolve to the customer_contact email (stable across SNOW/365), else the name", () => {
+  const r = rec({
+    number: "UM2", subcategory: "30000", u_first: "Jane", u_last: "Doe",
+    u_manager_name: ["mgr-sys-id", "James (Jim) Goodmiller"],
+    u_mirror_existing_user: ["mir-sys-id", "Bob (Bobby) Smith"],
+    // fetchUserManagementCase stashes resolved emails here:
+    "__email:u_manager_name": "jim.goodmiller@acme.com",
+  });
+  const { payload } = normalizeIntake(r);
+  assert.equal(payload.managerName, "James (Jim) Goodmiller"); // display name kept
+  assert.equal(payload.managerEmail, "jim.goodmiller@acme.com"); // resolved email preferred for lookup
+  // the mirror had no resolved email -> falls back to the display name
+  assert.equal(payload.mirrorPermissionsFromUser, "Bob (Bobby) Smith");
+});
+
 test("usageLocation resolves from a US state/city (not blind US default) and flags nothing", () => {
   const p = normalizeIntake(rec({ number: "UM1", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Atlanta, GA"] })).payload;
   assert.equal(p.usageLocation, "US");
