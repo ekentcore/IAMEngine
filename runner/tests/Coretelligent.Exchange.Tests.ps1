@@ -4,7 +4,7 @@
 # and the on-request OOO message.
 
 BeforeAll {
-    function global:Connect-ExchangeOnline { [CmdletBinding()] param($AppId, $Organization, $CertificateThumbprint, [switch]$ShowBanner) }
+    function global:Connect-ExchangeOnline { [CmdletBinding()] param($AppId, $Organization, $CertificateThumbprint, $CertificateFilePath, $CertificatePassword, [switch]$ShowBanner) }
     function global:Get-MailboxStatistics { [CmdletBinding()] param($Identity) }
     function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, [switch]$Confirm) }
     # shared-mailbox permission mirror (EXO)
@@ -134,10 +134,28 @@ Describe 'Invoke-CtgExchangeOffboarding' {
 }
 
 Describe 'Connect-CtgExchange' {
-    It 'connects app-only with appId, org and certificate thumbprint' {
+    It 'connects app-only with a thumbprint on a Windows runner' {
+        InModuleScope Coretelligent.Exchange {
+            $IsWindows = $true   # simulate Windows so the cert-store path is allowed
+            Mock Connect-ExchangeOnline -MockWith { }
+            Connect-CtgExchange -AppId 'app-1' -Organization '61commodities.com' -CertificateThumbprint 'ABC123'
+            Should -Invoke Connect-ExchangeOnline -Times 1 -ParameterFilter { $Organization -eq '61commodities.com' -and $CertificateThumbprint -eq 'ABC123' }
+        }
+    }
+
+    It 'refuses a thumbprint on a non-Windows runner — points to CertificateBase64' {
+        InModuleScope Coretelligent.Exchange {
+            $IsWindows = $false   # the central macOS/Linux runner: no Windows cert store
+            Mock Connect-ExchangeOnline -MockWith { }
+            { Connect-CtgExchange -AppId 'app-1' -Organization 'x.com' -CertificateThumbprint 'ABC123' } | Should -Throw -ExpectedMessage '*Windows runner*'
+            Should -Invoke Connect-ExchangeOnline -Times 0 -Exactly
+        }
+    }
+
+    It 'connects cross-platform with a CertificateBase64 (.pfx written to a temp file, then deleted)' {
         Mock Connect-ExchangeOnline -ModuleName Coretelligent.Exchange -MockWith { }
-        Connect-CtgExchange -AppId 'app-1' -Organization '61commodities.com' -CertificateThumbprint 'ABC123'
-        Should -Invoke Connect-ExchangeOnline -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Organization -eq '61commodities.com' }
+        Connect-CtgExchange -AppId 'app-1' -Organization 'x.com' -CertificateBase64 'AAAA'
+        Should -Invoke Connect-ExchangeOnline -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $CertificateFilePath -like '*.pfx' }
     }
 }
 

@@ -54,6 +54,12 @@ function Connect-CtgExchange {
         finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }  # never leave the private key on disk
     }
     elseif ($CertificateThumbprint) {
+        # A thumbprint resolves the cert from the WINDOWS certificate store — which only exists on
+        # Windows. On the central macOS/Linux runner there's nothing to look it up in, so fail fast
+        # with the fix instead of a confusing store/parameter error.
+        if (-not $IsWindows) {
+            throw "a CertificateThumbprint only works on a WINDOWS runner (it reads the Windows certificate store). This runner is $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription) — store the cert as CertificateBase64 (the .pfx, base64-encoded) on the m365-admin secret instead; that's cross-platform. (A thumbprint is fine if you run this client on a Windows client-network agent that has the cert installed.)"
+        }
         Connect-ExchangeOnline -AppId $AppId -Organization $Organization -CertificateThumbprint $CertificateThumbprint -ShowBanner:$false
     }
     else {
