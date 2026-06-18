@@ -33,6 +33,8 @@ export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) 
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("engineer");
   const [authType, setAuthType] = useState<"sso" | "local">("sso");
+  const [newPassword, setNewPassword] = useState(""); // only used for a super creating a local user
+  const canMakeLocal = meRole === "super_admin"; // local (password) users are super-admin only
 
   async function run<T extends { ok: boolean; error?: string; generatedPassword?: string }>(key: string, fn: () => Promise<T>, who?: string) {
     setBusy(key); setError(null);
@@ -77,20 +79,29 @@ export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) 
             </select>
           </div>
           <div style={{ flex: "0 1 170px" }}><label htmlFor="nu-auth">Sign-in</label>
-            <select id="nu-auth" value={authType} onChange={(e) => setAuthType(e.target.value as "sso" | "local")}>
+            <select id="nu-auth" value={authType} onChange={(e) => setAuthType(e.target.value as "sso" | "local")}
+              title={canMakeLocal ? "" : "Only a super admin can create local (password) users"}>
               <option value="sso">Microsoft 365 (SSO)</option>
-              <option value="local">Local password</option>
+              {canMakeLocal && <option value="local">Local password</option>}
             </select>
           </div>
+          {canMakeLocal && authType === "local" && (
+            <div style={{ flex: "1 1 200px" }}><label htmlFor="nu-pw">Password</label>
+              <input id="nu-pw" type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="set one, or leave blank to generate" autoComplete="new-password" />
+            </div>
+          )}
           <button className="primary" disabled={busy === "create" || !email.trim()}
-            onClick={() => run("create", () => createUser({ email, name, role, authType }), email.trim().toLowerCase()).then(() => { setEmail(""); setName(""); })}>
+            onClick={() => run("create", () => createUser({ email, name, role, authType, password: authType === "local" ? (newPassword.trim() || undefined) : undefined }), email.trim().toLowerCase()).then(() => { setEmail(""); setName(""); setNewPassword(""); })}>
             {busy === "create" ? "Adding…" : "Add user"}
           </button>
         </div>
         <p className="note" style={{ margin: "0.5rem 0 0" }}>
           {authType === "sso"
             ? "They sign in with Microsoft 365 — no password is set; they just click “Sign in with Microsoft 365” (their email must match)."
-            : "A one-time password is generated and shown after you add the user (no email is sent)."}{" "}
+            : newPassword.trim()
+              ? "A local user with the password you set (you already have it — no email is sent)."
+              : "A local user with a one-time password generated and shown after you add them (no email is sent)."}{" "}
+          {!canMakeLocal && <span className="note">Local (password) users are super-admin only.</span>}{" "}
           <b>{ROLE_LABELS[role]}</b>: {ROLE_DESCRIPTIONS[role]}
         </p>
       </div>

@@ -26,10 +26,15 @@ export async function createUser(input: { email: string; name?: string; role: st
     if (!isRole(input.role)) return { ok: false, error: "invalid role" };
     // Only a super admin may create another super admin.
     if (input.role === "super_admin" && me.role !== "super_admin") return { ok: false, error: "only a super admin can grant the super admin role" };
+    // Creating a LOCAL (password) user — or setting a password at creation — is super-admin only.
+    // Everyone else can only create Microsoft 365 (SSO) users.
+    const wantsLocal = input.authType === "local" || !!input.password?.trim();
+    if (wantsLocal && me.role !== "super_admin") return { ok: false, error: "only a super admin can create a local (password) user" };
+    if (input.password?.trim() && input.password.trim().length < 8) return { ok: false, error: "the password must be at least 8 characters" };
     if (await db.user.findUnique({ where: { email } })) return { ok: false, error: "a user with that email already exists" };
-    // SSO users sign in with Microsoft 365 (no local password). Local users get one (generated if
-    // not supplied), shown once to the admin.
-    const sso = input.authType === "sso";
+    // SSO users sign in with Microsoft 365 (no local password). Local users get one (set by the super
+    // admin, or generated if not supplied), shown once to the admin.
+    const sso = !wantsLocal;
     const password = sso ? null : input.password?.trim() || generatePassword();
     await db.user.create({
       data: { email, name: input.name?.trim() || null, role: input.role, authType: sso ? "sso" : "local", passwordHash: password ? hashPassword(password) : null },
