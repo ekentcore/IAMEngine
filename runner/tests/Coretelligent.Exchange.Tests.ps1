@@ -6,7 +6,12 @@
 BeforeAll {
     function global:Connect-ExchangeOnline { [CmdletBinding()] param($AppId, $Organization, $CertificateThumbprint, [switch]$ShowBanner) }
     function global:Get-MailboxStatistics { [CmdletBinding()] param($Identity) }
-    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward) }
+    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, [switch]$Confirm) }
+    # shared-mailbox permission mirror (EXO)
+    function global:Get-MailboxPermission { [CmdletBinding()] param($Identity) }
+    function global:Add-MailboxPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, $InheritanceType, [switch]$AutoMapping, [switch]$Confirm) }
+    function global:Get-RecipientPermission { [CmdletBinding()] param($Identity) }
+    function global:Add-RecipientPermission { [CmdletBinding()] param($Identity, $Trustee, $AccessRights, [switch]$Confirm) }
     function global:Set-CASMailbox { [CmdletBinding()] param($Identity, $ActiveSyncEnabled, $OWAEnabled) }
     function global:Set-MailboxAutoReplyConfiguration { [CmdletBinding()] param($Identity, $AutoReplyState, $InternalMessage, $ExternalMessage) }
     # on-prem hybrid remote-mailbox + post-sync EXO finishing
@@ -15,13 +20,55 @@ BeforeAll {
     function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled) }
     function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
     function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
-    function global:Get-Mailbox { [CmdletBinding()] param($Identity) }
+    function global:Get-Mailbox { [CmdletBinding()] param($Identity, $RecipientTypeDetails, $ResultSize) }
     # distribution-list mirror (EXO)
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
     function global:Add-UnifiedGroupLinks { [CmdletBinding()] param($Identity, $LinkType, $Links) }
 
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
+}
+
+Describe 'Invoke-CtgExchangeSharedMailboxMirror' {
+    It 'grants the new user the FullAccess / SendAs / SendOnBehalf the mirror user has' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'mirror@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Mirror User'; PrimarySmtpAddress='mirror@x.com'; UserPrincipalName='mirror@x.com'; Name='Mirror User'; DistinguishedName='CN=Mirror,DC=x' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'new@x.com' } -MockWith { [pscustomobject]@{ DisplayName='New User'; PrimarySmtpAddress='new@x.com'; UserPrincipalName='new@x.com'; Name='New User'; DistinguishedName='CN=New,DC=x' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $RecipientTypeDetails -eq 'SharedMailbox' } -MockWith {
+            @(
+                [pscustomobject]@{ DisplayName='Sales'; Identity='sales@x.com'; GrantSendOnBehalfTo=@('mirror@x.com') }
+                [pscustomobject]@{ DisplayName='IT';    Identity='it@x.com';    GrantSendOnBehalfTo=@() }
+            )
+        }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { param($Identity) if ($Identity -eq 'sales@x.com') { @([pscustomobject]@{ User='mirror@x.com'; AccessRights=@('FullAccess'); IsInherited=$false }) } else { @() } }
+        Mock Get-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { param($Identity) if ($Identity -eq 'sales@x.com') { @([pscustomobject]@{ Trustee='mirror@x.com'; AccessRights=@('SendAs') }) } else { @() } }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Add-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
+
+        $acts = Invoke-CtgExchangeSharedMailboxMirror -MirrorUser 'mirror@x.com' -NewUser 'new@x.com'
+
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'sales@x.com' -and $User -eq 'new@x.com' -and ($AccessRights -contains 'FullAccess') } -Times 1
+        Should -Invoke Add-RecipientPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'sales@x.com' -and $Trustee -eq 'new@x.com' } -Times 1
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'sales@x.com' -and $GrantSendOnBehalfTo['Add'] -eq 'new@x.com' } -Times 1
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'it@x.com' } -Times 0 -Exactly  # mirror had nothing on IT
+        ($acts -join ' ') | Should -Match 'FullAccess: Sales'
+    }
+
+    It 'is idempotent — skips a permission the target already holds' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'mirror@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Mirror'; PrimarySmtpAddress='mirror@x.com'; UserPrincipalName='mirror@x.com' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'new@x.com' } -MockWith { [pscustomobject]@{ DisplayName='New'; PrimarySmtpAddress='new@x.com'; UserPrincipalName='new@x.com' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $RecipientTypeDetails -eq 'SharedMailbox' } -MockWith { @([pscustomobject]@{ DisplayName='Sales'; Identity='sales@x.com'; GrantSendOnBehalfTo=@() }) }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @(
+            [pscustomobject]@{ User='mirror@x.com'; AccessRights=@('FullAccess'); IsInherited=$false }
+            [pscustomobject]@{ User='new@x.com';    AccessRights=@('FullAccess'); IsInherited=$false }
+        ) }
+        Mock Get-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+
+        $acts = Invoke-CtgExchangeSharedMailboxMirror -MirrorUser 'mirror@x.com' -NewUser 'new@x.com'
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($acts -join ' ') | Should -Match 'already FullAccess: Sales'
+    }
 }
 
 Describe 'Invoke-CtgExchangeDistListMirror' {

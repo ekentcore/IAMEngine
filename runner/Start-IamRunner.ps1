@@ -288,28 +288,41 @@ function Get-CtgExoCertArgs {
     $a
 }
 
-function Add-CtgM365DistributionLists {
-    # Add the new user to the distribution / mail-enabled groups Graph couldn't write, over Exchange
-    # Online — app-only auth with the m365-admin certificate (the SAME app), so no separate Exchange
-    # system is needed. Idempotent + best-effort; returns action lines.
-    param($Job, $Creds, [string[]]$Names)
+function Invoke-CtgM365ExoFinish {
+    # Finish the m365 onboard over Exchange Online with the SAME m365-admin app cert (no separate
+    # Exchange system): (1) add the distribution / mail-enabled groups Graph couldn't write; and when
+    # MIRRORING, (2) copy the mirror user's cloud DLs and (3) their SHARED-MAILBOX permissions
+    # (FullAccess / SendAs / SendOnBehalf) — the part Graph can't do. One EXO connection for all of it.
+    # Idempotent + best-effort; returns action lines.
+    param($Job, $Creds, [string[]]$Names, [string]$MirrorUser)
     $out = [System.Collections.Generic.List[string]]::new()
+    $names = @($Names | Where-Object { $_ })
+    $mirror = if ([string]::IsNullOrWhiteSpace($MirrorUser)) { $null } else { [string]$MirrorUser }
+    if ($names.Count -eq 0 -and -not $mirror) { return $out.ToArray() }
+
     if (-not (Get-Command Invoke-CtgExchangeNamedGroups -ErrorAction SilentlyContinue)) {
-        $out.Add("note: $(@($Names).Count) distribution list(s) not added — ExchangeOnlineManagement isn't installed on this runner, so the Coretelligent.Exchange module didn't load. Install it (or run this client on a runner that has it).")
+        if ($names.Count) { $out.Add("note: $($names.Count) distribution list(s) not added — ExchangeOnlineManagement isn't installed on this runner, so the Coretelligent.Exchange module didn't load. Install it (or run this client on a runner that has it).") }
+        if ($mirror) { $out.Add("note: shared mailboxes / DLs not mirrored — ExchangeOnlineManagement isn't installed on this runner.") }
         return $out.ToArray()
     }
     $s = $Creds['m365-admin']
     $certArgs = Get-CtgExoCertArgs $s
     if ($certArgs.Count -eq 0) {
-        $out.Add("note: $(@($Names).Count) distribution list(s) not added — the m365-admin secret has no Exchange Online cert: set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows). Also grant the app the Exchange.ManageAsApp permission.")
+        $out.Add("note: Exchange Online steps skipped — the m365-admin secret has no EXO cert: set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows), and grant the app Exchange.ManageAsApp.")
         return $out.ToArray()
     }
     try {
-        Set-CtgPhase $Job.id "adding distribution lists over Exchange Online (app-only)"
+        $what = @($(if ($names.Count) { 'distribution lists' }), $(if ($mirror) { 'mirror (DLs + shared mailboxes)' }) | Where-Object { $_ }) -join ' + '
+        Set-CtgPhase $Job.id "finishing over Exchange Online (app-only): $what"
         Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $Job $Creds) @certArgs
-        foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$Job.payload.UserPrincipalName) -Groups $Names)) { $out.Add($a) }
+        $upn = [string]$Job.payload.UserPrincipalName
+        if ($names.Count) { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser $upn -Groups $names)) { $out.Add($a) } }
+        if ($mirror) {
+            foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser $mirror -NewUser $upn)) { $out.Add($a) }
+            foreach ($a in (Invoke-CtgExchangeSharedMailboxMirror -MirrorUser $mirror -NewUser $upn)) { $out.Add($a) }
+        }
     } catch {
-        $out.Add("WARN couldn't add distribution lists over Exchange Online ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret.")
+        $out.Add("WARN Exchange Online finish failed ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret.")
     }
     return $out.ToArray()
 }
@@ -326,11 +339,13 @@ $DISPATCH = @{
         }
         Onboard  = { param($job, $creds)
             $r = Invoke-CtgM365Onboarding -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds)
-            # Finish the distribution / mail-enabled groups Graph couldn't add, over Exchange Online,
-            # using the SAME m365-admin app (cert) — no separate Exchange system needed. Best-effort.
+            # Finish over Exchange Online with the SAME m365-admin app (cert) — no separate Exchange
+            # system needed: the DLs Graph couldn't write, plus (when mirroring) the mirror user's DLs
+            # and shared-mailbox permissions. One EXO connection, best-effort.
             $dls = @(if ($r.PSObject.Properties['DeferredDistributionGroups']) { $r.DeferredDistributionGroups })
-            if ($dls.Count -gt 0) {
-                foreach ($a in (Add-CtgM365DistributionLists -Job $job -Creds $creds -Names $dls)) { $r.Actions = @($r.Actions) + $a }
+            $mirror = [string](Get-CtgProp $job.config 'mirrorFromUser')
+            if ($dls.Count -gt 0 -or $mirror) {
+                foreach ($a in (Invoke-CtgM365ExoFinish -Job $job -Creds $creds -Names $dls -MirrorUser $mirror)) { $r.Actions = @($r.Actions) + $a }
             }
             $r
         }

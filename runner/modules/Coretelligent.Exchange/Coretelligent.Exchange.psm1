@@ -197,6 +197,78 @@ function Invoke-CtgExchangeDistListMirror {
     return $actions.ToArray()
 }
 
+function Invoke-CtgExchangeSharedMailboxMirror {
+    <#
+    .SYNOPSIS
+        Grant the new user the SHARED-MAILBOX permissions the mirror user has — FullAccess, SendAs and
+        SendOnBehalf — across every shared mailbox in the tenant. Idempotent: a permission is only added
+        when the mirror user has it AND the new user doesn't. Mirrors the manual mirror script.
+    .NOTES
+        Needs Exchange Online (the same app-only connection the DL adds use). Matching is identifier-
+        tolerant: a permission's User/Trustee matches the mirror/target by UPN, SMTP, alias, name or DN
+        (EXO stores different forms in different places), so a name spelled differently still resolves.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$NewUser)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $ref = Get-Recipient -Identity $MirrorUser -ErrorAction SilentlyContinue
+    if (-not $ref) { $actions.Add("WARN mirror user not found in Exchange (shared mailboxes): $MirrorUser"); return $actions.ToArray() }
+    $tgt = Get-Recipient -Identity $NewUser -ErrorAction SilentlyContinue
+
+    # Every identifier EXO might record a permission under, lowercased, so matching is form-agnostic.
+    # Get-CtgProp keeps this StrictMode-safe when a recipient object lacks one of the properties.
+    $idsOf = {
+        param($r, $raw)
+        $fields = @('PrimarySmtpAddress', 'UserPrincipalName', 'WindowsLiveID', 'Name', 'Alias', 'DistinguishedName', 'ExternalDirectoryObjectId')
+        @(@($raw) + @($fields | ForEach-Object { Get-CtgProp $r $_ })) |
+            Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Select-Object -Unique
+    }
+    $mirrorIds = @(& $idsOf $ref $MirrorUser)
+    $targetIds = @(& $idsOf $tgt $NewUser)
+    $isMirror = { param($u) $u -and (([string]$u).ToLowerInvariant() -in $mirrorIds) }
+    $isTarget = { param($u) $u -and (([string]$u).ToLowerInvariant() -in $targetIds) }
+
+    Write-CtgStep "mirroring shared-mailbox permissions from $($ref.DisplayName)"
+    $shared = @(Get-Mailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
+    $full = 0; $sa = 0; $sob = 0
+    foreach ($mbx in $shared) {
+        $name = $mbx.DisplayName
+        try {
+            # FULL ACCESS — explicit (non-inherited) grants only, same as the manual script.
+            $perms = @(Get-MailboxPermission -Identity $mbx.Identity -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and ($_.AccessRights -contains 'FullAccess') })
+            if (@($perms | Where-Object { & $isMirror $_.User }).Count) {
+                if (@($perms | Where-Object { & $isTarget $_.User }).Count) { $actions.Add("already FullAccess: $name") }
+                elseif ($PSCmdlet.ShouldProcess($NewUser, "FullAccess on $name")) {
+                    Add-MailboxPermission -Identity $mbx.Identity -User $NewUser -AccessRights FullAccess -InheritanceType All -AutoMapping:$true -Confirm:$false -ErrorAction Stop | Out-Null
+                    $actions.Add("shared mailbox FullAccess: $name"); Write-CtgStep "✓ FullAccess: $name"; $full++
+                }
+            }
+            # SEND AS
+            $rperms = @(Get-RecipientPermission -Identity $mbx.Identity -ErrorAction SilentlyContinue | Where-Object { $_.AccessRights -contains 'SendAs' })
+            if (@($rperms | Where-Object { & $isMirror $_.Trustee }).Count) {
+                if (@($rperms | Where-Object { & $isTarget $_.Trustee }).Count) { $actions.Add("already SendAs: $name") }
+                elseif ($PSCmdlet.ShouldProcess($NewUser, "SendAs on $name")) {
+                    Add-RecipientPermission -Identity $mbx.Identity -Trustee $NewUser -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+                    $actions.Add("shared mailbox SendAs: $name"); Write-CtgStep "✓ SendAs: $name"; $sa++
+                }
+            }
+            # SEND ON BEHALF — stored on the mailbox; add the new user without clobbering the list.
+            $sobList = @($mbx.GrantSendOnBehalfTo)
+            if (@($sobList | Where-Object { & $isMirror $_ }).Count) {
+                if (@($sobList | Where-Object { & $isTarget $_ }).Count) { $actions.Add("already SendOnBehalf: $name") }
+                elseif ($PSCmdlet.ShouldProcess($NewUser, "SendOnBehalf on $name")) {
+                    Set-Mailbox -Identity $mbx.Identity -GrantSendOnBehalfTo @{ Add = $NewUser } -ErrorAction Stop
+                    $actions.Add("shared mailbox SendOnBehalf: $name"); Write-CtgStep "✓ SendOnBehalf: $name"; $sob++
+                }
+            }
+        } catch {
+            $actions.Add("WARN shared mailbox '$name': $($_.Exception.Message)"); Write-CtgStep "✗ $name — $($_.Exception.Message)"
+        }
+    }
+    $actions.Add("shared-mailbox mirror from ${MirrorUser}: $full FullAccess, $sa SendAs, $sob SendOnBehalf added (of $($shared.Count) shared mailboxes)")
+    return $actions.ToArray()
+}
+
 function Invoke-CtgExchangeNamedGroups {
     # Add the new user to EXPLICITLY-REQUESTED groups BY NAME over Exchange Online — the groups the
     # Graph/m365 lane couldn't write (DLs/mail-enabled) or couldn't resolve (a 365 group whose alias
@@ -466,4 +538,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
