@@ -25,12 +25,42 @@ export const ALL_PERMISSIONS: Permission[] = [
 const CASE_OPS: Permission[] = ["case.view", "case.import", "case.plan", "case.dispatch", "case.schedule"];
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  super_admin: ALL_PERMISSIONS, // same capabilities as global; the difference is the super-only guards below
   global_admin: ALL_PERMISSIONS,
   ops_manager: [...CASE_OPS, "case.approve_destructive", "client.edit_systems", "client.edit_secrets", "agent.manage", "audit.view"],
   engineer: [...CASE_OPS, "client.edit_secrets"],
   importer: ["case.view", "case.import"],
   auditor: ["case.view", "audit.view"],
 };
+
+// Seniority ranking (higher = more powerful). Drives the password-reset / role-assignment rules:
+// you can only reset or re-role someone at or below your own rank, and the super tier is touched
+// ONLY by another super.
+export const ROLE_RANK: Record<Role, number> = {
+  super_admin: 5,
+  global_admin: 4,
+  ops_manager: 3,
+  engineer: 2,
+  importer: 1,
+  auditor: 0,
+};
+
+// Who may RESET a user's password:
+//   - super_admin  -> anyone (including other supers)
+//   - global_admin -> anyone global_admin or LOWER (never a super)
+//   - below global -> no one (they lack user.manage)
+// i.e. you must hold user.manage AND be at least as senior as the target.
+export function canResetPassword(actor: Role, target: Role): boolean {
+  return can(actor, "user.manage") && ROLE_RANK[actor] >= ROLE_RANK[target];
+}
+
+// Who may ASSIGN/CHANGE a role: granting or modifying the super_admin tier is super-only (so a global
+// can't self-promote to super or demote a super to dodge the reset rule). Everything below is the
+// usual user.manage capability.
+export function canAssignRole(actor: Role, targetCurrentRole: Role, newRole: Role): boolean {
+  if (newRole === "super_admin" || targetCurrentRole === "super_admin") return actor === "super_admin";
+  return can(actor, "user.manage");
+}
 
 export function permissionsFor(role: Role): Permission[] {
   return ROLE_PERMISSIONS[role] ?? [];
@@ -42,6 +72,7 @@ export function can(role: Role, perm: Permission): boolean {
 
 // Human labels for the role picker / audit display.
 export const ROLE_LABELS: Record<Role, string> = {
+  super_admin: "Super admin",
   global_admin: "Global admin",
   ops_manager: "Operations manager",
   engineer: "Engineer",
@@ -51,7 +82,8 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 // One-line plain-English summary of each role (shown on the Users page + as hover text).
 export const ROLE_DESCRIPTIONS: Record<Role, string> = {
-  global_admin: "Full control — everything below, plus managing users, roles, and settings.",
+  super_admin: "Top tier. Everything a global admin can do, and the only role that can reset a super admin's password or grant/remove the super admin role.",
+  global_admin: "Full control — everything below, plus managing users, roles, and settings. Cannot reset a super admin's password.",
   ops_manager: "Runs AND approves everything operational, including destructive offboard steps; can edit client systems and manage runners. Cannot manage users.",
   engineer: "Runs onboardings & offboardings — import, plan, schedule, dispatch, re-run, verify. Cannot approve destructive offboard steps (a manager does that).",
   importer: "Imports cases and views them. Cannot run anything.",

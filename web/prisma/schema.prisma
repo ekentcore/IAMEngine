@@ -357,7 +357,8 @@ model RunOutcome {
 // Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
 // authorization is permission-based and roles stay easy to re-compose.
 enum Role {
-  global_admin // everything incl. user/role + settings + approve destructive
+  super_admin  // top tier: everything a global admin can do, plus only a super can reset/assign supers
+  global_admin // everything incl. user/role + settings + approve destructive (but not supers)
   ops_manager  // all case ops + approve destructive + edit systems + manage agents
   engineer     // import/plan/dispatch/rerun/pause/verify/schedule; NOT approve destructive
   importer     // import + view only

@@ -7,10 +7,11 @@ import { db } from "@/lib/db";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
 import { hashPassword, generatePassword } from "@/lib/auth/password";
 import { recordAudit } from "@/lib/auth/audit";
+import { canResetPassword, canAssignRole } from "@/lib/auth/permissions";
 
 type Result<T = unknown> = ({ ok: true } & T) | { ok: false; error: string };
 
-const ROLES: Role[] = ["global_admin", "ops_manager", "engineer", "importer", "auditor"];
+const ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
 const isRole = (r: unknown): r is Role => typeof r === "string" && ROLES.includes(r as Role);
 
 function fail(e: unknown): { ok: false; error: string } {
@@ -23,6 +24,8 @@ export async function createUser(input: { email: string; name?: string; role: st
     const email = input.email.trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, error: "enter a valid email" };
     if (!isRole(input.role)) return { ok: false, error: "invalid role" };
+    // Only a super admin may create another super admin.
+    if (input.role === "super_admin" && me.role !== "super_admin") return { ok: false, error: "only a super admin can grant the super admin role" };
     if (await db.user.findUnique({ where: { email } })) return { ok: false, error: "a user with that email already exists" };
     // SSO users sign in with Microsoft 365 (no local password). Local users get one (generated if
     // not supplied), shown once to the admin.
@@ -45,6 +48,11 @@ export async function setUserRole(userId: string, role: string): Promise<Result>
     if (!isRole(role)) return { ok: false, error: "invalid role" };
     const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
     if (!target) return { ok: false, error: "user not found" };
+    // Granting/changing the super admin tier is super-only — a global can't promote to super or
+    // re-role a super (which would let them dodge the password-reset rule).
+    if (!canAssignRole(me.role, target.role, role)) {
+      return { ok: false, error: "only a super admin can grant or change the super admin role" };
+    }
     await db.user.update({ where: { id: userId }, data: { role } });
     await recordAudit("user.set_role", { user: me, detail: { email: target.email, from: target.role, to: role } });
     revalidatePath("/users");
@@ -75,8 +83,12 @@ export async function setUserStatus(userId: string, status: "active" | "disabled
 export async function resetUserPassword(userId: string, password?: string): Promise<Result<{ generatedPassword?: string }>> {
   try {
     const me = await requirePermission("user.manage");
-    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
     if (!target) return { ok: false, error: "user not found" };
+    // Seniority rule: a super resets anyone; a global resets global-or-lower; only a super resets a super.
+    if (!canResetPassword(me.role, target.role)) {
+      return { ok: false, error: target.role === "super_admin" ? "only a super admin can reset a super admin's password" : "you can't reset the password of a user more senior than you" };
+    }
     const pw = password?.trim() || generatePassword();
     // A password reset also revokes existing sessions (forces re-login).
     await db.$transaction([

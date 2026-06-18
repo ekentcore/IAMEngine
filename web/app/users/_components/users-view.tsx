@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Role } from "@prisma/client";
-import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS } from "@/lib/auth/permissions";
+import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS, canResetPassword, canAssignRole } from "@/lib/auth/permissions";
 import { createUser, setUserRole, setUserStatus, resetUserPassword } from "../actions";
 
 type UserVM = {
@@ -11,7 +11,7 @@ type UserVM = {
   isBreakGlass: boolean; authType: string; lastLoginAt: string | null;
 };
 
-const ROLES: Role[] = ["global_admin", "ops_manager", "engineer", "importer", "auditor"];
+const ALL_ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
 
 function lastSeen(iso: string | null) {
   if (!iso) return "never";
@@ -19,8 +19,11 @@ function lastSeen(iso: string | null) {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function UsersView({ users }: { users: UserVM[] }) {
+export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) {
   const router = useRouter();
+  // super_admin only appears in the pickers for a super admin (others can't grant it). The guide +
+  // create form use this; per-row selects also keep a target's own (super) role visible.
+  const ROLES: Role[] = meRole === "super_admin" ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "super_admin");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<{ email: string; password: string } | null>(null);
@@ -114,17 +117,35 @@ export function UsersView({ users }: { users: UserVM[] }) {
                 <div className="note" style={{ fontSize: 11 }}>{u.email}{u.isBreakGlass && " · break-glass"}{u.authType === "sso" && " · SSO"}</div>
               </td>
               <td>
-                <select value={u.role} title={ROLE_DESCRIPTIONS[u.role]} disabled={busy === `role-${u.id}`} onChange={(e) => run(`role-${u.id}`, () => setUserRole(u.id, e.target.value))} style={{ width: "auto", fontSize: 12 }}>
-                  {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-                </select>
+                {/* A super's role can only be changed by another super; the super_admin option only
+                    shows for a super (or on a super's own row, so the current value renders). */}
+                {(() => {
+                  const lockRole = u.role === "super_admin" && meRole !== "super_admin";
+                  const rowRoles = meRole === "super_admin" || u.role === "super_admin" ? ALL_ROLES : ROLES;
+                  return (
+                    <select value={u.role} title={lockRole ? "Only a super admin can change a super admin's role" : ROLE_DESCRIPTIONS[u.role]}
+                      disabled={busy === `role-${u.id}` || lockRole}
+                      onChange={(e) => run(`role-${u.id}`, () => setUserRole(u.id, e.target.value))} style={{ width: "auto", fontSize: 12 }}>
+                      {rowRoles.map((r) => <option key={r} value={r} disabled={!canAssignRole(meRole, u.role, r)}>{ROLE_LABELS[r]}</option>)}
+                    </select>
+                  );
+                })()}
               </td>
               <td><span className="badge" style={{ color: u.status === "active" ? "#15803d" : "#b91c1c", background: u.status === "active" ? "#e8f5ee" : "#fcebe9" }}>{u.status}</span></td>
               <td className="note">{lastSeen(u.lastLoginAt)}</td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
-                <button style={{ fontSize: 12 }} disabled={busy === `pw-${u.id}` || u.authType === "sso"} title={u.authType === "sso" ? "SSO user — no local password" : "Generate a new one-time password"}
-                  onClick={() => run(`pw-${u.id}`, () => resetUserPassword(u.id), u.email)}>
-                  Reset password
-                </button>
+                {(() => {
+                  const allowed = canResetPassword(meRole, u.role);
+                  const why = u.authType === "sso" ? "SSO user — no local password"
+                    : !allowed ? (u.role === "super_admin" ? "Only a super admin can reset a super admin's password" : "You can't reset a more senior user's password")
+                    : "Generate a new one-time password";
+                  return (
+                    <button style={{ fontSize: 12 }} disabled={busy === `pw-${u.id}` || u.authType === "sso" || !allowed} title={why}
+                      onClick={() => run(`pw-${u.id}`, () => resetUserPassword(u.id), u.email)}>
+                      Reset password
+                    </button>
+                  );
+                })()}
                 <button style={{ fontSize: 12, marginLeft: 6 }} disabled={busy === `st-${u.id}`}
                   onClick={() => run(`st-${u.id}`, () => setUserStatus(u.id, u.status === "active" ? "disabled" : "active"))}>
                   {u.status === "active" ? "Disable" : "Enable"}

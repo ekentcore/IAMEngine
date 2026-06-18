@@ -15,7 +15,7 @@ export class AuthError extends Error {
 
 // What guards return when auth is off — full access, no audited identity (actor stays "ui").
 export type ActingUser = Pick<User, "id" | "email" | "name" | "role"> & { system?: boolean };
-const SYSTEM: ActingUser = { id: "", email: "system", name: "system", role: "global_admin", system: true };
+const SYSTEM: ActingUser = { id: "", email: "system", name: "system", role: "super_admin", system: true };
 
 export async function requireUser(): Promise<ActingUser> {
   if (!authEnabled()) return SYSTEM;
