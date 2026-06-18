@@ -5,6 +5,7 @@
 // Keep in sync with Connect-CtgM365 / Connect-CtgExchange in the runner.
 import Link from "next/link";
 import { Code } from "../_components/code";
+import { ExoCertTool } from "./_components/exo-cert-tool";
 
 export const metadata = { title: "M365 auth setup" };
 
@@ -81,6 +82,9 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
         only the public <code>.cer</code> does; the key is stored in Delinea and brokered to the runner at run time.
         Pick the method for your runner host:
       </p>
+      <p style={{ fontWeight: 600, margin: "0.6rem 0 0.2rem" }}>Easiest — generate it here (a cross-platform <code>.pfx</code>, works for any runner)</p>
+      <ExoCertTool />
+      <p className="note" style={{ marginTop: "0.5rem" }}>…or do it by hand:</p>
       <p style={{ fontWeight: 600, margin: "0.6rem 0 0.2rem" }}>A) Central runner on macOS / Linux (or any host) — a <code>.pfx</code> (cross-platform)</p>
       <Code>{`# Create a self-signed cert + key, bundle into a password-protected .pfx, base64 it:
 openssl req -x509 -newkey rsa:2048 -keyout exo.key -out exo.cer -days 730 -nodes -subj "/CN=iam-engine-exo"
