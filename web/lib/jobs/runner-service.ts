@@ -235,9 +235,12 @@ export function makeRunnerService(db: PrismaClient) {
 
       // Preflight: don't claim a job whose required secrets aren't set — the broker couldn't resolve a
       // credential, so it would just fail. Load the candidate cases' client refs + overrides once.
-      const caseMeta = await db.caseRequest.findMany({ where: { id: { in: caseIds } }, select: { id: true, clientId: true, secretOverrides: true } });
+      const caseMeta = await db.caseRequest.findMany({ where: { id: { in: caseIds } }, select: { id: true, clientId: true, secretOverrides: true, client: { select: { parentId: true } } } });
       const caseMetaById = new Map(caseMeta.map((c) => [c.id, c]));
-      const clientSecrets = await db.secret.findMany({ where: { clientId: { in: [...new Set(caseMeta.map((c) => c.clientId))] } }, select: { clientId: true, name: true, externalId: true } });
+      // Load the candidate clients' secrets AND their parents' (a child account inherits the parent's
+      // Delinea refs for systems it inherits) so an inheriting case isn't wrongly skipped as "missing".
+      const parentIds = [...new Set(caseMeta.map((c) => c.client?.parentId).filter((x): x is string => Boolean(x)))];
+      const clientSecrets = await db.secret.findMany({ where: { clientId: { in: [...new Set([...caseMeta.map((c) => c.clientId), ...parentIds])] } }, select: { clientId: true, name: true, externalId: true } });
       const secretsByClient = new Map<string, Map<string, string | null>>();
       for (const s of clientSecrets) {
         const m = secretsByClient.get(s.clientId) ?? new Map<string, string | null>();
@@ -253,7 +256,8 @@ export function makeRunnerService(db: PrismaClient) {
         if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
         const meta = caseMetaById.get(c.caseRequestId);
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
-        if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap).length > 0) continue; // secrets not set — skip
+        const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
+        if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }
@@ -302,7 +306,7 @@ export function makeRunnerService(db: PrismaClient) {
     // the secret must be one named on that job. Never returns a secret value (we store only
     // the Delinea reference); production exchanges externalId for a short-TTL scoped cred here.
     async brokerCredential(jobId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true, secretOverrides: true } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true, secretOverrides: true, client: { select: { parentId: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -310,12 +314,18 @@ export function makeRunnerService(db: PrismaClient) {
       const allowed = req(job).secretNames ?? [];
       if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
       const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
-      // A per-case override reference wins over the client default; either way it's a Delinea id.
-      const { externalId, source } = effectiveExternalId(secretName, job.case.secretOverrides, clientSecret?.externalId ?? null);
+      // Child accounts that run their parent's runbook also inherit the parent's Delinea references —
+      // looked up only when the child has none of its own (the override/own ref take precedence).
+      const parentId = job.case.client.parentId;
+      const parentSecret = parentId && !clientSecret?.externalId
+        ? await db.secret.findUnique({ where: { clientId_name: { clientId: parentId, name: secretName } }, select: { provider: true, externalId: true } })
+        : null;
+      // A per-case override wins over the child's own ref, which wins over the parent's; all Delinea ids.
+      const { externalId, source } = effectiveExternalId(secretName, job.case.secretOverrides, clientSecret?.externalId ?? null, parentSecret?.externalId ?? null);
       if (source === "not_needed") throw new HttpError(409, `secret '${secretName}' is marked not needed (handled as a manual step) — no credential to broker`);
       if (!externalId) throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client or override it on the case)`);
       // Overrides only replace the reference id, not the provider — every reference is a Delinea id.
-      const secret = { provider: clientSecret?.provider ?? "delinea", externalId, source };
+      const secret = { provider: clientSecret?.provider ?? parentSecret?.provider ?? "delinea", externalId, source };
 
       // Push-down model: the app resolves the secret's VALUE from Delinea and returns the fields so
       // the runner doesn't need Delinea creds of its own (nothing to distribute to client DCs). A

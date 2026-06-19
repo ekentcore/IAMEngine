@@ -50,6 +50,29 @@ test("effectiveExternalId: case override wins; else client; else missing (REPLAC
   assert.deepEqual(effectiveExternalId("ad-dc", null, null), { externalId: null, source: "missing" });
 });
 
+test("effectiveExternalId: a child inherits the PARENT's ref only when it has none of its own", () => {
+  // child has none -> parent's ref, source "parent"
+  assert.deepEqual(effectiveExternalId("m365-admin", {}, null, "777"), { externalId: "777", source: "parent" });
+  assert.deepEqual(effectiveExternalId("m365-admin", {}, "REPLACE_ME", "777"), { externalId: "777", source: "parent" });
+  // the child's OWN ref wins over the parent's
+  assert.deepEqual(effectiveExternalId("m365-admin", {}, "999", "777"), { externalId: "999", source: "client" });
+  // a case OVERRIDE wins over both
+  assert.deepEqual(effectiveExternalId("m365-admin", { "m365-admin": "111" }, "999", "777"), { externalId: "111", source: "case" });
+  // a parent "not needed" marker also inherits (satisfied, not missing)
+  assert.deepEqual(effectiveExternalId("m365-admin", {}, null, "NOT_NEEDED"), { externalId: null, source: "not_needed" });
+  // neither child nor parent -> missing
+  assert.deepEqual(effectiveExternalId("m365-admin", {}, null, null), { externalId: null, source: "missing" });
+});
+
+test("missingRequiredSecrets: a child is NOT flagged for a secret its parent provides", () => {
+  const child = new Map<string, string | null>([["ad-dc", "123"]]);
+  const parent = new Map<string, string | null>([["m365-admin", "555"]]);
+  // ad-dc on child, m365-admin inherited from parent, mimecast on neither -> only mimecast missing
+  assert.deepEqual(missingRequiredSecrets(["ad-dc", "m365-admin", "mimecast"], {}, child, parent), ["mimecast"]);
+  // with no parent map, the inherited one IS missing (back-compat)
+  assert.deepEqual(missingRequiredSecrets(["m365-admin"], {}, child), ["m365-admin"]);
+});
+
 test("effectiveExternalId: NOT_NEEDED sentinel -> not-needed (no usable ref, but intentional)", () => {
   // A secret marked "not needed" (module is a manual step) resolves to no reference but a distinct
   // source so it is NOT treated as missing.

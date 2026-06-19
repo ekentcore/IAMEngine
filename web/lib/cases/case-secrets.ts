@@ -3,7 +3,7 @@
 // REFERENCES (ids), never values. Pure functions here are unit-tested; DB-touching status lives in
 // case-secrets-repo.
 
-export type SecretSource = "case" | "client" | "missing" | "not_needed";
+export type SecretSource = "case" | "client" | "parent" | "missing" | "not_needed";
 
 // Sentinel reference meaning "this module is handled as a manual step — don't require a credential."
 // Stored as a secret's externalId so it travels with the client wiring (and can be set as a case
@@ -55,11 +55,12 @@ export function stepRunsOn(systemKey: string, clientHasOnPremAd: boolean, server
 export function missingRequiredSecrets(
   secretNames: string[] | undefined,
   overrides: unknown,
-  clientSecretByName: Map<string, string | null>
+  clientSecretByName: Map<string, string | null>,
+  parentSecretByName?: Map<string, string | null>
 ): string[] {
   const missing: string[] = [];
   for (const name of secretNames ?? []) {
-    const { externalId, source } = effectiveExternalId(name, overrides, clientSecretByName.get(name) ?? null);
+    const { externalId, source } = effectiveExternalId(name, overrides, clientSecretByName.get(name) ?? null, parentSecretByName?.get(name) ?? null);
     // "not needed" is intentional (manual-step module) — satisfied, not missing.
     if (!externalId && source !== "not_needed") missing.push(name);
   }
@@ -68,19 +69,30 @@ export function missingRequiredSecrets(
 
 // The reference the broker should use for a secret on this case: a case override wins over the
 // client default; null when neither is set (the step can't run until it's filled).
+// Precedence: a case OVERRIDE wins, then the CHILD client's own reference, then (for a child account
+// running its parent's runbook) the PARENT client's reference, else missing. A "not needed" marker at
+// any tier that's reached short-circuits as satisfied. `parentExternalId` is the parent client's
+// reference for the same name (only consulted when the child has none of its own).
 export function effectiveExternalId(
   name: string,
   overrides: unknown,
-  clientExternalId: string | null | undefined
+  clientExternalId: string | null | undefined,
+  parentExternalId?: string | null | undefined
 ): { externalId: string | null; source: SecretSource } {
   const o = overrides && typeof overrides === "object" ? (overrides as Record<string, unknown>)[name] : undefined;
   // A case override wins — including an override that marks the secret not-needed for this case.
   if (typeof o === "string" && o.trim() === NOT_NEEDED) return { externalId: null, source: "not_needed" };
   if (typeof o === "string" && o.trim() && o.trim() !== "REPLACE_ME") return { externalId: o.trim(), source: "case" };
-  // Client-level "not needed" marker (module is a manual step).
+  // Child client's own reference (or "not needed" marker).
   if (typeof clientExternalId === "string" && clientExternalId.trim() === NOT_NEEDED) return { externalId: null, source: "not_needed" };
   if (typeof clientExternalId === "string" && clientExternalId.trim() && clientExternalId.trim() !== "REPLACE_ME") {
     return { externalId: clientExternalId.trim(), source: "client" };
+  }
+  // Inherit the parent account's reference when the child has none of its own (mirrors runbook/system
+  // inheritance for child accounts). A parent "not needed" marker also inherits.
+  if (typeof parentExternalId === "string" && parentExternalId.trim() === NOT_NEEDED) return { externalId: null, source: "not_needed" };
+  if (typeof parentExternalId === "string" && parentExternalId.trim() && parentExternalId.trim() !== "REPLACE_ME") {
+    return { externalId: parentExternalId.trim(), source: "parent" };
   }
   return { externalId: null, source: "missing" };
 }

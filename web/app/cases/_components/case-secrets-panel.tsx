@@ -9,10 +9,11 @@ import { SecretHelpLink } from "@/app/_components/secret-help-link";
 type CaseSecret = {
   name: string;
   label: string | null;
-  source: "case" | "client" | "missing" | "not_needed";
+  source: "case" | "client" | "parent" | "missing" | "not_needed";
   externalId: string | null;
   clientExternalId: string | null;
   overridden: boolean;
+  inheritedFrom: string | null;
   server: string | null;
   systems: string[];
   clientSystems: string[];
@@ -22,6 +23,7 @@ type TestResult = { ok: boolean; label?: string; error?: string };
 const SRC: Record<CaseSecret["source"], { text: string; color: string }> = {
   client: { text: "from client", color: "var(--muted)" },
   case: { text: "overridden", color: "#7b3fa0" },
+  parent: { text: "inherited", color: "#2563eb" },
   missing: { text: "missing", color: "#b3261e" },
   not_needed: { text: "not needed", color: "var(--muted)" },
 };
@@ -102,7 +104,7 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
                 <td>
                   <input value={val} placeholder="Delinea secret id" onChange={(e) => setEdit((x) => ({ ...x, [s.name]: e.target.value }))}
                     style={{ fontFamily: "monospace", width: "100%", minWidth: 140 }} />
-                  <span className="badge" style={{ marginTop: 2, color: srcOf(s.source).color }}>{srcOf(s.source).text}</span>
+                  <span className="badge" style={{ marginTop: 2, color: srcOf(s.source).color }} title={s.source === "parent" ? `Inherited from the parent account${s.inheritedFrom ? ` (${s.inheritedFrom})` : ""} — set one here to override` : undefined}>{srcOf(s.source).text}{s.source === "parent" && s.inheritedFrom ? ` · ${s.inheritedFrom}` : ""}</span>
                   {s.overridden && s.clientExternalId && (
                     <button className="note" style={{ marginLeft: 6 }} onClick={() => saveOverride(s.name, "")}>reset to client</button>
                   )}

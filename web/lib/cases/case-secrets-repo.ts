@@ -11,6 +11,7 @@ export type CaseSecretStatus = {
   externalId: string | null; // the effective reference (case override or client default)
   clientExternalId: string | null; // the client default, for the "reset to client" affordance
   overridden: boolean;
+  inheritedFrom: string | null; // the parent account's name when this ref is inherited (source "parent")
   server: string | null; // host hint parsed from the label, e.g. core-cce-dc01
   systems: string[]; // system keys whose jobs need this secret
   // System keys of ALL the client's systems that reference this secret — not just this case's jobs.
@@ -26,6 +27,7 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
     select: {
       clientId: true,
       secretOverrides: true,
+      client: { select: { parentId: true, parent: { select: { name: true } } } },
       jobs: { select: { systemKey: true, request: true } },
     },
   });
@@ -50,6 +52,13 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
     db.clientSystem.findMany({ where: { clientId: c.clientId }, select: { systemKey: true, secretNames: true } }),
   ]);
   const byName = new Map(clientSecrets.map((s) => [s.name, s]));
+  // The parent account's refs (a child running its parent's runbook inherits these where it has none).
+  const parentId = c.client?.parentId ?? null;
+  const parentName = c.client?.parent?.name ?? null;
+  const parentSecrets = parentId
+    ? await db.secret.findMany({ where: { clientId: parentId, name: { in: [...usedBy.keys()] } }, select: { name: true, externalId: true, label: true } })
+    : [];
+  const parentByName = new Map(parentSecrets.map((s) => [s.name, s]));
   // secret name -> ALL the client's systems wired to it (see clientSystems on the type).
   const clientUsedBy = new Map<string, Set<string>>();
   for (const s of clientSystems) {
@@ -62,15 +71,17 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
   return [...usedBy.entries()]
     .map(([name, systems]) => {
       const cs = byName.get(name) ?? null;
-      const eff = effectiveExternalId(name, overrides, cs?.externalId ?? null);
+      const ps = parentByName.get(name) ?? null;
+      const eff = effectiveExternalId(name, overrides, cs?.externalId ?? null, ps?.externalId ?? null);
       return {
         name,
-        label: cs?.label ?? null,
+        label: (eff.source === "parent" ? ps?.label : cs?.label) ?? null,
         source: eff.source,
         externalId: eff.externalId,
         clientExternalId: cs?.externalId ?? null,
         overridden: eff.source === "case",
-        server: serverHintFromLabel(cs?.label),
+        inheritedFrom: eff.source === "parent" ? parentName : null,
+        server: serverHintFromLabel((eff.source === "parent" ? ps?.label : cs?.label)),
         systems: [...systems].sort(),
         clientSystems: [...(clientUsedBy.get(name) ?? systems)].sort(),
       };
