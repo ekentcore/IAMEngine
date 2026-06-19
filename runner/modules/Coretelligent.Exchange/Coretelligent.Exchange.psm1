@@ -27,6 +27,22 @@ function Write-CtgStep([string]$Message) {
     if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
 }
 
+# Resolve the offboard target's mailbox identity ONCE, used by BOTH the executor and the validator so
+# they never disagree (a validator that resolved differently would always "miss" and trigger the
+# idempotent re-run loop — running Get-Recipient/Set-Mailbox several times). Returns
+# @{ Upn; MatchCount; DisplayName }: the UPN from the case when present, else by DISPLAY NAME via
+# Get-Recipient (exactly-one match wins; 0/many -> Upn '').
+function Resolve-CtgExchangeTarget {
+    param([pscustomobject]$User)
+    $upn = [string]$User.UserPrincipalName
+    if (-not [string]::IsNullOrWhiteSpace($upn)) { return @{ Upn = $upn; MatchCount = 1; DisplayName = '' } }
+    $dn = [string](Get-CtgProp $User 'DisplayName')
+    if (-not $dn) { return @{ Upn = ''; MatchCount = 0; DisplayName = '' } }
+    $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$dn'" -ErrorAction SilentlyContinue)
+    $u = if ($rcpt.Count -eq 1) { [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity')) } else { '' }
+    return @{ Upn = $u; MatchCount = $rcpt.Count; DisplayName = $dn }
+}
+
 # Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
 # offboard (convert-to-shared, CAS), the post-sync mailbox wait, and regional/calendar finishing.
 function Connect-CtgExchange {
@@ -464,31 +480,20 @@ function Invoke-CtgExchangeOffboarding {
         [scriptblock]$TriggerSync
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $upn = [string]$User.UserPrincipalName
-    Write-CtgStep "offboard exchange: resolving target (UPN on case = '$upn', display name = '$([string](Get-CtgProp $User 'DisplayName'))')"
-    # Resolve by DISPLAY NAME when the case has no UPN (offboard intakes often carry only the name).
-    if ([string]::IsNullOrWhiteSpace($upn)) {
-        $dn = [string](Get-CtgProp $User 'DisplayName')
-        if ($dn) {
-            Write-CtgStep "running: Get-Recipient -Filter `"DisplayName -eq '$dn'`""
-            $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$dn'" -ErrorAction SilentlyContinue)
-            Write-CtgStep "Get-Recipient returned $($rcpt.Count) match(es) for '$dn'"
-            if ($rcpt.Count -eq 1) {
-                $upn = [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity'))
-                $actions.Add("resolved offboard target by display name '$dn' -> $upn")
-                Write-CtgStep "resolved '$dn' -> '$upn'"
-            }
-            elseif ($rcpt.Count -gt 1) {
-                $actions.Add("WARN $($rcpt.Count) recipients match display name '$dn' — set the exact UPN on the case. Nothing done.")
-                return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0; Actions = $actions.ToArray() }
-            }
-        }
+    Write-CtgStep "offboard exchange: resolving target (UPN on case = '$([string]$User.UserPrincipalName)', display name = '$([string](Get-CtgProp $User 'DisplayName'))')"
+    $resolved = Resolve-CtgExchangeTarget $User
+    $upn = [string]$resolved.Upn
+    if ($resolved.MatchCount -gt 1) {
+        Write-CtgStep "$($resolved.MatchCount) recipients match '$($resolved.DisplayName)' — ambiguous, stopping"
+        $actions.Add("WARN $($resolved.MatchCount) recipients match display name '$($resolved.DisplayName)' — set the exact UPN on the case. Nothing done.")
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0; Actions = $actions.ToArray() }
     }
     if ([string]::IsNullOrWhiteSpace($upn)) {
         Write-CtgStep "no user identity resolved — stopping (nothing done)"
         $actions.Add("WARN no user identity on the case (no UPN, and no display-name match) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
     }
+    if ($resolved.DisplayName) { $actions.Add("resolved offboard target by display name '$($resolved.DisplayName)' -> $upn"); Write-CtgStep "resolved '$($resolved.DisplayName)' -> '$upn'" }
     Write-CtgStep "running: Get-MailboxStatistics -Identity '$upn' (mailbox size)"
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
     $actions.Add("mailbox size: $sizeGB GB")
@@ -603,7 +608,14 @@ function Confirm-CtgExchange {
     # Exchange has no onboard lane (the mailbox is created with the M365 user).
     if ($Action -eq 'onboard') { return [pscustomobject]@{ ok = $true; checks = @() } }
 
-    $upn = $User.UserPrincipalName
+    # Resolve the SAME way the executor does, or the read-back checks the wrong identity and always
+    # "misses" — which would re-run the offboard repeatedly via the idempotent revalidate loop.
+    $upn = [string](Resolve-CtgExchangeTarget $User).Upn
+    if ([string]::IsNullOrWhiteSpace($upn)) {
+        # Couldn't resolve a unique target (the executor already warned + did nothing) — nothing to
+        # verify, so pass rather than fail-and-retry forever.
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable offboard target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
     $mbx = Get-Mailbox -Identity $upn -ErrorAction SilentlyContinue
     $cts = Get-CtgProp $Config 'convertToShared'
     if ($cts) {

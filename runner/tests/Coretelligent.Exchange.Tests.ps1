@@ -256,6 +256,26 @@ Describe 'Confirm-CtgExchange' {
         $r.ok | Should -BeTrue
     }
 
+    It 'offboard: resolves by display name (same as the executor) so it checks the RIGHT mailbox' {
+        # No UPN on the case — the validator must resolve via Get-Recipient, not check an empty identity
+        # (which would always "miss" and trigger the offboard re-run loop).
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ PrimarySmtpAddress = 'esack@61commodities.com'; DisplayName = 'Evan Sacksner' } }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '3 GB (3,221,225,472 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $u = [pscustomobject]@{ UserPrincipalName = ''; DisplayName = 'Evan Sacksner' }
+        $r = Confirm-CtgExchange -User $u -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }) -Action 'offboard'
+        $r.ok | Should -BeTrue
+        Should -Invoke Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'esack@61commodities.com' } -Times 1
+    }
+
+    It 'offboard: passes (nothing to verify) when the target cannot be resolved — no re-run loop' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { @() }
+        $u = [pscustomobject]@{ UserPrincipalName = ''; DisplayName = 'Nobody Here' }
+        $r = Confirm-CtgExchange -User $u -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{} }) -Action 'offboard'
+        $r.ok | Should -BeTrue
+    }
+
     It 'offboard: an over-threshold mailbox is allowed to stay a user mailbox' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '75 GB (80,530,636,800 bytes)' } }
         Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }

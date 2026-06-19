@@ -31,12 +31,14 @@ export type AgentVM = {
 function installCommand(a: AgentVM, origin: string): string {
   const lines = [
     `$App="${origin}"; $Dir="$HOME/iam-runner"; $H=@{'ngrok-skip-browser-warning'='true'}`,
-    // Clean slate. Get-CtgBuildId hashes EVERY file in the folder, so a leftover from a previous
-    // install (a removed/renamed module) makes the agent's build id differ from the app's forever —
-    // "update available" that re-pulls but never converges. Wiping first guarantees the pulled tree
-    // is exactly the bundle. (Stop a runner that's still holding the folder, then remove it.)
-    `if ($IsWindows) { Get-CimInstance Win32_Process -EA SilentlyContinue | Where-Object { $_.Name -eq 'pwsh.exe' -and $_.CommandLine -like '*Start-IamRunner*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
-    `Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue`,
+    // TRUE fresh install. Get-CtgBuildId hashes EVERY file in the folder, so a leftover from a prior
+    // install makes the build id differ from the app's forever ("update available" that never
+    // converges). 1) stop EVERY running runner instance, 2) wait for file handles to release,
+    // 3) wipe the folder (retry once — a just-killed process can briefly hold a lock).
+    `if ($IsWindows) { Get-CimInstance Win32_Process -EA SilentlyContinue | Where-Object { $_.Name -eq 'pwsh.exe' -and $_.CommandLine -like '*Start-IamRunner*' } | ForEach-Object { Write-Host "stopping old runner pid $($_.ProcessId)"; Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
+    `Start-Sleep -Seconds 2`,
+    `if (Test-Path $Dir) { try { Remove-Item $Dir -Recurse -Force -ErrorAction Stop } catch { Start-Sleep -Seconds 2; Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue } }`,
+    `if (Test-Path $Dir) { Write-Warning "could not fully remove $Dir — close any process using it and re-run" } else { Write-Host "wiped $Dir — clean install" -ForegroundColor Green }`,
   ];
   if (a.scope === "central") {
     // Just the Graph submodules the M365 executor needs — far faster than the Microsoft.Graph meta-module.
