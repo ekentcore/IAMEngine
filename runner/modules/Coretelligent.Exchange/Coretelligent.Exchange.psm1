@@ -541,8 +541,20 @@ function Invoke-CtgExchangeOffboarding {
             if ($delegate -is [string]) { $delegate }
             elseif (Get-CtgProp $delegate 'address') { [string](Get-CtgProp $delegate 'address') }
             else { [string]((Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerUpn') ?? (Get-CtgProp $User 'Manager')) }
+        # The intake usually has no manager — look it up from the DIRECTORY (the departing user's
+        # Manager attribute) and resolve it to a primary SMTP for a clean delegate identity.
+        if (-not $mgr -and (Get-Command Get-User -ErrorAction SilentlyContinue)) {
+            Write-CtgStep "no manager on the case — looking it up: (Get-User -Identity '$upn').Manager"
+            $mgrId = [string](Get-CtgProp (Get-User -Identity $upn -ErrorAction SilentlyContinue) 'Manager')
+            if ($mgrId) {
+                $mgrRcpt = if (Get-Command Get-Recipient -ErrorAction SilentlyContinue) { Get-Recipient -Identity $mgrId -ErrorAction SilentlyContinue } else { $null }
+                $mgr = [string]((Get-CtgProp $mgrRcpt 'PrimarySmtpAddress') ?? $mgrId)
+                $actions.Add("resolved manager from the directory: $mgr")
+                Write-CtgStep "resolved manager -> $mgr"
+            }
+        }
         if (-not $mgr) {
-            $actions.Add("WARN delegateManagerFullAccess set but no manager on the case — Full Access delegate skipped")
+            $actions.Add("WARN delegateManagerFullAccess set but no manager on the case OR in the directory — Full Access delegate skipped")
         }
         else {
             $already = @(Get-MailboxPermission -Identity $upn -ErrorAction SilentlyContinue) |

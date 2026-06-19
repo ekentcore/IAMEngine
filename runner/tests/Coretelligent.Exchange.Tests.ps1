@@ -23,6 +23,7 @@ BeforeAll {
     function global:Get-Mailbox { [CmdletBinding()] param($Identity, $RecipientTypeDetails, $ResultSize) }
     # distribution-list mirror (EXO)
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
+    function global:Get-User { [CmdletBinding()] param($Identity) }
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
     function global:Add-UnifiedGroupLinks { [CmdletBinding()] param($Identity, $LinkType, $Links) }
 
@@ -183,9 +184,21 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'already has Full Access'
     }
 
-    It 'warns (does not fail) when delegateManagerFullAccess is set but no manager is on the case' {
+    It 'looks the manager up from the DIRECTORY when the case has none, and grants Full Access' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-User -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Manager = 'Patrick Breitner' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ PrimarySmtpAddress = 'pbreitner@core.tech' } }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'pbreitner@core.tech' -and @($AccessRights) -contains 'FullAccess' }
+        ($r.Actions -join ' ') | Should -Match 'resolved manager from the directory: pbreitner@core.tech'
+    }
+
+    It 'warns (does not fail) when delegateManagerFullAccess is set but no manager on the case OR directory' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-User -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Manager = '' } }
         $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'no manager on the case'
