@@ -70,6 +70,13 @@ export async function createAndPlanCase(
     await repo.setHold(caseId, "needs_info");
   }
 
+  // Offboards may be scheduled for a future date — never auto-dispatch on import. Hold the case as
+  // "scheduled" so its jobs aren't claimed until an operator resumes it (when the offboard date
+  // arrives). A dry-run preview is exempt — the operator wants to see it run read-only now.
+  if (input.action === "offboard" && !input.dryRun) {
+    await repo.setHold(caseId, "scheduled");
+  }
+
   await repo.writeAudit({
     actor,
     action: "case.plan",

@@ -25,8 +25,11 @@ const APPLY = process.argv.includes("--apply");
 const DISABLED_USERS_OU = "OU=Disabled Users,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local";
 const DISABLED_COMPUTERS_OU = "OU=Disabled,OU=Computers,OU=Coretelligent,DC=coretelligent,DC=local";
 const DISABLED_USERS_GROUP = "Disabled Users";
-const ON_PREM_EXCHANGE_URI = "http://core-cce1-ex01.coretelligent.com/PowerShell/"; // TODO confirm
-const NOTIFY_SENDER = "offboarding@coretelligent.com";                         // TODO a mailbox the m365-admin app may send as
+// From Offboarding_User.ps1 line 88-89 ($exchangeServer / $azsync). Better long-term home for the
+// Exchange URI is the exchange-onprem secret's ConnectionUri field — this is just the seed default.
+const ON_PREM_EXCHANGE_URI = "http://core-cce1-ex01.coretelligent.local/PowerShell/";
+const AZSYNC_HOST = "CORE-CCE-AZSYNC.coretelligent.local";   // the Entra Connect host (directory-sync)
+const NOTIFY_SENDER = "ekent@core.tech";                     // the mailbox the m365-admin app sends as
 const OFFBOARD_RECIPIENTS = [
   "scott.camara@coretelligent.com", "todd.oblak@coretelligent.com", "evan.kent@coretelligent.com",
   "joe.aukofer@coretelligent.com", "miguel.gallegos@coretelligent.com", "anthony.bostock@coretelligent.com",
@@ -54,7 +57,7 @@ const SPECS: Spec[] = [
               blockMobileDevices: true, onPremExchangeUri: ON_PREM_EXCHANGE_URI } },
 
   // 2. Push the on-prem convert to the cloud, then the cloud steps can confirm SharedMailbox.
-  { systemKey: "directory-sync", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange"], config: {} },
+  { systemKey: "directory-sync", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange"], config: { host: AZSYNC_HOST } },
 
   // 3. Entra: block sign-in + revoke sessions + disable & capture the registered device(s).
   { systemKey: "entra", mode: "api", secretNames: ["m365-admin"], dependsOn: ["exchange"], captureEvidence: true,

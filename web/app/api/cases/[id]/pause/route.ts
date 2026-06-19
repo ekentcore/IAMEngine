@@ -18,7 +18,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const paused = Boolean(body.paused);
   const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { id: true, clientId: true } });
   if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
-  await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: paused ? new Date() : null } });
+  // Keep pausedReason in lockstep with pausedAt: a manual pause is "operator"; resuming clears the
+  // reason (so a scheduled/needs-info hold that's resumed doesn't leave a stale reason behind).
+  await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: paused ? new Date() : null, pausedReason: paused ? "operator" : null } });
   await db.auditLog.create({ data: { actor: "ui", action: paused ? "case.pause" : "case.resume", caseRequestId: params.id, clientId: c.clientId } });
   return NextResponse.json({ ok: true, paused });
 }
