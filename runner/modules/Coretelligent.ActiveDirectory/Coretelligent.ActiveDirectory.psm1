@@ -282,7 +282,10 @@ function Invoke-CtgADOffboarding {
         [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $sam = $User.SamAccountName
+    $sam = [string]$User.SamAccountName
+    if ([string]::IsNullOrWhiteSpace($sam)) {
+        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN no user identity on the case (SamAccountName is empty) — set the offboard target on the case, then re-run. Nothing done."); Evidence=@{ Groups=@() } }
+    }
 
     $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
     if (-not $existing) {

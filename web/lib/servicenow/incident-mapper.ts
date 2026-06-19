@@ -91,16 +91,33 @@ function firstVar(r: SnIncidentRecord, names: string[], display = false): string
   return "";
 }
 
+// The departing user's full name: prefer explicit name variables, else the trailing "… - First
+// Last" segment of the short description ("Offboarding - 06/30/2026 - Jordan Park" -> "Jordan Park").
+function offboardName(r: SnIncidentRecord): string {
+  const explicit = firstVar(r, ["u_full_name", "u_display_name", "u_name", "u_user", "u_employee", "u_offboard_user"], true)
+    || [v(r, "u_first_name"), v(r, "u_last_name")].filter(Boolean).join(" ");
+  if (explicit) return explicit;
+  const sd = disp(r, "short_description");
+  const segs = sd.split(/\s+[-–—]\s+/).map((s) => s.trim()).filter(Boolean);
+  // Use the last segment that isn't a date / the word "offboarding".
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (!/^\d/.test(segs[i]) && !/off-?boarding/i.test(segs[i])) return segs[i];
+  }
+  return sd;
+}
+
 function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {
-  const firstName = v(r, "u_first_name");
-  const lastName = v(r, "u_last_name");
-  const fullName = firstVar(r, ["u_full_name", "u_display_name", "u_name", "u_user", "u_employee", "u_offboard_user"], true) || [firstName, lastName].filter(Boolean).join(" ");
+  const name = offboardName(r);
+  const tokens = name.split(/\s+/).filter(Boolean);
+  const firstName = v(r, "u_first_name") || tokens[0] || "";
+  const lastName = v(r, "u_last_name") || (tokens.length > 1 ? tokens.slice(1).join(" ") : "");
   // The executors resolve the EXISTING user by UPN/email. Use one from the incident when present;
-  // otherwise the operator confirms the target on the (auto-paused) case before resuming.
+  // otherwise planning derives a best-guess UPN from the name + the client's username pattern, and
+  // the operator confirms the target on the (auto-paused) case before resuming.
   const email = firstVar(r, ["u_user_principal_name", "u_upn", "u_email", "u_user_email", "u_username"]);
   return {
-    userToOffboard: fullName || disp(r, "short_description") || null,
-    displayName: fullName || null,
+    userToOffboard: name || null,
+    displayName: name || null,
     firstName: orNull(firstName),
     lastName: orNull(lastName),
     UserPrincipalName: orNull(email),

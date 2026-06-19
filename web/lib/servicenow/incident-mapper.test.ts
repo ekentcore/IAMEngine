@@ -87,3 +87,18 @@ test("normalizeIncidentIntake: 'off-boarding' is not misread as onboarding", () 
   assert.equal(normalizeIncidentIntake(OFFB as never).action, "offboard");
   assert.equal(normalizeIncidentIntake(AVNI as never).action, "onboard");
 });
+
+// Name only in the short description (no first/last variables on the form).
+const OFFB_SD_ONLY = {
+  number: fv("INC0844049"),
+  short_description: fv("Offboarding - 06/30/2026 - Morgan Lee"),
+  subcategory: fv("user_offboarding", "User / Off-Boarding"),
+  company: fv("sysid", "Coretelligent"),
+};
+
+test("normalizeIncidentIntake: extracts the offboard user's name from the short description", () => {
+  const p = normalizeIncidentIntake(OFFB_SD_ONLY as never).payload as Record<string, unknown>;
+  assert.equal(p.displayName, "Morgan Lee");
+  assert.equal(p.firstName, "Morgan");
+  assert.equal(p.lastName, "Lee");
+});

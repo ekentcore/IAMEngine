@@ -210,6 +210,13 @@ Describe 'Invoke-CtgADOffboarding' {
         ($r.Actions -join ' ') | Should -Match "computer 'GONE-PC' not found"
     }
 
+    It 'returns a clear message (no crash) when the case has no user identity' {
+        $r = Invoke-CtgADOffboarding -User ([pscustomobject]@{ SamAccountName = '' }) -Config ([pscustomobject]@{ disableAccount = $true })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no user identity'
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
     It 'does NOT remove a well-known privileged group (Domain Admins) — flags it for manual removal' {
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
             @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' },

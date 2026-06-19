@@ -116,6 +116,13 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $ActiveSyncEnabled -eq $false }
     }
 
+    It 'returns a clear message (no crash) when the case has no user identity' {
+        $r = Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{} })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no user identity'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+    }
+
     It 'converts a HYBRID (on-prem-mastered) mailbox via Set-RemoteMailbox + triggers a delta sync' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
         # On-prem session present: Get-RemoteMailbox returns the object -> the on-prem path.

@@ -460,7 +460,11 @@ function Invoke-CtgExchangeOffboarding {
         [scriptblock]$TriggerSync
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $upn = $User.UserPrincipalName
+    $upn = [string]$User.UserPrincipalName
+    if ([string]::IsNullOrWhiteSpace($upn)) {
+        $actions.Add("WARN no user identity on the case (UserPrincipalName is empty) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
+    }
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
     $actions.Add("mailbox size: $sizeGB GB")
 

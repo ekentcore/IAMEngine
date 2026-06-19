@@ -41,10 +41,20 @@ export async function createAndPlanCase(
   // refreshes it from contacts and applies any per-case override. Offboarding identifies an
   // existing user, so no derivation is needed.
   const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null };
+  // Offboard intakes often carry only the departing user's NAME (no UPN). Derive a best-guess
+  // UPN/SamAccountName from the client's username pattern so the executors can resolve the existing
+  // user — the case is auto-paused ("scheduled"), so an operator confirms/corrects it before it runs.
+  // The executors also check the user exists before acting, so a wrong guess resolves to nobody and
+  // skips rather than touching the wrong account.
+  const p0 = input.payload as Record<string, unknown>;
+  const hasUpn = Boolean(p0.UserPrincipalName || p0.userPrincipalName);
+  const hasName = Boolean(p0.firstName || p0.lastName || p0.displayName);
+  const deriveForOffboard = input.action === "offboard" && !hasUpn && hasName;
+
   let domain = client.emailDomain ?? client.primaryDomain;
-  if (input.action === "onboard" && opts?.resolveDomain) domain = await opts.resolveDomain(client);
+  if (opts?.resolveDomain && (input.action === "onboard" || deriveForOffboard)) domain = await opts.resolveDomain(client);
   let payload =
-    input.action === "onboard"
+    input.action === "onboard" || deriveForOffboard
       ? deriveIdentity(input.payload, {
           usernamePatterns: identity.usernamePatterns ?? null,
           primaryDomain: domain,
