@@ -7,6 +7,7 @@
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
+import { runnerBuildId } from "../runner/bundle";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending";
 
@@ -428,9 +429,11 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } }),
       db.agent.findMany({
         where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
-        select: { clientId: true, name: true, lastSeenAt: true },
+        select: { clientId: true, name: true, lastSeenAt: true, version: true },
       }),
     ]);
+    const build = runnerBuildId();
+    const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
     const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
     // Hybrid (exchange runs on-prem) only when this case actually has an AD/sync job — matches the
     // claim filter. A cloud-only case's exchange is Exchange Online, claimable by the central runner.
@@ -454,9 +457,17 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
           : "ready, but no runner is online to claim it — check the Agents page";
         continue;
       }
+      // The agent is online but on an OUTDATED build — the app won't dispatch jobs to it (it would run
+      // stale code), so the step sits. Tell the operator exactly that instead of "about to start".
+      const current = eligible.filter((a) => upToDate(a.version));
+      if (current.length === 0) {
+        const names = [...new Set(eligible.map((a) => a.name))].join(", ");
+        st.pendingReason = `ready, but ${names} ${eligible.length > 1 ? "are" : "is"} on an OUTDATED build — the app won't dispatch jobs to it until you update it on the Agents page`;
+        continue;
+      }
       // Pull model: the runner claims on its next poll (~15s). Name it + show how fresh it is, so
       // "ready" reads as "about to start" instead of "stuck".
-      const best = [...eligible].sort((x, y) => new Date(y.lastSeenAt ?? 0).getTime() - new Date(x.lastSeenAt ?? 0).getTime())[0];
+      const best = [...current].sort((x, y) => new Date(y.lastSeenAt ?? 0).getTime() - new Date(x.lastSeenAt ?? 0).getTime())[0];
       const secs = Math.max(0, Math.round((Date.now() - new Date(best.lastSeenAt ?? 0).getTime()) / 1000));
       st.pendingReason = `ready — ${best.name} claims it on its next poll (~15s; last polled ${secs}s ago)`;
     }

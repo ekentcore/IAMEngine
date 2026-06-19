@@ -1133,7 +1133,9 @@ while ($true) {
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
-        $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize }
+        # Send our build id so the app refuses to dispatch to a STALE runner (a half-landed update can
+        # leave an old process alive; this stops it claiming jobs with old modules in memory).
+        $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize; version = $script:RunnerBuild }
 
         foreach ($job in @($jobs)) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early

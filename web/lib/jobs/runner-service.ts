@@ -13,6 +13,7 @@ import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
+import { runnerBuildId } from "../runner/bundle";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -172,10 +173,22 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
-    async claim(agentId: string, batchSize: number): Promise<RunnerJob[]> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true } });
+    async claim(agentId: string, batchSize: number, version?: string | null): Promise<RunnerJob[]> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
+
+      // STALE-CODE GUARD: never hand jobs to a runner that isn't on the current build. A half-landed
+      // self-update can leave an OLD process alive (it predates the single-instance lock so it won't
+      // self-evict) which would run jobs with stale modules in memory — the cause of executors
+      // crashing on bugs that were already fixed. The claiming process sends its OWN build id
+      // (race-free); fall back to the last heartbeat's version. A valid-hash mismatch -> claim nothing.
+      const build = runnerBuildId();
+      const running = (version && version.trim()) || agent.version || "";
+      const validHash = /^[0-9a-f]{6,}$/.test(running);
+      if (validHash && running !== build) {
+        return []; // outdated runner — the run report shows "agent outdated" as the pending reason
+      }
 
       // Reclaim stale leases: a job dispatched long ago whose assigned agent is gone/stale/
       // disabled goes back to pending. Scoped to dead agents so a peer can't reset a live
@@ -280,6 +293,12 @@ export function makeRunnerService(db: PrismaClient) {
         orderBy: { sequence: "asc" },
       });
       await db.auditLog.create({ data: { actor: `agent:${agent.id}`, action: "job.claim", detail: { count: claimed.length, jobIds: claimed.map((c) => c.id), clients: [...new Set(claimed.map((c) => c.case.client.slug))] } } });
+
+      // A case with a dispatched/running step IS running — reflect it now so the cases list shows
+      // "running" instead of "queued" while work executes (status is only otherwise recomputed when a
+      // job finishes). Only bump pre-execution states; never override a paused/needs_* hold.
+      const runningCaseIds = [...new Set(claimed.map((c) => c.caseRequestId))];
+      await db.caseRequest.updateMany({ where: { id: { in: runningCaseIds }, status: { in: ["queued", "planning"] } }, data: { status: "running" } });
 
       return claimed.map((j) => {
         const r = req(j);
