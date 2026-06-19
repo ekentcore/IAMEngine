@@ -76,3 +76,13 @@ test("case-resolution always runs last: implicit dependency on every other syste
   assert.equal(plan[plan.length - 1].systemKey, "case-resolution");
   assert.deepEqual([...resolution.dependsOn].sort(), ["m365", "mimecast"]);
 });
+
+test("a manual step never carries requiresApproval (approval gates only auto-running API steps)", () => {
+  // sentinelone as a MANUAL checklist item with requiresApproval set: the human doing it IS the
+  // approval, so it must not put the case in "needs approval".
+  const manual = planCase([sys({ systemKey: "sentinelone", mode: "manual", requiresApproval: true })], "offboard", {})[0];
+  assert.equal(manual.requiresApproval, false);
+  // the same system as an API step keeps its approval gate
+  const api = planCase([sys({ systemKey: "sentinelone", mode: "api", requiresApproval: true })], "offboard", {})[0];
+  assert.equal(api.requiresApproval, true);
+});

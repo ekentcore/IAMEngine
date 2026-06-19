@@ -93,7 +93,9 @@ export function planCase(
       sequence: i,
       mode: s.mode,
       dependsOn: depsOf(s),
-      requiresApproval: ra ? Boolean(ra[action]) : s.requiresApproval,
+      // Approval gates only auto-executing API steps. A manual/browser step is done by a human, so
+      // the act of doing it IS the approval — it must never put the case in "needs approval".
+      requiresApproval: s.mode === "api" ? (ra ? Boolean(ra[action]) : s.requiresApproval) : false,
       captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
       secretNames: s.secretNames,
       // The runner needs only this action's resolved config, not the whole blob.
