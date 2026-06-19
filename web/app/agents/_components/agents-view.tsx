@@ -31,6 +31,12 @@ export type AgentVM = {
 function installCommand(a: AgentVM, origin: string): string {
   const lines = [
     `$App="${origin}"; $Dir="$HOME/iam-runner"; $H=@{'ngrok-skip-browser-warning'='true'}`,
+    // Clean slate. Get-CtgBuildId hashes EVERY file in the folder, so a leftover from a previous
+    // install (a removed/renamed module) makes the agent's build id differ from the app's forever —
+    // "update available" that re-pulls but never converges. Wiping first guarantees the pulled tree
+    // is exactly the bundle. (Stop a runner that's still holding the folder, then remove it.)
+    `if ($IsWindows) { Get-CimInstance Win32_Process -EA SilentlyContinue | Where-Object { $_.Name -eq 'pwsh.exe' -and $_.CommandLine -like '*Start-IamRunner*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
+    `Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue`,
   ];
   if (a.scope === "central") {
     // Just the Graph submodules the M365 executor needs — far faster than the Microsoft.Graph meta-module.
