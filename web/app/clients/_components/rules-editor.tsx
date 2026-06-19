@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import type { Fragment, Persona, GroupEntry, AttrValue } from "@/lib/clients/rules";
 import { ConditionBuilder, TagList, AD_ATTRIBUTES } from "./condition-builder";
 import { OuTreePicker } from "./ad-pickers";
+import { NlRuleBox, type AppliedRule, type AppliedPersona } from "./nl-rule-box";
 
 type Personas = Record<string, Persona>;
 type Globals = Record<string, Fragment>;
@@ -104,6 +105,22 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   }
   function setPersonaField(name: string, patch: Partial<Persona>) {
     setPersonas({ ...personas, [name]: { ...personas[name], ...patch } });
+  }
+
+  // Apply an LLM-drafted persona to the CURRENT persona scope — set its match + titles, and (if the
+  // draft named groups) add them to the active system's onboard fragment. One functional update so
+  // the match/titles and the groups can't clobber each other.
+  function applyPersona(p: AppliedPersona) {
+    setPersonas((prev) => {
+      const cur = prev[scope] ?? { systems: {} };
+      let systems = cur.systems ?? {};
+      if (p.groups.length && activeSystem) {
+        const frag = (systems[activeSystem] ?? {}) as Fragment;
+        const existing = Array.isArray(frag.groups) ? frag.groups : [];
+        systems = { ...systems, [activeSystem]: { ...frag, groups: [...existing, ...p.groups] } };
+      }
+      return { ...prev, [scope]: { ...cur, match: p.match || undefined, titles: p.titles, systems } };
+    });
   }
 
   async function save() {
@@ -227,6 +244,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
               <TagList items={personas[scope].titles ?? []} onChange={(t) => setPersonaField(scope, { titles: t })} placeholder="add a title…" />
               <label style={{ marginTop: 8 }}>Auto-select this persona when… <span className="note">(optional — leave blank to pick by role name)</span></label>
               <ConditionBuilder value={personas[scope].match ?? ""} onChange={(m) => setPersonaField(scope, { match: m || undefined })} />
+              {slug && <NlRuleBox slug={slug} kind="persona" action={action} systemKey={activeSystem} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} onApplyPersona={applyPersona} />}
             </div>
           )}
 
@@ -240,7 +258,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
 
           {activeSystem ? (
-            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} action={action} />
+            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} action={action} slug={slug ?? ""} systemKey={activeSystem} />
           ) : (
             <p className="note" style={{ marginTop: 12 }}>Add a system to start adding rules.</p>
           )}
@@ -257,7 +275,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
 }
 
 // ---- one system's fragment: GROUP rules, OU rules, ATTRIBUTES ----
-function FragmentEditor({ frag, onChange, ous, groupOptions, action }: { frag: Fragment; onChange: (f: Fragment) => void; ous: string[]; groupOptions: string[]; action: "onboard" | "offboard" }) {
+function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, systemKey }: { frag: Fragment; onChange: (f: Fragment) => void; ous: string[]; groupOptions: string[]; action: "onboard" | "offboard"; slug: string; systemKey: string }) {
   const [ouPick, setOuPick] = useState<number | null>(null);
   const off = action === "offboard";
   const L = {
@@ -287,8 +305,16 @@ function FragmentEditor({ frag, onChange, ous, groupOptions, action }: { frag: F
   const attrs = (frag.attributes && typeof frag.attributes === "object" ? frag.attributes : {}) as Record<string, AttrValue>;
   const setAttrs = (next: Record<string, AttrValue>) => onChange({ ...frag, attributes: Object.keys(next).length ? next : undefined });
 
+  // Apply an LLM-drafted rule into this fragment — same shapes a hand-added rule produces.
+  const applyRule = (r: AppliedRule) => {
+    if (r.type === "group") setGroups(always, [...conditional, { groups: r.groups, when: r.condition || undefined }]);
+    else if (r.type === "ou") setOu([...ouRows, { path: r.path, when: r.condition || undefined }]);
+    else setAttrs({ ...attrs, [r.name]: r.condition ? [{ value: r.value, when: r.condition }] : r.value });
+  };
+
   return (
     <div style={{ marginTop: 10, display: "grid", gap: 16 }}>
+      {slug && <NlRuleBox slug={slug} kind="rule" action={action} systemKey={systemKey} groupOptions={groupOptions} onApplyRule={applyRule} />}
       {/* GROUPS */}
       <section>
         <h3 style={{ margin: "0 0 4px" }}>{L.groups}</h3>
