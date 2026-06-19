@@ -10,20 +10,23 @@
 // so if the convert job fails the case fails and the rest is skipped (deriveCaseStatus). SentinelOne
 // shutdown stays OFF and the S1 step requiresApproval. notify runs last (runLast).
 //
-// PLACEHOLDERS: the infra-specific values below (OUs, on-prem Exchange URI, the S1 console + secret
-// refs) are Coretelligent-specific — set them here or adjust each system on the client page after.
+// VALUES: the AD OUs + group are pulled verbatim from data/Offboarding_User.ps1 (the AD domain is
+// coretelligent.LOCAL, not .com). The on-prem Exchange URI + notify sender are still TODO — set them
+// here or adjust each system on the client page after.
 import { Prisma } from "@prisma/client";
 import { db } from "../lib/db";
 
 const SLUG = process.env.CLIENT_SLUG ?? "coretelligent";
 const APPLY = process.argv.includes("--apply");
 
-// --- Coretelligent-specific values (edit before --apply, or refine in the UI afterwards) ----------
-const DISABLED_USERS_OU = "OU=Disabled Users,DC=coretelligent,DC=com";       // TODO confirm
-const DISABLED_COMPUTERS_OU = "OU=Disabled Computers,DC=coretelligent,DC=com"; // TODO confirm
+// --- Coretelligent-specific values --------------------------------------------------------------
+// From Offboarding_User.ps1: $disabledOU (line 91), the computer Move-ADObject target (line 338),
+// and "Disabled Users" as the primary group (lines 421/426).
+const DISABLED_USERS_OU = "OU=Disabled Users,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local";
+const DISABLED_COMPUTERS_OU = "OU=Disabled,OU=Computers,OU=Coretelligent,DC=coretelligent,DC=local";
 const DISABLED_USERS_GROUP = "Disabled Users";
 const ON_PREM_EXCHANGE_URI = "http://core-cce1-ex01.coretelligent.com/PowerShell/"; // TODO confirm
-const NOTIFY_SENDER = "offboarding@coretelligent.com";                         // a mailbox the m365-admin app may send as
+const NOTIFY_SENDER = "offboarding@coretelligent.com";                         // TODO a mailbox the m365-admin app may send as
 const OFFBOARD_RECIPIENTS = [
   "scott.camara@coretelligent.com", "todd.oblak@coretelligent.com", "evan.kent@coretelligent.com",
   "joe.aukofer@coretelligent.com", "miguel.gallegos@coretelligent.com", "anthony.bostock@coretelligent.com",
