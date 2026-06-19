@@ -795,6 +795,17 @@ function Update-CtgRunner {
         $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H -TimeoutSec 60
         [System.IO.File]::WriteAllText($dest, $resp.Content)
     }
+    # PRUNE files no longer in the bundle. Pulling-without-deleting leaves stale leftovers (a removed/
+    # renamed module), and Get-CtgBuildId hashes EVERY file in the folder — so one leftover makes our
+    # build id differ from the app's forever: "update available" that re-pulls but never converges
+    # ("updated, back online… still the same version"). Keep only manifest files + the runtime files
+    # the hash already excludes (.build, .runner.lock, *.log). Mirrors Get-CtgBuildId's skip-list.
+    $want = @{}; foreach ($rel in $manifest.files) { $want[(Join-Path $PSScriptRoot $rel)] = $true }
+    foreach ($f in Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue) {
+        if ($want.ContainsKey($f.FullName)) { continue }
+        if ($f.Name -eq '.build' -or $f.Name -eq '.runner.lock' -or $f.Name -eq '.DS_Store' -or $f.Name -like '*.log') { continue }
+        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; Write-Host "self-update: pruned stale $($f.Name)" -ForegroundColor DarkYellow } catch { }
+    }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
     # Relaunch a fresh process on the just-downloaded script, then exit this one. Spawn it via WMI
     # (Win32_Process.Create), NOT Start-Process: the WMI host creates the process, so it BREAKS AWAY
