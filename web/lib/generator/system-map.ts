@@ -35,6 +35,12 @@ export const CATALOG: Record<string, CatalogEntry> = {
   mdm:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "mdm" },
   dropbox:           { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "dropbox" },
   perimeter81:       { mode: "api", tier: 3, onboard: "on-request", offboard: "always", secret: "perimeter81", dependsOn: ["m365"] },
+  // Endpoint containment + the apps the offboard "please remove from…" email used to name. Offboard-
+  // focused (onboarding is out of band); destructive S1 actions are gated by requiresApproval per client.
+  sentinelone:       { mode: "api", tier: 2, onboard: null, offboard: "always", secret: "sentinelone", dependsOn: ["m365"] },
+  duo:               { mode: "api", tier: 3, onboard: null, offboard: "always", secret: "duo", dependsOn: ["m365"] },
+  xmatters:          { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "xmatters" },
+  logicmonitor:      { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "logicmonitor" },
   teams:             { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "teams-admin", dependsOn: ["m365"] },
   avd:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   "1password":       { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "1password" },
@@ -88,6 +94,10 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/uni ?flow/, "uniflow"],
   [/printix/, "printix"],
   [/perimeter ?81/, "perimeter81"],
+  [/sentinel ?one|sentinel1|\bs1\b/, "sentinelone"],
+  [/\bduo\b/, "duo"],
+  [/x ?matters/, "xmatters"],
+  [/logic ?monitor/, "logicmonitor"],
 ];
 
 // Map a raw runbook header to a system key, or null if it isn't a modeled system.

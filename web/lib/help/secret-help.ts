@@ -40,5 +40,17 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "hubspot") {
     return { kind: "private-app access token", href: "/help/hubspot" };
   }
+  if (name === "sentinelone") {
+    return { kind: "console URL + API token", href: "/help/sentinelone" };
+  }
+  if (name === "duo") {
+    return { kind: "Admin API host + integration/secret key", href: "/help/duo" };
+  }
+  if (name === "xmatters") {
+    return { kind: "company URL + REST web-service user", href: "/help/xmatters" };
+  }
+  if (name === "logicmonitor") {
+    return { kind: "account + LMv1 access id/key", href: "/help/logicmonitor" };
+  }
   return null;
 }
