@@ -60,18 +60,28 @@ async function agentOp(fn: () => Promise<unknown>) {
   }
 }
 
-export const requestAgentUpdate = (id: string) => agentOp(() => makeRunnerService(db).requestUpdate(id));
+export async function requestAgentUpdate(id: string) {
+  try {
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).requestUpdate(id, me.email);
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
 
 // Queue self-updates for several agents at once (Update selected / Update all). Per-agent failures
 // don't stop the rest; the first error is surfaced alongside how many actually queued.
 export async function requestAgentUpdates(ids: string[]) {
-  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
+  let me;
+  try { me = await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
   const svc = makeRunnerService(db);
   let queued = 0;
   let firstError: string | null = null;
   for (const id of ids) {
     try {
-      await svc.requestUpdate(id);
+      await svc.requestUpdate(id, me.email);
       queued++;
     } catch (e) {
       firstError ??= errMsg(e);
@@ -84,7 +94,8 @@ export async function requestAgentUpdates(ids: string[]) {
 // operator can update all from any page (no agent list in hand). Mirrors outdatedAgentCount's rule:
 // enabled + checked-in + not on the served build. Per-agent failures don't stop the rest.
 export async function updateAllOutdatedAgents() {
-  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
+  let me;
+  try { me = await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
   const build = runnerBuildId();
   const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
   const agents = await db.agent.findMany({
@@ -96,7 +107,7 @@ export async function updateAllOutdatedAgents() {
   let queued = 0;
   let firstError: string | null = null;
   for (const id of ids) {
-    try { await svc.requestUpdate(id); queued++; } catch (e) { firstError ??= errMsg(e); }
+    try { await svc.requestUpdate(id, me.email); queued++; } catch (e) { firstError ??= errMsg(e); }
   }
   revalidatePath("/agents");
   return firstError

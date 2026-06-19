@@ -18,6 +18,7 @@ export type AgentVM = {
   pendingJobs: { systemKey: string; subject: string | null; action: string; status: string }[];
   updateRequested: boolean;
   updateRequestedAt: string | null;
+  updateRequestedBy: string | null;
   updateDeliveredAt: string | null;
 };
 
@@ -47,13 +48,14 @@ function installCommand(a: AgentVM, origin: string): string {
 }
 
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
-  if (a.updateRequested) return { label: "↻ update queued — waiting for the runner to poll…", color: "#8a6d00" };
+  const by = a.updateRequestedBy ? ` (by ${a.updateRequestedBy})` : "";
+  if (a.updateRequested) return { label: `↻ update queued${by} — waiting for the runner to poll…`, color: "#8a6d00" };
   if (a.updateDeliveredAt) {
     const del = new Date(a.updateDeliveredAt).getTime();
     if (Date.now() - del > 5 * 60_000) return null;
     const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
-    if (seen > del + 3000) return { label: "✓ updated — runner back online on new code", color: "#2e7d32" };
-    return { label: "↻ updating — pulling files + restarting…", color: "#1565c0" };
+    if (seen > del + 3000) return { label: `✓ updated${by} — runner back online on new code`, color: "#2e7d32" };
+    return { label: `↻ updating${by} — pulling files + restarting…`, color: "#1565c0" };
   }
   return null;
 }

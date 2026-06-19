@@ -56,6 +56,7 @@ export default async function AgentsPage() {
     pendingJobs: a.enabled ? jobsForAgent(a.id, a.clientId) : [],
     updateRequested: a.updateRequested,
     updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
+    updateRequestedBy: a.updateRequestedBy ?? null,
     updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
   }));
   const now = new Date();

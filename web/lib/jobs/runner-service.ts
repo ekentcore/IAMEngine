@@ -156,15 +156,18 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     // Operator action: queue a self-update. The next heartbeat returns update:true (see above).
-    async requestUpdate(agentId: string): Promise<{ id: string }> {
+    // actor = the operator who requested it (their email), recorded in the audit log AND stamped on
+    // the agent (updateRequestedBy) so the Agents page can show WHO pushed the update. Defaults to
+    // "ui" only when no identity is available (auth off).
+    async requestUpdate(agentId: string, actor = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // The UI hides Update for disabled/trashed agents, but the action is callable — guard here too:
       // a disabled agent won't heartbeat to consume the flag, so the request would just hang pending.
       if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting an update");
-      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateDeliveredAt: null } });
-      await db.auditLog.create({ data: { actor: "ui", action: "agent.update_requested", detail: { agentId } } });
+      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: actor, updateDeliveredAt: null } });
+      await db.auditLog.create({ data: { actor, action: "agent.update_requested", detail: { agentId } } });
       return { id: agentId };
     },
 

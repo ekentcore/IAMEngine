@@ -192,6 +192,7 @@ model Agent {
   // restarting) -> back online (lastSeenAt > delivered).
   updateRequested   Boolean   @default(false)
   updateRequestedAt DateTime?
+  updateRequestedBy String?   // operator (email) who pushed the last self-update — for the Agents page
   updateDeliveredAt DateTime?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
   deletedAt  DateTime?
