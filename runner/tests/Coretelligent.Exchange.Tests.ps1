@@ -123,6 +123,15 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly
     }
 
+    It 'resolves the offboard target by display name (Get-Recipient) when the case has no UPN' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ PrimarySmtpAddress = 'jpark@61commodities.com'; DisplayName = 'Jordan Park' } }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '5 GB (5,368,709,120 bytes)' } }
+        $r = Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ UserPrincipalName = ''; DisplayName = 'Jordan Park' }) -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } })
+        ($r.Actions -join ' ') | Should -Match "resolved offboard target by display name 'Jordan Park'"
+        $r.Upn | Should -Be 'jpark@61commodities.com'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Type -eq 'Shared' }
+    }
+
     It 'converts a HYBRID (on-prem-mastered) mailbox via Set-RemoteMailbox + triggers a delta sync' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
         # On-prem session present: Get-RemoteMailbox returns the object -> the on-prem path.

@@ -461,8 +461,23 @@ function Invoke-CtgExchangeOffboarding {
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $upn = [string]$User.UserPrincipalName
+    # Resolve by DISPLAY NAME when the case has no UPN (offboard intakes often carry only the name).
     if ([string]::IsNullOrWhiteSpace($upn)) {
-        $actions.Add("WARN no user identity on the case (UserPrincipalName is empty) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
+        $dn = [string](Get-CtgProp $User 'DisplayName')
+        if ($dn) {
+            $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$dn'" -ErrorAction SilentlyContinue)
+            if ($rcpt.Count -eq 1) {
+                $upn = [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity'))
+                $actions.Add("resolved offboard target by display name '$dn' -> $upn")
+            }
+            elseif ($rcpt.Count -gt 1) {
+                $actions.Add("WARN $($rcpt.Count) recipients match display name '$dn' — set the exact UPN on the case. Nothing done.")
+                return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0; Actions = $actions.ToArray() }
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($upn)) {
+        $actions.Add("WARN no user identity on the case (no UPN, and no display-name match) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
     }
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn

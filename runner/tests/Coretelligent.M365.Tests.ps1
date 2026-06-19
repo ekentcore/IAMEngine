@@ -10,7 +10,7 @@ BeforeAll {
 
     # Global stubs so Pester can Mock these in the module scope (real cmdlets come from Microsoft.Graph).
     function global:Get-MgSubscribedSku { param($SubscribedSkuId, [switch]$All) }
-    function global:Get-MgUser {}
+    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel) }
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
     function global:Set-MgUserLicense {}
@@ -240,6 +240,22 @@ Describe 'Invoke-CtgM365Offboarding' {
             @([pscustomobject]@{ Id = 'dev-1'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.device'; displayName = 'LT-JDOE' } })
         }
         Mock Update-MgDevice -ModuleName Coretelligent.M365 -MockWith { }
+    }
+
+    It 'resolves the offboard target by display name when the case has no UPN' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-9'; UserPrincipalName = 'jpark@x.com'; AccountEnabled = $true } }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = ''; DisplayName = 'Jordan Park' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Match "resolved offboard target by display name 'Jordan Park'"
+        $r.Upn | Should -Be 'jpark@x.com'
+    }
+
+    It 'stops (no action) when more than one user matches the display name' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { @([pscustomobject]@{ Id = 'a'; UserPrincipalName = 'a@x.com' }, [pscustomobject]@{ Id = 'b'; UserPrincipalName = 'b@x.com' }) }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = ''; DisplayName = 'Jordan Park' }) -Config ([pscustomobject]@{}) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Match 'match display name'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
     }
 
     It 'revokes sign-in sessions by default on offboard' {

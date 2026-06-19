@@ -283,13 +283,29 @@ function Invoke-CtgADOffboarding {
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $sam = [string]$User.SamAccountName
-    if ([string]::IsNullOrWhiteSpace($sam)) {
-        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN no user identity on the case (SamAccountName is empty) — set the offboard target on the case, then re-run. Nothing done."); Evidence=@{ Groups=@() } }
-    }
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
 
-    $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
+    # Resolve by SamAccountName when present, else by DISPLAY NAME against AD (offboard intakes often
+    # carry only the name). Exactly-one match is authoritative; 0/many -> stop with a clear note.
+    $existing = $null
+    if (-not [string]::IsNullOrWhiteSpace($sam)) {
+        $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
+    }
+    if (-not $existing -and $displayName) {
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$displayName'" -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection)
+        if ($byName.Count -eq 1) {
+            $existing = $byName[0]; $sam = [string]$existing.SamAccountName
+            $actions.Add("resolved offboard target by display name '$displayName' -> $sam")
+        }
+        elseif ($byName.Count -gt 1) {
+            return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN $($byName.Count) AD users match display name '$displayName' — set the exact account on the case. Nothing done."); Evidence=@{ Groups=@() } }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($sam) -and -not $existing) {
+        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN no user identity on the case (no SamAccountName, and no display-name match) — set the offboard target on the case, then re-run. Nothing done."); Evidence=@{ Groups=@() } }
+    }
     if (-not $existing) {
-        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("user not found ($sam)"); Evidence=@{ Groups=@() } }
+        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("user not found ($(if($sam){$sam}else{$displayName}))"); Evidence=@{ Groups=@() } }
     }
     $guardrails = @(Get-CtgProp $Config 'guardrails')
 

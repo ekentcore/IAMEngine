@@ -772,13 +772,30 @@ function Invoke-CtgM365Offboarding {
     )
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $upn = $User.UserPrincipalName
+    $upn = [string]$User.UserPrincipalName
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
 
-    $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue
+    # Resolve the existing user: by UPN when the case carries one, else by DISPLAY NAME against the
+    # directory (offboard intakes often have only the name). A display-name search that matches exactly
+    # one user is authoritative; 0 or many -> stop with a clear note rather than act on the wrong person.
+    $existing = $null
+    if ($upn) { $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue }
+    if (-not $existing -and $displayName) {
+        $byName = @(Get-MgUser -Filter "displayName eq '$displayName'" -All -ErrorAction SilentlyContinue)
+        if ($byName.Count -eq 1) {
+            $existing = $byName[0]
+            $actions.Add("resolved offboard target by display name '$displayName' -> $(Get-CtgProp $existing 'UserPrincipalName')")
+        }
+        elseif ($byName.Count -gt 1) {
+            return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("WARN $($byName.Count) users match display name '$displayName' — set the exact UPN on the case to disambiguate. Nothing done."); Evidence = @{ Groups = @(); Devices = @() } }
+        }
+    }
     if (-not $existing) {
-        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("user not found ($upn) — nothing to offboard"); Evidence = @{ Groups = @() } }
+        $who = if ($upn) { $upn } else { $displayName }
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("user not found ($who) — nothing to offboard"); Evidence = @{ Groups = @(); Devices = @() } }
     }
     $userId = $existing.Id
+    $upn = [string]((Get-CtgProp $existing 'UserPrincipalName') ?? $upn)   # authoritative from here on
 
     # 1. Evidence FIRST — snapshot group memberships before we remove anything ----
     $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
