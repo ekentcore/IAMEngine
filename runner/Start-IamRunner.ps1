@@ -478,8 +478,13 @@ $DISPATCH = @{
             # the system config (`onPremExchangeUri`) — so reusing ad-dc needs no extra Delinea field.
             $op = $creds['exchange-onprem']
             if ($op) {
-                $opUri = if ($op.Fields['ConnectionUri']) { $op.Fields['ConnectionUri'] } else { $job.config.onPremExchangeUri }
-                if (-not $opUri) { throw "on-prem session needs a ConnectionUri (set the exchange system's onPremExchangeUri, e.g. http://core-cce1-ex01.<domain>/PowerShell/)" }
+                # The PowerShell endpoint URI can live in any of these secret fields (so an existing
+                # "Document Link"/"URL" field can be reused instead of adding a ConnectionUri one),
+                # else falls back to the exchange system config's onPremExchangeUri.
+                $pickUri = { param($names) foreach ($k in $names) { if ($op.Fields.ContainsKey($k) -and $op.Fields[$k]) { return [string]$op.Fields[$k] } } $null }
+                $opUri = & $pickUri @('ConnectionUri', 'ConnectionUrl', 'ConnectionURL', 'Uri', 'Url', 'URL', 'PowerShellUri', 'PowerShellUrl', 'Link', 'DocumentLink', 'Document Link')
+                if (-not $opUri) { $opUri = $job.config.onPremExchangeUri }
+                if (-not $opUri) { throw "the on-prem Exchange session needs a PowerShell URI — set ConnectionUri (or a Document Link / URL field) on the exchange-onprem secret, or onPremExchangeUri on the exchange system. e.g. http://core-cce1-ex01.<domain>/PowerShell/" }
                 Set-CtgPhase $job.id "connecting to on-prem Exchange ($opUri)"
                 Connect-CtgExchangeOnPrem -ConnectionUri $opUri -Credential $op.Credential
             }
