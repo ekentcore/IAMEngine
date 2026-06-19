@@ -255,6 +255,25 @@ function Invoke-CtgADOnboarding {
     [pscustomobject]@{ System = 'active-directory'; Status = 'ok'; Sam = $sam; Ou = $ouPath; Actions = $actions.ToArray() }
 }
 
+function Test-CtgADProtectedGroup {
+    # Is this group a privileged group to NEVER strip on offboard? Used by BOTH the executor (skip
+    # removal) and the validator (don't count as a miss):
+    #   - well-known privileged group NAMES (the add-on),
+    #   - an "*Privileged* OU" DN pattern (matches Offboarding_User.ps1's protected-group detection),
+    #   - an explicit config list (protectedGroups).
+    # protectPrivilegedGroups:false disables it. Config: protectedGroupPattern, protectedGroups.
+    param($Group, $Config)
+    if ((Get-CtgProp $Config 'protectPrivilegedGroups') -eq $false) { return $false }
+    $wellKnown = @('Domain Admins', 'Enterprise Admins', 'Schema Admins', 'Administrators',
+        'Account Operators', 'Backup Operators', 'Server Operators', 'Print Operators',
+        'Group Policy Creator Owners', 'DnsAdmins', 'Key Admins', 'Enterprise Key Admins')
+    $names = @($wellKnown + @(Get-CtgProp $Config 'protectedGroups' | Where-Object { $_ }) | ForEach-Object { "$_".ToLower() })
+    if ($names -contains "$(Get-CtgProp $Group 'Name')".ToLower()) { return $true }
+    $pattern = [string]((Get-CtgProp $Config 'protectedGroupPattern') ?? '*,OU=*Privileged,*')
+    $dn = [string](Get-CtgProp $Group 'DistinguishedName')
+    return ($pattern -and $dn -and ($dn -like $pattern))
+}
+
 function Invoke-CtgADOffboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -310,9 +329,21 @@ function Invoke-CtgADOffboarding {
         }
     }
 
+    # 2b. Privileged-group protection. Offboarding_User.ps1 detects groups under an "*Privileged*" OU
+    # and prints "please manually remove" — but then strips them anyway (warn-but-remove). Here we
+    # detect them the same way AND actually SKIP them, recording each as a manual-removal item so a
+    # privileged membership is never silently torn down (and never left without a paper trail).
+    $protectedFound = @()
+
     if ((Get-CtgProp $Config 'removeAllGroups')) {
         foreach ($g in $memberships) {
             if ($g.Name -eq 'Domain Users') { continue }   # primary group — not removable this way
+            if (Test-CtgADProtectedGroup -Group $g -Config $Config) {
+                $protectedFound += $g.Name
+                $actions.Add("WARN protected/privileged group NOT removed — remove manually: $($g.Name)")
+                Write-CtgADStep "⚠ protected group — manual removal required: $($g.Name)"
+                continue
+            }
             if ($PSCmdlet.ShouldProcess($sam, "Remove from group $($g.Name)")) {
                 # -ErrorAction Stop so a failed removal is surfaced, not silently logged as success.
                 try {
@@ -424,7 +455,7 @@ function Invoke-CtgADOffboarding {
 
     [pscustomobject]@{
         System='active-directory'; Status='ok'; Sam=$sam
-        Evidence=@{ Groups = $groupNames; Computer = $computerInfo }
+        Evidence=@{ Groups = $groupNames; Computer = $computerInfo; ProtectedGroups = @($protectedFound) }
         Actions=$actions.ToArray()
     }
 }
@@ -452,7 +483,8 @@ function Confirm-CtgAD {
 
     $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue @AdConnection
     $exists = [bool]$u
-    $groupNames = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection | ForEach-Object { $_.Name }) } else { @() }
+    $memberObjs = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection) } else { @() }
+    $groupNames = @($memberObjs | ForEach-Object { $_.Name })
 
     if ($Action -eq 'onboard') {
         $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
@@ -472,7 +504,9 @@ function Confirm-CtgAD {
     else {
         & $add 'account disabled' $true ([bool](-not $exists -or (Get-CtgProp $u 'Enabled') -eq $false))
         if ($exists -and (Get-CtgProp $Config 'removeAllGroups')) {
-            $remaining = @($groupNames | Where-Object { $_ -ne 'Domain Users' }).Count
+            # Protected/privileged groups are intentionally kept (skipped by the executor), so they
+            # must not count as a failed removal — exclude them the same way, by the same predicate.
+            $remaining = @($memberObjs | Where-Object { $_.Name -ne 'Domain Users' -and -not (Test-CtgADProtectedGroup -Group $_ -Config $Config) }).Count
             & $add 'groups removed' $true ([bool]($remaining -eq 0))
         }
         $hide = Get-CtgProp $Config 'hideFromGal'

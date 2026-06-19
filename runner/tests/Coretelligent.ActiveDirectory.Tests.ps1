@@ -209,6 +209,39 @@ Describe 'Invoke-CtgADOffboarding' {
         $r = Invoke-CtgADOffboarding -User $user -Config $config
         ($r.Actions -join ' ') | Should -Match "computer 'GONE-PC' not found"
     }
+
+    It 'does NOT remove a well-known privileged group (Domain Admins) — flags it for manual removal' {
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' },
+              [pscustomobject]@{ Name='VPN Users'; DistinguishedName='CN=VPN Users,OU=Groups,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Domain Admins' } -Times 0 -Exactly
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'VPN Users' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'protected/privileged group NOT removed.*Domain Admins'
+        $r.Evidence.ProtectedGroups | Should -Contain 'Domain Admins'
+    }
+
+    It 'does NOT remove a group under a *Privileged* OU (matches the script pattern)' {
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Tier0 Admins'; DistinguishedName='CN=Tier0 Admins,OU=T0 Privileged,OU=Groups,DC=x' },
+              [pscustomobject]@{ Name='VPN Users'; DistinguishedName='CN=VPN Users,OU=Groups,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Tier0 Admins' } -Times 0 -Exactly
+        $r.Evidence.ProtectedGroups | Should -Contain 'Tier0 Admins'
+    }
+
+    It 'protectPrivilegedGroups:false strips even privileged groups (opt-out)' {
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; protectPrivilegedGroups=$false; disableAccount=$true; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Domain Admins' } -Times 1
+    }
 }
 
 Describe 'Confirm-CtgAD' {
@@ -240,6 +273,18 @@ Describe 'Confirm-CtgAD' {
         $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); disabledUsersOu='OU=Disabled,DC=x' }
         $r = Confirm-CtgAD -User $user -Config $config -Action 'offboard'
         ($r.checks | Where-Object { $_.name -eq 'not moved (do-not-move-ou)' }).pass | Should -BeFalse
+    }
+
+    It 'offboard: a kept privileged group does NOT fail the groups-removed check' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$false } }
+        # Only "Domain Admins" (privileged, intentionally kept) + Domain Users remain — must still pass.
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' },
+              [pscustomobject]@{ Name='Domain Users'; DistinguishedName='CN=Domain Users,CN=Users,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; guardrails=@('do-not-move-ou') }
+        $r = Confirm-CtgAD -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config $config -Action 'offboard'
+        ($r.checks | Where-Object { $_.name -eq 'groups removed' }).pass | Should -BeTrue
     }
 }
 
