@@ -4,7 +4,8 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
-import { listOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
+import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
+import { FixButton } from "./_components/fix-button";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Run outcomes" };
@@ -27,7 +28,7 @@ function fmtTime(d: Date): string {
   return new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export default async function RunsPage({ searchParams }: { searchParams: { q?: string; system?: string; verdict?: string; all?: string } }) {
+export default async function RunsPage({ searchParams }: { searchParams: { q?: string; system?: string; verdict?: string; all?: string; resolved?: string } }) {
   if (authEnabled()) {
     const me = await getCurrentUser();
     if (!me) return null; // layout already redirects unauthenticated users to /login
@@ -37,12 +38,16 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
   const system = (searchParams.system ?? "").trim();
   const verdict = (searchParams.verdict ?? "").trim();
   const includeClean = searchParams.all === "1";
+  const includeResolved = searchParams.resolved === "1";
 
-  const [rows, summary, systems] = await Promise.all([
-    listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, includeClean }),
+  const [rawRows, summary, systems] = await Promise.all([
+    listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, includeClean, includeResolved }),
     moduleIssueSummary(db),
     outcomeSystems(db),
   ]);
+  // Collapse identical lines (same case + line) into one entry with an occurrence count, so the log
+  // isn't a wall of repeats; "Fixed" then resolves every occurrence at once.
+  const rows = groupOutcomes(rawRows);
 
   const linkFor = (sys: string) => `/runs?system=${encodeURIComponent(sys)}`;
 
@@ -87,11 +92,14 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
         <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, margin: 0 }}>
           <input type="checkbox" name="all" value="1" defaultChecked={includeClean} style={{ width: "auto" }} /> include clean successes
         </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, margin: 0 }}>
+          <input type="checkbox" name="resolved" value="1" defaultChecked={includeResolved} style={{ width: "auto" }} /> show fixed
+        </label>
         <button type="submit">Filter</button>
-        {(q || system || verdict || includeClean) && <Link href="/runs" className="note">clear</Link>}
+        {(q || system || verdict || includeClean || includeResolved) && <Link href="/runs" className="note">clear</Link>}
       </form>
 
-      <p className="note">{rows.length}{rows.length === 250 ? "+ (showing latest 250)" : ""} outcome{rows.length === 1 ? "" : "s"}{verdict || system || q ? " (filtered)" : !includeClean ? " — errors & warnings (toggle to see successes)" : ""}.</p>
+      <p className="note">{rows.length} distinct line{rows.length === 1 ? "" : "s"}{verdict || system || q ? " (filtered)" : !includeClean ? " — open errors & warnings" : ""}{includeResolved ? " · including fixed" : ""}. Identical repeats are collapsed; <b>✓ Fixed</b> clears every occurrence of a line (and future re-runs of it).</p>
 
       <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
         <thead>
@@ -102,12 +110,15 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
             <th style={{ padding: "4px 8px" }}>Module</th>
             <th style={{ padding: "4px 8px" }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Message</th>
+            <th style={{ padding: "4px 8px" }}></th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top" }}>
-              <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: "var(--muted, #6b7280)" }}>{fmtTime(r.at)}</td>
+          {rows.map((r) => {
+            const done = Boolean(r.resolvedAt);
+            return (
+            <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top", opacity: done ? 0.5 : 1 }}>
+              <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: "var(--muted, #6b7280)" }}>{fmtTime(r.at)}{r.count > 1 && <span className="note" style={{ marginLeft: 4 }}>×{r.count}</span>}</td>
               <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
                 <Link href={`/cases/${r.caseRequestId}`}>{r.caseNumber}</Link>
                 <span className="note" style={{ marginLeft: 4, fontSize: 11 }}>{r.action}</span>
@@ -115,13 +126,18 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
               <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
               <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
               <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-              <td style={{ padding: "4px 8px", color: r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
+              <td style={{ padding: "4px 8px", color: done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
                 {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
+                {done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
+              </td>
+              <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                {(r.verdict === "warning" || r.verdict === "failed") && <FixButton fingerprint={r.fingerprint} resolved={done} count={r.count} />}
               </td>
             </tr>
-          ))}
+            );
+          })}
           {rows.length === 0 && (
-            <tr><td colSpan={6} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No outcomes{verdict || system || q ? " match the filter" : !includeClean ? " — no errors or warnings logged 🎉" : " yet"}.</td></tr>
+            <tr><td colSpan={7} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No {includeResolved ? "" : "open "}outcomes{verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.</td></tr>
           )}
         </tbody>
       </table>

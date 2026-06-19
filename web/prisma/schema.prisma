@@ -346,11 +346,19 @@ model RunOutcome {
   messages      String[] // warning / error / validation-miss lines (empty for a clean success)
   error         String?  // the top-level failure message, if any
   validateOnly  Boolean  @default(false) // true = an auto-verify read-back, not the action run
+  // Stable hash of (case + module + verdict + messages + error): the SAME line for the SAME case
+  // recurs across re-runs under one fingerprint, so marking it "Fixed" resolves every occurrence and
+  // the log collapses duplicates instead of repeating noise.
+  fingerprint   String   @default("")
+  resolvedAt    DateTime? // set when an operator marks the line "Fixed" (hides it from the default view)
+  resolvedBy    String?   // who resolved it (email / "system")
 
   @@index([systemKey, verdict, at])
   @@index([clientId, at])
   @@index([verdict, at])
   @@index([at])
+  @@index([fingerprint])
+  @@index([resolvedAt])
 }
 
 // ── Auth: operators, their roles, and live sessions ──────────────────────────

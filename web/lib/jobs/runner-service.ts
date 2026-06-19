@@ -12,6 +12,7 @@ import { sweepProcurementWatches } from "./procurement-watch";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
+import { outcomeFingerprint } from "../runs/outcomes-repo";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -600,6 +601,11 @@ export function makeRunnerService(db: PrismaClient) {
       // overwrites the Job, but each result still lands here). Never fatal to result recording.
       try {
         const { verdict, messages } = jobOutcome(status, input.result, input.validation, input.error ?? null);
+        const fingerprint = outcomeFingerprint({ caseRequestId: job.caseRequestId, systemKey: job.systemKey, verdict, messages, error: input.error ?? null });
+        // If this exact line for this case was already marked "Fixed", inherit that resolution so a
+        // re-run of an already-handled noise line doesn't reappear (a genuinely new error has a new
+        // fingerprint and won't match).
+        const prior = await db.runOutcome.findFirst({ where: { fingerprint, resolvedAt: { not: null } }, select: { resolvedAt: true, resolvedBy: true } });
         await db.runOutcome.create({
           data: {
             caseRequestId: job.caseRequestId,
@@ -611,6 +617,9 @@ export function makeRunnerService(db: PrismaClient) {
             verdict, status, messages,
             error: input.error ?? null,
             validateOnly: Boolean(req(job).validateOnly),
+            fingerprint,
+            resolvedAt: prior?.resolvedAt ?? null,
+            resolvedBy: prior?.resolvedBy ?? null,
           },
         });
       } catch { /* an outcome-log failure must never lose the job result */ }
