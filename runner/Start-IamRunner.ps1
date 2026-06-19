@@ -868,7 +868,7 @@ function Get-CtgBuildId {
             if ($rel.Split('/') | Where-Object { $skip -contains $_ }) { continue }
             # Skip runtime/non-bundle files (logs, build marker) — they aren't in the app's bundle, so
             # counting them makes the hash drift forever vs the app ("update available" that never clears).
-            if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build') { continue }
+            if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build' -or $f.Name -eq '.runner.lock') { continue }
             $rel
         }
         $arr = @($rels); [Array]::Sort($arr, [System.StringComparer]::Ordinal)
@@ -1090,13 +1090,33 @@ function Invoke-CtgCloudGroupDiscovery {
 # no marker file to keep in sync.
 $script:RunnerBuild = Get-CtgBuildId
 
-Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
+# Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
+# at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
+# PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
+# modules while a newer process reports the new build — "agent up to date but running old code", which
+# silently ran outdated executors after an update. Lock I/O is best-effort (never fatal).
+$script:LockPath = Join-Path $PSScriptRoot '.runner.lock'
+try { [System.IO.File]::WriteAllText($script:LockPath, [string]$PID) } catch { }
+
+Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild, pid $PID) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
 # Per-process progress globals, read by Send-CtgProgress (callable from the Coretelligent.* modules).
 $global:CtgProgressUrl   = $AppUrl
 $global:CtgProgressToken = $ApiToken
 $global:CtgProgressAgent = $AgentId
 while ($true) {
     $jobs = @()   # reset BEFORE try: a heartbeat/claim throw must not leave a stale value driving the drain check below
+    # Superseded by a newer instance? It overwrote .runner.lock with its PID at startup. Exit so this
+    # (older) process stops heartbeating + claiming jobs with stale modules. Best-effort; on any lock
+    # read error we just continue (fail open — better to keep running than to wrongly self-terminate).
+    try {
+        if (Test-Path -LiteralPath $script:LockPath) {
+            $owner = ([System.IO.File]::ReadAllText($script:LockPath)).Trim()
+            if ($owner -and $owner -ne [string]$PID) {
+                Write-Warning "a newer runner instance (pid $owner) has taken over; exiting this one (pid $PID)."
+                exit 0
+            }
+        }
+    } catch { }
     try {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
