@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
 import { FixButton } from "./_components/fix-button";
+import { CopyButton } from "./_components/copy-button";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Run outcomes" };
@@ -130,8 +131,13 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
                 {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
                 {done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
               </td>
-              <td style={{ padding: "4px 8px", textAlign: "right" }}>
-                {(r.verdict === "warning" || r.verdict === "failed") && <FixButton fingerprint={r.fingerprint} resolved={done} count={r.count} />}
+              <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                {(r.verdict === "warning" || r.verdict === "failed") && (
+                  <span style={{ display: "inline-flex", gap: 4 }}>
+                    <CopyButton text={[`${r.systemKey} (${r.caseNumber})`, ...r.messages, r.error ?? ""].filter(Boolean).join("\n")} />
+                    <FixButton fingerprint={r.fingerprint} resolved={done} count={r.count} />
+                  </span>
+                )}
               </td>
             </tr>
             );

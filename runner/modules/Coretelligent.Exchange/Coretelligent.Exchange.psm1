@@ -87,8 +87,12 @@ function Connect-CtgExchangeOnPrem {
 
 # Mailbox size in GB, parsed from Get-MailboxStatistics TotalItemSize ("75 GB (80,530,…bytes)").
 function Get-CtgMailboxSizeGB {
+    # Identity is intentionally NOT [Mandatory]: a Mandatory string param throws a hard
+    # "Cannot bind argument to parameter 'Identity' because it is an empty string" on an empty value,
+    # which is an opaque crash. Return 0 for an empty/absent identity instead — the caller decides.
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Identity)
+    param([string]$Identity)
+    if ([string]::IsNullOrWhiteSpace($Identity)) { return 0 }
     $stats = Get-MailboxStatistics -Identity $Identity -ErrorAction SilentlyContinue
     if (-not $stats) { return 0 }
     $m = [regex]::Match([string]$stats.TotalItemSize, '([\d,]+)\s*bytes')
@@ -461,14 +465,18 @@ function Invoke-CtgExchangeOffboarding {
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $upn = [string]$User.UserPrincipalName
+    Write-CtgStep "offboard exchange: resolving target (UPN on case = '$upn', display name = '$([string](Get-CtgProp $User 'DisplayName'))')"
     # Resolve by DISPLAY NAME when the case has no UPN (offboard intakes often carry only the name).
     if ([string]::IsNullOrWhiteSpace($upn)) {
         $dn = [string](Get-CtgProp $User 'DisplayName')
         if ($dn) {
+            Write-CtgStep "running: Get-Recipient -Filter `"DisplayName -eq '$dn'`""
             $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$dn'" -ErrorAction SilentlyContinue)
+            Write-CtgStep "Get-Recipient returned $($rcpt.Count) match(es) for '$dn'"
             if ($rcpt.Count -eq 1) {
                 $upn = [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity'))
                 $actions.Add("resolved offboard target by display name '$dn' -> $upn")
+                Write-CtgStep "resolved '$dn' -> '$upn'"
             }
             elseif ($rcpt.Count -gt 1) {
                 $actions.Add("WARN $($rcpt.Count) recipients match display name '$dn' — set the exact UPN on the case. Nothing done.")
@@ -477,9 +485,11 @@ function Invoke-CtgExchangeOffboarding {
         }
     }
     if ([string]::IsNullOrWhiteSpace($upn)) {
+        Write-CtgStep "no user identity resolved — stopping (nothing done)"
         $actions.Add("WARN no user identity on the case (no UPN, and no display-name match) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
     }
+    Write-CtgStep "running: Get-MailboxStatistics -Identity '$upn' (mailbox size)"
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
     $actions.Add("mailbox size: $sizeGB GB")
 
