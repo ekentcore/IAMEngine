@@ -55,7 +55,7 @@ function ImportButton() {
         <form onSubmit={submit}>
           <label htmlFor="um">Case number</label>
           <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698 or INC0836187" autoFocus />
-          <p className="note" style={{ marginTop: "0.25rem" }}>UM = external client case · INC = internal Coretelligent onboarding incident</p>
+          <p className="note" style={{ marginTop: "0.25rem" }}>UM = external client case · INC = internal Coretelligent on/off-boarding incident</p>
           {!result && (
             <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.5rem 0 0", fontSize: 13, color: "var(--fg)" }}>
               <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} style={{ width: "auto" }} />

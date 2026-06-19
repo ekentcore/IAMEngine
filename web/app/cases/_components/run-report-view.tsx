@@ -309,6 +309,16 @@ function CopyButton({ text, label = "Copy error", title = "Copy the full error t
   );
 }
 
+// The "expected X, got Y" tail for a check — but ONLY when it adds information. For a boolean check
+// the ✓/✗ already says pass/fail, so "(expected true, got false)" is just noise; show the detail
+// only on a FAILURE whose expected/actual carry a real value (a name, count, string).
+function checkDetail(c: { expected?: unknown; actual?: unknown; pass: boolean }): string {
+  if (c.pass) return "";
+  const trivial = (val: unknown) => typeof val === "boolean" || val === null || val === undefined;
+  if (trivial(c.expected) && trivial(c.actual)) return "";
+  return ` — expected ${String(c.expected)}, got ${String(c.actual)}`;
+}
+
 // Plain-text dump of a step's full log (actions + validation + error + progress) — for the "Copy
 // log" buttons, so an operator can paste exactly what they see straight into a report or chat.
 function stepLogText(step: RunReport["steps"][number]): string {
@@ -316,8 +326,9 @@ function stepLogText(step: RunReport["steps"][number]): string {
   if (step.actions.length) { L.push("Actions:"); for (const a of step.actions) L.push(a); }
   const v = step.validation as { ok?: boolean; checks?: { name: string; expected: unknown; actual: unknown; pass: boolean }[] } | null;
   if (v?.checks?.length) {
-    L.push(`Validation: ${v.ok ? "OK" : "MISS"}`);
-    for (const c of v.checks) L.push(`${c.pass ? "✓" : "✗"} ${c.name} (expected ${String(c.expected)}, got ${String(c.actual)})`);
+    const failed = v.checks.filter((c) => !c.pass).length;
+    L.push(`Validation: ${failed ? `${failed} of ${v.checks.length} failed` : "passed"}`);
+    for (const c of v.checks) L.push(`${c.pass ? "✓" : "✗"} ${c.name}${checkDetail(c)}`);
   }
   if (step.error) L.push(`Error: ${step.error}`);
   if (step.phaseTrail?.length) { L.push("Progress:"); for (const p of step.phaseTrail) L.push(`${new Date(p.ts).toLocaleTimeString()} ${p.phase}`); }
@@ -563,19 +574,27 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   </ul>
                 </div>
               )}
-              {step.validation && (
-                <div style={{ marginTop: "0.4rem" }}>
-                  <div className="note">Validation: {step.validation.ok ? "ok" : "MISS"}</div>
-                  <ul className="muted" style={{ margin: "0.2rem 0 0" }}>
-                    {step.validation.checks.map((c, i) => (
-                      <li key={i} style={{ color: c.pass ? undefined : "#b91c1c" }}>
-                        {c.pass ? "✓" : "✗"} {c.name}
-                        {c.expected !== undefined && ` (expected ${String(c.expected)}, got ${String(c.actual)})`}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              {step.validation && (() => {
+                const checks = step.validation.checks;
+                const failed = checks.filter((c) => !c.pass).length;
+                return (
+                  <div style={{ marginTop: "0.4rem" }}>
+                    <div className="note" style={{ color: failed ? "#b45309" : "#15803d", fontWeight: 600 }}>
+                      Validation: {failed ? `${failed} of ${checks.length} need${failed === 1 ? "s" : ""} review` : "passed"}
+                    </div>
+                    <ul style={{ margin: "0.2rem 0 0", padding: 0, listStyle: "none", fontSize: 13 }}>
+                      {checks.map((c, i) => (
+                        <li key={i} style={{ display: "flex", gap: 6, alignItems: "baseline", padding: "1px 0" }}>
+                          <span style={{ color: c.pass ? "#15803d" : "#b91c1c", fontWeight: 700, flexShrink: 0 }}>{c.pass ? "✓" : "✗"}</span>
+                          <span style={{ color: c.pass ? "var(--muted, #6b7280)" : "#b91c1c" }}>
+                            {c.name}<span className="muted">{checkDetail(c)}</span>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
               {step.error && (
                 <div>
                   <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>
