@@ -223,6 +223,70 @@ function Use-CtgHubSpotSecret {
     if ($baseUrl) { Connect-CtgHubSpot -Token $token -BaseUrl $baseUrl } else { Connect-CtgHubSpot -Token $token }
 }
 
+# Connect SentinelOne from the brokered 'sentinelone' secret — the management console URL + an API
+# token (service user). ApiToken auth. Re-broker each lane so a rotated token applies next job.
+function Use-CtgSentinelOneSecret {
+    param($Job, $Creds)
+    $s = $Creds['sentinelone']
+    if (-not $s) { throw "the job did not broker a 'sentinelone' secret — list 'sentinelone' in the client's sentinelone system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $baseUrl = & $pick @('BaseUrl', 'ConsoleUrl', 'MgmtUrl', 'ManagementUrl', 'Url', 'ApiUrl')
+    if (-not $baseUrl) { throw "the 'sentinelone' secret has no console URL — set BaseUrl to the management console (e.g. https://usea1-partners.sentinelone.net). The secret has: $(@($f.Keys) -join ', '). See /help/sentinelone." }
+    $token = & $pick @('ApiToken', 'Token', 'ApiKey', 'API Key', 'Key', 'Password')
+    if (-not $token) { throw "the 'sentinelone' secret has no API token — set ApiToken (a service-user token). The secret has: $(@($f.Keys) -join ', '). See /help/sentinelone." }
+    Connect-CtgSentinelOne -BaseUrl $baseUrl -Token $token
+}
+
+# Connect Duo from the brokered 'duo' secret — the Admin API host + integration key + secret key.
+function Use-CtgDuoSecret {
+    param($Job, $Creds)
+    $s = $Creds['duo']
+    if (-not $s) { throw "the job did not broker a 'duo' secret — list 'duo' in the client's duo system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $apiHost = & $pick @('ApiHost', 'Host', 'Hostname', 'ApiHostname', 'BaseUrl', 'Url')
+    $ikey    = & $pick @('IntegrationKey', 'IKey', 'ClientID', 'ClientId', 'Username'); if (-not $ikey -and $s.Username) { $ikey = [string]$s.Username }
+    $skey    = & $pick @('SecretKey', 'SKey', 'ClientSecret', 'Secret', 'ApiKey', 'Key', 'Password')
+    if (-not $apiHost -or -not $ikey -or -not $skey) { throw "the 'duo' secret needs ApiHost (api-XXXX.duosecurity.com) + IntegrationKey + SecretKey from a Duo Admin API application. The secret has: $(@($f.Keys) -join ', '). See /help/duo." }
+    Connect-CtgDuo -ApiHost $apiHost -IntegrationKey $ikey -SecretKey $skey
+}
+
+# Connect xMatters from the brokered 'xmatters' secret — the company URL + a REST web-service user
+# (Basic). The credential is the secret's pscredential, or Username/Password fields.
+function Use-CtgXMattersSecret {
+    param($Job, $Creds)
+    $s = $Creds['xmatters']
+    if (-not $s) { throw "the job did not broker an 'xmatters' secret — list 'xmatters' in the client's xmatters system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $baseUrl = & $pick @('BaseUrl', 'CompanyUrl', 'Url', 'Instance')
+    if (-not $baseUrl) { throw "the 'xmatters' secret has no company URL — set BaseUrl (https://{company}.xmatters.com). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+    $cred = $s.Credential
+    if (-not $cred) {
+        $u = & $pick @('Username', 'User'); $p = & $pick @('Password', 'Token', 'ApiToken', 'Key')
+        if (-not $u -or -not $p) { throw "the 'xmatters' secret needs a REST web-service Username + Password (or a stored credential). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+        $cred = [pscredential]::new($u, (ConvertTo-SecureString $p -AsPlainText -Force))
+    }
+    Connect-CtgXMatters -BaseUrl $baseUrl -Credential $cred
+}
+
+# Connect LogicMonitor from the brokered 'logicmonitor' secret — the portal account + LMv1 access id +
+# access key (an API-token, not a user password).
+function Use-CtgLogicMonitorSecret {
+    param($Job, $Creds)
+    $s = $Creds['logicmonitor']
+    if (-not $s) { throw "the job did not broker a 'logicmonitor' secret — list 'logicmonitor' in the client's logicmonitor system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $account = & $pick @('Account', 'Portal', 'Company', 'Subdomain', 'BaseUrl', 'Url')
+    if (-not $account) { throw "the 'logicmonitor' secret has no Account — set Account to the portal subdomain (e.g. 'coretelligent'). The secret has: $(@($f.Keys) -join ', '). See /help/logicmonitor." }
+    $accessId  = & $pick @('AccessId', 'AccessID', 'ClientID', 'ClientId', 'Username'); if (-not $accessId -and $s.Username) { $accessId = [string]$s.Username }
+    $accessKey = & $pick @('AccessKey', 'ClientSecret', 'Secret', 'ApiKey', 'Key', 'Password')
+    if (-not $accessId -or -not $accessKey) { throw "the 'logicmonitor' secret needs AccessId + AccessKey (an LMv1 API token from Settings > User Access > API Tokens). The secret has: $(@($f.Keys) -join ', '). See /help/logicmonitor." }
+    Connect-CtgLogicMonitor -Account $account -AccessId $accessId -AccessKey $accessKey
+}
+
 # The M365/Exchange tenant identifier for this job, in priority order:
 #   1. the m365-admin secret's TenantId field — the Directory (tenant) ID GUID from the app
 #      registration; unambiguous and ALWAYS accepted by Entra, even when domain names are mis-set
@@ -515,6 +579,27 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Invoke-CtgHubSpotOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Invoke-CtgHubSpotOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Confirm-CtgHubSpot -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'sentinelone' = @{
+        # ApiToken auth; Connect is a pure local assignment, so re-broker each lane (rotated token next job).
+        Onboard  = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Invoke-CtgSentinelOneOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Invoke-CtgSentinelOneOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Confirm-CtgSentinelOne -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'duo' = @{
+        Onboard  = { param($job, $creds) Use-CtgDuoSecret $job $creds; Invoke-CtgDuoOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgDuoSecret $job $creds; Invoke-CtgDuoOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgDuoSecret $job $creds; Confirm-CtgDuo -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'xmatters' = @{
+        Onboard  = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Invoke-CtgXMattersOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Invoke-CtgXMattersOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Confirm-CtgXMatters -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'logicmonitor' = @{
+        Onboard  = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Invoke-CtgLogicMonitorOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Invoke-CtgLogicMonitorOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Confirm-CtgLogicMonitor -User $job.payload -Config $job.config -Action $job.action }
     }
 }
 
