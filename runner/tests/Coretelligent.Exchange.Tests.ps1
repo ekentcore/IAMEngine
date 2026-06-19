@@ -17,7 +17,7 @@ BeforeAll {
     # on-prem hybrid remote-mailbox + post-sync EXO finishing
     function global:Get-RemoteMailbox { [CmdletBinding()] param($Identity) }
     function global:Enable-RemoteMailbox { [CmdletBinding()] param($Identity, $RemoteRoutingAddress, $Alias, $DisplayName, $PrimarySmtpAddress) }
-    function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled) }
+    function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled, $Type) }
     function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
     function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
     function global:Get-Mailbox { [CmdletBinding()] param($Identity, $RecipientTypeDetails, $ResultSize) }
@@ -114,6 +114,21 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         $r.MailboxSizeGB | Should -Be 10
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly -ParameterFilter { $Type -eq 'Shared' }
         Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $ActiveSyncEnabled -eq $false }
+    }
+
+    It 'converts a HYBRID (on-prem-mastered) mailbox via Set-RemoteMailbox + triggers a delta sync' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
+        # On-prem session present: Get-RemoteMailbox returns the object -> the on-prem path.
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity = 'jdoe@61commodities.com' } }
+        Mock Set-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        $state = @{ synced = $false }                              # mutated by the trigger (a closure)
+        $trigger = { $state.synced = $true }.GetNewClosure()
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config -TriggerSync $trigger
+        Should -Invoke Set-RemoteMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Type -eq 'Shared' }
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        $state.synced | Should -BeTrue
+        ($r.Actions -join ' ') | Should -Match 'on-prem'
     }
 
     It 'does NOT convert when the mailbox is over the threshold (keeps it + license)' {

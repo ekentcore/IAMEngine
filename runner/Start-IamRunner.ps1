@@ -470,13 +470,14 @@ $DISPATCH = @{
             $exoCert = Get-CtgExoCertArgs $s
             if ($exoCert.Count -eq 0) { throw "the m365-admin secret has no Exchange Online cert — set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows store), and grant the app Exchange.ManageAsApp." }
             Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $job $creds) @exoCert
-            # On-prem session only for onboard (Enable-RemoteMailbox) — offboard is EXO-only. The
-            # credential comes from the brokered `exchange-onprem` secret (which may point at the same
-            # Delinea id as ad-dc — the domain admin already has Exchange rights). The PowerShell URI
-            # comes from that secret's ConnectionUri field if present, else from the system config
-            # (`onPremExchangeUri`) so reusing the ad-dc secret needs no extra Delinea field.
+            # On-prem session for BOTH lanes when the `exchange-onprem` secret is brokered: onboard
+            # needs Enable-RemoteMailbox; a HYBRID offboard needs Set-RemoteMailbox -Type Shared
+            # (an EXO Set-Mailbox would be overwritten by AD Connect on an on-prem-mastered mailbox).
+            # The credential may reuse the ad-dc Delinea id (the domain admin already has Exchange
+            # rights). The PowerShell URI comes from the secret's ConnectionUri field if present, else
+            # the system config (`onPremExchangeUri`) — so reusing ad-dc needs no extra Delinea field.
             $op = $creds['exchange-onprem']
-            if ($op -and $job.action -ne 'offboard') {
+            if ($op) {
                 $opUri = if ($op.Fields['ConnectionUri']) { $op.Fields['ConnectionUri'] } else { $job.config.onPremExchangeUri }
                 if (-not $opUri) { throw "on-prem session needs a ConnectionUri (set the exchange system's onPremExchangeUri, e.g. http://core-cce1-ex01.<domain>/PowerShell/)" }
                 Set-CtgPhase $job.id "connecting to on-prem Exchange ($opUri)"
@@ -499,7 +500,14 @@ $DISPATCH = @{
                 Invoke-CtgExchangeHybridOnboard -User $job.payload -Config $job.config -TriggerSync $trigger
             }
         }
-        Offboard = { param($job, $creds) Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds)
+            # Pass a delta-sync trigger (reusing the on-prem credential) so a HYBRID convert-to-shared
+            # via Set-RemoteMailbox is pushed to the cloud immediately; cloud-only offboards ignore it.
+            $op = $creds['exchange-onprem']
+            $syncCred = if ($op) { $op.Credential } else { $null }
+            $trigger = if ($syncCred) { { Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $syncCred | Out-Null }.GetNewClosure() } else { $null }
+            Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config -TriggerSync $trigger
+        }
         Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
     }
     'zoom' = @{

@@ -446,6 +446,9 @@ function Invoke-CtgExchangeOffboarding {
     .PARAMETER Config
         convertToShared{skipIfMailboxOverGB}, blockMobileDevices, autoReply{message},
         forwarding{address, keepCopy}.
+    .PARAMETER TriggerSync
+        Optional delta-sync scriptblock — invoked after a HYBRID (on-prem) convert so the change
+        propagates to the cloud promptly. Cloud-only offboards don't pass it.
     .OUTPUTS
         Result with Status, MailboxSizeGB (so the m365 module can honor the keep-license rule),
         and an Actions log.
@@ -453,7 +456,8 @@ function Invoke-CtgExchangeOffboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
-        [Parameter(Mandatory)][pscustomobject]$Config
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [scriptblock]$TriggerSync
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $upn = $User.UserPrincipalName
@@ -467,9 +471,30 @@ function Invoke-CtgExchangeOffboarding {
         if ($sizeGB -gt $threshold) {
             $actions.Add("mailbox $sizeGB GB over threshold ($threshold GB) — kept as a user mailbox; license stays")
         }
-        elseif ($PSCmdlet.ShouldProcess($upn, "Convert mailbox to shared")) {
-            Set-Mailbox -Identity $upn -Type Shared
-            $actions.Add("converted mailbox to shared")
+        else {
+            # HYBRID (on-prem-mastered) mailbox: an EXO Set-Mailbox -Type Shared is overwritten by AD
+            # Connect, so convert via Set-RemoteMailbox ON-PREM, then trigger a delta sync to push it.
+            # Detect by the on-prem session: when Connect-CtgExchangeOnPrem ran it imported
+            # *-RemoteMailbox, and Get-RemoteMailbox returns the object for an on-prem-mastered mailbox.
+            # Cloud-mastered mailboxes (no on-prem session, or no remote object) take the EXO path.
+            $remote = $null
+            if (Get-Command Get-RemoteMailbox -ErrorAction SilentlyContinue) {
+                $remote = Get-RemoteMailbox -Identity $upn -ErrorAction SilentlyContinue
+            }
+            if ($remote) {
+                if ($PSCmdlet.ShouldProcess($upn, "Convert mailbox to shared (on-prem Set-RemoteMailbox)")) {
+                    Set-RemoteMailbox -Identity $upn -Type Shared
+                    $actions.Add("converted mailbox to shared on-prem (Set-RemoteMailbox -Type Shared)")
+                    if ($TriggerSync) {
+                        try { & $TriggerSync; $actions.Add("triggered Entra Connect delta sync to push the shared conversion") }
+                        catch { $actions.Add("WARN convert synced on next cycle — delta-sync trigger failed: $($_.Exception.Message)") }
+                    }
+                }
+            }
+            elseif ($PSCmdlet.ShouldProcess($upn, "Convert mailbox to shared")) {
+                Set-Mailbox -Identity $upn -Type Shared
+                $actions.Add("converted mailbox to shared")
+            }
         }
     }
 
