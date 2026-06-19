@@ -22,6 +22,9 @@ BeforeAll {
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef {}
     function global:Get-MgUserDefaultDrive {}
+    function global:Revoke-MgUserSignInSession { param($UserId) }
+    function global:Get-MgUserRegisteredDevice { param($UserId, [switch]$All) }
+    function global:Update-MgDevice { param($DeviceId, $AccountEnabled) }
 
     Import-Module $ModulePath -Force
 
@@ -232,6 +235,36 @@ Describe 'Invoke-CtgM365Offboarding' {
         Mock Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -MockWith { }
         Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
         Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ SkuId = 'sku-e3' }) }
+        Mock Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserRegisteredDevice -ModuleName Coretelligent.M365 -MockWith {
+            @([pscustomobject]@{ Id = 'dev-1'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.device'; displayName = 'LT-JDOE' } })
+        }
+        Mock Update-MgDevice -ModuleName Coretelligent.M365 -MockWith { }
+    }
+
+    It 'revokes sign-in sessions by default on offboard' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'revoked sign-in sessions'
+    }
+
+    It 'does not revoke sessions when revokeSessions is false' {
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ revokeSessions = $false }) -MailboxSizeGB 10 | Out-Null
+        Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'disables Entra devices and captures their names when disableDevices is set' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ disableDevices = $true }) -MailboxSizeGB 10
+        Should -Invoke Update-MgDevice -ModuleName Coretelligent.M365 -ParameterFilter { $DeviceId -eq 'dev-1' } -Times 1 -Exactly
+        $r.Evidence.Devices.Count | Should -Be 1
+        $r.Evidence.Devices[0].DisplayName | Should -Be 'LT-JDOE'
+        ($r.Actions -join ' ') | Should -Match 'disabled Entra device: LT-JDOE'
+    }
+
+    It 'captures device evidence without disabling when only captureDevices is set' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ captureDevices = $true }) -MailboxSizeGB 10
+        Should -Invoke Update-MgDevice -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        $r.Evidence.Devices.Count | Should -Be 1
     }
 
     It 'blocks sign-in, captures group evidence, and removes all groups' {

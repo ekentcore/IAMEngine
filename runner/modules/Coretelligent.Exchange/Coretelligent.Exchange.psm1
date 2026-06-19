@@ -473,6 +473,34 @@ function Invoke-CtgExchangeOffboarding {
         }
     }
 
+    # 1b. Grant the manager Full Access to the mailbox (so they can retrieve mail) -------
+    # config.delegateManagerFullAccess: $true uses the case's manager; a string sets an explicit
+    # address. AutoMapping adds the mailbox to the manager's Outlook automatically. Idempotent.
+    $delegate = Get-CtgProp $Config 'delegateManagerFullAccess'
+    if ($delegate) {
+        $mgr =
+            if ($delegate -is [string]) { $delegate }
+            elseif (Get-CtgProp $delegate 'address') { [string](Get-CtgProp $delegate 'address') }
+            else { [string]((Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerUpn') ?? (Get-CtgProp $User 'Manager')) }
+        if (-not $mgr) {
+            $actions.Add("WARN delegateManagerFullAccess set but no manager on the case — Full Access delegate skipped")
+        }
+        else {
+            $already = @(Get-MailboxPermission -Identity $upn -ErrorAction SilentlyContinue) |
+                Where-Object { (@($_.AccessRights) -contains 'FullAccess') -and ("$($_.User)" -eq $mgr -or "$($_.User)" -like "*$mgr*") }
+            if ($already) {
+                $actions.Add("manager $mgr already has Full Access — no change")
+            }
+            elseif ($PSCmdlet.ShouldProcess($upn, "Grant $mgr Full Access")) {
+                try {
+                    Add-MailboxPermission -Identity $upn -User $mgr -AccessRights FullAccess -AutoMapping:$true -ErrorAction Stop | Out-Null
+                    $actions.Add("granted manager $mgr Full Access to the mailbox (AutoMapping on)")
+                }
+                catch { $actions.Add("WARN could not grant $mgr Full Access: $($_.Exception.Message)") }
+            }
+        }
+    }
+
     # 2. On-request out-of-office --------------------------------------------
     $autoReply = Get-CtgProp $Config 'autoReply'
     $message = if ($autoReply) { Get-CtgProp $autoReply 'message' } else { $null }

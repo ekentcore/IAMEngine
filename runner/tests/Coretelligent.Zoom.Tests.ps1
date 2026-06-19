@@ -67,6 +67,29 @@ Describe 'Invoke-CtgZoomOffboarding' {
         $r = Invoke-CtgZoomOffboarding -User $user -Config ([pscustomobject]@{})
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PUT' -and $Path -match '/status' -and $Body.action -eq 'deactivate' } -Times 1
     }
+
+    It 'revokes the SSO token after deactivating (by default)' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ id = 'zoom-1' } }
+            return $null
+        }
+        $r = Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{})
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'DELETE' -and $Path -match '/token$' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'revoked Zoom SSO token'
+    }
+
+    It 'does NOT revoke a token on delete (the user is gone) and skips it when revokeSso is false' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ id = 'zoom-1' } }
+            return $null
+        }
+        Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{ delete = $true }) | Out-Null
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Path -match '/token$' } -Times 0 -Exactly
+        Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{ revokeSso = $false }) | Out-Null
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Path -match '/token$' } -Times 0 -Exactly
+    }
 }
 
 Describe 'Connect-CtgZoom' {

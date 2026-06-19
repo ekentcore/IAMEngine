@@ -284,6 +284,32 @@ function Invoke-CtgADOffboarding {
     $memberships = @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection)
     $groupNames = @($memberships | ForEach-Object { $_.Name })
     $actions.Add("captured $($groupNames.Count) group membership(s) as evidence")
+
+    # 2a. Set "Disabled Users" as the PRIMARY group BEFORE stripping groups. A primary group can't be
+    # removed while it's primary, and every user must have one — so make the Disabled Users group
+    # primary first, which then lets remove-all-groups strip the original primary (e.g. Domain Users).
+    $primaryGroup = [string]((Get-CtgProp $Config 'disabledUsersPrimaryGroup') ?? (Get-CtgProp $Config 'disabledUsersGroup'))
+    if ($primaryGroup) {
+        if ($PSCmdlet.ShouldProcess($sam, "Set '$primaryGroup' as primary group")) {
+            try {
+                $grp = Get-ADGroup -Identity $primaryGroup -Properties primaryGroupToken @AdConnection
+                if (-not ($memberships | Where-Object { $_.Name -eq $grp.Name })) {
+                    Add-ADGroupMember -Identity $grp -Members $sam -ErrorAction Stop @AdConnection
+                    $actions.Add("added to $primaryGroup (for primary-group assignment)")
+                }
+                $current = (Get-ADUser -Identity $sam -Properties primaryGroupID @AdConnection).primaryGroupID
+                if ($current -eq $grp.primaryGroupToken) {
+                    $actions.Add("'$primaryGroup' is already the primary group — no change")
+                }
+                else {
+                    Set-ADUser -Identity $sam -Replace @{ primaryGroupID = $grp.primaryGroupToken } @AdConnection
+                    $actions.Add("set '$primaryGroup' as the primary group")
+                }
+            }
+            catch { $actions.Add("WARN could not set '$primaryGroup' as primary group: $($_.Exception.Message)") }
+        }
+    }
+
     if ((Get-CtgProp $Config 'removeAllGroups')) {
         foreach ($g in $memberships) {
             if ($g.Name -eq 'Domain Users') { continue }   # primary group — not removable this way
@@ -366,9 +392,39 @@ function Invoke-CtgADOffboarding {
         }
     }
 
+    # 7. Disable + move the user's COMPUTER object. The machine name comes from the case (the Entra
+    # device resolved by the M365 step, or config.computerName) — never guessed. Disable, then move to
+    # the Disabled Computers OU when configured. Idempotent; a clean note when the computer isn't found.
+    $computerInfo = $null
+    $computerName = [string]((Get-CtgProp $Config 'computerName') ?? (Get-CtgProp $User 'computerName') ?? (Get-CtgProp $User 'deviceName') ?? (Get-CtgProp $User 'EntraDeviceName'))
+    if ((Get-CtgProp $Config 'disableComputer') -and $computerName) {
+        try {
+            $comp = Get-ADComputer -Identity $computerName -Properties DistinguishedName, Enabled -ErrorAction SilentlyContinue @AdConnection
+            if (-not $comp) {
+                $actions.Add("computer '$computerName' not found in AD — nothing to disable")
+            }
+            else {
+                $computerInfo = @{ Name = $comp.Name; DistinguishedName = $comp.DistinguishedName }
+                if ($comp.Enabled -eq $false) {
+                    $actions.Add("computer '$computerName' already disabled")
+                }
+                elseif ($PSCmdlet.ShouldProcess($computerName, "Disable computer")) {
+                    Disable-ADAccount -Identity $comp.DistinguishedName @AdConnection
+                    $actions.Add("disabled computer: $computerName")
+                }
+                $compOu = Get-CtgProp $Config 'disabledComputersOu'
+                if ($compOu -and "$compOu" -match '(?i)dc=' -and $PSCmdlet.ShouldProcess($computerName, "Move computer to $compOu")) {
+                    Move-ADObject -Identity $comp.DistinguishedName -TargetPath $compOu @AdConnection
+                    $actions.Add("moved computer '$computerName' to $compOu")
+                }
+            }
+        }
+        catch { $actions.Add("WARN could not disable computer '$computerName': $($_.Exception.Message)") }
+    }
+
     [pscustomobject]@{
         System='active-directory'; Status='ok'; Sam=$sam
-        Evidence=@{ Groups = $groupNames }
+        Evidence=@{ Groups = $groupNames; Computer = $computerInfo }
         Actions=$actions.ToArray()
     }
 }

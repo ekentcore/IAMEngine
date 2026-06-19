@@ -131,6 +131,34 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
         Should -Invoke Set-MailboxAutoReplyConfiguration -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $AutoReplyState -eq 'Enabled' }
     }
+
+    It 'grants the case manager Full Access (AutoMapping) when delegateManagerFullAccess is set' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }   # not yet delegated
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com'; ManagerEmail = 'boss@61commodities.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'boss@61commodities.com' -and @($AccessRights) -contains 'FullAccess' -and $AutoMapping }
+        ($r.Actions -join ' ') | Should -Match 'granted manager boss@61commodities.com Full Access'
+    }
+
+    It 'is idempotent — no re-grant when the manager already has Full Access' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ User = 'boss@61commodities.com'; AccessRights = @('FullAccess') }) }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com'; ManagerEmail = 'boss@61commodities.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'already has Full Access'
+    }
+
+    It 'warns (does not fail) when delegateManagerFullAccess is set but no manager is on the case' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'no manager on the case'
+    }
 }
 
 Describe 'Connect-CtgExchange' {

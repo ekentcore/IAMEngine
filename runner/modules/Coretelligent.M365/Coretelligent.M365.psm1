@@ -800,6 +800,18 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
+    # 2b. Revoke active sign-in sessions (invalidates issued tokens / forces re-auth) ----
+    # Blocking sign-in stops NEW logins; existing refresh tokens stay valid until revoked.
+    if ((Get-CtgProp $Config 'revokeSessions') -ne $false) {
+        if ($PSCmdlet.ShouldProcess($upn, "Revoke sign-in sessions")) {
+            try {
+                Revoke-MgUserSignInSession -UserId $userId -ErrorAction Stop | Out-Null
+                $actions.Add("revoked sign-in sessions (issued tokens invalidated)")
+            }
+            catch { $actions.Add("WARN could not revoke sign-in sessions: $($_.Exception.Message)") }
+        }
+    }
+
     # 3. Remove from all groups (evidence already captured) --------------------
     if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
         foreach ($g in $groupEvidence) {
@@ -811,6 +823,36 @@ function Invoke-CtgM365Offboarding {
                 catch { $actions.Add("WARN could not remove from $($g.DisplayName): $($_.Exception.Message)") }
             }
         }
+    }
+
+    # 3b. Disable the user's Entra-registered devices, and surface their names ----
+    # The device name(s) are the single source for downstream endpoint steps (SentinelOne
+    # isolate/shutdown, the AD computer-object disable) — captured as evidence either way so a
+    # later step / operator can resolve the machine even when device-disable itself is off.
+    $deviceEvidence = @()
+    $disableDevices = Get-CtgProp $Config 'disableDevices'
+    if ($disableDevices -or (Get-CtgProp $Config 'captureDevices')) {
+        try {
+            $devices = @(Get-MgUserRegisteredDevice -UserId $userId -All -ErrorAction SilentlyContinue) |
+                Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.device' }
+            $deviceEvidence = foreach ($d in $devices) {
+                [pscustomobject]@{ Id = $d.Id; DisplayName = (Get-CtgProp $d.AdditionalProperties 'displayName') }
+            }
+            $deviceEvidence = @($deviceEvidence)
+            $actions.Add("captured $($deviceEvidence.Count) Entra device(s) as evidence: $((@($deviceEvidence | ForEach-Object { $_.DisplayName }) -join ', '))")
+            if ($disableDevices) {
+                foreach ($d in $deviceEvidence) {
+                    if ($PSCmdlet.ShouldProcess($d.DisplayName, "Disable Entra device")) {
+                        try {
+                            Invoke-CtgM365Write { Update-MgDevice -DeviceId $d.Id -AccountEnabled:$false }
+                            $actions.Add("disabled Entra device: $($d.DisplayName)")
+                        }
+                        catch { $actions.Add("WARN could not disable Entra device $($d.DisplayName): $($_.Exception.Message)") }
+                    }
+                }
+            }
+        }
+        catch { $actions.Add("WARN could not enumerate Entra devices: $($_.Exception.Message)") }
     }
 
     # 4. OneDrive backup — flagged for the data-transfer step (not done inline) -
@@ -841,7 +883,7 @@ function Invoke-CtgM365Offboarding {
         Status   = 'ok'
         UserId   = $userId
         Upn      = $upn
-        Evidence = @{ Groups = @($groupEvidence) }
+        Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence) }
         Actions  = $actions.ToArray()
     }
 }

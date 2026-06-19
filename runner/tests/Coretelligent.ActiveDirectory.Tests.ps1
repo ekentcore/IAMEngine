@@ -18,6 +18,8 @@ BeforeAll {
     function global:Disable-ADAccount { [CmdletBinding()] param($Identity, $Server, $Credential) }
     function global:Move-ADObject { [CmdletBinding()] param($Identity, $TargetPath, $Server, $Credential) }
     function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword, $Server, $Credential) }
+    function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Properties, $Server, $Credential) }
+    function global:Get-ADComputer { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
 
     Import-Module $ModulePath -Force
 }
@@ -124,6 +126,7 @@ Describe 'Invoke-CtgADOffboarding' {
         }
         Mock Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -MockWith { }
         Mock Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -MockWith { }
         Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
         Mock Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -MockWith { }
         Mock Move-ADObject -ModuleName Coretelligent.ActiveDirectory -MockWith { }
@@ -177,6 +180,34 @@ Describe 'Invoke-CtgADOffboarding' {
         $r = Invoke-CtgADOffboarding -User $user -Config $config
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.description -eq 'Offboarded' }
         ($r.Actions -join ' ') | Should -Match 'description=Offboarded'
+    }
+
+    It 'sets the Disabled Users group as the primary group before stripping groups' {
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ Name='Disabled Users'; primaryGroupToken=1234 } }
+        # The second Get-ADUser (reading primaryGroupID) returns a different current primary -> a change is made.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'primaryGroupID' } -MockWith { [pscustomobject]@{ primaryGroupID=513 } }
+        $config = [pscustomobject]@{ disableAccount=$true; removeAllGroups=$true; disabledUsersPrimaryGroup='Disabled Users'; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Members -eq 'jdoe' } -Times 1
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.primaryGroupID -eq 1234 } -Times 1
+        ($r.Actions -join ' ') | Should -Match "set 'Disabled Users' as the primary group"
+    }
+
+    It 'disables and moves the computer object when disableComputer is set (machine from the case)' {
+        Mock Get-ADComputer -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ Name='LT-JDOE'; DistinguishedName='CN=LT-JDOE,OU=Computers,DC=x'; Enabled=$true } }
+        $config = [pscustomobject]@{ disableAccount=$true; disableComputer=$true; computerName='LT-JDOE'; disabledComputersOu='OU=Disabled Computers,DC=x'; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=LT-JDOE,OU=Computers,DC=x' } -Times 1
+        Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $TargetPath -eq 'OU=Disabled Computers,DC=x' } -Times 1
+        $r.Evidence.Computer.Name | Should -Be 'LT-JDOE'
+        ($r.Actions -join ' ') | Should -Match 'disabled computer: LT-JDOE'
+    }
+
+    It 'notes when the computer object is not found (no machine in AD)' {
+        Mock Get-ADComputer -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        $config = [pscustomobject]@{ disableAccount=$true; disableComputer=$true; computerName='GONE-PC'; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        ($r.Actions -join ' ') | Should -Match "computer 'GONE-PC' not found"
     }
 }
 

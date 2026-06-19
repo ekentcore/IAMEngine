@@ -136,10 +136,25 @@ function Invoke-CtgZoomOffboarding {
             Invoke-CtgZoomApi -Method DELETE -Path "/users/$email" | Out-Null
             $actions.Add("deleted Zoom user: $email")
         }
+        # A deleted user has no session to revoke — the DELETE already ends access.
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
-    elseif ($PSCmdlet.ShouldProcess($email, "Deactivate Zoom user")) {
+
+    if ($PSCmdlet.ShouldProcess($email, "Deactivate Zoom user")) {
         Invoke-CtgZoomApi -Method PUT -Path "/users/$email/status" -Body @{ action = 'deactivate' } | Out-Null
         $actions.Add("deactivated Zoom user: $email")
+    }
+
+    # Revoke the SSO token / sign the user out of all sessions — deactivation blocks new logins
+    # but doesn't end live sessions. DELETE /users/{id}/token revokes the user's SSO token.
+    if ((Get-CtgProp $Config 'revokeSso') -ne $false) {
+        if ($PSCmdlet.ShouldProcess($email, "Revoke Zoom SSO token")) {
+            try {
+                Invoke-CtgZoomApi -Method DELETE -Path "/users/$email/token" | Out-Null
+                $actions.Add("revoked Zoom SSO token (signed out of all sessions)")
+            }
+            catch { $actions.Add("WARN could not revoke Zoom SSO token: $($_.Exception.Message)") }
+        }
     }
 
     [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
