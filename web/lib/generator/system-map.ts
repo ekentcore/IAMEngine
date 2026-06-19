@@ -41,6 +41,9 @@ export const CATALOG: Record<string, CatalogEntry> = {
   duo:               { mode: "api", tier: 3, onboard: null, offboard: "always", secret: "duo", dependsOn: ["m365"] },
   xmatters:          { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "xmatters" },
   logicmonitor:      { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "logicmonitor" },
+  // Offboard completion notice (Graph sendMail via m365-admin): communication email + SN case note.
+  // Runs LAST — its per-client dependsOn lists the other offboard steps.
+  notify:            { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   teams:             { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "teams-admin", dependsOn: ["m365"] },
   avd:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   "1password":       { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "1password" },

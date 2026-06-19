@@ -601,6 +601,18 @@ $DISPATCH = @{
         Offboard = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Invoke-CtgLogicMonitorOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Confirm-CtgLogicMonitor -User $job.payload -Config $job.config -Action $job.action }
     }
+    'notify' = @{
+        # Sends offboard emails via Graph sendMail using the m365-admin app — reuse the m365 Connect so
+        # the ambient Microsoft.Graph context (Send-MgUserMail) is established. Runs last in the offboard.
+        Connect  = { param($job, $creds)
+            $tenant = Get-CtgTenantDomain $job $creds
+            Set-CtgPhase $job.id "connecting to Graph for notifications (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
+            Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
+        }
+        Onboard  = { param($job, $creds) Invoke-CtgNotifyOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgNotifyOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgNotify -User $job.payload -Config $job.config -Action $job.action }
+    }
 }
 
 # entra is the Entra-ID slice of the M365 module — same executor + read-backs (catalog
