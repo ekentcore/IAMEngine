@@ -393,6 +393,19 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  // Release an approval-gated (destructive) step so a runner can claim it. approvedBy defaults to the
+  // signed-in operator server-side.
+  async function approve(stepSeq: number, jobId: string | undefined) {
+    if (!jobId) return;
+    setBusy(`approve-${stepSeq}`);
+    try {
+      await fetch(`/api/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function verifyAll() {
     setBusy("verify");
     try {
@@ -534,6 +547,17 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   onClick={(e) => { e.preventDefault(); rerun(step.seq, step.jobId); }}
                 >
                   {busy === `rerun-${step.seq}` ? "re-running…" : "re-run / re-validate"}
+                </button>
+              )}
+              {/* An approval-gated (destructive) step — release it so a runner can claim it. */}
+              {step.verdict === "needs_approval" && step.jobId && (
+                <button
+                  className="primary"
+                  style={{ marginLeft: 8, fontSize: 11 }}
+                  disabled={busy === `approve-${step.seq}`}
+                  onClick={(e) => { e.preventDefault(); approve(step.seq, step.jobId); }}
+                >
+                  {busy === `approve-${step.seq}` ? "approving…" : "✓ Approve step"}
                 </button>
               )}
               {/* Manual / skipped steps an operator does by hand — mark them done so the case can

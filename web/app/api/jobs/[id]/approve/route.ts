@@ -8,13 +8,11 @@ import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.approve_destructive"); if (_g.res) return _g.res;
-  let body: { approvedBy?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
-  }
-  const approvedBy = typeof body.approvedBy === "string" ? body.approvedBy.trim() : "";
+  // Body is optional — approvedBy defaults to the authenticated operator (so the UI can approve with
+  // a single click and still record WHO approved).
+  let body: { approvedBy?: unknown } = {};
+  try { body = await request.json(); } catch { /* no/empty body is fine — fall back to the operator */ }
+  const approvedBy = (typeof body.approvedBy === "string" && body.approvedBy.trim()) || _g.user.email;
   if (!approvedBy) return NextResponse.json({ error: "approvedBy is required" }, { status: 422 });
 
   try {
