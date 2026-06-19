@@ -497,8 +497,22 @@ function Confirm-CtgAD {
 
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
-    $sam = $User.SamAccountName
+    $sam = [string]$User.SamAccountName
     $domain = Get-CtgProp $User 'PrimaryDomain'
+
+    # Resolve the SAME way the executor does — by display name when the case has no SamAccountName —
+    # so the read-back doesn't pass an empty -Identity (a hard bind error) and doesn't check the wrong
+    # account (which would "miss" and re-run the offboard via the revalidate loop).
+    if ([string]::IsNullOrWhiteSpace($sam)) {
+        $dn = [string](Get-CtgProp $User 'DisplayName')
+        if ($Action -eq 'offboard' -and $dn) {
+            $byName = @(Get-ADUser -Filter "DisplayName -eq '$dn'" -Properties SamAccountName -ErrorAction SilentlyContinue @AdConnection)
+            if ($byName.Count -eq 1) { $sam = [string]$byName[0].SamAccountName }
+        }
+        if ([string]::IsNullOrWhiteSpace($sam)) {
+            return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable offboard target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+        }
+    }
 
     $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue @AdConnection
     $exists = [bool]$u

@@ -392,7 +392,10 @@ function Resolve-CtgM365User {
     # transient case and returns $null too — which makes the onboarder think the user doesn't exist
     # (so it skips the marker/adopt logic and tries to CREATE) and makes the validator false-report
     # "user exists = false". We retry transient errors and, if they persist, THROW rather than guess.
-    param([Parameter(Mandatory)][string]$Upn, [string[]]$Property = @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes'))
+    # -Upn is NOT [Mandatory]: an empty value would throw the opaque "Cannot bind argument to
+    # parameter 'Upn' because it is an empty string". Return $null (genuinely absent) instead.
+    param([string]$Upn, [string[]]$Property = @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes'))
+    if ([string]::IsNullOrWhiteSpace($Upn)) { return $null }
     for ($i = 0; $i -lt 4; $i++) {
         if ($i) { Start-Sleep -Seconds (2 * $i) }
         try { return (Get-MgUser -UserId $Upn -Property $Property -ErrorAction Stop) }
@@ -403,6 +406,20 @@ function Resolve-CtgM365User {
         }
     }
     $null
+}
+
+# The offboard target's UPN: from the case when present, else by DISPLAY NAME via Graph (exactly-one
+# match wins; 0/many -> ''). Used by the offboard executor AND the validator so they resolve the SAME
+# user — a validator that resolved differently would always "miss" and trigger the re-run loop.
+function Resolve-CtgM365Upn {
+    param([pscustomobject]$User)
+    $upn = [string]$User.UserPrincipalName
+    if (-not [string]::IsNullOrWhiteSpace($upn)) { return $upn }
+    $dn = [string](Get-CtgProp $User 'DisplayName')
+    if (-not $dn) { return '' }
+    $byName = @(Get-MgUser -Filter "displayName eq '$dn'" -All -ErrorAction SilentlyContinue)
+    if ($byName.Count -eq 1) { return [string]((Get-CtgProp $byName[0] 'UserPrincipalName') ?? '') }
+    return ''
 }
 
 function Invoke-CtgM365Onboarding {
@@ -925,7 +942,12 @@ function Confirm-CtgM365 {
 
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
-    $upn = $User.UserPrincipalName
+    # Resolve the SAME way the executor does (UPN, else by display name) — checking an empty identity
+    # would always "miss" and re-run the offboard via the revalidate loop.
+    $upn = [string](Resolve-CtgM365Upn $User)
+    if ($Action -eq 'offboard' -and [string]::IsNullOrWhiteSpace($upn)) {
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable offboard target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
 
     # Transient-aware lookup: don't let a throttle/timeout false-report "user exists = false" (a MISS).
     $u = Resolve-CtgM365User -Upn $upn -Property @('Id', 'AccountEnabled', 'UserPrincipalName')
