@@ -85,10 +85,28 @@ const SPECS: Spec[] = [
     config: { sender: NOTIFY_SENDER, recipients: OFFBOARD_RECIPIENTS, caseNoteAddress: "internalsupport@core.tech" } },
 ];
 
+// The new offboard systems aren't in SystemCatalog until `prisma db seed` runs; ClientSystem has a
+// FK to SystemCatalog.key, so ensure these rows exist first (idempotent — matches seed.ts).
+const NEW_CATALOG: Array<[string, string, number, string]> = [
+  ["sentinelone", "SentinelOne", 2, "Coretelligent.SentinelOne"],
+  ["duo", "Duo Security", 3, "Coretelligent.Duo"],
+  ["xmatters", "xMatters", 3, "Coretelligent.XMatters"],
+  ["logicmonitor", "LogicMonitor", 3, "Coretelligent.LogicMonitor"],
+  ["notify", "Offboard notification", 3, "Coretelligent.Notify"],
+];
+
 async function main() {
   const client = await db.client.findUnique({ where: { slug: SLUG } });
   if (!client) throw new Error(`no client with slug '${SLUG}' — set CLIENT_SLUG or seed the client first`);
   console.log(`${APPLY ? "WIRING" : "DRY RUN —"} offboard for ${client.name} (${client.slug})\n`);
+
+  if (APPLY) {
+    for (const [key, name, buildTier, moduleName] of NEW_CATALOG) {
+      await db.systemCatalog.upsert({
+        where: { key }, update: { name, buildTier, moduleName }, create: { key, name, buildTier, moduleName },
+      });
+    }
+  }
 
   for (const s of SPECS) {
     const config = {
