@@ -1,5 +1,6 @@
 // Clients list (server component). Reads Prisma directly — no HTTP round-trip — and
 // auto-syncs from ServiceNow when the roster is stale.
+import Link from "next/link";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { syncIfStale } from "@/lib/clients/stale-check";
@@ -30,6 +31,7 @@ export default async function ClientsPage() {
             {lastSync ? `last synced ${lastSync.toLocaleString()}` : "never synced"}
           </p>
         </div>
+        <Link href="/clients/review" className="note" style={{ alignSelf: "flex-start" }}>⊞ Config review (email formats + runbooks)</Link>
       </div>
       <ClientsTable clients={clients.map(serialize)} />
     </main>
