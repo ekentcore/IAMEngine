@@ -53,3 +53,37 @@ test("extractMirrorUser: pulls the reference user from free text, else null", ()
   assert.equal(extractMirrorUser("no mirror directive here"), null);
   assert.equal(extractMirrorUser(""), null);
 });
+
+// An offboarding incident (different subcategory + the departing user's identity).
+const OFFB = {
+  number: fv("INC0844048"),
+  short_description: fv("Offboarding - 06/30/2026 - Jordan Park"),
+  subcategory: fv("user_offboarding", "User / Off-Boarding"),
+  company: fv("d8d9...sysid", "Coretelligent"),
+  opened_by: fv("smoore", "Sammi Moore"),
+  "variables.u_first_name": fv("Jordan"),
+  "variables.u_last_name": fv("Park"),
+  "variables.u_email": fv("jordan.park@coretelligent.com"),
+  "variables.u_department": fv("Sales", "Sales"),
+  "variables.u_last_day": fv("06/30/2026"),
+  "variables.u_computer_name": fv("LT-JPARK"),
+};
+
+test("normalizeIncidentIntake: routes an offboarding incident to the offboard payload", () => {
+  const intake = normalizeIncidentIntake(OFFB as never);
+  assert.equal(intake.action, "offboard");
+  assert.equal(intake.caseNumber, "INC0844048");
+  const p = intake.payload as Record<string, unknown>;
+  assert.equal(p.userToOffboard, "Jordan Park");
+  assert.equal(p.displayName, "Jordan Park");
+  assert.equal(p.UserPrincipalName, "jordan.park@coretelligent.com");
+  assert.equal(p.email, "jordan.park@coretelligent.com");
+  assert.equal(p.department, "Sales");
+  assert.equal(p.endDate, "06/30/2026");
+  assert.equal(p.computerName, "LT-JPARK");
+});
+
+test("normalizeIncidentIntake: 'off-boarding' is not misread as onboarding", () => {
+  assert.equal(normalizeIncidentIntake(OFFB as never).action, "offboard");
+  assert.equal(normalizeIncidentIntake(AVNI as never).action, "onboard");
+});

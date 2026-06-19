@@ -1,6 +1,6 @@
 // Map a ServiceNow onboarding INCIDENT (record-producer variables) to the same NormalizedIntake
 // shape the UM mapper produces, so it flows through the identical planning path. No I/O; unit-tested.
-import type { SnIncidentRecord } from "./incident-intake";
+import { incidentAction, type SnIncidentRecord } from "./incident-intake";
 import type { NormalizedIntake } from "./intake-mapper";
 
 type Cell = { value?: string; display_value?: string } | string | null | undefined;
@@ -82,13 +82,45 @@ function onboardPayload(r: SnIncidentRecord): Record<string, unknown> {
   };
 }
 
-export function normalizeIncidentIntake(r: SnIncidentRecord): NormalizedIntake {
-  // The producer is onboarding-only today; offboarding incidents would route here later.
+// First non-empty value among several candidate producer variables (forms vary by revision).
+function firstVar(r: SnIncidentRecord, names: string[], display = false): string {
+  for (const n of names) {
+    const value = display ? vd(r, n) : v(r, n);
+    if (value) return value;
+  }
+  return "";
+}
+
+function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {
+  const firstName = v(r, "u_first_name");
+  const lastName = v(r, "u_last_name");
+  const fullName = firstVar(r, ["u_full_name", "u_display_name", "u_name", "u_user", "u_employee", "u_offboard_user"], true) || [firstName, lastName].filter(Boolean).join(" ");
+  // The executors resolve the EXISTING user by UPN/email. Use one from the incident when present;
+  // otherwise the operator confirms the target on the (auto-paused) case before resuming.
+  const email = firstVar(r, ["u_user_principal_name", "u_upn", "u_email", "u_user_email", "u_username"]);
   return {
-    action: "onboard",
+    userToOffboard: fullName || disp(r, "short_description") || null,
+    displayName: fullName || null,
+    firstName: orNull(firstName),
+    lastName: orNull(lastName),
+    UserPrincipalName: orNull(email),
+    email: orNull(email),
+    department: orNull(vd(r, "u_department")),
+    endDate: orNull(firstVar(r, ["u_last_day", "u_end_date", "u_termination_date"])),
+    managerName: orNull(firstVar(r, ["u_manager"], true)),
+    computerName: orNull(firstVar(r, ["u_computer_name", "u_computer"])),
+    requestedBy: orNull(disp(r, "opened_by")),
+    description: orNull(v(r, "description")),
+  };
+}
+
+export function normalizeIncidentIntake(r: SnIncidentRecord): NormalizedIntake {
+  const action = incidentAction(r) ?? "onboard";
+  return {
+    action,
     clientSysId: orNull(raw(r, "company")),
     caseNumber: raw(r, "number") || "",
-    subject: disp(r, "short_description") || raw(r, "number") || "Internal onboarding",
-    payload: onboardPayload(r),
+    subject: disp(r, "short_description") || raw(r, "number") || (action === "offboard" ? "Internal offboarding" : "Internal onboarding"),
+    payload: action === "offboard" ? offboardPayload(r) : onboardPayload(r),
   };
 }

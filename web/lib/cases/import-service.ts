@@ -4,7 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { fetchUserManagementCase } from "../servicenow/intake";
 import { normalizeIntake } from "../servicenow/intake-mapper";
-import { fetchOnboardingIncident, isOnboardingIncident } from "../servicenow/incident-intake";
+import { fetchOnboardingIncident, incidentAction } from "../servicenow/incident-intake";
 import { normalizeIncidentIntake } from "../servicenow/incident-mapper";
 import { makeCaseRepository } from "./repository";
 import { createAndPlanCase, type PlanOutcome } from "./planning-service";
@@ -96,8 +96,8 @@ export async function importIncidentCase(
 
   const raw = await fetchOnboardingIncident(snConfigFromEnv(), trimmed);
   if (!raw) return { ok: false, error: `no ServiceNow incident found for ${trimmed}`, code: "not_found" };
-  if (!isOnboardingIncident(raw)) {
-    return { ok: false, error: `${trimmed} isn't an onboarding incident (subcategory "User / On-Boarding")`, code: "not_found" };
+  if (!incidentAction(raw)) {
+    return { ok: false, error: `${trimmed} isn't a user on/off-boarding incident (subcategory "User / On-Boarding" or "User / Off-Boarding")`, code: "not_found" };
   }
 
   const intake = normalizeIncidentIntake(raw);
