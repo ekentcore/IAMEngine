@@ -56,8 +56,11 @@ const SPECS: Spec[] = [
     config: { convertToShared: { skipIfMailboxOverGB: 50 }, delegateManagerFullAccess: true,
               blockMobileDevices: true, onPremExchangeUri: ON_PREM_EXCHANGE_URI } },
 
-  // 2. Push the on-prem convert to the cloud, then the cloud steps can confirm SharedMailbox.
-  { systemKey: "directory-sync", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange"], config: { host: AZSYNC_HOST } },
+  // 2. Push the on-prem changes (AD disable + group/licensing-group removals) to the cloud. Runs
+  //    AFTER active-directory so it actually carries those removals — that's what drops the
+  //    group-based E3 license in Entra. (The hybrid mailbox convert has its OWN inline sync in the
+  //    exchange step, so this isn't on the convert's critical path.)
+  { systemKey: "directory-sync", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange", "active-directory"], config: { host: AZSYNC_HOST } },
 
   // 3. Entra: block sign-in + revoke sessions + disable & capture the registered device(s).
   { systemKey: "entra", mode: "api", secretNames: ["m365-admin"], dependsOn: ["exchange"], captureEvidence: true,
@@ -67,8 +70,9 @@ const SPECS: Spec[] = [
   { systemKey: "m365", mode: "api", secretNames: ["m365-admin"], dependsOn: ["exchange"],
     config: { removeLicense: {}, mailbox: { sizeThresholdGB: 50 } } },
 
-  // 5. AD: disable user, set Disabled-Users primary group, strip groups, disable + move the computer.
-  { systemKey: "active-directory", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange", "directory-sync"],
+  // 5. AD: disable user, set Disabled-Users primary group, strip groups (incl. the on-prem-synced
+  //    licensing group), disable + move the computer. Runs after exchange; the sync follows IT.
+  { systemKey: "active-directory", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange"],
     captureEvidence: true,
     config: { resetPassword: true, removeAllGroups: true, disableAccount: true,
               disabledUsersPrimaryGroup: DISABLED_USERS_GROUP, disabledUsersOu: DISABLED_USERS_OU,
