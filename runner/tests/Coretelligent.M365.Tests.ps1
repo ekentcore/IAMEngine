@@ -13,7 +13,7 @@ BeforeAll {
     function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel) }
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
-    function global:Set-MgUserLicense {}
+    function global:Set-MgUserLicense { param($UserId, $AddLicenses, $RemoveLicenses) }
     function global:Get-MgGroup {}
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
@@ -319,6 +319,24 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r = Invoke-CtgM365Offboarding -User $user -Config $config -MailboxSizeGB 75
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly   # license kept
         ($r.Actions -join ' ') | Should -Match 'over threshold'
+    }
+
+    It 'removes only DIRECTLY-assigned licenses and reports group-assigned ones' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true; LicenseAssignmentStates = @(
+                [pscustomobject]@{ SkuId = 'sku-direct'; AssignedByGroup = $null },
+                [pscustomobject]@{ SkuId = 'sku-e3'; AssignedByGroup = 'grp-lic' }
+            ) }
+        }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @(
+            [pscustomobject]@{ SkuId = 'sku-direct'; SkuPartNumber = 'FLOW_FREE' },
+            [pscustomobject]@{ SkuId = 'sku-e3'; SkuPartNumber = 'SPE_E3' }
+        ) }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ DisplayName = 'M365 E3 Users Group' } }
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 } }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -ParameterFilter { ($RemoveLicenses -contains 'sku-direct') -and ($RemoveLicenses -notcontains 'sku-e3') } -Times 1
+        ($r.Actions -join ' ') | Should -Match "license 'SPE_E3' is GROUP-ASSIGNED by 'M365 E3 Users Group'"
     }
 
     It 'removes the license when under the threshold and removeLicense is requested' {

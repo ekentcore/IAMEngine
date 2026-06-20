@@ -908,7 +908,11 @@ function Invoke-CtgM365Offboarding {
     $oneDrive = Get-CtgProp $Config 'oneDriveBackup'
     if ($oneDrive) { $actions.Add("OneDrive backup required -> $((Get-CtgProp $oneDrive 'target'))") }
 
-    # 5. License removal — honor the mailbox size threshold --------------------
+    # 5. License removal — honor the mailbox size threshold. GROUP-BASED LICENSING: a license assigned
+    # via a GROUP can't be removed directly ("User license is inherited from a group membership and it
+    # cannot be removed directly from the user"). So remove only DIRECTLY-assigned licenses and REPORT
+    # which group assigns the rest — those drop when the user leaves that group (an on-prem-synced
+    # licensing group like "M365 E3 Users Group" is removed by the AD step, then AD Connect syncs it).
     $removeLicense = Get-CtgProp $Config 'removeLicense'
     $mailbox = Get-CtgProp $Config 'mailbox'
     $threshold = if ($mailbox) { [double]((Get-CtgProp $mailbox 'sizeThresholdGB') ?? 50) } else { 50 }
@@ -916,14 +920,30 @@ function Invoke-CtgM365Offboarding {
         if ($MailboxSizeGB -gt $threshold) {
             $actions.Add("license kept — mailbox $MailboxSizeGB GB is over threshold ($threshold GB); remove after mailbox handling")
         }
-        elseif ($PSCmdlet.ShouldProcess($upn, "Remove licenses")) {
-            $skus = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
-            if ($skus.Count) {
-                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $skus } | Out-Null
-                $actions.Add("removed $($skus.Count) license(s)")
+        elseif ($PSCmdlet.ShouldProcess($upn, "Remove directly-assigned licenses")) {
+            $userObj = Get-MgUser -UserId $userId -Property 'LicenseAssignmentStates' -ErrorAction SilentlyContinue
+            $states = @(@(Get-CtgProp $userObj 'LicenseAssignmentStates') | Where-Object { $_ })
+            $skuName = @{}; foreach ($d in @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue)) { $skuName[[string](Get-CtgProp $d 'SkuId')] = [string](Get-CtgProp $d 'SkuPartNumber') }
+            if ($states.Count) {
+                $direct  = @($states | Where-Object { [string]::IsNullOrEmpty([string]$_.AssignedByGroup) } | ForEach-Object { [string]$_.SkuId } | Where-Object { $_ } | Select-Object -Unique)
+                $byGroup = @($states | Where-Object { -not [string]::IsNullOrEmpty([string]$_.AssignedByGroup) })
             } else {
-                $actions.Add("no licenses to remove")
+                # No assignment-state detail — fall back to removing whatever's directly assignable.
+                $direct = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.SkuId }); $byGroup = @()
             }
+            if ($direct.Count) {
+                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $direct } | Out-Null
+                $actions.Add("removed $($direct.Count) directly-assigned license(s)")
+            }
+            $seen = @{}
+            foreach ($s in $byGroup) {
+                $key = "$([string]$s.SkuId)|$([string]$s.AssignedByGroup)"; if ($seen.ContainsKey($key)) { continue }; $seen[$key] = $true
+                $gName = try { [string](Get-MgGroup -GroupId $s.AssignedByGroup -ErrorAction SilentlyContinue).DisplayName } catch { '' }
+                if (-not $gName) { $gName = [string]$s.AssignedByGroup }
+                $sName = if ($skuName.ContainsKey([string]$s.SkuId)) { $skuName[[string]$s.SkuId] } else { [string]$s.SkuId }
+                $actions.Add("license '$sName' is GROUP-ASSIGNED by '$gName' — it drops when the user leaves that group (on-prem-synced licensing groups are removed by the AD step), not via direct removal")
+            }
+            if (-not $direct.Count -and -not $byGroup.Count) { $actions.Add("no licenses to remove") }
         }
     }
 
