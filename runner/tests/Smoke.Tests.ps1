@@ -32,6 +32,19 @@ Describe 'Runner wiring smoke' {
         }
     }
 
+    It 'Start-IamRunner.ps1 Import-Modules the module behind EVERY dispatched function' {
+        # Catches "added a DISPATCH lane + Use-*Secret but forgot the Import-Module" — the smoke
+        # BeforeAll imports every .psm1 itself, so it can't see what the RUNNER actually loads.
+        $runner = Get-Content "$Root/Start-IamRunner.ps1" -Raw
+        $imported = @([regex]::Matches($runner, 'modules/(Coretelligent\.[A-Za-z0-9]+)/') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $referenced = @([regex]::Matches($runner, '\b((?:Invoke|Confirm|Connect)-Ctg[A-Za-z0-9]+)\b') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        foreach ($fn in $referenced) {
+            $cmd = Get-Command $fn -ErrorAction SilentlyContinue
+            if (-not $cmd -or $cmd.ModuleName -notlike 'Coretelligent.*') { continue }  # runner-local helper -> not a module import
+            $imported | Should -Contain $cmd.ModuleName -Because "$fn lives in $($cmd.ModuleName) — Start-IamRunner.ps1 must Import-Module it"
+        }
+    }
+
     It 'every module manifest parses and declares its root + exports' {
         # Import-PowerShellDataFile validates the manifest as data without resolving its
         # RequiredModules (Graph / ActiveDirectory aren't installed in this test environment).
