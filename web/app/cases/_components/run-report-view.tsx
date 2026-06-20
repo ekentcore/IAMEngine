@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
+import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -395,6 +396,20 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  // Ignore a warning/failed step the operator deems acceptable (e.g. a group that's intentionally
+  // kept). Resolves its run-log fingerprint — sticky: re-runs of the same line inherit the
+  // resolution. "↺ un-ignore" reverses it.
+  async function ignoreWarning(stepSeq: number, fingerprint: string | null, undo: boolean) {
+    if (!fingerprint) return;
+    setBusy(`ignore-${stepSeq}`);
+    try {
+      undo ? await reopenOutcomes(fingerprint) : await resolveOutcomes(fingerprint);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   // Release an approval-gated (destructive) step so a runner can claim it. approvedBy defaults to the
   // signed-in operator server-side.
   async function approve(stepSeq: number, jobId: string | undefined) {
@@ -550,6 +565,29 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 >
                   {busy === `rerun-${step.seq}` ? "re-running…" : "re-run / re-validate"}
                 </button>
+              )}
+              {/* Ignore an intentional warning/failure ("mark as complete") — or un-ignore it. */}
+              {(step.verdict === "warning" || step.verdict === "failed") && step.fingerprint && (
+                <button
+                  style={{ marginLeft: 8, fontSize: 11, color: "#92400e" }}
+                  disabled={busy === `ignore-${step.seq}`}
+                  title="Mark this warning acceptable — clears it here and in the run log, and stays cleared on re-runs"
+                  onClick={(e) => { e.preventDefault(); ignoreWarning(step.seq, step.fingerprint, false); }}
+                >
+                  {busy === `ignore-${step.seq}` ? "…" : "✓ ignore warning — mark complete"}
+                </button>
+              )}
+              {step.accepted && step.fingerprint && (
+                <>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "#15803d" }}>✓ accepted (ignored)</span>
+                  <button
+                    style={{ marginLeft: 6, fontSize: 11 }}
+                    disabled={busy === `ignore-${step.seq}`}
+                    onClick={(e) => { e.preventDefault(); ignoreWarning(step.seq, step.fingerprint, true); }}
+                  >
+                    {busy === `ignore-${step.seq}` ? "…" : "↺ un-ignore"}
+                  </button>
+                </>
               )}
               {/* An approval-gated (destructive) step — release it so a runner can claim it. */}
               {step.verdict === "needs_approval" && step.jobId && (

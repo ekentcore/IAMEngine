@@ -8,6 +8,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
 import { runnerBuildId } from "../runner/bundle";
+import { outcomeFingerprint } from "../runs/outcomes-repo";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying";
 
@@ -25,6 +26,10 @@ export type RunReportStep = {
   currentPhase: string | null; // what the runner is doing right now (in-flight steps only)
   phaseTrail: { ts: string; phase: string }[]; // the phases this step has gone through
   manualCompleted: boolean; // marked done by an operator (a manual/skipped step closed by hand)
+  // The run-log fingerprint of this step's warning/failure — lets the operator "ignore" it. Resolving
+  // it (by fingerprint) is STICKY: a re-run of the same line inherits the resolution. null when clean.
+  fingerprint: string | null;
+  accepted: boolean; // the operator ignored this warning/failure (its fingerprint is resolved)
   // Procurement-case watch on this step (license blocked on seats): when the PC resolves in SN the
   // job auto-re-queues. null = no watch.
   procurement: { number: string; state: string; note: string | null; lastCheckedAt: string | null } | null;
@@ -253,9 +258,20 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     const inFlight = j.status === "running" || j.status === "dispatched";
     const currentPhase = inFlight && phaseTrail.length ? phaseTrail[phaseTrail.length - 1].phase : null;
 
+    // The run-log fingerprint for a warning/failed step — same line recordResult wrote, so "ignore"
+    // resolves the SAME row (and re-runs inherit it). null for clean/in-progress steps.
+    let fingerprint: string | null = null;
+    if (verdict === "warning" || verdict === "failed") {
+      const oc = jobOutcome(j.status, j.result, j.validation, j.error);
+      fingerprint = outcomeFingerprint({ caseRequestId: input.caseId, systemKey: j.systemKey, verdict: oc.verdict, messages: oc.messages, error: j.error });
+    }
+
     return {
       seq: i + 1,
       jobId: j.id,
+      fingerprint,
+      accepted: false, // loadRunReport flips this on when the fingerprint is resolved
+
       procurement: j.procurementWatch
         ? { number: j.procurementWatch.number, state: j.procurementWatch.state, note: j.procurementWatch.note ?? null, lastCheckedAt: j.procurementWatch.lastCheckedAt ? new Date(j.procurementWatch.lastCheckedAt).toISOString() : null }
         : null,
@@ -417,6 +433,21 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     jobs: c.jobs,
     names,
   });
+
+  // "Ignore warning" — a step whose run-log fingerprint the operator resolved is ACCEPTED: it no
+  // longer counts against the case (and the run log already hides it + re-runs inherit it).
+  const fps = report.steps.map((s) => s.fingerprint).filter((x): x is string => Boolean(x));
+  if (fps.length) {
+    const resolved = new Set(
+      (await db.runOutcome.findMany({ where: { fingerprint: { in: fps }, resolvedAt: { not: null } }, select: { fingerprint: true } })).map((r) => r.fingerprint)
+    );
+    for (const st of report.steps) {
+      if (!st.fingerprint || !resolved.has(st.fingerprint)) continue;
+      st.accepted = true;
+      if (st.verdict === "warning") { report.summary.warnings--; report.summary.succeeded++; st.verdict = "verified"; }
+      else if (st.verdict === "failed") { report.summary.failed--; report.summary.succeeded++; st.verdict = "verified"; }
+    }
+  }
 
   // An operator-paused case: every pending step is held by the pause, whatever else is true.
   if (c.pausedAt) {
