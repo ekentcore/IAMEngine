@@ -20,7 +20,7 @@ BeforeAll {
     function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses) }
     function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
-    function global:Remove-MgGroupMemberByRef {}
+    function global:Remove-MgGroupMemberByRef { param($GroupId, $DirectoryObjectId) }
     function global:Get-MgUserDefaultDrive {}
     function global:Revoke-MgUserSignInSession { param($UserId) }
     function global:Get-MgUserRegisteredDevice { param($UserId, [switch]$All) }
@@ -267,6 +267,25 @@ Describe 'Invoke-CtgM365Offboarding' {
     It 'does not revoke sessions when revokeSessions is false' {
         Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ revokeSessions = $false }) -MailboxSizeGB 10 | Out-Null
         Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'removes only CLOUD groups; routes on-prem-synced/mail-enabled/dynamic instead of erroring' {
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'g-cloud'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Cloud-Sec' } }
+                [pscustomobject]@{ Id = 'g-onprem'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'DEPT-RemoteSupport'; onPremisesSyncEnabled = $true } }
+                [pscustomobject]@{ Id = 'g-mail'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'TechStaff'; mailEnabled = $true } }
+                [pscustomobject]@{ Id = 'g-dyn'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'All Users'; groupTypes = @('DynamicMembership') } }
+            )
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ removeAllGroups = $true }) -MailboxSizeGB 10
+        # Only the cloud security group is removed via Graph
+        Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g-cloud' } -Times 1 -Exactly
+        Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -Times 1 -Exactly  # and ONLY that one
+        $a = $r.Actions -join ' '
+        $a | Should -Match 'skipped on-prem-synced group: DEPT-RemoteSupport'
+        $a | Should -Match 'skipped mail-enabled group/DL: TechStaff'
+        $a | Should -Match 'skipped dynamic group: All Users'
     }
 
     It 'disables Entra devices and captures their names when disableDevices is set' {

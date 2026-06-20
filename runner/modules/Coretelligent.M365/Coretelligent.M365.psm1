@@ -818,7 +818,15 @@ function Invoke-CtgM365Offboarding {
     $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
         Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }
     $groupEvidence = foreach ($g in $memberships) {
-        [pscustomobject]@{ Id = $g.Id; DisplayName = (Get-CtgProp $g.AdditionalProperties 'displayName') }
+        $ap = $g.AdditionalProperties
+        [pscustomobject]@{
+            Id          = $g.Id
+            DisplayName = (Get-CtgProp $ap 'displayName')
+            # Why a group may NOT be removable via Graph (Entra) — used to route it instead of erroring:
+            OnPrem      = [bool](Get-CtgProp $ap 'onPremisesSyncEnabled')                 # AD-mastered -> the AD step removes it
+            MailEnabled = [bool](Get-CtgProp $ap 'mailEnabled')                           # DL / mail-enabled security -> managed in Exchange
+            Dynamic     = (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') # rule-managed -> can't remove a member
+        }
     }
     $actions.Add("captured $($groupEvidence.Count) group membership(s) as evidence")
 
@@ -846,9 +854,16 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
-    # 3. Remove from all groups (evidence already captured) --------------------
+    # 3. Remove from all groups (evidence already captured). Only CLOUD, non-mail, non-dynamic groups
+    # can be modified via Graph — route the rest instead of erroring on them:
+    #   - on-prem-synced groups are AD-mastered -> the active-directory step removes them
+    #   - mail-enabled groups / DLs are managed in Exchange (Graph can't change membership)
+    #   - dynamic groups are rule-managed -> a member can't be removed at all
     if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
         foreach ($g in $groupEvidence) {
+            if ($g.OnPrem)      { $actions.Add("skipped on-prem-synced group: $($g.DisplayName) — removed by the AD step"); continue }
+            if ($g.MailEnabled) { $actions.Add("skipped mail-enabled group/DL: $($g.DisplayName) — managed in Exchange"); continue }
+            if ($g.Dynamic)     { $actions.Add("skipped dynamic group: $($g.DisplayName) — membership is rule-managed"); continue }
             if ($PSCmdlet.ShouldProcess($upn, "Remove from group $($g.DisplayName)")) {
                 try {
                     Remove-MgGroupMemberByRef -GroupId $g.Id -DirectoryObjectId $userId -ErrorAction Stop
@@ -1043,9 +1058,17 @@ function Confirm-CtgM365 {
         # Offboard: a removed user trivially satisfies the teardown checks.
         & $add 'sign-in blocked' $true ([bool](-not $exists -or (Get-CtgProp $u 'AccountEnabled') -eq $false))
         if ($exists -and (Get-CtgProp $Config 'removeAllGroups') -ne $false) {
-            $memberCount = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue |
-                Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }).Count
-            & $add 'groups removed' $true ([bool]($memberCount -eq 0))
+            # Count only CLOUD, non-mail, non-dynamic groups — the ones Graph can actually remove.
+            # On-prem-synced (removed by the AD step), mail-enabled/DLs (Exchange), and dynamic
+            # (rule-managed) legitimately remain in Entra, so they must NOT count as a failed removal.
+            $remaining = @(Get-MgUserMemberOf -UserId $u.Id -All -ErrorAction SilentlyContinue |
+                Where-Object {
+                    (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' -and
+                    -not [bool](Get-CtgProp $_.AdditionalProperties 'onPremisesSyncEnabled') -and
+                    -not [bool](Get-CtgProp $_.AdditionalProperties 'mailEnabled') -and
+                    -not (@(Get-CtgProp $_.AdditionalProperties 'groupTypes') -contains 'DynamicMembership')
+                }).Count
+            & $add 'cloud groups removed' $true ([bool]($remaining -eq 0))
         }
     }
 
