@@ -597,6 +597,30 @@ function Invoke-CtgExchangeOffboarding {
         }
     }
 
+    # 5. Remove from CLOUD distribution lists / mail-enabled groups (Graph can't change these; the
+    # Entra step routed them here). Only IsDirSynced=$false ones — on-prem-synced DLs are removed by
+    # the AD step. Config removeDistributionGroups (default on). Scans the DLs the user belongs to.
+    if ((Get-CtgProp $Config 'removeDistributionGroups') -ne $false) {
+        Write-CtgStep "scanning cloud distribution lists for '$upn' memberships…"
+        $dls = @(Get-DistributionGroup -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { -not (Get-CtgProp $_ 'IsDirSynced') })
+        $checked = 0; $removed = 0
+        foreach ($dl in $dls) {
+            $checked++
+            $members = @(Get-DistributionGroupMember -Identity $dl.Identity -ResultSize Unlimited -ErrorAction SilentlyContinue)
+            $isMember = @($members | ForEach-Object { [string](Get-CtgProp $_ 'PrimarySmtpAddress') }) -contains $upn
+            if (-not $isMember) { continue }
+            if ($PSCmdlet.ShouldProcess($dl.DisplayName, "Remove $upn from distribution list")) {
+                try {
+                    Remove-DistributionGroupMember -Identity $dl.Identity -Member $upn -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop
+                    $actions.Add("removed from cloud distribution list: $($dl.DisplayName)")
+                    $removed++
+                }
+                catch { $actions.Add("WARN could not remove from DL $($dl.DisplayName): $($_.Exception.Message)") }
+            }
+        }
+        $actions.Add("scanned $checked cloud distribution list(s); removed from $removed")
+    }
+
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = $sizeGB; Actions = $actions.ToArray() }
 }
 

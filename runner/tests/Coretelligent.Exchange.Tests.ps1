@@ -25,6 +25,9 @@ BeforeAll {
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
     function global:Get-User { [CmdletBinding()] param($Identity) }
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
+    function global:Get-DistributionGroup { [CmdletBinding()] param($Identity, $ResultSize, $Filter) }
+    function global:Get-DistributionGroupMember { [CmdletBinding()] param($Identity, $ResultSize) }
+    function global:Remove-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck, [switch]$Confirm) }
     function global:Add-UnifiedGroupLinks { [CmdletBinding()] param($Identity, $LinkType, $Links) }
 
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Exchange/Coretelligent.Exchange.psm1" -Force
@@ -182,6 +185,23 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'already has Full Access'
+    }
+
+    It 'removes the user from CLOUD distribution lists, skipping on-prem-synced ones' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-DistributionGroup -ModuleName Coretelligent.Exchange -MockWith {
+            @(
+                [pscustomobject]@{ Identity = 'cloud-dl'; DisplayName = 'Notifications'; IsDirSynced = $false }
+                [pscustomobject]@{ Identity = 'synced-dl'; DisplayName = 'TechStaff'; IsDirSynced = $true }   # on-prem -> AD removes it
+            )
+        }
+        Mock Get-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ PrimarySmtpAddress = 'jdoe@61commodities.com' }) }
+        Mock Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ removeDistributionGroups = $true })
+        # only the cloud DL is touched; the synced one is skipped (filtered out before the member check)
+        Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'cloud-dl' } -Times 1 -Exactly
+        Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'removed from cloud distribution list: Notifications'
     }
 
     It 'looks the manager up from the DIRECTORY when the case has none, and grants Full Access' {
