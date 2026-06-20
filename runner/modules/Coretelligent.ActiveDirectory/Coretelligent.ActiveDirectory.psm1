@@ -357,7 +357,14 @@ function Invoke-CtgADOffboarding {
 
     if ((Get-CtgProp $Config 'removeAllGroups')) {
         foreach ($g in $memberships) {
-            if ($g.Name -eq 'Domain Users') { continue }   # primary group — not removable this way
+            if ($g.Name -eq 'Domain Users') { continue }   # the OLD default primary — not removable this way
+            # The "Disabled Users" group is now the user's PRIMARY group (set in step 2a) — a primary
+            # group can't be removed and isn't supposed to be. Skip it cleanly (it's intentionally kept),
+            # not a warning.
+            if ($primaryGroup -and "$($g.Name)" -ieq $primaryGroup) {
+                $actions.Add("kept '$($g.Name)' — the user's primary group (set in this offboard); intentionally not removed")
+                continue
+            }
             if (Test-CtgADProtectedGroup -Group $g -Config $Config) {
                 $protectedFound += $g.Name
                 $actions.Add("WARN protected/privileged group NOT removed — remove manually: $($g.Name)")
@@ -538,9 +545,15 @@ function Confirm-CtgAD {
     else {
         & $add 'account disabled' $true ([bool](-not $exists -or (Get-CtgProp $u 'Enabled') -eq $false))
         if ($exists -and (Get-CtgProp $Config 'removeAllGroups')) {
-            # Protected/privileged groups are intentionally kept (skipped by the executor), so they
-            # must not count as a failed removal — exclude them the same way, by the same predicate.
-            $remaining = @($memberObjs | Where-Object { $_.Name -ne 'Domain Users' -and -not (Test-CtgADProtectedGroup -Group $_ -Config $Config) }).Count
+            # Exclude the same groups the executor intentionally keeps: the primary group (Domain Users,
+            # and the "Disabled Users" group we set as primary) — a primary group can't be removed — and
+            # protected/privileged groups. None of these count as a failed removal.
+            $primaryGroup = [string]((Get-CtgProp $Config 'disabledUsersPrimaryGroup') ?? (Get-CtgProp $Config 'disabledUsersGroup'))
+            $remaining = @($memberObjs | Where-Object {
+                    $_.Name -ne 'Domain Users' -and
+                    -not ($primaryGroup -and "$($_.Name)" -ieq $primaryGroup) -and
+                    -not (Test-CtgADProtectedGroup -Group $_ -Config $Config)
+                }).Count
             & $add 'groups removed' $true ([bool]($remaining -eq 0))
         }
         $hide = Get-CtgProp $Config 'hideFromGal'

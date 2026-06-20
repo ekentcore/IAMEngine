@@ -182,6 +182,23 @@ Describe 'Invoke-CtgADOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'description=Offboarded'
     }
 
+    It 'does NOT try to remove the primary group (Disabled Users) — keeps it cleanly, no warn' {
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ Name='Disabled Users'; primaryGroupToken=1234 } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'primaryGroupID' } -MockWith { [pscustomobject]@{ primaryGroupID=1234 } }
+        # User already in Disabled Users (a prior step / run) AND a normal group.
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Disabled Users'; DistinguishedName='CN=Disabled Users,OU=x,DC=x' },
+              [pscustomobject]@{ Name='VPN Users'; DistinguishedName='CN=VPN Users,OU=Groups,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; disabledUsersPrimaryGroup='Disabled Users'; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Disabled Users' } -Times 0 -Exactly
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'VPN Users' } -Times 1
+        $a = $r.Actions -join ' '
+        $a | Should -Match "kept 'Disabled Users' — the user's primary group"
+        $a | Should -Not -Match 'could not remove from group Disabled Users'
+    }
+
     It 'sets the Disabled Users group as the primary group before stripping groups' {
         Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ Name='Disabled Users'; primaryGroupToken=1234 } }
         # The second Get-ADUser (reading primaryGroupID) returns a different current primary -> a change is made.
