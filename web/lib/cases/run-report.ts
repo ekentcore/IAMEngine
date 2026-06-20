@@ -9,7 +9,7 @@ import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
 import { runnerBuildId } from "../runner/bundle";
 
-export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending";
+export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying";
 
 export type RunReportStep = {
   seq: number;
@@ -66,7 +66,7 @@ export type RunReport = {
   startedAt: string | null;
   finishedAt: string | null;
   steps: RunReportStep[];
-  summary: { succeeded: number; warnings: number; failed: number; skipped: number; manual: number; needsApproval: number; pending: number };
+  summary: { succeeded: number; warnings: number; failed: number; skipped: number; manual: number; needsApproval: number; pending: number; running: number };
 };
 
 type JobRow = {
@@ -179,7 +179,7 @@ function phaseTrailOf(progress: unknown): { ts: string; phase: string }[] {
     .map((p) => ({ ts: String(p.ts ?? ""), phase: String(p.phase) }));
 }
 
-function verdictOf(status: string, validation: RunReportStep["validation"]): StepVerdict {
+function verdictOf(status: string, validation: RunReportStep["validation"], validateOnly = false): StepVerdict {
   switch (status) {
     case "succeeded":
       return validation && !validation.ok ? "warning" : "verified";
@@ -189,8 +189,12 @@ function verdictOf(status: string, validation: RunReportStep["validation"]): Ste
       return "skipped";
     case "manual":
       return "manual";
+    case "dispatched":
+    case "running":
+      // A re-dispatch with validateOnly is the auto-verify sweep re-checking the step.
+      return validateOnly ? "verifying" : "running";
     default:
-      return "pending"; // pending | dispatched | running
+      return "pending"; // pending
   }
 }
 
@@ -204,12 +208,12 @@ function userHeader(action: string, payload: Record<string, unknown>): string | 
 
 export function buildRunReport(input: BuildRunReportInput): RunReport {
   const jobs = [...input.jobs].sort((a, b) => a.sequence - b.sequence);
-  const summary = { succeeded: 0, warnings: 0, failed: 0, skipped: 0, manual: 0, needsApproval: 0, pending: 0 };
+  const summary = { succeeded: 0, warnings: 0, failed: 0, skipped: 0, manual: 0, needsApproval: 0, pending: 0, running: 0 };
 
   const steps: RunReportStep[] = jobs.map((j, i) => {
     const validation = normalizeValidation(j.validation);
-    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
-    let verdict = verdictOf(j.status, validation);
+    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean };
+    let verdict = verdictOf(j.status, validation, Boolean(req.validateOnly));
     // A pending approval-gated job is surfaced distinctly from an ordinary pending step.
     if (verdict === "pending" && req.requiresApproval && !req.approved) verdict = "needs_approval";
     // A step that succeeded but logged a WARN action (e.g. a group/license it couldn't apply) is a
@@ -225,6 +229,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else if (verdict === "skipped") summary.skipped++;
     else if (verdict === "manual") summary.manual++;
     else if (verdict === "needs_approval") summary.needsApproval++;
+    else if (verdict === "running" || verdict === "verifying") summary.running++;
     else summary.pending++;
 
     const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
@@ -348,6 +353,8 @@ const VERDICT_LABEL: Record<StepVerdict, string> = {
   manual: "✋ manual",
   needs_approval: "🔒 needs approval",
   pending: "… pending",
+  running: "● running",
+  verifying: "🔎 verifying",
 };
 
 export function renderRunReportMarkdown(rr: RunReport): string {

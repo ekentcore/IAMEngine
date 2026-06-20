@@ -11,6 +11,8 @@ const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   manual: { label: "manual", color: "#374151" },
   needs_approval: { label: "needs approval", color: "#7c3aed" },
   pending: { label: "pending", color: "#6b7280" },
+  running: { label: "● running", color: "#1565c0" },
+  verifying: { label: "🔎 verifying", color: "#1565c0" },
 };
 
 const PRE: React.CSSProperties = {
@@ -438,7 +440,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   // The step executing right now (for a prominent "what's happening" banner) — easier to follow than
   // scanning the per-step trails.
   const running = report.steps.find((st) => st.currentPhase);
-  const pendingCount = report.steps.filter((st) => st.verdict === "pending" || st.verdict === "needs_approval").length;
+  const pendingCount = report.steps.filter((st) => ["pending", "needs_approval", "running", "verifying"].includes(st.verdict)).length;
   // Pull the cross-lane mirror-coverage check (from the m365 validator) up to the banner so the
   // person handling the case sees mirror completeness without expanding a step.
   const mirrorCheck = report.steps.flatMap((st) => st.validation?.checks ?? []).find((c) => /mirror coverage/i.test(c.name));
@@ -478,7 +480,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
         // (verified / warning / skipped); none pending, approval-gated, or failed. The remaining
         // work is then purely the manual checklist — listed here so the case can be closed by hand.
         const auto = report.steps.filter((st) => st.verdict !== "manual");
-        const blocking = auto.filter((st) => st.verdict === "pending" || st.verdict === "needs_approval" || st.verdict === "failed");
+        const blocking = auto.filter((st) => ["pending", "needs_approval", "failed", "running", "verifying"].includes(st.verdict));
         const warns = auto.filter((st) => st.verdict === "warning");
         const retrying = report.steps.filter((st) => st.autoRetry);
         const manualLeft = report.steps.filter((st) => st.verdict === "manual" && !st.manualCompleted);

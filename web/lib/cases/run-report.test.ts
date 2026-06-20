@@ -32,7 +32,7 @@ test("succeeded + validation ok => verified; succeeded + validation miss => warn
 
 test("summary tallies each verdict", () => {
   const rr = buildRunReport(input());
-  assert.deepEqual(rr.summary, { succeeded: 1, warnings: 1, failed: 1, skipped: 0, manual: 1, needsApproval: 0, pending: 0 });
+  assert.deepEqual(rr.summary, { succeeded: 1, warnings: 1, failed: 1, skipped: 0, manual: 1, needsApproval: 0, pending: 0, running: 0 });
 });
 
 test("succeeded + validation ok but a WARN action => warning (not a clean verified)", () => {
