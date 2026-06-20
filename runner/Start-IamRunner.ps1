@@ -34,6 +34,11 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Salesforce/Coretelligent.Sale
 Import-Module "$PSScriptRoot/modules/Coretelligent.KnowBe4/Coretelligent.KnowBe4.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Jira/Coretelligent.Jira.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.HubSpot/Coretelligent.HubSpot.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.SentinelOne/Coretelligent.SentinelOne.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Duo/Coretelligent.Duo.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.XMatters/Coretelligent.XMatters.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.LogicMonitor/Coretelligent.LogicMonitor.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Notify/Coretelligent.Notify.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
