@@ -131,7 +131,7 @@ function Invoke-CtgADOnboarding {
         [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $primarySam = $User.SamAccountName
+    $primarySam = Get-CtgProp $User 'SamAccountName'   # StrictMode-safe
     $primaryUpn = [string]$User.UserPrincipalName
     $domain = Get-CtgProp $User 'PrimaryDomain'
     $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
@@ -282,7 +282,8 @@ function Invoke-CtgADOffboarding {
         [hashtable]$AdConnection = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $sam = [string]$User.SamAccountName
+    # StrictMode-safe: the incident offboard payload may have no SamAccountName property at all.
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
     $displayName = [string](Get-CtgProp $User 'DisplayName')
 
     # Resolve by SamAccountName when present, else by DISPLAY NAME against AD (offboard intakes often
@@ -294,7 +295,7 @@ function Invoke-CtgADOffboarding {
     if (-not $existing -and $displayName) {
         $byName = @(Get-ADUser -Filter "DisplayName -eq '$displayName'" -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection)
         if ($byName.Count -eq 1) {
-            $existing = $byName[0]; $sam = [string]$existing.SamAccountName
+            $existing = $byName[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName')
             $actions.Add("resolved offboard target by display name '$displayName' -> $sam")
         }
         elseif ($byName.Count -gt 1) {
@@ -497,7 +498,7 @@ function Confirm-CtgAD {
 
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
-    $sam = [string]$User.SamAccountName
+    $sam = [string](Get-CtgProp $User 'SamAccountName')   # StrictMode-safe (payload may lack the property)
     $domain = Get-CtgProp $User 'PrimaryDomain'
 
     # Resolve the SAME way the executor does — by display name when the case has no SamAccountName —
@@ -507,7 +508,7 @@ function Confirm-CtgAD {
         $dn = [string](Get-CtgProp $User 'DisplayName')
         if ($Action -eq 'offboard' -and $dn) {
             $byName = @(Get-ADUser -Filter "DisplayName -eq '$dn'" -Properties SamAccountName -ErrorAction SilentlyContinue @AdConnection)
-            if ($byName.Count -eq 1) { $sam = [string]$byName[0].SamAccountName }
+            if ($byName.Count -eq 1) { $sam = [string](Get-CtgProp $byName[0] 'SamAccountName') }
         }
         if ([string]::IsNullOrWhiteSpace($sam)) {
             return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable offboard target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }

@@ -224,6 +224,14 @@ Describe 'Invoke-CtgADOffboarding' {
         Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 1
     }
 
+    It 'does not crash when the payload has NO SamAccountName property (display name only)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Filter" -match 'DisplayName' } -MockWith { [pscustomobject]@{ SamAccountName = 'esack'; DistinguishedName = 'CN=Evan,OU=Users,DC=x'; Enabled = $true } }
+        # NOTE: the user object intentionally has NO SamAccountName key — direct access would throw under StrictMode.
+        $r = Invoke-CtgADOffboarding -User ([pscustomobject]@{ DisplayName = 'Evan Sacksner' }) -Config ([pscustomobject]@{ disableAccount = $true; guardrails = @('do-not-move-ou') })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match "resolved offboard target by display name 'Evan Sacksner'"
+    }
+
     It 'does NOT remove a well-known privileged group (Domain Admins) — flags it for manual removal' {
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
             @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' },
