@@ -74,14 +74,16 @@ function Find-CtgXMattersPerson {
     # @() so an empty data array doesn't unroll to $null (which would wrongly fall through to $resp).
     $list = @(Get-CtgProp $resp 'data')
     $needle = $Email.ToLower()
-    # Prefer an exact login/targetName match; otherwise the ?emails= query already narrowed the set,
-    # so the first returned person is the match.
+    # Prefer an exact login/targetName match. The ?emails= query is an exact email filter, so a
+    # SINGLE returned person is the match even when targetName/webLogin is a username (not the email).
+    # But NEVER guess on an ambiguous (>1, no exact match) set — deactivating the wrong person.
     $hit = $list | Where-Object {
         ([string](Get-CtgProp $_ 'targetName')).ToLower() -eq $needle -or
         ([string](Get-CtgProp $_ 'webLogin')).ToLower() -eq $needle
     } | Select-Object -First 1
     if ($hit) { return $hit }
-    $list | Select-Object -First 1
+    if ($list.Count -eq 1) { return $list[0] }
+    return $null
 }
 
 function Invoke-CtgXMattersOnboarding {
