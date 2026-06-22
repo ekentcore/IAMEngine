@@ -405,9 +405,11 @@ export function makeCaseRepository(db: PrismaClient) {
 
       return rows.map((r) => {
         // Contextual date: a new hire's start date for onboarding, the offboarding date for offboards
-        // (both come date-only from the intake — u_start_date / u_end_date).
-        const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown };
-        const raw = r.action === "offboard" ? p.dateOfOffboarding : p.startDate;
+        // (both come date-only from the intake — u_start_date / u_end_date). Offboards accept either
+        // the canonical `dateOfOffboarding` or the legacy `endDate` key (incident cases imported before
+        // the field was unified store it under endDate), so existing + new cases both show a date.
+        const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown; endDate?: unknown };
+        const raw = r.action === "offboard" ? (p.dateOfOffboarding ?? p.endDate) : p.startDate;
         const effectiveDate = typeof raw === "string" && raw ? raw : null;
         // Match the claim preflight exactly: only the jobs the runner could claim NOW gate the case
         // — pending api jobs whose earlier api jobs are all done. (A later job's unset secret, or a
