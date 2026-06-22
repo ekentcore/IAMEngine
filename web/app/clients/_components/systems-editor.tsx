@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { CATALOG } from "@/lib/generator/system-map";
 
 type Lane = "always" | "on_request" | "never";
@@ -27,6 +27,14 @@ const BACKBONES = [
 ];
 const LANES: Lane[] = ["always", "on_request", "never"];
 const MODES: Mode[] = ["api", "browser", "manual"];
+// Color the lane selects so onboard/offboard participation is scannable at a glance: green = runs,
+// amber = only on request, grey = off. (Flat tints, no gradients — matches the host design system.)
+const LANE_STYLE: Record<Lane, CSSProperties> = {
+  always: { background: "#e8f5ee", color: "#15803d", borderColor: "#bbf7d0" },
+  on_request: { background: "#fef6e7", color: "#92400e", borderColor: "#fde9c8" },
+  never: { background: "#f4f4f5", color: "#9ca3af", borderColor: "#e5e7eb" },
+};
+const cell: CSSProperties = { padding: "5px 8px", verticalAlign: "top" };
 const ALL_KEYS = Object.keys(CATALOG).sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "always" ? "always" : "never");
 
@@ -167,7 +175,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
 
   return (
-    <dialog ref={ref} onClose={onClose} style={{ width: 820, maxWidth: "95vw" }}>
+    <dialog ref={ref} onClose={onClose} style={{ width: 1080, maxWidth: "96vw" }}>
       <div className="row-between">
         <h2>Edit systems — {name}</h2>
         <button onClick={onClose}>Close</button>
@@ -196,28 +204,47 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             <button onClick={() => addSystem(addKey)} disabled={!addKey}>Add</button>
           </div>
 
-          <table>
-            <thead>
-              <tr><th>System</th><th>Mode</th><th>Onboard</th><th>Offboard</th><th>Deps</th><th>Appr</th><th>Evid</th><th>Secrets</th><th>Config</th><th></th></tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.systemKey}>
-                  <td>{r.systemKey}</td>
-                  <td><select value={r.mode} onChange={(e) => update(i, { mode: e.target.value as Mode })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></td>
-                  <td><select value={r.onboardWhen} onChange={(e) => update(i, { onboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
-                  <td><select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
-                  <td><input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 90 }} /></td>
-                  <td><input type="checkbox" style={{ width: "auto" }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} /></td>
-                  <td><input type="checkbox" style={{ width: "auto" }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} /></td>
-                  <td><input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} style={{ width: 90 }} /></td>
-                  <td><textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder="{ }" rows={1} style={{ width: 120, fontFamily: "monospace", fontSize: 11 }} /></td>
-                  <td><button onClick={() => remove(i)}>✕</button></td>
+          <p className="note" style={{ margin: "0.4rem 0 0.3rem" }}>
+            <b>Onboard</b> and <b>Offboard</b> are the two runbooks — set when each system runs:{" "}
+            <span className="badge" style={LANE_STYLE.always}>always</span>{" "}
+            <span className="badge" style={LANE_STYLE.on_request}>on request</span>{" "}
+            <span className="badge" style={LANE_STYLE.never}>never</span>. (e.g. for xMatters onboarding-only: Onboard = always, Offboard = never.)
+          </p>
+          <div style={{ overflowX: "auto", border: "1px solid var(--line, #e5e7eb)", borderRadius: 8 }}>
+            <table style={{ margin: 0, fontSize: 13, minWidth: 920 }}>
+              <thead>
+                <tr style={{ background: "var(--bg-soft, #f9fafb)" }}>
+                  <th style={cell}>System</th>
+                  <th style={cell}>Mode</th>
+                  <th style={cell}>Onboard</th>
+                  <th style={cell}>Offboard</th>
+                  <th style={cell}>Depends on</th>
+                  <th style={{ ...cell, textAlign: "center" }} title="Destructive step — gated server-side until approved">Approval</th>
+                  <th style={{ ...cell, textAlign: "center" }} title="Snapshot the before-state and attach it to the case before any change">Evidence</th>
+                  <th style={cell}>Secrets</th>
+                  <th style={cell}>Config (JSON)</th>
+                  <th style={cell} aria-label="remove"></th>
                 </tr>
-              ))}
-              {rows.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: "center" }}>No systems. Add one or use “Parse instructions”.</td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r.systemKey} style={{ borderTop: "1px solid var(--line-2, #f1f5f9)" }}>
+                    <td style={{ ...cell, fontFamily: "monospace", fontWeight: 600, whiteSpace: "nowrap" }}>{r.systemKey}</td>
+                    <td style={cell}><select value={r.mode} onChange={(e) => update(i, { mode: e.target.value as Mode })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></td>
+                    <td style={cell}><select value={r.onboardWhen} onChange={(e) => update(i, { onboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.onboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select></td>
+                    <td style={cell}><select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.offboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select></td>
+                    <td style={cell}><input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 110 }} /></td>
+                    <td style={{ ...cell, textAlign: "center" }}><input type="checkbox" style={{ width: "auto" }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} /></td>
+                    <td style={{ ...cell, textAlign: "center" }}><input type="checkbox" style={{ width: "auto" }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} /></td>
+                    <td style={cell}><input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 120 }} /></td>
+                    <td style={cell}><textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder="{ }" rows={2} style={{ width: 220, fontFamily: "monospace", fontSize: 12 }} /></td>
+                    <td style={{ ...cell, textAlign: "center" }}><button title={`Remove ${r.systemKey}`} onClick={() => remove(i)}>✕</button></td>
+                  </tr>
+                ))}
+                {rows.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: "center", padding: "1rem" }}>No systems. Add one or use “Parse instructions”.</td></tr>}
+              </tbody>
+            </table>
+          </div>
 
           {error && <p className="note danger">{error}</p>}
           <div className="dialog-actions">
