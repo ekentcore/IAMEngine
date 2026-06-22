@@ -123,7 +123,9 @@ function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {
     UserPrincipalName: orNull(email),
     email: orNull(email),
     department: orNull(vd(r, "u_department")),
-    endDate: orNull(firstVar(r, ["u_last_day", "u_end_date", "u_termination_date"])),
+    // Canonical field name (matches intake-mapper + what repository/labels/toolbar read) so the
+    // offboarding date renders on the case and the "scheduled" hold has a date to resume on.
+    dateOfOffboarding: orNull(firstVar(r, ["u_last_day", "u_end_date", "u_termination_date"])),
     managerName: orNull(firstVar(r, ["u_manager"], true)),
     computerName: orNull(firstVar(r, ["u_computer_name", "u_computer"])),
     requestedBy: orNull(disp(r, "opened_by")),

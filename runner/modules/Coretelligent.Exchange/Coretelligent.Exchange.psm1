@@ -38,7 +38,8 @@ function Resolve-CtgExchangeTarget {
     if (-not [string]::IsNullOrWhiteSpace($upn)) { return @{ Upn = $upn; MatchCount = 1; DisplayName = '' } }
     $dn = [string](Get-CtgProp $User 'DisplayName')
     if (-not $dn) { return @{ Upn = ''; MatchCount = 0; DisplayName = '' } }
-    $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$dn'" -ErrorAction SilentlyContinue)
+    $safe = $dn -replace "'", "''"   # escape quotes so a name like "Sean O'Brien" can't break the OPATH filter
+    $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$safe'" -ErrorAction SilentlyContinue)
     $u = if ($rcpt.Count -eq 1) { [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity')) } else { '' }
     return @{ Upn = $u; MatchCount = $rcpt.Count; DisplayName = $dn }
 }

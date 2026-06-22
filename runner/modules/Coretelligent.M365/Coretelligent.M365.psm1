@@ -417,7 +417,8 @@ function Resolve-CtgM365Upn {
     if (-not [string]::IsNullOrWhiteSpace($upn)) { return $upn }
     $dn = [string](Get-CtgProp $User 'DisplayName')
     if (-not $dn) { return '' }
-    $byName = @(Get-MgUser -Filter "displayName eq '$dn'" -All -ErrorAction SilentlyContinue)
+    $dnEsc = $dn -replace "'", "''"   # escape quotes so a name like "Sean O'Brien" can't break the OData filter
+    $byName = @(Get-MgUser -Filter "displayName eq '$dnEsc'" -All -ErrorAction SilentlyContinue)
     if ($byName.Count -eq 1) { return [string]((Get-CtgProp $byName[0] 'UserPrincipalName') ?? '') }
     return ''
 }
@@ -796,9 +797,10 @@ function Invoke-CtgM365Offboarding {
     # directory (offboard intakes often have only the name). A display-name search that matches exactly
     # one user is authoritative; 0 or many -> stop with a clear note rather than act on the wrong person.
     $existing = $null
-    if ($upn) { $existing = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ErrorAction SilentlyContinue }
+    if ($upn) { $existing = Get-MgUser -Filter "userPrincipalName eq '$($upn -replace "'", "''")'" -ErrorAction SilentlyContinue }
     if (-not $existing -and $displayName) {
-        $byName = @(Get-MgUser -Filter "displayName eq '$displayName'" -All -ErrorAction SilentlyContinue)
+        $dnEsc = $displayName -replace "'", "''"   # escape quotes so "Sean O'Brien" can't break the OData filter
+        $byName = @(Get-MgUser -Filter "displayName eq '$dnEsc'" -All -ErrorAction SilentlyContinue)
         if ($byName.Count -eq 1) {
             $existing = $byName[0]
             $actions.Add("resolved offboard target by display name '$displayName' -> $(Get-CtgProp $existing 'UserPrincipalName')")

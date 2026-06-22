@@ -178,21 +178,11 @@ export function makeRunnerService(db: PrismaClient) {
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
 
-      // STALE-CODE GUARD: never hand jobs to a runner that isn't on the current build. A half-landed
-      // self-update can leave an OLD process alive (it predates the single-instance lock so it won't
-      // self-evict) which would run jobs with stale modules in memory — the cause of executors
-      // crashing on bugs that were already fixed. The claiming process sends its OWN build id
-      // (race-free); fall back to the last heartbeat's version. A valid-hash mismatch -> claim nothing.
-      const build = runnerBuildId();
-      const running = (version && version.trim()) || agent.version || "";
-      const validHash = /^[0-9a-f]{6,}$/.test(running);
-      if (validHash && running !== build) {
-        return []; // outdated runner — the run report shows "agent outdated" as the pending reason
-      }
-
       // Reclaim stale leases: a job dispatched long ago whose assigned agent is gone/stale/
       // disabled goes back to pending. Scoped to dead agents so a peer can't reset a live
-      // agent's in-flight jobs (the live agent keeps lastSeenAt fresh via heartbeat).
+      // agent's in-flight jobs (the live agent keeps lastSeenAt fresh via heartbeat). This runs
+      // BEFORE the stale-code guard below: an outdated single-agent client must still recover its
+      // OWN crashed leases (no peer/central runner will — host affinity keeps on-prem jobs here).
       const staleCutoff = new Date(Date.now() - LEASE_MS);
       const stale = await db.job.findMany({
         where: {
@@ -205,6 +195,18 @@ export function makeRunnerService(db: PrismaClient) {
       if (stale.length > 0) {
         await db.job.updateMany({ where: { id: { in: stale.map((s) => s.id) } }, data: { status: "pending", assignedAgentId: null } });
         await db.auditLog.create({ data: { actor: "system", action: "job.lease.reclaim", detail: { count: stale.length } } });
+      }
+
+      // STALE-CODE GUARD: never hand jobs to a runner that isn't on the current build. A half-landed
+      // self-update can leave an OLD process alive (it predates the single-instance lock so it won't
+      // self-evict) which would run jobs with stale modules in memory — the cause of executors
+      // crashing on bugs that were already fixed. The claiming process sends its OWN build id
+      // (race-free); fall back to the last heartbeat's version. A valid-hash mismatch -> claim nothing.
+      const build = runnerBuildId();
+      const running = (version && version.trim()) || agent.version || "";
+      const validHash = /^[0-9a-f]{6,}$/.test(running);
+      if (validHash && running !== build) {
+        return []; // outdated runner — the run report shows "agent outdated" as the pending reason
       }
 
       // central runner (clientId null) sees all clients' api jobs; a client agent sees only

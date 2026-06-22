@@ -79,7 +79,7 @@ test("normalizeIncidentIntake: routes an offboarding incident to the offboard pa
   assert.equal(p.UserPrincipalName, "jordan.park@coretelligent.com");
   assert.equal(p.email, "jordan.park@coretelligent.com");
   assert.equal(p.department, "Sales");
-  assert.equal(p.endDate, "06/30/2026");
+  assert.equal(p.dateOfOffboarding, "06/30/2026");
   assert.equal(p.computerName, "LT-JPARK");
 });
 

@@ -293,7 +293,8 @@ function Invoke-CtgADOffboarding {
         $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
     }
     if (-not $existing -and $displayName) {
-        $byName = @(Get-ADUser -Filter "DisplayName -eq '$displayName'" -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection)
+        $dnEsc = $displayName -replace "'", "''"   # escape quotes so "Sean O'Brien" can't break the AD filter
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection)
         if ($byName.Count -eq 1) {
             $existing = $byName[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName')
             $actions.Add("resolved offboard target by display name '$displayName' -> $sam")
@@ -514,7 +515,8 @@ function Confirm-CtgAD {
     if ([string]::IsNullOrWhiteSpace($sam)) {
         $dn = [string](Get-CtgProp $User 'DisplayName')
         if ($Action -eq 'offboard' -and $dn) {
-            $byName = @(Get-ADUser -Filter "DisplayName -eq '$dn'" -Properties SamAccountName -ErrorAction SilentlyContinue @AdConnection)
+            $dnEsc = $dn -replace "'", "''"   # escape quotes so "Sean O'Brien" can't break the AD filter
+            $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties SamAccountName -ErrorAction SilentlyContinue @AdConnection)
             if ($byName.Count -eq 1) { $sam = [string](Get-CtgProp $byName[0] 'SamAccountName') }
         }
         if ([string]::IsNullOrWhiteSpace($sam)) {

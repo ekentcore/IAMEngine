@@ -99,8 +99,9 @@ function Find-CtgLmAdmin {
         ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
         ([string](Get-CtgProp $_ 'username')).ToLower() -eq $needle
     } | Select-Object -First 1
-    if ($hit) { return $hit }
-    $items | Select-Object -First 1
+    # Exact email/username match only. The server-side filter can fuzzy/substring-match, so NEVER
+    # fall back to an arbitrary first item — suspending/deleting the wrong admin on offboard.
+    if ($hit) { return $hit } else { return $null }
 }
 
 function Test-CtgLmSuspended {
