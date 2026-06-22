@@ -86,15 +86,26 @@ async function main() {
     process.exit(1);
   }
 
-  // Either a Delinea secret id (--secret=<id>, or a bare numeric arg) — resolved directly — or a
-  // client slug that's looked up to find its 'zoom' secret's externalId.
+  // Resolve which Delinea secret to test, in priority order:
+  //   --case=<num>   the EXACT secret the runner brokers for that case's client (the real test)
+  //   --secret=<id> / bare number   a Delinea secret id, resolved directly
+  //   <client-slug>  the client's 'zoom' secret externalId
   const positional = process.argv.slice(2).find((a) => !a.startsWith("-"));
+  const caseNum = process.argv.find((a) => a.startsWith("--case="))?.slice("--case=".length);
   const flagId = process.argv.find((a) => a.startsWith("--secret="))?.slice("--secret=".length)
     ?? process.argv.find((a) => a.startsWith("--id="))?.slice("--id=".length);
   const externalId = flagId ?? (positional && /^\d+$/.test(positional) ? positional : undefined);
 
   let secretId: string;
-  if (externalId) {
+  if (caseNum) {
+    const c = await db.caseRequest.findFirst({ where: { serviceNowCaseNumber: caseNum }, select: { clientId: true, client: { select: { slug: true, name: true } } } });
+    if (!c) { console.error(`✗ no case with number '${caseNum}'.`); process.exit(1); }
+    const sec = await db.secret.findFirst({ where: { name: "zoom", clientId: c.clientId }, select: { externalId: true } });
+    if (!sec) { console.error(`✗ case ${caseNum} → client ${c.client.name} (${c.client.slug}) has NO 'zoom' secret wired — the runner can't broker it. Wire the zoom secret to Delinea #56730 on that client's Secrets panel.`); process.exit(1); }
+    secretId = sec.externalId;
+    console.log(`Case ${caseNum} → client ${c.client.name} (${c.client.slug}) → zoom secret externalId=${secretId || "(unset)"}`);
+    if (!secretId) { console.error("  …but the externalId is BLANK — wire it to the Delinea secret (e.g. 56730)."); process.exit(1); }
+  } else if (externalId) {
     secretId = externalId.trim();
     console.log(`Delinea secret #${secretId} (direct)`);
   } else {
@@ -104,7 +115,7 @@ async function main() {
       console.error(`✗ no 'zoom' secret on client '${slug}'.`);
       const others = await db.secret.findMany({ where: { name: "zoom" }, select: { client: { select: { slug: true, name: true } } }, orderBy: { client: { name: "asc" } } });
       if (others.length) console.error(`  clients with a zoom secret: ${others.map((o) => `${o.client.slug} (${o.client.name})`).join(", ")}`);
-      console.error("  …or point straight at the Delinea secret: --secret=<id>");
+      console.error("  …or test by case (--case=INC0841839) or a Delinea id (--secret=<id>).");
       process.exit(1);
     }
     secretId = secret.externalId;
