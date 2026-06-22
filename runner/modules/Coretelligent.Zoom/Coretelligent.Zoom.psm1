@@ -94,8 +94,17 @@ function Invoke-CtgZoomApi {
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { return Invoke-RestMethod @p }
     catch {
-        if ($_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
-        throw
+        # Probe the response safely (StrictMode + varying exception types). 404 = not found -> $null.
+        $resp = $null; try { $resp = $_.Exception.Response } catch { }
+        $status = $null; if ($resp) { try { $status = [int]$resp.StatusCode } catch { } }
+        if ($status -eq 404) { return $null }
+        # Surface Zoom's actual error body ({"code":..,"message":".."}) instead of the opaque "400 ()",
+        # tagged with the method + path so it's clear WHICH call failed.
+        $detail = ''
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        if (-not $detail -and $resp) { try { $detail = [IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd() } catch { } }
+        if (-not $detail) { try { $detail = [string]$_.Exception.Message } catch { } }
+        throw "Zoom API $Method $Path failed ($status): $($detail.Trim())"
     }
 }
 
