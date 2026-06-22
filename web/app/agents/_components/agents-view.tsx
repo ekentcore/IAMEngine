@@ -77,21 +77,31 @@ export type TrashedAgentVM = {
   daysLeft: number;
 };
 
-function lastSeen(iso: string | null): { text: string; online: boolean } {
+// `now` is passed in (NOT read from Date.now() during render) so the SSR markup and the first client
+// render agree — otherwise the seconds tick between server render and hydration and React throws a
+// "text content does not match" hydration error. After mount the component ticks `now` itself.
+function lastSeen(iso: string | null, now: number): { text: string; online: boolean } {
   if (!iso) return { text: "never", online: false };
-  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  const secs = Math.round((now - new Date(iso).getTime()) / 1000);
   const online = secs < 90;
+  if (secs < 0) return { text: "just now", online: true };
   if (secs < 60) return { text: `${secs}s ago`, online };
   if (secs < 3600) return { text: `${Math.round(secs / 60)}m ago`, online };
   if (secs < 86400) return { text: `${Math.round(secs / 3600)}h ago`, online };
-  return { text: new Date(iso).toLocaleDateString(), online };
+  return { text: new Date(iso).toISOString().slice(0, 10), online }; // deterministic (UTC) — locale-free
 }
 
-export function AgentsView({ agents, clients, trashed, currentBuild }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string }) {
+export function AgentsView({ agents, clients, trashed, currentBuild, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; now: number }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
   const [busy, setBusy] = useState(false);
+  // Start from the server's `now` (so hydration matches), then tick every second to keep "Xs ago" live.
+  const [nowMs, setNowMs] = useState(now);
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ id: string; scope: string } | null>(null);
   const [install, setInstall] = useState<{ command: string } | null>(null);
@@ -276,7 +286,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
         </thead>
         <tbody>
           {agents.map((a) => {
-            const ls = lastSeen(a.lastSeenAt);
+            const ls = lastSeen(a.lastSeenAt, nowMs);
             // Up to date = it reports a build hash that matches what the app serves. Only offer
             // Update when there's actually something to apply (or it's mid-update).
             const upToDate = isUpToDate(a);

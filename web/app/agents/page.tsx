@@ -87,7 +87,7 @@ export default async function AgentsPage() {
           </p>
         </div>
       </div>
-      <AgentsView agents={vms} clients={clients} trashed={trashVms} currentBuild={runnerBuildId()} />
+      <AgentsView agents={vms} clients={clients} trashed={trashVms} currentBuild={runnerBuildId()} now={Date.now()} />
     </main>
   );
 }
