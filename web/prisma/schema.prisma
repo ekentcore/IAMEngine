@@ -214,8 +214,12 @@ model ConnectionTest {
   client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   clientId        String
   systemKey       String
-  status          String    @default("pending") // pending | running | ok | fail
-  detail          String? // one-line summary ("tenant Contoso · scopes …") or the error
+  status          String    @default("pending") // pending | running | ok | fail (overall)
+  detail          String? // the API stage's one-line summary ("users readable") or its error
+  // Two-stage result: accessOk = the runner could RESOLVE the secret from Delinea; the API stage
+  // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
+  accessOk        Boolean?
+  accessDetail    String?
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
   secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
   requestedAt     DateTime  @default(now())

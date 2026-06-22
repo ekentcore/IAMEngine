@@ -7,14 +7,24 @@
 // has access by connecting from where the runner runs.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Test = { systemKey: string; status: "pending" | "running" | "ok" | "fail"; detail: string | null; onPrem: boolean; finishedAt: string | null };
+type Test = { systemKey: string; status: "pending" | "running" | "ok" | "fail"; detail: string | null; accessOk: boolean | null; accessDetail: string | null; onPrem: boolean; finishedAt: string | null };
 
-const BADGE: Record<Test["status"], { text: string; color: string }> = {
-  pending: { text: "queued", color: "var(--muted)" },
-  running: { text: "testing…", color: "#92400e" },
-  ok: { text: "✓ connected", color: "#15803d" },
-  fail: { text: "✗ failed", color: "#b91c1c" },
-};
+// Stage 1 — can the runner RESOLVE the secret from Delinea.
+function accessBadge(t: Test): { text: string; color: string } {
+  if (t.accessOk === true) return { text: "✓ resolved", color: "#15803d" };
+  if (t.accessOk === false) return { text: "✗ no access", color: "#b91c1c" };
+  if (t.status === "running") return { text: "testing…", color: "#92400e" };
+  if (t.status === "pending") return { text: "queued", color: "var(--muted)" };
+  return { text: "—", color: "var(--muted)" }; // older runner didn't report the stage
+}
+// Stage 2 — connect + one live read against the vendor API.
+function apiBadge(t: Test): { text: string; color: string } {
+  if (t.accessOk === false) return { text: "— skipped", color: "var(--muted)" };
+  if (t.status === "ok") return { text: "✓ read ok", color: "#15803d" };
+  if (t.status === "fail") return { text: "✗ failed", color: "#b91c1c" };
+  if (t.status === "running") return { text: "testing…", color: "#92400e" };
+  return { text: "queued", color: "var(--muted)" };
+}
 
 export function ConnectionTestPanel({ slug, systemNames }: { slug: string; systemNames: Record<string, string> }) {
   const [tests, setTests] = useState<Test[] | null>(null);
@@ -61,16 +71,25 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
       {error && <p className="note danger">{error}</p>}
       {tests && tests.length > 0 && (
         <table style={{ marginTop: "0.5rem" }}>
-          <thead><tr><th>System</th><th>Where</th><th>Result</th><th>Detail</th></tr></thead>
+          <thead><tr>
+            <th>System</th><th>Where</th>
+            <th title="Can the runner resolve the secret from Delinea?">Can access</th>
+            <th title="Does connecting + one live read against the vendor API work?">API works</th>
+            <th>Detail</th>
+          </tr></thead>
           <tbody>
             {tests.map((t) => {
-              const b = BADGE[t.status];
+              const acc = accessBadge(t);
+              const api = apiBadge(t);
+              // Show the failing stage's detail; else the API detail (the live read result).
+              const detail = t.accessOk === false ? t.accessDetail : t.detail;
               return (
                 <tr key={t.systemKey}>
                   <td>{systemNames[t.systemKey] ?? t.systemKey}</td>
                   <td className="muted">{t.onPrem ? "client agent" : "central runner"}</td>
-                  <td><span className="badge" style={{ color: b.color }}>{b.text}</span></td>
-                  <td className="muted" style={{ maxWidth: 360, whiteSpace: "normal" }}>{t.detail ?? (t.status === "pending" ? "waiting for a runner to claim it…" : t.status === "running" ? "connecting…" : "")}</td>
+                  <td><span className="badge" style={{ color: acc.color }} title={t.accessDetail ?? undefined}>{acc.text}</span></td>
+                  <td><span className="badge" style={{ color: api.color }} title={t.detail ?? undefined}>{api.text}</span></td>
+                  <td className="muted" style={{ maxWidth: 340, whiteSpace: "normal" }}>{detail ?? (t.status === "pending" ? "waiting for a runner to claim it…" : t.status === "running" ? "testing…" : "")}</td>
                 </tr>
               );
             })}

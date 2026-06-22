@@ -402,7 +402,7 @@ export function makeRunnerService(db: PrismaClient) {
       const tests = await db.connectionTest.findMany({
         where: { clientId: client.id },
         orderBy: { systemKey: "asc" },
-        select: { systemKey: true, status: true, detail: true, onPrem: true, finishedAt: true },
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true },
       });
       return { tests };
     },
@@ -449,12 +449,23 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
-    async reportConnectionTest(testId: string, agentId: string, ok: boolean, detail: string): Promise<{ ok: true }> {
+    async reportConnectionTest(testId: string, agentId: string, ok: boolean, detail: string, accessOk: boolean | null = null, accessDetail: string | null = null): Promise<{ ok: true }> {
       const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
-      await db.connectionTest.update({ where: { id: testId }, data: { status: ok ? "ok" : "fail", detail: (detail ?? "").slice(0, 500), finishedAt: new Date() } });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, ok } } });
+      // Overall status is a fail if EITHER stage failed (access couldn't resolve, or the API read failed).
+      const passed = accessOk !== false && ok;
+      await db.connectionTest.update({
+        where: { id: testId },
+        data: {
+          status: passed ? "ok" : "fail",
+          detail: (detail ?? "").slice(0, 500),
+          accessOk,
+          accessDetail: accessDetail === null ? null : accessDetail.slice(0, 500),
+          finishedAt: new Date(),
+        },
+      });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok } } });
       return { ok: true };
     },
 

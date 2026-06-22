@@ -1075,30 +1075,44 @@ function Invoke-CtgConnectionTests {
     # connect with the brokered credential, run the read probe, report pass/fail + a one-line detail.
     $tests = @()
     try { $tests = Invoke-AppApi POST '/api/runner/conn-tests/claim' @{ agentId = $AgentId; max = 5 } } catch { return }
+    # Flatten an exception chain to a one-line, secret-redacted message.
+    $errLine = { param($e, $c) $ex = $e.Exception; $ch = [System.Collections.Generic.List[string]]::new(); while ($ex) { if ($ex.Message) { [void]$ch.Add($ex.Message) }; $ex = $ex.InnerException }; Protect-CtgSecretsInText (($ch | Select-Object -Unique) -join ' <- ') $c }
     foreach ($t in @($tests)) {
         $global:CtgProgressJobId = $null   # no job -> keep Connect's Set-CtgPhase from posting progress
-        $ok = $true; $detail = ''
+        # TWO STAGES, reported separately: (1) ACCESS — can the runner resolve the secret(s) from the
+        # app/Delinea; (2) API — connect + one live read against the vendor. A failed access skips API.
+        $accessOk = $true; $accessDetail = ''
+        $apiOk = $true; $apiDetail = ''
         $creds = @{}
         $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
+
         try {
-            foreach ($sn in @($t.secretNames)) { if ($sn) { $creds[$sn] = Get-ConnTestCredential $t.id $sn } }
-            $handler = $DISPATCH[$t.systemKey]
-            $probe = $CONNTEST_PROBE[$t.systemKey]
-            $hasConnect = $handler -and $handler.ContainsKey('Connect')
-            if (-not $hasConnect -and -not $probe) { throw "no automated connection test available for '$($t.systemKey)' — verify it manually" }
-            if ($hasConnect) { & $handler.Connect $job $creds; $detail = 'connected' }
-            if ($probe) { $detail = & $probe $job $creds }
-        } catch {
-            $ok = $false
-            $ex = $_.Exception; $chain = [System.Collections.Generic.List[string]]::new()
-            while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
-            $detail = Protect-CtgSecretsInText (($chain | Select-Object -Unique) -join ' <- ') $creds
-        } finally {
-            # A conn-test connects OUTSIDE the cached-connection path — drop this system's cache key so
-            # the next REAL job reconnects with its own tenant/creds (never reuses a conn-test session).
-            if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
+            $names = @(@($t.secretNames) | Where-Object { $_ })
+            foreach ($sn in $names) { $creds[$sn] = Get-ConnTestCredential $t.id $sn }
+            $accessDetail = if ($names.Count) { "resolved $($names.Count) secret$(if ($names.Count -ne 1) { 's' }): $($names -join ', ')" } else { 'no secret required' }
         }
-        try { Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; ok = $ok; detail = "$detail" } } catch { }
+        catch {
+            $accessOk = $false; $accessDetail = & $errLine $_ $creds
+            $apiOk = $false; $apiDetail = 'skipped — secret not resolved from Delinea'
+        }
+
+        if ($accessOk) {
+            try {
+                $handler = $DISPATCH[$t.systemKey]
+                $probe = $CONNTEST_PROBE[$t.systemKey]
+                $hasConnect = $handler -and $handler.ContainsKey('Connect')
+                if (-not $hasConnect -and -not $probe) { throw "no automated connection test available for '$($t.systemKey)' — verify it manually" }
+                if ($hasConnect) { & $handler.Connect $job $creds; $apiDetail = 'connected' }
+                if ($probe) { $apiDetail = & $probe $job $creds }
+            }
+            catch { $apiOk = $false; $apiDetail = & $errLine $_ $creds }
+            finally {
+                # A conn-test connects OUTSIDE the cached-connection path — drop this system's cache key
+                # so the next REAL job reconnects with its own tenant/creds (never reuses this session).
+                if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
+            }
+        }
+        try { Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" } } catch { }
     }
 }
 
