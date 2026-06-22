@@ -81,17 +81,50 @@ Describe 'Invoke-CtgZoomOnboarding' {
     }
 }
 
-Describe 'Zoom with no email/UPN on the case' {
-    It 'offboard: skips gracefully (no crash) when there is no email anywhere' {
-        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { throw 'should not be called' }
-        $u = [pscustomobject]@{ UserPrincipalName = ''; displayName = 'Jane Doe' }
+Describe 'Zoom display-name resolution (no email on the case)' {
+    It 'offboard: resolves the user by display name against the Zoom user list, then deactivates' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users?*') {
+                return [pscustomobject]@{ users = @(
+                        [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty@coretelligent.com' }
+                        [pscustomobject]@{ first_name = 'Someone'; last_name = 'Else'; email = 'else@coretelligent.com' }
+                    ); next_page_token = '' }
+            }
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ id = 'z1'; email = 'rmcnulty@coretelligent.com' } }
+            return $null  # PUT status / DELETE token
+        }
+        $u = [pscustomobject]@{ UserPrincipalName = ''; displayName = 'Ryan McNulty' }
         $r = Invoke-CtgZoomOffboarding -User $u -Config ([pscustomobject]@{})
+        ($r.Actions -join ' ') | Should -Match "resolved Zoom user by display name 'Ryan McNulty' -> rmcnulty@coretelligent.com"
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PUT' -and $Path -match 'rmcnulty@coretelligent.com/status' -and $Body.action -eq 'deactivate' } -Times 1
+    }
+
+    It 'offboard: refuses on an ambiguous display-name match (two users, same name)' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users?*') {
+                return [pscustomobject]@{ users = @(
+                        [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty1@coretelligent.com' }
+                        [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty2@coretelligent.com' }
+                    ); next_page_token = '' }
+            }
+            return $null
+        }
+        $r = Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = ''; displayName = 'Ryan McNulty' }) -Config ([pscustomobject]@{})
+        ($r.Actions -join ' ') | Should -Match "2 Zoom users match display name 'Ryan McNulty'"
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PUT' } -Times 0 -Exactly
+    }
+
+    It 'offboard: skips gracefully (no crash) when there is no email AND no display name' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { throw 'should not be called' }
+        $r = Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{})
         $r.Status | Should -Be 'ok'
         ($r.Actions -join ' ') | Should -Match 'no email/UPN on the case'
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -Times 0 -Exactly
     }
 
-    It 'confirm: passes as nothing-to-verify when there is no email' {
+    It 'confirm: passes as nothing-to-verify when there is no email or display name' {
         Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { throw 'should not be called' }
         $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{}) -Action 'offboard'
         $r.ok | Should -BeTrue

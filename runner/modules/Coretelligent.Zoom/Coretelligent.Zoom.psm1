@@ -105,8 +105,7 @@ function Get-CtgZoomUser {
 }
 
 # Zoom keys users by EMAIL. Offboard intakes often carry no UserPrincipalName (display-name-only),
-# so resolve the address from any of the case's email-ish fields. Returns '' when none is set —
-# callers skip gracefully rather than crash on an empty -Email bind.
+# so resolve the address from any of the case's email-ish fields. Returns '' when none is set.
 function Resolve-CtgZoomEmail {
     param([pscustomobject]$User)
     foreach ($k in 'UserPrincipalName', 'email', 'Email', 'mail', 'Mail', 'EmailAddress', 'PrimarySmtpAddress', 'userPrincipalName') {
@@ -114,6 +113,42 @@ function Resolve-CtgZoomEmail {
         if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
     }
     return ''
+}
+
+# Find Zoom users whose name matches a display name, by paging the account's user list and comparing
+# "first last" (and display_name) case-insensitively. Returns ALL matches so the caller can refuse on
+# ambiguity. The Zoom API has no name search, so this is the equivalent of Exchange's by-name lookup.
+function Find-CtgZoomUserByName {
+    param([Parameter(Mandatory)][string]$DisplayName)
+    $needle = (($DisplayName -replace '\s+', ' ').Trim()).ToLower()
+    $hits = [System.Collections.Generic.List[object]]::new()
+    if (-not $needle) { return $hits.ToArray() }
+    $next = ''
+    do {
+        $path = "/users?page_size=300" + $(if ($next) { "&next_page_token=$([uri]::EscapeDataString($next))" } else { '' })
+        $resp = Invoke-CtgZoomApi -Method GET -Path $path
+        foreach ($u in @(Get-CtgProp $resp 'users')) {
+            $full = ((("$([string](Get-CtgProp $u 'first_name')) $([string](Get-CtgProp $u 'last_name'))")) -replace '\s+', ' ').Trim().ToLower()
+            $disp = (([string](Get-CtgProp $u 'display_name')) -replace '\s+', ' ').Trim().ToLower()
+            if ($full -eq $needle -or $disp -eq $needle) { $hits.Add($u) }
+        }
+        $next = [string](Get-CtgProp $resp 'next_page_token')
+    } while ($next)
+    return $hits.ToArray()
+}
+
+# Resolve an EXISTING Zoom user's email so the executor + validator agree: a case email field FIRST,
+# else by DISPLAY NAME against the Zoom user list (exactly-one match wins; 0/many -> Email '').
+# Returns @{ Email; MatchCount; DisplayName }.
+function Resolve-CtgZoomTarget {
+    param([pscustomobject]$User)
+    $email = Resolve-CtgZoomEmail $User
+    if ($email) { return @{ Email = $email; MatchCount = 1; DisplayName = '' } }
+    $dn = [string]((Get-CtgProp $User 'DisplayName') ?? (Get-CtgProp $User 'displayName') ?? (Get-CtgProp $User 'userToOffboard'))
+    if (-not $dn) { return @{ Email = ''; MatchCount = 0; DisplayName = '' } }
+    $hits = @(Find-CtgZoomUserByName -DisplayName $dn)
+    $em = if ($hits.Count -eq 1) { [string](Get-CtgProp $hits[0] 'email') } else { '' }
+    return @{ Email = $em; MatchCount = $hits.Count; DisplayName = $dn }
 }
 
 function Invoke-CtgZoomOnboarding {
@@ -194,11 +229,15 @@ function Invoke-CtgZoomOffboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = Resolve-CtgZoomEmail $User
+    $t = Resolve-CtgZoomTarget $User
+    $email = $t.Email
     if (-not $email) {
-        $actions.Add("WARN no email/UPN on the case — can't resolve the Zoom user. Set the offboard target's email and re-run. Nothing done.")
+        $msg = if ($t.MatchCount -gt 1) { "WARN $($t.MatchCount) Zoom users match display name '$($t.DisplayName)' — set the exact email on the case. Nothing done." }
+        else { "WARN no email/UPN on the case$(if ($t.DisplayName) { " and no Zoom user matched display name '$($t.DisplayName)'" }) — set the offboard target's email and re-run. Nothing done." }
+        $actions.Add($msg)
         return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = ''; Actions = $actions.ToArray() }
     }
+    if ($t.DisplayName) { $actions.Add("resolved Zoom user by display name '$($t.DisplayName)' -> $email") }
 
     if (-not (Get-CtgZoomUser -Email $email)) {
         $actions.Add("Zoom user not found: $email")
@@ -246,10 +285,10 @@ function Confirm-CtgZoom {
         [Parameter(Mandatory)][pscustomobject]$Config,
         [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
     )
-    $email = Resolve-CtgZoomEmail $User
+    $email = (Resolve-CtgZoomTarget $User).Email
     if (-not $email) {
         # No resolvable target — nothing to verify (mirrors the executor's graceful skip).
-        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no email/UPN on the case — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable Zoom target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
     }
     $u = Get-CtgZoomUser -Email $email
     if ($Action -eq 'onboard') {
@@ -269,4 +308,4 @@ function Confirm-CtgZoom {
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }
 
-Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom
+Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom
