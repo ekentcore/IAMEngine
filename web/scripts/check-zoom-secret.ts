@@ -7,8 +7,41 @@
  *
  * Run it on the APP SERVER (it needs DELINEA_BASE_URL/USER/PASSWORD in the environment).
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { delineaConfigFromEnv, delineaConfigured, resolveSecretFields } from "../lib/secrets/delinea";
+
+// tsx (unlike `next`) does NOT auto-load .env, so DELINEA_* would be missing even when configured.
+// Load .env from the usual spots — an explicit --env=PATH, the repo root (the "main folder"), and
+// web/ — without overwriting anything already in the real environment. First file to set a key wins.
+function loadEnvFiles(): void {
+  const explicit = process.argv.find((a) => a.startsWith("--env="))?.slice("--env=".length);
+  const candidates = [
+    explicit && resolve(explicit),
+    resolve(process.cwd(), ".env"),
+    resolve(process.cwd(), "..", ".env"),   // repo root when run from web/
+    resolve(__dirname, "..", ".env"),        // web/.env
+    resolve(__dirname, "..", "..", ".env"),  // repo root, relative to the script
+  ].filter(Boolean) as string[];
+  const seen = new Set<string>();
+  for (const path of candidates) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    let text: string;
+    try { text = readFileSync(path, "utf8"); } catch { continue; }
+    for (const line of text.split("\n")) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!m || line.trim().startsWith("#")) continue;
+      const key = m[1];
+      if (process.env[key] !== undefined) continue; // don't override the real environment
+      let val = m[2].trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      process.env[key] = val;
+    }
+  }
+}
+loadEnvFiles();
 
 const db = new PrismaClient();
 
@@ -39,10 +72,11 @@ function inspect(label: string, value: string | undefined): string {
 }
 
 async function main() {
-  const slug = (process.argv[2] ?? "coretelligent").trim();
+  const slug = (process.argv.slice(2).find((a) => !a.startsWith("-")) ?? "coretelligent").trim();
   const cfg = delineaConfigFromEnv();
   if (!delineaConfigured(cfg)) {
-    console.error("✗ Delinea is not configured here — set DELINEA_BASE_URL/DELINEA_USER/DELINEA_PASSWORD (run this on the app server).");
+    console.error("✗ Delinea is not configured — set DELINEA_BASE_URL/DELINEA_USER/DELINEA_PASSWORD in the app's .env");
+    console.error("  (this script loads .env from the repo root, web/, and --env=<path>; pass --env=/path/to/.env if it's elsewhere).");
     process.exit(1);
   }
   const secret = await db.secret.findFirst({ where: { name: "zoom", client: { slug } }, select: { externalId: true, client: { select: { name: true } } } });
