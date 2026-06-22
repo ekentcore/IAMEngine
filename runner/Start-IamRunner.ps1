@@ -631,10 +631,12 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Use-CtgHubSpotSecret $job $creds; Confirm-CtgHubSpot -User $job.payload -Config $job.config -Action $job.action }
     }
     'sentinelone' = @{
-        # ApiToken auth; Connect is a pure local assignment, so re-broker each lane (rotated token next job).
-        Onboard  = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Invoke-CtgSentinelOneOnboarding  -User $job.payload -Config $job.config }
-        Offboard = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Invoke-CtgSentinelOneOffboarding -User $job.payload -Config $job.config }
-        Validate = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds; Confirm-CtgSentinelOne -User $job.payload -Config $job.config -Action $job.action }
+        # Connect key (vs inline) so the connection-test harness can exercise it; the job loop's
+        # connect-cache re-brokers when the credential fingerprint changes (rotated token next job).
+        Connect  = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds }
+        Onboard  = { param($job, $creds) Invoke-CtgSentinelOneOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgSentinelOneOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgSentinelOne -User $job.payload -Config $job.config -Action $job.action }
     }
     'duo' = @{
         Onboard  = { param($job, $creds) Use-CtgDuoSecret $job $creds; Invoke-CtgDuoOnboarding  -User $job.payload -Config $job.config }
@@ -642,9 +644,10 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Use-CtgDuoSecret $job $creds; Confirm-CtgDuo -User $job.payload -Config $job.config -Action $job.action }
     }
     'xmatters' = @{
-        Onboard  = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Invoke-CtgXMattersOnboarding  -User $job.payload -Config $job.config }
-        Offboard = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Invoke-CtgXMattersOffboarding -User $job.payload -Config $job.config }
-        Validate = { param($job, $creds) Use-CtgXMattersSecret $job $creds; Confirm-CtgXMatters -User $job.payload -Config $job.config -Action $job.action }
+        Connect  = { param($job, $creds) Use-CtgXMattersSecret $job $creds }
+        Onboard  = { param($job, $creds) Invoke-CtgXMattersOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgXMattersOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Confirm-CtgXMatters -User $job.payload -Config $job.config -Action $job.action }
     }
     'logicmonitor' = @{
         Onboard  = { param($job, $creds) Use-CtgLogicMonitorSecret $job $creds; Invoke-CtgLogicMonitorOnboarding  -User $job.payload -Config $job.config }
@@ -1061,6 +1064,11 @@ $CONNTEST_PROBE = @{
     'directory-sync'   = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
 $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's Entra slice — same Graph perms
+# Cloud REST systems: after Connect (above), do one read so the test validates the credential +
+# read scope against the live API (not just that Connect assembled an auth header).
+$CONNTEST_PROBE['zoom']        = { param($job, $creds) Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null; 'zoom: users readable' }
+$CONNTEST_PROBE['sentinelone'] = { param($job, $creds) Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null; 'sentinelone: agents readable' }
+$CONNTEST_PROBE['xmatters']    = { param($job, $creds) Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null; 'xmatters: people readable' }
 
 function Invoke-CtgConnectionTests {
     # Claim + run any queued connection tests for this agent. Fully isolated from the job pipeline:
