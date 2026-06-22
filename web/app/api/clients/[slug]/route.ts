@@ -31,11 +31,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
-  // Restricting a client is an ACCESS-CONTROL decision (who may see it) — gate it on user.manage,
-  // not the broader client.edit_systems, so an ops_manager who edits systems can't unlock a sensitive
-  // client. Everything else on this route is the usual systems-editing capability.
-  const _g = body.action === "set-restricted" ? await guard("user.manage") : await guard("client.edit_systems");
+  // Restricting a client is the most sensitive access-control decision (it hides an org from everyone
+  // but super admins) — SUPER-ADMIN ONLY. Everything else on this route is the usual systems-editing
+  // capability.
+  const _g = body.action === "set-restricted" ? await guardAuth() : await guard("client.edit_systems");
   if (_g.res) return _g.res;
+  if (body.action === "set-restricted" && _g.user.role !== "super_admin") {
+    return NextResponse.json({ error: "only a super admin can restrict or unrestrict a client" }, { status: 403 });
+  }
 
   const repo = makeClientRepository(db);
   // scope-gated: you can only edit a client you can see (an out-of-scope client reads as not-found).

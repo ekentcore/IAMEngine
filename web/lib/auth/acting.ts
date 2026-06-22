@@ -1,11 +1,10 @@
-// Non-throwing capability checks for the CURRENT operator, for UI gating in server components
-// (e.g. "show the restricted toggle only to a user.manage admin"). Mutations still enforce via
-// requirePermission server-side — this only decides what to render. Auth off → full access.
+// Non-throwing role check for the CURRENT operator, for UI gating in server components (e.g. "show the
+// restrict-client control only to a super admin"). Mutations still enforce server-side — this only
+// decides what to render. Auth off → true (synthetic system super-admin).
 import { authEnabled, getCurrentUser } from "./current-user";
-import { can, type Permission } from "./permissions";
 
-export async function currentCan(perm: Permission): Promise<boolean> {
-  if (!authEnabled()) return true; // synthetic system super-admin
+export async function currentIsSuperAdmin(): Promise<boolean> {
+  if (!authEnabled()) return true;
   const me = await getCurrentUser();
-  return !!me && can(me.role, perm);
+  return !!me && me.role === "super_admin";
 }

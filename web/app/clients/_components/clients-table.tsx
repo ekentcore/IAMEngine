@@ -80,7 +80,7 @@ function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
   return String(av).localeCompare(String(bv));
 }
 
-export function ClientsTable({ clients, canManageAccess = false }: { clients: ClientVM[]; canManageAccess?: boolean }) {
+export function ClientsTable({ clients, canRestrict = false }: { clients: ClientVM[]; canRestrict?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
@@ -363,33 +363,26 @@ export function ClientsTable({ clients, canManageAccess = false }: { clients: Cl
                 >
                   {c.intakeSource === "incident" ? "internal" : "external"}
                 </span>
-                {/* Restricted (internal-only) flag. Visible to anyone who can see the client; a
-                    user.manage admin can click to toggle. Restricting hides it from operators not
-                    granted it. */}
-                {(c.restricted || canManageAccess) && (
+                {/* Restricted (internal-only) flag — SUPER ADMIN ONLY (the option is hidden from
+                    everyone else). Restricting hides the client from every operator not granted it. */}
+                {canRestrict && (
                   <>
                     {" "}
                     <span
                       className="badge"
-                      role={canManageAccess ? "button" : undefined}
-                      tabIndex={canManageAccess ? 0 : undefined}
+                      role="button"
+                      tabIndex={0}
                       title={
-                        canManageAccess
-                          ? c.restricted
-                            ? "Restricted (internal-only): hidden from operators not granted it. Click to unrestrict."
-                            : "Click to restrict: hide this client from operators who haven't been granted it (grant per-user on the Users page)."
-                          : "Restricted — internal-only client"
+                        c.restricted
+                          ? "Restricted (internal-only): hidden from operators not granted it. Click to unrestrict."
+                          : "Click to restrict: hide this client from operators who haven't been granted it (grant per-user on the Users page)."
                       }
-                      onClick={
-                        canManageAccess
-                          ? () => {
-                              if (!c.restricted && !confirm(`Restrict ${c.name}? It will be hidden from every operator (except super admins and those you grant it to on the Users page).`)) return;
-                              saveCell(c.slug, "set-restricted", { restricted: !c.restricted });
-                            }
-                          : undefined
-                      }
+                      onClick={() => {
+                        if (!c.restricted && !confirm(`Restrict ${c.name}? It will be hidden from every operator (except super admins and those you grant it to on the Users page).`)) return;
+                        saveCell(c.slug, "set-restricted", { restricted: !c.restricted });
+                      }}
                       style={{
-                        cursor: canManageAccess ? "pointer" : "default",
+                        cursor: "pointer",
                         ...(c.restricted
                           ? { color: "#a23f3f", borderColor: "#f0cece", background: "#fcf3f3" }
                           : { color: "var(--muted)", opacity: 0.5 }),

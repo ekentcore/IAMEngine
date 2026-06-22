@@ -41,8 +41,11 @@ export function ClientAccessEditor({
   const [grant, setGrant] = useState<Set<string>>(new Set(user.grantClientIds));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState(""); // filters the only/exclude client list (can be ~200 clients)
 
   const restricted = clients.filter((c) => c.restricted);
+  const q = query.trim().toLowerCase();
+  const filtered = q ? clients.filter((c) => c.name.toLowerCase().includes(q)) : clients;
 
   function toggle(set: Set<string>, setSet: (s: Set<string>) => void, id: string) {
     const n = new Set(set);
@@ -85,17 +88,24 @@ export function ClientAccessEditor({
         ))}
       </div>
 
-      {mode === "only" && (
+      {(mode === "only" || mode === "exclude") && (
         <div>
-          <p className="note" style={{ margin: "0.3rem 0 0" }}>Sees ONLY the clients you check (a restricted client checked here is thereby granted):</p>
-          <div style={box}>{clients.map((c) => row(c, scope.has(c.id), () => toggle(scope, setScope, c.id)))}</div>
-        </div>
-      )}
-
-      {mode === "exclude" && (
-        <div>
-          <p className="note" style={{ margin: "0.3rem 0 0" }}>Sees all clients EXCEPT the ones you check:</p>
-          <div style={box}>{clients.map((c) => row(c, scope.has(c.id), () => toggle(scope, setScope, c.id)))}</div>
+          <p className="note" style={{ margin: "0.3rem 0 0" }}>
+            {mode === "only"
+              ? "Sees ONLY the clients you check (a restricted client checked here is thereby granted):"
+              : "Sees all clients EXCEPT the ones you check:"}
+          </p>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search clients…"
+            style={{ width: "100%", fontSize: 13, margin: "0.3rem 0 0" }}
+          />
+          <div style={box}>
+            {filtered.map((c) => row(c, scope.has(c.id), () => toggle(scope, setScope, c.id)))}
+            {filtered.length === 0 && <span className="note" style={{ color: "var(--faint)" }}>no client matches “{query}”</span>}
+          </div>
+          <p className="note" style={{ margin: 0, color: "var(--faint)" }}>{scope.size} selected{q ? ` · showing ${filtered.length} of ${clients.length}` : ""}</p>
         </div>
       )}
 
