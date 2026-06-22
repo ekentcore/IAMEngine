@@ -13,6 +13,7 @@ import { EditSystemsButton } from "../_components/edit-systems-button";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
+import { GenerateRunbookButton } from "../_components/generate-runbook-button";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
@@ -331,13 +332,17 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       <h2 style={{ marginTop: "1.5rem" }}>Connection tests</h2>
       <ConnectionTestPanel slug={client.slug} systemNames={Object.fromEntries(client.systems.map((s) => [s.systemKey, s.system.name]))} />
 
-      <h2 style={{ marginTop: "1.5rem" }}>Runbook — everything to do</h2>
+      <div className="row-between" style={{ marginTop: "1.5rem", alignItems: "baseline" }}>
+        <h2 style={{ margin: 0 }}>Runbook — everything to do</h2>
+        <GenerateRunbookButton slug={client.slug} />
+      </div>
       <p className="note">
-        Generated from the ServiceNow KB. ✅ automated steps run via a module; ✋ human-interaction
-        steps (manual, or not yet modeled) need a person — those are the module backlog. Expand to see the steps.
+        From the ServiceNow KB, or <b>built from the modeled systems</b> (⚙ for internal/KB-less clients like
+        Coretelligent). ✅ automated steps run via a module; ✋ human-interaction steps (manual, or not yet modeled)
+        need a person. Expand to see the steps.
       </p>
       {items.length === 0 ? (
-        <p className="note">No KB runbook for this client. If it&rsquo;s internal or KB-less (process from a script/doc), paste or type the runbook below — it&rsquo;s parsed into steps and known systems are auto-wired.</p>
+        <p className="note">No runbook yet. Click <b>⚙ Build from systems</b> to generate it from what&rsquo;s modeled on Edit systems, or paste/type a runbook below (parsed into steps; known systems are auto-wired).</p>
       ) : (
         <RunbookView items={items} slug={client.slug} />
       )}
