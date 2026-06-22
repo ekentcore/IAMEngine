@@ -24,6 +24,7 @@ BeforeAll {
     # distribution-list mirror (EXO)
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
     function global:Get-User { [CmdletBinding()] param($Identity) }
+    function global:Get-MgUserManager { [CmdletBinding()] param($UserId) } # Entra manager link (Graph)
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
     function global:Get-DistributionGroup { [CmdletBinding()] param($Identity, $ResultSize, $Filter) }
     function global:Get-DistributionGroupMember { [CmdletBinding()] param($Identity, $ResultSize) }
@@ -213,6 +214,22 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'pbreitner@core.tech' -and @($AccessRights) -contains 'FullAccess' }
         ($r.Actions -join ' ') | Should -Match 'resolved manager from the directory: pbreitner@core.tech'
+    }
+
+    It 'resolves the manager from Entra (Graph) when Exchange Get-User.Manager is blank' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        # Exchange's own view has no manager, but Entra (Graph) does — the real-world INC0841839 case.
+        Mock Get-User -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Manager = '' } }
+        # AdditionalProperties as a generic Dictionary — exactly what Graph returns (NOT a [hashtable]),
+        # so this also guards Get-CtgProp's IDictionary handling.
+        $mgrDict = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $mgrDict['mail'] = 'boss@core.tech'; $mgrDict['userPrincipalName'] = 'boss@core.tech'
+        Mock Get-MgUserManager -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ AdditionalProperties = $mgrDict } }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'boss@core.tech' -and @($AccessRights) -contains 'FullAccess' }
+        ($r.Actions -join ' ') | Should -Match 'resolved manager from the directory: boss@core.tech'
     }
 
     It 'warns (does not fail) when delegateManagerFullAccess is set but no manager on the case OR directory' {

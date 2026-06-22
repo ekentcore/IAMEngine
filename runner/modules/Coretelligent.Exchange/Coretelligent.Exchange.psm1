@@ -15,7 +15,9 @@ Set-StrictMode -Version Latest
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Object) { return $null }
-    if ($Object -is [hashtable]) { return $Object[$Name] }
+    # IDictionary (not just [hashtable]): Graph's AdditionalProperties is a generic Dictionary, so a
+    # [hashtable]-only check would miss its keys (e.g. the manager's mail/userPrincipalName).
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
@@ -42,6 +44,57 @@ function Resolve-CtgExchangeTarget {
     $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$safe'" -ErrorAction SilentlyContinue)
     $u = if ($rcpt.Count -eq 1) { [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity')) } else { '' }
     return @{ Upn = $u; MatchCount = $rcpt.Count; DisplayName = $dn }
+}
+
+# Resolve the departing user's MANAGER to a primary SMTP address, trying the authoritative sources in
+# order: Entra via Microsoft Graph FIRST (Get-MgUserManager — the manager link Exchange's
+# Get-User.Manager frequently OMITS for cloud-managed users, which is why a delegate was being skipped
+# even though Entra had a manager), then Exchange's directory view (Get-User.Manager -> Get-Recipient),
+# then on-prem AD (Get-ADUser.Manager, on a client-network agent). Returns '' only when NO source has a
+# manager. Each cmdlet is probed with Get-Command so a runner missing Graph/AD just falls through.
+function Resolve-CtgManagerAddress {
+    param([string]$Upn)
+    if ([string]::IsNullOrWhiteSpace($Upn)) { return '' }
+
+    # 1) Entra via Microsoft Graph — authoritative for the cloud manager relationship. Graph is
+    #    connected by the entra/m365 step that runs before Exchange in the same runner process.
+    if (Get-Command Get-MgUserManager -ErrorAction SilentlyContinue) {
+        try {
+            $m = Get-MgUserManager -UserId $Upn -ErrorAction Stop
+            $ap = Get-CtgProp $m 'AdditionalProperties'
+            $addr = [string]((Get-CtgProp $ap 'mail') ?? (Get-CtgProp $ap 'userPrincipalName'))
+            if (-not $addr) { $addr = [string]((Get-CtgProp $m 'Mail') ?? (Get-CtgProp $m 'UserPrincipalName')) }
+            if ($addr) { return $addr }
+        }
+        catch { }
+    }
+
+    # 2) Exchange Online directory view — Get-User.Manager is a name/DN; resolve it to a primary SMTP.
+    if (Get-Command Get-User -ErrorAction SilentlyContinue) {
+        $mgrId = [string](Get-CtgProp (Get-User -Identity $Upn -ErrorAction SilentlyContinue) 'Manager')
+        if ($mgrId) {
+            $rcpt = if (Get-Command Get-Recipient -ErrorAction SilentlyContinue) { Get-Recipient -Identity $mgrId -ErrorAction SilentlyContinue } else { $null }
+            $addr = [string]((Get-CtgProp $rcpt 'PrimarySmtpAddress') ?? $mgrId)
+            if ($addr) { return $addr }
+        }
+    }
+
+    # 3) On-prem AD (client-network agent with RSAT) — the manager DN -> the manager's mail/UPN.
+    if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) {
+        try {
+            $esc = $Upn -replace "'", "''"
+            $u = Get-ADUser -Filter "UserPrincipalName -eq '$esc'" -Properties Manager -ErrorAction SilentlyContinue
+            $mgrDn = [string](Get-CtgProp $u 'Manager')
+            if ($mgrDn) {
+                $mgrU = Get-ADUser -Identity $mgrDn -Properties mail, UserPrincipalName -ErrorAction SilentlyContinue
+                $addr = [string]((Get-CtgProp $mgrU 'mail') ?? (Get-CtgProp $mgrU 'UserPrincipalName'))
+                if ($addr) { return $addr }
+            }
+        }
+        catch { }
+    }
+
+    return ''
 }
 
 # Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
@@ -542,20 +595,18 @@ function Invoke-CtgExchangeOffboarding {
             if ($delegate -is [string]) { $delegate }
             elseif (Get-CtgProp $delegate 'address') { [string](Get-CtgProp $delegate 'address') }
             else { [string]((Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerUpn') ?? (Get-CtgProp $User 'Manager')) }
-        # The intake usually has no manager — look it up from the DIRECTORY (the departing user's
-        # Manager attribute) and resolve it to a primary SMTP for a clean delegate identity.
-        if (-not $mgr -and (Get-Command Get-User -ErrorAction SilentlyContinue)) {
-            Write-CtgStep "no manager on the case — looking it up: (Get-User -Identity '$upn').Manager"
-            $mgrId = [string](Get-CtgProp (Get-User -Identity $upn -ErrorAction SilentlyContinue) 'Manager')
-            if ($mgrId) {
-                $mgrRcpt = if (Get-Command Get-Recipient -ErrorAction SilentlyContinue) { Get-Recipient -Identity $mgrId -ErrorAction SilentlyContinue } else { $null }
-                $mgr = [string]((Get-CtgProp $mgrRcpt 'PrimarySmtpAddress') ?? $mgrId)
+        # The intake usually has no manager — look it up from the DIRECTORY: Entra/Graph first (the
+        # authoritative cloud manager link), then Exchange, then on-prem AD. Resolved to a primary SMTP.
+        if (-not $mgr) {
+            Write-CtgStep "no manager on the case — looking it up in the directory (Entra/Exchange/AD) for '$upn'"
+            $mgr = Resolve-CtgManagerAddress -Upn $upn
+            if ($mgr) {
                 $actions.Add("resolved manager from the directory: $mgr")
                 Write-CtgStep "resolved manager -> $mgr"
             }
         }
         if (-not $mgr) {
-            $actions.Add("WARN delegateManagerFullAccess set but no manager on the case OR in the directory — Full Access delegate skipped")
+            $actions.Add("WARN delegateManagerFullAccess set but no manager on the case OR in the directory (Entra/Exchange/AD) — Full Access delegate skipped")
         }
         else {
             $already = @(Get-MailboxPermission -Identity $upn -ErrorAction SilentlyContinue) |
