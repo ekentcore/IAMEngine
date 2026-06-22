@@ -41,6 +41,16 @@ function Connect-CtgZoom {
     if ([string]::IsNullOrWhiteSpace($clientId))     { throw "Zoom: the 'zoom' secret has no Client ID — set Username = Client ID (see /help/zoom)." }
     if ([string]::IsNullOrWhiteSpace($clientSecret)) { throw "Zoom: the 'zoom' secret has no Client Secret — set Password = Client Secret (see /help/zoom)." }
 
+    # Zoom credentials are plain ASCII. A non-ASCII character (most often a 'smart quote' ' ' or a
+    # stray symbol introduced by copy-paste through an app that auto-corrects) is the #1 cause of an
+    # invalid_client where the value "looks right" — catch it here and name the exact field, since
+    # Zoom's error can't tell you which one.
+    foreach ($pair in @(@('Account ID', $AccountId), @('Client ID', $clientId), @('Client Secret', $clientSecret))) {
+        if ($pair[1] -match '[^\x20-\x7E]') {
+            throw "Zoom: the $($pair[0]) on the 'zoom' secret contains a non-ASCII character (likely a 'smart quote' or stray symbol from copy-paste) — re-paste it as PLAIN TEXT straight from the Zoom app's App Credentials page (see /help/zoom)."
+        }
+    }
+
     $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${clientId}:${clientSecret}"))
     $uri = "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=$([uri]::EscapeDataString($AccountId))"
     try {

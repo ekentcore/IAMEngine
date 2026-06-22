@@ -123,6 +123,12 @@ Describe 'Connect-CtgZoom' {
         $cred = [pscredential]::new('client-id', (ConvertTo-SecureString 'secret' -AsPlainText -Force))
         { Connect-CtgZoom -Credential $cred -AccountId ' ' } | Should -Throw '*no Account ID*'
     }
+
+    It 'detects a smart-quote (non-ASCII) in the Client Secret and names the field' {
+        # U+2019 right single quote — the copy-paste artifact behind a "looks right" invalid_client.
+        $cred = [pscredential]::new('client-id', (ConvertTo-SecureString "g$([char]0x2019)yGhBn8" -AsPlainText -Force))
+        { Connect-CtgZoom -Credential $cred -AccountId 'acct-1' } | Should -Throw '*Client Secret*non-ASCII*'
+    }
 }
 
 Describe 'Confirm-CtgZoom' {
