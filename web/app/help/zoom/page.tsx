@@ -33,14 +33,17 @@ export default function ZoomSetupPage() {
         <li><b>Develop → Build App → Server-to-Server OAuth → Create.</b> Name it e.g. <code>Coretelligent IAM</code>.</li>
         <li>On <b>App Credentials</b>, copy the <b>Account ID</b>, <b>Client ID</b>, and <b>Client Secret</b>.</li>
         <li>Fill in the required <b>Information</b> fields (company name, contact) — Zoom won&rsquo;t let you activate without them.</li>
-        <li>On <b>Scopes</b>, add (Add Scopes → search) the <b>granular</b> scopes below:
+        <li>On <b>Scopes</b>, add (Add Scopes → search) the <b>granular</b> scopes below — this is the exact
+          set the live Coretelligent app uses (14):
           <ul>
-            <li><b>User</b> (always) — create/license/deactivate/delete + read-back:
+            <li><b>User</b> (always required):
               <ul>
-                <li><code>user:read:user:admin</code></li>
-                <li><code>user:read:list_users:admin</code></li>
-                <li><code>user:update:user:admin</code></li>
-                <li><code>user:delete:user:admin</code></li>
+                <li><code>user:read:user:admin</code> — read a user</li>
+                <li><code>user:read:list_users:admin</code> — list users (used to resolve an offboard by display name)</li>
+                <li><code>user:update:user:admin</code> — set the license tier (type)</li>
+                <li><code>user:update:status:admin</code> — deactivate / activate</li>
+                <li><code>user:delete:user:admin</code> — delete (hard removal, when configured)</li>
+                <li><code>user:delete:token:admin</code> — revoke the SSO token / sign out</li>
               </ul>
             </li>
             <li><b>Phone</b> (<i>only if you use the Zoom Phone provisioning</i> — calling plan + number):
@@ -55,6 +58,9 @@ export default function ZoomSetupPage() {
             </li>
           </ul>
         </li>
+        <li><b>Turn OFF the &ldquo;new experience&rdquo; toggle</b> on the app (the new app/scopes experience Zoom is
+          rolling out). The integration is validated against the <b>classic</b> behavior — with the new experience on,
+          the granular scopes above don&rsquo;t map the same way and admin calls (deactivate, list users) can 400.</li>
         <li><b>Activate</b> the app (Activation → Activate your app).</li>
       </ol>
 
