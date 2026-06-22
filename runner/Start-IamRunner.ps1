@@ -265,17 +265,18 @@ function Use-CtgXMattersSecret {
     if (-not $s) { throw "the job did not broker an 'xmatters' secret — list 'xmatters' in the client's xmatters system secrets" }
     $f = $s.Fields
     $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
-    $baseUrl = & $pick @('BaseUrl', 'CompanyUrl', 'Url', 'Instance')
-    if (-not $baseUrl) { throw "the 'xmatters' secret has no company URL — set BaseUrl (https://{company}.xmatters.com). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
-    # An xMatters API KEY + SECRET (key = Basic username, secret = Basic password), or a REST
-    # web-service user's username/password. Prefer the stored credential, else build from fields.
-    $cred = $s.Credential
-    if (-not ($cred -and $cred.UserName)) {
-        $u = & $pick @('ApiKey', 'AccessKey', 'Key', 'Username', 'User'); if (-not $u -and $s.Username) { $u = [string]$s.Username }
-        $p = & $pick @('Secret', 'ApiSecret', 'Password', 'Token', 'ApiToken')
-        if (-not $u -or -not $p) { throw "the 'xmatters' secret needs an API key + secret (ApiKey/Secret) or a REST user Username + Password. The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
-        $cred = [pscredential]::new($u, (ConvertTo-SecureString $p -AsPlainText -Force))
-    }
+    $baseUrl = & $pick @('apiURL', 'ApiUrl', 'BaseUrl', 'CompanyUrl', 'Url', 'Instance')
+    if (-not $baseUrl) { throw "the 'xmatters' secret has no company URL — set apiURL (https://{company}.xmatters.com). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+    # xMatters API KEY + SECRET as Basic auth (key = username, secret = password). The Delinea
+    # "Automation API" template stores them as clientID + ClientSecret; a REST user's Username +
+    # Password works too. Prefer explicit fields, else the stored credential. (accountId is unused.)
+    $u = & $pick @('ClientID', 'ClientId', 'ApiKey', 'AccessKey', 'Key', 'Username', 'User')
+    $p = & $pick @('ClientSecret', 'Secret', 'ApiSecret', 'Password', 'Token', 'ApiToken')
+    if (-not $u -and $s.Credential -and $s.Credential.UserName) { $u = [string]$s.Credential.UserName }
+    if (-not $u -and $s.Username) { $u = [string]$s.Username }
+    if (-not $p -and $s.Credential -and $s.Credential.Password) { $p = ConvertFrom-SecureString $s.Credential.Password -AsPlainText }
+    if (-not $u -or -not $p) { throw "the 'xmatters' secret needs an API key + secret (clientID/ClientSecret) or a REST user Username + Password. The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+    $cred = [pscredential]::new(([string]$u).Trim(), (ConvertTo-SecureString (([string]$p).Trim()) -AsPlainText -Force))
     Connect-CtgXMatters -BaseUrl $baseUrl -Credential $cred
 }
 

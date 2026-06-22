@@ -42,14 +42,17 @@ export default function XMattersSetupPage() {
         <li>Note the company URL <code>https://&#123;company&#125;.xmatters.com</code>.</li>
       </ol>
 
-      <h2>2. Store it in Delinea</h2>
+      <h2>2. Store it in Delinea (use the “Automation API” template)</h2>
+      <p className="note">Create the secret from the <b>Automation API</b> template and fill its fields:</p>
       <table>
         <tbody>
-          <tr><th style={{ width: 150 }}>BaseUrl</th><td>the company URL (<code>https://&#123;company&#125;.xmatters.com</code>)</td></tr>
-          <tr><th>ApiKey</th><td>the API <b>Key</b> (also accepted in the secret&rsquo;s Username field)</td></tr>
-          <tr><th>Secret</th><td>the API <b>Secret</b> (also accepted in the Password field)</td></tr>
+          <tr><th style={{ width: 150 }}>apiURL</th><td>the company URL (<code>https://&#123;company&#125;.xmatters.com</code>)</td></tr>
+          <tr><th>clientID</th><td>the API <b>Key</b> (used as the Basic-auth username)</td></tr>
+          <tr><th>ClientSecret</th><td>the API <b>Secret</b> (used as the Basic-auth password)</td></tr>
+          <tr><th>accountId</th><td>not used by xMatters — leave blank (the template just includes it)</td></tr>
         </tbody>
       </table>
+      <p className="note">Field names are matched leniently and trimmed, so the template&rsquo;s exact casing is fine.</p>
 
       <h2>3. Behavior config</h2>
       <p className="note">On the client&rsquo;s <code>xmatters</code> system config (nested under <code>onboard</code>/<code>offboard</code>):</p>
