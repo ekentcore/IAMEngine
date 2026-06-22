@@ -58,9 +58,9 @@ export default function ZoomSetupPage() {
             </li>
           </ul>
         </li>
-        <li><b>Turn OFF the &ldquo;new experience&rdquo; toggle</b> on the app (the new app/scopes experience Zoom is
-          rolling out). The integration is validated against the <b>classic</b> behavior — with the new experience on,
-          the granular scopes above don&rsquo;t map the same way and admin calls (deactivate, list users) can 400.</li>
+        <li><b>Turn OFF the &ldquo;new experience&rdquo; toggle</b> — it&rsquo;s at the <b>top-right of the app&rsquo;s build
+          page</b>. The integration is validated against the <b>classic</b> experience; with the new one on, the granular
+          scopes above don&rsquo;t map the same way and admin calls (deactivate, list users) can 400.</li>
         <li><b>Activate</b> the app (Activation → Activate your app).</li>
       </ol>
 
