@@ -33,12 +33,27 @@ export default function ZoomSetupPage() {
         <li><b>Develop → Build App → Server-to-Server OAuth → Create.</b> Name it e.g. <code>Coretelligent IAM</code>.</li>
         <li>On <b>App Credentials</b>, copy the <b>Account ID</b>, <b>Client ID</b>, and <b>Client Secret</b>.</li>
         <li>Fill in the required <b>Information</b> fields (company name, contact) — Zoom won&rsquo;t let you activate without them.</li>
-        <li>On <b>Scopes</b>, add (Add Scopes → search):
+        <li>On <b>Scopes</b>, add (Add Scopes → search) the <b>granular</b> scopes below:
           <ul>
-            <li><code>user:read:admin</code> and <code>user:write:admin</code> — create, license (set type), deactivate/delete, and revoke SSO tokens.</li>
-            <li><i>Only if you use the Zoom Phone provisioning:</i> <code>phone:read:admin</code> and <code>phone:write:admin</code>.</li>
+            <li><b>User</b> (always) — create/license/deactivate/delete + read-back:
+              <ul>
+                <li><code>user:read:user:admin</code></li>
+                <li><code>user:read:list_users:admin</code></li>
+                <li><code>user:update:user:admin</code></li>
+                <li><code>user:delete:user:admin</code></li>
+              </ul>
+            </li>
+            <li><b>Phone</b> (<i>only if you use the Zoom Phone provisioning</i> — calling plan + number):
+              <ul>
+                <li><code>phone:read:list_users:admin</code></li>
+                <li><code>phone:read:numbers:admin</code></li>
+                <li><code>phone:write:calling_plan:admin</code></li>
+                <li><code>phone:update:calling_plan:admin</code></li>
+                <li><code>phone:delete:users_calling_plan:admin</code></li>
+                <li><code>phone:read:call:admin</code>, <code>phone:read:call_log:admin</code>, <code>phone:read:list_call_logs:admin</code></li>
+              </ul>
+            </li>
           </ul>
-          <span className="note">Newer accounts show <b>granular</b> scopes — pick the equivalent <code>user:read:user:admin</code> / <code>user:write:user:admin</code> (and the phone ones) if the classic names aren&rsquo;t listed.</span>
         </li>
         <li><b>Activate</b> the app (Activation → Activate your app).</li>
       </ol>
@@ -59,13 +74,21 @@ export default function ZoomSetupPage() {
       </p>
 
       <h2>3. Behavior config</h2>
-      <p className="note">On the client&rsquo;s <code>zoom</code> system config:</p>
+      <p className="note">
+        Set on the client&rsquo;s <code>zoom</code> system config (Client → <b>Edit systems</b> → the config cell, the
+        profile JSON, or a wiring script). Knobs are <b>nested under the action</b> — <code>onboard</code> knobs go in
+        an <code>onboard</code> object, <code>offboard</code> knobs in an <code>offboard</code> object:
+      </p>
+      <pre style={{ border: "1px solid var(--line, #e5e7eb)", borderRadius: 6, padding: "0.7rem 0.9rem", fontSize: 12, overflowX: "auto" }}>{`{
+  "onboard":  { "type": 2, "phone": { "callingPlanType": 200, "number": "+15551230000" } },
+  "offboard": { "delete": false, "revokeSso": true }
+}`}</pre>
       <table>
         <tbody>
-          <tr><th style={{ width: 170 }}>type</th><td>license tier on onboard — <code>2</code> = Licensed/Pro (default), <code>1</code> = Basic (no license)</td></tr>
-          <tr><th>phone</th><td>optional Zoom Phone: <code>{`{ callingPlanType, number | numberId }`}</code> — the number must already be in the account&rsquo;s pool. Omit to skip.</td></tr>
-          <tr><th>delete</th><td>offboard hard-delete instead of deactivate (default off — deactivate is reversible and audit-friendly)</td></tr>
-          <tr><th>revokeSso</th><td>revoke the SSO session on offboard (default <b>on</b>; set <code>false</code> to skip)</td></tr>
+          <tr><th style={{ width: 170 }}>onboard.type</th><td>license tier — <code>2</code> = Licensed/Pro (default), <code>1</code> = Basic (no license)</td></tr>
+          <tr><th>onboard.phone</th><td>optional Zoom Phone: <code>{`{ callingPlanType, number | numberId }`}</code> — the number must already be in the account&rsquo;s pool. Omit to skip.</td></tr>
+          <tr><th>offboard.delete</th><td>hard-delete instead of deactivate (default off — deactivate is reversible and audit-friendly)</td></tr>
+          <tr><th>offboard.revokeSso</th><td>revoke the SSO session (default <b>on</b>; set <code>false</code> to skip)</td></tr>
         </tbody>
       </table>
 
