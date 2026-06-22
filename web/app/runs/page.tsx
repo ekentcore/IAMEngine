@@ -137,7 +137,9 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
               <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
                 {(r.verdict === "warning" || r.verdict === "failed") && (
                   <span style={{ display: "inline-flex", gap: 4 }}>
-                    <CopyButton text={[`${r.systemKey} (${r.caseNumber})`, ...r.messages, r.error ?? ""].filter(Boolean).join("\n")} />
+                    {/* error is already messages[0] for a failed step (jobOutcome pushes it first), so
+                        append it only when it isn't already shown — otherwise the copy duplicates it. */}
+                    <CopyButton text={[`${r.systemKey} (${r.caseNumber})`, ...r.messages, ...(r.error && !r.messages.includes(r.error) ? [r.error] : [])].filter(Boolean).join("\n")} />
                     <FixButton fingerprint={r.fingerprint} resolved={done} count={r.count} />
                   </span>
                 )}
