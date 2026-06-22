@@ -52,5 +52,8 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "logicmonitor") {
     return { kind: "account + LMv1 access id/key", href: "/help/logicmonitor" };
   }
+  if (name === "zoom") {
+    return { kind: "Server-to-Server OAuth app (account id + client id/secret)", href: "/help/zoom" };
+  }
   return null;
 }

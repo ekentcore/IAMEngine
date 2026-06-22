@@ -17,11 +17,16 @@ $script:ZoomToken  = $null
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Object) { return $null }
-    if ($Object -is [hashtable]) { return $Object[$Name] }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
 }
+
+# Zoom user license tiers (the `type` field): 1 = Basic (free, no license), 2 = Licensed (Pro),
+# 3 = On-Prem. Onboarding ensures the user is Licensed (2) by default; offboarding deactivates,
+# which drops the license back to the account pool.
+$script:ZoomTypeName = @{ 1 = 'Basic'; 2 = 'Licensed'; 3 = 'On-Prem' }
 
 function Connect-CtgZoom {
     [CmdletBinding()]
@@ -73,22 +78,33 @@ function Invoke-CtgZoomOnboarding {
 
     $actions = [System.Collections.Generic.List[string]]::new()
     $email = $User.UserPrincipalName
+    $desiredType = [int]((Get-CtgProp $Config 'type') ?? 2)   # 2 = Licensed (Pro) by default
+    $typeName = { param($t) ($script:ZoomTypeName[[int]$t]) ?? "type $t" }
 
-    if (Get-CtgZoomUser -Email $email) {
+    $existing = Get-CtgZoomUser -Email $email
+    if ($existing) {
         $actions.Add("Zoom user already exists: $email")
+        # Ensure they hold the desired LICENSE — a pre-existing Basic user is upgraded to Licensed
+        # (the create call below only runs for a brand-new user, so without this an existing Basic
+        # account would never get its license). PATCH /users/{id} { type } is the assignment.
+        $curType = [int]((Get-CtgProp $existing 'type') ?? 0)
+        if ($curType -ne $desiredType -and $PSCmdlet.ShouldProcess($email, "Set Zoom license to $(& $typeName $desiredType)")) {
+            Invoke-CtgZoomApi -Method PATCH -Path "/users/$email" -Body @{ type = $desiredType } | Out-Null
+            $actions.Add("set Zoom license: $(& $typeName $curType) -> $(& $typeName $desiredType)")
+        }
     }
     elseif ($PSCmdlet.ShouldProcess($email, "Create Zoom user")) {
         $body = @{
             action    = ((Get-CtgProp $Config 'action') ?? 'create')
             user_info = @{
                 email      = $email
-                type       = [int]((Get-CtgProp $Config 'type') ?? 2)
+                type       = $desiredType
                 first_name = $User.FirstName
                 last_name  = $User.LastName
             }
         }
         Invoke-CtgZoomApi -Method POST -Path '/users' -Body $body | Out-Null
-        $actions.Add("created Zoom user: $email (type $($body.user_info.type))")
+        $actions.Add("created Zoom user: $email ($(& $typeName $desiredType))")
     }
 
     # Zoom Phone: assign a calling plan + number when configured. Idempotent — skips whichever is
@@ -175,13 +191,19 @@ function Confirm-CtgZoom {
     $email = $User.UserPrincipalName
     $u = Get-CtgZoomUser -Email $email
     if ($Action -eq 'onboard') {
-        $check = @{ name = 'Zoom user present'; expected = $true; actual = [bool]$u; pass = [bool]$u }
+        $present = [bool]$u
+        $checks = @(@{ name = 'Zoom user present'; expected = $true; actual = $present; pass = $present })
+        # Verify the LICENSE landed: the user's type matches the desired tier (default 2 = Licensed).
+        $desiredType = [int]((Get-CtgProp $Config 'type') ?? 2)
+        if ($present) {
+            $curType = [int]((Get-CtgProp $u 'type') ?? 0)
+            $checks += @{ name = "Zoom license = $(($script:ZoomTypeName[$desiredType]) ?? $desiredType)"; expected = $desiredType; actual = $curType; pass = ($curType -eq $desiredType) }
+        }
+        return [pscustomobject]@{ ok = ($checks.pass -notcontains $false); checks = $checks }
     }
-    else {
-        # Deleted users return $null; deactivated users have status != 'active'.
-        $gone = (-not $u) -or ((Get-CtgProp $u 'status') -and (Get-CtgProp $u 'status') -ne 'active')
-        $check = @{ name = 'Zoom user removed/deactivated'; expected = $true; actual = [bool]$gone; pass = [bool]$gone }
-    }
+    # Deleted users return $null; deactivated users have status != 'active'.
+    $gone = (-not $u) -or ((Get-CtgProp $u 'status') -and (Get-CtgProp $u 'status') -ne 'active')
+    $check = @{ name = 'Zoom user removed/deactivated'; expected = $true; actual = [bool]$gone; pass = [bool]$gone }
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }
 

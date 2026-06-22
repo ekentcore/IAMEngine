@@ -292,6 +292,27 @@ function Use-CtgLogicMonitorSecret {
     Connect-CtgLogicMonitor -Account $account -AccessId $accessId -AccessKey $accessKey
 }
 
+# Connect Zoom from the brokered 'zoom' secret — a Server-to-Server OAuth app: Client ID (the
+# credential's username, or a Client* field), Client Secret (the password / *Secret field), and the
+# Account ID. Tolerant of field-name variants and fails actionably (names what it looked for + what
+# the secret has) instead of an opaque parameter-bind error.
+function Use-CtgZoomSecret {
+    param($Job, $Creds)
+    $s = $Creds['zoom']
+    if (-not $s) { throw "the job did not broker a 'zoom' secret — list 'zoom' in the client's zoom system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+    $accountId = & $pick @('AccountId', 'AccountID', 'Account ID', 'Account')
+    $cred = $s.Credential
+    if (-not ($cred -and $cred.UserName)) {
+        $clientId = & $pick @('ClientId', 'ClientID', 'Client ID'); if (-not $clientId -and $s.Username) { $clientId = [string]$s.Username }
+        $secret   = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'ApiKey', 'Key', 'Password')
+        $cred = if ($clientId -and $secret) { [pscredential]::new($clientId, (ConvertTo-SecureString $secret -AsPlainText -Force)) } else { $null }
+    }
+    if (-not $accountId -or -not $cred) { throw "the 'zoom' secret needs a Server-to-Server OAuth app — Username = Client ID, Password = Client Secret, plus an AccountId field. The secret has: $(@($f.Keys) -join ', '). See /help/zoom." }
+    Connect-CtgZoom -Credential $cred -AccountId $accountId
+}
+
 # The M365/Exchange tenant identifier for this job, in priority order:
 #   1. the m365-admin secret's TenantId field — the Directory (tenant) ID GUID from the app
 #      registration; unambiguous and ALWAYS accepted by Entra, even when domain names are mis-set
@@ -521,7 +542,7 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
     }
     'zoom' = @{
-        Connect  = { param($job, $creds) Connect-CtgZoom -Credential $creds['zoom'].Credential -AccountId $creds['zoom'].Fields['AccountId'] }
+        Connect  = { param($job, $creds) Use-CtgZoomSecret -Job $job -Creds $creds }
         Onboard  = { param($job, $creds) Invoke-CtgZoomOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgZoomOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgZoom -User $job.payload -Config $job.config -Action $job.action }

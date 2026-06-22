@@ -21,15 +21,28 @@ Describe 'Invoke-CtgZoomOnboarding' {
         ($r.Actions -join ' ') | Should -Match 'created Zoom user'
     }
 
-    It 'is idempotent — skips create when the user already exists' {
+    It 'is idempotent — skips create (and re-license) when the user already exists as Licensed' {
         Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET') { return [pscustomobject]@{ id = 'zoom-1' } }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ id = 'zoom-1'; type = 2 } } # already Licensed
             return $null
         }
-        $r = Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{})
+        $r = Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{ type = 2 })
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' } -Times 0 -Exactly
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PATCH' } -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'already exists'
+    }
+
+    It 'upgrades an existing Basic user to Licensed (PATCH type) without re-creating' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ id = 'zoom-1'; type = 1 } } # currently Basic
+            return $null
+        }
+        $r = Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{ type = 2 })
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' } -Times 0 -Exactly
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PATCH' -and $Path -eq '/users/jdoe@61commodities.com' -and [int]$Body.type -eq 2 } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'set Zoom license: Basic -> Licensed'
     }
 
     It 'assigns a Zoom Phone calling plan + number when phone is configured' {
@@ -102,10 +115,16 @@ Describe 'Connect-CtgZoom' {
 }
 
 Describe 'Confirm-CtgZoom' {
-    It 'onboard: passes when the user is present' {
-        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { [pscustomobject]@{ id = 'zoom-1'; email = 'jdoe@61commodities.com'; status = 'active' } }
-        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{}) -Action 'onboard'
+    It 'onboard: passes when the user is present AND holds the expected license' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { [pscustomobject]@{ id = 'zoom-1'; email = 'jdoe@61commodities.com'; status = 'active'; type = 2 } }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{ type = 2 }) -Action 'onboard'
         $r.ok | Should -BeTrue
+    }
+
+    It 'onboard: FAILS when the user is present but still Basic (license not applied)' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { [pscustomobject]@{ id = 'zoom-1'; status = 'active'; type = 1 } }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com' }) -Config ([pscustomobject]@{ type = 2 }) -Action 'onboard'
+        $r.ok | Should -BeFalse
     }
 
     It 'offboard: passes when the user is absent' {
