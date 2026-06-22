@@ -104,6 +104,18 @@ function Get-CtgZoomUser {
     Invoke-CtgZoomApi -Method GET -Path "/users/$Email"
 }
 
+# Zoom keys users by EMAIL. Offboard intakes often carry no UserPrincipalName (display-name-only),
+# so resolve the address from any of the case's email-ish fields. Returns '' when none is set —
+# callers skip gracefully rather than crash on an empty -Email bind.
+function Resolve-CtgZoomEmail {
+    param([pscustomobject]$User)
+    foreach ($k in 'UserPrincipalName', 'email', 'Email', 'mail', 'Mail', 'EmailAddress', 'PrimarySmtpAddress', 'userPrincipalName') {
+        $v = [string](Get-CtgProp $User $k)
+        if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+    }
+    return ''
+}
+
 function Invoke-CtgZoomOnboarding {
     <#
     .SYNOPSIS
@@ -115,7 +127,11 @@ function Invoke-CtgZoomOnboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    $email = Resolve-CtgZoomEmail $User
+    if (-not $email) {
+        $actions.Add("WARN no email/UPN on the case — can't provision the Zoom user. Set the new user's email and re-run. Nothing done.")
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = ''; Actions = $actions.ToArray() }
+    }
     $desiredType = [int]((Get-CtgProp $Config 'type') ?? 2)   # 2 = Licensed (Pro) by default
     $typeName = { param($t) ($script:ZoomTypeName[[int]$t]) ?? "type $t" }
 
@@ -178,7 +194,11 @@ function Invoke-CtgZoomOffboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    $email = Resolve-CtgZoomEmail $User
+    if (-not $email) {
+        $actions.Add("WARN no email/UPN on the case — can't resolve the Zoom user. Set the offboard target's email and re-run. Nothing done.")
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = ''; Actions = $actions.ToArray() }
+    }
 
     if (-not (Get-CtgZoomUser -Email $email)) {
         $actions.Add("Zoom user not found: $email")
@@ -226,7 +246,11 @@ function Confirm-CtgZoom {
         [Parameter(Mandatory)][pscustomobject]$Config,
         [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
     )
-    $email = $User.UserPrincipalName
+    $email = Resolve-CtgZoomEmail $User
+    if (-not $email) {
+        # No resolvable target — nothing to verify (mirrors the executor's graceful skip).
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no email/UPN on the case — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
     $u = Get-CtgZoomUser -Email $email
     if ($Action -eq 'onboard') {
         $present = [bool]$u

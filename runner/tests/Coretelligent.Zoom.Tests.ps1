@@ -67,6 +67,36 @@ Describe 'Invoke-CtgZoomOnboarding' {
         Invoke-CtgZoomOnboarding -User $user -Config ([pscustomobject]@{ type = 2 }) | Out-Null
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Path -like '/phone/*' } -Times 0 -Exactly
     }
+
+    It 'resolves the email from the `email` field when UserPrincipalName is empty' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return $null }
+            return [pscustomobject]@{ id = 'zoom-1' }
+        }
+        $u = [pscustomobject]@{ UserPrincipalName = ''; email = 'jdoe@61commodities.com'; FirstName = 'Jane'; LastName = 'Doe' }
+        $r = Invoke-CtgZoomOnboarding -User $u -Config ([pscustomobject]@{ type = 2 })
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'created Zoom user'
+    }
+}
+
+Describe 'Zoom with no email/UPN on the case' {
+    It 'offboard: skips gracefully (no crash) when there is no email anywhere' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { throw 'should not be called' }
+        $u = [pscustomobject]@{ UserPrincipalName = ''; displayName = 'Jane Doe' }
+        $r = Invoke-CtgZoomOffboarding -User $u -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no email/UPN on the case'
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -Times 0 -Exactly
+    }
+
+    It 'confirm: passes as nothing-to-verify when there is no email' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith { throw 'should not be called' }
+        $r = Confirm-CtgZoom -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeTrue
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -Times 0 -Exactly
+    }
 }
 
 Describe 'Invoke-CtgZoomOffboarding' {
