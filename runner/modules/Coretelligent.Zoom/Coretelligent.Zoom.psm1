@@ -132,17 +132,21 @@ function Find-CtgZoomUserByName {
     $needle = (($DisplayName -replace '\s+', ' ').Trim()).ToLower()
     $hits = [System.Collections.Generic.List[object]]::new()
     if (-not $needle) { return $hits.ToArray() }
-    $next = ''
-    do {
-        $path = "/users?page_size=300" + $(if ($next) { "&next_page_token=$([uri]::EscapeDataString($next))" } else { '' })
-        $resp = Invoke-CtgZoomApi -Method GET -Path $path
-        foreach ($u in @(Get-CtgProp $resp 'users')) {
-            $full = ((("$([string](Get-CtgProp $u 'first_name')) $([string](Get-CtgProp $u 'last_name'))")) -replace '\s+', ' ').Trim().ToLower()
-            $disp = (([string](Get-CtgProp $u 'display_name')) -replace '\s+', ' ').Trim().ToLower()
-            if ($full -eq $needle -or $disp -eq $needle) { $hits.Add($u) }
-        }
-        $next = [string](Get-CtgProp $resp 'next_page_token')
-    } while ($next)
+    # Page EACH status — the default list is active-only, so an already-deactivated (inactive) user
+    # wouldn't be found, and an offboard must still recognise them. A user has one status, so no dupes.
+    foreach ($status in @('active', 'inactive', 'pending')) {
+        $next = ''
+        do {
+            $path = "/users?page_size=300&status=$status" + $(if ($next) { "&next_page_token=$([uri]::EscapeDataString($next))" } else { '' })
+            $resp = Invoke-CtgZoomApi -Method GET -Path $path
+            foreach ($u in @(Get-CtgProp $resp 'users')) {
+                $full = ((("$([string](Get-CtgProp $u 'first_name')) $([string](Get-CtgProp $u 'last_name'))")) -replace '\s+', ' ').Trim().ToLower()
+                $disp = (([string](Get-CtgProp $u 'display_name')) -replace '\s+', ' ').Trim().ToLower()
+                if ($full -eq $needle -or $disp -eq $needle) { $hits.Add($u) }
+            }
+            $next = [string](Get-CtgProp $resp 'next_page_token')
+        } while ($next)
+    }
     return $hits.ToArray()
 }
 
@@ -248,7 +252,8 @@ function Invoke-CtgZoomOffboarding {
     }
     if ($t.DisplayName) { $actions.Add("resolved Zoom user by display name '$($t.DisplayName)' -> $email") }
 
-    if (-not (Get-CtgZoomUser -Email $email)) {
+    $zu = Get-CtgZoomUser -Email $email
+    if (-not $zu) {
         $actions.Add("Zoom user not found: $email")
         return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
@@ -259,6 +264,14 @@ function Invoke-CtgZoomOffboarding {
             $actions.Add("deleted Zoom user: $email")
         }
         # A deleted user has no session to revoke — the DELETE already ends access.
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+    }
+
+    # Idempotent: if the user is ALREADY deactivated (status 'inactive'), don't re-deactivate — Zoom
+    # returns a 400 for that — just report it as done. ('pending' users have never activated.)
+    $status = [string](Get-CtgProp $zu 'status')
+    if ($status -eq 'inactive') {
+        $actions.Add("Zoom user already deactivated: $email — no change")
         return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
 

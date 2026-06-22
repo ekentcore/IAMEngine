@@ -85,13 +85,15 @@ Describe 'Zoom display-name resolution (no email on the case)' {
     It 'offboard: resolves the user by display name against the Zoom user list, then deactivates' {
         Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET' -and $Path -like '/users?*') {
+            # status-aware: the user is ACTIVE, so only the active page returns them.
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*status=active*') {
                 return [pscustomobject]@{ users = @(
                         [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty@coretelligent.com' }
                         [pscustomobject]@{ first_name = 'Someone'; last_name = 'Else'; email = 'else@coretelligent.com' }
                     ); next_page_token = '' }
             }
-            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ id = 'z1'; email = 'rmcnulty@coretelligent.com' } }
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*') { return [pscustomobject]@{ users = @(); next_page_token = '' } }
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ id = 'z1'; email = 'rmcnulty@coretelligent.com'; status = 'active' } }
             return $null  # PUT status / DELETE token
         }
         $u = [pscustomobject]@{ UserPrincipalName = ''; displayName = 'Ryan McNulty' }
@@ -100,15 +102,33 @@ Describe 'Zoom display-name resolution (no email on the case)' {
         Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PUT' -and $Path -match 'rmcnulty@coretelligent.com/status' -and $Body.action -eq 'deactivate' } -Times 1
     }
 
+    It 'offboard: an ALREADY-deactivated user is found (inactive list) and reported, not re-deactivated' {
+        Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
+            param($Method, $Path, $Body)
+            # Ryan is INACTIVE — only the inactive page returns him (the active list would miss him).
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*status=inactive*') {
+                return [pscustomobject]@{ users = @([pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty@coretelligent.com' }); next_page_token = '' }
+            }
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*') { return [pscustomobject]@{ users = @(); next_page_token = '' } }
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ id = 'z1'; email = 'rmcnulty@coretelligent.com'; status = 'inactive' } }
+            return $null
+        }
+        $r = Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = ''; displayName = 'Ryan McNulty' }) -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'already deactivated'
+        Should -Invoke Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -ParameterFilter { $Method -eq 'PUT' } -Times 0 -Exactly
+    }
+
     It 'offboard: refuses on an ambiguous display-name match (two users, same name)' {
         Mock Invoke-CtgZoomApi -ModuleName Coretelligent.Zoom -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET' -and $Path -like '/users?*') {
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*status=active*') {
                 return [pscustomobject]@{ users = @(
                         [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty1@coretelligent.com' }
                         [pscustomobject]@{ first_name = 'Ryan'; last_name = 'McNulty'; email = 'rmcnulty2@coretelligent.com' }
                     ); next_page_token = '' }
             }
+            if ($Method -eq 'GET' -and $Path -like '/users[?]*') { return [pscustomobject]@{ users = @(); next_page_token = '' } }
             return $null
         }
         $r = Invoke-CtgZoomOffboarding -User ([pscustomobject]@{ UserPrincipalName = ''; displayName = 'Ryan McNulty' }) -Config ([pscustomobject]@{})

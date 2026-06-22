@@ -143,7 +143,10 @@ async function main() {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   console.log(`\nZoom token request: HTTP ${res.status}`);
   if (res.ok) {
-    console.log(`✓ SUCCESS — token issued. api_url=${body.api_url ?? "?"} · scopes ok. The stored secret is GOOD.`);
+    console.log(`✓ SUCCESS — token issued. api_url=${body.api_url ?? "?"}. The stored secret is GOOD.`);
+    const scopes = String(body.scope ?? "").split(/\s+/).filter(Boolean).sort();
+    console.log(`\nGranted scopes (${scopes.length}):`);
+    for (const s of scopes) console.log(`  ${s}`);
   } else {
     console.log(`✗ ${JSON.stringify({ error: body.error, reason: body.reason })}`);
     console.log("  If the field-health line above shows ⚠, fix that field (re-paste plain text). Otherwise the Client ID/Secret is wrong or stale — regenerate in Zoom.");
