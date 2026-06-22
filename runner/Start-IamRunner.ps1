@@ -267,10 +267,13 @@ function Use-CtgXMattersSecret {
     $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
     $baseUrl = & $pick @('BaseUrl', 'CompanyUrl', 'Url', 'Instance')
     if (-not $baseUrl) { throw "the 'xmatters' secret has no company URL — set BaseUrl (https://{company}.xmatters.com). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+    # An xMatters API KEY + SECRET (key = Basic username, secret = Basic password), or a REST
+    # web-service user's username/password. Prefer the stored credential, else build from fields.
     $cred = $s.Credential
-    if (-not $cred) {
-        $u = & $pick @('Username', 'User'); $p = & $pick @('Password', 'Token', 'ApiToken', 'Key')
-        if (-not $u -or -not $p) { throw "the 'xmatters' secret needs a REST web-service Username + Password (or a stored credential). The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
+    if (-not ($cred -and $cred.UserName)) {
+        $u = & $pick @('ApiKey', 'AccessKey', 'Key', 'Username', 'User'); if (-not $u -and $s.Username) { $u = [string]$s.Username }
+        $p = & $pick @('Secret', 'ApiSecret', 'Password', 'Token', 'ApiToken')
+        if (-not $u -or -not $p) { throw "the 'xmatters' secret needs an API key + secret (ApiKey/Secret) or a REST user Username + Password. The secret has: $(@($f.Keys) -join ', '). See /help/xmatters." }
         $cred = [pscredential]::new($u, (ConvertTo-SecureString $p -AsPlainText -Force))
     }
     Connect-CtgXMatters -BaseUrl $baseUrl -Credential $cred
