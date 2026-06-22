@@ -302,14 +302,21 @@ function Use-CtgZoomSecret {
     if (-not $s) { throw "the job did not broker a 'zoom' secret — list 'zoom' in the client's zoom system secrets" }
     $f = $s.Fields
     $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
-    $accountId = & $pick @('AccountId', 'AccountID', 'Account ID', 'Account')
-    $cred = $s.Credential
-    if (-not ($cred -and $cred.UserName)) {
-        $clientId = & $pick @('ClientId', 'ClientID', 'Client ID'); if (-not $clientId -and $s.Username) { $clientId = [string]$s.Username }
-        $secret   = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'ApiKey', 'Key', 'Password')
-        $cred = if ($clientId -and $secret) { [pscredential]::new($clientId, (ConvertTo-SecureString $secret -AsPlainText -Force)) } else { $null }
-    }
-    if (-not $accountId -or -not $cred) { throw "the 'zoom' secret needs a Server-to-Server OAuth app — Username = Client ID, Password = Client Secret, plus an AccountId field. The secret has: $(@($f.Keys) -join ', '). See /help/zoom." }
+    # Accept the S2S app creds from EITHER explicit custom fields OR the secret's username/password —
+    # whichever is set. Prefer a non-empty custom field, then fall back to the credential, so an
+    # operator who put the Client ID in the Username slot AND one who used a ClientId field both work.
+    $accountId    = & $pick @('AccountId', 'AccountID', 'Account ID', 'Account')
+    $clientId     = & $pick @('ClientId', 'ClientID', 'Client ID')
+    $clientSecret = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'ApiKey', 'Key')
+    if (-not $clientId -and $s.Credential -and $s.Credential.UserName) { $clientId = [string]$s.Credential.UserName }
+    if (-not $clientId -and $s.Username) { $clientId = [string]$s.Username }
+    if (-not $clientSecret -and $s.Credential -and $s.Credential.Password) { $clientSecret = ConvertFrom-SecureString $s.Credential.Password -AsPlainText }
+    if (-not $clientSecret) { $clientSecret = & $pick @('Password') }
+    # Trim copy-paste whitespace/newlines — a trailing space in the id/secret is a common cause of
+    # Zoom's invalid_client (the value "looks right" but the Basic header carries the stray char).
+    $accountId = ([string]$accountId).Trim(); $clientId = ([string]$clientId).Trim(); $clientSecret = ([string]$clientSecret).Trim()
+    if (-not $accountId -or -not $clientId -or -not $clientSecret) { throw "the 'zoom' secret needs a Server-to-Server OAuth app — Username = Client ID, Password = Client Secret, plus an AccountId field (or ClientId/ClientSecret/AccountId custom fields). The secret has: $(@($f.Keys) -join ', '). See /help/zoom." }
+    $cred = [pscredential]::new($clientId, (ConvertTo-SecureString $clientSecret -AsPlainText -Force))
     Connect-CtgZoom -Credential $cred -AccountId $accountId
 }
 
