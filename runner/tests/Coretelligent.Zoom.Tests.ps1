@@ -112,6 +112,17 @@ Describe 'Connect-CtgZoom' {
         Connect-CtgZoom -Credential $cred -AccountId 'acct-1'
         Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Zoom -ParameterFilter { $Uri -match 'grant_type=account_credentials' } -Times 1
     }
+
+    It 'wraps a Zoom token error with an actionable message (not the opaque 400)' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Zoom -MockWith { throw 'Response status code does not indicate success: 400 ().' }
+        $cred = [pscredential]::new('client-id', (ConvertTo-SecureString 'secret' -AsPlainText -Force))
+        { Connect-CtgZoom -Credential $cred -AccountId 'acct-1' } | Should -Throw '*Zoom token request failed*'
+    }
+
+    It 'fails clearly when the Account ID is blank' {
+        $cred = [pscredential]::new('client-id', (ConvertTo-SecureString 'secret' -AsPlainText -Force))
+        { Connect-CtgZoom -Credential $cred -AccountId ' ' } | Should -Throw '*no Account ID*'
+    }
 }
 
 Describe 'Confirm-CtgZoom' {

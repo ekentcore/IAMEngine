@@ -34,10 +34,38 @@ function Connect-CtgZoom {
         [Parameter(Mandatory)][pscredential]$Credential,
         [Parameter(Mandatory)][string]$AccountId
     )
-    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(
-        "$($Credential.UserName):$(ConvertFrom-SecureString $Credential.Password -AsPlainText)"))
-    $uri = "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=$AccountId"
-    $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers @{ Authorization = "Basic $basic" }
+    # Guard up front so a blank field fails with a clear message, not an opaque 400 from Zoom.
+    $clientId = [string]$Credential.UserName
+    $clientSecret = ConvertFrom-SecureString $Credential.Password -AsPlainText
+    if ([string]::IsNullOrWhiteSpace($AccountId))    { throw "Zoom: the 'zoom' secret has no Account ID — set AccountId to the Server-to-Server OAuth app's Account ID (see /help/zoom)." }
+    if ([string]::IsNullOrWhiteSpace($clientId))     { throw "Zoom: the 'zoom' secret has no Client ID — set Username = Client ID (see /help/zoom)." }
+    if ([string]::IsNullOrWhiteSpace($clientSecret)) { throw "Zoom: the 'zoom' secret has no Client Secret — set Password = Client Secret (see /help/zoom)." }
+
+    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${clientId}:${clientSecret}"))
+    $uri = "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=$([uri]::EscapeDataString($AccountId))"
+    try {
+        $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers @{ Authorization = "Basic $basic" } -ErrorAction Stop
+    }
+    catch {
+        # Surface Zoom's actual error body (e.g. {"reason":"Invalid client_id or client_secret",
+        # "error":"invalid_client"}) instead of the opaque "400 ()". The body is the real diagnosis:
+        # invalid_client -> wrong Client ID/Secret; invalid_request / "account does not exist" -> wrong
+        # Account ID; "scope" -> the S2S app is missing a scope or isn't activated.
+        # Probe each source SAFELY — StrictMode throws on a missing property, and the error shape
+        # varies (HttpResponseException vs a plain RuntimeException). Prefer Zoom's JSON body
+        # (ErrorDetails.Message), then the raw response stream, then the exception message.
+        $detail = ''
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        $resp = $null; try { $resp = $_.Exception.Response } catch { }
+        if (-not $detail -and $resp) {
+            try { $detail = [IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd() } catch { }
+        }
+        if (-not $detail) { try { $detail = [string]$_.Exception.Message } catch { } }
+        $status = ''
+        if ($resp) { try { $status = [int]$resp.StatusCode } catch { } }
+        throw "Zoom token request failed ($status): $($detail.Trim()) — verify the 'zoom' secret's Account ID + Client ID/Secret and that the Server-to-Server OAuth app is ACTIVATED with the required scopes (see /help/zoom)."
+    }
+    if (-not $resp.access_token) { throw "Zoom token request returned no access_token (response: $($resp | ConvertTo-Json -Depth 4 -Compress))." }
     $script:ZoomToken = $resp.access_token
     Write-Verbose "Zoom session established."
 }
