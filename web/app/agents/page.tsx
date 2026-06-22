@@ -13,17 +13,19 @@ export default async function AgentsPage() {
   // Purge any trash past the 30-day window on load (no cron infra — lazy purge on visit).
   await makeRunnerService(db).purgeExpiredTrash();
 
-  // Scope-gate to the operator's visible clients. A scoped (non-super) user sees only their clients'
-  // agents — the shared central runner (clientId null) is excluded, and the pending-jobs hints below
-  // can't leak a hidden client's case subjects.
+  // Scope-gate to the operator's visible clients, BUT the shared central runner (clientId null) is
+  // infrastructure that serves every client — it stays visible to everyone (its pending-jobs hints
+  // below are still scoped, so a hidden client's subjects don't leak). A client-network agent shows
+  // only to operators who can see that client. super_admin / auth-off (scope null) sees all.
   const scope = await currentClientScope(db);
+  const agentScopeWhere = scope === null ? {} : { OR: [{ clientId: null }, { clientId: { in: scope } }] };
   const agents = await db.agent.findMany({
-    where: { deletedAt: null, clientId: clientIdWhere(scope) },
+    where: { deletedAt: null, ...agentScopeWhere },
     orderBy: { name: "asc" },
     include: { client: { select: { slug: true, name: true } }, _count: { select: { jobs: true } } },
   });
   const trashed = await db.agent.findMany({
-    where: { deletedAt: { not: null }, clientId: clientIdWhere(scope) },
+    where: { deletedAt: { not: null }, ...agentScopeWhere },
     orderBy: { deletedAt: "desc" },
     include: { client: { select: { name: true } } },
   });
