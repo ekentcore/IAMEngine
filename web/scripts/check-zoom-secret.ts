@@ -80,7 +80,12 @@ async function main() {
     process.exit(1);
   }
   const secret = await db.secret.findFirst({ where: { name: "zoom", client: { slug } }, select: { externalId: true, client: { select: { name: true } } } });
-  if (!secret) { console.error(`✗ no 'zoom' secret on client '${slug}'.`); process.exit(1); }
+  if (!secret) {
+    console.error(`✗ no 'zoom' secret on client '${slug}'.`);
+    const others = await db.secret.findMany({ where: { name: "zoom" }, select: { client: { select: { slug: true, name: true } } }, orderBy: { client: { name: "asc" } } });
+    if (others.length) console.error(`  clients with a zoom secret: ${others.map((o) => `${o.client.slug} (${o.client.name})`).join(", ")}`);
+    process.exit(1);
+  }
   console.log(`Client: ${secret.client.name} (${slug}) · zoom secret externalId=${secret.externalId || "(unset)"}`);
 
   const r = await resolveSecretFields(cfg, secret.externalId);
