@@ -1,11 +1,14 @@
-/* Diagnose a client's `zoom` secret end-to-end, the way the runner does — WITHOUT printing any
- * secret value. Resolves the fields from Delinea, flags hidden contamination (non-ASCII "smart
- * quotes", leading/trailing whitespace) that causes Zoom's invalid_client, and runs the real
- * Server-to-Server token request.
+/* Diagnose a `zoom` secret end-to-end, the way the runner does — WITHOUT printing any secret value.
+ * Resolves the fields from Delinea, flags hidden contamination (non-ASCII "smart quotes",
+ * leading/trailing whitespace) that causes Zoom's invalid_client, and runs the real Server-to-Server
+ * token request.
  *
- *   npx tsx scripts/check-zoom-secret.ts <client-slug>      (default: coretelligent)
+ *   npx tsx scripts/check-zoom-secret.ts <client-slug>        (look the secret up by client)
+ *   npx tsx scripts/check-zoom-secret.ts --secret=56730       (point straight at a Delinea secret id)
+ *   npx tsx scripts/check-zoom-secret.ts 56730                (a bare number is treated as a secret id)
  *
- * Run it on the APP SERVER (it needs DELINEA_BASE_URL/USER/PASSWORD in the environment).
+ * Needs DELINEA_BASE_URL/USER/PASSWORD in the environment; loads them from the repo-root .env,
+ * web/.env, or --env=<path>.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -72,23 +75,39 @@ function inspect(label: string, value: string | undefined): string {
 }
 
 async function main() {
-  const slug = (process.argv.slice(2).find((a) => !a.startsWith("-")) ?? "coretelligent").trim();
   const cfg = delineaConfigFromEnv();
   if (!delineaConfigured(cfg)) {
     console.error("✗ Delinea is not configured — set DELINEA_BASE_URL/DELINEA_USER/DELINEA_PASSWORD in the app's .env");
     console.error("  (this script loads .env from the repo root, web/, and --env=<path>; pass --env=/path/to/.env if it's elsewhere).");
     process.exit(1);
   }
-  const secret = await db.secret.findFirst({ where: { name: "zoom", client: { slug } }, select: { externalId: true, client: { select: { name: true } } } });
-  if (!secret) {
-    console.error(`✗ no 'zoom' secret on client '${slug}'.`);
-    const others = await db.secret.findMany({ where: { name: "zoom" }, select: { client: { select: { slug: true, name: true } } }, orderBy: { client: { name: "asc" } } });
-    if (others.length) console.error(`  clients with a zoom secret: ${others.map((o) => `${o.client.slug} (${o.client.name})`).join(", ")}`);
-    process.exit(1);
-  }
-  console.log(`Client: ${secret.client.name} (${slug}) · zoom secret externalId=${secret.externalId || "(unset)"}`);
 
-  const r = await resolveSecretFields(cfg, secret.externalId);
+  // Either a Delinea secret id (--secret=<id>, or a bare numeric arg) — resolved directly — or a
+  // client slug that's looked up to find its 'zoom' secret's externalId.
+  const positional = process.argv.slice(2).find((a) => !a.startsWith("-"));
+  const flagId = process.argv.find((a) => a.startsWith("--secret="))?.slice("--secret=".length)
+    ?? process.argv.find((a) => a.startsWith("--id="))?.slice("--id=".length);
+  const externalId = flagId ?? (positional && /^\d+$/.test(positional) ? positional : undefined);
+
+  let secretId: string;
+  if (externalId) {
+    secretId = externalId.trim();
+    console.log(`Delinea secret #${secretId} (direct)`);
+  } else {
+    const slug = (positional ?? "coretelligent").trim();
+    const secret = await db.secret.findFirst({ where: { name: "zoom", client: { slug } }, select: { externalId: true, client: { select: { name: true } } } });
+    if (!secret) {
+      console.error(`✗ no 'zoom' secret on client '${slug}'.`);
+      const others = await db.secret.findMany({ where: { name: "zoom" }, select: { client: { select: { slug: true, name: true } } }, orderBy: { client: { name: "asc" } } });
+      if (others.length) console.error(`  clients with a zoom secret: ${others.map((o) => `${o.client.slug} (${o.client.name})`).join(", ")}`);
+      console.error("  …or point straight at the Delinea secret: --secret=<id>");
+      process.exit(1);
+    }
+    secretId = secret.externalId;
+    console.log(`Client: ${secret.client.name} (${slug}) · zoom secret externalId=${secretId || "(unset)"}`);
+  }
+
+  const r = await resolveSecretFields(cfg, secretId);
   if (!r.ok || !r.fields) { console.error(`✗ Delinea did not resolve the secret: ${r.error}`); process.exit(1); }
   console.log(`Resolved fields: ${Object.keys(r.fields).join(", ") || "(none)"}\n`);
 
