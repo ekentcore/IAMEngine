@@ -2,6 +2,7 @@
 // client's current systems, replacing the planned jobs. Pre-execution only.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { replanCase } from "@/lib/cases/replan-service";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.plan"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let override: string | undefined;
   try {
     const body = (await req.json()) as { emailDomain?: string };

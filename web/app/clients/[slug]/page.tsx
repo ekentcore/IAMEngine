@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
@@ -25,7 +26,9 @@ export const dynamic = "force-dynamic";
 
 // Tab title = the client's name, so open client tabs are tellable apart.
 export async function generateMetadata({ params }: { params: { slug: string } }) {
-  const c = await db.client.findUnique({ where: { slug: params.slug }, select: { name: true } });
+  const c = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true, name: true } });
+  // Don't leak an out-of-scope client's name in the tab title (the page itself 404s).
+  if (c && !scopeAllows(await currentClientScope(db), c.id)) return { title: "Client" };
   return { title: c?.name ?? params.slug };
 }
 
@@ -66,7 +69,9 @@ function groupByModule(systems: SysRow[]) {
 }
 
 export default async function ClientDetailPage({ params }: { params: { slug: string } }) {
-  const client = await makeClientRepository(db).getClientBySlug(params.slug);
+  // scope-gated: an out-of-scope (e.g. restricted) client reads as not-found here.
+  const scope = await currentClientScope(db);
+  const client = await makeClientRepository(db).getClientBySlug(params.slug, scope);
   if (!client) notFound();
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.

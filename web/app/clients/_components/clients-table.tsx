@@ -16,6 +16,7 @@ export type ClientVM = {
   backbone: Backbone | null;
   status: ClientStatus;
   intakeSource: string;
+  restricted: boolean;
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;
@@ -79,7 +80,7 @@ function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
   return String(av).localeCompare(String(bv));
 }
 
-export function ClientsTable({ clients }: { clients: ClientVM[] }) {
+export function ClientsTable({ clients, canManageAccess = false }: { clients: ClientVM[]; canManageAccess?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
@@ -362,6 +363,42 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 >
                   {c.intakeSource === "incident" ? "internal" : "external"}
                 </span>
+                {/* Restricted (internal-only) flag. Visible to anyone who can see the client; a
+                    user.manage admin can click to toggle. Restricting hides it from operators not
+                    granted it. */}
+                {(c.restricted || canManageAccess) && (
+                  <>
+                    {" "}
+                    <span
+                      className="badge"
+                      role={canManageAccess ? "button" : undefined}
+                      tabIndex={canManageAccess ? 0 : undefined}
+                      title={
+                        canManageAccess
+                          ? c.restricted
+                            ? "Restricted (internal-only): hidden from operators not granted it. Click to unrestrict."
+                            : "Click to restrict: hide this client from operators who haven't been granted it (grant per-user on the Users page)."
+                          : "Restricted — internal-only client"
+                      }
+                      onClick={
+                        canManageAccess
+                          ? () => {
+                              if (!c.restricted && !confirm(`Restrict ${c.name}? It will be hidden from every operator (except super admins and those you grant it to on the Users page).`)) return;
+                              saveCell(c.slug, "set-restricted", { restricted: !c.restricted });
+                            }
+                          : undefined
+                      }
+                      style={{
+                        cursor: canManageAccess ? "pointer" : "default",
+                        ...(c.restricted
+                          ? { color: "#a23f3f", borderColor: "#f0cece", background: "#fcf3f3" }
+                          : { color: "var(--muted)", opacity: 0.5 }),
+                      }}
+                    >
+                      {c.restricted ? "🔒 restricted" : "🔓 restrict"}
+                    </span>
+                  </>
+                )}
               </td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
               <td

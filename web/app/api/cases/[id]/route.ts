@@ -6,19 +6,31 @@ import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
 export const dynamic = "force-dynamic";
 
+// A case of an out-of-scope client reads as not-found for any operation. Returns a 404 response to
+// short-circuit, or null when the case is in scope (or the operator is unrestricted).
+async function denyIfOutOfScope(caseId: string): Promise<NextResponse | null> {
+  const scope = await currentClientScope(db);
+  if (scope === null) return null;
+  const owner = await db.caseRequest.findUnique({ where: { id: caseId }, select: { clientId: true } });
+  if (!owner || !scopeAllows(scope, owner.clientId)) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return null;
+}
+
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
-  const c = await makeCaseRepository(db).getCase(params.id);
+  const c = await makeCaseRepository(db).getCase(params.id, await currentClientScope(db));
   if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(c);
 }
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  const denied = await denyIfOutOfScope(params.id); if (denied) return denied;
   let body: { action?: string; dryRun?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
@@ -43,6 +55,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  const denied = await denyIfOutOfScope(params.id); if (denied) return denied;
   const repo = makeCaseRepository(db);
   const forever = new URL(req.url).searchParams.get("forever") === "1";
 

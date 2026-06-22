@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { currentClientScope } from "@/lib/auth/client-scope";
+import { currentCan } from "@/lib/auth/acting";
 import { syncIfStale } from "@/lib/clients/stale-check";
 import type { ClientListItem } from "@/lib/clients/types";
 import { ClientsTable, type ClientVM } from "./_components/clients-table";
@@ -12,7 +14,9 @@ export const metadata = { title: "Clients" };
 
 export default async function ClientsPage() {
   await syncIfStale(db, "system:auto");
-  const clients = await makeClientRepository(db).listClients();
+  const scope = await currentClientScope(db);
+  const clients = await makeClientRepository(db).listClients(scope);
+  const canManageAccess = await currentCan("user.manage");
 
   const lastSync = clients.reduce<Date | null>((max, c) => {
     if (c.snLastSyncedAt && (!max || c.snLastSyncedAt > max)) return c.snLastSyncedAt;
@@ -33,7 +37,7 @@ export default async function ClientsPage() {
         </div>
         <Link href="/clients/review" className="note" style={{ alignSelf: "flex-start" }}>⊞ Config review (email formats + runbooks)</Link>
       </div>
-      <ClientsTable clients={clients.map(serialize)} />
+      <ClientsTable clients={clients.map(serialize)} canManageAccess={canManageAccess} />
     </main>
   );
 }

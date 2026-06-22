@@ -2,12 +2,14 @@
 // claimed. Server-side gate per CLAUDE.md (destructive steps need a recorded approval).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.approve_destructive"); if (_g.res) return _g.res;
+  if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   // Body is optional — approvedBy defaults to the authenticated operator (so the UI can approve with
   // a single click and still record WHO approved).
   let body: { approvedBy?: unknown } = {};

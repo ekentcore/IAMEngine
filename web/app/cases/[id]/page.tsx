@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { intakeLabel } from "@/lib/cases/intake-labels";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
@@ -21,12 +22,16 @@ export const dynamic = "force-dynamic";
 
 // Tab title = the UM number (or subject), so open case tabs are tellable apart.
 export async function generateMetadata({ params }: { params: { id: string } }) {
-  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { serviceNowCaseNumber: true, subject: true } });
+  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { clientId: true, serviceNowCaseNumber: true, subject: true } });
+  // Don't leak an out-of-scope case's subject in the tab title (the page itself 404s).
+  if (c && !scopeAllows(await currentClientScope(db), c.clientId)) return { title: "Case" };
   return { title: c?.serviceNowCaseNumber ?? c?.subject ?? "Case" };
 }
 
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
-  const c = await makeCaseRepository(db).getCase(params.id);
+  // scope-gated: a case of an out-of-scope (e.g. restricted) client reads as not-found here.
+  const scope = await currentClientScope(db);
+  const c = await makeCaseRepository(db).getCase(params.id, scope);
   if (!c) notFound();
 
   const [playbook, runReport] = await Promise.all([loadPlaybook(db, params.id), loadRunReport(db, params.id)]);

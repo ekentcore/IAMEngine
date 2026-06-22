@@ -5,6 +5,7 @@
 // Recomputes the case status afterward.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const body = (await req.json().catch(() => ({}))) as { done?: unknown };
   const done = body.done !== false; // default: mark complete
 

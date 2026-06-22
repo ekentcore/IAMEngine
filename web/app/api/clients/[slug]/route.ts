@@ -5,6 +5,7 @@ import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
 import { refreshClientName } from "@/lib/clients/refresh-name";
@@ -17,22 +18,28 @@ type Ctx = { params: { slug: string } };
 export async function GET(_req: Request, { params }: Ctx) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
   const repo = makeClientRepository(db);
-  const client = await repo.getClientBySlug(params.slug);
+  // scope-gated: an out-of-scope client reads as not-found.
+  const client = await repo.getClientBySlug(params.slug, await currentClientScope(db));
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(client);
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
+  // Restricting a client is an ACCESS-CONTROL decision (who may see it) — gate it on user.manage,
+  // not the broader client.edit_systems, so an ops_manager who edits systems can't unlock a sensitive
+  // client. Everything else on this route is the usual systems-editing capability.
+  const _g = body.action === "set-restricted" ? await guard("user.manage") : await guard("client.edit_systems");
+  if (_g.res) return _g.res;
 
   const repo = makeClientRepository(db);
-  const existing = await repo.getClientBySlug(params.slug);
+  // scope-gated: you can only edit a client you can see (an out-of-scope client reads as not-found).
+  const existing = await repo.getClientBySlug(params.slug, await currentClientScope(db));
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   // Pull just the name from ServiceNow (a renamed account, e.g. CORE2224) — narrow, doesn't touch
@@ -110,6 +117,15 @@ export async function PATCH(req: Request, { params }: Ctx) {
       clientId: client.id,
       detail: { emailDomain: domain, locked: lock },
     });
+    return NextResponse.json(client);
+  }
+
+  // Mark the client internal-only (restricted): hidden from operators not granted it. Access-control
+  // decision — guarded above on user.manage.
+  if (body.action === "set-restricted") {
+    if (typeof body.restricted !== "boolean") return NextResponse.json({ error: "restricted must be a boolean" }, { status: 422 });
+    const client = await repo.setRestricted(params.slug, body.restricted);
+    await repo.writeAudit({ actor: "ui", action: "client.restricted.set", clientId: client.id, detail: { restricted: body.restricted } });
     return NextResponse.json(client);
   }
 

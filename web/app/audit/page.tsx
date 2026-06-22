@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { can } from "@/lib/auth/permissions";
 import { AuditFilters } from "./_components/audit-filters";
 
@@ -34,6 +35,10 @@ export default async function AuditPage({ searchParams }: { searchParams: { q?: 
   if (days && Number.isFinite(days)) where.at = { gte: new Date(Date.now() - days * 86_400_000) };
   if (action) where.action = action;
   if (q) where.OR = [{ action: { contains: q, mode: "insensitive" } }, { actor: { contains: q, mode: "insensitive" } }];
+  // Scope-gate to the operator's visible clients. Global rows (no clientId — logins, user admin,
+  // system tasks) stay visible; rows pinned to a hidden client are filtered out.
+  const scope = await currentClientScope(db);
+  if (scope !== null) where.AND = [{ OR: [{ clientId: null }, { clientId: { in: scope } }] }];
 
   const [rows, actionGroups] = await Promise.all([
     db.auditLog.findMany({ where, orderBy: { at: "desc" }, take: LIMIT, include: { user: { select: { email: true, name: true } } } }),

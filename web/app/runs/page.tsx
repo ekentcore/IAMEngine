@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
 import { FixButton } from "./_components/fix-button";
 import { CopyButton } from "./_components/copy-button";
@@ -41,10 +42,12 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
   const includeClean = searchParams.all === "1";
   const includeResolved = searchParams.resolved === "1";
 
+  // Scope-gate to the operator's visible clients (the log carries clientId).
+  const scope = await currentClientScope(db);
   const [rawRows, summary, systems] = await Promise.all([
-    listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, includeClean, includeResolved }),
-    moduleIssueSummary(db),
-    outcomeSystems(db),
+    listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, includeClean, includeResolved, scope }),
+    moduleIssueSummary(db, scope),
+    outcomeSystems(db, scope),
   ]);
   // Collapse identical lines (same case + line) into one entry with an occurrence count, so the log
   // isn't a wall of repeats; "Fixed" then resolves every occurrence at once.

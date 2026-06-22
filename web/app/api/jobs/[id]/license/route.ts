@@ -4,6 +4,7 @@
 // it warns + falls back to the procurement path again).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requeueJob } from "@/lib/jobs/requeue";
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const g = await guard("case.dispatch"); if (g.res) return g.res;
+  if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   let body: { licenses?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }

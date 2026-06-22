@@ -9,6 +9,7 @@ import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job
 import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
+import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -340,9 +341,10 @@ export function makeCaseRepository(db: PrismaClient) {
       });
     },
 
-    async listCases(): Promise<CaseListItem[]> {
+    // `scope` (default unrestricted) limits the list to cases of the operator's visible clients.
+    async listCases(scope: ClientScope = null): Promise<CaseListItem[]> {
       const rows = await db.caseRequest.findMany({
-        where: { deletedAt: null }, // trashed cases live in the Trash section, not the main list
+        where: { deletedAt: null, clientId: clientIdWhere(scope) }, // trashed cases live in the Trash section
         orderBy: { createdAt: "desc" },
         select: {
           id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
@@ -448,9 +450,9 @@ export function makeCaseRepository(db: PrismaClient) {
     },
 
     // Cases in the trash (soft-deleted) — for the collapsible Trash section. Newest-trashed first.
-    async listTrashedCases(): Promise<TrashedCaseItem[]> {
+    async listTrashedCases(scope: ClientScope = null): Promise<TrashedCaseItem[]> {
       const rows = await db.caseRequest.findMany({
-        where: { deletedAt: { not: null } },
+        where: { deletedAt: { not: null }, clientId: clientIdWhere(scope) },
         orderBy: { deletedAt: "desc" },
         select: {
           id: true, action: true, status: true, subject: true, serviceNowCaseNumber: true,
@@ -536,7 +538,9 @@ export function makeCaseRepository(db: PrismaClient) {
       return ids.length;
     },
 
-    async getCase(id: string): Promise<CaseDetail | null> {
+    // `scope` (default unrestricted) hard-gates direct access: a case of a hidden client reads as
+    // not-found (404) so it can't be loaded by guessing the case id.
+    async getCase(id: string, scope: ClientScope = null): Promise<CaseDetail | null> {
       const c = await db.caseRequest.findUnique({
         where: { id },
         include: {
@@ -545,6 +549,7 @@ export function makeCaseRepository(db: PrismaClient) {
         },
       });
       if (!c) return null;
+      if (!scopeAllows(scope, c.clientId)) return null;
 
       // Job stores only systemKey; resolve display names from the catalog in one query.
       const keys = [...new Set(c.jobs.map((j) => j.systemKey))];

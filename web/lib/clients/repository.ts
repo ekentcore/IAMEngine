@@ -2,6 +2,7 @@
 // values. Built as a factory so tests can inject a mock/throwaway PrismaClient.
 import type { PrismaClient, Prisma, Backbone } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
+import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 
 // Order systemKeys by the runbook's documented run sequence (onboard first — the primary process,
@@ -52,8 +53,11 @@ function snData(c: NormalizedSnClient) {
 
 export function makeClientRepository(db: PrismaClient) {
   return {
-    async listClients(): Promise<ClientListItem[]> {
+    // `scope` (default unrestricted) limits the list to the operator's visible clients — see
+    // lib/auth/client-scope. Callers in a request context pass currentClientScope(db).
+    async listClients(scope: ClientScope = null): Promise<ClientListItem[]> {
       const rows = await db.client.findMany({
+        where: { id: clientIdWhere(scope) },
         orderBy: { name: "asc" },
         select: {
           id: true,
@@ -63,6 +67,7 @@ export function makeClientRepository(db: PrismaClient) {
           backbone: true,
           status: true,
           intakeSource: true,
+          restricted: true,
           coreId: true,
           region: true,
           supportStatus: true,
@@ -85,6 +90,7 @@ export function makeClientRepository(db: PrismaClient) {
         backbone: r.backbone,
         status: r.status,
         intakeSource: r.intakeSource,
+        restricted: r.restricted,
         coreId: r.coreId,
         region: r.region,
         supportStatus: r.supportStatus,
@@ -103,8 +109,10 @@ export function makeClientRepository(db: PrismaClient) {
       }));
     },
 
-    async getClientBySlug(slug: string): Promise<ClientDetail | null> {
-      return db.client.findUnique({
+    // `scope` (default unrestricted) hard-gates direct access: an out-of-scope client reads as
+    // not-found (404) so a hidden client can't be loaded by guessing its slug.
+    async getClientBySlug(slug: string, scope: ClientScope = null): Promise<ClientDetail | null> {
+      const client = (await db.client.findUnique({
         where: { slug },
         include: {
           systems: {
@@ -113,7 +121,9 @@ export function makeClientRepository(db: PrismaClient) {
           },
           secrets: { select: { name: true, provider: true, label: true } },
         },
-      }) as unknown as Promise<ClientDetail | null>;
+      })) as unknown as (ClientDetail & { id: string }) | null;
+      if (client && !scopeAllows(scope, client.id)) return null;
+      return client;
     },
 
     // Lightweight index for reconciliation: who already exists and how they're keyed.
@@ -210,6 +220,11 @@ export function makeClientRepository(db: PrismaClient) {
     // "incident" (internal). Drives which ServiceNow table case-scanning reads.
     async setIntakeSource(slug: string, intakeSource: "um" | "incident") {
       return db.client.update({ where: { slug }, data: { intakeSource } });
+    },
+    // Internal-only flag: a restricted client is hidden from operators not granted it (see
+    // lib/auth/client-scope). Access-control decision — callers gate on user.manage.
+    async setRestricted(slug: string, restricted: boolean) {
+      return db.client.update({ where: { slug }, data: { restricted } });
     },
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses

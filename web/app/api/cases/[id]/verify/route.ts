@@ -5,6 +5,7 @@
 // the runner runs only the Validate lane and posts a fresh validation read-back.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const c = await db.caseRequest.findUnique({
     where: { id: params.id },
     select: { id: true, jobs: { select: { id: true, mode: true, status: true, request: true, error: true } } },

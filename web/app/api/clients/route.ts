@@ -5,6 +5,7 @@ import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { deriveSlugFromParts } from "@/lib/clients/sync-service";
 import { syncIfStale } from "@/lib/clients/stale-check";
 
@@ -16,7 +17,7 @@ export async function GET() {
   const _g = await guardAuth(); if (_g.res) return _g.res;
   await syncIfStale(db, "system:auto");
   const repo = makeClientRepository(db);
-  return NextResponse.json(await repo.listClients());
+  return NextResponse.json(await repo.listClients(await currentClientScope(db)));
 }
 
 export async function POST(req: Request) {

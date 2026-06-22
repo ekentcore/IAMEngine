@@ -4,6 +4,7 @@
 // the obvious gaps (no onboarding runbook, missing domain) so they're easy to spot. Read-only.
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { applyUsernamePattern } from "@/lib/servicenow/intake-mapper";
 
 export const dynamic = "force-dynamic";
@@ -19,9 +20,10 @@ function sampleEmail(pattern: string, domain: string): string {
 }
 
 export default async function ConfigReviewPage() {
+  const scope = await currentClientScope(db); // scope-gate to the operator's visible clients
   const [clients, sections] = await Promise.all([
     db.client.findMany({
-      where: { archivedAt: null },
+      where: { archivedAt: null, id: clientIdWhere(scope) },
       orderBy: { name: "asc" },
       select: { id: true, slug: true, name: true, primaryDomain: true, emailDomain: true, identity: true, editedFields: true, parentId: true },
     }),

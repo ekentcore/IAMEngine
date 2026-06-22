@@ -1,15 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Role } from "@prisma/client";
 import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS, canResetPassword, canAssignRole } from "@/lib/auth/permissions";
 import { createUser, setUserRole, setUserStatus, resetUserPassword } from "../actions";
+import { ClientAccessEditor, accessSummary, type ClientLite, type AccessUser } from "./client-access-editor";
 
 type UserVM = {
   id: string; email: string; name: string | null; role: Role; status: string;
   isBreakGlass: boolean; authType: string; lastLoginAt: string | null;
-};
+} & AccessUser;
 
 const ALL_ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
 
@@ -19,8 +20,10 @@ function lastSeen(iso: string | null) {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) {
+export function UsersView({ users, meRole, clients, meId }: { users: UserVM[]; meRole: Role; clients: ClientLite[]; meId?: string }) {
   const router = useRouter();
+  const totalRestricted = clients.filter((c) => c.restricted).length;
+  const [accessFor, setAccessFor] = useState<string | null>(null); // user id whose access editor is open
   // super_admin only appears in the pickers for a super admin (others can't grant it). The guide +
   // create form use this; per-row selects also keep a target's own (super) role visible.
   const ROLES: Role[] = meRole === "super_admin" ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "super_admin");
@@ -119,10 +122,11 @@ export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) 
       {error && <p className="note danger" style={{ marginTop: "0.5rem" }}>{error}</p>}
 
       <table style={{ marginTop: "1rem" }}>
-        <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th>Role</th><th>Client access</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>
           {users.map((u) => (
-            <tr key={u.id}>
+            <Fragment key={u.id}>
+            <tr>
               <td>
                 <div style={{ fontWeight: 600 }}>{u.name || u.email}</div>
                 <div className="note" style={{ fontSize: 11 }}>{u.email}{u.isBreakGlass && " · break-glass"}{u.authType === "sso" && " · SSO"}</div>
@@ -141,6 +145,17 @@ export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) 
                     </select>
                   );
                 })()}
+              </td>
+              <td>
+                {/* Super admins always see every client (they bypass scoping) — no editor. */}
+                {u.role === "super_admin" ? (
+                  <span className="note" title="Super admins bypass client scoping — they always see every client.">All clients</span>
+                ) : (
+                  <button style={{ fontSize: 12 }} title="Scope which clients this user can see"
+                    onClick={() => setAccessFor(accessFor === u.id ? null : u.id)}>
+                    {accessSummary(u, totalRestricted)} ✎
+                  </button>
+                )}
               </td>
               <td><span className="badge" style={{ color: u.status === "active" ? "#15803d" : "#b91c1c", background: u.status === "active" ? "#e8f5ee" : "#fcebe9" }}>{u.status}</span></td>
               <td className="note">{lastSeen(u.lastLoginAt)}</td>
@@ -163,6 +178,20 @@ export function UsersView({ users, meRole }: { users: UserVM[]; meRole: Role }) 
                 </button>
               </td>
             </tr>
+            {accessFor === u.id && u.role !== "super_admin" && (
+              <tr>
+                <td colSpan={6} style={{ background: "var(--bg-soft)" }}>
+                  <ClientAccessEditor
+                    user={u}
+                    clients={clients}
+                    isSelf={u.id === meId}
+                    onSaved={() => { setAccessFor(null); router.refresh(); }}
+                    onCancel={() => setAccessFor(null)}
+                  />
+                </td>
+              </tr>
+            )}
+            </Fragment>
           ))}
         </tbody>
       </table>

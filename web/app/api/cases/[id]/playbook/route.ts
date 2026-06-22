@@ -2,6 +2,7 @@
 // JSON by default; ?format=md returns a downloadable markdown document to attach to the case.
 import { NextResponse } from "next/server";
 import { guardAuth } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { loadPlaybook, renderPlaybookMarkdown } from "@/lib/cases/playbook";
 
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const pb = await loadPlaybook(db, params.id);
   if (!pb) return NextResponse.json({ error: "not found" }, { status: 404 });
 

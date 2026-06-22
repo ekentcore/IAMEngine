@@ -4,6 +4,7 @@
 // the hold once nothing's left to fill.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const g = await guard("case.dispatch"); if (g.res) return g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   let body: { fields?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }

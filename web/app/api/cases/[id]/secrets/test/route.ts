@@ -2,6 +2,7 @@
 // on-screen edits passed in the body), proving the app can resolve each WITHOUT pulling the value.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { caseSecretStatus } from "@/lib/cases/case-secrets-repo";
 import { checkSecret, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
@@ -12,6 +13,7 @@ type TestItem = { name: string; externalId: string };
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.view"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { secrets?: unknown } = {};
   try { body = await req.json(); } catch { /* empty body = test the saved effective refs */ }
 

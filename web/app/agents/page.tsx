@@ -1,6 +1,7 @@
 // Agents (runners) — list + enroll + enable/disable + trash. Server component reads Prisma directly.
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { trashDaysLeft } from "@/lib/jobs/agent-trash";
 import { runnerBuildId } from "@/lib/runner/bundle";
 import { AgentsView, type AgentVM, type TrashedAgentVM } from "./_components/agents-view";
@@ -12,18 +13,22 @@ export default async function AgentsPage() {
   // Purge any trash past the 30-day window on load (no cron infra — lazy purge on visit).
   await makeRunnerService(db).purgeExpiredTrash();
 
+  // Scope-gate to the operator's visible clients. A scoped (non-super) user sees only their clients'
+  // agents — the shared central runner (clientId null) is excluded, and the pending-jobs hints below
+  // can't leak a hidden client's case subjects.
+  const scope = await currentClientScope(db);
   const agents = await db.agent.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, clientId: clientIdWhere(scope) },
     orderBy: { name: "asc" },
     include: { client: { select: { slug: true, name: true } }, _count: { select: { jobs: true } } },
   });
   const trashed = await db.agent.findMany({
-    where: { deletedAt: { not: null } },
+    where: { deletedAt: { not: null }, clientId: clientIdWhere(scope) },
     orderBy: { deletedAt: "desc" },
     include: { client: { select: { name: true } } },
   });
   const clients = await db.client.findMany({
-    where: { status: "active" },
+    where: { status: "active", id: clientIdWhere(scope) },
     orderBy: { name: "asc" },
     select: { slug: true, name: true },
   });
@@ -32,7 +37,7 @@ export default async function AgentsPage() {
   // about to do. A job is relevant to an agent if it's assigned to it (in flight) OR it's pending and
   // in the agent's claim scope (central sees all; a client agent sees only its client's).
   const activeJobs = await db.job.findMany({
-    where: { mode: "api", status: { in: ["pending", "dispatched", "running"] }, case: { deletedAt: null, status: { notIn: ["failed", "completed"] } } },
+    where: { mode: "api", status: { in: ["pending", "dispatched", "running"] }, case: { deletedAt: null, status: { notIn: ["failed", "completed"] }, clientId: clientIdWhere(scope) } },
     orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
     select: { status: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, subject: true, action: true } } },
   });

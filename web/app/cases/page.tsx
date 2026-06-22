@@ -1,6 +1,7 @@
 // Cases list (server component).
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { purgeCutoff, trashDaysLeft } from "@/lib/jobs/agent-trash";
 import { CasesToolbar } from "./_components/cases-toolbar";
 import { CasesTable } from "./_components/cases-table";
@@ -13,12 +14,13 @@ export default async function CasesPage() {
   // Purge cases that have sat in the trash past the retention window (mirrors the agents page).
   await repo.purgeExpiredTrashedCases(purgeCutoff(new Date()));
 
-  // Clients for the "new case" picker (slug + name only).
+  // Scope-gate everything to the operator's visible clients (lists + the "new case" picker).
+  const scope = await currentClientScope(db);
   const [cases, trashed, clients] = await Promise.all([
-    repo.listCases(),
-    repo.listTrashedCases(),
+    repo.listCases(scope),
+    repo.listTrashedCases(scope),
     db.client.findMany({
-      where: { status: "active" },
+      where: { status: "active", id: clientIdWhere(scope) },
       orderBy: { name: "asc" },
       select: { slug: true, name: true },
     }),

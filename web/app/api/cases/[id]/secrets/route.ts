@@ -2,6 +2,7 @@
 // PATCH /api/cases/:id/secrets         — { name, externalId } set (or clear with empty) a per-case override.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { caseSecretStatus, setCaseSecretOverride } from "@/lib/cases/case-secrets-repo";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
@@ -12,6 +13,7 @@ type Ctx = { params: { id: string } };
 
 export async function GET(_req: Request, { params }: Ctx) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const secrets = await caseSecretStatus(db, params.id);
   if (secrets === null) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ secrets, delineaConfigured: delineaConfigured(delineaConfigFromEnv()) });
@@ -19,6 +21,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 
 export async function PATCH(req: Request, { params }: Ctx) {
   const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { name?: unknown; externalId?: unknown };
   try {
     body = await req.json();

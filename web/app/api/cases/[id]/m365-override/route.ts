@@ -4,6 +4,7 @@
 // m365 job's config; username/fallbacks write the case payload (read by the runner at claim time).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
@@ -15,6 +16,7 @@ const strArr = (v: unknown): string[] | null =>
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const g = await guard("case.dispatch"); if (g.res) return g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }

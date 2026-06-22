@@ -1,8 +1,9 @@
 "use server";
 // User administration (Global Admin only — user.manage). Create operators, set their role, enable/
-// disable, and reset passwords. Generated passwords are returned to the caller ONCE for display.
+// disable, reset passwords, and scope which clients each may see. Generated passwords are returned to
+// the caller ONCE for display.
 import { revalidatePath } from "next/cache";
-import type { Role } from "@prisma/client";
+import type { Role, ClientAccessMode } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
 import { hashPassword, generatePassword } from "@/lib/auth/password";
@@ -13,6 +14,8 @@ type Result<T = unknown> = ({ ok: true } & T) | { ok: false; error: string };
 
 const ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
 const isRole = (r: unknown): r is Role => typeof r === "string" && ROLES.includes(r as Role);
+const ACCESS_MODES: ClientAccessMode[] = ["all", "only", "exclude"];
+const isAccessMode = (m: unknown): m is ClientAccessMode => typeof m === "string" && ACCESS_MODES.includes(m as ClientAccessMode);
 
 function fail(e: unknown): { ok: false; error: string } {
   return { ok: false, error: e instanceof AuthError ? e.message : e instanceof Error ? e.message : "failed" };
@@ -83,6 +86,54 @@ export async function setUserStatus(userId: string, status: "active" | "disabled
   } catch (e) {
     return fail(e);
   }
+}
+
+// Scope which clients a user may see. `mode` + the relevant client list (the only/exclude allow/deny
+// set) + `grantClientIds` (restricted clients this user may see). Replaces the user's access rows
+// wholesale. Enforced at every read path via lib/auth/client-scope.
+export async function setUserClientAccess(
+  userId: string,
+  input: { mode: string; scopeClientIds?: string[]; grantClientIds?: string[] },
+): Promise<Result> {
+  try {
+    const me = await requirePermission("user.manage");
+    if (!isAccessMode(input.mode)) return { ok: false, error: "invalid access mode" };
+    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+    if (!target) return { ok: false, error: "user not found" };
+
+    // Keep only ids that are real clients (drop anything stale/forged), then split by mode: the scope
+    // list is meaningful for only/exclude; grants apply to all/exclude (only-mode ignores them).
+    const wantScope = input.mode === "all" ? [] : uniq(input.scopeClientIds);
+    const wantGrant = input.mode === "only" ? [] : uniq(input.grantClientIds);
+    const ids = [...new Set([...wantScope, ...wantGrant])];
+    const real = ids.length
+      ? new Set((await db.client.findMany({ where: { id: { in: ids } }, select: { id: true } })).map((c) => c.id))
+      : new Set<string>();
+    const scopeIds = wantScope.filter((id) => real.has(id));
+    const grantIds = wantGrant.filter((id) => real.has(id));
+
+    await db.$transaction([
+      db.user.update({ where: { id: userId }, data: { clientAccessMode: input.mode } }),
+      db.userClientAccess.deleteMany({ where: { userId } }),
+      ...(scopeIds.length || grantIds.length
+        ? [db.userClientAccess.createMany({
+            data: [
+              ...scopeIds.map((clientId) => ({ userId, clientId, kind: "scope" as const })),
+              ...grantIds.map((clientId) => ({ userId, clientId, kind: "grant" as const })),
+            ],
+          })]
+        : []),
+    ]);
+    await recordAudit("user.set_client_access", { user: me, detail: { email: target.email, mode: input.mode, scope: scopeIds.length, grants: grantIds.length } });
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+function uniq(xs?: string[]): string[] {
+  return Array.isArray(xs) ? [...new Set(xs.filter((x) => typeof x === "string" && x))] : [];
 }
 
 export async function resetUserPassword(userId: string, password?: string): Promise<Result<{ generatedPassword?: string }>> {

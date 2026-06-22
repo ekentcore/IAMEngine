@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
+import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { replanCase } from "@/lib/cases/replan-service";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,8 @@ export const dynamic = "force-dynamic";
 export async function POST(_req: Request, { params }: { params: { id?: string; slug: string } }) {
   const _g = await guard("case.plan"); if (_g.res) return _g.res;
   const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
-  if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
+  // scope-gated: can't replan cases of a client you can't see.
+  if (!client || !scopeAllows(await currentClientScope(db), client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
   const open = await db.caseRequest.findMany({
     where: { clientId: client.id, deletedAt: null, status: { notIn: ["completed", "failed"] } },
     select: { id: true },

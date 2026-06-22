@@ -3,6 +3,7 @@
 // DELETE /api/jobs/:id/procurement             — stop watching.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ type Ctx = { params: { id: string } };
 
 export async function POST(req: Request, { params }: Ctx) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { number?: unknown };
   try {
     body = await req.json();
@@ -38,6 +40,7 @@ export async function POST(req: Request, { params }: Ctx) {
 
 export async function DELETE(_req: Request, { params }: Ctx) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const deleted = await db.procurementWatch.deleteMany({ where: { jobId: params.id } });
   if (deleted.count > 0) {
     await db.auditLog.create({ data: { actor: "ui", action: "procurement.watch.clear", jobId: params.id } });

@@ -2,6 +2,7 @@
 // run (success / warning / error + messages). Powers /runs, where module problems are tracked & fixed.
 import { createHash } from "node:crypto";
 import type { PrismaClient, Prisma } from "@prisma/client";
+import { type ClientScope, clientIdWhere } from "../auth/client-scope";
 
 // Stable fingerprint for "the same line for the same case". The SAME (case, module, verdict, messages,
 // error) across re-runs hashes identically, so marking one "Fixed" can resolve every occurrence and the
@@ -35,11 +36,13 @@ export type OutcomeFilter = {
   q?: string;            // matches case number / client / error / system
   includeClean?: boolean; // include verified / skipped / manual rows too
   includeResolved?: boolean; // include lines already marked "Fixed" (hidden by default)
+  scope?: ClientScope;   // per-operator client visibility (null = unrestricted) — see lib/auth/client-scope
   limit?: number;
 };
 
 export async function listOutcomes(db: PrismaClient, f: OutcomeFilter): Promise<OutcomeRow[]> {
   const where: Prisma.RunOutcomeWhereInput = {};
+  where.clientId = clientIdWhere(f.scope ?? null);
   if (f.system) where.systemKey = f.system;
   if (f.verdict) where.verdict = f.verdict;
   else if (!f.includeClean) where.verdict = { in: ["warning", "failed"] };
@@ -73,10 +76,10 @@ export function groupOutcomes(rows: OutcomeRow[]): OutcomeGroup[] {
 // The modules with open problems, most-affected first — the "what to fix" leaderboard. Counts
 // warning + failed outcomes per system. validateOnly read-backs count too (a failed verify is a
 // real gap). Returns [] when everything's clean.
-export async function moduleIssueSummary(db: PrismaClient): Promise<{ systemKey: string; failed: number; warnings: number }[]> {
+export async function moduleIssueSummary(db: PrismaClient, scope: ClientScope = null): Promise<{ systemKey: string; failed: number; warnings: number }[]> {
   const rows = await db.runOutcome.groupBy({
     by: ["systemKey", "verdict"],
-    where: { verdict: { in: ["warning", "failed"] }, resolvedAt: null }, // resolved lines don't count
+    where: { verdict: { in: ["warning", "failed"] }, resolvedAt: null, clientId: clientIdWhere(scope) }, // resolved lines don't count
     _count: { _all: true },
   });
   const bySys = new Map<string, { systemKey: string; failed: number; warnings: number }>();
@@ -90,7 +93,7 @@ export async function moduleIssueSummary(db: PrismaClient): Promise<{ systemKey:
 }
 
 // Distinct system keys seen in the log — for the filter dropdown.
-export async function outcomeSystems(db: PrismaClient): Promise<string[]> {
-  const rows = await db.runOutcome.findMany({ distinct: ["systemKey"], select: { systemKey: true }, orderBy: { systemKey: "asc" } });
+export async function outcomeSystems(db: PrismaClient, scope: ClientScope = null): Promise<string[]> {
+  const rows = await db.runOutcome.findMany({ where: { clientId: clientIdWhere(scope) }, distinct: ["systemKey"], select: { systemKey: true }, orderBy: { systemKey: "asc" } });
   return rows.map((r) => r.systemKey);
 }

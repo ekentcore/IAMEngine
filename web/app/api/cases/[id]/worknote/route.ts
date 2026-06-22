@@ -3,6 +3,7 @@
 // read-only). The on-screen + downloadable report is always available regardless.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!writeBackEnabled()) {
     return NextResponse.json({ error: "ServiceNow write-back is disabled (read-only key)" }, { status: 409 });
   }

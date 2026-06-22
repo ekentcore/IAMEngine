@@ -10,6 +10,7 @@ export type ClientListItem = {
   backbone: Backbone | null;
   status: ClientStatus;
   intakeSource: string; // "um" (external) | "incident" (internal) — which SN table to scan for cases
+  restricted: boolean; // internal-only: hidden from operators not granted it (see lib/auth/client-scope)
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;
