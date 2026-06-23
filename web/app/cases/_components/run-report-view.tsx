@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
+import { ResolutionModal } from "./resolution-modal";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -347,6 +348,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   const [busy, setBusy] = useState<string | null>(null);
   const [writeBack, setWriteBack] = useState(false);
   const [writeMsg, setWriteMsg] = useState<string | null>(null);
+  const [resolveOpen, setResolveOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -513,9 +515,15 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 ? "No manual steps remaining — the case can be resolved."
                 : <>Remaining manual step{manualLeft.length > 1 ? "s" : ""} (do by hand, then ✓ mark complete): <b>{manualLeft.map((m) => m.systemName).join(", ")}</b></>}
             </div>
+            {/* All automated work is done — let the operator review the full resolution + write it back. */}
+            <button className="primary" style={{ marginTop: 8 }} onClick={() => setResolveOpen(true)}
+              title="Review everything this case did (every step + manual notes) and post it as the ServiceNow work note">
+              📋 Review resolution{manualLeft.length === 0 ? " & write back" : " notes"}
+            </button>
           </div>
         );
       })()}
+      <ResolutionModal report={report} caseId={caseId} writeEnabled={writeEnabled} open={resolveOpen} onClose={() => setResolveOpen(false)} />
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <p className="note" style={{ margin: 0 }}>
           {s.succeeded} verified · {s.warnings} warning · {s.failed} failed · {s.skipped} skipped · {s.manual} manual

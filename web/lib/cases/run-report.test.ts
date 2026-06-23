@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunReport, jobWarningLines, jobOutcome, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
+import { buildRunReport, jobWarningLines, jobOutcome, renderRunReportMarkdown, buildResolutionNote, type BuildRunReportInput } from "./run-report";
 
 function input(overrides: Partial<BuildRunReportInput> = {}): BuildRunReportInput {
   return {
@@ -49,6 +49,23 @@ test("a pending approval-gated job surfaces as needs_approval", () => {
     names: new Map([["ad", "AD"]]),
   }));
   assert.equal(rr.steps[0].verdict, "needs_approval");
+});
+
+test("buildResolutionNote lists each step's actions, excludes case-resolution, and flags follow-ups", () => {
+  const note = buildResolutionNote(buildRunReport(input({
+    jobs: [
+      { systemKey: "m365", sequence: 0, mode: "api", status: "succeeded", request: {}, result: { Actions: ["created user jane.doe@acme.com", "assigned E5"] }, validation: { ok: true, checks: [] }, error: null, startedAt: null, finishedAt: null },
+      { systemKey: "adobe", sequence: 1, mode: "api", status: "failed", request: {}, result: null, validation: null, error: "token expired", startedAt: null, finishedAt: null },
+      { systemKey: "hardware", sequence: 2, mode: "manual", status: "manual", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+      { systemKey: "case-resolution", sequence: 3, mode: "manual", status: "manual", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+    ],
+    names: new Map([["m365", "Microsoft 365"], ["adobe", "Adobe"], ["hardware", "Hardware"], ["case-resolution", "Case resolution"]]),
+  })));
+  assert.match(note, /Microsoft 365: created user jane\.doe@acme\.com; assigned E5/);
+  assert.match(note, /✋ Hardware: completed by hand/);
+  assert.match(note, /Follow-ups/);
+  assert.match(note, /Adobe: token expired/);
+  assert.doesNotMatch(note, /Case resolution/); // the resolution step itself is excluded
 });
 
 test("markdown surfaces actions, validation misses, and errors", () => {
