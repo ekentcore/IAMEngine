@@ -520,8 +520,13 @@ $DISPATCH = @{
                 # else falls back to the exchange system config's onPremExchangeUri.
                 $pickUri = { param($names) foreach ($k in $names) { if ($op.Fields.ContainsKey($k) -and $op.Fields[$k]) { return [string]$op.Fields[$k] } } $null }
                 $opUri = & $pickUri @('ConnectionUri', 'ConnectionUrl', 'ConnectionURL', 'Uri', 'Url', 'URL', 'PowerShellUri', 'PowerShellUrl', 'Link', 'DocumentLink', 'Document Link')
-                if (-not $opUri) { $opUri = $job.config.onPremExchangeUri }
-                if (-not $opUri) { throw "the on-prem Exchange session needs a PowerShell URI — set ConnectionUri (or a Document Link / URL field) on the exchange-onprem secret, or onPremExchangeUri on the exchange system. e.g. http://core-cce1-ex01.<domain>/PowerShell/" }
+                # System config: a real job's config is the action sub-object (top-level key); a
+                # connection test passes the whole config, so also look under onboard/offboard.
+                if (-not $opUri) {
+                    $cfg = $job.config
+                    $opUri = [string]((Get-CtgProp $cfg 'onPremExchangeUri') ?? (Get-CtgProp (Get-CtgProp $cfg 'offboard') 'onPremExchangeUri') ?? (Get-CtgProp (Get-CtgProp $cfg 'onboard') 'onPremExchangeUri'))
+                }
+                if (-not $opUri) { throw "the on-prem Exchange session needs a PowerShell URI — set ConnectionUri (or a Document Link / URL field) on the exchange-onprem secret, or onPremExchangeUri on the exchange system. e.g. http://core-cce1-ex01.core.tech/PowerShell/" }
                 Set-CtgPhase $job.id "connecting to on-prem Exchange ($opUri)"
                 Connect-CtgExchangeOnPrem -ConnectionUri $opUri -Credential $op.Credential
             }
@@ -1060,8 +1065,8 @@ $CONNTEST_PROBE = @{
         if (($report -join ' ') -match 'FORBIDDEN') { throw $detail }
         $detail
     }
-    'active-directory' = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "domain: $($d.DNSRoot)" }
-    'directory-sync'   = { param($job, $creds) $d = Get-ADDomain @(New-CtgAdConnection $creds) -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
+    'active-directory' = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "domain: $($d.DNSRoot)" }
+    'directory-sync'   = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
 $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's Entra slice — same Graph perms
 # Cloud REST systems: after Connect (above), do one read so the test validates the credential +
@@ -1084,7 +1089,9 @@ function Invoke-CtgConnectionTests {
         $accessOk = $true; $accessDetail = ''
         $apiOk = $true; $apiDetail = ''
         $creds = @{}
-        $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
+        # Pass the system's config so a Connect that reads it (e.g. exchange's onPremExchangeUri) works
+        # in the test. It's the whole ClientSystem.config (onboard/offboard sub-objects), not a lane.
+        $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
 
         try {
             $names = @(@($t.secretNames) | Where-Object { $_ })

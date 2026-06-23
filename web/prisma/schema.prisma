@@ -222,6 +222,7 @@ model ConnectionTest {
   accessDetail    String?
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
   secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
+  config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri
   requestedAt     DateTime  @default(now())
   claimedAt       DateTime?
   finishedAt      DateTime?

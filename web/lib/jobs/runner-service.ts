@@ -384,14 +384,14 @@ export function makeRunnerService(db: PrismaClient) {
     async requestConnectionTests(clientSlug: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
-        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true } } },
+        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
       });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
       const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
       await db.connectionTest.deleteMany({ where: { clientId: client.id } });
       if (testable.length === 0) return { tests: [] };
-      const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+      const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
       await db.connectionTest.createMany({ data: rows });
       return { tests: rows.map((r) => ({ systemKey: r.systemKey, onPrem: r.onPrem })) };
     },
@@ -409,7 +409,7 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomic claim, same scope rule as job claim: a central runner (no clientId) takes only cloud
     // tests; a client agent takes its own client's (cloud + on-prem).
-    async claimConnectionTests(agentId: string, max = 5): Promise<{ id: string; systemKey: string; secretNames: string[]; clientSlug: string; primaryDomain: string }[]> {
+    async claimConnectionTests(agentId: string, max = 5): Promise<{ id: string; systemKey: string; secretNames: string[]; clientSlug: string; primaryDomain: string; config: unknown }[]> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, clientId: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) return [];
@@ -420,9 +420,9 @@ export function makeRunnerService(db: PrismaClient) {
       await db.connectionTest.updateMany({ where: { id: { in: ids }, status: "pending" }, data: { status: "running", assignedAgentId: agent.id, claimedAt: new Date() } });
       const claimed = await db.connectionTest.findMany({
         where: { id: { in: ids }, assignedAgentId: agent.id, status: "running" },
-        select: { id: true, systemKey: true, secretNames: true, client: { select: { slug: true, primaryDomain: true } } },
+        select: { id: true, systemKey: true, secretNames: true, config: true, client: { select: { slug: true, primaryDomain: true } } },
       });
-      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain }));
+      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain, config: t.config ?? null }));
     },
 
     // Same push-down broker as a job, scoped to the test's own secretNames (no case overrides).
