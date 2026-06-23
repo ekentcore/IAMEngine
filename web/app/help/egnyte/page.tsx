@@ -38,13 +38,13 @@ export default function EgnyteSetupPage() {
       <Code>{`curl -X POST "https://<egnyteDomain>.egnyte.com/puboauth/token" \\
   -d "grant_type=password&client_id=<API_KEY>&username=<adminServiceAccount>&password=<itsPassword>"
 # 200 -> { "access_token": "...", ... }   <- this token goes in Delinea`}</Code>
-      <p className="note"><code>&lt;egnyteDomain&gt;</code> is the tenant subdomain — <code>drakestar</code> for
-        {" "}<code>drakestar.egnyte.com</code>. The service account must be an Egnyte admin to manage users.</p>
+      <p className="note"><code>&lt;egnyteDomain&gt;</code> is the tenant subdomain — <code>coretelligent</code> for
+        {" "}<code>coretelligent.egnyte.com</code>. The service account must be an Egnyte admin to manage users.</p>
 
       <h2>3. Store it in Delinea</h2>
       <table>
         <tbody>
-          <tr><th style={{ width: 200 }}>Domain <span className="note">(field)</span></th><td>the tenant subdomain, e.g. <code>drakestar</code></td></tr>
+          <tr><th style={{ width: 200 }}>Domain <span className="note">(field)</span></th><td>the tenant subdomain, e.g. <code>coretelligent</code></td></tr>
           <tr><th>Token <span className="note">(field)</span></th><td>the access token from step 2 (preferred — long-lived)</td></tr>
         </tbody>
       </table>
