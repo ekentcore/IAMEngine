@@ -4,7 +4,8 @@
 // what was done by hand, and any follow-ups) — the exact work note that posts to ServiceNow. Opened
 // from the case-resolution step once all other steps are done.
 import { useEffect, useRef, useState } from "react";
-import { buildResolutionNote, type RunReport } from "@/lib/cases/run-report";
+import type { RunReport } from "@/lib/cases/run-report";
+import { buildResolutionNote } from "@/lib/cases/resolution-note";
 
 const ICON: Record<string, string> = {
   verified: "✓", warning: "⚠", failed: "✗", skipped: "–", manual: "✋",

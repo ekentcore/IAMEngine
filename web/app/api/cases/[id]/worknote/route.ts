@@ -5,7 +5,8 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
-import { loadRunReport, buildResolutionNote } from "@/lib/cases/run-report";
+import { loadRunReport } from "@/lib/cases/run-report";
+import { buildResolutionNote } from "@/lib/cases/resolution-note";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
 import { postWorkNote, writeBackEnabled } from "@/lib/servicenow/worknote";
 

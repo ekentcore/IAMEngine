@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunReport, jobWarningLines, jobOutcome, renderRunReportMarkdown, buildResolutionNote, type BuildRunReportInput } from "./run-report";
+import { buildRunReport, jobWarningLines, jobOutcome, renderRunReportMarkdown, type BuildRunReportInput } from "./run-report";
+import { buildResolutionNote } from "./resolution-note";
 
 function input(overrides: Partial<BuildRunReportInput> = {}): BuildRunReportInput {
   return {
