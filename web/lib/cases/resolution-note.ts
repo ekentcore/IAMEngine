@@ -9,7 +9,7 @@ import type { RunReport, StepVerdict } from "./run-report";
 
 const RES_ICON: Record<StepVerdict, string> = {
   verified: "✓", warning: "⚠", failed: "✗", skipped: "–", manual: "✋",
-  needs_approval: "⏸", pending: "…", running: "▶", verifying: "🔎",
+  needs_approval: "⏸", pending: "…", running: "▶", verifying: "🔎", retrying: "⟳",
 };
 
 export function buildResolutionNote(rr: RunReport): string {

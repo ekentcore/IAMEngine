@@ -31,6 +31,25 @@ test("succeeded + validation ok => verified; succeeded + validation miss => warn
   assert.equal(rr.steps[3].verdict, "manual");
 });
 
+test("an auto-retrying step (vendor sync pending) is 'retrying', not a warning/failure", () => {
+  const rr = buildRunReport(input({
+    jobs: [{
+      systemKey: "spanning", sequence: 0, mode: "api", status: "succeeded",
+      request: { autoRetry: { at: 2_000_000_900_000, count: 1, firstAt: 2_000_000_000_000 } },
+      result: { Actions: ["Spanning has not discovered the user yet — auto-retrying every 15 minutes"] },
+      validation: { ok: false, checks: [{ name: "Spanning user present", expected: true, actual: false, pass: false }] },
+      error: null, startedAt: null, finishedAt: null,
+    }],
+    names: new Map([["spanning", "Spanning"]]),
+  }));
+  assert.equal(rr.steps[0].verdict, "retrying");
+  assert.equal(rr.summary.warnings, 0);
+  assert.equal(rr.summary.failed, 0);
+  assert.equal(rr.summary.running, 1); // folded into the in-progress bucket
+  assert.ok(rr.steps[0].autoRetry, "carries the auto-retry schedule");
+  assert.equal(rr.steps[0].fingerprint, null, "no run-log outcome — the retry resolves it");
+});
+
 test("summary tallies each verdict", () => {
   const rr = buildRunReport(input());
   assert.deepEqual(rr.summary, { succeeded: 1, warnings: 1, failed: 1, skipped: 0, manual: 1, needsApproval: 0, pending: 0, running: 0 });

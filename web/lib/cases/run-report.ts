@@ -10,7 +10,7 @@ import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 
-export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying";
+export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying" | "retrying";
 
 export type RunReportStep = {
   seq: number;
@@ -228,13 +228,23 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     const stepActions = actionsOf(j.result);
     if (verdict === "verified" && stepActions.some((a) => /\bWARN\b/i.test(a))) verdict = "warning";
 
+    // A step that scheduled its OWN re-run (request.autoRetry) is deliberately waiting for a
+    // vendor-side sync (e.g. Spanning discovering a new M365 user). Its validation "miss" is
+    // EXPECTED until the sync lands, so show it as a benign "retrying" state — not a warning/failure
+    // — and don't write a run-log outcome for it (the retry resolves it automatically).
+    const autoRetryData = (() => {
+      const ar = ((j.request ?? {}) as { autoRetry?: { at?: number; count?: number; firstAt?: number } }).autoRetry;
+      return ar?.at ? { at: new Date(ar.at).toISOString(), count: ar.count ?? 1, firstAt: new Date(ar.firstAt ?? ar.at).toISOString() } : null;
+    })();
+    if (autoRetryData && (verdict === "warning" || verdict === "failed" || verdict === "verified")) verdict = "retrying";
+
     if (verdict === "verified") summary.succeeded++;
     else if (verdict === "warning") summary.warnings++;
     else if (verdict === "failed") summary.failed++;
     else if (verdict === "skipped") summary.skipped++;
     else if (verdict === "manual") summary.manual++;
     else if (verdict === "needs_approval") summary.needsApproval++;
-    else if (verdict === "running" || verdict === "verifying") summary.running++;
+    else if (verdict === "running" || verdict === "verifying" || verdict === "retrying") summary.running++;
     else summary.pending++;
 
     const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
@@ -288,10 +298,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       manualCompleted,
       pendingReason,
       licenseOptions: licenseOptionsOf(j.result),
-      autoRetry: (() => {
-        const ar = ((j.request ?? {}) as { autoRetry?: { at?: number; count?: number; firstAt?: number } }).autoRetry;
-        return ar?.at ? { at: new Date(ar.at).toISOString(), count: ar.count ?? 1, firstAt: new Date(ar.firstAt ?? ar.at).toISOString() } : null;
-      })(),
+      autoRetry: autoRetryData,
     };
   });
 
@@ -371,6 +378,7 @@ const VERDICT_LABEL: Record<StepVerdict, string> = {
   pending: "… pending",
   running: "● running",
   verifying: "🔎 verifying",
+  retrying: "⟳ waiting for sync",
 };
 
 export function renderRunReportMarkdown(rr: RunReport): string {

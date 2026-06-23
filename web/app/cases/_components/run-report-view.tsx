@@ -15,6 +15,7 @@ const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   pending: { label: "pending", color: "#6b7280" },
   running: { label: "● running", color: "#1565c0" },
   verifying: { label: "🔎 verifying", color: "#1565c0" },
+  retrying: { label: "⟳ waiting for sync", color: "#1565c0" },
 };
 
 const PRE: React.CSSProperties = {
@@ -649,16 +650,21 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.validation && (() => {
                 const checks = step.validation.checks;
                 const failed = checks.filter((c) => !c.pass).length;
+                // A retrying step's failing checks are EXPECTED (the vendor hasn't synced yet) — show
+                // them as benign "pending, will re-check" (⟳ blue), not alarming ✗ "needs review".
+                const retrying = step.verdict === "retrying";
                 return (
                   <div style={{ marginTop: "0.4rem" }}>
-                    <div className="note" style={{ color: failed ? "#b45309" : "#15803d", fontWeight: 600 }}>
-                      Validation: {failed ? `${failed} of ${checks.length} need${failed === 1 ? "s" : ""} review` : "passed"}
+                    <div className="note" style={{ color: retrying ? "#1565c0" : failed ? "#b45309" : "#15803d", fontWeight: 600 }}>
+                      {retrying
+                        ? `Validation: ${failed} of ${checks.length} pending — waiting for the vendor to sync, re-checks automatically`
+                        : `Validation: ${failed ? `${failed} of ${checks.length} need${failed === 1 ? "s" : ""} review` : "passed"}`}
                     </div>
                     <ul style={{ margin: "0.2rem 0 0", padding: 0, listStyle: "none", fontSize: 13 }}>
                       {checks.map((c, i) => (
                         <li key={i} style={{ display: "flex", gap: 6, alignItems: "baseline", padding: "1px 0" }}>
-                          <span style={{ color: c.pass ? "#15803d" : "#b91c1c", fontWeight: 700, flexShrink: 0 }}>{c.pass ? "✓" : "✗"}</span>
-                          <span style={{ color: c.pass ? "var(--muted, #6b7280)" : "#b91c1c" }}>
+                          <span style={{ color: c.pass ? "#15803d" : retrying ? "#1565c0" : "#b91c1c", fontWeight: 700, flexShrink: 0 }}>{c.pass ? "✓" : retrying ? "⟳" : "✗"}</span>
+                          <span style={{ color: c.pass ? "var(--muted, #6b7280)" : retrying ? "#1565c0" : "#b91c1c" }}>
                             {c.name}<span className="muted">{checkDetail(c)}</span>
                           </span>
                         </li>
