@@ -28,3 +28,21 @@ test("a dry-run offboard is NOT auto-held (the operator wants the read-only prev
   await createAndPlanCase(fakeRepo(holds), { clientSlug: "acme", action: "offboard", payload: {}, dryRun: true }, "tester");
   assert.equal(holds.length, 0);
 });
+
+test("an imported onboard is auto-held as 'review' (nothing auto-runs — an operator resumes it)", async () => {
+  const holds: Array<[string, string | null]> = [];
+  await createAndPlanCase(fakeRepo(holds), { clientSlug: "acme", action: "onboard", payload: {} }, "tester");
+  assert.deepEqual(holds, [["case1", "review"]]);
+});
+
+test("an onboard with intake unknowns is held as 'needs_info' (the more specific reason wins)", async () => {
+  const holds: Array<[string, string | null]> = [];
+  await createAndPlanCase(fakeRepo(holds), { clientSlug: "acme", action: "onboard", payload: { unknownFields: ["manager"] } }, "tester");
+  assert.deepEqual(holds, [["case1", "needs_info"]]);
+});
+
+test("a dry-run onboard is NOT auto-held (the read-only preview runs now)", async () => {
+  const holds: Array<[string, string | null]> = [];
+  await createAndPlanCase(fakeRepo(holds), { clientSlug: "acme", action: "onboard", payload: {}, dryRun: true }, "tester");
+  assert.equal(holds.length, 0);
+});

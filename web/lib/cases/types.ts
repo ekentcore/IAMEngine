@@ -16,9 +16,10 @@ export type CaseListItem = {
   status: CaseStatus;
   // Running/queued but blocked on a missing required credential — shown as "paused" in the list.
   paused: boolean;
-  // Why it's paused: a future-dated offboard held on import ("scheduled"), an explicit operator
-  // pause, intake unknowns to fill, or missing credentials. null when not paused.
-  pausedBy: "needs_info" | "scheduled" | "operator" | "creds" | null;
+  // Why it's paused: every import is held — "needs_info" (intake unknowns to fill), "scheduled" (a
+  // possibly-future-dated offboard), "review" (a ready case awaiting an operator's go) — plus an
+  // explicit operator pause or missing credentials. null when not paused.
+  pausedBy: "needs_info" | "scheduled" | "review" | "operator" | "creds" | null;
   // For completed cases: the steps' warning lines (WARN actions / missed validations), with the
   // system name prefixed. Empty = a clean green "completed"; non-empty renders orange with these
   // on hover. Always [] for non-completed cases.

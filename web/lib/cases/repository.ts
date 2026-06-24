@@ -323,7 +323,7 @@ export function makeCaseRepository(db: PrismaClient) {
     // Hold / release a case. reason "needs_info" auto-holds an imported case whose intake had
     // unknowns to fill; "scheduled" auto-holds an offboard on import (it may be future-dated);
     // "operator" is a manual pause. Passing null releases the hold.
-    async setHold(caseId: string, reason: "needs_info" | "scheduled" | "operator" | null): Promise<void> {
+    async setHold(caseId: string, reason: "needs_info" | "scheduled" | "review" | "operator" | null): Promise<void> {
       await db.caseRequest.update({
         where: { id: caseId },
         data: { pausedAt: reason ? new Date() : null, pausedReason: reason },
@@ -455,10 +455,11 @@ export function makeCaseRepository(db: PrismaClient) {
         const credsPaused = !activeNow && missingSecrets.length > 0 && (r.status === "running" || r.status === "queued");
         const needsInfo = operatorPaused && r.pausedReason === "needs_info";
         const scheduled = operatorPaused && r.pausedReason === "scheduled";
+        const review = operatorPaused && r.pausedReason === "review";
         const paused = operatorPaused || credsPaused;
         return {
           id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
-          pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
+          pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : review ? ("review" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
@@ -467,6 +468,8 @@ export function makeCaseRepository(db: PrismaClient) {
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."
             : scheduled
             ? "Scheduled — an offboard is held on import (it may be future-dated). Resume on the case page when the offboard date arrives."
+            : review
+            ? "Held on import — review the planned steps on the case page and resume to run it."
             : operatorPaused
             ? "Paused by an operator — runners won't claim its steps. Resume on the case page."
             : buildCaseStatusHint(

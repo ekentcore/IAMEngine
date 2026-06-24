@@ -10,7 +10,7 @@ export type CaseRowVM = {
   action: string;
   status: string;
   paused?: boolean; // operator pause or blocked on missing credentials — shown as "paused"
-  pausedBy?: "needs_info" | "scheduled" | "operator" | "creds" | null;
+  pausedBy?: "needs_info" | "scheduled" | "review" | "operator" | "creds" | null;
   warnings?: string[]; // completed-with-warnings: badge goes orange, these show on hover
   subject: string | null;
   serviceNowCaseNumber: string | null;
@@ -84,7 +84,7 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
       }}
     >
       {c.paused
-        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
+        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? "⏸ held — resume to run" : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
         : warns.length
           ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
           : (STATUS_LABEL[c.status] ?? c.status)}
@@ -123,6 +123,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [hoveredId, setHoveredId] = useState<string | null>(null); // row under the cursor — reveals its trash ×
 
   const toggleSel = (id: string) => setSelected((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
 
@@ -255,12 +256,17 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
             <SortHead k="effectiveDate" label="Start / off date" />
             <SortHead k="lastRun" label="Last run" />
             <SortHead k="createdAt" label="Created" />
-            <th></th>
+            <th style={{ width: 28 }} aria-label="Actions"></th>
           </tr>
         </thead>
         <tbody>
           {visible.map((c) => (
-            <tr key={c.id} style={selected.has(c.id) ? { background: "#eff6ff" } : undefined}>
+            <tr
+              key={c.id}
+              onMouseEnter={() => setHoveredId(c.id)}
+              onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+              style={selected.has(c.id) ? { background: "#eff6ff" } : undefined}
+            >
               <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
               <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
               <td className="muted">{c.clientName}</td>
@@ -280,14 +286,25 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
                 {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
-              <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+              <td style={{ width: 28, padding: 0, textAlign: "right" }}>
                 <button
                   onClick={() => remove(c)}
                   disabled={busyId === c.id}
                   title="Move this case to the trash (restorable for 30 days)"
-                  style={{ color: "#b3261e" }}
+                  aria-label="Move this case to the trash"
+                  style={{
+                    border: "none",
+                    background: "none",
+                    cursor: "pointer",
+                    color: "#b3261e",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    padding: "2px 8px",
+                    opacity: hoveredId === c.id || busyId === c.id ? 1 : 0,
+                    transition: "opacity 120ms",
+                  }}
                 >
-                  {busyId === c.id ? "Removing…" : "Remove"}
+                  {busyId === c.id ? "…" : "×"}
                 </button>
               </td>
             </tr>

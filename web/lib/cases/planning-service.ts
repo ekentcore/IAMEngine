@@ -66,18 +66,18 @@ export async function createAndPlanCase(
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 
-  // Autonomy gate: if the intake left fields it couldn't determine, HOLD the case as "Needs
-  // Information" instead of running with guesses — an operator fills them in to release it.
+  // Every imported case is HELD on import — nothing auto-dispatches. An operator reviews it and
+  // resumes to run (and is recorded as the case's "ran by"). The hold reason is the most specific
+  // one that applies:
+  //   - needs_info: the intake left fields we couldn't determine — fill them in to release it.
+  //   - scheduled:  an offboard that may be future-dated — resume when the offboard date arrives.
+  //   - review:     anything else (a ready onboard) — a generic "review & run" hold.
+  // A dry-run preview is exempt — the operator wants to see it run read-only now.
   const unknownFields = Array.isArray((payload as { unknownFields?: unknown }).unknownFields) ? (payload as { unknownFields: unknown[] }).unknownFields : [];
   if (input.action === "onboard" && unknownFields.length > 0) {
     await repo.setHold(caseId, "needs_info");
-  }
-
-  // Offboards may be scheduled for a future date — never auto-dispatch on import. Hold the case as
-  // "scheduled" so its jobs aren't claimed until an operator resumes it (when the offboard date
-  // arrives). A dry-run preview is exempt — the operator wants to see it run read-only now.
-  if (input.action === "offboard" && !input.dryRun) {
-    await repo.setHold(caseId, "scheduled");
+  } else if (!input.dryRun) {
+    await repo.setHold(caseId, input.action === "offboard" ? "scheduled" : "review");
   }
 
   await repo.writeAudit({
