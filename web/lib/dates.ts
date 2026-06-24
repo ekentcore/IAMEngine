@@ -12,3 +12,13 @@ export function formatDateOnly(d: string): string {
   if (dt.getMonth() !== mo - 1 || dt.getDate() !== day) return d; // e.g. Feb 30 would roll over
   return dt.toLocaleDateString();
 }
+
+// A full timestamp (ISO) -> "Jun 19, 2026, 3:04 PM" in the user's locale. For "when did this run".
+// A bare date-only string ("2026-06-19") renders as just the date (no spurious midnight time).
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return formatDateOnly(iso); // date-only, no time component
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}

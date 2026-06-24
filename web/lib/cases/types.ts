@@ -32,8 +32,15 @@ export type CaseListItem = {
   // Human explanation of the status for a hover tooltip: why it failed, what a queued case is
   // waiting on, which steps need a person / approval. Empty for self-explanatory states.
   statusHint: string;
-  // Onboarding start date / offboarding date (date-only string from intake), per the action.
+  // Onboarding start date / offboarding date (date-only string from intake or subject), per the
+  // action. null when none — see `immediate` for an offboard with no scheduled date.
   effectiveDate: string | null;
+  // Offboard with no future date — the subject says "Immediate" (process now). Shown instead of a date.
+  immediate: boolean;
+  // When the case last executed (most recent job start/finish), and which operator last ran it
+  // (import/plan, re-run, resume, verify — "user:<email>" stripped to the email). null = never / no auth.
+  lastRunAt: Date | null;
+  ranBy: string | null;
 };
 
 export type TrashedCaseItem = {

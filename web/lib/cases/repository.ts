@@ -350,9 +350,24 @@ export function makeCaseRepository(db: PrismaClient) {
           id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true } },
-          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true } },
+          jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, startedAt: true, finishedAt: true } },
         },
       });
+
+      // "Run by": the last OPERATOR (user) who actioned a run on each case — import/plan, re-run,
+      // resume, verify. actor is "user:<email>" once auth is on (else "ui"/"system"/"agent:…", which
+      // we ignore). One query for all listed cases; latest per case wins.
+      const caseIds = rows.map((r) => r.id);
+      const RUN_ACTIONS = ["case.plan", "job.rerun", "case.verify", "case.resume", "case.dry_run.set"];
+      const runAudits = caseIds.length
+        ? await db.auditLog.findMany({
+            where: { caseRequestId: { in: caseIds }, action: { in: RUN_ACTIONS }, actor: { startsWith: "user:" } },
+            orderBy: { at: "desc" },
+            select: { caseRequestId: true, actor: true },
+          })
+        : [];
+      const ranByCase = new Map<string, string>();
+      for (const a of runAudits) if (a.caseRequestId && !ranByCase.has(a.caseRequestId)) ranByCase.set(a.caseRequestId, a.actor.replace(/^user:/, ""));
 
       // Resolve display names for every system in play (one query) + which clients have a runner
       // online right now (so a "queued" hint can say "no runner online" — the usual stall cause).
@@ -409,8 +424,21 @@ export function makeCaseRepository(db: PrismaClient) {
         // the canonical `dateOfOffboarding` or the legacy `endDate` key (incident cases imported before
         // the field was unified store it under endDate), so existing + new cases both show a date.
         const p = (r.payload ?? {}) as { startDate?: unknown; dateOfOffboarding?: unknown; endDate?: unknown };
-        const raw = r.action === "offboard" ? (p.dateOfOffboarding ?? p.endDate) : p.startDate;
+        let raw = r.action === "offboard" ? (p.dateOfOffboarding ?? p.endDate) : p.startDate;
+        // Incident offboards carry the date (or "Immediate") in the subject, e.g.
+        // "Offboarding - Ryan McNulty - 06/19/2026" / "… - Immediate" — extract it when the payload
+        // had no date field, so the column isn't blank.
+        let immediate = false;
+        if (r.action === "offboard" && !(typeof raw === "string" && raw)) {
+          const subj = r.subject ?? "";
+          const md = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/.exec(subj);
+          if (md) raw = `${md[3]}-${md[1].padStart(2, "0")}-${md[2].padStart(2, "0")}`;
+          else if (/\bimmediate\b/i.test(subj)) immediate = true;
+        }
         const effectiveDate = typeof raw === "string" && raw ? raw : null;
+        // Last run: the most recent time any job started or finished. null = never dispatched.
+        const runTimes = r.jobs.map((j) => j.finishedAt ?? j.startedAt).filter((d): d is Date => Boolean(d));
+        const lastRunAt = runTimes.length ? new Date(Math.max(...runTimes.map((d) => d.getTime()))) : null;
         // Match the claim preflight exactly: only the jobs the runner could claim NOW gate the case
         // — pending api jobs whose earlier api jobs are all done. (A later job's unset secret, or a
         // manual job's secret, must NOT show the case as blocked while an earlier step can still run.)
@@ -432,7 +460,8 @@ export function makeCaseRepository(db: PrismaClient) {
           id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
           pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
-          serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate,
+          serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
+          lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: needsInfo
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."

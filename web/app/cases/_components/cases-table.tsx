@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { formatDateOnly } from "@/lib/dates";
+import { formatDateOnly, formatDateTime } from "@/lib/dates";
 
 export type CaseRowVM = {
   id: string;
@@ -18,6 +18,9 @@ export type CaseRowVM = {
   jobCount: number;
   statusHint: string;
   effectiveDate: string | null;
+  immediate?: boolean; // offboard with no scheduled date (subject says "Immediate")
+  lastRunIso?: string | null; // when the case last executed (most recent job start/finish)
+  ranBy?: string | null; // operator who last ran it (email), or null
   createdAtIso: string;
 };
 
@@ -51,7 +54,7 @@ const STATUS_COLOR: Record<string, string> = {
   running: "#1565c0",
 };
 
-type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "createdAt";
+type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "lastRun" | "createdAt";
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
@@ -95,6 +98,12 @@ function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
       return a.jobCount - b.jobCount;
     case "createdAt":
       return a.createdAtIso.localeCompare(b.createdAtIso);
+    case "lastRun": {
+      const av = a.lastRunIso ?? ""; const bv = b.lastRunIso ?? "";
+      if (!av && bv) return 1; // never-run last
+      if (av && !bv) return -1;
+      return av.localeCompare(bv);
+    }
     default: {
       const av = (a[key] ?? "") as string;
       const bv = (b[key] ?? "") as string;
@@ -244,6 +253,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
             <SortHead k="jobCount" label="Jobs" num />
             <SortHead k="status" label="Status" />
             <SortHead k="effectiveDate" label="Start / off date" />
+            <SortHead k="lastRun" label="Last run" />
             <SortHead k="createdAt" label="Created" />
             <th></th>
           </tr>
@@ -258,8 +268,18 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
               <td className="muted">{c.jobCount}</td>
               <td><StatusBadge c={c} /></td>
-              <td className="muted" title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : undefined}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
-              <td className="muted">{new Date(c.createdAtIso).toLocaleDateString()}</td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
+                {c.effectiveDate
+                  ? formatDateOnly(c.effectiveDate)
+                  : c.immediate
+                    ? <span className="badge" style={{ color: "#b45309", borderColor: "#fde68a", background: "#fffbeb" }}>Immediate</span>
+                    : "—"}
+              </td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
+                {formatDateTime(c.lastRunIso)}
+                {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+              </td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                 <button
                   onClick={() => remove(c)}
@@ -274,7 +294,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={9} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
+              <td colSpan={11} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
                 {cases.length === 0 ? "No cases yet. Import a ServiceNow ticket or create one." : "No cases match your search."}
               </td>
             </tr>

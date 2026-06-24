@@ -40,6 +40,9 @@ export default async function CasesPage() {
     jobCount: c.jobCount,
     statusHint: c.statusHint,
     effectiveDate: c.effectiveDate,
+    immediate: c.immediate,
+    lastRunIso: c.lastRunAt ? c.lastRunAt.toISOString() : null,
+    ranBy: c.ranBy,
     createdAtIso: c.createdAt.toISOString(),
   }));
 
