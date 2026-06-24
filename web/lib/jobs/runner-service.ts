@@ -546,6 +546,12 @@ export function makeRunnerService(db: PrismaClient) {
       const next = [...trail, { ts: new Date().toISOString(), phase: String(phase).slice(0, 200) }].slice(-20);
       // Stamp running on the first progress post so the case/step reflects in-flight immediately.
       await db.job.update({ where: { id: jobId }, data: { progress: next as Prisma.InputJsonValue, status: "running" } });
+      // A runner mid-step posts progress every second or two, but only the between-jobs heartbeat
+      // loop refreshes lastSeenAt — so a long step (an Exchange mailbox/DL mirror can run minutes)
+      // would read "offline" while it's actively working. Treat a progress post as a heartbeat too:
+      // a runner that's narrating its work IS alive. It now reads offline only when GENUINELY stuck
+      // (no progress for the offline window) — which is the alarm we actually want.
+      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date() } });
       return { ok: true };
     },
 
