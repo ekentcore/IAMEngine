@@ -54,6 +54,10 @@ param(
     [string]$DelineaBaseUrl  = $env:DELINEA_BASE_URL,
     [string]$DelineaUser     = $env:DELINEA_USER,
     [string]$DelineaPassword = $env:DELINEA_PASSWORD,
+    # Load DELINEA_*/M365_*/S1_* from a .env file DIRECTLY (raw UTF-8, like the app) instead of via the
+    # shell — so a non-ASCII char in a secret (smart quote, etc.) can't get mangled by `export`/`source`.
+    # When a -*SecretId is used and this isn't given, env.env then web/.env at the repo root are auto-loaded.
+    [string]$EnvFile,
 
     # -Email mode: just LIST the user's Entra devices and stop (no SentinelOne). Handy when you have
     # Graph creds but not the S1 API token yet.
@@ -67,6 +71,41 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot/../modules/Coretelligent.SentinelOne/Coretelligent.SentinelOne.psm1" -Force
+
+function Import-DotEnvFile {
+    # Parse a .env file the way dotenv/Next does — KEY=VALUE, optional surrounding "…"/'…' quotes
+    # (content taken verbatim, inline # comment on unquoted values stripped) — reading raw UTF-8 so a
+    # non-ASCII byte in a secret survives. Sets each var only if it isn't already in the environment
+    # (explicit env/params win). Returns $true if the file existed.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    foreach ($raw in (Get-Content -LiteralPath $Path -Encoding utf8)) {
+        if ($raw -match '^\s*#' -or $raw -notmatch '=') { continue }
+        $line = $raw -replace '^\s*export\s+', ''
+        $m = [regex]::Match($line, '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("([^"]*)"|''([^'']*)''|[^#\r\n]*)')
+        if (-not $m.Success) { continue }
+        $key = $m.Groups[1].Value
+        $val = if ($m.Groups[3].Success) { $m.Groups[3].Value }
+               elseif ($m.Groups[4].Success) { $m.Groups[4].Value }
+               else { $m.Groups[2].Value.Trim() }
+        if (-not [Environment]::GetEnvironmentVariable($key)) { [Environment]::SetEnvironmentVariable($key, $val) }
+    }
+    return $true
+}
+
+# Load creds from a .env file directly (no shell) when resolving from Delinea.
+if ($M365SecretId -or $S1SecretId) {
+    if ($EnvFile) {
+        if (-not (Import-DotEnvFile $EnvFile)) { throw "env file not found: $EnvFile" }
+    } else {
+        foreach ($cand in @("$PSScriptRoot/../../env.env", "$PSScriptRoot/../../web/.env", "$PSScriptRoot/../../web/.env.local")) {
+            Import-DotEnvFile $cand | Out-Null
+        }
+    }
+    if (-not $DelineaBaseUrl)  { $DelineaBaseUrl  = $env:DELINEA_BASE_URL }
+    if (-not $DelineaUser)     { $DelineaUser     = $env:DELINEA_USER }
+    if (-not $DelineaPassword) { $DelineaPassword = $env:DELINEA_PASSWORD }
+}
 
 # Lazy Delinea session — only connect if a -*SecretId was given.
 $script:DelineaReady = $false
