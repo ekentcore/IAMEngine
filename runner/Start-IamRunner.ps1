@@ -792,14 +792,55 @@ function Add-ClientContext {
     $u
 }
 
+# ONE shared HttpClient for every app call — reuses TCP connections (keep-alive) instead of opening a
+# new socket per request. PowerShell's Invoke-RestMethod creates + disposes a fresh HttpClient PER CALL,
+# so a long-running poller churns a connection per heartbeat/claim/progress; the host's ephemeral ports
+# fill with TIME_WAIT sockets and every outbound connect eventually fails ("Can't assign requested
+# address" / "can't reach the database"). A pooled client keeps it to a handful of reused connections.
+# GLOBAL so the module-scope Send-CtgProgress can reuse the same client.
+$global:CtgHttp = $null
+function global:Get-CtgHttpClient {
+    if ($null -eq $global:CtgHttp) {
+        $h = [System.Net.Http.SocketsHttpHandler]::new()
+        $h.PooledConnectionLifetime    = [TimeSpan]::FromMinutes(5)
+        $h.PooledConnectionIdleTimeout = [TimeSpan]::FromMinutes(2)
+        $h.MaxConnectionsPerServer     = 8
+        $c = [System.Net.Http.HttpClient]::new($h)
+        $c.Timeout = [TimeSpan]::FromSeconds(300)
+        $global:CtgHttp = $c
+    }
+    $global:CtgHttp
+}
+
+function global:Invoke-CtgHttp {
+    # Shared-client request → parsed JSON (or $null). Throws "HTTP <code> — <body>" on non-2xx, matching
+    # the Invoke-RestMethod behaviour callers relied on. Disposes the request/response, NOT the client.
+    param([string]$Method, [string]$Uri, [hashtable]$Headers, [string]$Body)
+    $msg = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $Uri)
+    if ($Headers) {
+        foreach ($k in $Headers.Keys) {
+            if ($k -ieq 'Authorization') { $msg.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::Parse([string]$Headers[$k]) }
+            else { [void]$msg.Headers.TryAddWithoutValidation($k, [string]$Headers[$k]) }
+        }
+    }
+    if ($Body) { $msg.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json') }
+    $resp = (Get-CtgHttpClient).SendAsync($msg).GetAwaiter().GetResult()
+    $code = [int]$resp.StatusCode
+    $ok   = $resp.IsSuccessStatusCode
+    $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $msg.Dispose(); $resp.Dispose()
+    if (-not $ok) { throw "HTTP ${code}: $Method $Uri$(if ($text) { " — $text" })" }
+    if ($text) { return ($text | ConvertFrom-Json) }
+    $null
+}
+
 function Invoke-AppApi {
     param([string]$Method, [string]$Path, $Body)
     # ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
     $headers = @{ 'ngrok-skip-browser-warning' = 'true' }
     if ($ApiToken) { $headers['Authorization'] = "Bearer $ApiToken" }
-    $p = @{ Method = $Method; Uri = "$AppUrl$Path"; ContentType = 'application/json'; Headers = $headers }
-    if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 12) }
-    Invoke-RestMethod @p   # mTLS replaces the shared bearer in production
+    $json = if ($Body) { ($Body | ConvertTo-Json -Depth 12) } else { $null }
+    Invoke-CtgHttp -Method $Method -Uri "$AppUrl$Path" -Headers $headers -Body $json  # mTLS replaces the bearer in production
 }
 
 function global:Send-CtgProgress {
@@ -817,7 +858,9 @@ function global:Send-CtgProgress {
     if (-not $jid) { return }
     $h = @{ 'ngrok-skip-browser-warning' = 'true' }
     if ($global:CtgProgressToken) { $h['Authorization'] = "Bearer $($global:CtgProgressToken)" }
-    try { Invoke-RestMethod -Method POST -Uri "$($global:CtgProgressUrl)/api/jobs/$jid/progress" -ContentType 'application/json' -Headers $h -Body (@{ agentId = $global:CtgProgressAgent; phase = $Message } | ConvertTo-Json) | Out-Null } catch { }
+    # Shared pooled client (Invoke-CtgHttp) — NOT Invoke-RestMethod. Progress is the highest-frequency
+    # call (every narration line during a job), so a fresh socket each time was the worst port-churn.
+    try { Invoke-CtgHttp -Method POST -Uri "$($global:CtgProgressUrl)/api/jobs/$jid/progress" -Headers $h -Body (@{ agentId = $global:CtgProgressAgent; phase = $Message } | ConvertTo-Json) | Out-Null } catch { }
 }
 
 function Set-CtgPhase {
