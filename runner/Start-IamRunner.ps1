@@ -17,8 +17,31 @@ param(
     # ExchangeOnlineManagement 3.10.0's REST cmdlets break on PowerShell 7.6 ("[HttpResponseMessage]
     # does not contain a method named 'GetResponseHeader'"); 3.9.2 is the known-good build. Pin the
     # version the runner loads so it never auto-picks a broken one. Override per host if needed.
-    [string]$ExoModuleVersion = '3.9.2'
+    [string]$ExoModuleVersion = '3.9.2',
+    # Watchdog: restart the process if it makes no progress for this long (a hung inline job — the
+    # only failure the loop can't self-heal). Default 600s; aligns with the app's 10-min stale-lease
+    # reclaim so the orphaned job re-queues just as the fresh process comes up. Env: RUNNER_STALL_TIMEOUT.
+    [int]$StallTimeoutSeconds = 600,
+    # Heartbeat file the watchdog + -HealthCheck read; defaults to a temp path keyed by AgentId
+    # (kept out of the bundle so it can't affect the build hash). Env: RUNNER_HEARTBEAT_FILE.
+    [string]$HeartbeatFile = '',
+    # Liveness-probe mode: report health from the heartbeat file and exit (0 healthy / 1 stale) WITHOUT
+    # starting the runner. Backs an Azure Container Apps `exec` liveness probe in managed hosting.
+    [switch]$HealthCheck
 )
+
+# The watchdog is lightweight and the -HealthCheck probe must be fast, so load it + resolve the
+# heartbeat path BEFORE the heavy automation modules. A health probe never loads the rest.
+Import-Module "$PSScriptRoot/lib/Coretelligent.Watchdog/Coretelligent.Watchdog.psm1" -Force
+if (-not $PSBoundParameters.ContainsKey('StallTimeoutSeconds') -and $env:RUNNER_STALL_TIMEOUT) { $StallTimeoutSeconds = [int]$env:RUNNER_STALL_TIMEOUT }
+$HeartbeatFile = Get-CtgHeartbeatPath -Explicit $HeartbeatFile -AgentId $AgentId
+if ($HealthCheck) {
+    $h = Test-CtgRunnerHealth -Path $HeartbeatFile -TimeoutSeconds $StallTimeoutSeconds
+    if (-not $h.healthy) { Write-Error "runner unhealthy: $($h.reason)"; exit 1 }
+    Write-Host "runner healthy: $($h.reason)"
+    exit 0
+}
+$global:CtgHeartbeatFile = $HeartbeatFile
 
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
@@ -759,6 +782,11 @@ function global:Send-CtgProgress {
     # operation (e.g. the Exchange mailbox sync-wait) can call this to emit a "still trying" heartbeat.
     # Reads per-job globals; best-effort (a failed post never breaks the job).
     param([string]$Message)
+    # Touch the watchdog heartbeat first: a narration means the runner made progress just now, so the
+    # stall watchdog must not restart it. mtime is the signal (body is human-readable). Inlined rather
+    # than calling the module's Update-CtgHeartbeat so it's reachable from module scope with no
+    # cross-scope lookup (same reason this function is global). Best-effort.
+    if ($global:CtgHeartbeatFile) { try { [System.IO.File]::WriteAllText($global:CtgHeartbeatFile, "$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())`n$Message") } catch { } }
     $jid = $global:CtgProgressJobId
     if (-not $jid) { return }
     $h = @{ 'ngrok-skip-browser-warning' = 'true' }
@@ -1184,7 +1212,23 @@ Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild, pid $PID) pol
 $global:CtgProgressUrl   = $AppUrl
 $global:CtgProgressToken = $ApiToken
 $global:CtgProgressAgent = $AgentId
+
+# Arm the stall watchdog (lib/Coretelligent.Watchdog) on its own thread: if no progress for
+# $StallTimeoutSeconds it self-respawns + hard-exits, recovering from a hung inline job the main loop
+# can't escape. Build the same relaunch spec the self-update uses (cross-platform Start-Process).
+Update-CtgHeartbeat -Path $global:CtgHeartbeatFile -Phase 'starting'
+$wdPwsh = (Get-Process -Id $PID).Path
+if (-not $wdPwsh) { $wdPwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
+$wdSelf = Join-Path $PSScriptRoot 'Start-IamRunner.ps1'
+$wdArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$wdSelf,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion)
+if ($ApiToken) { $wdArgs += @('-ApiToken',$ApiToken) }
+$script:Watchdog = Start-CtgWatchdog -HeartbeatFile $global:CtgHeartbeatFile -TimeoutSeconds $StallTimeoutSeconds -PwshPath $wdPwsh -RelaunchArgs $wdArgs
+Write-Host "watchdog armed: restart if no progress for ${StallTimeoutSeconds}s (heartbeat $global:CtgHeartbeatFile)" -ForegroundColor DarkGray
+
 while ($true) {
+    # Liveness tick: the loop is alive (idle or between jobs). A long job keeps this fresh via
+    # Send-CtgProgress; only a TRUE hang (no progress) lets it go stale and trips the watchdog.
+    Update-CtgHeartbeat -Path $global:CtgHeartbeatFile -Phase 'polling'
     $jobs = @()   # reset BEFORE try: a heartbeat/claim throw must not leave a stale value driving the drain check below
     # Superseded by a newer instance? It overwrote .runner.lock with its PID at startup. Exit so this
     # (older) process stops heartbeating + claiming jobs with stale modules. Best-effort; on any lock
