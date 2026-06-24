@@ -97,7 +97,12 @@ export function planCase(
       // the act of doing it IS the approval — it must never put the case in "needs approval".
       requiresApproval: s.mode === "api" ? (ra ? Boolean(ra[action]) : s.requiresApproval) : false,
       captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
-      secretNames: s.secretNames,
+      // SentinelOne's offboard resolves the user's machines from their Entra registered devices, so it
+      // also needs the m365-admin app brokered (catalog-wide, no per-client wiring). If the client has
+      // no m365-admin it simply isn't brokered and the runner falls back to config/payload machineName.
+      secretNames: s.systemKey === "sentinelone" && !s.secretNames.includes("m365-admin")
+        ? [...s.secretNames, "m365-admin"]
+        : s.secretNames,
       // The runner needs only this action's resolved config, not the whole blob.
       config: cfg ? (cfg[action] ?? null) : null,
     };
