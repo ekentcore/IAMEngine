@@ -945,7 +945,9 @@ function Get-CtgBuildId {
     # bundle.ts runnerBuildId), so the app can show "up to date" vs "update available" with no version
     # string to bump and no marker file to keep in sync. 'unknown' if anything goes wrong.
     $root = $PSScriptRoot
-    $skip = 'tests', 'dist', '.git', 'node_modules'
+    # Keep in lockstep with SKIP_DIRS in web/lib/runner/bundle.ts. 'scripts' holds operator/diagnostic
+    # helpers that never ship to a deployed runner (and so must not move the build hash).
+    $skip = 'tests', 'dist', '.git', 'node_modules', 'scripts'
     try {
         $rels = foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File) {
             $rel = ([System.IO.Path]::GetRelativePath($root, $f.FullName)) -replace '\\', '/'
