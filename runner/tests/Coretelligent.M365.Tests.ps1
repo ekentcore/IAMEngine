@@ -288,6 +288,19 @@ Describe 'Invoke-CtgM365Offboarding' {
         $a | Should -Match 'skipped dynamic group: All Users'
     }
 
+    It 'treats an "already not a member" / not-found group removal as done, not a warning (idempotent)' {
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith {
+            @([pscustomobject]@{ Id = 'g-gone'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'M365 Power BI Pro' } })
+        }
+        Mock Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -MockWith {
+            throw [Exception]::new("[Request_BadRequest] : One or more removed object references do not exist for the following modified properties: 'members'.")
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ removeAllGroups = $true }) -MailboxSizeGB 10
+        $a = $r.Actions -join ' '
+        $a | Should -Match 'already not a member of M365 Power BI Pro'
+        $a | Should -Not -Match 'WARN could not remove from M365 Power BI Pro'
+    }
+
     It 'disables Entra devices and captures their names when disableDevices is set' {
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ disableDevices = $true }) -MailboxSizeGB 10
         Should -Invoke Update-MgDevice -ModuleName Coretelligent.M365 -ParameterFilter { $DeviceId -eq 'dev-1' } -Times 1 -Exactly

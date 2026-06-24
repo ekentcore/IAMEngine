@@ -373,9 +373,16 @@ function Invoke-CtgADOffboarding {
                 continue
             }
             if ($PSCmdlet.ShouldProcess($sam, "Remove from group $($g.Name)")) {
+                # Remove by DistinguishedName, NOT Name. Remove-ADGroupMember -Identity resolves a group
+                # by DN / objectGUID / SID / sAMAccountName — never the CN/Name. For groups whose
+                # sAMAccountName differs from their display name (Teams/M365-provisioned "<name>_<hex>"
+                # groups, or names with spaces), passing $g.Name fails "cannot find an object with
+                # identity" even though the group plainly exists — which also left the user still in the
+                # groups, so the "groups removed" validation missed. The DN always resolves.
+                $gid = if ($g.DistinguishedName) { $g.DistinguishedName } else { $g.Name }
                 # -ErrorAction Stop so a failed removal is surfaced, not silently logged as success.
                 try {
-                    Remove-ADGroupMember -Identity $g.Name -Members $sam -Confirm:$false -ErrorAction Stop @AdConnection
+                    Remove-ADGroupMember -Identity $gid -Members $sam -Confirm:$false -ErrorAction Stop @AdConnection
                     $actions.Add("removed from group: $($g.Name)")
                     Write-CtgADStep "✓ removed from group: $($g.Name)"
                 } catch {
@@ -390,14 +397,17 @@ function Invoke-CtgADOffboarding {
     # is actually a member. Independent of removeAllGroups (and a no-op once that already stripped all).
     $removeGroups = @(Get-CtgProp $Config 'removeGroups' | Where-Object { $_ })
     if ($removeGroups.Count) {
-        $memberByLower = @{}; foreach ($g in $memberships) { $memberByLower["$($g.Name)".ToLower()] = $g.Name }
+        $memberByLower = @{}; foreach ($g in $memberships) { $memberByLower["$($g.Name)".ToLower()] = $g }
         foreach ($name in $removeGroups) {
             if ("$name" -ieq 'Domain Users') { continue }
-            $actual = $memberByLower["$name".ToLower()]   # the real group name (authoritative case)
-            if (-not $actual) { $actions.Add("not a member of $name (skip)"); continue }
-            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $actual")) {
-                Remove-ADGroupMember -Identity $actual -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
-                $actions.Add("removed from group: $actual")
+            $grpObj = $memberByLower["$name".ToLower()]   # the real group object the user belongs to
+            if (-not $grpObj) { $actions.Add("not a member of $name (skip)"); continue }
+            # Resolve by DN (see the removeAllGroups note above) — a Name-based identity fails for
+            # groups whose sAMAccountName differs from their display name.
+            $gid = if ($grpObj.DistinguishedName) { $grpObj.DistinguishedName } else { $grpObj.Name }
+            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $($grpObj.Name)")) {
+                Remove-ADGroupMember -Identity $gid -Members $sam -Confirm:$false -ErrorAction SilentlyContinue @AdConnection
+                $actions.Add("removed from group: $($grpObj.Name)")
             }
         }
     }

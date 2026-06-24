@@ -871,7 +871,17 @@ function Invoke-CtgM365Offboarding {
                     Remove-MgGroupMemberByRef -GroupId $g.Id -DirectoryObjectId $userId -ErrorAction Stop
                     $actions.Add("removed from group: $($g.DisplayName)")
                 }
-                catch { $actions.Add("WARN could not remove from $($g.DisplayName): $($_.Exception.Message)") }
+                catch {
+                    $m = "$($_.Exception.Message)"
+                    # Idempotent end-state: the user is already not a member (Graph: "removed object
+                    # references do not exist … 'members'") or the group is gone (ResourceNotFound/404).
+                    # The desired state — not a member — already holds, so it's done, not a warning.
+                    if ($m -match 'do(es)? not exist|ResourceNotFound|not present|\bNotFound\b|\b404\b') {
+                        $actions.Add("already not a member of $($g.DisplayName) (skipped)")
+                    } else {
+                        $actions.Add("WARN could not remove from $($g.DisplayName): $m")
+                    }
+                }
             }
         }
     }

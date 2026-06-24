@@ -122,7 +122,9 @@ Describe 'Invoke-CtgADOffboarding' {
             [pscustomobject]@{ SamAccountName='jdoe'; DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$true }
         }
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
-            @([pscustomobject]@{ Name='Back Office Users' }, [pscustomobject]@{ Name='VPN Users' }, [pscustomobject]@{ Name='Domain Users' })
+            @([pscustomobject]@{ Name='Back Office Users'; DistinguishedName='CN=Back Office Users,OU=Groups,DC=x' },
+              [pscustomobject]@{ Name='VPN Users'; DistinguishedName='CN=VPN Users,OU=Groups,DC=x' },
+              [pscustomobject]@{ Name='Domain Users'; DistinguishedName='CN=Domain Users,CN=Users,DC=x' })
         }
         Mock Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -MockWith { }
         Mock Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -MockWith { }
@@ -161,11 +163,24 @@ Describe 'Invoke-CtgADOffboarding' {
         Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $TargetPath -match 'Disabled Users' }
     }
 
+    It 'removes a group whose display Name differs from its sAMAccountName (Teams/M365 group) — by DN, not Name' {
+        # The bug: Remove-ADGroupMember -Identity $g.Name failed "cannot find an object with identity"
+        # for groups whose Name != sAMAccountName (e.g. a Teams group "Chatsoft-Contracts Team_<hex>"),
+        # even though the user is a member. Removal must target the DistinguishedName.
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            @([pscustomobject]@{ Name='Chatsoft-Contracts Team'; SamAccountName='Chatsoft-Contracts Team_640a4c12864f'; DistinguishedName='CN=Chatsoft-Contracts Team_640a4c12864f,OU=M365 Groups,DC=x' })
+        }
+        $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; guardrails=@('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'CN=Chatsoft-Contracts Team_640a4c12864f,OU=M365 Groups,DC=x' }
+        ($r.Actions -join ' ') | Should -Match 'removed from group: Chatsoft-Contracts Team'
+    }
+
     It 'offboard rules: removes only the specific rule-named groups the user belongs to (config.removeGroups)' {
         $config = [pscustomobject]@{ disableAccount=$true; removeGroups=@('VPN Users','Nonexistent Group'); guardrails=@('do-not-move-ou') }
         $r = Invoke-CtgADOffboarding -User $user -Config $config
-        # member of 'VPN Users' -> removed; not a member of 'Nonexistent Group' -> skipped
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'VPN Users' }
+        # member of 'VPN Users' -> removed by DN; not a member of 'Nonexistent Group' -> skipped
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'CN=VPN Users,OU=Groups,DC=x' }
         ($r.Actions -join ' ') | Should -Match 'not a member of Nonexistent Group'
     }
 
@@ -192,8 +207,8 @@ Describe 'Invoke-CtgADOffboarding' {
         }
         $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; disabledUsersPrimaryGroup='Disabled Users'; guardrails=@('do-not-move-ou') }
         $r = Invoke-CtgADOffboarding -User $user -Config $config
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Disabled Users' } -Times 0 -Exactly
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'VPN Users' } -Times 1
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Disabled Users,OU=x,DC=x' } -Times 0 -Exactly
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=VPN Users,OU=Groups,DC=x' } -Times 1
         $a = $r.Actions -join ' '
         $a | Should -Match "kept 'Disabled Users' — the user's primary group"
         $a | Should -Not -Match 'could not remove from group Disabled Users'
@@ -256,8 +271,8 @@ Describe 'Invoke-CtgADOffboarding' {
         }
         $config = [pscustomobject]@{ removeAllGroups=$true; disableAccount=$true; guardrails=@('do-not-move-ou') }
         $r = Invoke-CtgADOffboarding -User $user -Config $config
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Domain Admins' } -Times 0 -Exactly
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'VPN Users' } -Times 1
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Domain Admins,CN=Users,DC=x' } -Times 0 -Exactly
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=VPN Users,OU=Groups,DC=x' } -Times 1
         ($r.Actions -join ' ') | Should -Match 'protected/privileged group NOT removed.*Domain Admins'
         $r.Evidence.ProtectedGroups | Should -Contain 'Domain Admins'
     }
@@ -279,7 +294,7 @@ Describe 'Invoke-CtgADOffboarding' {
         }
         $config = [pscustomobject]@{ removeAllGroups=$true; protectPrivilegedGroups=$false; disableAccount=$true; guardrails=@('do-not-move-ou') }
         $r = Invoke-CtgADOffboarding -User $user -Config $config
-        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'Domain Admins' } -Times 1
+        Should -Invoke Remove-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Domain Admins,CN=Users,DC=x' } -Times 1
     }
 }
 
