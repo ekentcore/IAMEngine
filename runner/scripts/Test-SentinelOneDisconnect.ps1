@@ -45,6 +45,19 @@ param(
     [string]$ClientId     = $env:M365_CLIENT_ID,
     [string]$ClientSecret = $env:M365_CLIENT_SECRET,
 
+    # --- Resolve creds straight from Delinea instead of pasting them ---------------------------------
+    # Pass a client's Delinea secret id(s) and the script pulls the fields at runtime (using YOUR
+    # Delinea login — same OAuth2 path the runner uses). e.g. Coretelligent m365-admin = 56410.
+    # ('sentinelone' isn't mapped for Coretelligent yet, so -S1Token stays manual there.)
+    [string]$M365SecretId,
+    [string]$S1SecretId,
+    [string]$DelineaBaseUrl  = $env:DELINEA_BASE_URL,
+    [string]$DelineaUser     = $env:DELINEA_USER,
+    [string]$DelineaPassword = $env:DELINEA_PASSWORD,
+
+    # -Email mode: just LIST the user's Entra devices and stop (no SentinelOne). Handy when you have
+    # Graph creds but not the S1 API token yet.
+    [switch]$ListOnly,
     # -Email mode: also disable each device in Entra (Update-MgDevice AccountEnabled=$false). Off by
     # default so the script is safe to run as a read+isolate test without touching Entra.
     [switch]$DisableInEntra,
@@ -54,6 +67,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot/../modules/Coretelligent.SentinelOne/Coretelligent.SentinelOne.psm1" -Force
+
+# Lazy Delinea session — only connect if a -*SecretId was given.
+$script:DelineaReady = $false
+function Resolve-DelineaSecret {
+    param([Parameter(Mandatory)][string]$Id)
+    if (-not $script:DelineaReady) {
+        if (-not $DelineaBaseUrl)  { throw "Delinea resolution needs DELINEA_BASE_URL (or -DelineaBaseUrl)." }
+        if (-not $DelineaUser -or -not $DelineaPassword) { throw "Delinea resolution needs DELINEA_USER + DELINEA_PASSWORD (or -DelineaUser/-DelineaPassword)." }
+        Import-Module "$PSScriptRoot/../lib/Coretelligent.Secrets/Coretelligent.Secrets.psm1" -Force
+        $dc = [pscredential]::new($DelineaUser, (ConvertTo-SecureString $DelineaPassword -AsPlainText -Force))
+        Connect-CtgSecretStore -Credential $dc -BaseUrl $DelineaBaseUrl
+        $script:DelineaReady = $true
+    }
+    Get-CtgSecret -Reference @{ provider = 'delinea'; id = $Id }
+}
+function Get-Field {
+    # First non-empty among the candidate field names (tolerant of Delinea field naming).
+    param($Secret, [string[]]$Names)
+    foreach ($n in $Names) { $v = $Secret.Fields[$n]; if ($v) { return [string]$v } }
+    return $null
+}
 
 function Confirm-Action {
     # y/N gate for the interactive flow. Auto-yes under -AutoConfirm or -WhatIf (so -WhatIf previews the
@@ -107,20 +141,42 @@ function Disable-EntraDevice {
     }
 }
 
-# --- connect SentinelOne (both modes) ----------------------------------------
-if (-not $S1BaseUrl) { throw "missing SentinelOne console URL — pass -S1BaseUrl or set S1_BASE_URL (e.g. https://usea1-partners.sentinelone.net)." }
-if (-not $S1Token)   { throw "missing SentinelOne token — pass -S1Token or set S1_TOKEN (a service-user API token)." }
-Connect-CtgSentinelOne -BaseUrl $S1BaseUrl -Token $S1Token
+# --- resolve creds from Delinea when a secret id was given -------------------
+if ($S1SecretId) {
+    Write-Host "resolving SentinelOne secret $S1SecretId from Delinea…" -ForegroundColor DarkGray
+    $s1sec = Resolve-DelineaSecret -Id $S1SecretId
+    if (-not $S1BaseUrl) { $S1BaseUrl = Get-Field $s1sec @('BaseUrl', 'Url', 'URL', 'ConsoleUrl', 'ManagementUrl') }
+    if (-not $S1Token)   { $S1Token   = Get-Field $s1sec @('ApiToken', 'Token', 'ApiKey', 'API Key', 'Key', 'Password') }
+}
+if ($M365SecretId) {
+    Write-Host "resolving Entra app secret $M365SecretId from Delinea…" -ForegroundColor DarkGray
+    $m365sec = Resolve-DelineaSecret -Id $M365SecretId
+    if (-not $ClientId)     { $ClientId     = Get-Field $m365sec @('ClientID', 'ClientId', 'Client ID', 'AppId', 'Application (client) ID'); if (-not $ClientId -and $m365sec.Username) { $ClientId = [string]$m365sec.Username } }
+    if (-not $ClientSecret) { $ClientSecret = Get-Field $m365sec @('ClientSecret', 'Client Secret', 'Secret', 'Password') }
+    if (-not $TenantId)     { $TenantId     = Get-Field $m365sec @('TenantId', 'Tenant', 'Directory (tenant) ID', 'Domain') }
+}
+
+# Is SentinelOne in play this run? Always for -ComputerName; for -Email unless -ListOnly or no token.
+$wantS1 = ($PSCmdlet.ParameterSetName -eq 'Computer') -or (-not $ListOnly)
+if ($wantS1 -and -not $S1Token) {
+    if ($PSCmdlet.ParameterSetName -eq 'Computer') { throw "missing SentinelOne token — pass -S1Token / set S1_TOKEN (a management API token), or -S1SecretId once 'sentinelone' is mapped in Delinea." }
+    Write-Host "note: no SentinelOne token — listing Entra devices only (set S1_TOKEN/-S1Token to also disconnect)." -ForegroundColor Yellow
+    $wantS1 = $false
+}
+if ($wantS1) {
+    if (-not $S1BaseUrl) { throw "missing SentinelOne console URL — pass -S1BaseUrl / set S1_BASE_URL (e.g. https://usea1-partners.sentinelone.net), or -S1SecretId." }
+    Connect-CtgSentinelOne -BaseUrl $S1BaseUrl -Token $S1Token
+}
 
 if ($PSCmdlet.ParameterSetName -eq 'Computer') {
     Invoke-OneDisconnect -Name $ComputerName
     return
 }
 
-# --- Email mode: pull Entra devices, then per-device isolate -----------------
-if (-not $TenantId)     { throw "missing -TenantId (or M365_TENANT_ID) for -Email mode." }
-if (-not $ClientId)     { throw "missing -ClientId (or M365_CLIENT_ID) for -Email mode." }
-if (-not $ClientSecret) { throw "missing -ClientSecret (or M365_CLIENT_SECRET) for -Email mode." }
+# --- Email mode: pull Entra devices, then (optionally) per-device isolate -----
+if (-not $TenantId)     { throw "missing tenant — pass -TenantId / set M365_TENANT_ID, or -M365SecretId." }
+if (-not $ClientId)     { throw "missing app id — pass -ClientId / set M365_CLIENT_ID, or -M365SecretId." }
+if (-not $ClientSecret) { throw "missing app secret — pass -ClientSecret / set M365_CLIENT_SECRET, or -M365SecretId." }
 
 # Graph app-only (client-secret) — identical to Connect-CtgM365; inlined so the diagnostic doesn't pull
 # the full M365 module's dependency chain. Needs Microsoft.Graph.Authentication + .Identity.DirectoryManagement.
@@ -142,6 +198,7 @@ Write-Host "found $($devices.Count) device(s): $(($devices | ForEach-Object { $_
 foreach ($d in $devices) {
     Write-Host "── device: $($d.DisplayName)   (Entra id $($d.Id)) ──" -ForegroundColor Cyan
     if ($DisableInEntra) { Disable-EntraDevice -Id $d.Id -Name $d.DisplayName }
-    Invoke-OneDisconnect -Name $d.DisplayName
+    if ($wantS1) { Invoke-OneDisconnect -Name $d.DisplayName }
+    else         { Write-Host "  (SentinelOne skipped — list-only)" -ForegroundColor DarkGray }
     Write-Host ""
 }
