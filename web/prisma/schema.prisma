@@ -282,6 +282,7 @@ model Job {
   evidence         Json? // screenshots / membership snapshots refs
   validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
   progress         Json? // live phase trail while running: [{ ts, phase }] — shown in the run report
+  progressAt       DateTime? // when progress last moved — the per-job "is it still working?" signal
   error            String?
   startedAt        DateTime?
   finishedAt       DateTime?

@@ -388,6 +388,19 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  async function stopStep(stepSeq: number, jobId: string | undefined) {
+    if (!jobId) return;
+    if (!confirm("Stop this step? It'll be marked failed and the case stops waiting on it (a late result from the runner is ignored). You can re-run it after.")) return;
+    setBusy(`stop-${stepSeq}`);
+    try {
+      const r = await fetch(`/api/jobs/${jobId}/stop`, { method: "POST" });
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not stop the step");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function markComplete(stepSeq: number, jobId: string | undefined, done: boolean) {
     if (!jobId) return;
     setBusy(`complete-${stepSeq}`);
@@ -563,6 +576,18 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 <span style={{ marginLeft: 8, fontSize: 12, color: step.pendingReason.startsWith("blocked") ? "#b3261e" : "#8a6d00" }}>
                   ⏳ {step.pendingReason}
                 </span>
+              )}
+              {/* Stop an in-flight step that looks wedged: marks it failed so the case stops waiting on
+                  it (a late runner result is then ignored). For the UM0029280 class — a hung vendor call. */}
+              {["running", "retrying", "pending"].includes(step.verdict) && step.jobId && (
+                <button
+                  style={{ marginLeft: 8, fontSize: 11, color: "#b3261e" }}
+                  disabled={busy === `stop-${step.seq}`}
+                  title="Abort this step — mark it failed and stop the case waiting on it (the runner's late result is ignored). You can re-run it after."
+                  onClick={(e) => { e.preventDefault(); stopStep(step.seq, step.jobId); }}
+                >
+                  {busy === `stop-${step.seq}` ? "stopping…" : "■ stop step"}
+                </button>
               )}
               {/* Any finished automated step can be re-run — incl. "verified" (e.g. re-run exchange to
                   finish regional/calendar deferred when the mailbox hadn't synced yet). */}

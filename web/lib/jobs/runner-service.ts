@@ -21,6 +21,23 @@ const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobReq
 
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
+// A "running" job whose progress hasn't moved in this long has wedged (the worker died / a step hung
+// past the runner's 10-min watchdog). Generous so a genuinely-slow-but-narrating step never trips it.
+const PROGRESS_STALE_MS = 20 * 60 * 1000;
+const MAX_PROGRESS_RECLAIMS = 1; // re-queue a wedged job once; if it wedges again, FAIL it (don't loop)
+
+// Re-derive a case's status from its jobs and persist it; on failure, cancel the still-pending jobs
+// (their dependency gate can never open behind a failed predecessor). Shared by the wedged-job reclaim
+// and the operator Stop so they advance the case exactly like a real job result does.
+async function refreshCaseStatus(db: PrismaClient, caseRequestId: string) {
+  const caseJobs = await db.job.findMany({ where: { caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
+  const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+  if (caseStatus === "failed") {
+    await db.job.updateMany({ where: { caseRequestId, status: "pending" }, data: { status: "skipped" } });
+  }
+  await db.caseRequest.update({ where: { id: caseRequestId }, data: { status: caseStatus } });
+  return caseStatus;
+}
 
 
 // An agent disabled mid-flight must not keep brokering credentials or posting results.
@@ -195,6 +212,32 @@ export function makeRunnerService(db: PrismaClient) {
       if (stale.length > 0) {
         await db.job.updateMany({ where: { id: { in: stale.map((s) => s.id) } }, data: { status: "pending", assignedAgentId: null } });
         await db.auditLog.create({ data: { actor: "system", action: "job.lease.reclaim", detail: { count: stale.length } } });
+      }
+
+      // Reclaim WEDGED "running" jobs — ones that posted progress then went silent (the dispatched
+      // reclaim above only covers "dispatched"; a job flips to "running" on its first progress post).
+      // Keyed off the JOB's own progressAt, NOT the agent heartbeat (the agent identity is reused, so a
+      // restarted runner keeps the heartbeat green while the worker that owned this job is dead).
+      // Bounded: re-queue once, then FAIL — so a deterministically-hanging step (e.g. a stuck Exchange
+      // mirror) can't loop forever; the case fails and an operator re-plans (or uses Stop).
+      const progressCutoff = new Date(Date.now() - PROGRESS_STALE_MS);
+      const wedged = await db.job.findMany({
+        where: {
+          status: "running",
+          OR: [{ progressAt: { lt: progressCutoff } }, { progressAt: null, startedAt: { lt: progressCutoff } }],
+        },
+        select: { id: true, request: true, caseRequestId: true },
+      });
+      for (const w of wedged) {
+        const reclaims = Number((req(w) as { progressReclaims?: unknown }).progressReclaims ?? 0);
+        if (reclaims >= MAX_PROGRESS_RECLAIMS) {
+          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "step stopped making progress and a re-run didn't recover it — wedged (e.g. a hung vendor call). Re-plan or fix the underlying step.", finishedAt: new Date() } });
+          await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims } } });
+          await refreshCaseStatus(db, w.caseRequestId);
+        } else {
+          await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });
+          await db.auditLog.create({ data: { actor: "system", action: "job.progress.reclaim", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims: reclaims + 1 } } });
+        }
       }
 
       // STALE-CODE GUARD: never hand jobs to a runner that isn't on the current build. A half-landed
@@ -545,7 +588,10 @@ export function makeRunnerService(db: PrismaClient) {
       const trail = Array.isArray(job.progress) ? (job.progress as unknown[]) : [];
       const next = [...trail, { ts: new Date().toISOString(), phase: String(phase).slice(0, 200) }].slice(-20);
       // Stamp running on the first progress post so the case/step reflects in-flight immediately.
-      await db.job.update({ where: { id: jobId }, data: { progress: next as Prisma.InputJsonValue, status: "running" } });
+      // progressAt = the queryable "still working?" signal (the JSON trail can't be filtered on) — the
+      // reclaim/stuck logic keys off this, NOT the agent heartbeat (the agent identity is reused, so a
+      // restarted runner keeps the heartbeat green while the worker that owned THIS job is dead).
+      await db.job.update({ where: { id: jobId }, data: { progress: next as Prisma.InputJsonValue, status: "running", progressAt: new Date() } });
       // A runner mid-step posts progress every second or two, but only the between-jobs heartbeat
       // loop refreshes lastSeenAt — so a long step (an Exchange mailbox/DL mirror can run minutes)
       // would read "offline" while it's actively working. Treat a progress post as a heartbeat too:
@@ -553,6 +599,22 @@ export function makeRunnerService(db: PrismaClient) {
       // (no progress for the offline window) — which is the alarm we actually want.
       await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date() } });
       return { ok: true };
+    },
+
+    // Operator "Stop": abort an in-flight (or queued) step that looks wedged — mark it failed so the
+    // case stops waiting on it (and its still-pending siblings are cancelled). A late result the runner
+    // eventually posts is rejected by recordResult's terminal guard (409), so the Stop holds.
+    async stopJob(jobId: string, actor: string): Promise<{ jobId: string; status: string; caseStatus: string }> {
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, case: { select: { clientId: true } } } });
+      if (!job) throw new HttpError(404, "unknown job");
+      if (!["pending", "dispatched", "running"].includes(job.status)) {
+        throw new HttpError(409, `job is ${job.status} — only an in-flight or queued step can be stopped`);
+      }
+      const who = actor.startsWith("user:") ? actor.slice(5) : "an operator";
+      await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date() } });
+      const caseStatus = await refreshCaseStatus(db, job.caseRequestId);
+      await db.auditLog.create({ data: { actor, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
+      return { jobId, status: "failed", caseStatus };
     },
 
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
