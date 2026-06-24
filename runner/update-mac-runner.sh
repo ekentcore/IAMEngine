@@ -46,6 +46,19 @@ echo "==> launching runner ($AGENT)"
 # build id and make it drift forever vs the app ("update available" that never clears).
 LOG="${RUNNER_LOG:-$HOME/iam-runner.log}"
 rm -f "$DIR/runner.log" 2>/dev/null || true   # clean up any old in-dir log from earlier runs
+
+# If launchd is supervising the runner (install-launchd.sh was run), restart THROUGH it — a raw nohup
+# here would spawn a second, unsupervised instance fighting the launchd one. Otherwise fall back to a
+# detached nohup (the unsupervised path).
+LABEL="com.coretelligent.iam-runner"; DOMAIN="gui/$(id -u)"
+if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+  echo "    launchd supervisor detected — restarting via launchctl (fresh code), not nohup"
+  launchctl kickstart -k "$DOMAIN/$LABEL"
+  echo "    restarted. Log: $LOG"
+  echo "==> tailing the log (Ctrl-C to stop watching — the runner keeps running):"
+  exec tail -f "$LOG"
+fi
+
 args=(-NoProfile -ExecutionPolicy Bypass -File "$DIR/Start-IamRunner.ps1" -AppUrl "$APP" -AgentId "$AGENT")
 [ -n "$TOKEN" ] && args+=(-ApiToken "$TOKEN")
 nohup "$PWSH" "${args[@]}" > "$LOG" 2>&1 &

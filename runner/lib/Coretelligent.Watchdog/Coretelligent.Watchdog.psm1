@@ -88,7 +88,12 @@ function Start-CtgWatchdog {
             if ($stale) {
                 $msg = "[$([DateTime]::Now.ToString('o'))] watchdog: no progress for ${age}s (limit ${TimeoutSeconds}s) — restarting runner"
                 try { [Console]::Error.WriteLine($msg) } catch { }
-                try { if ($PwshPath -and $RelaunchArgs) { Start-Process -FilePath $PwshPath -ArgumentList $RelaunchArgs | Out-Null } } catch { }
+                # Under a supervisor (launchd / Task Scheduler / Container Apps — RUNNER_SUPERVISED=1)
+                # just exit: it relaunches us, and self-respawning here would briefly double the process.
+                # With NO supervisor, self-respawn first so a fresh instance takes over before we die.
+                if (-not $env:RUNNER_SUPERVISED) {
+                    try { if ($PwshPath -and $RelaunchArgs) { Start-Process -FilePath $PwshPath -ArgumentList $RelaunchArgs | Out-Null } } catch { }
+                }
                 Start-Sleep -Seconds 1
                 [Environment]::Exit(75)
             }
