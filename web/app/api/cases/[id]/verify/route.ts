@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
+import { recordAudit } from "@/lib/auth/audit";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 
@@ -42,7 +43,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   // Preserve what we cleared (prior errors on failed steps) so a verify pass doesn't erase the
   // forensic trail of why a step originally failed.
   const cleared = targets.filter((j) => j.status === "failed").map((j) => ({ jobId: j.id, error: j.error }));
-  await db.auditLog.create({ data: { actor: "ui", action: "case.verify", caseRequestId: c.id, detail: { steps: targets.length, clearedFailed: cleared } } });
+  await recordAudit("case.verify", { user: _g.user, caseRequestId: c.id, detail: { steps: targets.length, clearedFailed: cleared } });
 
   return NextResponse.json({ ok: true, verifying: targets.length });
 }

@@ -354,20 +354,40 @@ export function makeCaseRepository(db: PrismaClient) {
         },
       });
 
-      // "Run by": the last OPERATOR (user) who actioned a run on each case — import/plan, re-run,
-      // resume, verify. actor is "user:<email>" once auth is on (else "ui"/"system"/"agent:…", which
-      // we ignore). One query for all listed cases; latest per case wins.
+      // Per-case audit attribution, from one query (latest-first). Two things come out of it:
+      //   - lastAction: the most recent tracked action on the case + who did it ("Imported: Jane",
+      //     "Unpaused: Bob", "Paused", "Verified") — a quick "who last touched this, and how".
+      //   - ranBy:      the last OPERATOR who ran the case (import/re-run/resume/verify — not a pause),
+      //     for the "Last run · by" column. Both ignore the "user:" prefix; the name is null when the
+      //     actor isn't a signed-in user ("ui"/"system"/"agent:…" — e.g. auth off).
       const caseIds = rows.map((r) => r.id);
-      const RUN_ACTIONS = ["case.plan", "job.rerun", "case.verify", "case.resume", "case.dry_run.set"];
-      const runAudits = caseIds.length
+      const ACTION_LABEL: Record<string, string> = {
+        "case.plan": "Imported",
+        "case.resume": "Unpaused",
+        "case.pause": "Paused",
+        "case.verify": "Verified",
+        "job.rerun": "Re-ran",
+        "case.dry_run.set": "Set dry-run",
+      };
+      const RUN_ACTIONS = new Set(["case.plan", "job.rerun", "case.verify", "case.resume", "case.dry_run.set"]); // a "run", not a pause
+      const audits = caseIds.length
         ? await db.auditLog.findMany({
-            where: { caseRequestId: { in: caseIds }, action: { in: RUN_ACTIONS }, actor: { startsWith: "user:" } },
+            where: { caseRequestId: { in: caseIds }, action: { in: Object.keys(ACTION_LABEL) } },
             orderBy: { at: "desc" },
-            select: { caseRequestId: true, actor: true },
+            select: { caseRequestId: true, actor: true, action: true },
           })
         : [];
+      const userName = (actor: string): string | null => (actor.startsWith("user:") ? actor.slice(5) : null);
+      const lastActionByCase = new Map<string, { label: string; by: string | null }>();
       const ranByCase = new Map<string, string>();
-      for (const a of runAudits) if (a.caseRequestId && !ranByCase.has(a.caseRequestId)) ranByCase.set(a.caseRequestId, a.actor.replace(/^user:/, ""));
+      for (const a of audits) {
+        if (!a.caseRequestId) continue;
+        if (!lastActionByCase.has(a.caseRequestId)) {
+          lastActionByCase.set(a.caseRequestId, { label: ACTION_LABEL[a.action] ?? a.action, by: userName(a.actor) });
+        }
+        const name = userName(a.actor);
+        if (name && RUN_ACTIONS.has(a.action) && !ranByCase.has(a.caseRequestId)) ranByCase.set(a.caseRequestId, name);
+      }
 
       // Resolve display names for every system in play (one query) + which clients have a runner
       // online right now (so a "queued" hint can say "no runner online" — the usual stall cause).
@@ -463,6 +483,8 @@ export function makeCaseRepository(db: PrismaClient) {
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
+          lastActionLabel: lastActionByCase.get(r.id)?.label ?? null,
+          lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: needsInfo
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."

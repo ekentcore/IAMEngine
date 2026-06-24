@@ -42,6 +42,11 @@ export type CaseListItem = {
   // (import/plan, re-run, resume, verify — "user:<email>" stripped to the email). null = never / no auth.
   lastRunAt: Date | null;
   ranBy: string | null;
+  // The most recent tracked action on the case and who took it — "Imported"/"Unpaused"/"Paused"/
+  // "Verified"/… shown under the status badge. lastActionBy is the operator's email, or null when
+  // the actor wasn't a signed-in user (auth off).
+  lastActionLabel: string | null;
+  lastActionBy: string | null;
 };
 
 export type TrashedCaseItem = {

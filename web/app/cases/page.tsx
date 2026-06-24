@@ -43,6 +43,8 @@ export default async function CasesPage() {
     immediate: c.immediate,
     lastRunIso: c.lastRunAt ? c.lastRunAt.toISOString() : null,
     ranBy: c.ranBy,
+    lastActionLabel: c.lastActionLabel,
+    lastActionBy: c.lastActionBy,
     createdAtIso: c.createdAt.toISOString(),
   }));
 

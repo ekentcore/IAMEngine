@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
+import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // Keep pausedReason in lockstep with pausedAt: a manual pause is "operator"; resuming clears the
   // reason (so a scheduled/needs-info hold that's resumed doesn't leave a stale reason behind).
   await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: paused ? new Date() : null, pausedReason: paused ? "operator" : null } });
-  await db.auditLog.create({ data: { actor: "ui", action: paused ? "case.pause" : "case.resume", caseRequestId: params.id, clientId: c.clientId } });
+  // Record WHO paused/resumed (the cases list shows "Paused: <name>" / "Unpaused: <name>").
+  await recordAudit(paused ? "case.pause" : "case.resume", { user: _g.user, caseRequestId: params.id, clientId: c.clientId });
   return NextResponse.json({ ok: true, paused });
 }

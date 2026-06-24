@@ -21,6 +21,8 @@ export type CaseRowVM = {
   immediate?: boolean; // offboard with no scheduled date (subject says "Immediate")
   lastRunIso?: string | null; // when the case last executed (most recent job start/finish)
   ranBy?: string | null; // operator who last ran it (email), or null
+  lastActionLabel?: string | null; // most recent tracked action — "Imported"/"Unpaused"/"Paused"/"Verified"/…
+  lastActionBy?: string | null; // who took that action (email), or null when not a signed-in user
   createdAtIso: string;
 };
 
@@ -273,7 +275,14 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
               <td><span className="badge">{c.action}</span></td>
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
               <td className="muted">{c.jobCount}</td>
-              <td><StatusBadge c={c} /></td>
+              <td>
+                <StatusBadge c={c} />
+                {c.lastActionLabel && (
+                  <div className="note" style={{ fontSize: 11, marginTop: 2, whiteSpace: "nowrap" }} title="Most recent action taken on this case">
+                    {c.lastActionLabel}{c.lastActionBy ? `: ${c.lastActionBy}` : ""}
+                  </div>
+                )}
+              </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
                 {c.effectiveDate
                   ? formatDateOnly(c.effectiveDate)

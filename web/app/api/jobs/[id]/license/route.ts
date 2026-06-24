@@ -8,7 +8,7 @@ import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requeueJob } from "@/lib/jobs/requeue";
-import { recordAudit } from "@/lib/auth/audit";
+import { recordAudit, actorLabel } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +35,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), licenses };
   await db.job.update({ where: { id: job.id }, data: { request: reqJson as Prisma.InputJsonValue } });
 
-  const out = await requeueJob(db, job.id, "ui:license");
+  const out = await requeueJob(db, job.id, actorLabel(g.user, "ui:license"));
   if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
   await recordAudit("job.license.reassign", { user: g.user, jobId: job.id, caseRequestId: job.caseRequestId, detail: { licenses: licenses.map((l) => l.name) } });
   return NextResponse.json({ ok: true, licenses: licenses.map((l) => l.name) });

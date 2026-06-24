@@ -13,6 +13,13 @@ type AuditOpts = {
   detail?: unknown;
 };
 
+// The actor string for an action attributed to a user ("user:<email>"), or `fallback` when there's
+// no signed-in user (auth off / system). Use when an action's actor is threaded as a plain string
+// (e.g. the planning service's `actor` param) rather than written via recordAudit.
+export function actorLabel(user: ActingUser | null | undefined, fallback: string): string {
+  return user && !user.system ? `user:${user.email}` : fallback;
+}
+
 export async function recordAudit(action: string, opts: AuditOpts = {}): Promise<void> {
   const user = opts.user && !opts.user.system ? opts.user : null;
   try {

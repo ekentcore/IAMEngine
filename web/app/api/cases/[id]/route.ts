@@ -4,6 +4,7 @@
 //        DELETE /api/cases/:id?forever=1 — permanently delete a trashed case + its jobs.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
@@ -41,7 +42,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     // Mode can't change once execution has begun (the UI also disables it; enforce it here too).
     if (hasStartedJobs(exists.jobs)) return NextResponse.json({ error: "a job has already started — re-plan to change the mode" }, { status: 409 });
     const updated = await makeCaseRepository(db).setCaseDryRun(params.id, body.dryRun);
-    await db.auditLog.create({ data: { actor: "ui", action: "case.dry_run.set", clientId: exists.clientId, detail: { caseId: params.id, from: exists.dryRun, to: body.dryRun, jobsUpdated: updated } } });
+    await recordAudit("case.dry_run.set", { user: _g.user, caseRequestId: params.id, clientId: exists.clientId, detail: { caseId: params.id, from: exists.dryRun, to: body.dryRun, jobsUpdated: updated } });
     return NextResponse.json({ dryRun: body.dryRun, jobsUpdated: updated });
   }
   if (body.action === "restore") {
