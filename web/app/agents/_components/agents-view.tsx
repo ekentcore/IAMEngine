@@ -11,7 +11,8 @@ export type AgentVM = {
   scope: AgentScope;
   clientSlug: string | null;
   clientName: string | null;
-  version: string | null;
+  version: string | null; // content-hash build id
+  semver: string | null; // human release version (runner/VERSION), display only
   enabled: boolean;
   lastSeenAt: string | null;
   jobCount: number;
@@ -91,7 +92,7 @@ function lastSeen(iso: string | null, now: number): { text: string; online: bool
   return { text: new Date(iso).toISOString().slice(0, 10), online }; // deterministic (UTC) — locale-free
 }
 
-export function AgentsView({ agents, clients, trashed, currentBuild, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; now: number }) {
+export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -308,10 +309,17 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {(() => {
                     const v = a.version;
                     const isBuild = !!v && /^[0-9a-f]{6,}$/.test(v); // a build hash vs legacy "0.1.0"/"unknown"
+                    // Human release version (e.g. "v1.0.0"), shown above the build hash when reported.
+                    // Goes amber if it differs from the app's current VERSION (a release the runner
+                    // hasn't pulled yet) — the hash below is still the authoritative up-to-date check.
+                    const semverLine = a.semver
+                      ? <div style={{ fontWeight: 600, color: currentVersion && a.semver !== currentVersion ? "#8a6d00" : undefined }}>v{a.semver}</div>
+                      : null;
                     if (isBuild) {
                       return (
                         <>
-                          <code className="muted" style={{ fontSize: 11 }}>{v.slice(0, 7)}</code>
+                          {semverLine}
+                          <code className="muted" style={{ fontSize: 11 }}>build {v.slice(0, 7)}</code>
                           {v === currentBuild
                             ? <div className="note" style={{ color: "#2e7d32" }}>✓ up to date</div>
                             : <div className="note" style={{ color: "#8a6d00" }}>⚠ update available</div>}

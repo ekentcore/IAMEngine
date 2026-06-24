@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { trashDaysLeft } from "@/lib/jobs/agent-trash";
-import { runnerBuildId } from "@/lib/runner/bundle";
+import { runnerBuildId, runnerVersion } from "@/lib/runner/bundle";
 import { AgentsView, type AgentVM, type TrashedAgentVM } from "./_components/agents-view";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +56,7 @@ export default async function AgentsPage() {
     clientSlug: a.client?.slug ?? null,
     clientName: a.client?.name ?? null,
     version: a.version,
+    semver: a.semver,
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
@@ -87,7 +88,7 @@ export default async function AgentsPage() {
           </p>
         </div>
       </div>
-      <AgentsView agents={vms} clients={clients} trashed={trashVms} currentBuild={runnerBuildId()} now={Date.now()} />
+      <AgentsView agents={vms} clients={clients} trashed={trashVms} currentBuild={runnerBuildId()} currentVersion={runnerVersion()} now={Date.now()} />
     </main>
   );
 }

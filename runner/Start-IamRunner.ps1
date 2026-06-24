@@ -1167,6 +1167,10 @@ function Invoke-CtgCloudGroupDiscovery {
 # no marker file to keep in sync.
 $script:RunnerBuild = Get-CtgBuildId
 
+# Human-readable release version from VERSION (e.g. "1.0.0"), reported alongside the build id so the
+# Agents page can show "v1.0.0 · build <hash>". Display only — the hash stays the up-to-date check.
+$script:RunnerSemver = try { (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -Raw -ErrorAction Stop).Trim() } catch { $null }
+
 # Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
 # at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
 # PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
@@ -1195,7 +1199,7 @@ while ($true) {
         }
     } catch { }
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery

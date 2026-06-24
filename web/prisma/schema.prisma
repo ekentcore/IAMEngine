@@ -187,7 +187,8 @@ model Agent {
   clientId          String? // null for the central cloud runner
   name              String
   scope             AgentScope
-  version           String?
+  version           String? // the content-hash build id (canonical "on current code?" check)
+  semver            String? // the human-readable release version from runner/VERSION (display only)
   lastSeenAt        DateTime?
   enabled           Boolean    @default(true)
   // Operator-requested self-update: set true by the "Update" button; the next heartbeat returns
