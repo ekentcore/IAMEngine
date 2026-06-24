@@ -423,6 +423,19 @@ function Resolve-CtgM365Upn {
     return ''
 }
 
+function Get-CtgM365UserDevices {
+    # The user's Entra-registered devices as @(@{ Id; DisplayName }). UserId is a UPN or object id.
+    # This is the single source of machine names for the endpoint-containment steps (SentinelOne
+    # isolate, the AD computer-object disable) — they call this with the SAME user so they act on the
+    # SAME machines the offboard captured. Empty array when none / unresolved (never throws here).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$UserId)
+    if ([string]::IsNullOrWhiteSpace($UserId)) { return @() }
+    $devices = @(Get-MgUserRegisteredDevice -UserId $UserId -All -ErrorAction SilentlyContinue) |
+        Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.device' }
+    @(foreach ($d in $devices) { [pscustomobject]@{ Id = $d.Id; DisplayName = (Get-CtgProp $d.AdditionalProperties 'displayName') } })
+}
+
 function Invoke-CtgM365Onboarding {
     <#
     .SYNOPSIS
@@ -894,12 +907,7 @@ function Invoke-CtgM365Offboarding {
     $disableDevices = Get-CtgProp $Config 'disableDevices'
     if ($disableDevices -or (Get-CtgProp $Config 'captureDevices')) {
         try {
-            $devices = @(Get-MgUserRegisteredDevice -UserId $userId -All -ErrorAction SilentlyContinue) |
-                Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.device' }
-            $deviceEvidence = foreach ($d in $devices) {
-                [pscustomobject]@{ Id = $d.Id; DisplayName = (Get-CtgProp $d.AdditionalProperties 'displayName') }
-            }
-            $deviceEvidence = @($deviceEvidence)
+            $deviceEvidence = @(Get-CtgM365UserDevices -UserId $userId)
             $actions.Add("captured $($deviceEvidence.Count) Entra device(s) as evidence: $((@($deviceEvidence | ForEach-Object { $_.DisplayName }) -join ', '))")
             if ($disableDevices) {
                 foreach ($d in $deviceEvidence) {
@@ -1108,4 +1116,4 @@ function Confirm-CtgM365 {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365

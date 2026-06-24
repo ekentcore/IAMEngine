@@ -76,6 +76,59 @@ Describe 'Invoke-CtgSentinelOneOffboarding' {
     }
 }
 
+Describe 'Invoke-CtgSentinelOneOffboarding (multiple devices)' {
+    It 'isolates EVERY device in -Machines and records each in Isolated' {
+        Mock Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') {
+                if ($Path -match 'PC-A') { return [pscustomobject]@{ data = @([pscustomobject]@{ id = 'a'; computerName = 'PC-A'; networkStatus = 'connected' }) } }
+                if ($Path -match 'PC-B') { return [pscustomobject]@{ data = @([pscustomobject]@{ id = 'b'; computerName = 'PC-B'; networkStatus = 'connected' }) } }
+                return [pscustomobject]@{ data = @() }
+            }
+            return $null
+        }
+        $r = Invoke-CtgSentinelOneOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'x@y.com' }) -Config ([pscustomobject]@{}) -Machines @('PC-A', 'PC-B')
+        Should -Invoke Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -ParameterFilter { $Method -eq 'POST' -and $Path -match 'disconnect' -and $Body.filter.ids -contains 'a' } -Times 1
+        Should -Invoke Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -ParameterFilter { $Method -eq 'POST' -and $Path -match 'disconnect' -and $Body.filter.ids -contains 'b' } -Times 1
+        @($r.Isolated).Count | Should -Be 2
+        @($r.Isolated | ForEach-Object { $_.machine }) | Should -Contain 'PC-A'
+    }
+
+    It 'isolates the reachable device and cleanly skips a not-found one (mixed list)' {
+        Mock Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') {
+                if ($Path -match 'PC-A') { return [pscustomobject]@{ data = @([pscustomobject]@{ id = 'a'; computerName = 'PC-A'; networkStatus = 'connected' }) } }
+                return [pscustomobject]@{ data = @() }   # PC-GONE absent
+            }
+            return $null
+        }
+        $r = Invoke-CtgSentinelOneOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'x@y.com' }) -Config ([pscustomobject]@{}) -Machines @('PC-A', 'PC-GONE')
+        Should -Invoke Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -ParameterFilter { $Method -eq 'POST' -and $Body.filter.ids -contains 'a' } -Times 1
+        @($r.Isolated).Count | Should -Be 1
+        ($r.Actions -join ' ') | Should -Match "no SentinelOne agent found for 'PC-GONE'"
+    }
+}
+
+Describe 'Invoke-CtgSentinelOneReconnect' {
+    It 'reconnects by agent id via the connect action' {
+        Mock Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -MockWith { $null }
+        $r = Invoke-CtgSentinelOneReconnect -AgentId 'a1' -Machine 'LT-JDOE'
+        Should -Invoke Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -ParameterFilter { $Method -eq 'POST' -and $Path -match 'actions/connect' -and $Body.filter.ids -contains 'a1' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'reconnected'
+    }
+
+    It 'resolves the agent by machine name when no id is given' {
+        Mock Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ data = @([pscustomobject]@{ id = 'z9'; computerName = 'LT-JDOE'; networkStatus = 'disconnected' }) } }
+            return $null
+        }
+        $r = Invoke-CtgSentinelOneReconnect -Machine 'LT-JDOE'
+        Should -Invoke Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -ParameterFilter { $Method -eq 'POST' -and $Path -match 'actions/connect' -and $Body.filter.ids -contains 'z9' } -Times 1
+    }
+}
+
 Describe 'Confirm-CtgSentinelOne' {
     It 'offboard: passes when the endpoint is isolated' {
         Mock Invoke-CtgSentinelOneApi -ModuleName Coretelligent.SentinelOne -MockWith { [pscustomobject]@{ data = @([pscustomobject]@{ id = 'a1'; computerName = 'LT-JDOE'; networkStatus = 'disconnected' }) } }

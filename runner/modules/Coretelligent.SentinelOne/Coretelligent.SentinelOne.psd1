@@ -7,7 +7,7 @@
     Description       = 'SentinelOne endpoint containment on offboard: network-isolate (quarantine) the departed user''s endpoint, and shut it down only when explicitly requested. Management API v2.1, ApiToken auth. Onboarding is out of band (MSI/RMM).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgSentinelOne', 'Invoke-CtgSentinelOneApi', 'Resolve-CtgS1MachineName', 'Find-CtgS1Agents', 'Test-CtgS1Isolated', 'Invoke-CtgSentinelOneOnboarding', 'Invoke-CtgSentinelOneOffboarding', 'Confirm-CtgSentinelOne')
+    FunctionsToExport = @('Connect-CtgSentinelOne', 'Invoke-CtgSentinelOneApi', 'Resolve-CtgS1MachineName', 'Find-CtgS1Agents', 'Test-CtgS1Isolated', 'Invoke-CtgSentinelOneOnboarding', 'Invoke-CtgSentinelOneOffboarding', 'Invoke-CtgSentinelOneReconnect', 'Confirm-CtgSentinelOne')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

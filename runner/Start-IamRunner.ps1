@@ -266,6 +266,25 @@ function Use-CtgSentinelOneSecret {
     Connect-CtgSentinelOne -BaseUrl $baseUrl -Token $token
 }
 
+# The machine names the SentinelOne offboard should isolate = the user's Entra-registered devices,
+# resolved via the brokered 'm365-admin' app (the same single source the M365 step captures). Returns
+# @() when m365-admin isn't brokered or nothing resolves — the S1 module then falls back to the
+# config/payload machineName. Best-effort: a Graph hiccup logs a note and falls back, never blocks the
+# isolate. (Connects Graph here on the m365-admin app; harmless alongside the S1 connection.)
+function Get-CtgSentinelOneMachines {
+    param($Job, $Creds)
+    if (-not $Creds['m365-admin']) { return @() }
+    try {
+        Connect-CtgM365 -Credential $Creds['m365-admin'].Credential -TenantId (Get-CtgTenantDomain $Job $Creds)
+        $upn = Resolve-CtgM365Upn -User $Job.payload
+        if (-not $upn) { return @() }
+        @(Get-CtgM365UserDevices -UserId $upn | ForEach-Object { [string]$_.DisplayName } | Where-Object { $_ })
+    } catch {
+        Send-CtgProgress "could not resolve Entra devices for SentinelOne ($($_.Exception.Message)) — falling back to the configured machine name"
+        @()
+    }
+}
+
 # Connect Duo from the brokered 'duo' secret — the Admin API host + integration key + secret key.
 function Use-CtgDuoSecret {
     param($Job, $Creds)
@@ -663,8 +682,15 @@ $DISPATCH = @{
         # connect-cache re-brokers when the credential fingerprint changes (rotated token next job).
         Connect  = { param($job, $creds) Use-CtgSentinelOneSecret $job $creds }
         Onboard  = { param($job, $creds) Invoke-CtgSentinelOneOnboarding  -User $job.payload -Config $job.config }
-        Offboard = { param($job, $creds) Invoke-CtgSentinelOneOffboarding -User $job.payload -Config $job.config }
-        Validate = { param($job, $creds) Confirm-CtgSentinelOne -User $job.payload -Config $job.config -Action $job.action }
+        Offboard = { param($job, $creds)
+            # In-app "Reconnect": a one-off job carrying config.reconnect = @{ agentId; machine } — undo an
+            # isolation rather than create one.
+            $rc = Get-CtgProp $job.config 'reconnect'
+            if ($rc) { return Invoke-CtgSentinelOneReconnect -AgentId ([string](Get-CtgProp $rc 'agentId')) -Machine ([string](Get-CtgProp $rc 'machine')) }
+            # Normal offboard: network-isolate EVERY one of the user's Entra-registered devices.
+            Invoke-CtgSentinelOneOffboarding -User $job.payload -Config $job.config -Machines (Get-CtgSentinelOneMachines $job $creds)
+        }
+        Validate = { param($job, $creds) Confirm-CtgSentinelOne -User $job.payload -Config $job.config -Action $job.action -Machines (Get-CtgSentinelOneMachines $job $creds) }
     }
     'duo' = @{
         Onboard  = { param($job, $creds) Use-CtgDuoSecret $job $creds; Invoke-CtgDuoOnboarding  -User $job.payload -Config $job.config }

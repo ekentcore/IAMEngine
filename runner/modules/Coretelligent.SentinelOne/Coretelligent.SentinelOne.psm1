@@ -123,55 +123,91 @@ function Invoke-CtgSentinelOneOnboarding {
 function Invoke-CtgSentinelOneOffboarding {
     <#
     .SYNOPSIS
-        Network-isolate the departed user's endpoint (default), and shut it down only when
-        config.shutdown is set. Idempotent — skips if already isolated. If the machine can't be
-        resolved to exactly one agent, takes NO action and says why (an operator must pick).
+        Network-isolate EVERY one of the departed user's endpoints (default), and shut each down only
+        when config.shutdown is set. Idempotent — skips machines already isolated. Per machine, if it
+        can't be resolved to exactly one agent, takes NO action on it and says why (an operator picks).
+    .PARAMETER Machines
+        The machine names to contain — normally the user's Entra device names, resolved upstream and
+        passed in. Falls back to the single Resolve-CtgS1MachineName (config/payload) when not supplied.
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [string[]]$Machines
+    )
 
-    $actions = [System.Collections.Generic.List[string]]::new()
-    $machine = Resolve-CtgS1MachineName $User $Config
-    if (-not $machine) {
-        $actions.Add("WARN no machine name on the case — cannot resolve a SentinelOne agent to isolate. Set the offboard config's machineName (or the Entra device step must resolve one). No action taken.")
-        return [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Actions = $actions.ToArray() }
+    $actions  = [System.Collections.Generic.List[string]]::new()
+    $isolated = [System.Collections.Generic.List[object]]::new()  # {machine; agentId} — for the reconnect UI
+
+    $names = @($Machines | Where-Object { $_ })
+    if (-not $names.Count) { $one = Resolve-CtgS1MachineName $User $Config; if ($one) { $names = @($one) } }
+    if (-not $names.Count) {
+        $actions.Add("WARN no machine name(s) — cannot resolve a SentinelOne agent to isolate. The Entra device step (or offboard config.machineName) must provide one. No action taken.")
+        return [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Actions = $actions.ToArray(); Isolated = @() }
     }
 
-    $agents = @(Find-CtgS1Agents -ComputerName $machine)  # @() so an empty result stays a 0-count array
-    if ($agents.Count -eq 0) {
-        $actions.Add("no SentinelOne agent found for '$machine' — nothing to isolate (already removed, or a different console)")
-        return [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Machine = $machine; Actions = $actions.ToArray() }
-    }
-    if ($agents.Count -gt 1) {
-        $ids = @($agents | ForEach-Object { Get-CtgProp $_ 'id' }) -join ', '
-        $actions.Add("WARN $($agents.Count) SentinelOne agents match '$machine' (ids: $ids) — ambiguous, so NO action was taken. An operator should isolate the correct endpoint by hand.")
-        return [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Machine = $machine; Actions = $actions.ToArray() }
-    }
+    $shutdown = [bool](Get-CtgProp $Config 'shutdown')
+    foreach ($machine in (@($names) | Select-Object -Unique)) {
+        $agents = @(Find-CtgS1Agents -ComputerName $machine)  # @() so empty stays a 0-count array
+        if ($agents.Count -eq 0) {
+            $actions.Add("no SentinelOne agent found for '$machine' — nothing to isolate (already removed, or a different console)")
+            continue
+        }
+        if ($agents.Count -gt 1) {
+            $ids = @($agents | ForEach-Object { Get-CtgProp $_ 'id' }) -join ', '
+            $actions.Add("WARN $($agents.Count) SentinelOne agents match '$machine' (ids: $ids) — ambiguous, so NO action was taken on it. Isolate the correct endpoint by hand.")
+            continue
+        }
+        $agent = $agents[0]
+        $id    = [string](Get-CtgProp $agent 'id')
 
-    $agent = $agents[0]
-    $id    = [string](Get-CtgProp $agent 'id')
-    $actions.Add("matched SentinelOne agent $id for '$machine'")
+        if (Test-CtgS1Isolated $agent) {
+            $actions.Add("endpoint '$machine' already network-isolated — no change")
+            $isolated.Add([pscustomobject]@{ machine = $machine; agentId = $id })  # still isolated -> show it (reconnectable)
+        }
+        elseif ($PSCmdlet.ShouldProcess($machine, "Network-isolate SentinelOne agent")) {
+            Invoke-CtgSentinelOneApi -Method POST -Path '/web/api/v2.1/agents/actions/disconnect' -Body @{ filter = @{ ids = @($id) } } | Out-Null
+            $actions.Add("network-isolated endpoint '$machine' (quarantined from the network)")
+            $isolated.Add([pscustomobject]@{ machine = $machine; agentId = $id })
+        }
 
-    if (Test-CtgS1Isolated $agent) {
-        $actions.Add("endpoint '$machine' already network-isolated — no change")
-    }
-    elseif ($PSCmdlet.ShouldProcess($machine, "Network-isolate SentinelOne agent")) {
-        Invoke-CtgSentinelOneApi -Method POST -Path '/web/api/v2.1/agents/actions/disconnect' -Body @{ filter = @{ ids = @($id) } } | Out-Null
-        $actions.Add("network-isolated endpoint '$machine' (quarantined from the network)")
-    }
-
-    # Shutdown is opt-in and irreversible-for-the-session: only when explicitly requested.
-    if (Get-CtgProp $Config 'shutdown') {
-        if ($PSCmdlet.ShouldProcess($machine, "Shut down SentinelOne endpoint")) {
+        # Shutdown is opt-in and irreversible-for-the-session: only when explicitly requested.
+        if ($shutdown -and $PSCmdlet.ShouldProcess($machine, "Shut down SentinelOne endpoint")) {
             Invoke-CtgSentinelOneApi -Method POST -Path '/web/api/v2.1/agents/actions/shutdown' -Body @{ filter = @{ ids = @($id) } } | Out-Null
             $actions.Add("sent shutdown to endpoint '$machine'")
         }
     }
-    else {
-        $actions.Add("shutdown not requested (config.shutdown is off) — endpoint isolated but left running")
-    }
+    if (-not $shutdown) { $actions.Add("shutdown not requested (config.shutdown is off) — endpoints isolated but left running") }
 
-    [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Machine = $machine; AgentId = $id; Actions = $actions.ToArray() }
+    [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Machines = @($names); Isolated = @($isolated.ToArray()); Actions = $actions.ToArray() }
+}
+
+function Invoke-CtgSentinelOneReconnect {
+    <#
+    .SYNOPSIS
+        Undo a network isolation — put an endpoint back on the network (the in-app "Reconnect" button).
+        Resolve by agent id (preferred — recorded when we isolated) or by machine name. Idempotent.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$AgentId, [string]$Machine)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $id = $AgentId
+    if (-not $id) {
+        if (-not $Machine) { throw "Invoke-CtgSentinelOneReconnect needs -AgentId or -Machine." }
+        $agents = @(Find-CtgS1Agents -ComputerName $Machine)
+        if ($agents.Count -ne 1) {
+            $actions.Add("WARN could not uniquely resolve '$Machine' in SentinelOne ($($agents.Count) match) — reconnect it by hand.")
+            return [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; Actions = $actions.ToArray() }
+        }
+        $id = [string](Get-CtgProp $agents[0] 'id')
+    }
+    $label = if ($Machine) { "'$Machine' ($id)" } else { $id }
+    if ($PSCmdlet.ShouldProcess(($Machine ? $Machine : $id), "Reconnect SentinelOne agent")) {
+        Invoke-CtgSentinelOneApi -Method POST -Path '/web/api/v2.1/agents/actions/connect' -Body @{ filter = @{ ids = @($id) } } | Out-Null
+        $actions.Add("reconnected endpoint $label to the network — no longer isolated")
+    }
+    [pscustomobject]@{ System = 'sentinelone'; Status = 'ok'; AgentId = $id; Machine = $Machine; Actions = $actions.ToArray() }
 }
 
 function Confirm-CtgSentinelOne {
@@ -185,23 +221,29 @@ function Confirm-CtgSentinelOne {
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
-        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
+        [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action,
+        [string[]]$Machines
     )
     if ($Action -eq 'onboard') {
         return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'SentinelOne agent deployment is out of band — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
     }
 
-    $machine = Resolve-CtgS1MachineName $User $Config
-    if (-not $machine) {
+    $names = @($Machines | Where-Object { $_ })
+    if (-not $names.Count) { $one = Resolve-CtgS1MachineName $User $Config; if ($one) { $names = @($one) } }
+    if (-not $names.Count) {
         return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no machine resolved — nothing to isolate'; expected = $true; actual = $true; pass = $true }) }
     }
-    $agents = @(Find-CtgS1Agents -ComputerName $machine)
-    if ($agents.Count -ne 1) {
-        # 0 = nothing to contain (pass); >1 = ambiguous, can't assert — surfaced by the executor already.
-        return [pscustomobject]@{ ok = $true; checks = @(@{ name = "SentinelOne agent for '$machine' not uniquely present ($($agents.Count)) — nothing asserted"; expected = $true; actual = $true; pass = $true }) }
-    }
-    $iso = Test-CtgS1Isolated $agents[0]
-    [pscustomobject]@{ ok = $iso; checks = @(@{ name = "SentinelOne endpoint '$machine' network-isolated"; expected = $true; actual = $iso; pass = $iso }) }
+    $checks = @(foreach ($machine in (@($names) | Select-Object -Unique)) {
+        $agents = @(Find-CtgS1Agents -ComputerName $machine)
+        if ($agents.Count -ne 1) {
+            # 0 = nothing to contain (pass); >1 = ambiguous, can't assert — surfaced by the executor already.
+            @{ name = "SentinelOne agent for '$machine' not uniquely present ($($agents.Count)) — nothing asserted"; expected = $true; actual = $true; pass = $true }
+        } else {
+            $iso = Test-CtgS1Isolated $agents[0]
+            @{ name = "SentinelOne endpoint '$machine' network-isolated"; expected = $true; actual = $iso; pass = $iso }
+        }
+    })
+    [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
 }
 
-Export-ModuleMember -Function Connect-CtgSentinelOne, Invoke-CtgSentinelOneApi, Resolve-CtgS1MachineName, Find-CtgS1Agents, Test-CtgS1Isolated, Invoke-CtgSentinelOneOnboarding, Invoke-CtgSentinelOneOffboarding, Confirm-CtgSentinelOne
+Export-ModuleMember -Function Connect-CtgSentinelOne, Invoke-CtgSentinelOneApi, Resolve-CtgS1MachineName, Find-CtgS1Agents, Test-CtgS1Isolated, Invoke-CtgSentinelOneOnboarding, Invoke-CtgSentinelOneOffboarding, Invoke-CtgSentinelOneReconnect, Confirm-CtgSentinelOne
