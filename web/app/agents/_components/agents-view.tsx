@@ -17,6 +17,10 @@ export type AgentVM = {
   lastSeenAt: string | null;
   jobCount: number;
   pendingJobs: { systemKey: string; subject: string | null; action: string; status: string }[];
+  // The agent's most-recent in-flight job phase + when its progress last moved. When the agent goes
+  // offline while these are stale, it's wedged mid-job → a "stuck on <phase>" badge (vs merely idle).
+  activePhase: string | null;
+  activeSinceIso: string | null;
   updateRequested: boolean;
   updateRequestedAt: string | null;
   updateRequestedBy: string | null;
@@ -81,6 +85,19 @@ export type TrashedAgentVM = {
 // `now` is passed in (NOT read from Date.now() during render) so the SSR markup and the first client
 // render agree — otherwise the seconds tick between server render and hydration and React throws a
 // "text content does not match" hydration error. After mount the component ticks `now` itself.
+// "Stuck" = offline (no heartbeat/progress) while a job is still in flight, and the last progress
+// moved more than STUCK_MS ago → the runner is wedged mid-job (vs merely idle/down). The A1 watchdog
+// restarts it at the stall timeout; this surfaces the window before that, and flags on-prem agents
+// that aren't watchdog-supervised. Returns the badge text, or null when not stuck.
+const STUCK_MS = 3 * 60_000;
+function stuckLabel(a: AgentVM, online: boolean, now: number): string | null {
+  if (online || !a.activeSinceIso) return null;
+  const ageMs = now - new Date(a.activeSinceIso).getTime();
+  if (ageMs < STUCK_MS) return null;
+  const where = a.activePhase ? ` on “${a.activePhase}”` : "";
+  return `⚠ stuck${where} (${Math.round(ageMs / 60_000)}m)`;
+}
+
 function lastSeen(iso: string | null, now: number): { text: string; online: boolean } {
   if (!iso) return { text: "never", online: false };
   const secs = Math.round((now - new Date(iso).getTime()) / 1000);
@@ -334,7 +351,13 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     );
                   })()}
                 </td>
-                <td><span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span></td>
+                <td>
+                  <span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span>
+                  {(() => {
+                    const s = stuckLabel(a, ls.online, nowMs);
+                    return s ? <div className="note" style={{ color: "#b3261e" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{s}</div> : null;
+                  })()}
+                </td>
                 <td
                   style={{ position: "relative", cursor: a.pendingJobs.length ? "help" : undefined }}
                   onMouseEnter={() => setJobsHover(a.id)}

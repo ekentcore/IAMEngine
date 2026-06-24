@@ -41,7 +41,7 @@ export default async function AgentsPage() {
   const activeJobs = await db.job.findMany({
     where: { mode: "api", status: { in: ["pending", "dispatched", "running"] }, case: { deletedAt: null, status: { notIn: ["failed", "completed"] }, clientId: clientIdWhere(scope) } },
     orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
-    select: { status: true, systemKey: true, assignedAgentId: true, case: { select: { clientId: true, subject: true, action: true } } },
+    select: { status: true, systemKey: true, assignedAgentId: true, startedAt: true, progress: true, case: { select: { clientId: true, subject: true, action: true } } },
   });
   const jobsForAgent = (id: string, clientId: string | null) =>
     activeJobs
@@ -49,7 +49,24 @@ export default async function AgentsPage() {
       .slice(0, 30)
       .map((j) => ({ systemKey: j.systemKey, subject: j.case.subject, action: j.case.action, status: j.status }));
 
-  const vms: AgentVM[] = agents.map((a) => ({
+  // The agent's most-recent in-flight (dispatched/running) job: its last progress phase + when that
+  // progress last moved. The client turns "offline + activity went stale" into a "stuck on <phase>"
+  // badge — distinguishing a runner wedged mid-job from one that's merely idle/down.
+  const activeStateForAgent = (id: string): { phase: string | null; sinceIso: string | null } => {
+    const inflight = activeJobs.filter((j) => j.assignedAgentId === id && (j.status === "dispatched" || j.status === "running"));
+    let best: { ts: number; phase: string | null } | null = null;
+    for (const j of inflight) {
+      const prog = Array.isArray(j.progress) ? (j.progress as { ts?: string; phase?: string }[]) : [];
+      const last = prog.length ? prog[prog.length - 1] : null;
+      const ts = last?.ts ? Date.parse(last.ts) : j.startedAt ? j.startedAt.getTime() : NaN;
+      if (!Number.isNaN(ts) && (best === null || ts > best.ts)) best = { ts, phase: last?.phase ?? null };
+    }
+    return best ? { phase: best.phase, sinceIso: new Date(best.ts).toISOString() } : { phase: null, sinceIso: null };
+  };
+
+  const vms: AgentVM[] = agents.map((a) => {
+    const active = a.enabled ? activeStateForAgent(a.id) : { phase: null, sinceIso: null };
+    return {
     id: a.id,
     name: a.name,
     scope: a.scope,
@@ -62,11 +79,14 @@ export default async function AgentsPage() {
     jobCount: a._count.jobs,
     // Only an enabled agent can claim — don't imply pending work on a disabled/down one.
     pendingJobs: a.enabled ? jobsForAgent(a.id, a.clientId) : [],
+    activePhase: active.phase,
+    activeSinceIso: active.sinceIso,
     updateRequested: a.updateRequested,
     updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
     updateRequestedBy: a.updateRequestedBy ?? null,
     updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
-  }));
+    };
+  });
   const now = new Date();
   const trashVms: TrashedAgentVM[] = trashed.map((a) => ({
     id: a.id,
