@@ -13,7 +13,7 @@ export function formatDateOnly(d: string): string {
   return dt.toLocaleDateString();
 }
 
-// A full timestamp (ISO) -> "Jun 19, 2026, 3:04 PM" in the user's locale. For "when did this run".
+// A full timestamp (ISO) -> "Jun 19, 2026, 3:04 PM" in the viewer's local zone. For "when did this run".
 // A bare date-only string ("2026-06-19") renders as just the date (no spurious midnight time).
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
