@@ -1327,7 +1327,7 @@ function Invoke-CtgConnectionTests {
                 if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
             }
         }
-        try { Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" } } catch { }
+        try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" } } catch { }
     }
 }
 
@@ -1362,7 +1362,7 @@ function Invoke-CtgCloudGroupDiscovery {
                         else { 'security' }
                 if ($g.DisplayName) { $groups += @{ name = [string]$g.DisplayName; type = $type } }
             }
-            Invoke-AppApi POST '/api/runner/cloud-groups/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; groups = $groups }
+            $null = Invoke-AppApi POST '/api/runner/cloud-groups/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; groups = $groups }
             Write-Host "  cloud groups: reported $($groups.Count) for $($w.clientSlug)" -ForegroundColor Green
         } catch {
             Write-Warning "cloud group discovery failed for $($w.clientSlug): $($_.Exception.Message)"
@@ -1448,12 +1448,12 @@ while ($true) {
                 if (-not $handler) {
                     # No executor for this system: resolve as a manual follow-up, not a failure,
                     # so an uncovered `api` system doesn't kill the whole case.
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no executor for $($job.systemKey) — manual follow-up" }
+                    $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no executor for $($job.systemKey) — manual follow-up" }
                     continue
                 }
                 $fn = if ($job.action -eq 'offboard') { $handler.Offboard } else { $handler.Onboard }
                 if (-not $fn) {
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no $($job.action) lane for $($job.systemKey) — manual follow-up" }
+                    $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no $($job.action) lane for $($job.systemKey) — manual follow-up" }
                     continue
                 }
 
@@ -1498,7 +1498,7 @@ while ($true) {
                         # when the auto-verify sweep re-runs a succeeded job.
                         $vbody.validation = @{ ok = $true; checks = @(@{ name = 'no validator for this system — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
                     }
-                    Invoke-AppApi POST "/api/jobs/$($job.id)/result" $vbody
+                    $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" $vbody
                     continue
                 }
 
@@ -1533,7 +1533,7 @@ while ($true) {
                 if ($outcome.Result -and $outcome.Result.PSObject.Properties['Evidence'] -and $null -ne $outcome.Result.Evidence) {
                     $body.evidence = $outcome.Result.Evidence
                 }
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
+                $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
             }
             catch {
                 # Walk the FULL inner-exception chain (deduped) so the real cause surfaces — a generic
@@ -1585,7 +1585,7 @@ while ($true) {
                 $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
                 Write-Warning "job $($job.id) failed: $err"
                 Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
-                Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
+                $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
             finally { $global:CtgProgressJobId = $null }  # don't let a stray post target a finished job
         }
