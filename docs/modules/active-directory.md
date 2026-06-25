@@ -45,3 +45,7 @@ cascades to provisioning-by-group systems.
 ### Manual fallback
 If the agent is offline, the whole module is surfaced as a manual checklist with the
 resolved OU/group/attribute values.
+
+### Installing the on-prem agent
+This system only runs on a client-network agent (DC / management host). Full setup:
+see [docs/runner-dc-setup.md](../runner-dc-setup.md).
