@@ -44,6 +44,12 @@ if ($HealthCheck) {
 $global:CtgHeartbeatFile = $HeartbeatFile
 
 $ErrorActionPreference = 'Stop'
+# This is a non-interactive background service. Suppress progress bars + ANSI cursor control: writing
+# a progress bar / colored output to a redirected or detached stdout (notably right after a self-update
+# relaunch, when the old console is gone) throws "Out-LineOutput: Input/output error" and leaks
+# cursor-position reports (the ;1R noise) into the log. PlainText output avoids the escape sequences.
+$ProgressPreference = 'SilentlyContinue'
+try { if (Get-Variable -Name PSStyle -ErrorAction SilentlyContinue) { $PSStyle.OutputRendering = 'PlainText' } } catch { }
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.DirectorySync/Coretelligent.DirectorySync.psd1" -Force
@@ -1022,12 +1028,18 @@ function Update-CtgRunner {
         }
     }
     else {
-        # macOS/Linux: no job object to escape, so a detached child survives our exit. Pass args
-        # explicitly (env is inherited, but an explicit -ApiToken arg would otherwise be lost).
-        $a = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion)
-        if ($ApiToken) { $a += @('-ApiToken',$ApiToken) }
-        Start-Process -FilePath $pwshPath -ArgumentList $a | Out-Null
-        Write-Host "self-update: relaunched on new code (Start-Process)" -ForegroundColor Green
+        # macOS/Linux: relaunch DETACHED from this terminal and redirect output to the log. A bare
+        # Start-Process keeps the child attached to our stdout/tty; once we exit, the child writes to a
+        # dead tty -> "Out-LineOutput: Input/output error" + ;1R cursor-report noise. nohup + `>> log
+        # 2>&1 &` (via bash) fully detaches and appends to the same log the launcher uses. Args are
+        # single-quote-escaped so a path/token with odd chars can't break the command line.
+        $log = if ($env:RUNNER_LOG) { $env:RUNNER_LOG } else { Join-Path $HOME 'iam-runner.log' }
+        $a = @($pwshPath, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', "$PollSeconds", '-BatchSize', "$BatchSize", '-ExoModuleVersion', $ExoModuleVersion)
+        if ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
+        $q = { param($s) "'" + ([string]$s -replace "'", "'\''") + "'" }
+        $cmd2 = "nohup " + (($a | ForEach-Object { & $q $_ }) -join ' ') + " >> $(& $q $log) 2>&1 &"
+        Start-Process -FilePath '/bin/bash' -ArgumentList @('-c', $cmd2) | Out-Null
+        Write-Host "self-update: relaunched detached on new code (log: $log)" -ForegroundColor Green
     }
     exit 0
 }
