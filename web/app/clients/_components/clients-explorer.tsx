@@ -23,6 +23,8 @@ type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "systemCount";
 export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"active" | "archived" | "all">("active");
+  const [backboneFilter, setBackboneFilter] = useState<string>(""); // "" = any
+  const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [match, setMatch] = useState<"all" | "any">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -45,6 +47,9 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
     const sel = [...selected];
     const rows = clients.filter((c) => {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (backboneFilter && c.backbone !== backboneFilter) return false;
+      if (modeledFilter === "modeled" && !c.modeled) return false;
+      if (modeledFilter === "unmodeled" && c.modeled) return false;
       if (q && ![c.name, c.coreId, c.primaryDomain, c.region].some((v) => v?.toLowerCase().includes(q))) return false;
       if (sel.length) {
         const have = sel.filter((k) => c.systemKeys.includes(k)).length;
@@ -62,7 +67,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
     rows.sort(cmp);
     if (sortDir === "desc") rows.reverse();
     return rows;
-  }, [clients, query, statusFilter, selected, match, sortKey, sortDir]);
+  }, [clients, query, statusFilter, backboneFilter, modeledFilter, selected, match, sortKey, sortDir]);
 
   const toggleSort = (k: SortKey) => k === sortKey ? setSortDir((d) => (d === "asc" ? "desc" : "asc")) : (setSortKey(k), setSortDir("asc"));
   const SortHead = ({ k, label }: { k: SortKey; label: string }) => (
@@ -74,6 +79,18 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
       <div className="filters">
         <input className="search" placeholder="Search name, CORE id, domain, region…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <ModulePicker options={moduleOptions} selected={selected} onToggle={toggleModule} onClear={() => setSelected(new Set())} match={match} onMatch={setMatch} />
+        <select className="inline" value={backboneFilter} onChange={(e) => setBackboneFilter(e.target.value)} title="Filter by identity backbone">
+          <option value="">Any backbone</option>
+          <option value="entra">Entra</option>
+          <option value="google">Google</option>
+          <option value="ad_synced">AD synced</option>
+          <option value="ad_standalone">AD standalone</option>
+        </select>
+        <select className="inline" value={modeledFilter} onChange={(e) => setModeledFilter(e.target.value as never)} title="Modeled = has a profile/systems">
+          <option value="all">All</option>
+          <option value="modeled">Modeled</option>
+          <option value="unmodeled">Not modeled</option>
+        </select>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as never)}>
           <option value="active">Active</option><option value="archived">Archived</option><option value="all">All statuses</option>
         </select>
