@@ -4,6 +4,7 @@ import type { Action, Backbone, Mode } from "@prisma/client";
 // What a runner receives per claimed job.
 export type RunnerJob = {
   id: string;
+  caseNumber: string | null; // the ServiceNow case number (e.g. UM0029329) this job belongs to
   action: Action;
   systemKey: string;
   mode: Mode;

@@ -362,6 +362,7 @@ export function makeRunnerService(db: PrismaClient) {
         const r = req(j);
         return {
           id: j.id,
+          caseNumber: j.case.serviceNowCaseNumber ?? null,
           action: j.case.action,
           systemKey: j.systemKey,
           mode: j.mode,

@@ -41,13 +41,13 @@ export default async function AgentsPage() {
   const activeJobs = await db.job.findMany({
     where: { mode: "api", status: { in: ["pending", "dispatched", "running"] }, case: { deletedAt: null, status: { notIn: ["failed", "completed"] }, clientId: clientIdWhere(scope) } },
     orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
-    select: { status: true, systemKey: true, assignedAgentId: true, startedAt: true, progress: true, case: { select: { clientId: true, subject: true, action: true } } },
+    select: { status: true, systemKey: true, assignedAgentId: true, startedAt: true, progress: true, case: { select: { clientId: true, subject: true, action: true, serviceNowCaseNumber: true } } },
   });
   const jobsForAgent = (id: string, clientId: string | null) =>
     activeJobs
       .filter((j) => j.assignedAgentId === id || (j.status === "pending" && (clientId === null || j.case.clientId === clientId)))
       .slice(0, 30)
-      .map((j) => ({ systemKey: j.systemKey, subject: j.case.subject, action: j.case.action, status: j.status }));
+      .map((j) => ({ systemKey: j.systemKey, caseNumber: j.case.serviceNowCaseNumber, subject: j.case.subject, action: j.case.action, status: j.status }));
 
   // The agent's most-recent in-flight (dispatched/running) job: its last progress phase + when that
   // progress last moved. The client turns "offline + activity went stale" into a "stuck on <phase>"

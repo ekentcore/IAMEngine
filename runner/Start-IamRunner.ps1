@@ -1423,6 +1423,9 @@ while ($true) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
             $script:Phase = 'starting'  # what we're doing now — the catch reports WHICH phase failed
             $global:CtgProgressJobId = $job.id  # so module-level Send-CtgProgress targets this job
+            # Header line so the console shows WHICH CASE this job is for (not just the opaque job id).
+            $caseNo = if ($job.PSObject.Properties['caseNumber'] -and $job.caseNumber) { [string]$job.caseNumber } else { '(no case #)' }
+            Write-Host "[$caseNo] $($job.action) $($job.systemKey)  (job $($job.id))" -ForegroundColor Cyan
             # A system with no per-user config (mimecast, spanning, …) is planned with config=null; the
             # executors take a [Mandatory] -Config, which a null fails to bind ("Cannot bind argument to
             # parameter 'Config' because it is null"). Normalize to an empty object — Get-CtgProp on it

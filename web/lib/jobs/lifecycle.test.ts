@@ -56,7 +56,7 @@ function simulateCase(systems: ClientSystem[], action: Action, payload: Record<s
     if (claimable.length > 0) {
       const j = claimable.sort((a, b) => a.sequence - b.sequence)[0];
       const runnerJob: RunnerJob = {
-        id: j.id, action, systemKey: j.systemKey, mode: j.mode, client,
+        id: j.id, caseNumber: null, action, systemKey: j.systemKey, mode: j.mode, client,
         config: (j.request as { config?: unknown }).config ?? null, secretNames: [],
         payload, requiresApproval: j.requiresApproval, captureEvidence: false, dryRun: false, validateOnly: false,
       };

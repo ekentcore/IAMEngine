@@ -16,7 +16,7 @@ export type AgentVM = {
   enabled: boolean;
   lastSeenAt: string | null;
   jobCount: number;
-  pendingJobs: { systemKey: string; subject: string | null; action: string; status: string }[];
+  pendingJobs: { systemKey: string; caseNumber: string | null; subject: string | null; action: string; status: string }[];
   // The agent's most-recent in-flight job phase + when its progress last moved. When the agent goes
   // offline while these are stale, it's wedged mid-job → a "stuck on <phase>" badge (vs merely idle).
   activePhase: string | null;
@@ -370,7 +370,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       <div className="note" style={{ marginBottom: 4 }}>{a.jobCount} total assigned · {a.pendingJobs.length} queued/in-flight for this runner:</div>
                       {a.pendingJobs.map((j, i) => (
                         <div key={i} style={{ padding: "2px 0", borderTop: i ? "1px solid #f0f0f0" : undefined, display: "flex", gap: 6, justifyContent: "space-between" }}>
-                          <span><code style={{ fontSize: 11 }}>{j.systemKey}</code> <span className="muted">· {j.subject ?? "—"}</span></span>
+                          <span><code style={{ fontSize: 11 }}>{j.caseNumber ?? "—"}</code> <span className="muted">· {j.systemKey} · {j.subject ?? "—"}</span></span>
                           <span style={{ color: j.status === "pending" ? "#8a6d00" : "#1565c0", whiteSpace: "nowrap" }}>{j.status}</span>
                         </div>
                       ))}
