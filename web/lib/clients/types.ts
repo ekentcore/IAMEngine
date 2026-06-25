@@ -25,6 +25,7 @@ export type ClientListItem = {
   modeled: boolean; // has at least one ClientSystem of its OWN (a profile was applied)
   parentId: string | null;
   parentName: string | null;
+  parentSystemKeys: string[]; // the parent's systems (shown in the hover for a via-parent client)
   coverage: "own" | "parent" | "none"; // own=modeled directly, parent=inherits a modeled parent, none=unmodeled
 };
 

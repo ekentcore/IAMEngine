@@ -37,7 +37,8 @@ function toVM(c: ClientListItem): ClientVM {
   return {
     id: c.id, slug: c.slug, name: c.name, primaryDomain: c.primaryDomain,
     backbone: c.backbone, status: c.status, coreId: c.coreId, region: c.region,
+    usernamePattern: c.usernamePattern,
     systemKeys: c.systemKeys, systemCount: c.systemCount, modeled: c.modeled,
-    coverage: c.coverage, parentName: c.parentName,
+    coverage: c.coverage, parentName: c.parentName, parentSystemKeys: c.parentSystemKeys,
   };
 }

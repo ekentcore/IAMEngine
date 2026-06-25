@@ -113,6 +113,7 @@ export function makeClientRepository(db: PrismaClient) {
         modeled: r.systems.length > 0,
         parentId: r.parentId,
         parentName: r.parent?.name ?? null,
+        parentSystemKeys: r.parent?.systems.map((s) => s.systemKey) ?? [],
         // own = has its own systems; parent = inherits a modeled parent; none = truly unmodeled.
         coverage: r.systems.length > 0 ? "own" : r.parentId && (r.parent?.systems.length ?? 0) > 0 ? "parent" : "none",
       }));

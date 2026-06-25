@@ -11,18 +11,28 @@ import type { Backbone, ClientStatus } from "@prisma/client";
 import { MODULES } from "@/lib/modules/catalog";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
+import { SystemsEditor } from "./systems-editor";
 
 export type ClientVM = {
   id: string; slug: string; name: string; primaryDomain: string;
   backbone: Backbone | null; status: ClientStatus; coreId: string | null;
-  region: string | null; systemKeys: string[]; systemCount: number; modeled: boolean;
-  coverage: "own" | "parent" | "none"; parentName: string | null;
+  region: string | null; usernamePattern: string; systemKeys: string[]; systemCount: number; modeled: boolean;
+  coverage: "own" | "parent" | "none"; parentName: string | null; parentSystemKeys: string[];
 };
 
 const NAME: Record<string, string> = Object.fromEntries(MODULES.map((m) => [m.key, m.name]));
 const BACKBONE_LABEL: Record<string, string> = { entra: "Entra", google: "Google", ad_synced: "AD synced", ad_standalone: "AD standalone" };
 
-type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "systemCount";
+// Hover text for the systems cell: own systems inline, or — for a via-parent client — a header
+// line then the parent's full system list.
+function systemsTitle(c: ClientVM): string {
+  if (c.coverage === "parent") {
+    return `Inherited from ${c.parentName ?? "parent"}:\n\n${c.parentSystemKeys.join(", ") || "(parent has no systems)"}`;
+  }
+  return c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)";
+}
+
+type SortKey = "name" | "coreId" | "primaryDomain" | "systemCount";
 
 export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
   const router = useRouter();
@@ -32,7 +42,26 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
   const [coverageFilter, setCoverageFilter] = useState<"all" | "own" | "parent" | "none">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editDomain, setEditDomain] = useState<string | null>(null); // slug being edited
+  const [editSlug, setEditSlug] = useState<string | null>(null); // systems editor target
   const [busy, setBusy] = useState(false);
+
+  // Per-row Archive / Restore / Hard-refresh — confirm, PATCH /api/clients/:slug, refresh.
+  async function rowAction(c: ClientVM, action: "archive" | "restore" | "hard-refresh") {
+    const prompts: Record<string, string> = {
+      archive: `Archive ${c.name}? It’s marked archived and removed from the active list. You can restore it.`,
+      "hard-refresh": `Hard refresh ${c.name} from ServiceNow? This overwrites its SN-owned fields and discards manual edits.`,
+      restore: "",
+    };
+    if (prompts[action] && !confirm(prompts[action])) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/clients/${c.slug}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
+      });
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? `could not ${action}`);
+      else router.refresh();
+    } finally { setBusy(false); }
+  }
 
   async function saveDomain(slug: string, value: string) {
     setEditDomain(null);
@@ -71,7 +100,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (backboneFilter && c.backbone !== backboneFilter) return false;
       if (coverageFilter !== "all" && c.coverage !== coverageFilter) return false;
-      if (q && ![c.name, c.coreId, c.primaryDomain, c.region].some((v) => v?.toLowerCase().includes(q))) return false;
+      if (q && ![c.name, c.coreId, c.primaryDomain, c.region, c.usernamePattern].some((v) => v?.toLowerCase().includes(q))) return false;
       if (sel.length) {
         const have = sel.filter((k) => c.systemKeys.includes(k)).length;
         if (match === "all" ? have !== sel.length : have === 0) return false;
@@ -135,8 +164,9 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
       <table>
         <thead>
           <tr>
-            <SortHead k="name" label="Name" /><SortHead k="coreId" label="CORE id" /><SortHead k="region" label="Region" />
-            <SortHead k="primaryDomain" label="Domain" /><th>Backbone</th><SortHead k="systemCount" label="Systems" /><th>Status</th>
+            <SortHead k="name" label="Name" /><SortHead k="coreId" label="CORE id" />
+            <th title="Email/UPN name format (a | separates the conflict fallback)">Email format</th>
+            <SortHead k="primaryDomain" label="Domain" /><th>Backbone</th><SortHead k="systemCount" label="Systems" /><th>Status</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -144,7 +174,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
             <tr key={c.id}>
               <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted">{c.coreId ?? "—"}</td>
-              <td className="muted">{c.region ?? "—"}</td>
+              <td className="muted" style={{ fontFamily: "monospace", fontSize: 12 }}>{c.usernamePattern || "—"}</td>
               <td className="muted" title="Double-click to edit the domain" onDoubleClick={() => setEditDomain(c.slug)} style={{ cursor: "text" }}>
                 {editDomain === c.slug ? (
                   <input
@@ -159,15 +189,24 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
                   : c.coverage === "parent" ? <span className="badge" title={`inherits from ${c.parentName ?? "parent"}`}>↳ via parent</span>
                   : <span className="badge unmodeled">not modeled</span>}
               </td>
-              <td className="muted" style={{ cursor: c.systemCount ? "help" : "default" }} title={c.systemKeys.length ? c.systemKeys.join(", ") : c.coverage === "parent" ? `inherits ${c.parentName ?? "parent"}'s systems` : "no systems (not modeled)"}>
+              <td className="muted" style={{ cursor: c.systemCount || c.coverage === "parent" ? "help" : "default" }} title={systemsTitle(c)}>
                 {c.coverage === "parent" && c.systemCount === 0 ? <span className="note">↳ {c.parentName}</span> : c.systemCount}
               </td>
               <td>{c.status === "archived" ? <span className="badge archived">archived</span> : <span className="badge">active</span>}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                <button onClick={() => setEditSlug(c.slug)} style={{ marginRight: 4 }}>Edit</button>
+                <button onClick={() => rowAction(c, "hard-refresh")} disabled={busy} title="Overwrite SN-owned fields from ServiceNow (discards manual edits)" style={{ marginRight: 4 }}>↻ Refresh</button>
+                {c.status === "archived"
+                  ? <button onClick={() => rowAction(c, "restore")} disabled={busy}>Restore</button>
+                  : <button onClick={() => rowAction(c, "archive")} disabled={busy}>Archive</button>}
+              </td>
             </tr>
           ))}
-          {visible.length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: "center", padding: "2rem" }}>No matches.</td></tr>}
+          {visible.length === 0 && <tr><td colSpan={8} className="muted" style={{ textAlign: "center", padding: "2rem" }}>No matches.</td></tr>}
         </tbody>
       </table>
+
+      <SystemsEditor slug={editSlug} open={!!editSlug} onClose={() => setEditSlug(null)} />
     </>
   );
 }
