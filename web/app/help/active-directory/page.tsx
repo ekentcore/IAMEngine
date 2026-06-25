@@ -20,11 +20,21 @@ export default function ActiveDirectorySetupPage() {
       </p>
 
       <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
-        <b>How it authenticates</b>
+        <b>How it authenticates — both fields are optional</b>
         <p style={{ margin: "0.4rem 0 0" }}>
-          The AD module connects with <code>Get-ADUser/New-ADUser -Server &lt;DC&gt; -Credential &lt;ad-dc&gt;</code>.
-          The <code>ad-dc</code> secret carries that domain account (Username/Password) <b>plus a
-          {" "}<code>Server</code> field</b> = the DC hostname/FQDN to target.
+          The runner splats <code>-Server</code> and <code>-Credential</code> onto the AD cmdlets <b>only if the
+          {" "}<code>ad-dc</code> secret provides them</b>:
+        </p>
+        <ul style={{ margin: "0.4rem 0 0" }}>
+          <li><b>Agent runs on the DC (or any domain-joined host) as an account with AD rights</b> — e.g. a gMSA /
+            service account. You can skip the <code>Server</code> field entirely (cmdlets use the local/logon DC),
+            and even skip the credential (the runner&rsquo;s own identity is used). The secret may not be needed at all.</li>
+          <li><b>Set <code>Server</code></b> only to pin a <i>specific</i> DC, or when the agent isn&rsquo;t on a domain
+            host and must target one remotely. <b>Set the credential</b> only to act as a different account than the
+            process identity.</li>
+        </ul>
+        <p className="note" style={{ margin: "0.4rem 0 0" }}>
+          So your template not having a <code>Server</code> field is fine — leave it off when the agent is on the DC.
         </p>
       </div>
 
@@ -45,13 +55,18 @@ export default function ActiveDirectorySetupPage() {
       <Code>{`mkdir C:\\iam-runner
 pwsh -File C:\\iam-runner\\update-dc-runner.ps1 -AppUrl https://<app> -AgentId <AgentId>`}</Code>
 
-      <h2>3. Store the <code>ad-dc</code> secret (Delinea)</h2>
+      <h2>3. Store the <code>ad-dc</code> secret (Delinea) — only what you need</h2>
+      <p className="note">All fields are optional; add only the ones that apply (see the box above).</p>
       <table>
         <tbody>
-          <tr><th style={{ width: 160 }}>Username / Password</th><td>a <b>delegated</b> domain account that can create/modify/disable users in the target OUs (least-privilege; avoid Domain Admin where possible)</td></tr>
-          <tr><th>Server</th><td>the DC to target, e.g. <code>CORE-CCE-DC01</code> (hostname or FQDN). <b>Required</b> — without it the AD connection has no DC.</td></tr>
+          <tr><th style={{ width: 160 }}>Username / Password</th><td><i>optional</i> — a <b>delegated</b> domain account that can create/modify/disable users in the target OUs (least-privilege). Omit if the agent already runs as an account with AD rights.</td></tr>
+          <tr><th>Server</th><td><i>optional</i> — a specific DC to target, e.g. <code>CORE-CCE-DC01</code> (or the alias field <code>DomainController</code>). <b>Omit when the agent is on the DC</b> — the cmdlets use the local domain. Set it only to pin/remote a DC.</td></tr>
         </tbody>
       </table>
+      <p className="note">
+        If the agent runs as a domain service account with the needed rights, you may not need an <code>ad-dc</code> secret
+        at all — the client&rsquo;s <code>active-directory</code> system can run on the process identity.
+      </p>
 
       <h2>4. Wire it to the client</h2>
       <ul>
