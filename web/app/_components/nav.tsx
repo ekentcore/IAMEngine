@@ -10,6 +10,7 @@ const ITEMS = [
   ["/cases", "Cases"],
   ["/runs", "Run log"],
   ["/agents", "Agents"],
+  ["/modules", "Modules"],
   ["/health", "Health"],
 ] as const;
 
