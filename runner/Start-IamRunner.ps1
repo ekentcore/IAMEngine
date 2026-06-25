@@ -477,8 +477,9 @@ function Invoke-CtgM365ExoFinish {
     }
     try {
         $what = @($(if ($names.Count) { 'distribution lists' }), $(if ($mirror) { 'mirror (DLs + shared mailboxes)' }) | Where-Object { $_ }) -join ' + '
-        Set-CtgPhase $Job.id "finishing over Exchange Online (app-only): $what"
-        Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $Job $Creds) @certArgs
+        $exoOrg = Get-CtgExoOrganization $Job $Creds
+        Set-CtgPhase $Job.id "finishing over Exchange Online (app-only) for $exoOrg`: $what"
+        Connect-CtgExchange -AppId $s.Credential.UserName -Organization $exoOrg @certArgs
         $upn = [string]$Job.payload.UserPrincipalName
         if ($names.Count) { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser $upn -Groups $names)) { $out.Add($a) } }
         if ($mirror) {
@@ -1190,7 +1191,11 @@ function Get-CtgGrantedGraphAppRoles {
 $CONNTEST_PROBE = @{
     'm365'             = { param($job, $creds)
         $org = $null; try { $org = @(Get-MgOrganization -ErrorAction Stop)[0] } catch { }
-        $base = if ($org) { "tenant: $($org.DisplayName)" } else { "connected" }
+        # Show the tenant DISPLAY NAME + its default domain together — the display name (e.g.
+        # "Newco, Inc.") often differs from the client name + the domain, which surprises operators.
+        $dom = ''
+        if ($org -and $org.VerifiedDomains) { $d = @($org.VerifiedDomains | Where-Object { $_.IsDefault }); if ($d.Count) { $dom = [string]$d[0].Name } }
+        $base = if ($org) { "tenant: $($org.DisplayName)$(if ($dom) { " ($dom)" })" } else { "connected" }
         # Read the ACTUAL consented application permissions from the directory (app-only doesn't expose
         # them via Get-MgContext.Scopes). Falls back to delegated scopes if that's how we're connected.
         $granted = @(); $how = ''
