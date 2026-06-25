@@ -116,8 +116,12 @@ function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
   }
 }
 
-export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: TrashedCaseRowVM[] }) {
+export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: CaseRowVM[]; trashed: TrashedCaseRowVM[]; splitCompleted?: boolean }) {
   const router = useRouter();
+  // When splitCompleted is on (the /cases/v2 view), completed cases come OFF the working list into
+  // their own collapsible table — the working table only carries open work. Default off: /cases is
+  // unchanged (working === cases).
+  const working = useMemo(() => (splitCompleted ? cases.filter((c) => c.status !== "completed") : cases), [cases, splitCompleted]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
@@ -169,7 +173,7 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
 
   const visible = useMemo(() => {
-    const filtered = cases.filter((c) => {
+    const filtered = working.filter((c) => {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (terms.length === 0) return true;
       const hay = haystack(c);
@@ -178,7 +182,17 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
     if (sortDir === "desc") sorted.reverse();
     return sorted;
-  }, [cases, terms, statusFilter, sortKey, sortDir]);
+  }, [working, terms, statusFilter, sortKey, sortDir]);
+
+  // The separated completed cases (only when splitCompleted): search-filtered + sorted the same way,
+  // shown in their own collapsible table below the working list.
+  const completed = useMemo(() => {
+    if (!splitCompleted) return [];
+    const filtered = cases.filter((c) => c.status === "completed" && (terms.length === 0 || terms.every((t) => haystack(c).includes(t))));
+    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+  }, [cases, splitCompleted, terms, sortKey, sortDir]);
 
   const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
   const selectedVisible = visibleIds.filter((id) => selected.has(id));
@@ -225,11 +239,13 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
         </div>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="all">All statuses</option>
-          {Object.entries(STATUS_LABEL).map(([k, label]) => (
-            <option key={k} value={k}>{label}</option>
-          ))}
+          {Object.entries(STATUS_LABEL)
+            .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
+            .map(([k, label]) => (
+              <option key={k} value={k}>{label}</option>
+            ))}
         </select>
-        <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {cases.length}</span>
+        <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {working.length}</span>
       </div>
       {selected.size > 0 && (
         <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
@@ -321,12 +337,65 @@ export function CasesTable({ cases, trashed }: { cases: CaseRowVM[]; trashed: Tr
           {visible.length === 0 && (
             <tr>
               <td colSpan={11} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
-                {cases.length === 0 ? "No cases yet. Import a ServiceNow ticket or create one." : "No cases match your search."}
+                {working.length === 0 ? (splitCompleted ? "No open cases — completed work is below." : "No cases yet. Import a ServiceNow ticket or create one.") : "No cases match your search."}
               </td>
             </tr>
           )}
         </tbody>
       </table>
+
+      {splitCompleted && (
+        <details style={{ marginTop: "1.25rem" }} open>
+          <summary style={{ cursor: "pointer" }}>
+            <b>Completed cases</b> <span className="note">({completed.length}) — off the working list, kept here for reference</span>
+          </summary>
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead>
+              <tr>
+                <th>Subject</th><th>Client</th><th>Action</th><th>SN case</th>
+                <th className="num">Jobs</th><th>Status</th><th>Start / off date</th><th>Last run</th><th>Created</th>
+                <th style={{ width: 28 }} aria-label="Actions"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {completed.map((c) => (
+                <tr
+                  key={c.id}
+                  onMouseEnter={() => setHoveredId(c.id)}
+                  onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+                >
+                  <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+                  <td className="muted">{c.clientName}</td>
+                  <td><span className="badge">{c.action}</span></td>
+                  <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
+                  <td className="muted">{c.jobCount}</td>
+                  <td><StatusBadge c={c} /></td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                    {formatDateTime(c.lastRunIso)}
+                    {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                  </td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+                  <td style={{ width: 28, padding: 0, textAlign: "right" }}>
+                    <button
+                      onClick={() => remove(c)}
+                      disabled={busyId === c.id}
+                      title="Move this case to the trash (restorable for 30 days)"
+                      aria-label="Move this case to the trash"
+                      style={{ border: "none", background: "none", cursor: "pointer", color: "#b3261e", fontSize: 16, lineHeight: 1, padding: "2px 8px", opacity: hoveredId === c.id || busyId === c.id ? 1 : 0, transition: "opacity 120ms" }}
+                    >
+                      {busyId === c.id ? "…" : "×"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {completed.length === 0 && (
+                <tr><td colSpan={10} className="muted" style={{ textAlign: "center", padding: "1.5rem" }}>No completed cases{terms.length ? " match your search" : " yet"}.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </details>
+      )}
 
       {trashed.length > 0 && (
         <details style={{ marginTop: "1.25rem" }}>
