@@ -5,6 +5,7 @@
 // with at least one. Plus free-text search, status filter, and sortable columns. Native React — no
 // DataTables/jQuery dependency.
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Backbone, ClientStatus } from "@prisma/client";
 import { MODULES } from "@/lib/modules/catalog";
@@ -13,6 +14,7 @@ export type ClientVM = {
   id: string; slug: string; name: string; primaryDomain: string;
   backbone: Backbone | null; status: ClientStatus; coreId: string | null;
   region: string | null; systemKeys: string[]; systemCount: number; modeled: boolean;
+  coverage: "own" | "parent" | "none"; parentName: string | null;
 };
 
 const NAME: Record<string, string> = Object.fromEntries(MODULES.map((m) => [m.key, m.name]));
@@ -21,11 +23,29 @@ const BACKBONE_LABEL: Record<string, string> = { entra: "Entra", google: "Google
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "systemCount";
 
 export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"active" | "archived" | "all">("active");
   const [backboneFilter, setBackboneFilter] = useState<string>(""); // "" = any
-  const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
+  const [coverageFilter, setCoverageFilter] = useState<"all" | "own" | "parent" | "none">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [editDomain, setEditDomain] = useState<string | null>(null); // slug being edited
+  const [busy, setBusy] = useState(false);
+
+  async function saveDomain(slug: string, value: string) {
+    setEditDomain(null);
+    const v = value.trim();
+    if (!v) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/clients/${slug}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set-domain", domain: v }),
+      });
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not set domain");
+      else router.refresh();
+    } finally { setBusy(false); }
+  }
   const [match, setMatch] = useState<"all" | "any">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -48,8 +68,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
     const rows = clients.filter((c) => {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (backboneFilter && c.backbone !== backboneFilter) return false;
-      if (modeledFilter === "modeled" && !c.modeled) return false;
-      if (modeledFilter === "unmodeled" && c.modeled) return false;
+      if (coverageFilter !== "all" && c.coverage !== coverageFilter) return false;
       if (q && ![c.name, c.coreId, c.primaryDomain, c.region].some((v) => v?.toLowerCase().includes(q))) return false;
       if (sel.length) {
         const have = sel.filter((k) => c.systemKeys.includes(k)).length;
@@ -67,7 +86,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
     rows.sort(cmp);
     if (sortDir === "desc") rows.reverse();
     return rows;
-  }, [clients, query, statusFilter, backboneFilter, modeledFilter, selected, match, sortKey, sortDir]);
+  }, [clients, query, statusFilter, backboneFilter, coverageFilter, selected, match, sortKey, sortDir]);
 
   const toggleSort = (k: SortKey) => k === sortKey ? setSortDir((d) => (d === "asc" ? "desc" : "asc")) : (setSortKey(k), setSortDir("asc"));
   const SortHead = ({ k, label }: { k: SortKey; label: string }) => (
@@ -86,10 +105,11 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
           <option value="ad_synced">AD synced</option>
           <option value="ad_standalone">AD standalone</option>
         </select>
-        <select className="inline" value={modeledFilter} onChange={(e) => setModeledFilter(e.target.value as never)} title="Modeled = has a profile/systems">
+        <select className="inline" value={coverageFilter} onChange={(e) => setCoverageFilter(e.target.value as never)} title="Modeled directly, inherited from a parent account, or not modeled at all">
           <option value="all">All</option>
-          <option value="modeled">Modeled</option>
-          <option value="unmodeled">Not modeled</option>
+          <option value="own">Modeled</option>
+          <option value="parent">Modeled via parent</option>
+          <option value="none">Not modeled</option>
         </select>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as never)}>
           <option value="active">Active</option><option value="archived">Archived</option><option value="all">All statuses</option>
@@ -118,9 +138,23 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
               <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted">{c.coreId ?? "—"}</td>
               <td className="muted">{c.region ?? "—"}</td>
-              <td className="muted">{c.primaryDomain || "—"}</td>
-              <td>{c.backbone ? <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span> : <span className="badge unmodeled">not modeled</span>}</td>
-              <td className="muted" style={{ cursor: c.systemCount ? "help" : "default" }} title={c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)"}>{c.systemCount}</td>
+              <td className="muted" title="Double-click to edit the domain" onDoubleClick={() => setEditDomain(c.slug)} style={{ cursor: "text" }}>
+                {editDomain === c.slug ? (
+                  <input
+                    autoFocus defaultValue={c.primaryDomain ?? ""} placeholder="example.com" disabled={busy}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveDomain(c.slug, (e.target as HTMLInputElement).value); if (e.key === "Escape") setEditDomain(null); }}
+                    onBlur={(e) => saveDomain(c.slug, e.target.value)} style={{ width: 150 }}
+                  />
+                ) : (c.primaryDomain || "—")}
+              </td>
+              <td>
+                {c.backbone ? <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
+                  : c.coverage === "parent" ? <span className="badge" title={`inherits from ${c.parentName ?? "parent"}`}>↳ via parent</span>
+                  : <span className="badge unmodeled">not modeled</span>}
+              </td>
+              <td className="muted" style={{ cursor: c.systemCount ? "help" : "default" }} title={c.systemKeys.length ? c.systemKeys.join(", ") : c.coverage === "parent" ? `inherits ${c.parentName ?? "parent"}'s systems` : "no systems (not modeled)"}>
+                {c.coverage === "parent" && c.systemCount === 0 ? <span className="note">↳ {c.parentName}</span> : c.systemCount}
+              </td>
               <td>{c.status === "archived" ? <span className="badge archived">archived</span> : <span className="badge">active</span>}</td>
             </tr>
           ))}

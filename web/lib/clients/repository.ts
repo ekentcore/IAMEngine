@@ -80,6 +80,11 @@ export function makeClientRepository(db: PrismaClient) {
           systems: { select: { systemKey: true } },
           // the runbook seq is the documented run order; used to list systems in execution order
           runbook: { select: { systemKey: true, action: true, seq: true } },
+          // parent (SN account hierarchy): a child with no OWN systems inherits the parent's at plan
+          // time. Surface whether the parent is modeled so the UI can distinguish "via parent" from
+          // "completely unmodeled".
+          parentId: true,
+          parent: { select: { name: true, systems: { select: { systemKey: true } } } },
         },
       });
       return rows.map((r) => ({
@@ -106,6 +111,10 @@ export function makeClientRepository(db: PrismaClient) {
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
         modeled: r.systems.length > 0,
+        parentId: r.parentId,
+        parentName: r.parent?.name ?? null,
+        // own = has its own systems; parent = inherits a modeled parent; none = truly unmodeled.
+        coverage: r.systems.length > 0 ? "own" : r.parentId && (r.parent?.systems.length ?? 0) > 0 ? "parent" : "none",
       }));
     },
 

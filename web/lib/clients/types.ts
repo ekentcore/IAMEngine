@@ -22,7 +22,10 @@ export type ClientListItem = {
   usernamePattern: string; // email/UPN local-part format, e.g. "{first}.{last}"
   systemKeys: string[];
   systemCount: number;
-  modeled: boolean; // has at least one ClientSystem (i.e. a profile was applied)
+  modeled: boolean; // has at least one ClientSystem of its OWN (a profile was applied)
+  parentId: string | null;
+  parentName: string | null;
+  coverage: "own" | "parent" | "none"; // own=modeled directly, parent=inherits a modeled parent, none=unmodeled
 };
 
 // One system as edited in the UI (full lanes + config). Lane values are the DB enum form.
