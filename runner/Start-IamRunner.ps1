@@ -486,7 +486,24 @@ function Invoke-CtgM365ExoFinish {
             foreach ($a in (Invoke-CtgExchangeSharedMailboxMirror -MirrorUser $mirror -NewUser $upn)) { $out.Add($a) }
         }
     } catch {
-        $out.Add("WARN Exchange Online finish failed ($($_.Exception.Message)) — grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret.")
+        # The AAD error tells you WHICH problem it is — don't always blame "grant Exchange.ManageAsApp".
+        $emsg = [string]$_.Exception.Message
+        $appId = try { [string]$s.Credential.UserName } catch { '' }
+        $org = try { [string](Get-CtgExoOrganization $Job $Creds) } catch { '' }
+        $hint =
+            if ($emsg -match 'AADSTS700016|was not found in the directory|AADSTS90002|AADSTS70011|Invalid scope') {
+                "the EXO app '$appId' isn't registered/consented in tenant '$org'. Fix the m365-admin secret's app id so it's an app that EXISTS in THIS client's tenant (not another client's), and admin-consent it there (a multi-tenant app must be consented in the tenant to create its service principal). Confirm '$org' is the correct tenant domain."
+            }
+            elseif ($emsg -match 'AADSTS7000215|invalid client secret|AADSTS700027|AADSTS500011|certificate|Key was not found') {
+                "EXO app-only is CERTIFICATE auth (not a client secret): set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows) on the m365-admin secret, and upload that same cert to the app registration."
+            }
+            elseif ($emsg -match 'Unauthorized|Access.?Denied|do(es)? not have permission|ManageAsApp|insufficient|forbidden') {
+                "grant the m365-admin app the Exchange.ManageAsApp APPLICATION permission (admin consent), AND add its service principal to the Exchange Administrator role in '$org' — EXO app-only needs both."
+            }
+            else {
+                "grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret."
+            }
+        $out.Add("WARN Exchange Online finish failed ($emsg) — $hint")
     }
     return $out.ToArray()
 }
