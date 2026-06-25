@@ -413,6 +413,21 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  // Run a step that's waiting on a vendor sync (request.autoRetry) right now, instead of at its
+  // scheduled time. Same re-queue the timer would do; reschedules normally if it still needs to wait.
+  async function retryNow(stepSeq: number, jobId: string | undefined) {
+    if (!jobId) return;
+    setBusy(`retrynow-${stepSeq}`);
+    setOpen((s) => new Set(s).add(stepSeq));
+    try {
+      const r = await fetch(`/api/jobs/${jobId}/retry-now`, { method: "POST" });
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not retry now");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function stopStep(stepSeq: number, jobId: string | undefined) {
     if (!jobId) return;
     if (!confirm("Stop this step? It'll be marked failed and the case stops waiting on it (a late result from the runner is ignored). You can re-run it after.")) return;
@@ -601,6 +616,23 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 <span style={{ marginLeft: 8, fontSize: 12, color: step.pendingReason.startsWith("blocked") ? "#b3261e" : "#8a6d00" }}>
                   ⏳ {step.pendingReason}
                 </span>
+              )}
+              {/* Waiting on a vendor sync (Spanning/Mimecast self-scheduled retry): show when the next
+                  attempt is due + a "retry now" button so the operator needn't wait for the timer. */}
+              {step.autoRetry && (
+                <>
+                  <span style={{ marginLeft: 8, fontSize: 12, color: "#1565c0" }}>
+                    next try {new Date(step.autoRetry.at).toLocaleTimeString()}
+                  </span>
+                  <button
+                    style={{ marginLeft: 6, fontSize: 11 }}
+                    disabled={busy === `retrynow-${step.seq}`}
+                    title="Run this waiting step now instead of at its scheduled time. If the vendor still hasn't synced, it reschedules the next attempt as normal."
+                    onClick={(e) => { e.preventDefault(); retryNow(step.seq, step.jobId); }}
+                  >
+                    {busy === `retrynow-${step.seq}` ? "retrying…" : "↻ retry now"}
+                  </button>
+                </>
               )}
               {/* Stop an in-flight step that looks wedged: marks it failed so the case stops waiting on
                   it (a late runner result is then ignored). For the UM0029280 class — a hung vendor call. */}
