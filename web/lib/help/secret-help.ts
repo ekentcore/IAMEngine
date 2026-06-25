@@ -55,5 +55,18 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "zoom") {
     return { kind: "Server-to-Server OAuth app (account id + client id/secret)", href: "/help/zoom" };
   }
+  if (name === "ad-dc") {
+    // Used by both active-directory and directory-sync; the AD guide covers the on-prem agent + sync.
+    return { kind: "on-prem agent + DC account (Server field)", href: "/help/active-directory" };
+  }
+  if (name === "exchange-onprem") {
+    return { kind: "on-prem Exchange session (ConnectionUri)", href: "/help/exchange-onprem" };
+  }
+  if (name === "adobe") {
+    return { kind: "UMAPI server-to-server (client id/secret + OrgId)", href: "/help/adobe" };
+  }
+  if (name === "perimeter81") {
+    return { kind: "API key", href: "/help/perimeter81" };
+  }
   return null;
 }
