@@ -396,9 +396,25 @@ function Get-CtgTenantDomain {
 
 function Get-CtgExoOrganization {
     # Exchange Online's -Organization needs a DOMAIN (e.g. dcg.co / dcg.onmicrosoft.com), NOT the
-    # tenant GUID that Get-CtgTenantDomain prefers (the GUID is right for Graph -TenantId but EXO
-    # rejects it: "Organization cannot be a Guid"). Pick the first non-GUID domain we can find.
+    # tenant GUID that Graph -TenantId uses ("Organization cannot be a Guid").
+    #
+    # CRITICAL: EXO must operate on the SAME tenant the user was just created in via Graph. Graph
+    # connects with the authoritative TenantId (a GUID); deriving EXO's domain independently from the
+    # client's primaryDomain can resolve to a DIFFERENT directory (e.g. JAMS' primaryDomain newcoinc.com
+    # resolved to a separate "Newco, Inc." tenant while Graph used the real app tenant) → AADSTS700016
+    # "app not found in directory". So PREFER the connected Graph tenant's own default verified domain;
+    # only fall back to client/secret/UPN domains when no Graph session is established.
     param($Job, $Creds)
+    try {
+        $org = @(Get-MgOrganization -ErrorAction Stop)[0]
+        if ($org -and $org.VerifiedDomains) {
+            $def = @($org.VerifiedDomains | Where-Object { $_.IsDefault } | ForEach-Object { [string]$_.Name } | Where-Object { $_ })
+            if ($def.Count) { return $def[0] }
+            $any = @($org.VerifiedDomains | ForEach-Object { [string]$_.Name } | Where-Object { $_ -and $_ -match '\.' })
+            if ($any.Count) { return $any[0] }
+        }
+    }
+    catch { } # no Graph session (e.g. a standalone exchange test) — fall back to configured domains
     $cand = [System.Collections.Generic.List[string]]::new()
     if ($Job.client -and $Job.client.primaryDomain) { $cand.Add([string]$Job.client.primaryDomain) }
     $s = $Creds['m365-admin']
