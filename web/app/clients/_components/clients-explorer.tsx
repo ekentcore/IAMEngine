@@ -25,6 +25,22 @@ const BACKBONE_LABEL: Record<string, string> = { entra: "Entra", google: "Google
 
 // Hover text for the systems cell: own systems inline, or — for a via-parent client — a header
 // line then the parent's full system list.
+// Render the email/UPN format as chips: a filled "primary" chip + dim "fallback" chips (the parts
+// after each "|", used when the primary username is already taken).
+function EmailFormat({ pattern }: { pattern: string }) {
+  if (!pattern) return <span className="muted">—</span>;
+  const parts = pattern.split("|").map((s) => s.trim()).filter(Boolean);
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+      {parts.map((p, i) => (
+        <span key={i} className={`email-chip ${i === 0 ? "primary" : "fallback"}`} title={i === 0 ? "primary format" : "fallback — used when the primary username is taken"}>
+          {i > 0 && "↳ "}{p}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function systemsTitle(c: ClientVM): string {
   if (c.coverage === "parent") {
     return `Inherited from ${c.parentName ?? "parent"}:\n\n${c.parentSystemKeys.join(", ") || "(parent has no systems)"}`;
@@ -174,7 +190,7 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
             <tr key={c.id}>
               <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
               <td className="muted">{c.coreId ?? "—"}</td>
-              <td className="muted" style={{ fontFamily: "monospace", fontSize: 12 }}>{c.usernamePattern || "—"}</td>
+              <td><EmailFormat pattern={c.usernamePattern} /></td>
               <td className="muted" title="Double-click to edit the domain" onDoubleClick={() => setEditDomain(c.slug)} style={{ cursor: "text" }}>
                 {editDomain === c.slug ? (
                   <input
@@ -193,12 +209,14 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
                 {c.coverage === "parent" && c.systemCount === 0 ? <span className="note">↳ {c.parentName}</span> : c.systemCount}
               </td>
               <td>{c.status === "archived" ? <span className="badge archived">archived</span> : <span className="badge">active</span>}</td>
-              <td style={{ whiteSpace: "nowrap" }}>
-                <button onClick={() => setEditSlug(c.slug)} style={{ marginRight: 4 }}>Edit</button>
-                <button onClick={() => rowAction(c, "hard-refresh")} disabled={busy} title="Overwrite SN-owned fields from ServiceNow (discards manual edits)" style={{ marginRight: 4 }}>↻ Refresh</button>
-                {c.status === "archived"
-                  ? <button onClick={() => rowAction(c, "restore")} disabled={busy}>Restore</button>
-                  : <button onClick={() => rowAction(c, "archive")} disabled={busy}>Archive</button>}
+              <td>
+                <span className="icon-stack">
+                  <button className="icon-btn" title="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
+                  <button className="icon-btn" title="Hard refresh from ServiceNow (discards manual edits)" disabled={busy} onClick={() => rowAction(c, "hard-refresh")}>↻</button>
+                  {c.status === "archived"
+                    ? <button className="icon-btn" title="Restore (unarchive)" disabled={busy} onClick={() => rowAction(c, "restore")}>↩</button>
+                    : <button className="icon-btn" title="Archive (offboard the client)" disabled={busy} onClick={() => rowAction(c, "archive")}>🗄</button>}
+                </span>
               </td>
             </tr>
           ))}
