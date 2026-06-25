@@ -1125,6 +1125,46 @@ function Get-CtgGraphScopeGaps {
     $gaps
 }
 
+# The app-only blind spot: Get-MgContext.Scopes is EMPTY for client-credentials auth (app perms ride
+# the token's `roles` claim, not scopes), so the scope-gap check above can't see what's granted. This
+# reads the ACTUAL consented application permissions from the directory: the app's service principal
+# appRoleAssignments in THIS tenant, resolved to names (User.ReadWrite.All, …). Uses Invoke-MgGraphRequest
+# (ships with the Authentication module — no extra Graph submodule). Returns:
+#   @{ ok=$true;  roles=@('User.ReadWrite.All', …) }   when it could read them
+#   @{ ok=$false; reason='…' }                          when it couldn't (usually the app lacks
+#                                                        Application.Read.All / Directory.Read.All)
+function Get-CtgGrantedGraphAppRoles {
+    $ctx = Get-MgContext
+    if (-not $ctx -or -not $ctx.ClientId) { return @{ ok = $false; reason = 'no Graph context (not connected app-only)' } }
+    $appId = [string]$ctx.ClientId
+    try {
+        $resp = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+            -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$appId')/appRoleAssignments?`$top=200"
+    }
+    catch {
+        return @{ ok = $false; reason = "couldn't read this app's granted application permissions — the app registration likely lacks Application.Read.All or Directory.Read.All (grant one so this check can verify the rest), or verify manually in Entra > App registrations > API permissions. ($([string]$_.Exception.Message))" }
+    }
+    $assignments = @($resp.value)
+    if ($assignments.Count -eq 0) { return @{ ok = $true; roles = @() } } # consented to NOTHING
+    $rolesByResource = @{}  # resourceSpId -> @{ appRoleId -> value }
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($a in $assignments) {
+        $rid = [string]$a.resourceId
+        if (-not $rolesByResource.ContainsKey($rid)) {
+            $map = @{}
+            try {
+                $r = Invoke-MgGraphRequest -Method GET -ErrorAction Stop -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/${rid}?`$select=appRoles"
+                foreach ($ar in @($r.appRoles)) { $map[[string]$ar.id] = [string]$ar.value }
+            }
+            catch { }
+            $rolesByResource[$rid] = $map
+        }
+        $v = $rolesByResource[$rid][[string]$a.appRoleId]
+        if ($v) { $names.Add($v) }
+    }
+    return @{ ok = $true; roles = @($names | Sort-Object -Unique) }
+}
+
 # Connection-test probes: after Connect (auth), one cheap authorized READ proves real access — not
 # just that the credential authenticates. The m365 probe ALSO diffs the granted Graph scopes against
 # what onboarding needs, so a permissions gap is reported by name. Systems with a $DISPATCH Connect
@@ -1132,14 +1172,25 @@ function Get-CtgGraphScopeGaps {
 # the ad-dc credential. Extend freely — keep reads cheap + read-only.
 $CONNTEST_PROBE = @{
     'm365'             = { param($job, $creds)
-        $ctx = Get-MgContext
-        $granted = @(); if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
         $org = $null; try { $org = @(Get-MgOrganization -ErrorAction Stop)[0] } catch { }
         $base = if ($org) { "tenant: $($org.DisplayName)" } else { "connected" }
-        if ($granted.Count -eq 0) { return "$base · connected (couldn't read granted scopes to verify permissions)" }
+        # Read the ACTUAL consented application permissions from the directory (app-only doesn't expose
+        # them via Get-MgContext.Scopes). Falls back to delegated scopes if that's how we're connected.
+        $granted = @(); $how = ''
+        $real = Get-CtgGrantedGraphAppRoles
+        if ($real.ok) { $granted = @($real.roles); $how = 'application permissions (consented in this tenant)' }
+        else {
+            $ctx = Get-MgContext
+            if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes); $how = 'delegated scopes' }
+        }
+        if ($granted.Count -eq 0 -and -not $real.ok) {
+            return "$base · connected, but couldn't verify permissions: $($real.reason)"
+        }
         $gaps = Get-CtgGraphScopeGaps $granted
-        if ($gaps.Count) { throw "$base, but MISSING Graph permissions: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent, then re-test." }
-        "$base · all required Graph permissions present ($($granted.Count) granted)"
+        if ($gaps.Count) {
+            throw "$base · consented ${how}: [$(@($granted) -join ', ')] — but MISSING: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent IN THIS TENANT, then re-test."
+        }
+        "$base · all required Graph permissions present — ${how}: $(@($granted) -join ', ')"
     }
     'exchange'         = { param($job, $creds) $o = Get-OrganizationConfig -ErrorAction Stop; "org: $($o.Name)" }
     'mimecast'         = { param($job, $creds)
@@ -1452,12 +1503,25 @@ while ($true) {
                             else { 'User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All' }
                     $hint = "the app registration is missing a Graph APPLICATION permission for this step ($ph) — grant + admin-consent: $need"
                     try {
-                        $ctx = Get-MgContext
-                        $granted = @(); if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) }
-                        if ($granted.Count -gt 0) {
+                        # Prefer the REAL consented application permissions (read from the directory) over the
+                        # phase heuristic — app-only auth hides them from Get-MgContext.Scopes.
+                        $real = Get-CtgGrantedGraphAppRoles
+                        $granted = @()
+                        if ($real.ok) { $granted = @($real.roles) }
+                        else { $ctx = Get-MgContext; if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes) } }
+                        if ($real.ok) {
+                            $gaps = Get-CtgGraphScopeGaps $granted
+                            $hint = if ($gaps.Count) {
+                                "missing Graph permission(s): $($gaps -join ' || '). Consented in this tenant: [$(@($granted) -join ', ')]. Grant + admin-consent the missing ones (APPLICATION permissions) IN THIS TENANT."
+                            } else {
+                                "the app HAS the expected Graph permissions in this tenant ([$(@($granted) -join ', ')]). 'RequestDenied' here usually means a STALE TOKEN (runner connected before consent — restart the runner), recent consent not yet propagated, or the target object is protected (role-assignable/admin user). It is NOT a missing User.ReadWrite.All."
+                            }
+                        }
+                        elseif ($granted.Count -gt 0) {
                             $gaps = Get-CtgGraphScopeGaps $granted
                             if ($gaps.Count) { $hint = "missing Graph permission(s): $($gaps -join ' || '). Grant + admin-consent (Application permissions on the app registration)." }
                         }
+                        else { $hint = "$hint — note: couldn't read the app's consented permissions to confirm ($($real.reason))." }
                     } catch { }
                     $msg += " — $hint"
                 }
