@@ -122,9 +122,17 @@ function New-CtgAdConnection($creds) {
     $s = $creds['ad-dc']
     if ($s) {
         if ($s.Credential) { $ad.Credential = $s.Credential }
-        $server = $s.Fields['Server']
-        if (-not $server) { $server = $s.Fields['DomainController'] }
-        if ($server) { $ad.Server = $server }
+        # DC to target (-Server). The "Active Directory Account" Delinea template has no Server
+        # field, so the DC name is stored in its "Documentation Link" field — accept that (and a few
+        # aliases). Ignore a value that looks like a URL (a genuine doc link) so it can't be mistaken
+        # for a server. Omit entirely when the agent is on the DC (cmdlets use the local domain).
+        $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return [string]$s.Fields[$k] } } $null }
+        $server = & $pick @('Server', 'DomainController')
+        if (-not $server) {
+            $docLink = & $pick @('Documentation Link', 'DocumentationLink', 'Document Link', 'DocLink')
+            if ($docLink -and $docLink -notmatch '^\s*https?://') { $server = $docLink }
+        }
+        if ($server) { $ad.Server = ([string]$server).Trim() }
     }
     return $ad
 }

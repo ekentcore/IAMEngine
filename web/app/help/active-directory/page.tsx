@@ -60,7 +60,7 @@ pwsh -File C:\\iam-runner\\update-dc-runner.ps1 -AppUrl https://<app> -AgentId <
       <table>
         <tbody>
           <tr><th style={{ width: 160 }}>Username / Password</th><td><i>optional</i> — a <b>delegated</b> domain account that can create/modify/disable users in the target OUs (least-privilege). Omit if the agent already runs as an account with AD rights.</td></tr>
-          <tr><th>Server</th><td><i>optional</i> — a specific DC to target, e.g. <code>CORE-CCE-DC01</code> (or the alias field <code>DomainController</code>). <b>Omit when the agent is on the DC</b> — the cmdlets use the local domain. Set it only to pin/remote a DC.</td></tr>
+          <tr><th>Server (DC name)</th><td><i>optional</i> — a specific DC to target, e.g. <code>CORE-CCE-DC01</code>. <b>Omit when the agent is on the DC</b> (the cmdlets use the local domain); set it only to pin or remotely target a DC. <b>On the <code>Active Directory Account</code> template</b> (which has no Server field) put the DC name in the <b><code>Documentation Link</code></b> field — the runner reads it from there (also accepts <code>Server</code> / <code>DomainController</code>). A real URL in that field is ignored, so it&rsquo;s only used when it&rsquo;s a hostname.</td></tr>
         </tbody>
       </table>
       <p className="note">
