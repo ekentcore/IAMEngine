@@ -1,7 +1,7 @@
 // Runner coordination: enrollment, heartbeat, atomic claim, credential broker, result +
 // case advance. Factory-style over PrismaClient, mirroring lib/clients/repository.ts.
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
-import type { AgentScope, PrismaClient } from "@prisma/client";
+import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
@@ -258,19 +258,25 @@ export function makeRunnerService(db: PrismaClient) {
       // execution (the ActiveDirectory/RSAT module, the EXO cert + on-prem Exchange session, the
       // ADSync module) — those only work on the client-network agent. Otherwise it grabs an AD job it
       // can't run ("Invoke-CtgADOnboarding not recognized"). Client agents still claim everything.
+      const scope = agent.clientId ? { clientId: agent.clientId } : {};
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
           mode: "api",
-          // Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand an unrelated
-          // pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are candidates and
-          // the per-job dependency gate (below) blocks any whose prerequisites didn't succeed, so a
-          // failed step can't drag a dependent one in. "completed" is excluded (it has no pending work).
-          case: { status: { not: "completed" }, deletedAt: null, pausedAt: null, ...(agent.clientId ? { clientId: agent.clientId } : {}) },
           ...(agent.clientId ? {} : { systemKey: { notIn: ALWAYS_ON_PREM_SYSTEMS } }),
+          OR: [
+            // Normal flow. Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand
+            // an unrelated pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are
+            // candidates and the per-job dependency gate (below) blocks any whose prerequisites didn't
+            // succeed. "completed" is excluded (no pending work) and paused cases are held.
+            { case: { status: { not: "completed" }, deletedAt: null, pausedAt: null, ...scope } },
+            // "Run this step only": an operator-targeted job runs even though its case is paused (or
+            // completed) — that pause is exactly what stops the rest of the run from cascading.
+            { singleRun: true, case: { deletedAt: null, ...scope } },
+          ],
         },
         orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
-        select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true, case: { select: { status: true } } },
+        select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, singleRun: true, request: true, case: { select: { status: true } } },
       });
       if (candidates.length === 0) return [];
 
@@ -312,7 +318,14 @@ export function makeRunnerService(db: PrismaClient) {
 
       const eligible: string[] = [];
       for (const c of candidates) {
-        if (!isClaimable(lite(c), byCase.get(c.caseRequestId) ?? [], c.case.status)) continue;
+        // A single-step job bypasses the dependency gate AND the terminal/paused-case exclusion
+        // (it's an explicit, operator-confirmed run), but still honors the approval gate below and
+        // the secret/host-affinity preflight. Everything else uses the normal claim rules.
+        const lj = lite(c);
+        const claimable = c.singleRun
+          ? !(lj.requiresApproval && !lj.approved)
+          : isClaimable(lj, byCase.get(c.caseRequestId) ?? [], c.case.status);
+        if (!claimable) continue;
         // Host affinity: the central runner can't run an on-prem step (only exchange reaches here, and
         // only for a hybrid case). A client agent (agent.clientId set) runs everything for its client.
         if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
@@ -620,7 +633,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true } } } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, singleRun: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -637,9 +650,17 @@ export function makeRunnerService(db: PrismaClient) {
 
       await db.job.update({
         where: { id: jobId },
-        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date() },
+        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false },
       });
 
+      // "Run this step only" records the outcome but does NOT cascade — no auto-retry reschedule, no
+      // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
+      // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
+      let caseStatus: string;
+      if (job.singleRun) {
+        const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
+        caseStatus = cs?.status ?? "unknown";
+      } else {
       // AUTO-RETRY: a succeeded result carrying RetryAfterMinutes (e.g. Spanning/Mimecast "user not
       // discovered yet") schedules its own re-run; sweepAutoRetries re-queues it when due. A result
       // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time.
@@ -662,7 +683,7 @@ export function makeRunnerService(db: PrismaClient) {
 
 
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
-      let caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
       // (their dependency gate could never open behind a failed predecessor anyway).
       if (caseStatus === "failed") {
@@ -695,9 +716,10 @@ export function makeRunnerService(db: PrismaClient) {
           }
         }
       }
-      await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
+      await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus as CaseStatus } });
+      } // end normal (non-single-step) cascade
 
-      await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
+      await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: job.singleRun ? "job.result.single" : "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
 
       // Append-only outcome log: capture this run's success/warning/error per module, with the case
       // number + client + messages, so module problems can be tracked across cases (a re-run

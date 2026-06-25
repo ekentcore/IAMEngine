@@ -278,6 +278,7 @@ model Job {
   assignedAgent    Agent?            @relation(fields: [assignedAgentId], references: [id])
   assignedAgentId  String?
   request          Json? // resolved instructions for the runner
+  singleRun        Boolean           @default(false) // operator "run this step only": claimable even while the case is paused, runs in isolation (no cascade), cleared on result
   result           Json?
   evidence         Json? // screenshots / membership snapshots refs
   validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }

@@ -388,6 +388,31 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     }
   }
 
+  // Run ONLY this step, in isolation: the case is paused so nothing else cascades. If the step's
+  // prerequisites aren't done the server returns 409 + blockedBy, and we warn-then-confirm (force).
+  async function runSingle(stepSeq: number, jobId: string | undefined, force = false) {
+    if (!jobId) return;
+    setBusy(`single-${stepSeq}`);
+    setOpen((s) => new Set(s).add(stepSeq));
+    try {
+      const r = await fetch(`/api/jobs/${jobId}/run-single`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }),
+      });
+      if (r.status === 409) {
+        const data = await r.json().catch(() => null);
+        const deps = (data?.blockedBy ?? []).map((b: { systemKey: string; status: string }) => `${b.systemKey} (${b.status})`).join(", ");
+        if (confirm(`The step(s) this depends on aren't complete: ${deps || "unknown"}.\n\nRunning this step now may fail. Do you wish to continue?`)) {
+          await runSingle(stepSeq, jobId, true); // re-issue forced
+        }
+        return;
+      }
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not run the step");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function stopStep(stepSeq: number, jobId: string | undefined) {
     if (!jobId) return;
     if (!confirm("Stop this step? It'll be marked failed and the case stops waiting on it (a late result from the runner is ignored). You can re-run it after.")) return;
@@ -598,6 +623,18 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   onClick={(e) => { e.preventDefault(); rerun(step.seq, step.jobId); }}
                 >
                   {busy === `rerun-${step.seq}` ? "re-running…" : "re-run / re-validate"}
+                </button>
+              )}
+              {/* Run ONLY this step (no cascade): the case is paused so the rest of the run is held.
+                  For testing or fixing a single step. Hidden while it's in flight / awaiting approval. */}
+              {["pending", "verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && (
+                <button
+                  style={{ marginLeft: 8, fontSize: 11 }}
+                  disabled={busy === `single-${step.seq}`}
+                  title="Run just this step now and hold the rest of the run (the case is paused). Use Resume to continue the full run."
+                  onClick={(e) => { e.preventDefault(); runSingle(step.seq, step.jobId); }}
+                >
+                  {busy === `single-${step.seq}` ? "running…" : "▶ run this step only"}
                 </button>
               )}
               {/* Ignore an intentional warning/failure ("mark as complete") — or un-ignore it. */}
