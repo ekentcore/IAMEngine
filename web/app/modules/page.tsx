@@ -42,8 +42,23 @@ function ExecutorBadge({ e }: { e: ModuleEntry["executor"] }) {
 }
 
 export default async function ModulesPage() {
-  const usage = await db.clientSystem.groupBy({ by: ["systemKey"], _count: { systemKey: true } });
-  const countBy = new Map(usage.map((u) => [u.systemKey, u._count.systemKey]));
+  // Per-system client list (names), so the Clients count can show WHO on hover.
+  const usage = await db.clientSystem.findMany({
+    select: { systemKey: true, client: { select: { name: true } } },
+    orderBy: { client: { name: "asc" } },
+  });
+  const namesBy = new Map<string, string[]>();
+  for (const u of usage) {
+    const arr = namesBy.get(u.systemKey) ?? [];
+    arr.push(u.client.name);
+    namesBy.set(u.systemKey, arr);
+  }
+  // Tooltip text: full list, capped so a 140-client system doesn't make an unreadable tooltip.
+  const namesTitle = (key: string): string => {
+    const names = namesBy.get(key) ?? [];
+    if (!names.length) return "no clients use this module";
+    return names.length > 40 ? `${names.slice(0, 40).join(", ")}, …+${names.length - 40} more` : names.join(", ");
+  };
 
   const help = existingHelpSlugs();
   const hasGuide = (m: ModuleEntry) => help.has(slugFor(m));
@@ -104,7 +119,13 @@ export default async function ModulesPage() {
                           <span className="muted">—</span>
                         )}
                       </td>
-                      <td className="muted">{countBy.get(m.key) ?? 0}</td>
+                      <td
+                        className="muted"
+                        style={{ cursor: (namesBy.get(m.key)?.length ?? 0) ? "help" : "default" }}
+                        title={namesTitle(m.key)}
+                      >
+                        {namesBy.get(m.key)?.length ?? 0}
+                      </td>
                       <td className="note">{m.note ?? ""}</td>
                     </tr>
                   );
