@@ -36,11 +36,24 @@ function CopyField({ label, value, mono = true, area = false }: { label: string;
 export function ExoCertTool() {
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState("");
-  const [cn, setCn] = useState("iam-engine-exo");
+  const [client, setClient] = useState("");
   const [days, setDays] = useState(730);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cert, setCert] = useState<Cert | null>(null);
+
+  // Name the cert after the client for visibility — its CN/filename/thumbprint become identifiable
+  // ("which client is this cert for?"). Falls back to the generic label when no client is given.
+  const slug = client.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const cn = slug ? `iam-engine-exo-${slug}` : "iam-engine-exo";
+
+  // The .pfx password isn't fetched from anywhere — it's yours to choose; you paste it into Delinea
+  // as CertificatePassword. This just makes a strong one so nobody ships a weak/blank pfx.
+  function randomPassword() {
+    const b = new Uint8Array(18);
+    crypto.getRandomValues(b);
+    setPassword(btoa(String.fromCharCode(...b)).replace(/[^a-zA-Z0-9]/g, "").slice(0, 20) + "aA1");
+  }
 
   async function generate() {
     setBusy(true); setError(null); setCert(null);
@@ -75,22 +88,25 @@ export function ExoCertTool() {
         <button onClick={() => setOpen(false)} aria-label="Close" style={{ fontSize: 12 }}>×</button>
       </div>
       <p className="note" style={{ margin: "0.3rem 0 0.6rem" }}>
-        Creates a fresh 2048-bit self-signed cert in your browser session (nothing is stored). Pick a password for the
-        private key — you&rsquo;ll paste it into Delinea as <code>CertificatePassword</code>.
+        Creates a fresh 2048-bit self-signed cert in your browser session (nothing is stored). The password is one
+        <b> you choose</b> (or generate below) — it encrypts the .pfx and you paste it into Delinea as
+        {" "}<code>CertificatePassword</code>. The cert is named after the client so you can tell which is which.
       </p>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 8 }}>
+        <label style={{ fontSize: 12 }}>Client (cert label)<br />
+          <input value={client} onChange={(e) => setClient(e.target.value)} placeholder="e.g. jams" style={{ width: 150 }} />
+        </label>
         <label style={{ fontSize: 12 }}>Private-key password<br />
-          <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="at least 8 characters" style={{ width: 220 }} />
+          <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="≥ 8 chars, or generate →" style={{ width: 200 }} />
         </label>
-        <label style={{ fontSize: 12 }}>Common name<br />
-          <input value={cn} onChange={(e) => setCn(e.target.value)} style={{ width: 160 }} />
-        </label>
+        <button onClick={randomPassword} title="Generate a strong random password" style={{ fontSize: 12 }}>↻ random</button>
         <label style={{ fontSize: 12 }}>Valid (days)<br />
           <input type="number" value={days} min={30} max={1095} onChange={(e) => setDays(Number(e.target.value))} style={{ width: 90 }} />
         </label>
         <button className="primary" onClick={generate} disabled={busy || password.trim().length < 8}>{busy ? "Generating…" : "Generate"}</button>
       </div>
+      <p className="note" style={{ margin: "-2px 0 8px" }}>Certificate name (CN): <code>{cn}</code></p>
       {error && <p className="note danger">{error}</p>}
 
       {cert && (
