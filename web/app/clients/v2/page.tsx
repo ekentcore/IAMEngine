@@ -24,6 +24,7 @@ export default async function ClientsV2Page() {
           <p className="note">{clients.length} total · {modeled} modeled · pick modules to see who has them</p>
         </div>
         <div style={{ display: "flex", gap: "1rem", alignSelf: "flex-start" }}>
+          <Link href="/clients/v2/review" className="note">✨ AI Review</Link>
           <Link href="/clients/review" className="note">⊞ Config review</Link>
           <Link href="/clients" className="note">← back to Clients</Link>
         </div>
