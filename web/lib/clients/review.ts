@@ -5,7 +5,7 @@
 import type { ClientListItem } from "./types";
 
 export type ReviewSeverity = "high" | "medium" | "low";
-export type ReviewCategory = "missing-domain" | "malformed-domain" | "domain-name-mismatch" | "email-format" | "other";
+export type ReviewCategory = "missing-domain" | "malformed-domain" | "domain-name-mismatch" | "domain-unreachable" | "email-format" | "other";
 
 export type ReviewFinding = {
   clientId: string;

@@ -11,6 +11,7 @@ const CAT_LABEL: Record<ReviewCategory, string> = {
   "missing-domain": "Missing domain",
   "malformed-domain": "Malformed domain",
   "domain-name-mismatch": "Domain ↔ name mismatch",
+  "domain-unreachable": "Domain unreachable",
   "email-format": "Email format",
   other: "Other",
 };
@@ -23,15 +24,17 @@ export function AiReviewView({ initial, clientCount, aiAvailable }: { initial: R
   const [ranAi, setRanAi] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>("all");
+  const [checked, setChecked] = useState(0);
 
   async function runAi() {
     setBusy(true); setError(null);
     try {
       const res = await runClientReview();
       if ("error" in res) { setError(res.error); return; }
-      // Merge: keep what we have, add anything new (dedupe by client+category+message).
-      const seen = new Set(findings.map(dedupeKey));
-      setFindings([...findings, ...res.findings.filter((f) => !seen.has(dedupeKey(f)))]);
+      // Replace with the full result (heuristics + live-domain checks + AI), de-duped.
+      const seen = new Set<string>();
+      setFindings(res.findings.filter((f) => { const k = dedupeKey(f); if (seen.has(k)) return false; seen.add(k); return true; }));
+      setChecked(res.domainsChecked);
       setRanAi(true);
     } finally {
       setBusy(false);
@@ -54,12 +57,12 @@ export function AiReviewView({ initial, clientCount, aiAvailable }: { initial: R
   return (
     <>
       <div className="filters" style={{ marginTop: "1rem", alignItems: "center", gap: 8 }}>
-        <button className="primary" onClick={runAi} disabled={busy || !aiAvailable}
-          title={aiAvailable ? "Send every client to the LLM to flag subtle issues" : "Azure OpenAI isn't configured (set AZUREAI_* in env)"}>
-          {busy ? "Reviewing…" : ranAi ? "↻ Re-run AI review" : "✨ Run AI review"}
+        <button className="primary" onClick={runAi} disabled={busy}
+          title="Loads every client's domain (homepage title + where it redirects) and sends it with the record to the LLM to flag mismatches — takes ~30–60s">
+          {busy ? "Reviewing… (loading domains)" : ranAi ? "↻ Re-run review" : "✨ Run AI review (loads each domain)"}
         </button>
-        {!aiAvailable && <span className="note">AI pass unavailable — showing heuristic checks only.</span>}
-        {ranAi && <span className="note">AI added {aiCount} finding{aiCount === 1 ? "" : "s"}.</span>}
+        {!aiAvailable && <span className="note">Azure OpenAI not configured — domain load-checks still run; LLM matching is skipped.</span>}
+        {ranAi && <span className="note">Checked {checked} domain{checked === 1 ? "" : "s"} · AI flagged {aiCount}.</span>}
         <select className="inline" value={catFilter} onChange={(e) => setCatFilter(e.target.value)} style={{ marginLeft: "auto" }}>
           <option value="all">All categories ({findings.length})</option>
           {(Object.keys(CAT_LABEL) as ReviewCategory[]).filter((k) => counts[k]).map((k) => (
