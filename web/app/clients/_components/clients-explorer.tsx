@@ -9,6 +9,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Backbone, ClientStatus } from "@prisma/client";
 import { MODULES } from "@/lib/modules/catalog";
+import { SyncButton } from "./sync-button";
+import { AddClientDialog } from "./add-client-dialog";
 
 export type ClientVM = {
   id: string; slug: string; name: string; primaryDomain: string;
@@ -95,6 +97,11 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
 
   return (
     <>
+      <div className="toolbar" style={{ marginTop: "1rem" }}>
+        <SyncButton />
+        <AddClientDialog />
+      </div>
+
       <div className="filters">
         <input className="search" placeholder="Search name, CORE id, domain, region…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <ModulePicker options={moduleOptions} selected={selected} onToggle={toggleModule} onClear={() => setSelected(new Set())} match={match} onMatch={setMatch} />

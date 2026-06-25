@@ -23,7 +23,10 @@ export default async function ClientsV2Page() {
           <h1>Clients <span className="note">(v2 — filter by modules)</span></h1>
           <p className="note">{clients.length} total · {modeled} modeled · pick modules to see who has them</p>
         </div>
-        <Link href="/clients" className="note" style={{ alignSelf: "flex-start" }}>← back to Clients</Link>
+        <div style={{ display: "flex", gap: "1rem", alignSelf: "flex-start" }}>
+          <Link href="/clients/review" className="note">⊞ Config review</Link>
+          <Link href="/clients" className="note">← back to Clients</Link>
+        </div>
       </div>
       <ClientsExplorer clients={clients.map(toVM)} />
     </main>
