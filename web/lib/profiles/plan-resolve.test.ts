@@ -81,3 +81,34 @@ test("no mirror directive → no mirrorFromUser key", () => {
   const resolved = resolvePlannedConfigs({ personas: null, globals: null, locations: null }, payload, "onboard", planned);
   assert.equal("mirrorFromUser" in (resolved[0].config as Record<string, unknown>), false);
 });
+
+// ── M365 licensing rules (config.onboard.licenseRules) ───────────────────────────────────────────
+const LIC_RULES = [
+  { when: "needsComputer == true", licenses: ["Microsoft 365 E5"] },
+  { when: "", licenses: ["Office 365 E1"] },
+];
+
+test("license rules: needs a computer → E5", () => {
+  const planned = [job("m365", { licenseRules: LIC_RULES })];
+  const r = resolvePlannedConfigs(client, { ...payload, needsComputer: true }, "onboard", planned);
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Microsoft 365 E5"]);
+});
+
+test("license rules: no computer → E1 default", () => {
+  const planned = [job("m365", { licenseRules: LIC_RULES })];
+  const r = resolvePlannedConfigs(client, { ...payload, needsComputer: false }, "onboard", planned);
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Office 365 E1"]);
+});
+
+test("license rules: explicit ticket productLicenses overrides the rule (left untouched)", () => {
+  const planned = [job("m365", { licenseRules: LIC_RULES, licenses: ["Microsoft 365 E3"] })];
+  const r = resolvePlannedConfigs(client, { ...payload, needsComputer: true, productLicenses: ["Microsoft 365 F3"] }, "onboard", planned);
+  // rule did NOT run, so the static config.licenses stays as authored
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Microsoft 365 E3"]);
+});
+
+test("license rules: a v2.0 client (no personas/globals) still gets rule-resolved licenses", () => {
+  const planned = [job("m365", { licenseRules: LIC_RULES })];
+  const r = resolvePlannedConfigs({}, { ...payload, needsComputer: true }, "onboard", planned);
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Microsoft 365 E5"]);
+});

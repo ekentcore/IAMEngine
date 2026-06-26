@@ -15,6 +15,8 @@ import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { GenerateRunbookButton } from "../_components/generate-runbook-button";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
+import { M365LicenseRulesEditor } from "../_components/m365-license-rules-editor";
+import { normalizeLicenseRules } from "@/lib/m365/license-rules";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
@@ -210,6 +212,15 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenses?: unknown; defaultLicenses?: unknown } };
             const lic = cfg.onboard?.licenses ?? cfg.onboard?.defaultLicenses ?? [];
             return Array.isArray(lic) ? lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean) : [];
+          })()}
+        />
+      )}
+      {sysByKey.has("m365") && (
+        <M365LicenseRulesEditor
+          slug={client.slug}
+          current={(() => {
+            const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenseRules?: unknown } };
+            return normalizeLicenseRules(cfg.onboard?.licenseRules);
           })()}
         />
       )}

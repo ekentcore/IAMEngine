@@ -5,6 +5,7 @@
 // semantics (remove groups / move OU / set attrs).
 import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
+import { evaluateLicenseRules } from "../m365/license-rules";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = { personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown };
@@ -53,24 +54,25 @@ export function resolvePlannedConfigs(
   const mirror = typeof payload.mirrorPermissionsFromUser === "string" && payload.mirrorPermissionsFromUser.trim()
     ? payload.mirrorPermissionsFromUser.trim() : null;
 
+  // One context for everything below (persona select + condition eval). Safe for v2.0 clients too —
+  // selectPersona just returns null with no personas.
+  const { context, persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
+
   // v2.1 resolution (persona/globals → flattened config) only when the client has those blocks.
   const resolved = (!personas && !globals)
     ? planned
-    : (() => {
-        const { context, persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
-        return planned.map((j) => ({
-          ...j,
-          config: resolveSystemConfig(
-            j.systemKey,
-            {
-              globals: globals?.[j.systemKey] ?? null,
-              persona: (persona?.def?.systems?.[j.systemKey] as Record<string, unknown> | undefined) ?? null,
-              own: (j.config as Record<string, unknown> | null) ?? null,
-            },
-            context
-          ),
-        }));
-      })();
+    : planned.map((j) => ({
+        ...j,
+        config: resolveSystemConfig(
+          j.systemKey,
+          {
+            globals: globals?.[j.systemKey] ?? null,
+            persona: (persona?.def?.systems?.[j.systemKey] as Record<string, unknown> | undefined) ?? null,
+            own: (j.config as Record<string, unknown> | null) ?? null,
+          },
+          context
+        ),
+      }));
 
   const withMirror = !mirror
     ? resolved
@@ -80,14 +82,28 @@ export function resolvePlannedConfigs(
           : j
       );
 
+  // Per-client M365 licensing rules: pick config.licenses from intake facts (e.g. needsComputer → E5
+  // else E1). v2.0 + v2.1 alike. SKIP when the ticket explicitly listed product licenses — a deliberate
+  // request overrides the rule (the runner already prefers payload.productLicenses over config.licenses).
+  const explicitLicenses = Array.isArray(payload.productLicenses)
+    && payload.productLicenses.some((x) => typeof x === "string" && x.trim() !== "");
+  const withLicenses = explicitLicenses
+    ? withMirror
+    : withMirror.map((j) => {
+        if (j.systemKey !== "m365") return j;
+        const cfg = (j.config as Record<string, unknown> | null) ?? {};
+        const ruleLicenses = evaluateLicenseRules((cfg as { licenseRules?: unknown }).licenseRules, context);
+        return ruleLicenses ? { ...j, config: { ...cfg, licenses: ruleLicenses } } : j;
+      });
+
   // Distribution lists requested on m365 can only be written by the Exchange Online lane (Graph
   // can't add DL members). Flow the m365/entra requested groups onto the exchange job's config so the
   // EXO step adds the distribution ones by name (it only sees its own config). It picks the DLs and
   // skips security/365 groups (those stay Graph's job).
-  const m365Groups = withMirror.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
+  const m365Groups = withLicenses.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
   const reqGroups = m365Groups && Array.isArray(m365Groups.groups) ? m365Groups.groups : null;
-  if (!reqGroups || reqGroups.length === 0) return withMirror;
-  return withMirror.map((j) =>
+  if (!reqGroups || reqGroups.length === 0) return withLicenses;
+  return withLicenses.map((j) =>
     j.systemKey === "exchange"
       ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), namedGroups: reqGroups } }
       : j
