@@ -528,7 +528,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
       {running && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
-          <span><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
+          <span suppressHydrationWarning><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
         </div>
       )}
       {(verifying || report.verifiedAt) && (
@@ -612,7 +612,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 </span>
               )}
               {step.currentPhase && (
-                <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }}>
+                <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }} suppressHydrationWarning>
                   <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…
                 </span>
               )}
@@ -743,7 +743,10 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 <div>
                   <div className="note">Actions:</div>
                   <ul className="muted" style={{ margin: "0.2rem 0 0" }}>
-                    {step.actions.map((a, i) => <li key={i}>{a}</li>)}
+                    {/* This report polls live; an actively-running step appends to its action lines
+                        (e.g. "username available: <upn>") between the server snapshot and hydration.
+                        That benign churn is expected — suppress the hydration text-diff warning. */}
+                    {step.actions.map((a, i) => <li key={i} suppressHydrationWarning>{a}</li>)}
                   </ul>
                 </div>
               )}
