@@ -338,9 +338,9 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   const off = "#c4c7cc";
                   return (
                     <span className="icon-stack">
-                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "#15803d" : off }} onClick={() => setPaused(c, false)}>▶</button>
-                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "#b45309" : off }} onClick={() => setPaused(c, true)}>⏸</button>
-                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "#b3261e" : off }} onClick={() => cancelRun(c)}>⏹</button>
+                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "#15803d" : off }} onClick={() => setPaused(c, false)}>{"▶︎"}</button>
+                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "#b45309" : off }} onClick={() => setPaused(c, true)}>{"⏸︎"}</button>
+                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "#b3261e" : off }} onClick={() => cancelRun(c)}>{"⏹︎"}</button>
                     </span>
                   );
                 })()}

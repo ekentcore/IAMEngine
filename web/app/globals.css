@@ -312,11 +312,15 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 }
 
 /* clients/v2: compact stacked row-action icon buttons + email-format chips */
-.icon-stack { display: inline-flex; flex-direction: column; gap: 3px; }
+.icon-stack { display: inline-flex; flex-direction: column; gap: 2px; }
+/* Small FLAT icon button — override the base button's pill radius / shadow / padding so a 1-char
+   glyph reads as a compact icon, not a big oval. */
 .icon-btn {
-  width: 26px; height: 23px; padding: 0; font-size: 12px; line-height: 1;
+  width: 22px; height: 20px; min-width: 0; padding: 0; font-size: 12px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 4px; background: transparent; box-shadow: none;
 }
+.icon-btn:hover:not(:disabled) { background: var(--bg-soft); border-color: var(--line-2); }
 .email-chip {
   font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
   padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line, #e5e5e5);
