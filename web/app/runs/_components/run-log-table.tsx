@@ -93,7 +93,6 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
             <th style={{ padding: "4px 8px", width: 86 }}>Module</th>
             <th style={{ padding: "4px 8px", width: 78 }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Message</th>
-            <th style={{ padding: "4px 8px", width: 132 }}></th>
           </tr>
         </thead>
         <tbody>
@@ -113,22 +112,22 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
                 <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
                 <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
                 <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: r.done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
-                  {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
-                  {r.done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
-                </td>
-                <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                  {/* Actions float top-right INSIDE the message cell: pinned to the row's right edge while
+                      the message text fills the full width and wraps under them — no sparse actions column. */}
                   {(r.verdict === "warning" || r.verdict === "failed") && (
-                    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap" }}>
                       <CopyButton text={r.copyText} />
                       <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
                     </span>
                   )}
+                  {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
+                  {r.done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
                 </td>
               </tr>
             );
           })}
           {rows.length === 0 && (
-            <tr><td colSpan={8} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>{emptyText}</td></tr>
+            <tr><td colSpan={7} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>{emptyText}</td></tr>
           )}
         </tbody>
       </table>
