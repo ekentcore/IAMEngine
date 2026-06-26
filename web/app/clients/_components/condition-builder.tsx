@@ -10,15 +10,22 @@ import { parseCondition, serializeCondition, validateCondition, type ConditionMo
 // Free text is allowed too — intake payload fields like `avd` pass through — so this is a datalist,
 // not a closed select.
 export const VARS = [
-  "country.short", "country.name", "country.code",
-  "employmentType", "role.name", "title", "manager", "startDate",
+  // identity / role / employment (from the intake)
+  "title", "department", "jobTitle", "employmentType", "isRehire", "role.name", "manager", "startDate", "officeLocation",
+  // yes/no intake fields — compare with "is" and a Yes/No (or true/false) value, e.g. needsComputer is Yes
+  "needsComputer", "clientProvidingAsset", "dockingStation", "keyboardMouse", "monitorStands",
+  // location (matched from the office) + country
   "location.name", "location.city", "location.state", "location.zip", "location.timezone",
+  "country.short", "country.name", "country.code",
+  // identity tokens
   "first", "last", "mobile", "did", "extension", "domain", "upn", "username",
-  // requested needs / hardware / software (free-text intake fields — match with "matches (regex)",
-  // e.g. otherNeeds ~= macbook|apple to add a Mac group when a Mac is requested)
+  // free-text needs / hardware / software (match with "matches (regex)", e.g. otherNeeds ~= macbook|apple)
   "otherNeeds", "otherHardware", "otherSoftware", "installedSoftware", "cloudApplications",
-  "needsComputer", "printers", "description",
+  "printers", "monitors", "description",
 ];
+
+// Intake fields that are yes/no booleans — used to offer Yes/No on the value side.
+export const BOOL_VARS = new Set(["needsComputer", "clientProvidingAsset", "dockingStation", "keyboardMouse", "monitorStands", "isRehire"]);
 
 // Common AD / Entra attribute names to SET (the "then set …" side). Free text still allowed — this
 // is only autocomplete. A static seed; AD discovery (later) can replace it with the DC's real schema.
@@ -92,6 +99,7 @@ export function ConditionBuilder({ value, onChange }: { value: string; onChange:
   return (
     <div style={{ border: "1px solid var(--border, #e2e2e2)", borderRadius: 4, padding: "6px 8px", background: "#fafafa" }}>
       <datalist id="rule-vars">{VARS.map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="rule-bool-vals"><option value="Yes" /><option value="No" /></datalist>
       {model.map((group, gi) => (
         <div key={gi}>
           {gi > 0 && <div className="note" style={{ margin: "4px 0", fontWeight: 600, color: "#7b3fa0" }}>OR</div>}
@@ -103,7 +111,8 @@ export function ConditionBuilder({ value, onChange }: { value: string; onChange:
               <select className="inline" value={term.op} onChange={(e) => setTerm(gi, ti, { op: e.target.value as TermOp })}>
                 {OPS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
               </select>
-              <input className="inline" style={{ width: 150 }} placeholder={term.op === "in" ? "CA, GA, TX" : "value"} value={term.value}
+              <input className="inline" style={{ width: 150 }} list={BOOL_VARS.has(term.var.trim()) ? "rule-bool-vals" : undefined}
+                placeholder={term.op === "in" ? "CA, GA, TX" : BOOL_VARS.has(term.var.trim()) ? "Yes / No" : "value"} value={term.value}
                 onChange={(e) => setTerm(gi, ti, { value: e.target.value })} spellCheck={false} />
               <button type="button" title="remove" onClick={() => removeTerm(gi, ti)} style={{ color: "#b3261e" }}>×</button>
             </div>

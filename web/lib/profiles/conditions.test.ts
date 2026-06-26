@@ -80,3 +80,21 @@ test("interpolate: computed initials + legacy <username> alias", () => {
 test("interpolate: an unknown token is left literal (so a typo is visible)", () => {
   assert.equal(interpolate("{first}.{nope}", ctx), "John.{nope}");
 });
+
+// Boolean-aware equality: a Yes/No intake field (stored as a boolean true/false OR the string
+// "Yes"/"No") matches both `== Yes` and `== true`. Regression for UM0029350 (needsComputer == Yes).
+test("boolean intake field matches Yes / true / No literals", () => {
+  // stored as a real boolean
+  assert.equal(evalCondition("needsComputer == Yes", { needsComputer: true }), true);
+  assert.equal(evalCondition("needsComputer == true", { needsComputer: true }), true);
+  assert.equal(evalCondition("needsComputer == Yes", { needsComputer: false }), false);
+  assert.equal(evalCondition("needsComputer == No", { needsComputer: false }), true);
+  assert.equal(evalCondition("needsComputer != Yes", { needsComputer: false }), true);
+  // stored as the string "Yes"/"No"
+  assert.equal(evalCondition("needsComputer == Yes", { needsComputer: "Yes" }), true);
+  assert.equal(evalCondition("needsComputer == No", { needsComputer: "No" }), true);
+  assert.equal(evalCondition("needsComputer == Yes", { needsComputer: "No" }), false);
+  // absent → falsy
+  assert.equal(evalCondition("needsComputer == Yes", {}), false);
+  assert.equal(evalCondition("needsComputer == No", {}), true);
+});

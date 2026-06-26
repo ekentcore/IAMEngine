@@ -18,6 +18,10 @@ const stripQuotes = (s: string): string => {
 
 const norm = (v: unknown): string => String(v ?? "").trim();
 
+// Boolean literals accepted on the RHS of ==/!= (so a Yes/No intake field reads naturally).
+const BOOL_TRUE = new Set(["true", "yes", "1", "on"]);
+const BOOL_FALSE = new Set(["false", "no", "0", "off"]);
+
 // Evaluate one term: "<var> <op> <value>". Ops: ==, !=, ~= (regex), `in [a, b, c]`.
 function evalTerm(term: string, ctx: PlanContext): boolean {
   const t = term.trim();
@@ -47,12 +51,21 @@ function evalTerm(term: string, ctx: PlanContext): boolean {
     }
   }
 
-  // boolean-aware, case-insensitive equality (mirrors PowerShell -eq)
+  // boolean-aware, case-insensitive equality (mirrors PowerShell -eq). A boolean LITERAL is any of
+  // true/false/yes/no/1/0/on/off — so a "Computer Needed" intake field (stored as the boolean true,
+  // OR as the string "Yes") matches `needsComputer == Yes` AND `needsComputer == true`.
+  const vlow = value.toLowerCase();
   let equal: boolean;
-  if (value === "true" || value === "false") {
-    equal = Boolean(actualRaw) === (value === "true");
+  if (BOOL_TRUE.has(vlow) || BOOL_FALSE.has(vlow)) {
+    const a = norm(actualRaw).toLowerCase();
+    const actualBool = typeof actualRaw === "boolean" ? actualRaw
+      : typeof actualRaw === "number" ? actualRaw !== 0
+      : BOOL_TRUE.has(a) ? true
+      : BOOL_FALSE.has(a) ? false
+      : a !== ""; // any other non-empty string counts as truthy (matches the old behavior)
+    equal = actualBool === BOOL_TRUE.has(vlow);
   } else {
-    equal = norm(actualRaw).toLowerCase() === value.toLowerCase();
+    equal = norm(actualRaw).toLowerCase() === vlow;
   }
   return op === "==" ? equal : !equal;
 }
