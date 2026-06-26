@@ -997,6 +997,15 @@ function Update-CtgRunner {
         try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; Write-Host "self-update: pruned stale $($f.Name)" -ForegroundColor DarkYellow } catch { }
     }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
+    # SUPERVISED (launchd KeepAlive / systemd Restart=always — set RUNNER_SUPERVISED=1): the cleanest,
+    # most reliable restart is to just EXIT and let the supervisor relaunch us on the new code. Don't
+    # self-spawn here too, or we'd get a double runner (our child + the supervisor's restart). This is
+    # the robust path — no fragile process hand-off. install-launchd.sh sets this flag.
+    if ($env:RUNNER_SUPERVISED) {
+        Write-Host "self-update: supervised — exiting so the service manager relaunches on the new code" -ForegroundColor Green
+        exit 0
+    }
+    # UNSUPERVISED (a hand-started `nohup` launch): we must spawn our own replacement before exiting.
     # Relaunch a fresh process on the just-downloaded script, then exit this one. Spawn it via WMI
     # (Win32_Process.Create), NOT Start-Process: the WMI host creates the process, so it BREAKS AWAY
     # from this process's job object and survives our exit. Under a SYSTEM Scheduled Task a
