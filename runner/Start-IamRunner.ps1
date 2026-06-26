@@ -1523,6 +1523,20 @@ while ($true) {
                             $mod = Repair-CtgMissingModule $missing
                             if ($mod) { Set-CtgPhase $job.id "installed $mod — retrying $($job.systemKey)"; continue }
                         }
+                        # Self-heal a STALE app-only Graph token: a RequestDenied on m365/entra is often a
+                        # token minted BEFORE consent was granted (the runner connects once per tenant and
+                        # reuses it). Force a fresh token — disconnect (clears the MSAL cache), drop the
+                        # cached connection, reconnect — and retry ONCE. If it's a genuinely missing
+                        # permission this just fails again and the accurate hint below fires.
+                        if ($try -eq 0 -and ($job.systemKey -in @('m365', 'entra')) -and $handler.ContainsKey('Connect') -and
+                            ([string]$_.Exception.Message -match 'Insufficient privileges|Authorization_RequestDenied|Access(Denied| is denied)')) {
+                            Set-CtgPhase $job.id "RequestDenied — refreshing the Graph token (new app-only token) and retrying once"
+                            try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }
+                            if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($job.systemKey) }
+                            & $handler.Connect $job $creds
+                            $script:ConnectedTenant[$job.systemKey] = "$(if ($job.client) { $job.client.primaryDomain } else { '' })|$(Get-CtgCredFingerprint $creds)"
+                            continue
+                        }
                         throw
                     }
                 }
