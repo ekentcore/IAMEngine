@@ -86,7 +86,7 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
       }}
     >
       {c.paused
-        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? "⏸ held — resume to run" : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
+        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? (c.lastRunIso ? "⏸ held — resume to run" : "▶︎ Press Play to Start") : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
         : warns.length
           ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
           : (STATUS_LABEL[c.status] ?? c.status)}
