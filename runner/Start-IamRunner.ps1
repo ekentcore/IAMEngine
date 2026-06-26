@@ -1028,17 +1028,20 @@ function Update-CtgRunner {
         }
     }
     else {
-        # macOS/Linux: relaunch DETACHED from this terminal and redirect output to the log. A bare
-        # Start-Process keeps the child attached to our stdout/tty; once we exit, the child writes to a
-        # dead tty -> "Out-LineOutput: Input/output error" + ;1R cursor-report noise. nohup + `>> log
-        # 2>&1 &` (via bash) fully detaches and appends to the same log the launcher uses. Args are
-        # single-quote-escaped so a path/token with odd chars can't break the command line.
+        # macOS/Linux: relaunch DETACHED, output redirected to the log (not the tty — a bare child on
+        # the dead tty throws "Out-LineOutput: Input/output error" + ;1R noise). We must NOT pass the
+        # redirect/`&` as a `-c` string to Start-Process: its argument-joining mangles a complex string
+        # (bash ended up running just `nohup` with no command -> "usage: nohup"). Instead write a tiny
+        # launcher script and run it with a SINGLE safe arg; `exec … >> log 2>&1` takes pwsh off the tty
+        # and the Start-Process child survives our exit on Unix (no nohup needed).
         $log = if ($env:RUNNER_LOG) { $env:RUNNER_LOG } else { Join-Path $HOME 'iam-runner.log' }
         $a = @($pwshPath, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', "$PollSeconds", '-BatchSize', "$BatchSize", '-ExoModuleVersion', $ExoModuleVersion)
         if ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
         $q = { param($s) "'" + ([string]$s -replace "'", "'\''") + "'" }
-        $cmd2 = "nohup " + (($a | ForEach-Object { & $q $_ }) -join ' ') + " >> $(& $q $log) 2>&1 &"
-        Start-Process -FilePath '/bin/bash' -ArgumentList @('-c', $cmd2) | Out-Null
+        $line = (($a | ForEach-Object { & $q $_ }) -join ' ') + " >> $(& $q $log) 2>&1"
+        $launcher = Join-Path ([System.IO.Path]::GetTempPath()) 'iam-runner-relaunch.sh'
+        [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nexec $line`n")
+        Start-Process -FilePath '/bin/sh' -ArgumentList $launcher | Out-Null
         Write-Host "self-update: relaunched detached on new code (log: $log)" -ForegroundColor Green
     }
     exit 0
