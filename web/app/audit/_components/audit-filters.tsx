@@ -4,13 +4,15 @@
 // and the view is shareable/bookmarkable).
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { actionLabel } from "@/lib/audit/action-labels";
+import { actionLabel, actionGroup } from "@/lib/audit/action-labels";
+import { ActionMultiSelect } from "./action-multiselect";
 
 export function AuditFilters({
   actions,
   current,
   basePath = "/audit",
   english = false,
+  multi = false,
   extra = {},
 }: {
   actions: string[];
@@ -18,6 +20,7 @@ export function AuditFilters({
   basePath?: string;     // /audit (v1) or /audit/v2
   english?: boolean;     // render action keys in plain English (v2). A function can't cross the
                          // server→client boundary, so we take a flag and look the label up here.
+  multi?: boolean;       // v2: a searchable checkbox multi-select (OR), with "All <group>" options.
   extra?: Record<string, string>; // params to preserve across filter changes (e.g. user=<id>)
 }) {
   const label = (a: string) => (english ? actionLabel(a) : a);
@@ -40,10 +43,18 @@ export function AuditFilters({
         <span className="search-icon" aria-hidden>⌕</span>
         <input className="search" placeholder="Search action or actor…" value={q} onChange={(e) => setQ(e.target.value)} />
       </form>
-      <select className="inline" value={current.action} onChange={(e) => apply({ action: e.target.value })} title="Filter by action">
-        <option value="">All actions</option>
-        {actions.map((a) => <option key={a} value={a}>{label(a)}</option>)}
-      </select>
+      {multi ? (
+        <ActionMultiSelect
+          options={actions.map((a) => ({ key: a, label: label(a), group: actionGroup(a) }))}
+          selected={current.action ? current.action.split(",").filter(Boolean) : []}
+          onChange={(keys) => apply({ action: keys.join(",") })}
+        />
+      ) : (
+        <select className="inline" value={current.action} onChange={(e) => apply({ action: e.target.value })} title="Filter by action">
+          <option value="">All actions</option>
+          {actions.map((a) => <option key={a} value={a}>{label(a)}</option>)}
+        </select>
+      )}
       <select className="inline" value={current.days} onChange={(e) => apply({ days: e.target.value })} title="Time window">
         <option value="1">Last 24h</option>
         <option value="7">Last 7 days</option>

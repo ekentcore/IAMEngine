@@ -89,3 +89,16 @@ function prettify(key: string): string {
 export function actionLabel(action: string): string {
   return EXPLICIT[action] ?? prettify(action);
 }
+
+// A friendly GROUP for an action, so related keys collapse into one "All X" filter — e.g. every
+// auth.login* (incl. SSO) groups under "Login". Used by the audit multi-select.
+const GROUP_BY_SEGMENT: Record<string, string> = {
+  client: "Client", job: "Step", case: "Case", agent: "Agent",
+  servicenow: "ServiceNow", cloudgroups: "Cloud groups", conntest: "Connection test", procurement: "Procurement",
+};
+export function actionGroup(action: string): string {
+  if (action.startsWith("auth.login") || action === "auth.logout") return "Login";
+  if (action.startsWith("auth.")) return "Auth";
+  const seg = action.split(/[._:]/)[0];
+  return GROUP_BY_SEGMENT[seg] ?? (seg ? seg.charAt(0).toUpperCase() + seg.slice(1) : "Other");
+}

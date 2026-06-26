@@ -30,13 +30,14 @@ export default async function AuditV2Page({ searchParams }: { searchParams: { q?
   }
 
   const q = (searchParams.q ?? "").trim();
-  const action = (searchParams.action ?? "").trim();
+  const actionParam = (searchParams.action ?? "").trim(); // comma-separated (multi-select)
+  const actions = actionParam.split(",").map((s) => s.trim()).filter(Boolean);
   const userId = (searchParams.user ?? "").trim();
   const days = searchParams.days === "all" ? null : Number(searchParams.days ?? 7);
 
   const where: Prisma.AuditLogWhereInput = {};
   if (days && Number.isFinite(days)) where.at = { gte: new Date(Date.now() - days * 86_400_000) };
-  if (action) where.action = action;
+  if (actions.length) where.action = { in: actions }; // OR across the selected actions
   if (userId) where.userId = userId; // logs for just this operator
   if (q) where.OR = [{ action: { contains: q, mode: "insensitive" } }, { actor: { contains: q, mode: "insensitive" } }];
   const scope = await currentClientScope(db);
@@ -91,9 +92,10 @@ export default async function AuditV2Page({ searchParams }: { searchParams: { q?
       )}
       <AuditFilters
         actions={sortedActions}
-        current={{ q, action, days: searchParams.days ?? "7" }}
+        current={{ q, action: actionParam, days: searchParams.days ?? "7" }}
         basePath="/audit/v2"
         english
+        multi
         extra={userId ? { user: userId } : {}}
       />
       <table style={{ marginTop: "1rem" }}>
