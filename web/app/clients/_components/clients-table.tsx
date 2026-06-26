@@ -530,20 +530,16 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 )}
               </td>
               <td className="row-actions">
-                <div className="action-stack">
-                  <button onClick={() => setEditSlug(c.slug)}>Edit</button>
-                  <button
-                    title="Re-pull this client from ServiceNow, discarding manual edits"
-                    onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}
-                  >
-                    ↻ Refresh
-                  </button>
+                <span className="icon-stack" style={{ flexDirection: "row" }}>
+                  <button className="icon-btn" title="Edit systems" aria-label="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
+                  <button className="icon-btn" title="Re-pull this client from ServiceNow, discarding manual edits" aria-label="Hard refresh"
+                    onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}>↻</button>
                   {c.status === "archived" ? (
-                    <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
+                    <button className="icon-btn" title="Restore (unarchive)" aria-label="Restore" disabled={busy === c.slug} onClick={() => patch(c, "restore")}>↩</button>
                   ) : (
-                    <button onClick={() => askArchive(c)} disabled={busy === c.slug}>Archive</button>
+                    <button className="icon-btn" title="Archive" aria-label="Archive" disabled={busy === c.slug} onClick={() => askArchive(c)}>🗄</button>
                   )}
-                </div>
+                </span>
               </td>
             </tr>
           ))}
