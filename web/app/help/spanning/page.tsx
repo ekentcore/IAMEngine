@@ -22,21 +22,21 @@ export default function SpanningSetupPage() {
       <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
         <b>How it authenticates</b>
         <p style={{ margin: "0.4rem 0 0" }}>
-          The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the Client ID</b>,
-          {" "}<b>password = the Client Secret</b> (both from the API section of the Spanning admin console), against
-          {" "}<code>https://o365-api-&#123;region&#125;.spanningbackup.com</code> (region = US/EU/AP/UK/CA; the runner
-          appends <code>/external</code>). The old public docs describe a legacy pair (<b>domain : access token</b>
-          {" "}against <code>api-&#123;region&#125;…/api/v1</code>) — a freshly-issued credential was rejected there, so
-          treat legacy as unsupported; if you hit a tenant that only works that way, flag it.
+          The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the email you sign in to Spanning
+          with</b>, <b>password = your API Key</b> (Settings → API Token), against
+          {" "}<code>https://o365-api-&#123;region&#125;.spanningbackup.com</code> (region = US/EU/AP/UK/CA — the United
+          States is <code>us</code>; the runner appends <code>/external</code>). Use the <b>o365-api</b> host — the bare
+          {" "}<code>api-&#123;region&#125;</code> host is a different product surface and returns 404.
         </p>
       </div>
 
-      <h2>1. Get the Client ID + Client Secret</h2>
+      <h2>1. Get the API Key</h2>
       <ol>
-        <li>Sign in to the <b>Spanning Backup admin console</b> for the client&rsquo;s tenant.</li>
-        <li>Open <b>Settings</b> (direct link: <code>https://spanningbackup.com/auth/redirectTo?initialPath=/app/settings/backup</code>)
-          and find the <b>API</b> section — it issues a <b>Client ID</b> and a <b>Client Secret</b> pair.</li>
-        <li>Note the tenant&rsquo;s <b>region</b> from the console URL (e.g. <code>o365-us…</code> → US).</li>
+        <li>Sign in to the <b>Spanning Backup admin console</b> for the client&rsquo;s tenant — note the
+          {" "}<b>email you sign in with</b> (that&rsquo;s the Basic-auth username).</li>
+        <li>Open <b>Settings</b> and scroll to <b>API Token</b> at the <b>bottom of the page</b> — copy the
+          {" "}<b>API Key</b> (generate one if there isn&rsquo;t one yet).</li>
+        <li>Note the tenant&rsquo;s <b>region</b> from the console URL (e.g. <code>o365-us…</code> → <code>us</code>).</li>
       </ol>
       <p className="note">
         Only <b>Regenerate</b> if you have to: it invalidates the current credential immediately, everywhere it&rsquo;s used.
@@ -49,19 +49,18 @@ export default function SpanningSetupPage() {
       </p>
       <table>
         <tbody>
-          <tr><th style={{ width: 160 }}>ClientID</th><td>the Spanning <b>Client ID</b> (the Basic-auth username)</td></tr>
-          <tr><th>ClientSecret</th><td>the Spanning <b>Client Secret</b></td></tr>
-          <tr><th>apiURL</th><td>the region host, e.g. <code>https://o365-api-us.spanningbackup.com</code> (swap <code>us</code> for the region). Paste just the host — the runner appends <code>/external</code>. Omit to default to US.</td></tr>
-          <tr><th>Secret name / AccountID</th><td>label / legacy only — <code>AccountID</code> is the account <b>domain</b> for old domain:access-token tenants; leave blank otherwise.</td></tr>
+          <tr><th style={{ width: 160 }}>clientID</th><td>the <b>email you log in to Spanning with</b> (the Basic-auth username)</td></tr>
+          <tr><th>ClientSecret</th><td>the <b>API Key</b> — Spanning admin → <b>Settings</b> → <b>API Token</b> (at the bottom of the page)</td></tr>
+          <tr><th>accountid</th><td>the account <b>domain without its suffix</b> — e.g. <code>coretelligent.com</code> → <code>coretelligent</code></td></tr>
+          <tr><th>apiURL</th><td><code>https://o365-api-&lt;region&gt;.spanningbackup.com</code> — for the United States the region is <code>us</code> (so <code>https://o365-api-us.spanningbackup.com</code>). Paste just the host; the runner appends <code>/external</code>.</td></tr>
         </tbody>
       </table>
       <p className="note">
-        Field-name matching, in case a template differs (spacing/casing variants accepted): secret ←
-        {" "}<code>ClientSecret / AccessToken / ApiToken / API Key / Token / Key / Password</code>;
-        {" "}username ← <code>ClientID / Domain / AccountID / Account / Tenant</code> (else the secret&rsquo;s Username,
-        else the client&rsquo;s primary domain); base URL ← <code>apiURL / BaseUrl / Url</code> (else a <code>Region</code>
-        {" "}field, else US). If no secret field is found the step fails with a message listing the field names it
-        looked for.
+        Field-name matching, in case a template differs (spacing/casing variants accepted): username ←
+        {" "}<code>clientID / Domain / AccountID / Account / Tenant</code> (else the secret&rsquo;s Username, else the
+        client&rsquo;s primary domain); API Key ← <code>ClientSecret / AccessToken / ApiToken / API Key / Token / Key /
+        Password</code>; base URL ← <code>apiURL / BaseUrl / Url</code> (else a <code>Region</code> field, else US).
+        If no key field is found the step fails with a message listing the field names it looked for.
       </p>
       <p className="note">Grant the app&rsquo;s Delinea service account <b>Read</b> on the secret, or the Test shows &ldquo;access denied&rdquo;.</p>
 
@@ -77,9 +76,9 @@ export default function SpanningSetupPage() {
         <li>Run the <code>spanning</code> step <b>dry-run first</b>. A green dry-run confirms the domain, region and token are all correct.</li>
         <li>You can also confirm by hand:</li>
       </ul>
-      <Code>{`curl -u "<clientID>:<clientSecret>" -H "Accept: application/json" \\
+      <Code>{`curl -u "<login-email>:<api-key>" -H "Accept: application/json" \\
   https://o365-api-<region>.spanningbackup.com/external/tenant
-# 200 + tenant JSON = the credential is correct; 401 = wrong Client ID/Secret (or wrong region)`}</Code>
+# 200 + tenant JSON = the credential is correct; 401 = wrong email/API Key (or wrong region)`}</Code>
 
       <h2>Notes</h2>
       <ul>
