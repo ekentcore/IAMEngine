@@ -147,6 +147,17 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
     }
   }
 
+  // Run transport: resume (play) a paused case, pause a running one, or cancel a running one (stop
+  // in-flight steps + pause). Terminal cases (completed/failed) have nothing to control.
+  function setPaused(c: CaseRowVM, paused: boolean) {
+    call(c.id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused }) }, `/api/cases/${c.id}/pause`);
+  }
+  function cancelRun(c: CaseRowVM) {
+    const label = c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8);
+    if (!confirm(`Cancel the run for "${label}"? In-flight steps are stopped and the case is paused (not deleted).`)) return;
+    call(c.id, { method: "POST" }, `/api/cases/${c.id}/cancel`);
+  }
+
   function remove(c: CaseRowVM) {
     const label = c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8);
     if (!confirm(`Move case "${label}" to the trash? It leaves the list and is restorable for 30 days.`)) return;
@@ -274,6 +285,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
             <SortHead k="effectiveDate" label="Start / off date" />
             <SortHead k="lastRun" label="Last run" />
             <SortHead k="createdAt" label="Created" />
+            <th aria-label="Run controls"></th>
             <th style={{ width: 28 }} aria-label="Actions"></th>
           </tr>
         </thead>
@@ -311,6 +323,20 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                 {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {(() => {
+                  const terminal = c.status === "completed" || c.status === "failed";
+                  const active = !c.paused && !terminal; // queued/planning/running/needs_* = "running"
+                  const busy = busyId === c.id;
+                  return (
+                    <span className="icon-stack" style={{ flexDirection: "row", gap: 2 }}>
+                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} onClick={() => setPaused(c, false)}>▶</button>
+                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} onClick={() => setPaused(c, true)}>⏸</button>
+                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} onClick={() => cancelRun(c)}>⏹</button>
+                    </span>
+                  );
+                })()}
+              </td>
               <td style={{ width: 28, padding: 0, textAlign: "right" }}>
                 <button
                   onClick={() => remove(c)}
@@ -336,7 +362,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={11} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
+              <td colSpan={12} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
                 {working.length === 0 ? (splitCompleted ? "No open cases — completed work is below." : "No cases yet. Import a ServiceNow ticket or create one.") : "No cases match your search."}
               </td>
             </tr>
