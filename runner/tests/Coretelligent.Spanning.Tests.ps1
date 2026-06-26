@@ -46,6 +46,19 @@ Describe 'Invoke-CtgSpanningOnboarding' {
         ($r.Actions -join ' ') | Should -Match 'has not discovered'
     }
 
+    It 'reactivates an INACTIVE (isDeleted) user by assigning a license — not "not discovered"' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'back@medipost.com'; userPrincipalName = 'back@medipost.com'; assigned = $false; isArchive = $false; isDeleted = $true } }
+            return [pscustomobject]@{ licensed = $true }
+        }
+        $r = Invoke-CtgSpanningOnboarding -User ([pscustomobject]@{ UserPrincipalName = 'back@medipost.com' }) -Config ([pscustomobject]@{ assignLicense = $true })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'INACTIVE'
+        ($r.Actions -join ' ') | Should -Not -Match 'has not discovered'
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' } -Times 1
+    }
+
     It 'warns to open a Procurement Case on a seat error (does not fail the job)' {
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
@@ -121,6 +134,17 @@ Describe 'Find-CtgSpanningUser (list fallback)' {
         $u.email | Should -Be 'jdoe@medipost.com'
         $u.isDeleted | Should -BeFalse
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match '^/users\?size=' } -Times 1
+    }
+
+    It 'returns an INACTIVE (isDeleted) user when that is the only record (so onboarding can reactivate)' {
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
+            param($Method, $Path, $Body)
+            if ($Path -match '^/users/') { throw 'Spanning API: GET .../users/x -> HTTP 400 — Bad Request' }
+            return [pscustomobject]@{ users = @([pscustomobject]@{ email = 'inactive@medipost.com'; assigned = $false; isDeleted = $true }) }
+        }
+        $u = Find-CtgSpanningUser -Email 'inactive@medipost.com'
+        $u | Should -Not -BeNullOrEmpty
+        $u.isDeleted | Should -BeTrue
     }
 
     It 'still treats 404 as user-not-present (no fallback, returns null)' {

@@ -168,12 +168,15 @@ function Find-CtgSpanningUser {
         $list = Get-CtgProp $resp 'users'
         if ($null -eq $list) { $list = Get-CtgProp $resp 'items' }
         if ($null -eq $list) { $list = $resp }
-        $hit = @($list) | Where-Object {
-            -not (Get-CtgProp $_ 'isDeleted') -and (
-                ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
-                ([string](Get-CtgProp $_ 'userPrincipalName')).ToLower() -eq $needle
-            )
-        } | Select-Object -First 1
+        $matches = @($list) | Where-Object {
+            ([string](Get-CtgProp $_ 'email')).ToLower() -eq $needle -or
+            ([string](Get-CtgProp $_ 'userPrincipalName')).ToLower() -eq $needle
+        }
+        # Prefer an ACTIVE record, but fall back to an inactive (isDeleted) one — the user IS in
+        # Spanning, just deactivated; onboarding reactivates them rather than waiting forever for a
+        # "discovery" that already happened.
+        $hit = @($matches | Where-Object { -not (Get-CtgProp $_ 'isDeleted') } | Select-Object -First 1)
+        if (-not $hit) { $hit = @($matches | Select-Object -First 1) }
         if ($hit) { return $hit }
         $path = ConvertTo-CtgSpanningPath ([string](Get-CtgProp $resp 'nextLink'))
     }
@@ -221,9 +224,15 @@ function Invoke-CtgSpanningOnboarding {
         # RetryAfterMinutes: the app re-queues this job automatically (capped) — see sweepAutoRetries.
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray(); RetryAfterMinutes = 15 }
     }
-    if (Test-CtgSpanningLicensed $found) {
+    $inactive = [bool](Get-CtgProp $found 'isDeleted')
+    if ((Test-CtgSpanningLicensed $found) -and -not $inactive) {
         $actions.Add("backup already enabled for $email (Standard license already assigned)")
         return [pscustomobject]@{ System = 'spanning'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+    }
+    if ($inactive) {
+        # The user exists in Spanning but is deactivated/inactive. Spanning's API has no explicit
+        # "reactivate" — assigning a Standard license is what brings the user back to active + backed up.
+        $actions.Add("$email exists in Spanning but is INACTIVE — assigning a Standard license to reactivate and enable backup")
     }
 
     if ($PSCmdlet.ShouldProcess($email, "assign Spanning Backup Standard license")) {
@@ -240,6 +249,11 @@ function Invoke-CtgSpanningOnboarding {
         catch {
             if ((Get-CtgProp $Config 'procureIfUnavailable') -and (Test-CtgSpanningSeatError $_.Exception.Message)) {
                 $actions.Add("WARN no available Spanning backup seats — backup NOT enabled for $email. Open a Procurement Case to order a Spanning license, then re-run this step.")
+            }
+            elseif ($inactive -and (Test-CtgSpanning404 $_)) {
+                # Soft-deleted users can usually be re-licensed; a 404 here means Spanning won't take
+                # the assign while the user is deactivated — needs a manual reactivation first.
+                throw "Spanning rejected the license assign for $email — the user is INACTIVE in Spanning and the API has no reactivate endpoint. Reactivate them in the Spanning admin console, then re-run this step."
             }
             else { throw }
         }
