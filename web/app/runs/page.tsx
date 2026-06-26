@@ -105,16 +105,18 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
 
       <p className="note">{rows.length} distinct line{rows.length === 1 ? "" : "s"}{verdict || system || q ? " (filtered)" : !includeClean ? " — open errors & warnings" : ""}{includeResolved ? " · including fixed" : ""}. Identical repeats are collapsed; <b>✓ Fixed</b> clears every occurrence of a line (and future re-runs of it).</p>
 
-      <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+      {/* Fixed layout + explicit column widths so a long, unbreakable message (URLs, snake_case tokens)
+          wraps inside the Message column instead of widening the table and pushing the actions off-card. */}
+      <table style={{ width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line, #e5e7eb)" }}>
-            <th style={{ padding: "4px 8px" }}>When</th>
-            <th style={{ padding: "4px 8px" }}>Case</th>
-            <th style={{ padding: "4px 8px" }}>Client</th>
-            <th style={{ padding: "4px 8px" }}>Module</th>
-            <th style={{ padding: "4px 8px" }}>Result</th>
+            <th style={{ padding: "4px 8px", width: 84 }}>When</th>
+            <th style={{ padding: "4px 8px", width: 116 }}>Case</th>
+            <th style={{ padding: "4px 8px", width: 130 }}>Client</th>
+            <th style={{ padding: "4px 8px", width: 86 }}>Module</th>
+            <th style={{ padding: "4px 8px", width: 78 }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Message</th>
-            <th style={{ padding: "4px 8px" }}></th>
+            <th style={{ padding: "4px 8px", width: 132 }}></th>
           </tr>
         </thead>
         <tbody>
@@ -130,13 +132,13 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
               <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
               <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
               <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-              <td style={{ padding: "4px 8px", color: done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
+              <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
                 {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
                 {done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
               </td>
               <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
                 {(r.verdict === "warning" || r.verdict === "failed") && (
-                  <span style={{ display: "inline-flex", gap: 4 }}>
+                  <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     {/* error is already messages[0] for a failed step (jobOutcome pushes it first), so
                         append it only when it isn't already shown — otherwise the copy duplicates it. */}
                     <CopyButton text={[`${r.systemKey} (${r.caseNumber})`, ...r.messages, ...(r.error && !r.messages.includes(r.error) ? [r.error] : [])].filter(Boolean).join("\n")} />
