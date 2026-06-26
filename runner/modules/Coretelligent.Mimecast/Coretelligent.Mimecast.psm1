@@ -130,10 +130,23 @@ function Get-CtgMimecastProfile {
         $msgs = @($fail | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { "$(Get-CtgProp $_ 'code'): $(Get-CtgProp $_ 'message')" } })
         $joined = $msgs -join '; '
         if ($joined -match 'unknown|not.?found|no such|invalid.*(user|email|address)|user.*invalid') { return $null }
-        # A "forbidden for address" / permissions fail is a Mimecast setup problem, not a transient
-        # miss — say what to fix instead of surfacing the raw code.
+        $domain = if ($Email -match '@') { $Email.Split('@')[1] } else { $Email }
+        # err_xdk_operation_forbidden_for_address: Mimecast returns "Forbidden To Perform Operation For
+        # Address" for an address it doesn't MANAGE yet — a brand-new hire not synced from the directory
+        # — which is semantically "not present", NOT a permission gap (existing users on the same account
+        # read fine). Confirm by reading a KNOWN address (postmaster@domain): if THAT reads, the app's
+        # permissions are fine and this user simply isn't in Mimecast yet -> treat as a miss, so onboarding
+        # triggers a sync and auto-retries until she appears (instead of hard-failing as "no permission").
+        if ($joined -match 'operation_forbidden_for_address|forbidden.{0,16}address') {
+            try {
+                $probe = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = "postmaster@$domain" } -AllowFail
+                if (@(Get-CtgProp $probe 'fail').Count -eq 0 -and @(Get-CtgProp $probe 'data').Count -gt 0) { return $null }
+            }
+            catch { }  # probe failed too — fall through to the permission diagnosis below
+        }
+        # A genuine permissions fail (the app can't read users at all) is a Mimecast setup problem, not a
+        # transient miss — say what to fix instead of surfacing the raw code.
         if ($joined -match 'forbidden|operation_forbidden|not .{0,6}permitted|unauthoriz|permission|denied') {
-            $domain = if ($Email -match '@') { $Email.Split('@')[1] } else { $Email }
             # Discriminate the two causes: best-effort list the account's internal domains. If we CAN
             # read them and $domain is missing -> it's a DOMAIN-not-internal problem; if $domain IS
             # listed -> it's a pure permission gap; if we can't read them at all -> permission gap.

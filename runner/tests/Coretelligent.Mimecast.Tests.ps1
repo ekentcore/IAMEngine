@@ -146,4 +146,21 @@ Describe 'Get-CtgMimecastProfile (fail classification)' {
         }
         { Get-CtgMimecastProfile -Email 'x@y.com' } | Should -Throw '*err_deserialise*'
     }
+
+    It 'forbidden-for-address + a readable postmaster = not synced yet (null), not a permission error' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            param($Path, $Data, $AllowFail)
+            $addr = if ($Data) { [string]$Data.emailAddress } else { '' }
+            if ($addr -like 'postmaster@*') { return [pscustomobject]@{ fail = @(); data = @([pscustomobject]@{ emailAddress = $addr }) } }
+            [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_xdk_operation_forbidden_for_address'; message = '0003 Forbidden To Perform Operation For Address' }) }); data = @() }
+        }
+        Get-CtgMimecastProfile -Email 'newhire@logicsource.com' | Should -BeNullOrEmpty
+    }
+
+    It 'forbidden-for-address where even postmaster is forbidden = a real permission gap (throws)' {
+        Mock Invoke-CtgMimecastApi -ModuleName Coretelligent.Mimecast -MockWith {
+            [pscustomobject]@{ fail = @([pscustomobject]@{ errors = @([pscustomobject]@{ code = 'err_xdk_operation_forbidden_for_address'; message = '0003 Forbidden To Perform Operation For Address' }) }); data = @() }
+        }
+        { Get-CtgMimecastProfile -Email 'x@y.com' } | Should -Throw '*not permitted to read*'
+    }
 }
