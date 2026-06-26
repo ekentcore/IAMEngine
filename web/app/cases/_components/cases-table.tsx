@@ -320,10 +320,17 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
                 {c.lastRunIso ? (
-                  <>
-                    {formatDateTime(c.lastRunIso)}
-                    {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
-                  </>
+                  (() => {
+                    const d = new Date(c.lastRunIso!);
+                    return (
+                      <>
+                        {/* date over time keeps this column narrow (was one wide "Jun 26, 2026, 9:13 AM" line) */}
+                        <div>{d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</div>
+                        <div className="note" style={{ fontSize: 11 }}>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+                        {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                      </>
+                    );
+                  })()
                 ) : (
                   // Not run yet — show how it got here ("Imported") instead of a bare "—" with a stray "by".
                   c.lastActionLabel ?? "—"
