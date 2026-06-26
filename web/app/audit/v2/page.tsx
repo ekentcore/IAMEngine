@@ -93,7 +93,7 @@ export default async function AuditV2Page({ searchParams }: { searchParams: { q?
         actions={sortedActions}
         current={{ q, action, days: searchParams.days ?? "7" }}
         basePath="/audit/v2"
-        label={actionLabel}
+        english
         extra={userId ? { user: userId } : {}}
       />
       <table style={{ marginTop: "1rem" }}>

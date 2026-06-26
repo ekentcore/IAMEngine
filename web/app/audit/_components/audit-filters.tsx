@@ -4,20 +4,23 @@
 // and the view is shareable/bookmarkable).
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { actionLabel } from "@/lib/audit/action-labels";
 
 export function AuditFilters({
   actions,
   current,
   basePath = "/audit",
-  label = (a: string) => a,
+  english = false,
   extra = {},
 }: {
   actions: string[];
   current: { q: string; action: string; days: string };
-  basePath?: string;          // /audit (v1) or /audit/v2
-  label?: (a: string) => string; // render the action key in English (v2)
+  basePath?: string;     // /audit (v1) or /audit/v2
+  english?: boolean;     // render action keys in plain English (v2). A function can't cross the
+                         // server→client boundary, so we take a flag and look the label up here.
   extra?: Record<string, string>; // params to preserve across filter changes (e.g. user=<id>)
 }) {
+  const label = (a: string) => (english ? actionLabel(a) : a);
   const router = useRouter();
   const [q, setQ] = useState(current.q);
 
