@@ -51,8 +51,21 @@ export function M365LicenseRulesEditor({ slug, current }: { slug: string; curren
   if (!open) {
     return (
       <div className="note" style={{ marginTop: "0.4rem" }}>
-        License rules: <b>{current.length ? `${current.length} rule${current.length === 1 ? "" : "s"}` : "(none — uses the fixed license above)"}</b>{" "}
-        <button style={{ fontSize: 12, marginLeft: 6 }} onClick={() => { setRules(norm(current)); setMsg(null); setOpen(true); }}>Edit license rules</button>
+        <div style={{ marginBottom: current.length ? 4 : 0 }}>
+          License rules{current.length ? ":" : ": "}
+          {!current.length && <b>(none — uses the fixed license above)</b>}
+          <button style={{ fontSize: 12, marginLeft: 6 }} onClick={() => { setRules(norm(current)); setMsg(null); setOpen(true); }}>Edit license rules</button>
+        </div>
+        {current.length > 0 && (
+          <ol style={{ margin: "0 0 0 1.1rem", padding: 0 }}>
+            {norm(current).map((r, i) => (
+              <li key={i} style={{ fontSize: 12 }}>
+                {r.when.trim() ? <>if <code>{r.when}</code> → </> : <b>default → </b>}
+                {r.licenses.join(", ") || <span className="muted">(no license)</span>}
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
     );
   }

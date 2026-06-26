@@ -605,6 +605,12 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
             <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
+              {step.expectedLicenses && (
+                <span style={{ marginLeft: 8, fontSize: 12 }} title={step.expectedLicenses.fromTicket ? "From the ticket's product licenses — overrides the client's license rules" : "Resolved from the client's M365 license rules at plan time"}>
+                  · license: <b>{step.expectedLicenses.names.join(", ")}</b>
+                  <span className="note"> {step.expectedLicenses.fromTicket ? "(ticket)" : "(rule)"}</span>
+                </span>
+              )}
               {step.currentPhase && (
                 <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }}>
                   <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…

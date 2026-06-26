@@ -39,6 +39,10 @@ export type RunReportStep = {
   // When an M365 license couldn't be assigned for lack of seats, the tenant's license inventory
   // (owned SKUs + free seat counts) so the operator can pick another and re-run. null otherwise.
   licenseOptions: { skuId: string; skuPartNumber: string; name: string; available: number; enabled: number; consumed: number }[] | null;
+  // M365 step (onboard): the license(s) this user is expected to get — the plan's resolved
+  // config.licenses (which already applied the client's licensing rules), or the ticket's explicit
+  // product licenses when present (those override the rule). null for non-m365 / offboard / none.
+  expectedLicenses: { names: string[]; fromTicket: boolean } | null;
   // For a step sitting at "pending": WHY it hasn't started — waiting on predecessors, a missing
   // credential, or no runner online. The ordering part is computed here; loadRunReport refines the
   // "ready" case with credential/runner checks. null when the step isn't pending.
@@ -147,6 +151,22 @@ function licenseOptionsOf(result: unknown): RunReportStep["licenseOptions"] {
       consumed: Number(o.consumed ?? 0),
     }));
   return opts.length ? opts : null;
+}
+
+// The license(s) the M365 onboard step is expected to assign: the ticket's explicit product licenses
+// when present (they override the rule, matching the runner), else the plan's resolved config.licenses
+// (which already applied the client's licensing rules at plan time). null for non-m365/offboard/none.
+function expectedLicensesFor(j: JobRow, action: string, payload: Record<string, unknown>): RunReportStep["expectedLicenses"] {
+  if (j.systemKey !== "m365" || action !== "onboard") return null;
+  const names = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).map((s) => s.trim()).filter(Boolean) : [];
+
+  const ticket = names(payload.productLicenses);
+  if (ticket.length) return { names: [...new Set(ticket)], fromTicket: true };
+
+  const cfg = (((j.request ?? {}) as { config?: unknown }).config ?? {}) as { licenses?: unknown; defaultLicenses?: unknown };
+  const planned = names(cfg.licenses).length ? names(cfg.licenses) : names(cfg.defaultLicenses);
+  return planned.length ? { names: [...new Set(planned)], fromTicket: false } : null;
 }
 
 export function jobWarningLines(result: unknown, validation: unknown): string[] {
@@ -299,6 +319,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       pendingReason,
       licenseOptions: licenseOptionsOf(j.result),
       autoRetry: autoRetryData,
+      expectedLicenses: expectedLicensesFor(j, input.action, input.payload),
     };
   });
 
