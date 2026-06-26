@@ -6,25 +6,10 @@ import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
-import { FixButton } from "./_components/fix-button";
-import { CopyButton } from "./_components/copy-button";
+import { RunLogTable } from "./_components/run-log-table";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Run outcomes" };
-
-const VERDICT_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  failed: { bg: "#fef2f2", fg: "#b91c1c", label: "✗ error" },
-  warning: { bg: "#fffbeb", fg: "#92400e", label: "⚠ warning" },
-  verified: { bg: "#f0fdf4", fg: "#166534", label: "✓ success" },
-  skipped: { bg: "#f3f4f6", fg: "#6b7280", label: "skipped" },
-  manual: { bg: "#eef2ff", fg: "#3730a3", label: "✋ manual" },
-  pending: { bg: "#f3f4f6", fg: "#6b7280", label: "pending" },
-};
-
-function Badge({ verdict }: { verdict: string }) {
-  const s = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.pending;
-  return <span style={{ background: s.bg, color: s.fg, borderRadius: 6, padding: "1px 7px", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>{s.label}</span>;
-}
 
 function fmtTime(d: Date): string {
   return new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -105,55 +90,28 @@ export default async function RunsPage({ searchParams }: { searchParams: { q?: s
 
       <p className="note">{rows.length} distinct line{rows.length === 1 ? "" : "s"}{verdict || system || q ? " (filtered)" : !includeClean ? " — open errors & warnings" : ""}{includeResolved ? " · including fixed" : ""}. Identical repeats are collapsed; <b>✓ Fixed</b> clears every occurrence of a line (and future re-runs of it).</p>
 
-      {/* Fixed layout + explicit column widths so a long, unbreakable message (URLs, snake_case tokens)
-          wraps inside the Message column instead of widening the table and pushing the actions off-card. */}
-      <table style={{ width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line, #e5e7eb)" }}>
-            <th style={{ padding: "4px 8px", width: 84 }}>When</th>
-            <th style={{ padding: "4px 8px", width: 116 }}>Case</th>
-            <th style={{ padding: "4px 8px", width: 130 }}>Client</th>
-            <th style={{ padding: "4px 8px", width: 86 }}>Module</th>
-            <th style={{ padding: "4px 8px", width: 78 }}>Result</th>
-            <th style={{ padding: "4px 8px" }}>Message</th>
-            <th style={{ padding: "4px 8px", width: 132 }}></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const done = Boolean(r.resolvedAt);
-            return (
-            <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top", opacity: done ? 0.5 : 1 }}>
-              <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: "var(--muted, #6b7280)" }}>{fmtTime(r.at)}{r.count > 1 && <span className="note" style={{ marginLeft: 4 }}>×{r.count}</span>}</td>
-              <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
-                <Link href={`/cases/${r.caseRequestId}`}>{r.caseNumber}</Link>
-                <span className="note" style={{ marginLeft: 4, fontSize: 11 }}>{r.action}</span>
-              </td>
-              <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
-              <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
-              <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-              <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
-                {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
-                {done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
-              </td>
-              <td style={{ padding: "4px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
-                {(r.verdict === "warning" || r.verdict === "failed") && (
-                  <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    {/* error is already messages[0] for a failed step (jobOutcome pushes it first), so
-                        append it only when it isn't already shown — otherwise the copy duplicates it. */}
-                    <CopyButton text={[`${r.systemKey} (${r.caseNumber})`, ...r.messages, ...(r.error && !r.messages.includes(r.error) ? [r.error] : [])].filter(Boolean).join("\n")} />
-                    <FixButton fingerprint={r.fingerprint} resolved={done} count={r.count} />
-                  </span>
-                )}
-              </td>
-            </tr>
-            );
-          })}
-          {rows.length === 0 && (
-            <tr><td colSpan={7} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No {includeResolved ? "" : "open "}outcomes{verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.</td></tr>
-          )}
-        </tbody>
-      </table>
+      <RunLogTable
+        rows={rows.map((r) => ({
+          id: r.id,
+          atLabel: fmtTime(r.at),
+          count: r.count,
+          caseRequestId: r.caseRequestId,
+          caseNumber: r.caseNumber,
+          action: r.action,
+          clientName: r.clientName,
+          systemKey: r.systemKey,
+          validateOnly: r.validateOnly,
+          verdict: r.verdict,
+          messages: r.messages,
+          done: Boolean(r.resolvedAt),
+          resolvedBy: r.resolvedBy,
+          fingerprint: r.fingerprint,
+          // error is already messages[0] for a failed step (jobOutcome pushes it first), so append it
+          // only when it isn't already shown — otherwise the copy duplicates it.
+          copyText: [`${r.systemKey} (${r.caseNumber})`, ...r.messages, ...(r.error && !r.messages.includes(r.error) ? [r.error] : [])].filter(Boolean).join("\n"),
+        }))}
+        emptyText={`No ${includeResolved ? "" : "open "}outcomes${verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.`}
+      />
     </main>
   );
 }

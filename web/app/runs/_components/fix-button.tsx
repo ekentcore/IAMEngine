@@ -26,7 +26,7 @@ export function FixButton({ fingerprint, resolved, count }: { fingerprint: strin
         onClick={run}
         disabled={pending}
         title={resolved ? "Reopen this line" : count > 1 ? `Mark Fixed — clears all ${count} occurrences of this line for this case` : "Mark this line Fixed"}
-        style={{ fontSize: 11, padding: "1px 7px", color: resolved ? "#6b7280" : "#166534" }}
+        style={{ fontSize: 11, padding: "1px 7px", color: resolved ? "#6b7280" : "#111827" }}
       >
         {pending ? "…" : resolved ? "↺ Reopen" : "✓ Fixed"}
       </button>

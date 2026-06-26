@@ -22,6 +22,23 @@ export async function resolveOutcomes(fingerprint: string): Promise<Result> {
   }
 }
 
+// Bulk "Fixed": resolve every occurrence of each selected line (by fingerprint) in one call.
+export async function resolveManyOutcomes(fingerprints: string[]): Promise<Result> {
+  try {
+    const me = await requireUser();
+    const fps = [...new Set((fingerprints ?? []).filter((f): f is string => typeof f === "string" && f !== ""))];
+    if (!fps.length) return { ok: false, error: "nothing selected" };
+    const r = await db.runOutcome.updateMany({
+      where: { fingerprint: { in: fps }, resolvedAt: null },
+      data: { resolvedAt: new Date(), resolvedBy: me.email },
+    });
+    revalidatePath("/runs");
+    return { ok: true, count: r.count };
+  } catch (e) {
+    return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
+  }
+}
+
 export async function reopenOutcomes(fingerprint: string): Promise<Result> {
   try {
     await requireUser();
