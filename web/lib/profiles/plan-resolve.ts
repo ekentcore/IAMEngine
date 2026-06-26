@@ -82,18 +82,25 @@ export function resolvePlannedConfigs(
           : j
       );
 
-  // Per-client M365 licensing rules: pick config.licenses from intake facts (e.g. needsComputer → E5
-  // else E1). v2.0 + v2.1 alike. SKIP when the ticket explicitly listed product licenses — a deliberate
-  // request overrides the rule (the runner already prefers payload.productLicenses over config.licenses).
+  // Per-client M365 licensing rules: ADD the intake-selected license(s) (e.g. needsComputer → E5 else
+  // E1) to the client's base config.licenses — UNION, so a static add-on like "Defender for Office 365"
+  // is kept alongside the rule-chosen tier. v2.0 + v2.1 alike. SKIP when the ticket explicitly listed
+  // product licenses — a deliberate request overrides (the runner prefers payload.productLicenses).
   const explicitLicenses = Array.isArray(payload.productLicenses)
     && payload.productLicenses.some((x) => typeof x === "string" && x.trim() !== "");
+  const licenseName = (l: unknown): string => (typeof l === "string" ? l : String((l as { name?: unknown; skuId?: unknown })?.name ?? (l as { skuId?: unknown })?.skuId ?? ""));
   const withLicenses = explicitLicenses
     ? withMirror
     : withMirror.map((j) => {
         if (j.systemKey !== "m365") return j;
         const cfg = (j.config as Record<string, unknown> | null) ?? {};
         const ruleLicenses = evaluateLicenseRules((cfg as { licenseRules?: unknown }).licenseRules, context);
-        return ruleLicenses ? { ...j, config: { ...cfg, licenses: ruleLicenses } } : j;
+        if (!ruleLicenses) return j;
+        // base (static) licenses first, then append the rule-selected ones not already present (case-insensitive)
+        const base = Array.isArray(cfg.licenses) ? [...cfg.licenses] : [];
+        const seen = new Set(base.map((l) => licenseName(l).toLowerCase()).filter(Boolean));
+        for (const r of ruleLicenses) { const k = r.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(r); } }
+        return { ...j, config: { ...cfg, licenses: base } };
       });
 
   // Distribution lists requested on m365 can only be written by the Exchange Online lane (Graph

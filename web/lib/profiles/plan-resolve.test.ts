@@ -107,6 +107,20 @@ test("license rules: explicit ticket productLicenses overrides the rule (left un
   assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Microsoft 365 E3"]);
 });
 
+test("license rules ADD to the static base licenses (union, not replace)", () => {
+  // LogicSource-style: a static add-on + a rule that picks the tier → BOTH get assigned.
+  const planned = [job("m365", { licenses: ["Microsoft Defender for Office 365 (Plan 1)"], licenseRules: LIC_RULES })];
+  const r = resolvePlannedConfigs(client, { ...payload, needsComputer: true }, "onboard", planned);
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses,
+    ["Microsoft Defender for Office 365 (Plan 1)", "Microsoft 365 E5"]);
+});
+
+test("license rules: union de-dupes a license the base already lists", () => {
+  const planned = [job("m365", { licenses: ["Office 365 E5"], licenseRules: [{ when: "needsComputer == true", licenses: ["Office 365 E5", "Power BI Pro"] }] })];
+  const r = resolvePlannedConfigs(client, { ...payload, needsComputer: true }, "onboard", planned);
+  assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Office 365 E5", "Power BI Pro"]);
+});
+
 test("license rules: a v2.0 client (no personas/globals) still gets rule-resolved licenses", () => {
   const planned = [job("m365", { licenseRules: LIC_RULES })];
   const r = resolvePlannedConfigs({}, { ...payload, needsComputer: true }, "onboard", planned);
