@@ -319,8 +319,15 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                     : "—"}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
-                {formatDateTime(c.lastRunIso)}
-                {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                {c.lastRunIso ? (
+                  <>
+                    {formatDateTime(c.lastRunIso)}
+                    {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                  </>
+                ) : (
+                  // Not run yet — show how it got here ("Imported") instead of a bare "—" with a stray "by".
+                  c.lastActionLabel ?? "—"
+                )}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
               <td style={{ whiteSpace: "nowrap" }}>
@@ -328,11 +335,12 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   const terminal = c.status === "completed" || c.status === "failed";
                   const active = !c.paused && !terminal; // queued/planning/running/needs_* = "running"
                   const busy = busyId === c.id;
+                  const off = "#c4c7cc";
                   return (
-                    <span className="icon-stack" style={{ flexDirection: "row", gap: 2 }}>
-                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} onClick={() => setPaused(c, false)}>▶</button>
-                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} onClick={() => setPaused(c, true)}>⏸</button>
-                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} onClick={() => cancelRun(c)}>⏹</button>
+                    <span className="icon-stack">
+                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "#15803d" : off }} onClick={() => setPaused(c, false)}>▶</button>
+                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "#b45309" : off }} onClick={() => setPaused(c, true)}>⏸</button>
+                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "#b3261e" : off }} onClick={() => cancelRun(c)}>⏹</button>
                     </span>
                   );
                 })()}
