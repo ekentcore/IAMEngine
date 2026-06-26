@@ -5,17 +5,30 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-export function AuditFilters({ actions, current }: { actions: string[]; current: { q: string; action: string; days: string } }) {
+export function AuditFilters({
+  actions,
+  current,
+  basePath = "/audit",
+  label = (a: string) => a,
+  extra = {},
+}: {
+  actions: string[];
+  current: { q: string; action: string; days: string };
+  basePath?: string;          // /audit (v1) or /audit/v2
+  label?: (a: string) => string; // render the action key in English (v2)
+  extra?: Record<string, string>; // params to preserve across filter changes (e.g. user=<id>)
+}) {
   const router = useRouter();
   const [q, setQ] = useState(current.q);
 
   function apply(next: Partial<{ q: string; action: string; days: string }>) {
     const merged = { q, action: current.action, days: current.days, ...next };
     const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(extra)) if (v) params.set(k, v);
     if (merged.q) params.set("q", merged.q);
     if (merged.action) params.set("action", merged.action);
     if (merged.days && merged.days !== "7") params.set("days", merged.days);
-    router.push(`/audit${params.toString() ? `?${params}` : ""}`);
+    router.push(`${basePath}${params.toString() ? `?${params}` : ""}`);
   }
 
   return (
@@ -26,7 +39,7 @@ export function AuditFilters({ actions, current }: { actions: string[]; current:
       </form>
       <select className="inline" value={current.action} onChange={(e) => apply({ action: e.target.value })} title="Filter by action">
         <option value="">All actions</option>
-        {actions.map((a) => <option key={a} value={a}>{a}</option>)}
+        {actions.map((a) => <option key={a} value={a}>{label(a)}</option>)}
       </select>
       <select className="inline" value={current.days} onChange={(e) => apply({ days: e.target.value })} title="Time window">
         <option value="1">Last 24h</option>
@@ -36,7 +49,7 @@ export function AuditFilters({ actions, current }: { actions: string[]; current:
         <option value="all">All time</option>
       </select>
       {(current.q || current.action || current.days !== "7") && (
-        <button className="linklike" onClick={() => { setQ(""); router.push("/audit"); }}>clear</button>
+        <button className="linklike" onClick={() => { setQ(""); const p = new URLSearchParams(); for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v); router.push(`${basePath}${p.toString() ? `?${p}` : ""}`); }}>clear</button>
       )}
     </div>
   );

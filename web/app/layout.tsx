@@ -1,8 +1,10 @@
 import "./globals.css";
 import Link from "next/link";
-import { headers } from "next/headers";
+import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
+import { V2Toggle } from "./_components/v2-toggle";
+import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
@@ -46,7 +48,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
               showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
             />
-            {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+              <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
+              {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
+            </div>
           </header>
         )}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}

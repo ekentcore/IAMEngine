@@ -20,7 +20,7 @@ function lastSeen(iso: string | null) {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function UsersView({ users, meRole, clients, meId }: { users: UserVM[]; meRole: Role; clients: ClientLite[]; meId?: string }) {
+export function UsersView({ users, meRole, clients, meId, v2 = false }: { users: UserVM[]; meRole: Role; clients: ClientLite[]; meId?: string; v2?: boolean }) {
   const router = useRouter();
   const totalRestricted = clients.filter((c) => c.restricted).length;
   const [accessFor, setAccessFor] = useState<string | null>(null); // user id whose access editor is open
@@ -176,6 +176,11 @@ export function UsersView({ users, meRole, clients, meId }: { users: UserVM[]; m
                   onClick={() => run(`st-${u.id}`, () => setUserStatus(u.id, u.status === "active" ? "disabled" : "active"))}>
                   {u.status === "active" ? "Disable" : "Enable"}
                 </button>
+                {v2 && (
+                  <a href={`/audit/v2?user=${u.id}`} className="linklike" style={{ fontSize: 12, marginLeft: 8 }} title="See the audit log for just this user">
+                    Logs
+                  </a>
+                )}
               </td>
             </tr>
             {accessFor === u.id && u.role !== "super_admin" && (
