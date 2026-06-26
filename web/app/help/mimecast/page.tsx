@@ -37,13 +37,26 @@ export default function MimecastSetupPage() {
         <li>Open the application → <b>Manage API 2.0 credentials</b> → <b>Generate</b> → copy the
           {" "}<b>Client ID</b> and <b>Client Secret</b> (the secret is shown once).</li>
       </ol>
+      <h2>2. Set its role + products</h2>
       <p className="note">
-        The application acts with the permissions granted to it — for this module it needs directory read/edit
-        (sync + groups) and user read/create. If a call fails with a permissions error, the run report will show the
-        exact endpoint; grant the matching role on the application.
+        The application acts with the <b>role</b> and <b>products</b> you grant it. Set the role to
+        {" "}<b>Basic Administrator</b> or <b>Help Desk Administrator</b>, and enable these <b>four products</b>:
+      </p>
+      <ul>
+        <li><b>Account Management</b> — read the account</li>
+        <li><b>Domain Management</b> — read internal domains</li>
+        <li><b>Directory (Sync) Management</b> — list sync connections + trigger a sync, manage groups</li>
+        <li><b>User &amp; Group Management</b> — read / create users. <b>Required.</b> Without it, every user call fails
+          with <code>app_forbidden</code> (&ldquo;resource or method … does not exist in any product assigned to the
+          application&rdquo;).</li>
+      </ul>
+      <p className="note">
+        Quick check that it&rsquo;s the products and not the domain: existing users (e.g. <code>postmaster@&lt;client&gt;</code>)
+        should read fine. If they do but a <i>new hire</i> is &ldquo;Forbidden To Perform Operation For Address&rdquo;, that&rsquo;s
+        just <b>not-synced-yet</b> (see Notes), not a permissions problem.
       </p>
 
-      <h2>2. Store it in Delinea</h2>
+      <h2>3. Store it in Delinea</h2>
       <table>
         <tbody>
           <tr><th style={{ width: 200 }}>Username <span className="note">(or ClientID field)</span></th><td>the <b>Client ID</b></td></tr>
@@ -55,7 +68,7 @@ export default function MimecastSetupPage() {
         (ClientID + ClientSecret fields). If neither pair is found the step fails naming the fields it saw.
       </p>
 
-      <h2>3. Wire + verify</h2>
+      <h2>4. Wire + verify</h2>
       <ul>
         <li>Point the client&rsquo;s <code>mimecast</code> reference at the secret (Credentials panel) → <b>Test</b> green.</li>
         <li><b>Update the runner</b>, then run the <code>mimecast</code> step <b>dry-run first</b>.</li>
@@ -71,6 +84,11 @@ export default function MimecastSetupPage() {
         <li><b>Users come from directory sync.</b> The step triggers a sync (<code>/api/directory/execute-sync</code>) and
           checks visibility (<code>/api/user/get-profile</code>); Mimecast syncs on its own schedule too, so a brand-new
           user may show as a validation warning until the sync lands — re-run to confirm.</li>
+        <li><b>&ldquo;Forbidden To Perform Operation For Address&rdquo; on a new hire is normal.</b> Mimecast returns that
+          (<code>err_xdk_operation_forbidden_for_address</code>) for an address it doesn&rsquo;t manage <i>yet</i> — i.e. the
+          user hasn&rsquo;t synced in. The runner detects this (by confirming a known address still reads) and treats it as
+          &ldquo;not present yet,&rdquo; auto-retrying every 15 min until the sync lands — it is <b>not</b> a permission
+          error. A real permission gap fails for <i>every</i> address, including <code>postmaster@</code>.</li>
         <li><b>createIfMissing:</b> only for clients with no directory sync — creates a cloud user in the Internal
           Directory with a forced password change.</li>
         <li><b>Offboarding</b> removes group memberships; the mailbox itself follows the disabled directory account.</li>
