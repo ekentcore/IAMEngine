@@ -47,7 +47,8 @@ export default function HealthPage() {
       </div>
       <p className="note" style={{ marginTop: "0.4rem" }}>
         Live credential + connection checks for the app&rsquo;s integrations. Reads <code>web/.env</code> and the
-        repo-root <code>env.env</code>.
+        repo-root <code>env.env</code>. For per-client/system preflights across the whole fleet, see{" "}
+        <Link href="/health/connections">Connection tests</Link>.
         {counts && (
           <> {" · "}{counts.ok ?? 0} healthy, {counts.fail ?? 0} failing, {counts.not_configured ?? 0} not configured
             {at ? ` · ${new Date(at).toLocaleTimeString()}` : ""}</>

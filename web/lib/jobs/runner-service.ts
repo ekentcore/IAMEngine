@@ -456,6 +456,38 @@ export function makeRunnerService(db: PrismaClient) {
       return { tests: rows.map((r) => ({ systemKey: r.systemKey, onPrem: r.onPrem })) };
     },
 
+    // FLEET sweep: enqueue connection tests for every modeled, active client at once (one row per
+    // testable api system). Replaces any prior run per client. Runners claim them on their next poll
+    // — cloud tests on the central runner, on-prem on each client's own agent (so clients without an
+    // installed agent leave their on-prem tests pending, surfaced as such in the roll-up). Returns
+    // how many clients + tests were queued, and how many of those tests are on-prem.
+    async requestConnectionTestsForAll(): Promise<{ clients: number; tests: number; onPrem: number }> {
+      const clients = await db.client.findMany({
+        where: { status: "active", systems: { some: {} } },
+        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
+      });
+      let total = 0, onPrem = 0, withTests = 0;
+      for (const client of clients) {
+        const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
+        const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
+        await db.connectionTest.deleteMany({ where: { clientId: client.id } });
+        if (testable.length === 0) continue;
+        const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+        await db.connectionTest.createMany({ data: rows });
+        withTests++; total += rows.length; onPrem += rows.filter((r) => r.onPrem).length;
+      }
+      return { clients: withTests, tests: total, onPrem };
+    },
+
+    // Fleet roll-up: every connection-test result joined to its client, for the /health/connections page.
+    async listAllConnectionTests() {
+      const tests = await db.connectionTest.findMany({
+        orderBy: [{ status: "asc" }, { clientId: "asc" }, { systemKey: "asc" }],
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true, claimedAt: true, client: { select: { name: true, slug: true } } },
+      });
+      return tests;
+    },
+
     async listConnectionTests(clientSlug: string) {
       const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
