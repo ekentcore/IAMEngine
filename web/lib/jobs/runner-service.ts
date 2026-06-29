@@ -231,8 +231,11 @@ export function makeRunnerService(db: PrismaClient) {
       for (const w of wedged) {
         const reclaims = Number((req(w) as { progressReclaims?: unknown }).progressReclaims ?? 0);
         if (reclaims >= MAX_PROGRESS_RECLAIMS) {
-          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "step stopped making progress and a re-run didn't recover it — wedged (e.g. a hung vendor call). Re-plan or fix the underlying step.", finishedAt: new Date() } });
-          await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims } } });
+          // Auto-stop: mark it failed but TAG it (request.autoStopped) so the run report shows a distinct
+          // "⏱ auto-stopped — no progress" warning rather than a generic failure. refreshCaseStatus then
+          // advances the case (a failed step doesn't block independent siblings) — "move on + warn".
+          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date() } });
+          await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
         } else {
           await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });

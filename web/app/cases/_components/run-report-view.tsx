@@ -350,6 +350,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   const [writeBack, setWriteBack] = useState(false);
   const [writeMsg, setWriteMsg] = useState<string | null>(null);
   const [resolveOpen, setResolveOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now()); // ticks while live so the "no progress for Ns" badge updates
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -366,6 +367,13 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     timer.current = setInterval(refresh, active ? 2000 : 4000);
     return () => { if (timer.current) clearInterval(timer.current); };
   }, [live, active, refresh]);
+
+  // Tick `now` every 5s while live so the per-step "no progress for Ns" badge counts up between polls.
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [live]);
 
   const toggle = (n: number) => setOpen((s) => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x; });
 
@@ -622,6 +630,27 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.currentPhase && (
                 <span style={{ marginLeft: 8, color: "#2563eb", fontSize: 12 }} suppressHydrationWarning>
                   <span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>▸</span> {step.currentPhase}…
+                </span>
+              )}
+              {/* No-progress warning: a running step that's been silent too long may be stalling. The
+                  server auto-stops a truly wedged step at 20 min; this is the EARLY visual heads-up. */}
+              {(() => {
+                if (step.verdict !== "running" && step.verdict !== "verifying") return null;
+                if (!step.lastProgressAt) return null;
+                const secs = Math.floor((now - new Date(step.lastProgressAt).getTime()) / 1000);
+                if (secs < 90) return null;
+                const human = secs >= 120 ? `${Math.floor(secs / 60)}m` : `${secs}s`;
+                return (
+                  <span className="badge" style={{ marginLeft: 8, color: "#92400e", borderColor: "#fde68a", background: "#fffbeb" }} suppressHydrationWarning
+                    title="This step hasn't reported progress recently — it may be on a slow call or stalling. The server auto-stops a wedged step after 20 minutes; you can also Stop it now.">
+                    ⏳ no progress for {human}
+                  </span>
+                );
+              })()}
+              {step.autoStopped && (
+                <span className="badge" style={{ marginLeft: 8, color: "#92400e", borderColor: "#fde68a", background: "#fffbeb" }}
+                  title="The server auto-stopped this step after it made no progress for 20 minutes (wedged). The case continued; re-run this step to retry.">
+                  ⏱ auto-stopped — no progress
                 </span>
               )}
               {/* A pending step says WHY it hasn't started — waiting on predecessors, a missing

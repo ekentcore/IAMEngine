@@ -24,6 +24,9 @@ export type RunReportStep = {
   error: string | null;
   finishedAt: string | null;
   currentPhase: string | null; // what the runner is doing right now (in-flight steps only)
+  lastProgressAt: string | null; // when this step last posted progress — the UI flags a running step
+                                 // that's been silent too long as "no progress for Ns" (possible stall)
+  autoStopped: boolean; // the server auto-stopped this step after it wedged (no progress); case continued
   phaseTrail: { ts: string; phase: string }[]; // the phases this step has gone through
   manualCompleted: boolean; // marked done by an operator (a manual/skipped step closed by hand)
   // The run-log fingerprint of this step's warning/failure — lets the operator "ignore" it. Resolving
@@ -92,6 +95,7 @@ type JobRow = {
   result: unknown;
   validation: unknown;
   progress?: unknown;
+  progressAt?: Date | null;
   error: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
@@ -240,7 +244,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
 
   const steps: RunReportStep[] = jobs.map((j, i) => {
     const validation = normalizeValidation(j.validation);
-    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean; intent?: "disable" | "destructive" | null };
+    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean; intent?: "disable" | "destructive" | null; autoStopped?: boolean };
     let verdict = verdictOf(j.status, validation, Boolean(req.validateOnly));
     // A pending approval-gated job is surfaced distinctly from an ordinary pending step.
     if (verdict === "pending" && req.requiresApproval && !req.approved) verdict = "needs_approval";
@@ -317,6 +321,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       error: j.error,
       finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
       currentPhase,
+      lastProgressAt: j.progressAt ? j.progressAt.toISOString() : null,
+      autoStopped: Boolean(req.autoStopped),
       phaseTrail,
       manualCompleted,
       pendingReason,
@@ -444,7 +450,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     where: { id: caseId },
     include: {
       client: { select: { id: true, name: true, slug: true } },
-      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
+      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, progressAt: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
     },
   });
   if (!c) return null;
