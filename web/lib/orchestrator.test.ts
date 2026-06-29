@@ -86,3 +86,33 @@ test("a manual step never carries requiresApproval (approval gates only auto-run
   const api = planCase([sys({ systemKey: "sentinelone", mode: "api", requiresApproval: true })], "offboard", {})[0];
   assert.equal(api.requiresApproval, true);
 });
+
+// ── Offboard intent (disable / destructive) ──────────────────────────────────────────────────────
+test("offboard steps default to intent 'disable'; onboard is unclassified (null)", () => {
+  const s = [sys({ systemKey: "active-directory" })];
+  assert.equal(planCase(s, "offboard", {})[0].intent, "disable");
+  assert.equal(planCase(s, "onboard", {})[0].intent, null);
+});
+
+test("destructive offboard forces requiresApproval + captureEvidence", () => {
+  const s = [sys({ systemKey: "m365", requiresApproval: false, captureEvidence: false, config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "offboard", {})[0];
+  assert.equal(j.intent, "destructive");
+  assert.equal(j.requiresApproval, true);  // forced on
+  assert.equal(j.captureEvidence, true);   // forced on (snapshot before delete)
+});
+
+test("a destructive flag on the OFFBOARD lane does not gate the ONBOARD lane", () => {
+  const s = [sys({ systemKey: "m365", config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "onboard", {})[0];
+  assert.equal(j.intent, null);
+  assert.equal(j.requiresApproval, false);
+});
+
+test("a manual destructive step never requires approval (the human doing it IS the approval)", () => {
+  const s = [sys({ systemKey: "fileserver", mode: "manual", config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "offboard", {})[0];
+  assert.equal(j.intent, "destructive");
+  assert.equal(j.requiresApproval, false);
+  assert.equal(j.captureEvidence, true); // evidence still captured
+});

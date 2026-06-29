@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { resolvePlannedConfigs } from "./plan-resolve";
 import type { PlannedJob } from "../orchestrator";
 
-const job = (config: unknown): PlannedJob => ({ systemKey: "active-directory", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, secretNames: [], dependsOn: [], config });
+const job = (config: unknown): PlannedJob => ({ systemKey: "active-directory", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config });
 
 const client = {
   globals: { "active-directory": { groups: ["New-Hire-ALL"] } }, // onboard rules (should NOT leak to offboard)

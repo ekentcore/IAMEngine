@@ -14,6 +14,7 @@ type Row = {
   dependsOn: string[];
   requiresApproval: boolean;
   captureEvidence: boolean;
+  offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
   secretNames: string[];
   configText: string; // JSON text; parsed on save
 };
@@ -42,6 +43,7 @@ const HELP = {
   depends: "System keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
   approval: "Destructive step — gated server-side. The job won't run until an operator approves it on the case (offboarding deletes/disables).",
   evidence: "Before doing anything, snapshot the user's current state (group memberships, license/app assignments) and attach it to the case — so there's an audit trail and you can restore if needed. Mainly used on offboarding.",
+  intent: "How destructive this system's OFFBOARD step is. disable = reversible containment (lock the account, isolate the device, revoke sessions) — undoable, and a candidate for future automation. destructive = actually deletes data (e.g. delete a mailbox) — always requires operator approval AND snapshots state first so it's redoable.",
   secrets: "The Delinea secret references this system needs at run time (comma-separated names, e.g. m365-admin). Names only — never the values.",
   config: 'Per-lane JSON settings, nested under onboard / offboard. e.g. { "offboard": { "delete": true } }. Leave blank for defaults.',
 };
@@ -71,6 +73,7 @@ function rowFromCatalog(key: string): Row {
     dependsOn: [],
     requiresApproval: false,
     captureEvidence: false,
+    offboardIntent: "disable",
     secretNames: c?.secret ? [c.secret] : [],
     configText: "",
   };
@@ -122,6 +125,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           dependsOn: Array.isArray(sys.dependsOn) ? sys.dependsOn : [],
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
+          offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
           configText: sys.config ? JSON.stringify(sys.config, null, 2) : "",
         }))
@@ -148,11 +152,16 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
     // validate config JSON
     const systems = [];
     for (const r of rows) {
-      let config: unknown = null;
+      let config: Record<string, unknown> | null = null;
       if (r.configText.trim()) {
         try { config = JSON.parse(r.configText); }
         catch { setError(`Invalid JSON config for ${r.systemKey}`); setSaving(false); return; }
       }
+      // The Offboard-intent select is authoritative: merge it into config.intent.offboard so a
+      // destructive step is auto-gated (approval + evidence) by the orchestrator at plan time.
+      if (config === null) config = {};
+      const intent = { ...((config.intent as Record<string, unknown> | undefined) ?? {}), offboard: r.offboardIntent };
+      config = { ...config, intent };
       systems.push({ ...r, secretNames: r.secretNames, config });
     }
     try {
@@ -262,6 +271,14 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: "0.55rem", alignItems: "flex-start" }}>
                   <Field label="Evidence" help={HELP.evidence}>
                     <input type="checkbox" style={{ width: "auto", height: 18 }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} />
+                  </Field>
+                  <Field label="Offboard intent" help={HELP.intent}>
+                    <select value={r.offboardIntent} onChange={(e) => update(i, { offboardIntent: e.target.value as Row["offboardIntent"] })}
+                      style={r.offboardIntent === "destructive" ? { color: "#b3261e", borderColor: "#f3c0bb", fontWeight: 600 } : { color: "#1d4ed8" }}
+                      disabled={r.offboardWhen === "never"}>
+                      <option value="disable">disable (reversible)</option>
+                      <option value="destructive">destructive (delete)</option>
+                    </select>
                   </Field>
                   <Field label="Secrets" help={HELP.secrets}>
                     <input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 200 }} />

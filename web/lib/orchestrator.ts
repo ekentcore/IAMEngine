@@ -2,12 +2,20 @@
 // See docs/DATA_MODEL.md ("Planning a case").
 import type { ClientSystem, Action, Mode } from "@prisma/client";
 
+// A step's INTENT — chiefly for offboarding. "disable" = reversible containment (lock the account,
+// isolate the device, revoke sessions); eventually safe to automate. "destructive" = actually deletes
+// / unrecoverable (delete a mailbox, hard-delete the user); ALWAYS gated for human approval AND we
+// snapshot state first (captureEvidence) so it's redoable/auditable. null = unclassified (the default
+// for onboard, which isn't disable/destructive in this sense).
+export type StepIntent = "disable" | "destructive";
+
 export type PlannedJob = {
   systemKey: string;
   sequence: number;
   mode: Mode;
   requiresApproval: boolean;
   captureEvidence: boolean;
+  intent: StepIntent | null;
   secretNames: string[];
   config: unknown;
   // Effective dependencies (lane-specific override applied, filtered to systems in this plan).
@@ -24,6 +32,7 @@ type SystemConfig = {
   requestKey?: string;
   requiresApproval?: Record<string, boolean | undefined>;
   captureEvidence?: Record<string, boolean | undefined>;
+  intent?: Record<string, StepIntent | undefined>;
 };
 
 // Maps an on-request system to the intake-payload signal that turns it on. This is the
@@ -88,15 +97,22 @@ export function planCase(
     // lane means false — no cross-lane bleed); otherwise fall back to the collapsed column.
     const ra = cfg?.requiresApproval;
     const ce = cfg?.captureEvidence;
+    // Effective intent for this lane. Offboard defaults to "disable" (most offboard work is
+    // reversible containment) so every offboard step carries a classification; onboard is unclassified.
+    const intent: StepIntent | null = cfg?.intent?.[action] ?? (action === "offboard" ? "disable" : null);
+    const destructive = intent === "destructive";
     return {
       systemKey: s.systemKey,
       sequence: i,
       mode: s.mode,
       dependsOn: depsOf(s),
+      intent,
       // Approval gates only auto-executing API steps. A manual/browser step is done by a human, so
       // the act of doing it IS the approval — it must never put the case in "needs approval".
-      requiresApproval: s.mode === "api" ? (ra ? Boolean(ra[action]) : s.requiresApproval) : false,
-      captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
+      // A DESTRUCTIVE step ALWAYS requires approval (and evidence below) — it can't be turned off.
+      requiresApproval: s.mode === "api" ? (destructive || (ra ? Boolean(ra[action]) : s.requiresApproval)) : false,
+      // Destructive steps ALWAYS snapshot state first ("save the settings so we can redo it").
+      captureEvidence: destructive || (ce ? Boolean(ce[action]) : s.captureEvidence),
       // SentinelOne's offboard resolves the user's machines from their Entra registered devices, so it
       // also needs the m365-admin app brokered (catalog-wide, no per-client wiring). If the client has
       // no m365-admin it simply isn't brokered and the runner falls back to config/payload machineName.

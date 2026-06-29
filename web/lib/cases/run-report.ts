@@ -39,6 +39,9 @@ export type RunReportStep = {
   // When an M365 license couldn't be assigned for lack of seats, the tenant's license inventory
   // (owned SKUs + free seat counts) so the operator can pick another and re-run. null otherwise.
   licenseOptions: { skuId: string; skuPartNumber: string; name: string; available: number; enabled: number; consumed: number }[] | null;
+  // Offboard step classification: "disable" = reversible containment (auto-runnable later),
+  // "destructive" = deletes data (always approval-gated + evidence-snapshotted). null = unclassified.
+  intent: "disable" | "destructive" | null;
   // M365 step (onboard): the license(s) this user is expected to get — the plan's resolved
   // config.licenses (which already applied the client's licensing rules), or the ticket's explicit
   // product licenses when present (those override the rule). null for non-m365 / offboard / none.
@@ -237,7 +240,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
 
   const steps: RunReportStep[] = jobs.map((j, i) => {
     const validation = normalizeValidation(j.validation);
-    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean };
+    const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean; intent?: "disable" | "destructive" | null };
     let verdict = verdictOf(j.status, validation, Boolean(req.validateOnly));
     // A pending approval-gated job is surfaced distinctly from an ordinary pending step.
     if (verdict === "pending" && req.requiresApproval && !req.approved) verdict = "needs_approval";
@@ -319,6 +322,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       pendingReason,
       licenseOptions: licenseOptionsOf(j.result),
       autoRetry: autoRetryData,
+      intent: req.intent ?? null,
       expectedLicenses: expectedLicensesFor(j, input.action, input.payload),
     };
   });

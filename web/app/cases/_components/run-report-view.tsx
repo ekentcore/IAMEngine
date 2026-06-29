@@ -605,6 +605,14 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
             <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
+              {step.intent === "destructive" && (
+                <span className="badge" style={{ marginLeft: 8, color: "#b3261e", borderColor: "#f3c0bb", background: "#fdecea" }}
+                  title="Destructive — deletes data. Always requires approval, and state is snapshotted first.">⚠ destructive</span>
+              )}
+              {step.intent === "disable" && (
+                <span className="badge" style={{ marginLeft: 8, color: "#1d4ed8", borderColor: "#bfdbfe", background: "#eff6ff" }}
+                  title="Reversible containment (lockout / isolate / revoke sessions) — undoable by re-enabling.">disable</span>
+              )}
               {step.expectedLicenses && (
                 <span style={{ marginLeft: 8, fontSize: 12 }} title={step.expectedLicenses.fromTicket ? "From the ticket's product licenses — overrides the client's license rules" : "Resolved from the client's M365 license rules at plan time"}>
                   · license: <b>{step.expectedLicenses.names.join(", ")}</b>
