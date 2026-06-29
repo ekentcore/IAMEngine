@@ -51,7 +51,7 @@ export const MODULES: ModuleEntry[] = [
   { key: "slack", name: "Slack", group: "Apps & access", executor: "planned", secret: "slack" },
   { key: "teams", name: "Teams Phone", group: "Apps & access", executor: "planned", secret: "teams-admin" },
   { key: "dropbox", name: "Dropbox", group: "Apps & access", executor: "planned", secret: "dropbox" },
-  { key: "1password", name: "1Password", group: "Apps & access", executor: "planned", secret: "1password" },
+  { key: "1password", name: "1Password", group: "Apps & access", executor: "built", secret: "1password", helpSlug: "1password" },
   { key: "notion", name: "Notion", group: "Apps & access", executor: "planned", secret: "notion" },
   { key: "printix", name: "Printix", group: "Apps & access", executor: "planned", secret: "printix" },
   { key: "avd", name: "Azure Virtual Desktop", group: "Apps & access", executor: "planned", secret: "m365-admin" },

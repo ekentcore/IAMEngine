@@ -57,6 +57,7 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Zoom/Coretelligent.Zoom.psd1"
 Import-Module "$PSScriptRoot/modules/Coretelligent.Adobe/Coretelligent.Adobe.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Perimeter81/Coretelligent.Perimeter81.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Spanning/Coretelligent.Spanning.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.1Password/Coretelligent.1Password.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Egnyte/Coretelligent.Egnyte.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Salesforce/Coretelligent.Salesforce.psd1" -Force
@@ -165,6 +166,43 @@ function Use-CtgSpanningSecret {
     $baseUrl = & $pick @('apiURL', 'ApiUrl', 'ApiURL', 'BaseUrl', 'Url')
     if ($baseUrl) { Connect-CtgSpanning -Username $user -AccessToken $token -BaseUrl $baseUrl }
     else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
+}
+
+# Sign in to 1Password with the brokered admin account so `op` can provision/suspend users. Only the
+# api/auto/scim methods need this; field-tolerant like the others. Returns $true on success. The CALLER
+# decides whether a failure is fatal (api) or a fallback-to-manual signal (auto) — so this throws and
+# the dispatch wraps it.
+function Use-Ctg1PasswordSecret {
+    param($Job, $Creds)
+    $s = $Creds['1password']
+    if (-not $s) { throw "the job did not broker a '1password' secret — list '1password' in the client's 1password system secrets (the api/scim methods need an admin sign-in). See /help/1password." }
+    $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return [string]$s.Fields[$k] } } $null }
+    $cfg = if ($Job.config) { $Job.config } else { [pscustomobject]@{} }
+    $address = (& $pick @('SignInAddress', 'Sign In Address', 'Account', 'Url', 'apiURL', 'Domain'))
+    if (-not $address) { $address = [string](Get-CtgProp $cfg 'signInAddress') }
+    $email = (& $pick @('Email', 'Username', 'User', 'AdminEmail'))
+    if (-not $email -and $s.Username) { $email = [string]$s.Username }
+    $secretKey = (& $pick @('SecretKey', 'Secret Key', 'SecretKey ', 'Key'))
+    $password = (& $pick @('Password', 'Pass'))
+    foreach ($pair in @(@('sign-in address', $address), @('email', $email), @('Secret Key', $secretKey), @('password', $password))) {
+        if (-not $pair[1]) { throw "the '1password' secret is missing $($pair[0]) — the api method needs SignInAddress + Email + SecretKey + Password (an admin/owner account, MFA-exempt). The secret has: $(@($s.Fields.Keys) -join ', '). See /help/1password." }
+    }
+    Connect-Ctg1Password -SignInAddress $address -Email $email -SecretKey $secretKey -Password $password
+}
+
+# Establish an `op` admin session for this job IF the method needs/wants one, returning $connected.
+# api REQUIRES it (a failure throws); auto/scim treat it as best-effort (a failure -> $false, and the
+# module falls back to a manual checklist / skips the optional verify); manual/browser never connect.
+function Connect-Ctg1PasswordForJob {
+    param($Job, $Creds)
+    $method = ([string](Get-CtgProp $Job.config 'method')); if (-not $method) { $method = 'auto' }
+    if ($method -in @('manual', 'browser')) { return $false }
+    try { Use-Ctg1PasswordSecret -Job $Job -Creds $Creds; return $true }
+    catch {
+        if ($method -eq 'api') { throw }
+        Set-CtgPhase $Job.id "1Password ($method): admin sign-in unavailable — $($_.Exception.Message)"
+        return $false
+    }
 }
 
 # Connect Google Workspace from the brokered 'google-admin' secret. Domain-wide-delegated SERVICE
@@ -701,6 +739,14 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Confirm-CtgSpanning -User $job.payload -Config $job.config -Action $job.action }
+    }
+    '1password' = @{
+        # Method-aware (config.method: auto|api|scim|manual|browser). No standing Connect block: each lane
+        # decides via Connect-Ctg1PasswordForJob whether to establish an `op` admin session (api requires
+        # it; auto/scim are best-effort -> $connected drives the module's manual fallback / verify).
+        Onboard  = { param($job, $creds) $c = Connect-Ctg1PasswordForJob $job $creds; Invoke-Ctg1PasswordOnboarding  -User $job.payload -Config $job.config -Connected $c }
+        Offboard = { param($job, $creds) $c = Connect-Ctg1PasswordForJob $job $creds; Invoke-Ctg1PasswordOffboarding -User $job.payload -Config $job.config -Connected $c }
+        Validate = { param($job, $creds) $c = Connect-Ctg1PasswordForJob $job $creds; Confirm-Ctg1Password -User $job.payload -Config $job.config -Action $job.action -Connected $c }
     }
     'google-workspace' = @{
         Connect  = { param($job, $creds) Use-CtgGoogleSecret -Job $job -Creds $creds }
@@ -1299,6 +1345,16 @@ $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's
 $CONNTEST_PROBE['zoom']        = { param($job, $creds) Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null; 'zoom: users readable' }
 $CONNTEST_PROBE['sentinelone'] = { param($job, $creds) Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null; 'sentinelone: agents readable' }
 $CONNTEST_PROBE['xmatters']    = { param($job, $creds) Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null; 'xmatters: people readable' }
+# 1Password: only the api method has a credential to test — prove the admin `op` sign-in works + can
+# read users. scim/manual/browser have no app credential, so report that there's nothing to probe.
+$CONNTEST_PROBE['1password']   = { param($job, $creds)
+    $method = ([string](Get-CtgProp $job.config 'method')); if (-not $method) { $method = 'auto' }
+    if ($method -in @('scim', 'manual', 'browser')) { return "1password: method '$method' uses no API credential — nothing to test (provisioning is $(if ($method -eq 'scim') { 'IdP/SCIM-driven' } else { 'manual' }))" }
+    Use-Ctg1PasswordSecret -Job $job -Creds $creds
+    $who = Invoke-Ctg1PasswordCli -OpArgs @('whoami') -AllowFail
+    Invoke-Ctg1PasswordCli -OpArgs @('user', 'list') -AllowFail | Out-Null
+    "1password: signed in + users readable$(if ($who) { " (as $([string](Get-CtgProp $who 'email')))" })"
+}
 
 function Invoke-CtgConnectionTests {
     # Claim + run any queued connection tests for this agent. Fully isolated from the job pipeline:

@@ -19,6 +19,9 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "spanning") {
     return { kind: "API key", href: "/help/spanning" };
   }
+  if (name === "1password") {
+    return { kind: "admin account for the op CLI (api method only)", href: "/help/1password" };
+  }
   if (name === "mimecast") {
     return { kind: "API 2.0 application (client ID + secret)", href: "/help/mimecast" };
   }
