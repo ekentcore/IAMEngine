@@ -308,11 +308,17 @@ function Invoke-CtgExchangeSharedMailboxMirror {
     $isMirror = { param($u) $u -and (([string]$u).ToLowerInvariant() -in $mirrorIds) }
     $isTarget = { param($u) $u -and (([string]$u).ToLowerInvariant() -in $targetIds) }
 
-    Write-CtgStep "mirroring shared-mailbox permissions from $($ref.DisplayName)"
     $shared = @(Get-Mailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
-    $full = 0; $sa = 0; $sob = 0
+    # This loop does ~2 EXO reads per mailbox, so on a big tenant it's a multi-minute scan that emits
+    # output ONLY when it changes a permission — which reads as "stuck". Tell the operator the size up
+    # front, then heartbeat every 25 mailboxes ("checked N/total — at <mailbox>") so the run report
+    # shows live movement, names WHERE it is if it wedges, and the stall watchdog keeps its heartbeat.
+    Write-CtgStep "mirroring shared-mailbox permissions from $($ref.DisplayName) — scanning $($shared.Count) shared mailboxes (this can take a few minutes)"
+    $full = 0; $sa = 0; $sob = 0; $idx = 0
     foreach ($mbx in $shared) {
+        $idx++
         $name = $mbx.DisplayName
+        if ($idx % 25 -eq 0) { Write-CtgStep "checked $idx/$($shared.Count) shared mailboxes — at $name" }
         # Use a GUARANTEED-UNIQUE identity for the per-mailbox cmdlets: a mailbox's .Identity is often
         # its Name/alias, which is ambiguous when another recipient shares it (e.g. a "Finance" shared
         # mailbox AND a "finance" DL) -> "object: 'finance' matches multiple entries". ExchangeGuid is
