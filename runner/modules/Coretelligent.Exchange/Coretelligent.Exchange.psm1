@@ -313,22 +313,30 @@ function Invoke-CtgExchangeSharedMailboxMirror {
     $full = 0; $sa = 0; $sob = 0
     foreach ($mbx in $shared) {
         $name = $mbx.DisplayName
+        # Use a GUARANTEED-UNIQUE identity for the per-mailbox cmdlets: a mailbox's .Identity is often
+        # its Name/alias, which is ambiguous when another recipient shares it (e.g. a "Finance" shared
+        # mailbox AND a "finance" DL) -> "object: 'finance' matches multiple entries". ExchangeGuid is
+        # unique to this mailbox; fall back to PrimarySmtpAddress, then Guid, then Identity.
+        $mbxId = @(
+            (Get-CtgProp $mbx 'ExchangeGuid'), (Get-CtgProp $mbx 'PrimarySmtpAddress'),
+            (Get-CtgProp $mbx 'Guid'), (Get-CtgProp $mbx 'Identity')
+        ) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -First 1
         try {
             # FULL ACCESS — explicit (non-inherited) grants only, same as the manual script.
-            $perms = @(Get-MailboxPermission -Identity $mbx.Identity -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and ($_.AccessRights -contains 'FullAccess') })
+            $perms = @(Get-MailboxPermission -Identity $mbxId -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and ($_.AccessRights -contains 'FullAccess') })
             if (@($perms | Where-Object { & $isMirror $_.User }).Count) {
                 if (@($perms | Where-Object { & $isTarget $_.User }).Count) { $actions.Add("already FullAccess: $name") }
                 elseif ($PSCmdlet.ShouldProcess($NewUser, "FullAccess on $name")) {
-                    Add-MailboxPermission -Identity $mbx.Identity -User $NewUser -AccessRights FullAccess -InheritanceType All -AutoMapping:$true -Confirm:$false -ErrorAction Stop | Out-Null
+                    Add-MailboxPermission -Identity $mbxId -User $NewUser -AccessRights FullAccess -InheritanceType All -AutoMapping:$true -Confirm:$false -ErrorAction Stop | Out-Null
                     $actions.Add("shared mailbox FullAccess: $name"); Write-CtgStep "✓ FullAccess: $name"; $full++
                 }
             }
             # SEND AS
-            $rperms = @(Get-RecipientPermission -Identity $mbx.Identity -ErrorAction SilentlyContinue | Where-Object { $_.AccessRights -contains 'SendAs' })
+            $rperms = @(Get-RecipientPermission -Identity $mbxId -ErrorAction SilentlyContinue | Where-Object { $_.AccessRights -contains 'SendAs' })
             if (@($rperms | Where-Object { & $isMirror $_.Trustee }).Count) {
                 if (@($rperms | Where-Object { & $isTarget $_.Trustee }).Count) { $actions.Add("already SendAs: $name") }
                 elseif ($PSCmdlet.ShouldProcess($NewUser, "SendAs on $name")) {
-                    Add-RecipientPermission -Identity $mbx.Identity -Trustee $NewUser -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+                    Add-RecipientPermission -Identity $mbxId -Trustee $NewUser -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
                     $actions.Add("shared mailbox SendAs: $name"); Write-CtgStep "✓ SendAs: $name"; $sa++
                 }
             }
@@ -337,7 +345,7 @@ function Invoke-CtgExchangeSharedMailboxMirror {
             if (@($sobList | Where-Object { & $isMirror $_ }).Count) {
                 if (@($sobList | Where-Object { & $isTarget $_ }).Count) { $actions.Add("already SendOnBehalf: $name") }
                 elseif ($PSCmdlet.ShouldProcess($NewUser, "SendOnBehalf on $name")) {
-                    Set-Mailbox -Identity $mbx.Identity -GrantSendOnBehalfTo @{ Add = $NewUser } -ErrorAction Stop
+                    Set-Mailbox -Identity $mbxId -GrantSendOnBehalfTo @{ Add = $NewUser } -ErrorAction Stop
                     $actions.Add("shared mailbox SendOnBehalf: $name"); Write-CtgStep "✓ SendOnBehalf: $name"; $sob++
                 }
             }
