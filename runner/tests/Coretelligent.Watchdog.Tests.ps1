@@ -71,3 +71,25 @@ Describe 'Get-CtgHeartbeatPath' {
         Get-CtgHeartbeatPath -AgentId 'agentXYZ' | Should -Match 'iam-runner-agentXYZ\.heartbeat$'
     }
 }
+
+Describe 'Get-CtgKeepAliveAction' {
+    It 'restarts when the runner process is not running' {
+        $d = Get-CtgKeepAliveAction -ProcessAlive $false -Health @{ healthy = $true; reason = 'fresh' }
+        $d.action | Should -Be 'restart'
+        $d.reason | Should -Match 'not running'
+    }
+    It 'restarts when the process is alive but the heartbeat is stale (wedged)' {
+        $d = Get-CtgKeepAliveAction -ProcessAlive $true -Health @{ healthy = $false; reason = 'no progress for 800s (limit 600s)' }
+        $d.action | Should -Be 'restart'
+        $d.reason | Should -Match 'wedged'
+    }
+    It 'leaves a healthy, running runner alone' {
+        $d = Get-CtgKeepAliveAction -ProcessAlive $true -Health @{ healthy = $true; reason = 'fresh' }
+        $d.action | Should -Be 'ok'
+    }
+    It 'does NOT restart a live runner whose heartbeat is merely unprovable (fail-safe)' {
+        # Test-CtgRunnerHealth reports healthy when the file is missing/unreadable — so a live process is left alone.
+        $d = Get-CtgKeepAliveAction -ProcessAlive $true -Health @{ healthy = $true; reason = 'no heartbeat file yet (starting)' }
+        $d.action | Should -Be 'ok'
+    }
+}

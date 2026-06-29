@@ -35,8 +35,32 @@ function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunRe
   const [num, setNum] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false); // re-point the watch to a different PC (any state)
   const wantsWatch = step.actions.some((a) => /procurement case/i.test(a));
   if (!step.jobId || (!step.procurement && !wantsWatch && !forceShow)) return null;
+
+  // POST upserts the watch — same call to SET or RE-POINT (it resets state to "watching" + clears the
+  // note/last-check). Used by the initial "Watch" form and the "Watch a different case" editor.
+  async function save(number: string) {
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number }) });
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+      setNum(""); setEditing(false);
+      await refresh();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  // Inline editor to point the watch at a DIFFERENT procurement case — shown in any state (e.g. the
+  // first PC resolved but someone grabbed the seat first, so you re-watch a new PC).
+  const editor = (
+    <span style={{ marginLeft: 8, display: "inline-flex", gap: 6, alignItems: "center" }}>
+      <input value={num} onChange={(e) => setNum(e.target.value)} placeholder="PC0012345" style={{ width: 110, fontSize: 12 }} autoFocus />
+      <button style={{ fontSize: 11 }} disabled={busy || !num.trim()} onClick={() => save(num)}>{busy ? "…" : "Save"}</button>
+      <button style={{ fontSize: 11 }} disabled={busy} onClick={() => { setEditing(false); setNum(""); setErr(null); }}>Cancel</button>
+    </span>
+  );
 
   if (step.procurement) {
     const p = step.procurement;
@@ -53,7 +77,7 @@ function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunRe
           {p.state === "cancelled" && `✗ Procurement case ${p.number} was cancelled — license not procured, the step was NOT re-run.`}
           {p.state === "error" && `Procurement case ${p.number}: ${p.note ?? "error"}`}
         </span>
-        {p.state === "watching" && (
+        {p.state === "watching" && !editing && (
           <>
             <button style={{ marginLeft: 8, fontSize: 11 }} disabled={busy} title="Check the PC's state in ServiceNow right now instead of waiting for the next 5-minute sweep"
               onClick={async () => {
@@ -76,9 +100,19 @@ function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunRe
               }}>
               Stop watching
             </button>
-            {err && <span style={{ marginLeft: 6, color: "#b91c1c" }}>{err}</span>}
           </>
         )}
+        {/* Re-point to a different case — available in EVERY state. Crucial when the watched PC resolved
+            but the seat was taken first, so you need to watch a new procurement case. */}
+        {!editing && (
+          <button style={{ marginLeft: 6, fontSize: 11 }} disabled={busy}
+            title="Point this watch at a different procurement case (e.g. the first one resolved but the license was assigned elsewhere)"
+            onClick={() => { setEditing(true); setNum(""); setErr(null); }}>
+            Watch a different case
+          </button>
+        )}
+        {editing && editor}
+        {err && <span style={{ marginLeft: 6, color: "#b91c1c" }}>{err}</span>}
       </div>
     );
   }
@@ -86,20 +120,7 @@ function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunRe
     <div className="note" style={{ marginTop: 4, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
       <span>Procurement case:</span>
       <input value={num} onChange={(e) => setNum(e.target.value)} placeholder="PC0012345" style={{ width: 110, fontSize: 12 }} />
-      <button disabled={busy || !num.trim()} style={{ fontSize: 11 }}
-        onClick={async () => {
-          setBusy(true); setErr(null);
-          try {
-            const r = await fetch(`/api/jobs/${step.jobId}/procurement`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: num }) });
-            if (!r.ok) setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed");
-            else setNum("");
-            await refresh();
-          } catch (e) {
-            setErr((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}>
+      <button disabled={busy || !num.trim()} style={{ fontSize: 11 }} onClick={() => save(num)}>
         {busy ? "…" : "Watch"}
       </button>
       <span className="muted" style={{ fontSize: 11 }}>checked every ~5 min — on resolve, this step re-runs + verifies automatically</span>

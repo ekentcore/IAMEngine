@@ -282,6 +282,10 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
           <pre style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" }}>{`pkill -f Start-IamRunner.ps1
 nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/Start-IamRunner.ps1 \\
   -AppUrl <app-url> -AgentId <this-agent-id> -PollSeconds 15 -BatchSize 5 >> ~/iam-runner/runner.log 2>&1 &`}</pre>
+          <p style={{ margin: "0.4rem 0 0.2rem" }}><b>Keep-alive supervisor</b> (optional — for a box with no service manager, or as a backstop): a small script that restarts this runner if it exits <i>or</i> wedges (heartbeat goes stale). Run it on a schedule with <code>-Once</code> so the OS scheduler keeps the supervisor itself alive — e.g. a cron line every minute:</p>
+          <pre style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" }}>{`* * * * * ~/.local/pwsh/pwsh -NoProfile -File ~/iam-runner/Keep-IamRunnerAlive.ps1 \\
+  -AppUrl <app-url> -AgentId <this-agent-id> -Once >> ~/iam-runner/keepalive.log 2>&1`}</pre>
+          <p style={{ margin: "0.2rem 0" }}>Or run it continuously (drop <code>-Once</code>): <code>nohup … Keep-IamRunnerAlive.ps1 -AppUrl &lt;app-url&gt; -AgentId &lt;id&gt; &amp;</code>. On macOS/Linux, <code>install-launchd.sh</code> already keeps the runner up via launchd — this is for hosts without that.</p>
           <p style={{ margin: "0.4rem 0 0.2rem" }}><b>Exchange Online module</b> (needed for distribution-list adds; pinned to 3.9.2 — 3.10.0 breaks on PS 7.6). The installer above includes it; to (re)install on a macOS/Linux central runner, then Update/restart:</p>
           <pre style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" }}>{`~/.local/pwsh/pwsh -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.2 -Scope CurrentUser -Force -AllowClobber"`}</pre>
         </div>

@@ -59,6 +59,18 @@ function Test-CtgRunnerHealth {
     }
 }
 
+function Get-CtgKeepAliveAction {
+    # Pure decision (unit-tested) for the EXTERNAL keep-alive supervisor (Keep-IamRunnerAlive.ps1):
+    # given whether the runner PROCESS is alive and the heartbeat HEALTH (from Test-CtgRunnerHealth),
+    # decide whether to restart it. Restart when the process is gone, OR it's running but its heartbeat
+    # is present-and-stale (wedged). Otherwise leave it alone. Fails safe: an unprovable-stale heartbeat
+    # (missing/unreadable -> Health.healthy true) never triggers a restart of a live process.
+    param([Parameter(Mandatory)][bool]$ProcessAlive, [Parameter(Mandatory)]$Health)
+    if (-not $ProcessAlive) { return @{ action = 'restart'; reason = 'runner process is not running' } }
+    if ($Health -and -not $Health.healthy) { return @{ action = 'restart'; reason = "runner wedged — $($Health.reason)" } }
+    return @{ action = 'ok'; reason = 'runner alive + heartbeat fresh' }
+}
+
 function Start-CtgWatchdog {
     # Arm the watchdog on its OWN runspace/thread so it keeps running while the main thread is blocked
     # in a native call. On stall it: (1) self-respawns a fresh process — so it recovers even with NO
@@ -103,4 +115,4 @@ function Start-CtgWatchdog {
     return @{ PowerShell = $ps; Runspace = $rs }
 }
 
-Export-ModuleMember -Function Get-CtgHeartbeatPath, Update-CtgHeartbeat, Test-CtgStalled, Test-CtgRunnerHealth, Start-CtgWatchdog
+Export-ModuleMember -Function Get-CtgHeartbeatPath, Update-CtgHeartbeat, Test-CtgStalled, Test-CtgRunnerHealth, Get-CtgKeepAliveAction, Start-CtgWatchdog
