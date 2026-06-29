@@ -43,7 +43,7 @@ export default function DirectorySyncSetupPage() {
 
       <h2>3. Secret</h2>
       <p className="note">
-        Reuses <code>ad-dc</code> (no separate secret) — see the{" "}
+        Reuses <code>ad-dc</code> (no separate secret — the <b>Active Directory Account</b> template) — see the{" "}
         <Link href="/help/active-directory">Active Directory guide</Link> for storing it (credential + an optional
         {" "}<code>Server</code>; both can be omitted when the agent runs on the DC as a rights-holding account).
       </p>

@@ -56,7 +56,7 @@ export default function OnePasswordSetupPage() {
         <li>Use a dedicated <b>admin/owner</b> account that can provision users. It must be <b>exempt from MFA</b>
           (or the headless sign-in can&rsquo;t answer the prompt).</li>
       </ol>
-      <p className="note">Store these fields on the client&rsquo;s <code>1password</code> Delinea secret:</p>
+      <p className="note">Store these fields on the client&rsquo;s <code>1password</code> Delinea secret (<b>template: Automation - API</b>; field names are matched leniently, so any template that carries them works):</p>
       <table>
         <tbody>
           <tr><th style={{ width: 170 }}>SignInAddress</th><td>the account sign-in URL, e.g. <code>coretelligent.1password.com</code></td></tr>

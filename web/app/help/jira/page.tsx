@@ -32,6 +32,7 @@ export default function JiraSetupPage() {
       </ol>
 
       <h2>2. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: username/password</b> — the admin email is the username and the API token is the password (plus <code>SiteUrl</code>). Field names are matched leniently, so any template that carries these fields works.</p>
       <table>
         <tbody>
           <tr><th style={{ width: 130 }}>Email</th><td>the admin user&rsquo;s <b>email</b> (Basic-auth username)</td></tr>

@@ -59,6 +59,7 @@ export default function GoogleSetupPage() {
       <p className="note">Pick a <b>super-admin email</b> the service account will impersonate (any active super-admin) — you&rsquo;ll store it as <code>Impersonate</code>.</p>
 
       <h2>3. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — the service-account key goes in the <code>ServiceAccountKeyBase64</code> field. Field names are matched leniently, so any template that carries these fields works.</p>
       <p className="note">
         The private key is multi-line, so the simplest Delinea-safe option is to <b>base64-encode the whole JSON key
         file</b> and paste that into one field. From a terminal:

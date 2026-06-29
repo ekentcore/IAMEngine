@@ -65,6 +65,7 @@ export default function ZoomSetupPage() {
       </ol>
 
       <h2>2. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — Server-to-Server OAuth: Client ID → <code>Username</code>, Client Secret → <code>Password</code>, plus <code>AccountId</code>. Field names are matched leniently, so any template that carries these fields works.</p>
       <p className="note">Wire a <code>zoom</code> secret on the client, then map these fields:</p>
       <table>
         <tbody>

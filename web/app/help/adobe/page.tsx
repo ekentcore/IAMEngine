@@ -44,6 +44,7 @@ export default function AdobeSetupPage() {
       </p>
 
       <h2>3. Store the <code>adobe</code> secret (Delinea)</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — fill the fields below (field names are matched leniently, so any template that carries them works).</p>
       <table>
         <tbody>
           <tr><th style={{ width: 160 }}>Username</th><td>the <b>Client ID</b></td></tr>

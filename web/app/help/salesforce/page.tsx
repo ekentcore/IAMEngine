@@ -36,6 +36,7 @@ export default function SalesforceSetupPage() {
       </ol>
 
       <h2>2. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — the JWT private key goes in the <code>PrivateKey</code> field. Field names are matched leniently, so any template that carries these fields works.</p>
       <table>
         <tbody>
           <tr><th style={{ width: 170 }}>ConsumerKey</th><td>the Connected App&rsquo;s <b>Consumer Key</b> (client_id)</td></tr>

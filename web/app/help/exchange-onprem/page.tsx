@@ -37,6 +37,7 @@ export default function ExchangeOnPremSetupPage() {
       </ul>
 
       <h2>2. Store the <code>exchange-onprem</code> secret (Delinea)</h2>
+      <p className="note"><b>Delinea template: Active Directory Account</b> (a Windows/domain account that can open a remote-PowerShell session to Exchange), plus the <code>ConnectionUri</code>. Field names are matched leniently, so any template that carries these fields works.</p>
       <table>
         <tbody>
           <tr><th style={{ width: 170 }}>Username / Password</th><td>the Recipient-Management account (can be the same as <code>ad-dc</code> if it has the rights)</td></tr>

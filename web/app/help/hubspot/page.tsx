@@ -32,6 +32,7 @@ export default function HubSpotSetupPage() {
       </ol>
 
       <h2>2. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — put the private-app token in the <code>AccessToken</code> field. Field names are matched leniently, so any template that carries it works.</p>
       <table>
         <tbody>
           <tr><th style={{ width: 150 }}>AccessToken</th><td>the private-app <b>access token</b> (Bearer)</td></tr>

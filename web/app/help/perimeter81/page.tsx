@@ -35,6 +35,7 @@ export default function Perimeter81SetupPage() {
       </ol>
 
       <h2>2. Store the <code>perimeter81</code> secret (Delinea)</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — put the API key in the <code>ApiKey</code> field. Field names are matched leniently, so any template that carries it works.</p>
       <table>
         <tbody>
           <tr><th style={{ width: 160 }}>ApiKey</th><td>the API key (sent as the bearer token). <b>Required field</b> — the Connect step reads <code>Fields['ApiKey']</code>.</td></tr>

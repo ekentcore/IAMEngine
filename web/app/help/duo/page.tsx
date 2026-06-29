@@ -31,6 +31,7 @@ export default function DuoSetupPage() {
       </ol>
 
       <h2>2. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — fill the fields below (field names are matched leniently, so any template that carries them works).</p>
       <table>
         <tbody>
           <tr><th style={{ width: 170 }}>ApiHost</th><td>the Admin API hostname (<code>api-XXXXXXXX.duosecurity.com</code>)</td></tr>

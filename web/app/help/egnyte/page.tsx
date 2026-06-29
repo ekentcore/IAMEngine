@@ -42,6 +42,7 @@ export default function EgnyteSetupPage() {
         {" "}<code>coretelligent.egnyte.com</code>. The service account must be an Egnyte admin to manage users.</p>
 
       <h2>3. Store it in Delinea</h2>
+      <p className="note"><b>Delinea template: Automation - API</b> — fill the fields below (field names are matched leniently, so any template that carries them works).</p>
       <table>
         <tbody>
           <tr><th style={{ width: 200 }}>Domain <span className="note">(field)</span></th><td>the tenant subdomain, e.g. <code>coretelligent</code></td></tr>
