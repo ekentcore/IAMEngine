@@ -126,3 +126,24 @@ test("license rules: a v2.0 client (no personas/globals) still gets rule-resolve
   const r = resolvePlannedConfigs({}, { ...payload, needsComputer: true }, "onboard", planned);
   assert.deepEqual((r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).licenses, ["Microsoft 365 E5"]);
 });
+
+// m365 + entra are the same Graph module; when both are modeled the entra lane must not re-run the
+// expensive EXO mirror — the planner defers it to m365 (skipExoFinish + no mirrorFromUser).
+test("both m365 + entra modeled → entra lane defers the EXO finish to m365", () => {
+  const planned = [job("m365", {}), job("entra", {})];
+  const r = resolvePlannedConfigs({}, { ...payload, mirrorPermissionsFromUser: "Rodrigo Rapussi" }, "onboard", planned);
+  const m365 = r.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>;
+  const entra = r.find((j) => j.systemKey === "entra")!.config as Record<string, unknown>;
+  assert.equal(m365.mirrorFromUser, "Rodrigo Rapussi");        // m365 keeps the mirror
+  assert.equal(m365.skipExoFinish, undefined);
+  assert.equal(entra.skipExoFinish, true);                      // entra defers
+  assert.equal(entra.mirrorFromUser, undefined);               // and won't re-mirror groups
+});
+
+test("entra-only client still runs its own EXO mirror (no m365 to defer to)", () => {
+  const planned = [job("entra", {})];
+  const r = resolvePlannedConfigs({}, { ...payload, mirrorPermissionsFromUser: "Rodrigo Rapussi" }, "onboard", planned);
+  const entra = r.find((j) => j.systemKey === "entra")!.config as Record<string, unknown>;
+  assert.equal(entra.mirrorFromUser, "Rodrigo Rapussi");
+  assert.equal(entra.skipExoFinish, undefined);
+});

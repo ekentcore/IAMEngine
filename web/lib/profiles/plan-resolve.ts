@@ -103,14 +103,26 @@ export function resolvePlannedConfigs(
         return { ...j, config: { ...cfg, licenses: base } };
       });
 
+  // m365 and entra are the SAME Graph module ($DISPATCH['entra'] = $DISPATCH['m365']). When a client
+  // models BOTH, the entra job would re-run the entire M365 onboard the m365 job already did — incl.
+  // the expensive shared-mailbox/DL EXO mirror (hundreds of mailboxes). De-dupe: the entra lane skips
+  // the EXO finish + group mirror (the m365 lane owns them). A client with ONLY entra is untouched.
+  const hasM365 = withLicenses.some((j) => j.systemKey === "m365");
+  const deduped = !hasM365 ? withLicenses : withLicenses.map((j) => {
+    if (j.systemKey !== "entra") return j;
+    const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
+    delete cfg.mirrorFromUser; // the m365 lane does the Graph group-mirror + EXO mirror
+    return { ...j, config: { ...cfg, skipExoFinish: true } };
+  });
+
   // Distribution lists requested on m365 can only be written by the Exchange Online lane (Graph
   // can't add DL members). Flow the m365/entra requested groups onto the exchange job's config so the
   // EXO step adds the distribution ones by name (it only sees its own config). It picks the DLs and
   // skips security/365 groups (those stay Graph's job).
-  const m365Groups = withLicenses.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
+  const m365Groups = deduped.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
   const reqGroups = m365Groups && Array.isArray(m365Groups.groups) ? m365Groups.groups : null;
-  if (!reqGroups || reqGroups.length === 0) return withLicenses;
-  return withLicenses.map((j) =>
+  if (!reqGroups || reqGroups.length === 0) return deduped;
+  return deduped.map((j) =>
     j.systemKey === "exchange"
       ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), namedGroups: reqGroups } }
       : j

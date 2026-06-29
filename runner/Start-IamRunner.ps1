@@ -548,7 +548,12 @@ $DISPATCH = @{
             # and shared-mailbox permissions. One EXO connection, best-effort.
             $dls = @(if ($r.PSObject.Properties['DeferredDistributionGroups']) { $r.DeferredDistributionGroups })
             $mirror = [string](Get-CtgProp $job.config 'mirrorFromUser')
-            if ($dls.Count -gt 0 -or $mirror) {
+            # skipExoFinish: set by the planner on the entra lane when m365 is ALSO modeled (same module),
+            # so the costly EXO mirror runs once on m365 instead of twice. Skip it here when set.
+            if ((Get-CtgProp $job.config 'skipExoFinish')) {
+                $r.Actions = @($r.Actions) + "EXO finish skipped — handled by the m365 lane (entra is the same module)"
+            }
+            elseif ($dls.Count -gt 0 -or $mirror) {
                 foreach ($a in (Invoke-CtgM365ExoFinish -Job $job -Creds $creds -Names $dls -MirrorUser $mirror)) { $r.Actions = @($r.Actions) + $a }
             }
             $r
