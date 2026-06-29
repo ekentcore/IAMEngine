@@ -13,7 +13,33 @@ export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
     <div className="toolbar" style={{ marginTop: "1rem" }}>
       <ImportButton />
       <NewCaseDialog clients={clients} />
+      <span className="grow" />
+      <AutoImportToggle />
     </div>
+  );
+}
+
+// Turn the automated ServiceNow intake poller on/off. When on, heartbeats pull open/unassigned UM
+// tickets ~every 15 min and auto-import + plan them (held for review).
+function AutoImportToggle() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [info, setInfo] = useState<{ lastRunAt?: string; imported?: number } | null>(null);
+  useEffect(() => { fetch("/api/admin/intake").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) { setOn(Boolean(d.enabled)); setInfo(d); } }).catch(() => {}); }, []);
+  if (on === null) return null; // not loaded / not permitted
+  async function toggle() {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/admin/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !on }) });
+      if (r.ok) setOn(!on);
+    } finally { setBusy(false); }
+  }
+  const last = info?.lastRunAt ? `last run ${new Date(info.lastRunAt).toLocaleTimeString()}${info.imported ? `, ${info.imported} imported` : ""}` : "not run yet";
+  return (
+    <label className="note" style={{ display: "inline-flex", gap: 6, alignItems: "center" }} title={`Auto-import open/unassigned ServiceNow tickets every ~15 min (held for review). ${last}.`}>
+      <input type="checkbox" checked={on} disabled={busy} onChange={toggle} style={{ width: "auto" }} />
+      Auto-import from ServiceNow {on && <span className="muted">· {last}</span>}
+    </label>
   );
 }
 

@@ -9,6 +9,7 @@ import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "..
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { purgeCutoff } from "./agent-trash";
 import { sweepProcurementWatches } from "./procurement-watch";
+import { sweepServiceNowIntake } from "./intake-sweep";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
@@ -142,6 +143,8 @@ export function makeRunnerService(db: PrismaClient) {
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.
       void sweepProcurementWatches(db).catch(() => {});
+      // Same pulse: auto-import new ServiceNow intake tickets (off unless enabled; self-throttles to ~15 min).
+      void sweepServiceNowIntake(db).catch(() => {});
       return { ok: true, enabled: agent.enabled, update, discover };
     },
 

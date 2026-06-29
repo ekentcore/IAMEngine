@@ -547,6 +547,13 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
+      {report.credsMissing.length > 0 && (
+        <div style={{ margin: "0 0 0.6rem", padding: "0.5rem 0.7rem", borderRadius: 6, border: "1px solid #fde68a", background: "#fffbeb", color: "#92400e", fontSize: 13 }}>
+          ⚠ <b>Client credentials not set up</b> for this case:{" "}
+          {report.credsMissing.map((m) => `${m.secretName} (${m.systems.join(", ")})`).join("; ")}.{" "}
+          Set them on the client&rsquo;s <a href={`/clients/${report.client.slug}`}>Credentials panel</a> — these steps stay blocked until they resolve.
+        </div>
+      )}
       {report.needsInfo && <NeedsInfoPanel caseId={caseId} info={report.needsInfo} refresh={refresh} />}
       {report.review && <ReviewPanel caseId={caseId} review={report.review} refresh={refresh} />}
       {report.aiResolved && (

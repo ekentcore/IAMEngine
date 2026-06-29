@@ -64,6 +64,10 @@ export type RunReport = {
   caseStatus: string;
   verifiedAt: string | null; // when the auto-verify sweep completed (null until verified)
   verifying: boolean; // a validate-only sweep is in flight right now (persistent across step gaps)
+  // Client credentials this case needs that AREN'T set up in Delinea yet (secret name -> the systems
+  // that need it). Computed regardless of hold state, so an auto-imported case for an un-onboarded
+  // client shows "credentials not set up" up front. Empty when everything resolves.
+  credsMissing: { secretName: string; systems: string[] }[];
   // Intake fields the system couldn't determine — editable to fill in. held = the case is paused as
   // "Needs Information" until they're provided. null when there's nothing to fill.
   needsInfo: { fields: { field: string; label: string; note: string }[]; held: boolean } | null;
@@ -343,6 +347,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     client: input.client,
     caseStatus: input.caseStatus,
     verifiedAt: input.verifiedAt ?? null,
+    credsMissing: [], // filled in by loadRunReport (needs the client's Delinea secrets)
     needsInfo: (() => {
       const uf = input.payload.unknownFields;
       const fields = Array.isArray(uf)
@@ -548,6 +553,24 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       const secs = Math.max(0, Math.round((Date.now() - new Date(best.lastSeenAt ?? 0).getTime()) / 1000));
       st.pendingReason = `ready — ${best.name} claims it on its next poll (~15s; last polled ${secs}s ago)`;
     }
+  }
+
+  // Case-level credential readiness (runs regardless of hold state, unlike the per-step block above):
+  // which required secrets aren't set up for this client. Surfaced as a banner so an auto-imported
+  // case for an un-onboarded client is obviously blocked on creds.
+  {
+    const clientSecrets = await db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } });
+    const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+    const missMap = new Map<string, Set<string>>();
+    for (const job of c.jobs) {
+      if (job.mode !== "api") continue;
+      const needed = ((job.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
+      for (const m of missingRequiredSecrets(needed, c.secretOverrides, byName)) {
+        if (!missMap.has(m)) missMap.set(m, new Set());
+        missMap.get(m)!.add(job.systemKey);
+      }
+    }
+    report.credsMissing = [...missMap.entries()].map(([secretName, systems]) => ({ secretName, systems: [...systems] }));
   }
   return report;
 }

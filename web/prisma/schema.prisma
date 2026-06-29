@@ -460,3 +460,11 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
 }
+
+// App-level singleton key/value state (no per-client owner). Holds the ServiceNow intake poller's
+// enabled flag + high-water mark, and is the home for future app settings. Value is JSON-as-text.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt
+}
