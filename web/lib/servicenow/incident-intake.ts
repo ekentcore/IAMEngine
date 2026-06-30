@@ -62,15 +62,21 @@ function subAndProducer(r: SnIncidentRecord): string {
   return `${sub} ${producer}`;
 }
 
+// Service / infrastructure deprovisioning ("Service Deprovisioning / Off-Boarding", DC Requests) reuses
+// the "off-boarding" wording but is NOT a user lifecycle case — exclude it so the poller can't import it.
+function isServiceDeprovisioning(r: SnIncidentRecord): boolean {
+  return /deprovision|\bservice\b/.test(subAndProducer(r));
+}
+
 // True when an incident is an internal onboarding request (subcategory or producer signal).
 export function isOnboardingIncident(r: SnIncidentRecord): boolean {
-  return /on-?boarding/.test(subAndProducer(r));
+  return /on-?boarding/.test(subAndProducer(r)) && !isServiceDeprovisioning(r);
 }
 
 // True when an incident is an internal OFFboarding request. Checked before onboarding so the
 // "off-boarding" string isn't shadowed by the looser "boarding" match.
 export function isOffboardingIncident(r: SnIncidentRecord): boolean {
-  return /off-?boarding/.test(subAndProducer(r));
+  return /off-?boarding/.test(subAndProducer(r)) && !isServiceDeprovisioning(r);
 }
 
 // onboard | offboard | null (not a user lifecycle incident). Offboard is tested first because

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeIncidentIntake, extractMirrorUser } from "./incident-mapper";
+import { incidentAction } from "./incident-intake";
 
 // Flat record with dotted variable keys, exactly as the Table API returns it for INC0836187.
 const fv = (value: string, display?: string) => ({ value, display_value: display ?? value });
@@ -129,4 +130,37 @@ const OFFB_ABBR = {
 test("normalizeIncidentIntake: 'OFFB - Name - date' picks the name", () => {
   const p = normalizeIncidentIntake(OFFB_ABBR as never).payload as Record<string, unknown>;
   assert.equal(p.displayName, "Katie Butzer");
+});
+
+// Regression (INC0850968): an internal onboard incident with NO producer variables — name and start
+// date come from the title; the legal name sits on the notes' first line.
+const ONB_NO_VARS = {
+  number: fv("INC0850968"),
+  short_description: fv("Onboarding - 07/13/2026 - Drew Dirienzo"),
+  subcategory: fv("user_onboarding", "User / On-Boarding"),
+  company: fv("sysid", "Coretelligent"),
+  "variables.description": fv("Andrew Dirienzo\r\n74 S Transithill Dr.\r\nDepew, NY 14043"),
+};
+test("normalizeIncidentIntake: onboard with no variables pulls name + start date from the title", () => {
+  const p = normalizeIncidentIntake(ONB_NO_VARS as never).payload as Record<string, unknown>;
+  assert.equal(p.firstName, "Drew");
+  assert.equal(p.lastName, "Dirienzo");
+  assert.equal(p.displayName, "Drew Dirienzo");
+  assert.equal(p.startDate, "07/13/2026");
+});
+
+// INC0233115: service/infrastructure deprovisioning reuses "Off-Boarding" wording but is NOT a user
+// lifecycle case — incidentAction must return null so the poller skips it.
+const SERVICE_DEPROV = {
+  number: fv("INC0233115"),
+  short_description: fv("Partial Deprovisioning / Off-boarding Request"),
+  subcategory: fv("deprovisioning", "Deprovisioning"),
+  u_producer: fv("Service Deprovisioning / Off-Boarding"),
+  company: fv("sysid", "Cove Hill Partners"),
+};
+test("incidentAction: service deprovisioning is not a user lifecycle incident", () => {
+  assert.equal(incidentAction(SERVICE_DEPROV as never), null);
+  // sanity: genuine user incidents still detect
+  assert.equal(incidentAction(AVNI as never), "onboard");
+  assert.equal(incidentAction(OFFB as never), "offboard");
 });

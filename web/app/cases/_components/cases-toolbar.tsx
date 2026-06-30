@@ -20,7 +20,7 @@ export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
 }
 
 // Turn the automated ServiceNow intake poller on/off. When on, heartbeats pull open/unassigned UM
-// tickets ~every 15 min and auto-import + plan them (held for review).
+// tickets + internal on/off-boarding incidents ~every 15 min and auto-import + plan them (held for review).
 function AutoImportToggle() {
   const [on, setOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);

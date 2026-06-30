@@ -1,4 +1,5 @@
-// Automated ServiceNow intake: every ~15 min, pull OPEN/UNASSIGNED in-scope UM tickets and auto-import
+// Automated ServiceNow intake: every ~15 min, pull OPEN/UNASSIGNED in-scope UM tickets + internal
+// on/off-boarding INCIDENTS and auto-import
 // + plan any not already imported (left HELD for review — nothing runs unattended). First run sweeps the
 // current backlog; thereafter it catches new tickets. Dedupe is by CaseRequest.serviceNowCaseNumber
 // (@unique) via importByNumber, so re-polls never double-create. Off by default (the enabled flag in
@@ -6,7 +7,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { assertConfig } from "../servicenow/http";
-import { fetchOpenIntakeNumbers } from "../servicenow/intake-list";
+import { fetchOpenIntakeNumbers, fetchOpenIncidentNumbers } from "../servicenow/intake-list";
 import { importByNumber } from "../cases/import-service";
 import { getAppSetting, setAppSetting, INTAKE_SETTING_KEY, type IntakeSetting } from "../settings";
 
@@ -27,7 +28,10 @@ export async function sweepServiceNowIntake(db: PrismaClient): Promise<void> {
   let imported = setting.imported ?? 0;
   let lastNumber = setting.lastImportedNumber;
   try {
-    const numbers = await fetchOpenIntakeNumbers(config);
+    // UM external client tickets + internal on/off-boarding incidents. importByNumber routes each by
+    // prefix (INC→incident path, UM→user-management path) and dedupes by serviceNowCaseNumber.
+    const [ums, incs] = await Promise.all([fetchOpenIntakeNumbers(config), fetchOpenIncidentNumbers(config)]);
+    const numbers = [...ums, ...incs];
     for (const number of numbers) {
       // importByNumber is idempotent (dedupes by serviceNowCaseNumber) and leaves the case HELD.
       const res = await importByNumber(db, number, "system:intake-poll").catch(() => null);

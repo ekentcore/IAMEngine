@@ -43,8 +43,12 @@ export function extractMirrorUser(text: string): string | null {
 }
 
 function onboardPayload(r: SnIncidentRecord): Record<string, unknown> {
-  const firstName = v(r, "u_first_name");
-  const lastName = v(r, "u_last_name");
+  // Producer variables are usually empty on these internal incidents, so fall back to the title
+  // ("Onboarding - 07/13/2026 - Drew Dirienzo") and the notes' first line for the name.
+  const titleName = nameFromTitle(disp(r, "short_description")) ?? nameFromNotes(v(r, "description"));
+  const titleTokens = (titleName ?? "").split(/\s+/).filter(Boolean);
+  const firstName = v(r, "u_first_name") || titleTokens[0] || "";
+  const lastName = v(r, "u_last_name") || (titleTokens.length > 1 ? titleTokens.slice(1).join(" ") : "");
   const title = v(r, "u_title");
   // Office location proper, falling back to the workspace location (e.g. "Remote (US)").
   const officeLocation = vd(r, "u_office_location") || vd(r, "u_workspace_location");
@@ -56,7 +60,7 @@ function onboardPayload(r: SnIncidentRecord): Record<string, unknown> {
     firstName,
     lastName,
     nickname: orNull(v(r, "u_nickname")),
-    displayName: [firstName, lastName].filter(Boolean).join(" ") || null,
+    displayName: [firstName, lastName].filter(Boolean).join(" ") || titleName || null,
     jobTitle: orNull(title),
     title: orNull(title),
     department: orNull(vd(r, "u_department")),
@@ -64,7 +68,7 @@ function onboardPayload(r: SnIncidentRecord): Record<string, unknown> {
     workspaceLocation: orNull(vd(r, "u_workspace_location")),
     employmentType: normalizeEmploymentType(v(r, "u_employment_type"), vd(r, "u_employment_type")),
     managerName: orNull(vd(r, "u_hiring_manager")), // readable name, not the sys_id
-    startDate: orNull(v(r, "u_start_date")),
+    startDate: orNull(v(r, "u_start_date") || dateFromTitle(disp(r, "short_description")) || ""),
     personalEmail: orNull(v(r, "u_personal_email")),
     personalPhone: orNull(v(r, "u_phone_number")),
     mobilePhone: orNull(v(r, "u_phone_number")),
@@ -95,20 +99,38 @@ function firstVar(r: SnIncidentRecord, names: string[], display = false): string
 // Richter - Immediate") — they're not the person's name.
 const TIMING_WORD = /^(immediate(ly)?|asap|urgent|rush|priority|now|today|tonight|eod|cob|end of (day|business)|effective.*)$/i;
 const looksLikeName = (s: string) => /^[A-Z][A-Za-z'’.-]*(\s+[A-Z][A-Za-z'’.-]*)+$/.test(s); // 2+ capitalized tokens
+const DATE_SEG = /^\d{1,4}[/.-]\d{1,2}([/.-]\d{1,4})?$/; // a date-looking title segment, e.g. "07/13/2026"
+
+// Internal incidents carry NO producer variables — the person's name lives in the title
+// ("Onboarding - 07/13/2026 - Drew Dirienzo", "Offboarding - Neil Richter - Immediate", "OFFB - Katie
+// Butzer - 06/30"). Drop the action word / date / urgency segments and PREFER the one that looks like a
+// person name (2+ capitalized tokens); fall back to the last leftover segment.
+function nameFromTitle(sd: string): string | null {
+  if (!sd) return null;
+  const segs = sd.split(/\s+[-–—]\s+/).map((s) => s.trim()).filter(Boolean);
+  const candidates = segs.filter((s) => !/^\d/.test(s) && !/(?:on|off)-?board/i.test(s) && !TIMING_WORD.test(s));
+  return candidates.find(looksLikeName) ?? candidates[candidates.length - 1] ?? null;
+}
+
+// The first date-looking segment of a title ("Onboarding - 07/13/2026 - Drew" → "07/13/2026").
+function dateFromTitle(sd: string): string | null {
+  return sd.split(/\s+[-–—]\s+/).map((s) => s.trim()).find((s) => DATE_SEG.test(s)) ?? null;
+}
+
+// First line of the notes when it reads like a person's (legal) name — internal onboards put it there
+// ("Andrew Dirienzo\n74 S Transithill Dr…"). Last-resort name source.
+function nameFromNotes(notes: string): string | null {
+  const first = (notes.split(/\r?\n/)[0] ?? "").trim();
+  return looksLikeName(first) ? first : null;
+}
 
 // The departing user's full name: prefer explicit name variables, else parse the short description.
-// The name segment can sit anywhere ("Offboarding - 06/30/2026 - Jordan Park", "Offboarding - Neil
-// Richter - Immediate", "OFFB - Katie Butzer - 06/30"), so drop date / "offboarding" / urgency-word
-// segments and PREFER the one that looks like a person name (2+ capitalized tokens).
 function offboardName(r: SnIncidentRecord): string {
   const explicit = firstVar(r, ["u_full_name", "u_display_name", "u_name", "u_user", "u_employee", "u_offboard_user"], true)
     || [v(r, "u_first_name"), v(r, "u_last_name")].filter(Boolean).join(" ");
   if (explicit) return explicit;
   const sd = disp(r, "short_description");
-  const segs = sd.split(/\s+[-–—]\s+/).map((s) => s.trim()).filter(Boolean);
-  const candidates = segs.filter((s) => !/^\d/.test(s) && !/off-?board/i.test(s) && !TIMING_WORD.test(s));
-  // A real "First Last" wins over any leftover label; else the last remaining candidate.
-  return candidates.find(looksLikeName) ?? candidates[candidates.length - 1] ?? sd;
+  return nameFromTitle(sd) ?? nameFromNotes(v(r, "description")) ?? sd;
 }
 
 function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {
