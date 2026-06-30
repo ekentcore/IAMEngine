@@ -219,6 +219,41 @@ export function makeCaseRepository(db: PrismaClient) {
       };
     },
 
+    // Rescan: refresh the stored intake (action/payload/subject) from ServiceNow WITHOUT touching the
+    // planned jobs — the operator re-plans separately. Returns the changed field keys for the UI. An
+    // onboard<->offboard flip on a started case is refused (it would desync the existing jobs).
+    async refreshCaseIntake(
+      caseId: string,
+      intake: { action: Action; payload: Record<string, unknown>; subject: string | null }
+    ): Promise<
+      | { ok: true; changed: string[]; clientId: string; actionChanged: boolean }
+      | { ok: false; reason: "not_found" | "action_flip_started" }
+    > {
+      const c = await db.caseRequest.findUnique({
+        where: { id: caseId },
+        select: { clientId: true, action: true, subject: true, payload: true, jobs: { select: { status: true } } },
+      });
+      if (!c) return { ok: false, reason: "not_found" };
+      const actionChanged = c.action !== intake.action;
+      if (actionChanged && hasStartedJobs(c.jobs)) return { ok: false, reason: "action_flip_started" };
+
+      // Diff the stored vs incoming payload (union of keys, structural compare) + action/subject.
+      const old = (c.payload ?? {}) as Record<string, unknown>;
+      const changed: string[] = [];
+      for (const k of new Set([...Object.keys(old), ...Object.keys(intake.payload)])) {
+        if (JSON.stringify(old[k]) !== JSON.stringify(intake.payload[k])) changed.push(k);
+      }
+      if (actionChanged) changed.push("action");
+      if ((c.subject ?? null) !== (intake.subject ?? null)) changed.push("subject");
+
+      await db.caseRequest.update({
+        where: { id: caseId },
+        // verifiedAt is cleared: the plan no longer reflects the (now-refreshed) intake until re-planned.
+        data: { action: intake.action, payload: intake.payload as Prisma.InputJsonValue, subject: intake.subject, verifiedAt: null },
+      });
+      return { ok: true, changed, clientId: c.clientId, actionChanged };
+    },
+
     // Re-plan: replace the case's jobs and refresh its action/payload/status in one transaction.
     async replanCaseJobs(
       caseId: string,

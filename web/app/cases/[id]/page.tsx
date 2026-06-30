@@ -13,6 +13,7 @@ import { PlaybookView } from "../_components/playbook-view";
 import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
+import { RescanButton } from "../_components/rescan-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
 import { PauseButton } from "../_components/pause-button";
 import { IntakePanel } from "../_components/intake-panel";
@@ -135,8 +136,11 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </>
       )}
 
-      <h2>Intake details</h2>
-      <p className="note" style={{ marginTop: "-0.5rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <h2 style={{ marginBottom: 0 }}>Intake details</h2>
+        {c.serviceNowCaseNumber && <RescanButton caseId={c.id} caseNumber={c.serviceNowCaseNumber} />}
+      </div>
+      <p className="note" style={{ marginTop: "0.25rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
       <table>
         <tbody>
           {Object.entries(c.payload).map(([k, v]) => (

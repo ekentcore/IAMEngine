@@ -5,9 +5,8 @@
 // regenerate the playbook. Only allowed BEFORE execution starts.
 import type { PrismaClient } from "@prisma/client";
 import { planCase } from "../orchestrator";
-import { deriveIdentity, normalizeIntake } from "../servicenow/intake-mapper";
-import { snConfigFromEnv } from "../servicenow/gateway";
-import { fetchUserManagementCase } from "../servicenow/intake";
+import { deriveIdentity } from "../servicenow/intake-mapper";
+import { fetchNormalizedIntake } from "./import-service";
 import { makeCaseRepository } from "./repository";
 import { deriveStatus, type PlanOutcome } from "./planning-service";
 import { CaseAlreadyStartedError } from "./job-status";
@@ -30,14 +29,13 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
   let payload = info.payload;
   let refreshedFromServiceNow = false;
 
-  // Re-pull the latest UM for a ServiceNow-sourced case (the requester may have edited it).
-  // Best-effort: a SN outage / unconfigured env must NOT block re-planning against edited local
-  // systems — keep the stored action/payload and carry on (refreshedFromServiceNow stays false).
+  // Re-pull the latest ticket for a ServiceNow-sourced case (UM or INC — the requester may have
+  // edited it). Best-effort: a SN outage / unconfigured env must NOT block re-planning against edited
+  // local systems — keep the stored action/payload and carry on (refreshedFromServiceNow stays false).
   if (info.serviceNowCaseNumber) {
     try {
-      const raw = await fetchUserManagementCase(snConfigFromEnv(), info.serviceNowCaseNumber);
-      if (raw) {
-        const intake = normalizeIntake(raw);
+      const intake = await fetchNormalizedIntake(info.serviceNowCaseNumber);
+      if (intake) {
         action = intake.action;
         payload = intake.payload;
         refreshedFromServiceNow = true;

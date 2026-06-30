@@ -3,7 +3,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { fetchUserManagementCase } from "../servicenow/intake";
-import { normalizeIntake } from "../servicenow/intake-mapper";
+import { normalizeIntake, type NormalizedIntake } from "../servicenow/intake-mapper";
 import { fetchOnboardingIncident, incidentAction } from "../servicenow/incident-intake";
 import { normalizeIncidentIntake } from "../servicenow/incident-mapper";
 import { makeCaseRepository } from "./repository";
@@ -120,6 +120,23 @@ export async function importIncidentCase(
     { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
   );
   return { ok: true, outcome, caseNumber: intake.caseNumber };
+}
+
+// Re-fetch + normalize the latest intake for an existing case's SN number, routing by prefix
+// (INC -> internal incident, else UM). Returns null if the record is gone / no longer a lifecycle
+// incident. Used to REFRESH an already-imported case's fields (Rescan) and by the re-plan path —
+// the single place that knows both intake sources, so neither has to special-case INC vs UM.
+export async function fetchNormalizedIntake(number: string): Promise<NormalizedIntake | null> {
+  const trimmed = number.trim();
+  if (!trimmed) return null;
+  const config = snConfigFromEnv();
+  if (/^inc/i.test(trimmed)) {
+    const raw = await fetchOnboardingIncident(config, trimmed);
+    if (!raw || !incidentAction(raw)) return null;
+    return normalizeIncidentIntake(raw);
+  }
+  const raw = await fetchUserManagementCase(config, trimmed);
+  return raw ? normalizeIntake(raw) : null;
 }
 
 // Route by number prefix: INCxxxxxxx -> internal incident; everything else (UM/CS) -> UM case.
