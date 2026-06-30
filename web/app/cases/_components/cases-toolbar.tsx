@@ -22,9 +22,12 @@ export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
 // Turn the automated ServiceNow intake poller on/off. When on, heartbeats pull open/unassigned UM
 // tickets + internal on/off-boarding incidents ~every 15 min and auto-import + plan them (held for review).
 function AutoImportToggle() {
+  const router = useRouter();
   const [on, setOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
-  const [info, setInfo] = useState<{ lastRunAt?: string; imported?: number } | null>(null);
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [info, setInfo] = useState<{ lastRunAt?: string; imported?: number; lastRunImported?: number } | null>(null);
   useEffect(() => { fetch("/api/admin/intake").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) { setOn(Boolean(d.enabled)); setInfo(d); } }).catch(() => {}); }, []);
   if (on === null) return null; // not loaded / not permitted
   async function toggle() {
@@ -34,12 +37,32 @@ function AutoImportToggle() {
       if (r.ok) setOn(!on);
     } finally { setBusy(false); }
   }
-  const last = info?.lastRunAt ? `last run ${new Date(info.lastRunAt).toLocaleTimeString()}${info.imported ? `, ${info.imported} imported` : ""}` : "not run yet";
+  // Run the sweep on demand (ignores the ~15-min throttle + the enabled flag) and surface the result.
+  async function importNow() {
+    setRunning(true); setMsg(null);
+    try {
+      const r = await fetch("/api/admin/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-now" }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg({ ok: false, text: d.error ?? `failed (${r.status})` }); return; }
+      if (d.setting) setInfo((p) => ({ ...(p ?? {}), ...d.setting }));
+      setMsg({ ok: true, text: `Imported ${d.imported} new of ${d.scanned} open${d.alreadyImported ? `, ${d.alreadyImported} already imported` : ""}${d.failed ? `, ${d.failed} failed` : ""}.` });
+      if (d.imported > 0) router.refresh(); // surface the new cases in the list
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally { setRunning(false); }
+  }
+  const last = info?.lastRunAt ? `last run ${new Date(info.lastRunAt).toLocaleTimeString()}${typeof info.lastRunImported === "number" ? `, ${info.lastRunImported} imported` : info.imported ? `, ${info.imported} imported` : ""}` : "not run yet";
   return (
-    <label className="note" style={{ display: "inline-flex", gap: 6, alignItems: "center" }} title={`Auto-import open/unassigned ServiceNow tickets every ~15 min (held for review). ${last}.`}>
-      <input type="checkbox" checked={on} disabled={busy} onChange={toggle} style={{ width: "auto" }} />
-      Auto-import from ServiceNow {on && <span className="muted">· {last}</span>}
-    </label>
+    <span style={{ display: "inline-flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <button onClick={importNow} disabled={running} title="Pull open/unassigned ServiceNow UMs + incidents now and import any new ones (held for review)">
+        {running ? "Importing…" : "Import now"}
+      </button>
+      <label className="note" style={{ display: "inline-flex", gap: 6, alignItems: "center" }} title={`Auto-import open/unassigned ServiceNow tickets every ~15 min (held for review). ${last}.`}>
+        <input type="checkbox" checked={on} disabled={busy} onChange={toggle} style={{ width: "auto" }} />
+        Auto-import from ServiceNow {on && <span className="muted">· {last}</span>}
+      </label>
+      {msg && <span className="note" style={{ color: msg.ok ? "#15803d" : "#b91c1c" }}>{msg.text}</span>}
+    </span>
   );
 }
 

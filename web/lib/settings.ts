@@ -17,7 +17,9 @@ export async function setAppSetting(db: PrismaClient, key: string, value: unknow
 export const INTAKE_SETTING_KEY = "servicenow_intake_poll";
 export type IntakeSetting = {
   enabled: boolean;
-  lastRunAt?: string;          // ISO — last time the sweep ran
-  lastImportedNumber?: string; // most recent UM number imported (for the log)
-  imported?: number;           // running count imported by the poller
+  lastRunAt?: string;          // ISO — last time the sweep ran (auto or manual "Import now")
+  lastImportedNumber?: string; // most recent UM/INC number imported (for the log)
+  imported?: number;           // running count imported by the poller (cumulative)
+  lastRunScanned?: number;     // open/unassigned tickets seen on the most recent run
+  lastRunImported?: number;    // NEW cases imported on the most recent run
 };
