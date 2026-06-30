@@ -127,6 +127,8 @@ export function SecretsPanel({
         {" · "}
         <a href="/help/mimecast" target="_blank" rel="noreferrer">Mimecast</a>
         {" · "}
+        <a href="/help/proofpoint" target="_blank" rel="noreferrer">Proofpoint</a>
+        {" · "}
         <a href="/help/google" target="_blank" rel="noreferrer">Google Workspace</a>
       </p>
     );

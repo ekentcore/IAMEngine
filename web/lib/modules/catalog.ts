@@ -34,7 +34,7 @@ export const MODULES: ModuleEntry[] = [
 
   // --- Email security ---
   { key: "mimecast", name: "Mimecast", group: "Email security", executor: "built", secret: "mimecast", helpSlug: "mimecast" },
-  { key: "proofpoint", name: "Proofpoint", group: "Email security", executor: "built", secret: "proofpoint" },
+  { key: "proofpoint", name: "Proofpoint", group: "Email security", executor: "built", secret: "proofpoint", helpSlug: "proofpoint" },
   { key: "spanning", name: "Spanning Backup", group: "Email security", executor: "built", secret: "spanning", helpSlug: "spanning" },
 
   // --- Apps & access ---
