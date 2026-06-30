@@ -16,7 +16,8 @@
     "db:setup": "npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed",
     "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts",
     "test": "tsx --test \"lib/**/*.test.ts\"",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "db:provision": "node scripts/provision-db.mjs"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
