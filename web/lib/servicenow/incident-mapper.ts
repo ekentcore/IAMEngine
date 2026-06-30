@@ -91,19 +91,24 @@ function firstVar(r: SnIncidentRecord, names: string[], display = false): string
   return "";
 }
 
-// The departing user's full name: prefer explicit name variables, else the trailing "… - First
-// Last" segment of the short description ("Offboarding - 06/30/2026 - Jordan Park" -> "Jordan Park").
+// Urgency/timing words that appear as their OWN segment in offboard titles ("Offboarding - Neil
+// Richter - Immediate") — they're not the person's name.
+const TIMING_WORD = /^(immediate(ly)?|asap|urgent|rush|priority|now|today|tonight|eod|cob|end of (day|business)|effective.*)$/i;
+const looksLikeName = (s: string) => /^[A-Z][A-Za-z'’.-]*(\s+[A-Z][A-Za-z'’.-]*)+$/.test(s); // 2+ capitalized tokens
+
+// The departing user's full name: prefer explicit name variables, else parse the short description.
+// The name segment can sit anywhere ("Offboarding - 06/30/2026 - Jordan Park", "Offboarding - Neil
+// Richter - Immediate", "OFFB - Katie Butzer - 06/30"), so drop date / "offboarding" / urgency-word
+// segments and PREFER the one that looks like a person name (2+ capitalized tokens).
 function offboardName(r: SnIncidentRecord): string {
   const explicit = firstVar(r, ["u_full_name", "u_display_name", "u_name", "u_user", "u_employee", "u_offboard_user"], true)
     || [v(r, "u_first_name"), v(r, "u_last_name")].filter(Boolean).join(" ");
   if (explicit) return explicit;
   const sd = disp(r, "short_description");
   const segs = sd.split(/\s+[-–—]\s+/).map((s) => s.trim()).filter(Boolean);
-  // Use the last segment that isn't a date / the word "offboarding".
-  for (let i = segs.length - 1; i >= 0; i--) {
-    if (!/^\d/.test(segs[i]) && !/off-?boarding/i.test(segs[i])) return segs[i];
-  }
-  return sd;
+  const candidates = segs.filter((s) => !/^\d/.test(s) && !/off-?board/i.test(s) && !TIMING_WORD.test(s));
+  // A real "First Last" wins over any leftover label; else the last remaining candidate.
+  return candidates.find(looksLikeName) ?? candidates[candidates.length - 1] ?? sd;
 }
 
 function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {

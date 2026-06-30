@@ -102,3 +102,31 @@ test("normalizeIncidentIntake: extracts the offboard user's name from the short 
   assert.equal(p.firstName, "Morgan");
   assert.equal(p.lastName, "Lee");
 });
+
+// Regression (INC0840775): title is "Offboarding - <Name> - Immediate" with NO name variables — the
+// urgency word "Immediate" must not be mistaken for the first name.
+const OFFB_IMMEDIATE = {
+  number: fv("INC0840775"),
+  short_description: fv("Offboarding - Neil Richter - Immediate"),
+  subcategory: fv("user_offboarding", "User / Off-Boarding"),
+  company: fv("sysid", "Coretelligent"),
+};
+
+test("normalizeIncidentIntake: '… - Immediate' is the timing, not the name", () => {
+  const p = normalizeIncidentIntake(OFFB_IMMEDIATE as never).payload as Record<string, unknown>;
+  assert.equal(p.displayName, "Neil Richter");
+  assert.equal(p.firstName, "Neil");
+  assert.equal(p.lastName, "Richter");
+});
+
+// "OFFB - <Name> - <date>" abbreviation variant — pick the person name, not the label/date.
+const OFFB_ABBR = {
+  number: fv("INC0840900"),
+  short_description: fv("OFFB - Katie Butzer - 06/30"),
+  subcategory: fv("user_offboarding", "User / Off-Boarding"),
+  company: fv("sysid", "Coretelligent"),
+};
+test("normalizeIncidentIntake: 'OFFB - Name - date' picks the name", () => {
+  const p = normalizeIncidentIntake(OFFB_ABBR as never).payload as Record<string, unknown>;
+  assert.equal(p.displayName, "Katie Butzer");
+});
