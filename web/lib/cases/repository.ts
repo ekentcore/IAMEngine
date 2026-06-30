@@ -514,8 +514,12 @@ export function makeCaseRepository(db: PrismaClient) {
         const scheduled = operatorPaused && r.pausedReason === "scheduled";
         const review = operatorPaused && r.pausedReason === "review";
         const paused = operatorPaused || credsPaused;
+        // "Imported": a ServiceNow-sourced case held on import for review with NO activity yet
+        // (nothing dispatched/run) — just landed, nothing done. Distinct from a reviewed case the
+        // operator has started or re-held after a run.
+        const imported = Boolean(r.serviceNowCaseNumber) && review && !lastRunAt && !["completed", "failed"].includes(r.status);
         return {
-          id: r.id, action: r.action, status: r.status, subject: r.subject, paused,
+          id: r.id, action: r.action, status: r.status, subject: r.subject, paused, imported,
           pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : review ? ("review" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,

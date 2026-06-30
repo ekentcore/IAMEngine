@@ -10,6 +10,7 @@ export type CaseRowVM = {
   action: string;
   status: string;
   paused?: boolean; // operator pause or blocked on missing credentials — shown as "paused"
+  imported?: boolean; // freshly imported from ServiceNow, nothing run yet — shown as "imported"
   pausedBy?: "needs_info" | "scheduled" | "review" | "operator" | "creds" | null;
   warnings?: string[]; // completed-with-warnings: badge goes orange, these show on hover
   subject: string | null;
@@ -60,7 +61,7 @@ type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "j
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
-  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, STATUS_LABEL[c.status] ?? c.status, c.statusHint, ...(c.warnings ?? [])]
+  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, c.imported ? "imported" : STATUS_LABEL[c.status] ?? c.status, c.statusHint, ...(c.warnings ?? [])]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -79,13 +80,15 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
       className="badge"
       title={title}
       style={{
-        color: c.paused ? "#8a6d00" : warns.length ? "#b45309" : STATUS_COLOR[c.status],
+        color: c.imported ? "#5b21b6" : c.paused ? "#8a6d00" : warns.length ? "#b45309" : STATUS_COLOR[c.status],
         cursor: title ? "help" : undefined,
         textDecoration: title ? "underline dotted" : undefined,
         textUnderlineOffset: 3,
       }}
     >
-      {c.paused
+      {c.imported
+        ? "✦ imported"
+        : c.paused
         ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? (c.lastRunIso ? "⏸ held — resume to run" : "▶︎ Press Play to Start") : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
         : warns.length
           ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
@@ -185,7 +188,8 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
 
   const visible = useMemo(() => {
     const filtered = working.filter((c) => {
-      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (statusFilter === "imported") { if (!c.imported) return false; }
+      else if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (terms.length === 0) return true;
       const hay = haystack(c);
       return terms.every((t) => hay.includes(t));
@@ -250,6 +254,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
         </div>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="all">All statuses</option>
+          <option value="imported">imported (just imported)</option>
           {Object.entries(STATUS_LABEL)
             .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
             .map(([k, label]) => (

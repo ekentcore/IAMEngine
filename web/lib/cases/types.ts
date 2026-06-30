@@ -16,6 +16,8 @@ export type CaseListItem = {
   status: CaseStatus;
   // Running/queued but blocked on a missing required credential — shown as "paused" in the list.
   paused: boolean;
+  // Freshly imported from ServiceNow and held for review with no activity yet — shown as "imported".
+  imported: boolean;
   // Why it's paused: every import is held — "needs_info" (intake unknowns to fill), "scheduled" (a
   // possibly-future-dated offboard), "review" (a ready case awaiting an operator's go) — plus an
   // explicit operator pause or missing credentials. null when not paused.
