@@ -1345,6 +1345,16 @@ $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's
 $CONNTEST_PROBE['zoom']        = { param($job, $creds) Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null; 'zoom: users readable' }
 $CONNTEST_PROBE['sentinelone'] = { param($job, $creds) Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null; 'sentinelone: agents readable' }
 $CONNTEST_PROBE['xmatters']    = { param($job, $creds) Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null; 'xmatters: people readable' }
+# Spanning has NO Connect in $DISPATCH (Connect-CtgSpanning is a pure local assignment), so the probe
+# reads the brokered secret itself (Use-CtgSpanningSecret) then does one live LIST read. The /users
+# LIST route is the VERIFIED one (the /users/{email} route 400s on some tenants), so listing a single
+# user proves the Basic clientId:clientSecret actually authorizes a read against the live API.
+$CONNTEST_PROBE['spanning']    = { param($job, $creds)
+    Use-CtgSpanningSecret $job $creds
+    $resp  = Invoke-CtgSpanningApi -Method GET -Path '/users?size=1'
+    $users = Get-CtgProp $resp 'users'; if ($null -eq $users) { $users = Get-CtgProp $resp 'items' }; if ($null -eq $users) { $users = $resp }
+    "spanning: users readable (sample returned $(@($users).Count))"
+}
 # 1Password: only the api method has a credential to test — prove the admin `op` sign-in works + can
 # read users. scim/manual/browser have no app credential, so report that there's nothing to probe.
 $CONNTEST_PROBE['1password']   = { param($job, $creds)
