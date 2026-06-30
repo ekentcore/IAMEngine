@@ -8,7 +8,11 @@
 // Extensible: add a row for a new provider's secret name. An unknown name has no rule (no warning).
 // `orClientDomain` requirements are satisfied either by a matching field OR by the client having a
 // primary domain (the runner falls back to it) — so they don't false-flag a correctly-set secret.
-export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean };
+// `optional` requirements are recommended-but-not-required: the runner has a safe fallback when the
+// field is absent (e.g. an on-DC agent binds to its local domain with no -Server), so the Test must
+// NOT report them as missing. They stay in the list to document the field the connector will USE if
+// present and to keep the synonym lists honest about what the runner reads.
+export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean; optional?: boolean };
 
 export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   // M365 admin (Graph): username + password + a tenant hint (tenant can come from the client domain).
@@ -42,11 +46,21 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "api token", anyOf: ["ClientSecret", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Token", "Key", "Password"] },
     { label: "region or base url", anyOf: ["apiURL", "ApiUrl", "ApiURL", "BaseUrl", "Base URL", "Url", "URL", "Region"] },
   ],
-  // On-prem AD / directory-sync service account: username + password + the DC to bind to.
+  // On-prem AD / directory-sync service account: username + password are required; the DC to bind to
+  // is OPTIONAL. The common topology is an agent running ON the domain controller, which authenticates
+  // in its ambient/local domain context — so New-CtgAdConnection (Start-IamRunner.ps1) OMITS -Server
+  // entirely and the AD cmdlets target the local DC. When a target IS wanted (an agent on a different
+  // in-network box), the "Active Directory Account" Delinea template has no Server field, so the runner
+  // reads the DC name from the Documentation Link field — the synonyms below mirror that exactly so the
+  // Test agrees with the runner. `optional` => a missing server field never flags as missing.
   "ad-dc": [
     { label: "username", anyOf: ["Username"] },
     { label: "password", anyOf: ["Password"] },
-    { label: "domain controller (server)", anyOf: ["Server", "Host", "DomainController", "DC"] },
+    {
+      label: "domain controller (server)",
+      anyOf: ["Server", "Host", "DomainController", "DC", "Documentation Link", "DocumentationLink", "Document Link", "DocLink"],
+      optional: true,
+    },
   ],
 };
 
@@ -66,6 +80,8 @@ export function checkFieldShape(
   const have = new Set(presentFields.map(norm));
   const missing = reqs
     .filter((r) => {
+      // Optional requirements (the runner has a safe fallback, e.g. on-DC ambient auth) never flag.
+      if (r.optional) return false;
       // Some requirements (m365 tenant, spanning user) can be supplied by the client's primary domain.
       if (r.orClientDomain && opts.clientHasTenantHint) return false;
       return !r.anyOf.some((syn) => have.has(norm(syn)));

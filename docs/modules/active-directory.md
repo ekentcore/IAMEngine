@@ -9,6 +9,16 @@ the local DC), never centrally. Identity origin for `ad-synced`/`ad-standalone` 
 Secret: `ad-dc` (domain admin / delegated service account). Executed locally by the agent;
 no inbound connectivity. `ActiveDirectory` PowerShell module on the DC/management host.
 
+**Required Delinea fields:** `Username` + `Password`. The target **DC/server is optional.** The
+agent normally runs ON the domain controller, so it authenticates in its ambient/local domain
+context — `New-CtgAdConnection` (in `Start-IamRunner.ps1`) omits `-Server` and the AD cmdlets bind
+to the local DC. Only when the agent runs on a *different* in-network box do you need to name a DC;
+the "Active Directory Account" Delinea template has no Server field, so put the DC name in its
+**Documentation Link** field (the runner reads `Server`/`DomainController`, then falls back to a
+non-URL Documentation Link). Because the field is optional, the Credentials "Test" treats a secret
+with just `Username` + `Password` as fully valid (no "missing: domain controller" warning) — which
+matches what the runner actually needs on the DC.
+
 ### Onboard lane
 `always`. (1) Create user in the client's OU (per-client path) with the username pattern
 (respect lowercase). (2) Set attributes: `proxyAddresses` (SMTP:user@domain), telephone,

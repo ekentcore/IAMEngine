@@ -32,6 +32,18 @@ test("spanning: a full URL in apiURL satisfies 'region or base url' (mirrors the
   assert.deepEqual(checkFieldShape("spanning", ["ClientID", "ClientSecret"]), { ok: false, missing: ["region or base url"] });
 });
 
+test("ad-dc: username + password required; the DC/server field is optional (on-DC agent)", () => {
+  // Agent runs ON the DC: the "Active Directory Account" secret has only Username + Password and the
+  // runner binds to the local domain (omits -Server) — must NOT flag a missing server.
+  assert.deepEqual(checkFieldShape("ad-dc", ["Username", "Password"]), { ok: true, missing: [] });
+  // An explicit Server, or the DC stored in the Documentation Link field (what the runner reads), is
+  // also fine — and still clean.
+  assert.deepEqual(checkFieldShape("ad-dc", ["Username", "Password", "Server"]), { ok: true, missing: [] });
+  assert.deepEqual(checkFieldShape("ad-dc", ["Username", "Password", "Documentation Link"]), { ok: true, missing: [] });
+  // Username/password are still genuinely required.
+  assert.deepEqual(checkFieldShape("ad-dc", ["Username"]), { ok: false, missing: ["password"] });
+});
+
 test("unknown secret name has no rule -> never flagged", () => {
   assert.deepEqual(checkFieldShape("some-future-system", []), { ok: true, missing: [] });
 });
