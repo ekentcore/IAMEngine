@@ -69,6 +69,7 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Duo/Coretelligent.Duo.psd1" -
 Import-Module "$PSScriptRoot/modules/Coretelligent.XMatters/Coretelligent.XMatters.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.LogicMonitor/Coretelligent.LogicMonitor.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Notify/Coretelligent.Notify.psd1" -Force
+Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proofpoint.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
@@ -166,6 +167,32 @@ function Use-CtgSpanningSecret {
     $baseUrl = & $pick @('apiURL', 'ApiUrl', 'ApiURL', 'BaseUrl', 'Url')
     if ($baseUrl) { Connect-CtgSpanning -Username $user -AccessToken $token -BaseUrl $baseUrl }
     else          { Connect-CtgSpanning -Username $user -AccessToken $token -Region $s.Fields['Region'] }
+}
+
+# Point the Proofpoint module at this job's brokered secret. Proofpoint Essentials authenticates with
+# the admin email + password as X-User / X-Password headers (admin accounts only). The org domain for
+# the /orgs/{domain} path comes from a Domain field, else the client's primary domain. Region/BaseUrl
+# select the tenant's pod (us1..us5/eu1/au1). Reads PLAIN field values (.Password is also a SecureString,
+# but the API needs the cleartext header). Called at the start of every proofpoint lane (no cached Connect).
+function Use-CtgProofpointSecret {
+    param($Job, $Creds)
+    $s = $Creds['proofpoint']
+    if (-not $s) { throw "the job did not broker a 'proofpoint' secret — make sure the client's proofpoint system lists 'proofpoint' in its secrets" }
+    $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
+    $user = & $pick @('X-User', 'Username', 'AdminUser', 'Admin', 'Email', 'User')
+    if (-not $user) { $user = $s.Username }
+    if (-not $user) { throw "the 'proofpoint' secret has no admin-email field — looked for X-User, Username, AdminUser, Email; the secret has: $(@($s.Fields.Keys) -join ', '). Put the Proofpoint admin email in one of those." }
+    $pass = & $pick @('X-Password', 'Password', 'AdminPassword', 'Secret', 'ApiKey', 'API Key', 'Token')
+    if (-not $pass) { throw "the 'proofpoint' secret has no admin-password field — looked for X-Password, Password, AdminPassword; the secret has: $(@($s.Fields.Keys) -join ', '). Put the Proofpoint admin password in one of those." }
+    $domain = & $pick @('Domain', 'OrgDomain', 'Org', 'Tenant')
+    if (-not $domain) { $domain = $Job.client.primaryDomain }
+    if (-not $domain) { throw "the 'proofpoint' secret has no Domain field and the client has no primary domain — Proofpoint needs the org domain for the /orgs/{domain} path." }
+    $baseUrl = & $pick @('BaseUrl', 'ApiUrl', 'apiURL', 'Url')
+    if ($baseUrl) { Connect-CtgProofpoint -User ([string]$user) -Password ([string]$pass) -Domain ([string]$domain) -BaseUrl $baseUrl }
+    else {
+        $region = & $pick @('Region', 'Pod')
+        Connect-CtgProofpoint -User ([string]$user) -Password ([string]$pass) -Domain ([string]$domain) -Region ([string]($region ?? 'us1'))
+    }
 }
 
 # Sign in to 1Password with the brokered admin account so `op` can provision/suspend users. Only the
@@ -739,6 +766,15 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Invoke-CtgSpanningOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Use-CtgSpanningSecret $job $creds; Confirm-CtgSpanning -User $job.payload -Config $job.config -Action $job.action }
+    }
+    'proofpoint' = @{
+        # Proofpoint Essentials: read-only sync verification (X-User/X-Password admin auth). No Connect
+        # block — Connect-CtgProofpoint is a pure local assignment, so each lane re-reads the brokered
+        # secret (a rotated credential applies on the next job). Provisioning is sync-driven; the lanes
+        # verify presence and (on onboard) auto-retry until Proofpoint's scheduled sync imports the user.
+        Onboard  = { param($job, $creds) Use-CtgProofpointSecret $job $creds; Invoke-CtgProofpointOnboarding  -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Use-CtgProofpointSecret $job $creds; Invoke-CtgProofpointOffboarding -User $job.payload -Config $job.config }
+        Validate = { param($job, $creds) Use-CtgProofpointSecret $job $creds; Confirm-CtgProofpoint -User $job.payload -Config $job.config -Action $job.action }
     }
     '1password' = @{
         # Method-aware (config.method: auto|api|scim|manual|browser). No standing Connect block: each lane
@@ -1354,6 +1390,16 @@ $CONNTEST_PROBE['spanning']    = { param($job, $creds)
     $resp  = Invoke-CtgSpanningApi -Method GET -Path '/users?size=1'
     $users = Get-CtgProp $resp 'users'; if ($null -eq $users) { $users = Get-CtgProp $resp 'items' }; if ($null -eq $users) { $users = $resp }
     "spanning: users readable (sample returned $(@($users).Count))"
+}
+# Proofpoint Essentials: read the org's Azure sync settings (also proves the X-User/X-Password admin
+# auth + org-path domain). Reports whether sync is on, its frequency, and the last successful sync —
+# the same signal the onboarding lane uses to decide "wait for the next sync" vs. "sync isn't enabled".
+$CONNTEST_PROBE['proofpoint']  = { param($job, $creds)
+    Use-CtgProofpointSecret $job $creds
+    $az = Get-CtgProofpointAzureSync
+    if ($null -eq $az) { return 'proofpoint: connected (admin auth OK) — but Azure/Entra sync is not configured for this org' }
+    $freq = Get-CtgProp $az 'sync_frequency'; $last = Get-CtgProp $az 'last_successful_sync'
+    "proofpoint: connected — Azure sync $(if ($freq -and "$freq" -ne '0') { "on (every ${freq}h)" } else { 'OFF' })$(if ($last) { ", last sync $last" })"
 }
 # 1Password: only the api method has a credential to test — prove the admin `op` sign-in works + can
 # read users. scim/manual/browser have no app credential, so report that there's nothing to probe.

@@ -44,6 +44,14 @@ test("ad-dc: username + password required; the DC/server field is optional (on-D
   assert.deepEqual(checkFieldShape("ad-dc", ["Username"]), { ok: false, missing: ["password"] });
 });
 
+test("proofpoint: admin email + password required; org domain from field or client", () => {
+  assert.deepEqual(checkFieldShape("proofpoint", ["X-User", "X-Password", "Domain"]), { ok: true, missing: [] });
+  // synonyms (Email/Password) + client primary domain supplies the org domain
+  assert.deepEqual(checkFieldShape("proofpoint", ["Email", "Password"], { clientHasTenantHint: true }), { ok: true, missing: [] });
+  // missing the password -> flagged
+  assert.deepEqual(checkFieldShape("proofpoint", ["X-User"], { clientHasTenantHint: true }), { ok: false, missing: ["admin password (X-Password)"] });
+});
+
 test("unknown secret name has no rule -> never flagged", () => {
   assert.deepEqual(checkFieldShape("some-future-system", []), { ok: true, missing: [] });
 });

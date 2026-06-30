@@ -46,6 +46,13 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "api token", anyOf: ["ClientSecret", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Token", "Key", "Password"] },
     { label: "region or base url", anyOf: ["apiURL", "ApiUrl", "ApiURL", "BaseUrl", "Base URL", "Url", "URL", "Region"] },
   ],
+  // Proofpoint Essentials API: admin email + password (sent as X-User / X-Password). The org domain
+  // for the /orgs/{domain} path is satisfied by a Domain field OR the client's primary domain.
+  proofpoint: [
+    { label: "admin email (X-User)", anyOf: ["X-User", "Username", "AdminUser", "Admin", "Email", "User"] },
+    { label: "admin password (X-Password)", anyOf: ["X-Password", "Password", "AdminPassword", "Secret", "ApiKey", "API Key", "Token"] },
+    { label: "org domain", anyOf: ["Domain", "OrgDomain", "Org", "Tenant"], orClientDomain: true },
+  ],
   // On-prem AD / directory-sync service account: username + password are required; the DC to bind to
   // is OPTIONAL. The common topology is an agent running ON the domain controller, which authenticates
   // in its ambient/local domain context — so New-CtgAdConnection (Start-IamRunner.ps1) OMITS -Server
