@@ -14,7 +14,13 @@ const INCIDENT_TABLE = "/api/now/table/incident";
 // (e.g. Computer Build / 30300) at the source so the poller never even fetches them. Newest first.
 // Override via env SN_INTAKE_QUERY for a different scope without a code change.
 const EXCLUDE_SUBCATS = Object.keys(NON_LIFECYCLE_SUBCATEGORIES).map((c) => `subcategory!=${c}`).join("^");
-const DEFAULT_QUERY = `active=true^assigned_toISEMPTY${EXCLUDE_SUBCATS ? `^${EXCLUDE_SUBCATS}` : ""}^ORDERBYDESCsys_created_on`;
+// Only auto-import tickets routed to the IAM pod: the open queue is POD-IAM / POD-IAM-L1 (IAM's work)
+// vs CoreIT / POD-Gold (other teams). "contains IAM" catches POD-IAM* (incl. future L2) and excludes
+// the rest. Tune the token via SN_INTAKE_ASSIGNMENT_GROUP_LIKE; set it empty to disable the filter.
+// (UM table only — internal incidents route to TEAM-InternalSupport, not IAM.)
+const ASSIGN_GROUP_LIKE = (process.env.SN_INTAKE_ASSIGNMENT_GROUP_LIKE ?? "IAM").trim();
+const ASSIGN_GROUP_CLAUSE = ASSIGN_GROUP_LIKE ? `^assignment_group.nameLIKE${ASSIGN_GROUP_LIKE}` : "";
+const DEFAULT_QUERY = `active=true^assigned_toISEMPTY${EXCLUDE_SUBCATS ? `^${EXCLUDE_SUBCATS}` : ""}${ASSIGN_GROUP_CLAUSE}^ORDERBYDESCsys_created_on`;
 // Internal on/off-boarding incidents: open, unassigned, and the lifecycle signal lives in EITHER the
 // subcategory OR the record producer (^OR groups with the immediately-preceding LIKE). We still confirm
 // each row client-side with incidentAction so a loose "boarding" match can't import a non-lifecycle INC.
