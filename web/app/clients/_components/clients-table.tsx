@@ -7,6 +7,7 @@ import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
 import { SystemsEditor } from "./systems-editor";
+import type { ClientReadiness } from "@/lib/clients/readiness";
 
 export type ClientVM = {
   id: string;
@@ -29,6 +30,7 @@ export type ClientVM = {
   systemKeys: string[];
   systemCount: number;
   modeled: boolean;
+  readiness: ClientReadiness;
 };
 
 const BACKBONE_LABEL: Record<string, string> = {
@@ -36,6 +38,14 @@ const BACKBONE_LABEL: Record<string, string> = {
   google: "Google",
   ad_synced: "AD synced",
   ad_standalone: "AD standalone",
+};
+
+// Run-readiness badge styling per tier (computed from wired secrets + connection-test results).
+const READINESS: Record<string, { label: string; mark: string; color: string; bg: string }> = {
+  ready: { label: "ready", mark: "✓", color: "#2e7d32", bg: "#eaf5ec" },
+  partial: { label: "partial", mark: "◑", color: "#8a6d00", bg: "#fbf4e0" },
+  not_set_up: { label: "not set up", mark: "✗", color: "#b3261e", bg: "#fdeceb" },
+  no_systems: { label: "—", mark: "", color: "var(--muted)", bg: "transparent" },
 };
 
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
@@ -48,6 +58,7 @@ function haystack(c: ClientVM): string {
     c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus,
     c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
     c.systemKeys.join(" "),
+    c.readiness ? READINESS[c.readiness.tier]?.label : "",
   ]
     .filter(Boolean)
     .join(" ")
@@ -332,6 +343,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
             <th className="help" title="Email/UPN name format. Add a conflict fallback after a | — e.g. {first}.{last} | {first}.{mi} (used when the primary username is already taken).">Email format</th>
             <SortHead k="onboardingRating" label="On / Off" num />
             <SortHead k="systemCount" label="Systems" num />
+            <th className="help" title="Run-readiness, computed from wired credentials + connection-test results. ready = all systems wired and tested; partial = core wired but some missing/untested/failing; not set up = nothing wired.">Ready</th>
             <SortHead k="status" label="Status" />
             <th aria-label="Actions"></th>
           </tr>
@@ -523,6 +535,16 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 )}
               </td>
               <td>
+                {c.readiness && c.readiness.tier !== "no_systems" ? (
+                  <span className="badge" title={c.readiness.summary}
+                    style={{ color: READINESS[c.readiness.tier].color, background: READINESS[c.readiness.tier].bg, borderColor: "transparent", cursor: "help" }}>
+                    {READINESS[c.readiness.tier].mark} {READINESS[c.readiness.tier].label}
+                  </span>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </td>
+              <td>
                 {c.status === "archived" ? (
                   <span className="badge archived">archived</span>
                 ) : (
@@ -545,7 +567,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={10}>
+              <td colSpan={11}>
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>

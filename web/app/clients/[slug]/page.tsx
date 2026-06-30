@@ -127,6 +127,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   // Secret wiring: every secretName the systems reference + the saved Delinea references (with id).
   const wiring = await makeClientRepository(db).secretsWiring(params.slug);
   const secretRows = wiring ? deriveSecretRows(wiring.systems, wiring.secrets) : [];
+  // Run-readiness, computed from wired secrets + latest connection tests.
+  const readiness = await makeClientRepository(db).clientReadiness(params.slug);
 
   // index systems for dependency badges + per-system config (code preview)
   const sysByKey = new Map(client.systems.map((s) => [s.systemKey, s]));
@@ -335,6 +337,43 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         />
       ) : (
         <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>
+      )}
+
+      {readiness && readiness.tier !== "no_systems" && (
+        <>
+          <h2 style={{ marginTop: "1.5rem" }}>Readiness</h2>
+          {(() => {
+            const c = readiness.tier === "ready" ? { fg: "#2e7d32", bg: "#eaf5ec", mark: "✓" }
+              : readiness.tier === "partial" ? { fg: "#8a6d00", bg: "#fbf4e0", mark: "◑" }
+              : { fg: "#b3261e", bg: "#fdeceb", mark: "✗" };
+            return (
+              <p style={{ marginTop: "-0.25rem" }}>
+                <span className="badge" style={{ color: c.fg, background: c.bg, borderColor: "transparent", fontSize: 13, padding: "2px 8px" }}>
+                  {c.mark} {readiness.label}
+                </span>{" "}
+                <span className="note">{readiness.summary}</span>
+              </p>
+            );
+          })()}
+          <table>
+            <thead><tr><th style={{ width: 180 }}>System</th><th>Credentials</th><th>Connection test</th></tr></thead>
+            <tbody>
+              {readiness.systems.map((s) => (
+                <tr key={s.systemKey}>
+                  <td>{s.systemKey}</td>
+                  <td>{s.wired
+                    ? <span style={{ color: "#2e7d32" }}>✓ wired</span>
+                    : <span style={{ color: "#b3261e" }}>✗ missing: {s.missingSecrets.join(", ")}</span>}</td>
+                  <td>{s.test === "ok"
+                    ? <span style={{ color: "#2e7d32" }}>✓ passed</span>
+                    : s.test === "fail" ? <span style={{ color: "#b3261e" }}>✗ failed</span>
+                    : <span className="muted">— untested</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="note">Computed from wired Delinea references + the latest connection-test results below. Run <b>Test</b> on the secrets to fill in the connection column.</p>
+        </>
       )}
 
       <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>

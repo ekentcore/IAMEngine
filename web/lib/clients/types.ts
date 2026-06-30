@@ -1,5 +1,6 @@
 // Shared types for the clients domain (repository + sync service + routes/UI).
 import type { Client, ClientStatus, Backbone, Mode, Lifecycle } from "@prisma/client";
+import type { ClientReadiness } from "./readiness";
 
 // Projection used by the list view — excludes the heavy ClientSystem.config JSON.
 export type ClientListItem = {
@@ -27,6 +28,7 @@ export type ClientListItem = {
   parentName: string | null;
   parentSystemKeys: string[]; // the parent's systems (shown in the hover for a via-parent client)
   coverage: "own" | "parent" | "none"; // own=modeled directly, parent=inherits a modeled parent, none=unmodeled
+  readiness: ClientReadiness; // run-readiness computed from wired secrets + connection-test results
 };
 
 // One system as edited in the UI (full lanes + config). Lane values are the DB enum form.

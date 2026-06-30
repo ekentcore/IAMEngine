@@ -4,6 +4,7 @@ import type { PrismaClient, Prisma, Backbone } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
+import { computeClientReadiness, type ConnTestState, type ClientReadiness } from "./readiness";
 
 // Order systemKeys by the runbook's documented run sequence (onboard first — the primary process,
 // and where "resolving case" lands last — then offboard-only systems by their seq; any system with
@@ -77,7 +78,7 @@ export function makeClientRepository(db: PrismaClient) {
           editedFields: true,
           identity: true,
           emailDomain: true,
-          systems: { select: { systemKey: true } },
+          systems: { select: { systemKey: true, mode: true, onboardWhen: true, offboardWhen: true, secretNames: true } },
           // the runbook seq is the documented run order; used to list systems in execution order
           runbook: { select: { systemKey: true, action: true, seq: true } },
           // parent (SN account hierarchy): a child with no OWN systems inherits the parent's at plan
@@ -87,6 +88,31 @@ export function makeClientRepository(db: PrismaClient) {
           parent: { select: { name: true, systems: { select: { systemKey: true } } } },
         },
       });
+      // Readiness inputs, batched across all listed clients (no per-row queries): the client's wired
+      // secret references + the latest connection-test outcome per system.
+      const ids = rows.map((r) => r.id);
+      const [secretRows, testRows] = ids.length
+        ? await Promise.all([
+            db.secret.findMany({ where: { clientId: { in: ids } }, select: { clientId: true, name: true, externalId: true } }),
+            db.connectionTest.findMany({
+              where: { clientId: { in: ids } },
+              select: { clientId: true, systemKey: true, status: true, finishedAt: true },
+              orderBy: { finishedAt: "desc" }, // newest first -> first seen per (client, system) is latest
+            }),
+          ])
+        : [[], []];
+      const secretsByClient = new Map<string, Map<string, string | null>>();
+      for (const s of secretRows) {
+        const m = secretsByClient.get(s.clientId) ?? new Map<string, string | null>();
+        m.set(s.name, s.externalId); secretsByClient.set(s.clientId, m);
+      }
+      const testsByClient = new Map<string, Map<string, ConnTestState>>();
+      for (const t of testRows) {
+        const m = testsByClient.get(t.clientId) ?? new Map<string, ConnTestState>();
+        if (!m.has(t.systemKey)) m.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+        testsByClient.set(t.clientId, m);
+      }
+
       return rows.map((r) => ({
         id: r.id,
         slug: r.slug,
@@ -116,7 +142,41 @@ export function makeClientRepository(db: PrismaClient) {
         parentSystemKeys: r.parent?.systems.map((s) => s.systemKey) ?? [],
         // own = has its own systems; parent = inherits a modeled parent; none = truly unmodeled.
         coverage: r.systems.length > 0 ? "own" : r.parentId && (r.parent?.systems.length ?? 0) > 0 ? "parent" : "none",
+        // Run-readiness, computed from wired secrets + latest connection tests (own systems).
+        readiness: computeClientReadiness({
+          systems: r.systems
+            .filter((s) => s.mode === "api" && s.secretNames.length > 0 && (s.onboardWhen !== "never" || s.offboardWhen !== "never"))
+            .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
+          secretExternalIds: secretsByClient.get(r.id) ?? new Map(),
+          testBySystem: testsByClient.get(r.id) ?? new Map(),
+        }),
       }));
+    },
+
+    // Run-readiness for a single client (the detail-page panel): same computation as the list, with
+    // the per-system breakdown. Computed from the client's wired secrets + latest connection tests.
+    async clientReadiness(slug: string): Promise<ClientReadiness | null> {
+      const c = await db.client.findUnique({
+        where: { slug },
+        select: {
+          id: true,
+          systems: { select: { systemKey: true, mode: true, onboardWhen: true, offboardWhen: true, secretNames: true } },
+          secrets: { select: { name: true, externalId: true } },
+        },
+      });
+      if (!c) return null;
+      const tests = await db.connectionTest.findMany({
+        where: { clientId: c.id }, select: { systemKey: true, status: true, finishedAt: true }, orderBy: { finishedAt: "desc" },
+      });
+      const testBySystem = new Map<string, ConnTestState>();
+      for (const t of tests) if (!testBySystem.has(t.systemKey)) testBySystem.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+      return computeClientReadiness({
+        systems: c.systems
+          .filter((s) => s.mode === "api" && s.secretNames.length > 0 && (s.onboardWhen !== "never" || s.offboardWhen !== "never"))
+          .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
+        secretExternalIds: new Map(c.secrets.map((s) => [s.name, s.externalId])),
+        testBySystem,
+      });
     },
 
     // `scope` (default unrestricted) hard-gates direct access: an out-of-scope client reads as
