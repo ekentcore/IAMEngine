@@ -3,7 +3,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { fetchUserManagementCase } from "../servicenow/intake";
-import { normalizeIntake, type NormalizedIntake } from "../servicenow/intake-mapper";
+import { normalizeIntake, umIntakeAction, umSubcategoryLabel, type NormalizedIntake } from "../servicenow/intake-mapper";
 import { fetchOnboardingIncident, incidentAction } from "../servicenow/incident-intake";
 import { normalizeIncidentIntake } from "../servicenow/incident-mapper";
 import { makeCaseRepository } from "./repository";
@@ -41,6 +41,11 @@ export async function importCaseFromServiceNow(
 
   const raw = await fetchUserManagementCase(snConfigFromEnv(), trimmed);
   if (!raw) return { ok: false, error: `no ServiceNow case found for ${trimmed}`, code: "not_found" };
+
+  // Skip non-lifecycle tickets (e.g. Computer Build / 30300) — the app only handles on/off-boarding.
+  if (!umIntakeAction(raw)) {
+    return { ok: false, code: "not_found", error: `${trimmed} is a "${umSubcategoryLabel(raw) || "non on/off-boarding"}" request, not an on/off-boarding case — not imported` };
+  }
 
   const intake = normalizeIntake(raw);
   if (!intake.clientSysId) {
@@ -136,7 +141,8 @@ export async function fetchNormalizedIntake(number: string): Promise<NormalizedI
     return normalizeIncidentIntake(raw);
   }
   const raw = await fetchUserManagementCase(config, trimmed);
-  return raw ? normalizeIntake(raw) : null;
+  if (!raw || !umIntakeAction(raw)) return null; // gone, or a non-lifecycle ticket (e.g. Computer Build)
+  return normalizeIntake(raw);
 }
 
 // Route by number prefix: INCxxxxxxx -> internal incident; everything else (UM/CS) -> UM case.

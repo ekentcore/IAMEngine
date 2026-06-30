@@ -5,13 +5,16 @@
 import type { SnConfig, SnFieldValue } from "./types";
 import { snGet, assertConfig } from "./http";
 import { incidentAction, type SnIncidentRecord } from "./incident-intake";
+import { NON_LIFECYCLE_SUBCATEGORIES } from "./intake-mapper";
 
 const TABLE = "/api/now/table/sn_customerservice_user_management";
 const INCIDENT_TABLE = "/api/now/table/incident";
 
-// active=true → open; assigned_toISEMPTY → nobody has picked it up. Newest first. Override via env
-// SN_INTAKE_QUERY for a different scope without a code change.
-const DEFAULT_QUERY = "active=true^assigned_toISEMPTY^ORDERBYDESCsys_created_on";
+// active=true → open; assigned_toISEMPTY → nobody has picked it up. Exclude non-lifecycle subcategories
+// (e.g. Computer Build / 30300) at the source so the poller never even fetches them. Newest first.
+// Override via env SN_INTAKE_QUERY for a different scope without a code change.
+const EXCLUDE_SUBCATS = Object.keys(NON_LIFECYCLE_SUBCATEGORIES).map((c) => `subcategory!=${c}`).join("^");
+const DEFAULT_QUERY = `active=true^assigned_toISEMPTY${EXCLUDE_SUBCATS ? `^${EXCLUDE_SUBCATS}` : ""}^ORDERBYDESCsys_created_on`;
 // Internal on/off-boarding incidents: open, unassigned, and the lifecycle signal lives in EITHER the
 // subcategory OR the record producer (^OR groups with the immediately-preceding LIKE). We still confirm
 // each row client-side with incidentAction so a loose "boarding" match can't import a non-lifecycle INC.

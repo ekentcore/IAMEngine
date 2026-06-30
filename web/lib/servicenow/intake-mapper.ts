@@ -93,6 +93,13 @@ function deriveUsageLocation(officeLocation: string | null, timezone: string | n
   return usageLocationFromTimezone(timezone); // null when even the timezone is ambiguous → flagged upstream
 }
 
+// Non-lifecycle UM subcategories we never import — the app only does on/off-boarding. Computer Build
+// (30300) is a hardware request, not a user lifecycle case; without this it fell through the heuristic
+// to the onboard default and got imported as a bogus onboard. Extend as other non-lifecycle codes surface.
+export const NON_LIFECYCLE_SUBCATEGORIES: Record<string, string> = {
+  "30300": "Computer Build",
+};
+
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   // The coded subcategory value is the authoritative signal: 30000 = User Onboarding,
   // 30100 = User Offboarding (category 1 = Access/Identity). Confirmed live on UM tickets.
@@ -104,6 +111,19 @@ function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   const short = (val(r, "short_description") ?? "").toLowerCase();
   if (sub.includes("offboard") || short.includes("offboard")) return "offboard";
   return "onboard";
+}
+
+// The intake action, or null when the ticket isn't an on/off-boarding case (a non-lifecycle
+// subcategory like Computer Build) — callers SKIP a null instead of importing it as a bogus onboard.
+export function umIntakeAction(r: SnUserMgmtRecord): IntakeAction | null {
+  const subVal = val(r, "subcategory") ?? "";
+  if (NON_LIFECYCLE_SUBCATEGORIES[subVal]) return null;
+  return deriveAction(r);
+}
+
+// Readable subcategory for a UM record (display value, else the coded value).
+export function umSubcategoryLabel(r: SnUserMgmtRecord): string {
+  return disp(r, "subcategory") ?? val(r, "subcategory") ?? "";
 }
 
 function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {

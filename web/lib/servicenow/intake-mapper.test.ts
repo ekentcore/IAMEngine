@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeIntake, deriveIdentity, emailTemplateFields, applyUsernamePattern } from "./intake-mapper";
+import { normalizeIntake, deriveIdentity, emailTemplateFields, applyUsernamePattern, umIntakeAction } from "./intake-mapper";
 import type { SnUserMgmtRecord } from "./intake";
 
 // Build a raw {value, display_value} record from a plain map (value === display unless given).
@@ -28,6 +28,13 @@ const onboard = rec({
   u_start_date: "2026-07-06 12:00:00",
   u_manager_name: ["b99...", "Evan Kent"],
   u_product_licenses: ["52d,01e", "Microsoft 365 Copilot, Microsoft 365 E3"],
+});
+
+test("umIntakeAction: lifecycle subcategories map; non-lifecycle (Computer Build 30300) is skipped", () => {
+  assert.equal(umIntakeAction(rec({ number: "UM1", subcategory: "30000" })), "onboard");
+  assert.equal(umIntakeAction(rec({ number: "UM2", subcategory: "30100" })), "offboard");
+  // Computer Build is a hardware request, NOT a user lifecycle case — must not import as a bogus onboard.
+  assert.equal(umIntakeAction(rec({ number: "UM3", subcategory: ["30300", "Computer Build"], short_description: "Computer Request - Pat" })), null);
 });
 
 test("onboard payload emits the canonical identity fields the modules read", () => {
