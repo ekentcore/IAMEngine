@@ -136,7 +136,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </>
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <h2 style={{ marginBottom: 0 }}>Intake details</h2>
         {c.serviceNowCaseNumber && <RescanButton caseId={c.id} caseNumber={c.serviceNowCaseNumber} />}
       </div>
