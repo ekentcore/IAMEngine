@@ -456,14 +456,19 @@ function Invoke-CtgExchangeHybridOnboard {
     $identity = $User.SamAccountName
     $actions = [System.Collections.Generic.List[string]]::new()
     if ($enable.Actions) { $actions.AddRange([string[]]$enable.Actions) }
+    # StrictMode-safe: Invoke-CtgExchangeOnboarding returns NO Email/Routing when there's no
+    # enableRemoteMailbox config (or no routing domain) — read them defensively so a config-less lane
+    # doesn't crash with "property 'Email' cannot be found".
+    $enableEmail = [string](Get-CtgProp $enable 'Email')
+    $enableRouting = [string](Get-CtgProp $enable 'Routing')
 
     # Dry run: Enable-RemoteMailbox was WhatIf'd so no mailbox will ever sync — don't block the full
     # sync timeout (up to 10 min) waiting for something that was never created. Regional/calendar are
     # ShouldProcess-gated below, so they no-op under -WhatIf too.
     if ($WhatIfPreference) {
         $actions.Add("dry run — skipped sync trigger + mailbox wait + regional/calendar (nothing was created)")
-        Write-CtgStep "✓ dry run complete — would enable remote mailbox $($enable.Email), trigger a delta sync, then set regional/calendar (no changes made)"
-        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
+        Write-CtgStep "✓ dry run complete — would enable remote mailbox $($enableEmail), trigger a delta sync, then set regional/calendar (no changes made)"
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enableEmail; Routing = $enableRouting; Actions = $actions.ToArray() }
     }
 
     # Push the just-enabled mailbox up to the cloud now (3b), so the wait below actually finds it.
@@ -482,8 +487,8 @@ function Invoke-CtgExchangeHybridOnboard {
         $wait = Wait-CtgMailbox -Identity $identity -TimeoutSeconds ([int]((Get-CtgProp $Config 'syncTimeoutSeconds') ?? 600))
         $actions.Add("mailbox sync: $($wait.Status)")
         if (-not $wait.Found) {
-            Write-CtgStep "⚠ remote mailbox enabled ($($enable.Email)) but it hasn't synced to Exchange Online yet — regional/calendar deferred; run a directory sync, then re-run this step"
-            return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray(); Warning = 'mailbox not synced before timeout — regional/calendar deferred to a re-run' }
+            Write-CtgStep "⚠ remote mailbox enabled ($($enableEmail)) but it hasn't synced to Exchange Online yet — regional/calendar deferred; run a directory sync, then re-run this step"
+            return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enableEmail; Routing = $enableRouting; Actions = $actions.ToArray(); Warning = 'mailbox not synced before timeout — regional/calendar deferred to a re-run' }
         }
     }
 
@@ -495,18 +500,18 @@ function Invoke-CtgExchangeHybridOnboard {
     # recipient. A failure here is non-fatal (the rest of the onboard already succeeded).
     # Explicitly-requested distribution lists (by name), then the reference-user mirror.
     $reqNames = @(Get-CtgRequestedGroupNames -Config $Config)   # @() — an empty function result collapses to $null otherwise
-    if ($reqNames.Count -gt 0 -and $enable.Email) {
-        try { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$enable.Email) -Groups $reqNames)) { $actions.Add($a) } }
+    if ($reqNames.Count -gt 0 -and $enableEmail) {
+        try { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser ([string]$enableEmail) -Groups $reqNames)) { $actions.Add($a) } }
         catch { $actions.Add("WARN requested distribution lists failed: $($_.Exception.Message)") }
     }
     $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
-    if ($mirrorUser -and $enable.Email) {
-        try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enable.Email))) { $actions.Add($a) } }
+    if ($mirrorUser -and $enableEmail) {
+        try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enableEmail))) { $actions.Add($a) } }
         catch { $actions.Add("WARN distribution mirror failed: $($_.Exception.Message)") }
     }
 
-    Write-CtgStep "✓ exchange onboard complete — mailbox $($enable.Email) live; $($actions -join '; ')"
-    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enable.Email; Routing = $enable.Routing; Actions = $actions.ToArray() }
+    Write-CtgStep "✓ exchange onboard complete — mailbox $($enableEmail) live; $($actions -join '; ')"
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $enableEmail; Routing = $enableRouting; Actions = $actions.ToArray() }
 }
 
 # Sync-wait: after Azure AD Connect runs a delta, poll Exchange Online until the new user's mailbox

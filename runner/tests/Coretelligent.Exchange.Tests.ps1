@@ -369,6 +369,21 @@ Describe 'Invoke-CtgExchangeOnboarding' {
 }
 
 Describe 'Invoke-CtgExchangeHybridOnboard' {
+    # Regression: a lane with NO enableRemoteMailbox config makes Invoke-CtgExchangeOnboarding return an
+    # object with no Email property — the caller must read it defensively, not crash with
+    # "The property 'Email' cannot be found on this object".
+    It 'does not crash when the onboard lane has no enableRemoteMailbox config' {
+        Mock Set-CtgMailboxRegional -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Actions=@() } }
+        Mock Get-CtgRequestedGroupNames -ModuleName Coretelligent.Exchange -MockWith { @() }
+        $user = [pscustomobject]@{ SamAccountName='ddirienzo'; UserPrincipalName='ddirienzo@core.tech'; DisplayName='Drew Dirienzo' }
+        $cfg = [pscustomobject]@{ waitForSync=$false }  # no enableRemoteMailbox, no mirror
+        $r = Invoke-CtgExchangeHybridOnboard -User $user -Config $cfg
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no remote-mailbox config'
+    }
+}
+
+Describe 'Invoke-CtgExchangeHybridOnboard' {
     BeforeEach {
         $script:user = [pscustomobject]@{ SamAccountName='jdoe'; ManagerEmail='boss@core.tech' }
         Mock Invoke-CtgExchangeOnboarding -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ System='exchange'; Status='ok'; Email='jdoe@core.tech'; Routing='jdoe@coretell.mail.onmicrosoft.com'; Actions=@('enabled remote mailbox') } }
