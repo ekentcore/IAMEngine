@@ -624,7 +624,18 @@ function Invoke-CtgM365Onboarding {
             try {
                 Invoke-CtgM365Write { Set-MgUserManagerByRef -UserId $userId -BodyParameter @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$($mgrUser.Id)" } -ErrorAction Stop }
                 $actions.Add("set manager: $($mgrUser.DisplayName)"); Write-CtgM365Step "✓ set manager: $($mgrUser.DisplayName)"
-            } catch { $actions.Add("WARN could not set manager '$mgr': $($_.Exception.Message)") }
+            } catch {
+                $mm = [string]$_.Exception.Message
+                # A hybrid (AD-synced) user is on-prem-mastered — Graph refuses to write source-of-authority
+                # attributes like manager. That's expected: the AD lane sets the manager on-prem and it
+                # syncs up. Report it as an informational skip, NOT a warning (same stance as on-prem groups).
+                if ($mm -match 'on-premises mastered|Directory Sync objects') {
+                    $actions.Add("manager is on-prem-mastered (AD-synced) — the AD lane sets manager '$mgr' on-prem; skipped in the cloud")
+                    Write-CtgM365Step "↷ manager on-prem-mastered — AD lane sets it: $mgr"
+                } else {
+                    $actions.Add("WARN could not set manager '$mgr': $mm")
+                }
+            }
         } else { $actions.Add("WARN manager not found in Entra (tried email + name): $mgr"); Write-CtgM365Step "✗ manager not found: $mgr" }
     }
 

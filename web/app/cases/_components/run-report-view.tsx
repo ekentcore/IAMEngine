@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
 import { ResolutionModal } from "./resolution-modal";
@@ -70,7 +71,7 @@ function ProcurementWatchRow({ step, refresh, forceShow = false }: { step: RunRe
     const next = p.lastCheckedAt ? `~${new Date(new Date(p.lastCheckedAt).getTime() + 5 * 60_000).toLocaleTimeString()}` : "within a minute";
     const color = p.state === "watching" ? "#8a6d00" : p.state === "resolved" ? "#15803d" : "#b91c1c";
     return (
-      <div className="note" style={{ marginTop: 4 }}>
+      <div className="note" style={{ marginTop: 4 }} suppressHydrationWarning>
         <span style={{ color }}>
           {p.state === "watching" && `⏳ Watching procurement case ${p.number} — last checked ${when}${p.note ? ` (SN state: ${p.note})` : ""} · next check ${next}. Watched server-side (safe to close this page); on resolve the step re-runs and verifies automatically.`}
           {p.state === "resolved" && `✓ Procurement case ${p.number} resolved — the step was re-queued automatically.`}
@@ -373,21 +374,29 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   const [resolveOpen, setResolveOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now()); // ticks while live so the "no progress for Ns" badge updates
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Sticky page-top banner: the current step is portaled into a slot right under the case title so it's
+  // visible no matter where you've scrolled (the slot lives high on the page; this component is far down).
+  const [bannerSlot, setBannerSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => { setBannerSlot(document.getElementById("case-running-banner-slot")); }, []);
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/cases/${caseId}/report`, { cache: "no-store" });
     if (res.ok) setReport((await res.json()) as RunReport);
   }, [caseId]);
 
-  // Poll while the case is in flight (queued/planning/running) so the report tracks execution.
-  // Poll faster (2s) when a step is actively executing so the live phase feels real-time.
+  // Keep the report live without a manual refresh — including when SOMEONE ELSE starts a step on a
+  // case you're viewing. Fast (2s) while a step is actively executing; 4s while in flight; a slow 12s
+  // background poll otherwise so an externally-started run appears on its own. Stops only when terminal
+  // (completed/failed) to avoid polling forever on a finished case.
   const live = ["queued", "planning", "running"].includes(report.caseStatus);
   const active = report.steps.some((s) => s.currentPhase);
+  const terminal = ["completed", "failed"].includes(report.caseStatus);
   useEffect(() => {
-    if (!live) { if (timer.current) clearInterval(timer.current); return; }
-    timer.current = setInterval(refresh, active ? 2000 : 4000);
+    if (terminal) { if (timer.current) clearInterval(timer.current); return; }
+    const period = active ? 2000 : live ? 4000 : 12000;
+    timer.current = setInterval(refresh, period);
     return () => { if (timer.current) clearInterval(timer.current); };
-  }, [live, active, refresh]);
+  }, [terminal, live, active, refresh]);
 
   // Tick `now` every 5s while live so the per-step "no progress for Ns" badge counts up between polls.
   useEffect(() => {
@@ -561,15 +570,16 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           ✨ AI-filled (please verify): {report.aiResolved.map((a) => `${a.field} — ${a.note}`).join(" · ")}
         </div>
       )}
-      {running && (
-        <div style={{ margin: "0 0 0.5rem", padding: "0.5rem 0.7rem", borderRadius: 4, fontSize: 13, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
+      {running && bannerSlot && createPortal(
+        <div style={{ padding: "0.5rem 0.8rem", fontSize: 13, borderBottom: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
           <span suppressHydrationWarning><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
-        </div>
+        </div>,
+        bannerSlot
       )}
       {(verifying || report.verifiedAt) && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: verifying ? "#bfdbfe" : "#bbf7d0", background: verifying ? "#eff6ff" : "#f0fdf4", color: verifying ? "#1d4ed8" : "#15803d" }}>
-          <div>
+          <div suppressHydrationWarning>
             {verifying
               ? <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>
               : <>🔎 Account verified {report.verifiedAt && new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>}
@@ -692,7 +702,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   attempt is due + a "retry now" button so the operator needn't wait for the timer. */}
               {step.autoRetry && (
                 <>
-                  <span style={{ marginLeft: 8, fontSize: 12, color: "#1565c0" }}>
+                  <span style={{ marginLeft: 8, fontSize: 12, color: "#1565c0" }} suppressHydrationWarning>
                     next try {new Date(step.autoRetry.at).toLocaleTimeString()}
                   </span>
                   <button
@@ -851,7 +861,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 <CollisionDecision caseId={caseId} jobId={step.jobId} error={step.error} refresh={refresh} />
               )}
               {step.autoRetry && (
-                <div className="note" style={{ marginTop: 4, color: "#8a6d00" }}>
+                <div className="note" style={{ marginTop: 4, color: "#8a6d00" }} suppressHydrationWarning>
                   ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
                 </div>
               )}
@@ -863,7 +873,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   <ul className="muted" style={{ margin: "0.2rem 0 0", listStyle: "none", paddingLeft: 0 }}>
                     {step.phaseTrail.map((p, i) => (
                       <li key={i}>
-                        <span style={{ color: "#9ca3af", marginRight: 6 }}>{p.ts ? new Date(p.ts).toLocaleTimeString() : ""}</span>
+                        <span style={{ color: "#9ca3af", marginRight: 6 }} suppressHydrationWarning>{p.ts ? new Date(p.ts).toLocaleTimeString() : ""}</span>
                         {p.phase}
                       </li>
                     ))}

@@ -47,6 +47,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
   return (
     <main>
+      {/* Sticky slot: the run report portals the "current step" banner here so it stays visible under
+          the title no matter where you've scrolled on the case. Empty (0-height) when nothing runs. */}
+      <div id="case-running-banner-slot" style={{ position: "sticky", top: 0, zIndex: 30, margin: "0 0 0.25rem", borderRadius: 4, overflow: "hidden" }} />
       <p className="note"><Link href="/cases">← Cases</Link></p>
       <div className="row-between">
         <div>
