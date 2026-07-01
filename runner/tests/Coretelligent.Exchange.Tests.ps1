@@ -306,6 +306,29 @@ Describe 'Confirm-CtgExchange' {
         $r.ok | Should -BeTrue
     }
 
+    It 'offboard: passes when EXO still shows UserMailbox but the on-prem remote mailbox is shared (pending sync)' {
+        # Hybrid: Set-RemoteMailbox -Type Shared converts on-prem immediately; EXO catches up on the next
+        # sync. The read-back must accept the on-prem RemoteSharedMailbox instead of false-failing + looping.
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '0 GB (0 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'RemoteSharedMailbox' } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'mailbox is shared' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: still fails when NEITHER EXO nor the on-prem remote mailbox is shared' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '0 GB (0 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'RemoteUserMailbox' } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        ($r.checks | Where-Object { $_.name -eq 'mailbox is shared' }).pass | Should -BeFalse
+    }
+
     It 'offboard: resolves by display name (same as the executor) so it checks the RIGHT mailbox' {
         # No UPN on the case — the validator must resolve via Get-Recipient, not check an empty identity
         # (which would always "miss" and trigger the offboard re-run loop).

@@ -738,7 +738,18 @@ function Confirm-CtgExchange {
             & $add "mailbox kept (>$threshold GB)" $true $true   # over-threshold mailboxes are intentionally not converted
         }
         else {
-            & $add 'mailbox is shared' 'SharedMailbox' ([string](Get-CtgProp $mbx 'RecipientTypeDetails'))
+            # HYBRID timing: the conversion is done on-prem (Set-RemoteMailbox -Type Shared) and flows to
+            # EXO on the next Entra Connect sync — so Get-Mailbox (EXO) can still read UserMailbox for a
+            # while after a successful convert. The on-prem RemoteMailbox reflects it IMMEDIATELY, so treat
+            # the mailbox as shared when EITHER EXO shows SharedMailbox OR the on-prem remote mailbox shows
+            # a shared type (RemoteSharedMailbox). Otherwise the read-back false-fails and the case
+            # re-runs the offboard in a loop until the sync lands.
+            $exoType = [string](Get-CtgProp $mbx 'RecipientTypeDetails')
+            $remote = if (Get-Command Get-RemoteMailbox -ErrorAction SilentlyContinue) { Get-RemoteMailbox -Identity $upn -ErrorAction SilentlyContinue } else { $null }
+            $remoteType = [string](Get-CtgProp $remote 'RecipientTypeDetails')
+            $isShared = ($exoType -eq 'SharedMailbox') -or ($remoteType -match 'Shared')
+            $actual = if ($isShared) { 'SharedMailbox' } elseif ($exoType) { "$exoType$(if ($remoteType) { " (on-prem remote: $remoteType — EXO reflects it after the next sync)" })" } else { $remoteType }
+            & $add 'mailbox is shared' 'SharedMailbox' $actual
         }
     }
     if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false) {
