@@ -102,6 +102,22 @@ Export-Certificate -Cert $cert -FilePath C:\\iam-engine-exo.cer   # upload this 
         <li>Keep the <b>CertificateBase64 + password</b> (method A) or the <b>Thumbprint</b> (method B) for the Delinea step below.</li>
       </ol>
 
+      <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 6, padding: "0.7rem 0.9rem", margin: "0.8rem 0" }}>
+        <b>Default: use CertificateBase64 (method A).</b> It works on every runner — the central macOS/Linux
+        runner included — so it&rsquo;s the right choice for the vast majority of clients. A
+        {" "}<code>CertificateThumbprint</code> (method B) only resolves on a <b>Windows</b> runner (it reads
+        the Windows certificate store).
+        <p style={{ margin: "0.5rem 0 0" }}>
+          <b>Exception — run cloud steps on the client&rsquo;s own agent.</b> If a client already has its own
+          Windows client-network agent and you&rsquo;d rather keep its Windows-store cert (thumbprint) — the
+          way its native onboarding script ran everything on-prem — turn on <b>&ldquo;cloud on own
+          agent&rdquo;</b> on the client page. Then <i>all</i> of that client&rsquo;s jobs (m365 / exchange
+          included) are claimed by its own agent instead of the central runner, so the thumbprint works and
+          the cloud + hybrid work stay co-located. It falls back to the central runner if the client has no
+          agent. (Coretelligent is set up this way.)
+        </p>
+      </div>
+
       <h2>{step()}. Grant the app Exchange admin rights {!hybrid && "(distribution lists only)"}</h2>
       <p className="note">Exchange.ManageAsApp alone isn&apos;t enough — the app also needs a directory role, assigned as <b>Active</b> (not PIM-eligible).</p>
       <ul>

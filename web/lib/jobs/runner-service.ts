@@ -309,8 +309,19 @@ export function makeRunnerService(db: PrismaClient) {
 
       // Preflight: don't claim a job whose required secrets aren't set — the broker couldn't resolve a
       // credential, so it would just fail. Load the candidate cases' client refs + overrides once.
-      const caseMeta = await db.caseRequest.findMany({ where: { id: { in: caseIds } }, select: { id: true, clientId: true, secretOverrides: true, client: { select: { parentId: true } } } });
+      const caseMeta = await db.caseRequest.findMany({ where: { id: { in: caseIds } }, select: { id: true, clientId: true, secretOverrides: true, client: { select: { parentId: true, runCloudOnOwnAgent: true } } } });
       const caseMetaById = new Map(caseMeta.map((c) => [c.id, c]));
+      // Own-agent affinity: for the CENTRAL runner, a client that pins its work to its own agent
+      // (runCloudOnOwnAgent) AND actually HAS one gets ALL its jobs skipped here — they wait for that
+      // client's agent (same as on-prem jobs). Falls back to central when the client has no agent.
+      let pinnedClientIds = new Set<string>();
+      if (!agent.clientId) {
+        const pinned = [...new Set(caseMeta.filter((c) => c.client?.runCloudOnOwnAgent).map((c) => c.clientId))];
+        if (pinned.length) {
+          const withAgent = await db.agent.findMany({ where: { clientId: { in: pinned }, scope: "client_network", enabled: true, deletedAt: null }, select: { clientId: true } });
+          pinnedClientIds = new Set(withAgent.map((a) => a.clientId).filter((x): x is string => Boolean(x)));
+        }
+      }
       // Load the candidate clients' secrets AND their parents' (a child account inherits the parent's
       // Delinea refs for systems it inherits) so an inheriting case isn't wrongly skipped as "missing".
       const parentIds = [...new Set(caseMeta.map((c) => c.client?.parentId).filter((x): x is string => Boolean(x)))];
@@ -336,6 +347,8 @@ export function makeRunnerService(db: PrismaClient) {
         // only for a hybrid case). A client agent (agent.clientId set) runs everything for its client.
         if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
         const meta = caseMetaById.get(c.caseRequestId);
+        // Own-agent affinity: central runner leaves a pinned client's cloud jobs for that client's agent.
+        if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId)) continue;
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
         const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip

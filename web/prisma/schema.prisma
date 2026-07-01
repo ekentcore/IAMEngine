@@ -116,6 +116,11 @@ model Client {
   // Internal-only: a restricted client is hidden from every operator EXCEPT those explicitly granted
   // it (and super admins), regardless of their access mode. Use for sensitive orgs like Coretelligent.
   restricted             Boolean      @default(false)
+  // When true AND this client has its own (client-network) agent, ALL of its jobs — including cloud
+  // ones (m365/exchange) — are claimed by that agent, not the central runner. Lets a client run
+  // everything on-prem the way its native script did (e.g. Windows-store EXO cert). Falls back to the
+  // central runner if the client has no agent. Off by default (cloud jobs go to the central runner).
+  runCloudOnOwnAgent     Boolean      @default(false)
   createdAt              DateTime     @default(now())
   archivedAt             DateTime?
 

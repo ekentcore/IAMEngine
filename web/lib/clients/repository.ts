@@ -296,6 +296,9 @@ export function makeClientRepository(db: PrismaClient) {
     async setRestricted(slug: string, restricted: boolean) {
       return db.client.update({ where: { slug }, data: { restricted } });
     },
+    async setRunCloudOnOwnAgent(slug: string, runCloudOnOwnAgent: boolean) {
+      return db.client.update({ where: { slug }, data: { runCloudOnOwnAgent } });
+    },
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses
     // the left-of-@ part and resolves the domain separately).

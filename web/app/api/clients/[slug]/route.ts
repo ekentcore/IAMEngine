@@ -25,7 +25,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -129,6 +129,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (typeof body.restricted !== "boolean") return NextResponse.json({ error: "restricted must be a boolean" }, { status: 422 });
     const client = await repo.setRestricted(params.slug, body.restricted);
     await repo.writeAudit({ actor: "ui", action: "client.restricted.set", clientId: client.id, detail: { restricted: body.restricted } });
+    return NextResponse.json(client);
+  }
+
+  // Run this client's cloud jobs on its own agent (when it has one) rather than the central runner.
+  if (body.action === "set-run-cloud-on-own-agent") {
+    if (typeof body.runCloudOnOwnAgent !== "boolean") return NextResponse.json({ error: "runCloudOnOwnAgent must be a boolean" }, { status: 422 });
+    const client = await repo.setRunCloudOnOwnAgent(params.slug, body.runCloudOnOwnAgent);
+    await repo.writeAudit({ actor: "ui", action: "client.run_cloud_on_own_agent.set", clientId: client.id, detail: { runCloudOnOwnAgent: body.runCloudOnOwnAgent } });
     return NextResponse.json(client);
   }
 
