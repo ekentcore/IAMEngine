@@ -25,6 +25,7 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["servicenow", "ServiceNow", 1, "Coretelligent.ServiceNow"],
   ["m365", "Microsoft 365", 1, "Coretelligent.M365"],
   ["entra", "Entra", 1, "Coretelligent.M365"],
+  ["tap", "Temporary Access Pass", 2, "Coretelligent.M365"],
   ["exchange", "Exchange", 1, "Coretelligent.M365"],
   ["active-directory", "Active Directory", 2, "Coretelligent.ActiveDirectory"],
   ["directory-sync", "Entra Connect sync", 2, "Coretelligent.ActiveDirectory"],

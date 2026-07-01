@@ -25,6 +25,9 @@ BeforeAll {
     function global:Revoke-MgUserSignInSession { param($UserId) }
     function global:Get-MgUserRegisteredDevice { param($UserId, [switch]$All) }
     function global:Update-MgDevice { param($DeviceId, $AccountEnabled) }
+    function global:Get-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId) }
+    function global:New-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId, $BodyParameter) }
+    function global:Remove-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId, $TemporaryAccessPassAuthenticationMethodId) }
 
     Import-Module $ModulePath -Force
 
@@ -471,6 +474,36 @@ Describe 'Confirm-CtgM365' {
         $config = [pscustomobject]@{ removeAllGroups = $true }
         $r = Confirm-CtgM365 -User $user -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Invoke-CtgEntraTap' {
+    It 'issues a TAP and post-dates it to the start day at 8am when the start date is future' {
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; DisplayName = 'Drew' } }
+        Mock Get-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock New-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $BodyParameter)
+            [pscustomobject]@{ TemporaryAccessPass = 'AB12CD34'; StartDateTime = $BodyParameter.startDateTime; LifetimeInMinutes = $BodyParameter.lifetimeInMinutes }
+        }
+        $future = (Get-Date).AddDays(3).ToString('yyyy-MM-dd')
+        $r = Invoke-CtgEntraTap -User ([pscustomobject]@{ UserPrincipalName = 'ddirienzo@x.com'; StartDate = $future }) -Config ([pscustomobject]@{ startHour = 8; lifetimeMinutes = 240 })
+        $r.Status | Should -Be 'ok'
+        $r.Tap | Should -Be 'AB12CD34'
+        $r.TapLifetimeMinutes | Should -Be 240
+        # startDateTime was set (future start), issued with a 240-min lifetime
+        Should -Invoke New-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -ParameterFilter { $BodyParameter.lifetimeInMinutes -eq 240 -and $BodyParameter.startDateTime } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'AB12CD34'
+    }
+
+    It 'replaces an existing TAP before issuing a new one (one per user)' {
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; DisplayName = 'Drew' } }
+        Mock Get-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'tap-old' }) }
+        Mock Remove-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -MockWith {}
+        Mock New-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ TemporaryAccessPass = 'NEW99'; LifetimeInMinutes = 240 } }
+        $r = Invoke-CtgEntraTap -User ([pscustomobject]@{ UserPrincipalName = 'ddirienzo@x.com' }) -Config ([pscustomobject]@{})
+        Should -Invoke Remove-MgUserAuthenticationTemporaryAccessPassMethod -ModuleName Coretelligent.M365 -ParameterFilter { $TemporaryAccessPassAuthenticationMethodId -eq 'tap-old' } -Times 1
+        $r.Tap | Should -Be 'NEW99'
+        ($r.Actions -join ' ') | Should -Match 'replaced an existing TAP'
     }
 }
 

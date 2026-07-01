@@ -1129,4 +1129,64 @@ function Confirm-CtgM365 {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365
+# Temporary Access Pass (TAP): issue a time-boxed passcode for the new hire's first sign-in /
+# passwordless registration. Default window = the START DATE at 08:00 for 240 min; both are
+# config-overridable (startHour, lifetimeMinutes). The TAP value is returned so the run report can show
+# it (short-lived, single onboarding use). A user may hold only ONE TAP — an existing one is replaced so
+# re-runs refresh cleanly. Prereqs: TAP enabled + user-targeted in the Entra Authentication methods
+# policy, and Graph UserAuthenticationMethod.ReadWrite.All consented.
+function Invoke-CtgEntraTap {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $upn = [string]$User.UserPrincipalName
+    if (-not $upn) { throw "no UPN to issue a TAP for" }
+    # TAP cmdlets ship in Microsoft.Graph.Identity.SignIns — load on demand (best-effort) so it isn't a
+    # hard load-dependency of the whole M365 module; the call below errors clearly if it's truly absent.
+    Import-Module Microsoft.Graph.Identity.SignIns -ErrorAction SilentlyContinue
+    $u = Resolve-CtgEntraUser -Identity $upn
+    if (-not $u) { throw "user not found in Entra for TAP: $upn" }
+
+    $startHour = [int]((Get-CtgProp $Config 'startHour') ?? 8)
+    $lifetime = [int]((Get-CtgProp $Config 'lifetimeMinutes') ?? 240)
+
+    # Activation = the start date at startHour (runner-local), converted to UTC for Graph. If there's no
+    # start date, or it's already in the past, omit startDateTime so the TAP is usable immediately.
+    $body = @{ lifetimeInMinutes = $lifetime; isUsableOnce = $false }
+    $startDate = [string](Get-CtgProp $User 'StartDate')
+    if ($startDate) {
+        try {
+            $d = [datetime]::Parse($startDate)
+            $local = Get-Date -Year $d.Year -Month $d.Month -Day $d.Day -Hour $startHour -Minute 0 -Second 0
+            if ($local -gt (Get-Date)) { $body.startDateTime = $local.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+        } catch { }
+    }
+
+    # One TAP per user — clear an existing one first so a re-run reissues rather than erroring.
+    try {
+        $existing = @(Get-MgUserAuthenticationTemporaryAccessPassMethod -UserId $u.Id -ErrorAction SilentlyContinue)
+        foreach ($e in $existing) { Invoke-CtgM365Write { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $u.Id -TemporaryAccessPassAuthenticationMethodId $e.Id -ErrorAction Stop } }
+        if ($existing.Count) { $actions.Add("replaced an existing TAP") }
+    } catch { }
+
+    if ($PSCmdlet.ShouldProcess($upn, "issue Temporary Access Pass")) {
+        try {
+            $tap = Invoke-CtgM365Write { New-MgUserAuthenticationTemporaryAccessPassMethod -UserId $u.Id -BodyParameter $body -ErrorAction Stop }
+            $startTxt = if ($body.ContainsKey('startDateTime')) { "activates $($body.startDateTime)" } else { "active now" }
+            $code = [string](Get-CtgProp $tap 'TemporaryAccessPass')
+            $actions.Add("TAP for ${upn}: $code — $startTxt, valid $lifetime min")
+            Write-CtgM365Step "✓ TAP issued for $upn ($startTxt, $lifetime min)"
+            return [pscustomobject]@{ System = 'tap'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray(); Tap = $code; TapStart = [string](Get-CtgProp $tap 'StartDateTime'); TapLifetimeMinutes = $lifetime }
+        }
+        catch {
+            $m = [string]$_.Exception.Message
+            if ($m -match 'not enabled|authenticationMethodsPolicy|not allowed|disabled') {
+                throw "TAP isn't enabled for this user in the tenant's Authentication methods policy (Entra → Authentication methods → Temporary Access Pass → enable + target the user), or Graph lacks UserAuthenticationMethod.ReadWrite.All. $m"
+            }
+            throw
+        }
+    }
+    return [pscustomobject]@{ System = 'tap'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap

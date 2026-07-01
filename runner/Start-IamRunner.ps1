@@ -861,6 +861,15 @@ $DISPATCH = @{
 # moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
 $DISPATCH['entra'] = $DISPATCH['m365']
 
+# tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
+# Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
+$DISPATCH['tap'] = @{
+    Connect  = $DISPATCH['m365'].Connect
+    Onboard  = { param($job, $creds) Invoke-CtgEntraTap -User (Add-ClientContext $job) -Config $job.config }
+    Offboard = { param($job, $creds) [pscustomobject]@{ System = 'tap'; Status = 'ok'; Actions = @('no TAP teardown needed (it self-expires)') } }
+    Validate = { param($job, $creds) [pscustomobject]@{ System = 'tap'; Ok = $true; Detail = 'TAP is issue-only (self-expiring); nothing to verify' } }
+}
+
 # Action -> validate, with idempotent auto-retry. On a validation miss we re-run the (idempotent)
 # action and re-validate up to $MaxRevalidate times — this self-heals eventual-consistency lags.
 # A persistent miss is NOT a failure: the job still succeeds; the validation block (ok=$false)
