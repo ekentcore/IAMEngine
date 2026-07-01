@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -24,6 +24,7 @@ export type AgentVM = {
   updateRequested: boolean;
   updateRequestedAt: string | null;
   updateRequestedBy: string | null;
+  restartRequested: boolean;
   updateDeliveredAt: string | null;
 };
 
@@ -391,6 +392,11 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {a.enabled && !upToDate && (
                     <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>
                       {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
+                    </button>
+                  )}
+                  {a.enabled && (
+                    <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner." style={{ marginLeft: 6 }}>
+                      {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
                     </button>
                   )}
                   {!a.enabled && (

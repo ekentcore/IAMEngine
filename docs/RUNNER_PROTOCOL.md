@@ -12,7 +12,10 @@ jobs.
 
 ## Endpoints (app side)
 
-- `POST /api/agents/heartbeat` — agent reports liveness + version; updates `lastSeenAt`.
+- `POST /api/agents/heartbeat` — agent reports liveness + version; updates `lastSeenAt`. Response
+  `{ ok, enabled, update, restart, discover }`: `update`=re-pull code + relaunch; `restart`=re-exec
+  without a pull (operator "Restart" — clears a wedged claim loop); `discover`=run AD OU/group discovery.
+  Each flag is consumed atomically (one heartbeat wins).
 - `POST /api/jobs/claim` — body `{ agentId }`. Returns up to N `pending` jobs the agent is
   eligible for (matching client + the systems it can execute), atomically flipping them to
   `dispatched`. Cloud runner claims `api` cloud jobs; client agents claim that client's

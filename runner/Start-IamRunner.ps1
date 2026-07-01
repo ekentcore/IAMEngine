@@ -1093,20 +1093,22 @@ function Update-CtgRunner {
         try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; Write-Host "self-update: pruned stale $($f.Name)" -ForegroundColor DarkYellow } catch { }
     }
     Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
-    # SUPERVISED (launchd KeepAlive / systemd Restart=always — set RUNNER_SUPERVISED=1): the cleanest,
-    # most reliable restart is to just EXIT and let the supervisor relaunch us on the new code. Don't
-    # self-spawn here too, or we'd get a double runner (our child + the supervisor's restart). This is
-    # the robust path — no fragile process hand-off. install-launchd.sh sets this flag.
+    Invoke-CtgRelaunch -Reason 'self-update'
+}
+
+# Re-exec the runner: under a supervisor (RUNNER_SUPERVISED — launchd/systemd/Scheduled Task) just EXIT
+# and let it relaunch us (the robust path, no self-spawn double-runner); UNSUPERVISED, spawn our own
+# replacement first, then exit. Shared by self-update (after pulling files) and an operator restart
+# (heartbeat restart:true — no file pull). Never returns.
+function Invoke-CtgRelaunch {
+    param([string]$Reason = 'restart')
     if ($env:RUNNER_SUPERVISED) {
-        Write-Host "self-update: supervised — exiting so the service manager relaunches on the new code" -ForegroundColor Green
+        Write-Host "${Reason}: supervised — exiting so the service manager relaunches" -ForegroundColor Green
         exit 0
     }
-    # UNSUPERVISED (a hand-started `nohup` launch): we must spawn our own replacement before exiting.
-    # Relaunch a fresh process on the just-downloaded script, then exit this one. Spawn it via WMI
-    # (Win32_Process.Create), NOT Start-Process: the WMI host creates the process, so it BREAKS AWAY
-    # from this process's job object and survives our exit. Under a SYSTEM Scheduled Task a
-    # Start-Process child lives in the task's job object and is KILLED when this process exits — which
-    # silently left the runner on the OLD code (the pull succeeded but the restart never landed).
+    # UNSUPERVISED (a hand-started launch): spawn a fresh process on this same script, then exit. On
+    # Windows use WMI (Win32_Process.Create) so the child BREAKS AWAY from a SYSTEM Scheduled Task's job
+    # object (a Start-Process child would be killed when we exit — the runner would never come back).
     $pwshPath = (Get-Process -Id $PID).Path
     if (-not $pwshPath) { $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
     $self = Join-Path $PSScriptRoot 'Start-IamRunner.ps1'
@@ -1115,30 +1117,21 @@ function Update-CtgRunner {
            ' -AppUrl ' + (& $qq $AppUrl) + ' -AgentId ' + (& $qq $AgentId) +
            ' -PollSeconds ' + $PollSeconds + ' -BatchSize ' + $BatchSize +
            ' -ExoModuleVersion ' + (& $qq $ExoModuleVersion)
-    # Forward an explicit -ApiToken (env is inherited; an explicit arg would otherwise be lost -> 401).
     if ($ApiToken) { $cmd += ' -ApiToken ' + (& $qq $ApiToken) }
-    # WMI Win32_Process.Create is Windows-only and is needed specifically to break out of a SYSTEM
-    # Scheduled Task's job object. On macOS/Linux (the central cloud runner) there's no CIM server —
-    # calling it errors or stalls, which left the Mac stuck "updating" (pull ok, restart never landed).
-    # So branch on platform: WMI on Windows, a plain detached relaunch everywhere else.
     if ($IsWindows) {
         try {
             $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
             if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create returned $($r.ReturnValue)" }
-            Write-Host "self-update: relaunched on new code (pid $($r.ProcessId))" -ForegroundColor Green
+            Write-Host "${Reason}: relaunched (pid $($r.ProcessId))" -ForegroundColor Green
         }
         catch {
-            Write-Warning "self-update relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
+            Write-Warning "${Reason} relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
             Start-Process -FilePath $pwshPath -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion) | Out-Null
         }
     }
     else {
-        # macOS/Linux: relaunch DETACHED, output redirected to the log (not the tty — a bare child on
-        # the dead tty throws "Out-LineOutput: Input/output error" + ;1R noise). We must NOT pass the
-        # redirect/`&` as a `-c` string to Start-Process: its argument-joining mangles a complex string
-        # (bash ended up running just `nohup` with no command -> "usage: nohup"). Instead write a tiny
-        # launcher script and run it with a SINGLE safe arg; `exec … >> log 2>&1` takes pwsh off the tty
-        # and the Start-Process child survives our exit on Unix (no nohup needed).
+        # macOS/Linux: relaunch DETACHED via a tiny launcher script (`exec … >> log 2>&1` takes pwsh off
+        # the dead tty; the Start-Process child survives our exit on Unix).
         $log = if ($env:RUNNER_LOG) { $env:RUNNER_LOG } else { Join-Path $HOME 'iam-runner.log' }
         $a = @($pwshPath, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', "$PollSeconds", '-BatchSize', "$BatchSize", '-ExoModuleVersion', $ExoModuleVersion)
         if ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
@@ -1147,9 +1140,18 @@ function Update-CtgRunner {
         $launcher = Join-Path ([System.IO.Path]::GetTempPath()) 'iam-runner-relaunch.sh'
         [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nexec $line`n")
         Start-Process -FilePath '/bin/sh' -ArgumentList $launcher | Out-Null
-        Write-Host "self-update: relaunched detached on new code (log: $log)" -ForegroundColor Green
+        Write-Host "${Reason}: relaunched detached (log: $log)" -ForegroundColor Green
     }
     exit 0
+}
+
+# Operator-requested restart (heartbeat restart:true): re-exec WITHOUT pulling new files. Clears a
+# wedged claim/work loop while the heartbeat thread stayed alive — the exact "heartbeats but won't
+# claim" case. Needs a supervisor to come back cleanly (or the unsupervised self-spawn above).
+function Restart-CtgRunner {
+    Write-Host "restart: operator requested a restart" -ForegroundColor Yellow
+    if (-not $env:RUNNER_SUPERVISED) { Write-Warning "restart requested but RUNNER_SUPERVISED is not set — attempting a self-spawn relaunch; install the supervisor (install-launchd.sh / install-systemd.sh / install-task.ps1) for reliable remote restarts." }
+    Invoke-CtgRelaunch -Reason 'restart'
 }
 
 function Protect-CtgSecretsInText {
@@ -1564,6 +1566,7 @@ while ($true) {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
+        if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
         # Send our build id so the app refuses to dispatch to a STALE runner (a half-landed update can
         # leave an old process alive; this stops it claiming jobs with old modules in memory).

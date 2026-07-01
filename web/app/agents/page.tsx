@@ -85,6 +85,7 @@ export default async function AgentsPage() {
     updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
     updateRequestedBy: a.updateRequestedBy ?? null,
     updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
+    restartRequested: a.restartRequested,
     };
   });
   const now = new Date();

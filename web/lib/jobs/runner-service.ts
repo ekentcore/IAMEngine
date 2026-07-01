@@ -114,8 +114,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; discover: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -129,6 +129,13 @@ export function makeRunnerService(db: PrismaClient) {
         // its next heartbeat pushes lastSeenAt past this timestamp ("updated ✓").
         const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false, updateDeliveredAt: new Date() } });
         update = consumed.count > 0;
+      }
+      // Same atomic-consume for a plain RESTART request (no file pull). An update already restarts, so
+      // if both are pending the update wins and this just clears the redundant flag.
+      let restart = false;
+      if (agent.enabled && agent.restartRequested) {
+        const consumed = await db.agent.updateMany({ where: { id: agentId, restartRequested: true }, data: { restartRequested: false, restartDeliveredAt: new Date() } });
+        restart = consumed.count > 0;
       }
       // Tell this (client-network) agent to run AD discovery if its client has a pending request.
       // Consume atomically so just one of the client's agents runs it (discovery is read-only, so a
@@ -145,7 +152,7 @@ export function makeRunnerService(db: PrismaClient) {
       void sweepProcurementWatches(db).catch(() => {});
       // Same pulse: auto-import new ServiceNow intake tickets (off unless enabled; self-throttles to ~15 min).
       void sweepServiceNowIntake(db).catch(() => {});
-      return { ok: true, enabled: agent.enabled, update, discover };
+      return { ok: true, enabled: agent.enabled, update, restart, discover };
     },
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
@@ -189,6 +196,18 @@ export function makeRunnerService(db: PrismaClient) {
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting an update");
       await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: actor, updateDeliveredAt: null } });
       await db.auditLog.create({ data: { actor, action: "agent.update_requested", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Operator action: ask the runner to RESTART (re-exec, no file pull) on its next heartbeat — clears
+    // a wedged claim/work loop remotely. Needs a supervised runner to come back cleanly.
+    async requestRestart(agentId: string, actor = "ui"): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
+      if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting a restart");
+      await db.agent.update({ where: { id: agentId }, data: { restartRequested: true, restartRequestedAt: new Date(), restartRequestedBy: actor, restartDeliveredAt: null } });
+      await db.auditLog.create({ data: { actor, action: "agent.restart_requested", detail: { agentId } } });
       return { id: agentId };
     },
 

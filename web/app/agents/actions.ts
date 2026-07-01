@@ -71,6 +71,19 @@ export async function requestAgentUpdate(id: string) {
   }
 }
 
+// Ask the runner to restart (re-exec, no file pull) on its next heartbeat — for a wedged agent that
+// heartbeats but stops claiming. Needs a supervised runner to relaunch.
+export async function requestAgentRestart(id: string) {
+  try {
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).requestRestart(id, me.email);
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
 // Queue self-updates for several agents at once (Update selected / Update all). Per-agent failures
 // don't stop the rest; the first error is surfaced alongside how many actually queued.
 export async function requestAgentUpdates(ids: string[]) {

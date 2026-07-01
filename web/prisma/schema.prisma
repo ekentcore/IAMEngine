@@ -204,6 +204,13 @@ model Agent {
   updateRequestedAt DateTime?
   updateRequestedBy String? // operator (email) who pushed the last self-update — for the Agents page
   updateDeliveredAt DateTime?
+  // Operator-requested plain RESTART (no file pull): the "Restart" button sets it; the next heartbeat
+  // returns restart:true (consumed) and the runner re-execs (its supervisor relaunches it). Clears a
+  // wedged claim/work loop remotely without touching the box.
+  restartRequested   Boolean   @default(false)
+  restartRequestedAt DateTime?
+  restartRequestedBy String?
+  restartDeliveredAt DateTime?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
   deletedAt         DateTime?
   jobs              Job[]
