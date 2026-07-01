@@ -390,6 +390,33 @@ Describe 'Confirm-CtgM365' {
         ($r.checks | Where-Object { $_.name -like 'group: Sales*' }).pass | Should -BeFalse
     }
 
+    It 'onboard: mirror coverage counts only cloud groups (on-prem/dynamic the AD lane owns are excluded)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'ref-1'; DisplayName = 'Davian Rodriguez' } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId)
+            if ($UserId -eq 'ref-1') {
+                # reference user: one cloud group + one on-prem-synced + one dynamic
+                @(
+                    [pscustomobject]@{ Id = 'g-cloud';  AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Cloud-Sec'; onPremisesSyncEnabled = $false } }
+                    [pscustomobject]@{ Id = 'g-onprem'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'RDS-Users'; onPremisesSyncEnabled = $true } }
+                    [pscustomobject]@{ Id = 'g-dyn';    AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'All Users'; groupTypes = @('DynamicMembership') } }
+                )
+            } else {
+                # new user: only in the cloud group (NOT the on-prem one — the AD lane hasn't synced it)
+                @([pscustomobject]@{ Id = 'g-cloud'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Cloud-Sec'; onPremisesSyncEnabled = $false } })
+            }
+        }
+        $user = [pscustomobject]@{ UserPrincipalName = 'ddirienzo@x.com' }
+        $config = [pscustomobject]@{ licenses = @(); groups = @(); mirrorFromUser = 'Davian Rodriguez' }
+        $r = Confirm-CtgM365 -User $user -Config $config -Action 'onboard'
+        $mc = $r.checks | Where-Object { $_.name -like 'mirror coverage*' }
+        $mc.pass | Should -BeTrue                                   # on-prem RDS-Users + dynamic All Users are NOT counted missing
+        $mc.name | Should -Match 'all 1 of'                         # only the 1 cloud group is in scope
+        $mc.name | Should -Not -Match 'RDS-Users'
+    }
+
     It 'onboard: each group check NAMES its type (distribution list / security / 365 Group)' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
         Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }

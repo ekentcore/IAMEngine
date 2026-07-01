@@ -1067,11 +1067,12 @@ function Confirm-CtgM365 {
                 $label = if ($present) { "group: $gn ($type)" } else { "group: $gn" }
                 & $add $label $true $present
             }
-            # Comprehensive mirror coverage: compare the new user's ENTIRE membership to the reference
-            # user's — across ALL group types (cloud security/M365, distribution + mail-enabled added
-            # by the exchange lane, AD-synced added by the AD lane), since Graph reads them all even the
-            # ones it can't write. Excludes dynamic groups (rule-computed, not assignable). The check
-            # NAMES any of the reference user's groups the new user is missing, so a real gap is obvious.
+            # Mirror coverage: compare the new user's membership to the reference user's, but ONLY over
+            # the groups the m365 lane actually OWNS — cloud, assignable groups. We EXCLUDE the same two
+            # classes the onboarding lane skips (see the "on-prem group (AD lane owns it)" / "dynamic
+            # group (rule-based)" skips): on-prem-synced groups are added on-prem by the AD lane and flow
+            # up via sync, and dynamic groups are rule-computed — neither is the m365 lane's to write, so
+            # counting them here produced false "MISSING" failures. The check NAMES any real gap.
             $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
             if ($mirrorUser) {
                 $ref = Resolve-CtgEntraUser -Identity ([string]$mirrorUser)
@@ -1079,7 +1080,8 @@ function Confirm-CtgM365 {
                     $refGroups = @(Get-MgUserMemberOf -UserId $ref.Id -All -ErrorAction SilentlyContinue | Where-Object {
                         $ap = $_.AdditionalProperties
                         ([string](Get-CtgProp $ap '@odata.type')) -match 'microsoft\.graph\.group' -and
-                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership')
+                        (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership') -and
+                        ((Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true)
                     })
                     $myIds = @($myMemberships | ForEach-Object { $_.Id })
                     $missing = @($refGroups | Where-Object { $myIds -notcontains $_.Id })
