@@ -43,6 +43,26 @@ test("planned job config is the lane's config, not the whole blob", () => {
   assert.deepEqual(planCase([sys({ config: cfg })], "offboard", {})[0].config, { blockSignIn: true });
 });
 
+test("identity flow: a mis-wired hybrid client still plans AD -> sync -> cloud (deadlock-proof)", () => {
+  // The exact inversion that stalled Coretelligent: exchange as the root, AD/sync depending on cloud.
+  const systems = [
+    sys({ systemKey: "exchange", dependsOn: [] }),
+    sys({ systemKey: "m365", dependsOn: ["exchange"] }),
+    sys({ systemKey: "directory-sync", dependsOn: ["exchange"] }),
+    sys({ systemKey: "active-directory", dependsOn: ["exchange", "directory-sync"] }),
+  ];
+  const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
+  assert.ok(order.indexOf("active-directory") < order.indexOf("directory-sync"), `AD before sync: ${order}`);
+  assert.ok(order.indexOf("directory-sync") < order.indexOf("m365"), `sync before m365: ${order}`);
+  assert.ok(order.indexOf("m365") < order.indexOf("exchange"), `m365 before exchange: ${order}`);
+});
+
+test("identity flow: a cloud-native client (no AD) is left untouched", () => {
+  const systems = [sys({ systemKey: "m365", dependsOn: [] }), sys({ systemKey: "exchange", dependsOn: ["m365"] })];
+  const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
+  assert.deepEqual(order, ["m365", "exchange"]);
+});
+
 test("requiresApproval/captureEvidence resolve per-lane (no cross-lane bleed)", () => {
   const cfg = { onboard: null, offboard: null, requiresApproval: { offboard: true }, captureEvidence: { offboard: true } };
   // column is the collapsed OR (true) — must NOT leak onto the onboard lane.

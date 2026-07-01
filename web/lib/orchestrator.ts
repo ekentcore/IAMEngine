@@ -43,6 +43,33 @@ const REQUEST_SIGNALS: Record<string, (payload: Record<string, unknown>, action:
   teams: (p, a) => a === "onboard" && Boolean(p.officeLineRequired || p.cellPhoneRequired),
 };
 
+// Identity-flow invariant for on-prem-origin clients: when the identity ORIGINATES in on-prem AD, the
+// order is ALWAYS create-in-AD -> directory-sync (push to the cloud) -> cloud consumers (entra / m365 /
+// exchange, which need the synced user to exist). We enforce it at plan time so a mis-wired client can't
+// deadlock — e.g. exchange waiting for a mailbox while the directory-sync that would create it is gated
+// behind exchange. No-op for cloud-native clients (no active-directory system) — their ordering differs.
+const IDENTITY_PIPELINE = ["active-directory", "directory-sync", "entra", "m365", "exchange"];
+
+// For an on-prem-origin client, the corrected dependencies for the pipeline systems: each keeps its
+// NON-pipeline deps (e.g. servicenow) but its pipeline-to-pipeline edges (forward OR reversed) are
+// replaced by the single chain edge to the previous ACTIVE pipeline system. Returns null (leave deps
+// untouched) when the client is cloud-native.
+function identityPipelineDeps(active: ClientSystem[], declaredOf: (s: ClientSystem) => string[]): Map<string, string[]> | null {
+  const activeKeys = new Set(active.map((s) => s.systemKey));
+  if (!activeKeys.has("active-directory")) return null;
+  const pipeActive = IDENTITY_PIPELINE.filter((k) => activeKeys.has(k));
+  const pipeSet = new Set(pipeActive);
+  const byKey = new Map(active.map((s) => [s.systemKey, s]));
+  const out = new Map<string, string[]>();
+  for (let i = 0; i < pipeActive.length; i++) {
+    const key = pipeActive[i];
+    const prev = i > 0 ? pipeActive[i - 1] : null;
+    const nonPipeline = declaredOf(byKey.get(key)!).filter((d) => !pipeSet.has(d));
+    out.set(key, prev ? [...new Set([...nonPipeline, prev])] : nonPipeline);
+  }
+  return out;
+}
+
 // Decide whether a system participates in this action, given the case payload.
 function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>): boolean {
   const when = action === "onboard" ? cs.onboardWhen : cs.offboardWhen;
@@ -71,9 +98,15 @@ export function planCase(
   // runLast systems the declared deps/order decide.
   const runLast = (s: ClientSystem) =>
     s.systemKey === "case-resolution" || Boolean((s.config as SystemConfig | null)?.runLast);
-  const depsOf = (s: ClientSystem): string[] => {
+  const declaredOf = (s: ClientSystem): string[] => {
     const laneDeps = (s.config as SystemConfig | null)?.dependsOn?.[action];
-    const declared = (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
+    return (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
+  };
+  // Enforce the on-prem identity flow (AD -> directory-sync -> cloud) for pipeline systems; other
+  // systems keep their declared deps. This can't be reversed by bad data, so it's deadlock-proof.
+  const pipelineDeps = identityPipelineDeps(active, declaredOf);
+  const depsOf = (s: ClientSystem): string[] => {
+    const declared = pipelineDeps?.get(s.systemKey) ?? declaredOf(s);
     if (!runLast(s)) return declared;
     const everyoneElse = active.filter((o) => o.systemKey !== s.systemKey && !runLast(o)).map((o) => o.systemKey);
     return [...new Set([...declared, ...everyoneElse])];
