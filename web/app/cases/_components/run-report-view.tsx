@@ -832,7 +832,8 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                       // A "WARN …" action line renders orange so it stands out when scanning the log;
                       // a TAP line (with the passcode) renders in a highlighted, monospaced box so it's
                       // easy to spot and copy for the new hire.
-                      const warn = /^\s*WARN\b/i.test(a);
+                      // Match WARN anywhere in the line — some are prefixed, e.g. "license: WARN …".
+                      const warn = /\bWARN\b/.test(a);
                       const tap = /^TAP for /i.test(a);
                       return (
                         <li key={i} suppressHydrationWarning
