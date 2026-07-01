@@ -520,6 +520,14 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     // Hybrid (exchange runs on-prem) only when this case actually has an AD/sync job — matches the
     // claim filter. A cloud-only case's exchange is Exchange Online, claimable by the central runner.
     const caseHasOnPremAd = c.jobs.some((j) => ALWAYS_ON_PREM_SYSTEMS.includes(j.systemKey));
+    // Own-agent pinning: a client with runCloudOnOwnAgent AND a registered client-network agent has ALL
+    // its steps (cloud included) claimed by that agent, not central — mirror the claim rule so the reason
+    // names the right runner instead of implying the (now-excluded) central runner.
+    const clientRow = await db.client.findUnique({ where: { id: c.client.id }, select: { runCloudOnOwnAgent: true } });
+    const ownAgentCount = clientRow?.runCloudOnOwnAgent
+      ? await db.agent.count({ where: { clientId: c.client.id, scope: "client_network", enabled: true, deletedAt: null } })
+      : 0;
+    const pinsToOwnAgent = Boolean(clientRow?.runCloudOnOwnAgent) && ownAgentCount > 0;
     for (const st of ready) {
       const job = c.jobs.find((j) => j.id === st.jobId);
       const needed = ((job?.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
@@ -531,11 +539,11 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       }
       // Host affinity, same rule as the claim filter: on-prem systems (AD/Exchange/dir-sync) are
       // ONLY claimed by the client's own agent — a central runner being online doesn't help them.
-      const needsOnPrem = systemIsOnPrem(st.systemKey, caseHasOnPremAd);
-      const eligible = onlineAgents.filter((a) => (needsOnPrem ? a.clientId === c.client.id : a.clientId === null || a.clientId === c.client.id));
+      const needsOwnAgent = systemIsOnPrem(st.systemKey, caseHasOnPremAd) || pinsToOwnAgent;
+      const eligible = onlineAgents.filter((a) => (needsOwnAgent ? a.clientId === c.client.id : a.clientId === null || a.clientId === c.client.id));
       if (eligible.length === 0) {
-        st.pendingReason = needsOnPrem
-          ? "ready, but this step runs on the client's ON-PREM agent and none is online — check the Agents page"
+        st.pendingReason = needsOwnAgent
+          ? "ready, but this step runs on THIS CLIENT'S OWN agent (on-prem / cloud-on-own-agent) and none is online — check the Agents page"
           : "ready, but no runner is online to claim it — check the Agents page";
         continue;
       }
