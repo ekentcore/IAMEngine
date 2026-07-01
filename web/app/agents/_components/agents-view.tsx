@@ -386,22 +386,25 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {a.enabled ? "enabled" : <span className="muted">disabled</span>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
                 </td>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
-                  <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id} style={{ marginLeft: 6 }}>{a.enabled ? "Disable" : "Enable"}</button>
-                  {a.enabled && !upToDate && (
-                    <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)" style={{ marginLeft: 6 }}>
-                      {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
-                    </button>
-                  )}
-                  {a.enabled && (
-                    <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner." style={{ marginLeft: 6 }}>
-                      {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
-                    </button>
-                  )}
-                  {!a.enabled && (
-                    <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)" style={{ marginLeft: 6 }}>Trash</button>
-                  )}
+                <td>
+                  {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
+                    <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
+                    <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                    {a.enabled && !upToDate && (
+                      <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)">
+                        {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
+                      </button>
+                    )}
+                    {a.enabled && (
+                      <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner.">
+                        {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
+                      </button>
+                    )}
+                    {!a.enabled && (
+                      <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)">Trash</button>
+                    )}
+                  </div>
                 </td>
               </tr>
             );
