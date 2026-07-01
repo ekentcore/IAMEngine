@@ -610,7 +610,18 @@ function Invoke-CtgM365Onboarding {
             try {
                 Invoke-CtgM365Write { Update-MgUser -UserId $userId @update -ErrorAction Stop }
                 $actions.Add("set profile: $($update.Keys -join ', ')"); Write-CtgM365Step "✓ set profile: $($update.Keys -join ', ')"
-            } catch { $actions.Add("WARN could not set profile attributes ($($update.Keys -join ', ')): $($_.Exception.Message)") }
+            } catch {
+                $pm = [string]$_.Exception.Message
+                # A hybrid (AD-synced) user is on-prem-mastered — Graph refuses to write these directory
+                # attributes. That's expected: the AD lane sets them on-prem and they sync up. Report an
+                # informational skip, not a warning (same stance as manager + on-prem groups).
+                if ($pm -match 'on-premises mastered|Directory Sync objects') {
+                    $actions.Add("profile attributes ($($update.Keys -join ', ')) are on-prem-mastered (AD-synced) — the AD lane sets them on-prem; skipped in the cloud")
+                    Write-CtgM365Step "↷ profile attrs on-prem-mastered — AD lane sets them: $($update.Keys -join ', ')"
+                } else {
+                    $actions.Add("WARN could not set profile attributes ($($update.Keys -join ', ')): $pm")
+                }
+            }
         }
     }
 
