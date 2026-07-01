@@ -103,6 +103,7 @@ export default function HealthPage() {
           <li><Link href="/help/spanning">Spanning Backup (Microsoft 365)</Link> — Client ID + Secret, region host, Delinea template.</li>
           <li><Link href="/help/mimecast">Mimecast</Link> — API 2.0 application (client ID + secret), directory sync + user checks.</li>
           <li><Link href="/help/proofpoint">Proofpoint Essentials</Link> — admin account (X-User / X-Password), pod/region + org domain; read-only sync verification.</li>
+          <li><Link href="/help/tap">Temporary Access Pass</Link> <span className="note">(optional)</span> — Graph UserAuthenticationMethod.ReadWrite.All + TAP enabled in the Authentication methods policy.</li>
           <li><Link href="/help/egnyte">Egnyte</Link> — API token (or API key + service account), per-tenant domain, license tiers.</li>
           <li><Link href="/help/google">Google Workspace</Link> — service account + domain-wide delegation (JSON key, base64 into Delinea), impersonated super-admin.</li>
           <li><Link href="/help/salesforce">Salesforce</Link> — Connected App + JWT certificate, integration user, config-driven Profile.</li>

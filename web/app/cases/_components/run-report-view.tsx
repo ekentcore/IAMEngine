@@ -828,7 +828,21 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                     {/* This report polls live; an actively-running step appends to its action lines
                         (e.g. "username available: <upn>") between the server snapshot and hydration.
                         That benign churn is expected — suppress the hydration text-diff warning. */}
-                    {step.actions.map((a, i) => <li key={i} suppressHydrationWarning>{a}</li>)}
+                    {step.actions.map((a, i) => {
+                      // A "WARN …" action line renders orange so it stands out when scanning the log;
+                      // a TAP line (with the passcode) renders in a highlighted, monospaced box so it's
+                      // easy to spot and copy for the new hire.
+                      const warn = /^\s*WARN\b/i.test(a);
+                      const tap = /^TAP for /i.test(a);
+                      return (
+                        <li key={i} suppressHydrationWarning
+                          style={warn ? { color: "#b45309", fontWeight: 500 }
+                            : tap ? { color: "#1d4ed8", fontWeight: 600, fontFamily: "var(--mono, monospace)", background: "#eff6ff", borderRadius: 4, padding: "1px 6px", listStyle: "none", marginLeft: "-1.1rem" }
+                            : undefined}>
+                          {a}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}

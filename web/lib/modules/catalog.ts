@@ -26,7 +26,7 @@ export const MODULES: ModuleEntry[] = [
   { key: "servicenow", name: "ServiceNow", group: "Core / identity", executor: "built", secret: "servicenow", note: "case contact + work notes (runner lib)" },
   { key: "m365", name: "Microsoft 365", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "cloud-auth" },
   { key: "entra", name: "Entra", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "cloud-auth", note: "runs through the M365 module" },
-  { key: "tap", name: "Temporary Access Pass", group: "Core / identity", executor: "built", secret: "m365-admin", note: "Entra TAP for first sign-in — runs through the M365 module; start-day 8am/4h (configurable)" },
+  { key: "tap", name: "Temporary Access Pass", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "tap", note: "Entra TAP for first sign-in — runs through the M365 module; start-day 8am/4h (configurable)" },
   { key: "exchange", name: "Exchange Online", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "cloud-auth" },
   { key: "exchange-onprem", name: "Exchange (on-prem / hybrid)", group: "Core / identity", executor: "built", secret: "exchange-onprem", note: "hybrid mailbox session — needs a setup guide" },
   { key: "active-directory", name: "Active Directory", group: "Core / identity", executor: "built", secret: "ad-dc", note: "on-prem only — see docs/runner-dc-setup.md (needs an in-app guide)" },
