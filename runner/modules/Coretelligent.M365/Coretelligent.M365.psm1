@@ -1191,8 +1191,11 @@ function Invoke-CtgEntraTap {
         }
         catch {
             $m = [string]$_.Exception.Message
-            if ($m -match 'not enabled|authenticationMethodsPolicy|not allowed|disabled') {
-                throw "TAP isn't enabled for this user in the tenant's Authentication methods policy (Entra → Authentication methods → Temporary Access Pass → enable + target the user), or Graph lacks UserAuthenticationMethod.ReadWrite.All. $m"
+            # accessDenied / "Request Authorization failed" / Forbidden = the app lacks the Graph
+            # PERMISSION; "not enabled"/policy = TAP isn't turned on. Both map to the same fix list, so
+            # give one actionable message instead of a bare Graph error.
+            if ($m -match 'accessDenied|Authorization failed|Forbidden|Insufficient privileges|not enabled|authenticationMethodsPolicy|not allowed|disabled') {
+                throw "TAP could not be issued — check BOTH: (1) the Graph app has the APPLICATION permission 'UserAuthenticationMethod.ReadWrite.All' with admin consent granted in this tenant, and (2) Temporary Access Pass is ENABLED and targets this user in Entra → Authentication methods policy. Graph said: $m"
             }
             throw
         }
