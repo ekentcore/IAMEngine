@@ -376,8 +376,10 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Sticky page-top banner: the current step is portaled into a slot right under the case title so it's
   // visible no matter where you've scrolled (the slot lives high on the page; this component is far down).
-  const [bannerSlot, setBannerSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setBannerSlot(document.getElementById("case-running-banner-slot")); }, []);
+  // We look the slot up FRESH each render (not cached) so it can't go stale if the server component
+  // re-renders and replaces that DOM node — that stale reference is what made the banner vanish.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/cases/${caseId}/report`, { cache: "no-store" });
@@ -570,13 +572,18 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           ✨ AI-filled (please verify): {report.aiResolved.map((a) => `${a.field} — ${a.note}`).join(" · ")}
         </div>
       )}
-      {running && bannerSlot && createPortal(
-        <div style={{ padding: "0.5rem 0.8rem", fontSize: 13, borderBottom: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
-          <span suppressHydrationWarning><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
-        </div>,
-        bannerSlot
-      )}
+      {running && mounted && (() => {
+        const slot = typeof document !== "undefined" ? document.getElementById("case-running-banner-slot") : null;
+        const banner = (
+          <div style={{ padding: "0.5rem 0.8rem", fontSize: 13, borderBottom: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ animation: "pulse 1.1s ease-in-out infinite", fontSize: 16 }}>▶</span>
+            <span suppressHydrationWarning><b>{running.systemName}</b> — {running.currentPhase}…{pendingCount > 1 ? ` (${pendingCount} steps remaining)` : ""}</span>
+          </div>
+        );
+        // Portal into the sticky page-top slot when present; otherwise fall back to rendering inline
+        // here so the banner NEVER just disappears.
+        return slot ? createPortal(banner, slot) : <div style={{ margin: "0 0 0.5rem" }}>{banner}</div>;
+      })()}
       {(verifying || report.verifiedAt) && (
         <div style={{ margin: "0 0 0.5rem", padding: "0.45rem 0.6rem", borderRadius: 4, fontSize: 13, border: "1px solid", borderColor: verifying ? "#bfdbfe" : "#bbf7d0", background: verifying ? "#eff6ff" : "#f0fdf4", color: verifying ? "#1d4ed8" : "#15803d" }}>
           <div suppressHydrationWarning>

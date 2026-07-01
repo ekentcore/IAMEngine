@@ -311,14 +311,20 @@ function Invoke-CtgExchangeSharedMailboxMirror {
     $shared = @(Get-Mailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
     # This loop does ~2 EXO reads per mailbox, so on a big tenant it's a multi-minute scan that emits
     # output ONLY when it changes a permission — which reads as "stuck". Tell the operator the size up
-    # front, then heartbeat every 25 mailboxes ("checked N/total — at <mailbox>") so the run report
-    # shows live movement, names WHERE it is if it wedges, and the stall watchdog keeps its heartbeat.
+    # front, then heartbeat as it scans ("checked N/total (P%) — at <mailbox>") so the run report shows
+    # live movement, names WHERE it is if it wedges, and the stall watchdog keeps its heartbeat. The
+    # cadence is ADAPTIVE — ~30 updates across the whole set regardless of size (every mailbox for a
+    # small tenant, ~every 6 for a big one) so it always reads as progressing, not frozen.
     Write-CtgStep "mirroring shared-mailbox permissions from $($ref.DisplayName) — scanning $($shared.Count) shared mailboxes (this can take a few minutes)"
     $full = 0; $sa = 0; $sob = 0; $idx = 0
+    $tick = [Math]::Max(1, [int][Math]::Ceiling($shared.Count / 30))
     foreach ($mbx in $shared) {
         $idx++
         $name = $mbx.DisplayName
-        if ($idx % 25 -eq 0) { Write-CtgStep "checked $idx/$($shared.Count) shared mailboxes — at $name" }
+        if ($idx % $tick -eq 0 -or $idx -eq $shared.Count) {
+            $pct = if ($shared.Count) { [int](($idx / $shared.Count) * 100) } else { 100 }
+            Write-CtgStep "checked $idx/$($shared.Count) shared mailboxes ($pct%) — at $name"
+        }
         # Use a GUARANTEED-UNIQUE identity for the per-mailbox cmdlets: a mailbox's .Identity is often
         # its Name/alias, which is ambiguous when another recipient shares it (e.g. a "Finance" shared
         # mailbox AND a "finance" DL) -> "object: 'finance' matches multiple entries". ExchangeGuid is
