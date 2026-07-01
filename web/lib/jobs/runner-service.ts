@@ -114,7 +114,7 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
@@ -145,7 +145,11 @@ export function makeRunnerService(db: PrismaClient) {
         const consumed = await db.client.updateMany({ where: { id: agent.clientId, adDiscoverRequestedAt: { not: null } }, data: { adDiscoverRequestedAt: null } });
         discover = consumed.count > 0;
       }
-      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver } });
+      // bootAt = the runner's reported process start (for the uptime display). Parse defensively; only
+      // set it when a valid value is sent (older runners don't report it — keep whatever's stored).
+      const boot = startedAt ? new Date(startedAt) : null;
+      const bootAt = boot && !Number.isNaN(boot.getTime()) ? boot : undefined;
+      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}) } });
       // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.

@@ -195,6 +195,9 @@ model Agent {
   version           String? // the content-hash build id (canonical "on current code?" check)
   semver            String? // the human-readable release version from runner/VERSION (display only)
   lastSeenAt        DateTime?
+  // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
+  // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
+  bootAt            DateTime?
   enabled           Boolean    @default(true)
   // Operator-requested self-update: set true by the "Update" button; the next heartbeat returns
   // update:true (consumed — cleared to false), and the runner re-pulls its files and restarts.

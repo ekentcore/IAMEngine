@@ -1519,6 +1519,10 @@ $script:RunnerBuild = Get-CtgBuildId
 # Agents page can show "v1.0.0 · build <hash>". Display only — the hash stays the up-to-date check.
 $script:RunnerSemver = try { (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -Raw -ErrorAction Stop).Trim() } catch { $null }
 
+# This process's start time (ISO-8601 UTC), reported on every heartbeat so the Agents page can show
+# UPTIME (now - bootAt). Re-exec on update/restart is a new process, so uptime correctly resets then.
+$script:RunnerStartedAt = (Get-Date).ToUniversalTime().ToString("o")
+
 # Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
 # at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
 # PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
@@ -1563,7 +1567,7 @@ while ($true) {
         }
     } catch { }
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)

@@ -76,6 +76,7 @@ export default async function AgentsPage() {
     semver: a.semver,
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
+    bootAt: a.bootAt?.toISOString() ?? null,
     jobCount: a._count.jobs,
     // Only an enabled agent can claim — don't imply pending work on a disabled/down one.
     pendingJobs: a.enabled ? jobsForAgent(a.id, a.clientId) : [],

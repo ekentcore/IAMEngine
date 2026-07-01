@@ -15,6 +15,7 @@ export type AgentVM = {
   semver: string | null; // human release version (runner/VERSION), display only
   enabled: boolean;
   lastSeenAt: string | null;
+  bootAt: string | null;
   jobCount: number;
   pendingJobs: { systemKey: string; caseNumber: string | null; subject: string | null; action: string; status: string }[];
   // The agent's most-recent in-flight job phase + when its progress last moved. When the agent goes
@@ -110,6 +111,18 @@ function lastSeen(iso: string | null, now: number): { text: string; online: bool
   return { text: new Date(iso).toISOString().slice(0, 10), online }; // deterministic (UTC) — locale-free
 }
 
+// Uptime since the runner's reported boot time (resets on restart/self-update — a new process). "—"
+// when unknown (older runner not yet reporting it, or never seen).
+function uptime(iso: string | null, now: number): string {
+  if (!iso) return "—";
+  const secs = Math.floor((now - new Date(iso).getTime()) / 1000);
+  if (secs < 0) return "just started";
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
+}
+
 export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
@@ -128,7 +141,6 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [toggling, setToggling] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [jobsHover, setJobsHover] = useState<string | null>(null);
   const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
   const installRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
@@ -304,7 +316,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
               />
             </th>
-            <th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Jobs</th><th>Status</th><th></th>
+            <th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Uptime</th><th>Status</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -363,24 +375,8 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     return s ? <div className="note" style={{ color: "#b3261e" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{s}</div> : null;
                   })()}
                 </td>
-                <td
-                  style={{ position: "relative", cursor: a.pendingJobs.length ? "help" : undefined }}
-                  onMouseEnter={() => setJobsHover(a.id)}
-                  onMouseLeave={() => setJobsHover((h) => (h === a.id ? null : h))}
-                >
-                  <span style={{ textDecoration: a.pendingJobs.length ? "underline dotted" : undefined, textUnderlineOffset: 3 }}>{a.jobCount}</span>
-                  {a.pendingJobs.length > 0 && <span className="muted" style={{ marginLeft: 4, fontSize: 11 }}>· {a.pendingJobs.length} queued/active</span>}
-                  {jobsHover === a.id && a.pendingJobs.length > 0 && (
-                    <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, minWidth: 320, maxHeight: 280, overflowY: "auto", background: "#fff", border: "1px solid #ccc", borderRadius: 4, boxShadow: "0 2px 10px rgba(0,0,0,0.18)", padding: 6, fontSize: 12, whiteSpace: "normal", textAlign: "left" }}>
-                      <div className="note" style={{ marginBottom: 4 }}>{a.jobCount} total assigned · {a.pendingJobs.length} queued/in-flight for this runner:</div>
-                      {a.pendingJobs.map((j, i) => (
-                        <div key={i} style={{ padding: "2px 0", borderTop: i ? "1px solid #f0f0f0" : undefined, display: "flex", gap: 6, justifyContent: "space-between" }}>
-                          <span><code style={{ fontSize: 11 }}>{j.caseNumber ?? "—"}</code> <span className="muted">· {j.systemKey} · {j.subject ?? "—"}</span></span>
-                          <span style={{ color: j.status === "pending" ? "#8a6d00" : "#1565c0", whiteSpace: "nowrap" }}>{j.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                <td className="muted tnum" title={a.bootAt ? `up since ${a.bootAt}` : "uptime unknown — the runner hasn't reported a start time yet"}>
+                  {a.enabled && ls.online ? uptime(a.bootAt, nowMs) : "—"}
                 </td>
                 <td>
                   {a.enabled ? "enabled" : <span className="muted">disabled</span>}
