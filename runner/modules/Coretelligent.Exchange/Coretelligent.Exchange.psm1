@@ -577,6 +577,17 @@ function Invoke-CtgExchangeOffboarding {
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
     $actions.Add("mailbox size: $sizeGB GB")
 
+    # Does the target have an EXO MAILBOX, or is it a MailUser (mailbox lives ON-PREM, EXO only holds a
+    # mail-enabled pointer)? The EXO mailbox cmdlets below (Set-CASMailbox, Add/Get-MailboxPermission,
+    # Set-MailboxAutoReplyConfiguration, Set-Mailbox forwarding) THROW on a MailUser ("This task does
+    # not support recipients of this type"). For a MailUser we still do the on-prem shared conversion
+    # (Set-RemoteMailbox, below) but skip the EXO-only steps with a note — they're managed on-prem.
+    $hasExoMailbox = [bool](Get-Mailbox -Identity $upn -ErrorAction SilentlyContinue)
+    if (-not $hasExoMailbox) {
+        $actions.Add("note: $upn is a MailUser in Exchange Online (mailbox is on-prem) — the shared conversion is done on-prem; EXO-only steps (Full Access delegate, ActiveSync/OWA, out-of-office, forwarding) don't apply here and are skipped")
+        Write-CtgStep "target is a MailUser (on-prem mailbox) — doing the on-prem convert, skipping EXO-only mailbox steps"
+    }
+
     # 1. Convert to shared — unless over the threshold ------------------------
     $cts = Get-CtgProp $Config 'convertToShared'
     if ($cts) {
@@ -615,7 +626,10 @@ function Invoke-CtgExchangeOffboarding {
     # config.delegateManagerFullAccess: $true uses the case's manager; a string sets an explicit
     # address. AutoMapping adds the mailbox to the manager's Outlook automatically. Idempotent.
     $delegate = Get-CtgProp $Config 'delegateManagerFullAccess'
-    if ($delegate) {
+    if ($delegate -and -not $hasExoMailbox) {
+        $actions.Add("Full Access delegate skipped — $upn is a MailUser (on-prem mailbox); grant Full Access on-prem if needed")
+    }
+    elseif ($delegate) {
         $mgr =
             if ($delegate -is [string]) { $delegate }
             elseif (Get-CtgProp $delegate 'address') { [string](Get-CtgProp $delegate 'address') }
@@ -652,7 +666,7 @@ function Invoke-CtgExchangeOffboarding {
     # 2. On-request out-of-office --------------------------------------------
     $autoReply = Get-CtgProp $Config 'autoReply'
     $message = if ($autoReply) { Get-CtgProp $autoReply 'message' } else { $null }
-    if ($message -and $PSCmdlet.ShouldProcess($upn, "Set out-of-office")) {
+    if ($message -and $hasExoMailbox -and $PSCmdlet.ShouldProcess($upn, "Set out-of-office")) {
         Set-MailboxAutoReplyConfiguration -Identity $upn -AutoReplyState Enabled -InternalMessage $message -ExternalMessage $message
         $actions.Add("set out-of-office reply")
     }
@@ -660,14 +674,14 @@ function Invoke-CtgExchangeOffboarding {
     # 3. On-request forwarding ------------------------------------------------
     $forwarding = Get-CtgProp $Config 'forwarding'
     $fwdAddr = if ($forwarding) { Get-CtgProp $forwarding 'address' } else { $null }
-    if ($fwdAddr -and $PSCmdlet.ShouldProcess($upn, "Forward to $fwdAddr")) {
+    if ($fwdAddr -and $hasExoMailbox -and $PSCmdlet.ShouldProcess($upn, "Forward to $fwdAddr")) {
         $keepCopy = [bool](Get-CtgProp $forwarding 'keepCopy')
         Set-Mailbox -Identity $upn -ForwardingSmtpAddress $fwdAddr -DeliverToMailboxAndForward:$keepCopy
         $actions.Add("forwarding to $fwdAddr (keep copy: $keepCopy)")
     }
 
     # 4. Block mobile devices / OWA ------------------------------------------
-    if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false) {
+    if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false -and $hasExoMailbox) {
         if ($PSCmdlet.ShouldProcess($upn, "Disable ActiveSync + OWA")) {
             Set-CASMailbox -Identity $upn -ActiveSyncEnabled $false -OWAEnabled $false
             $actions.Add("disabled ActiveSync and OWA")
@@ -752,7 +766,9 @@ function Confirm-CtgExchange {
             & $add 'mailbox is shared' 'SharedMailbox' $actual
         }
     }
-    if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false) {
+    # ActiveSync/OWA live on the EXO mailbox — a MailUser (on-prem mailbox) has none, and the executor
+    # skips disabling them in EXO, so don't verify them here either (Get-CASMailbox would error/miss).
+    if ((Get-CtgProp $Config 'blockMobileDevices') -ne $false -and $mbx) {
         $cas = Get-CASMailbox -Identity $upn -ErrorAction SilentlyContinue
         & $add 'ActiveSync disabled' $false ([bool](Get-CtgProp $cas 'ActiveSyncEnabled'))
         & $add 'OWA disabled' $false ([bool](Get-CtgProp $cas 'OWAEnabled'))

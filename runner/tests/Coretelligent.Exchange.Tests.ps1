@@ -109,6 +109,8 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
         Mock Set-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { }
         Mock Set-MailboxAutoReplyConfiguration -ModuleName Coretelligent.Exchange -MockWith { }
+        # Default: the target HAS an EXO mailbox (so the EXO-only steps run). A MailUser test overrides this.
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
     }
 
     It 'converts the mailbox to shared when under the size threshold' {
@@ -119,6 +121,21 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         $r.MailboxSizeGB | Should -Be 10
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly -ParameterFilter { $Type -eq 'Shared' }
         Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $ActiveSyncEnabled -eq $false }
+    }
+
+    It 'MailUser (on-prem mailbox): converts on-prem, SKIPS the EXO-only steps, does not crash' {
+        # EXO sees a MailUser (no mailbox) — the EXO cmdlets would throw "does not support this recipient
+        # type". Convert runs on-prem (Set-RemoteMailbox); CAS/autoreply/delegate are skipped with a note.
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $null }   # MailUser -> no EXO mailbox
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '0 GB (0 bytes)' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity = 'jdoe@61commodities.com' } }
+        Mock Set-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true; delegateManagerFullAccess = $true; removeDistributionGroups = $false }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-RemoteMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Type -eq 'Shared' }
+        Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly   # EXO-only, skipped
+        ($r.Actions -join ' ') | Should -Match 'MailUser'
     }
 
     It 'returns a clear message (no crash) when the case has no user identity' {
@@ -317,6 +334,17 @@ Describe 'Confirm-CtgExchange' {
         $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
         ($r.checks | Where-Object { $_.name -eq 'mailbox is shared' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: MailUser (no EXO mailbox) — shared via on-prem remote, ActiveSync/OWA checks skipped' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '0 GB (0 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $null }   # MailUser: no EXO mailbox
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'RemoteSharedMailbox' } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'mailbox is shared' }).pass | Should -BeTrue
+        @($r.checks | Where-Object { $_.name -like '*ActiveSync*' }).Count | Should -Be 0   # no EXO mailbox -> not checked
     }
 
     It 'offboard: still fails when NEITHER EXO nor the on-prem remote mailbox is shared' {
