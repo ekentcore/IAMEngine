@@ -66,6 +66,9 @@ test("resolveEmailDests: restricted vs default + also/only", () => {
   assert.deepEqual(resolveEmailDests(cfg.email, true), [["sec@core.tech"]]);
   assert.deepEqual(resolveEmailDests(cfg.email, false, { mode: "also", recipients: ["client@x.com"] }), [["client@x.com"], ["ops@core.tech"]]);
   assert.deepEqual(resolveEmailDests(cfg.email, false, { mode: "only", recipients: ["client@x.com"] }), [["client@x.com"]]);
+  // no-leak for email too: restricted + "also" adds the RESTRICTED base, never the default recipients
+  assert.deepEqual(resolveEmailDests(cfg.email, true, { mode: "also", recipients: ["client@x.com"] }), [["client@x.com"], ["sec@core.tech"]]);
+  assert.ok(!resolveEmailDests(cfg.email, true, { mode: "also", recipients: ["client@x.com"] }).some((r) => r.includes("ops@core.tech")));
 });
 
 test("parseClientOverride: migrates the OLD flat zoom override + reads the NEW per-channel shape", () => {
