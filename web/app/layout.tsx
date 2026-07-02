@@ -7,7 +7,8 @@ import { V2Toggle } from "./_components/v2-toggle";
 import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
-import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
+import { ImpersonationBanner } from "./_components/impersonation-banner";
+import { authEnabled, getActingContext } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
@@ -28,8 +29,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Server-side enforcement: middleware checked the cookie's PRESENCE at the edge; here we validate
   // it (expiry/revocation/active) and bounce an invalid session to /login. /login itself is exempt
   // (it shares this layout) to avoid a redirect loop.
-  const user = authEnabled() ? await getCurrentUser() : null;
+  const acting = authEnabled() ? await getActingContext() : { user: null, realUser: null, impersonating: false };
+  const user = acting.user;
   if (authEnabled() && !user && !onLogin) redirect("/login");
+  // A real super-admin may impersonate (unless already doing so). Uses the REAL operator, not the
+  // effective one, so an impersonated session can't offer to nest another.
+  const canImpersonate = authEnabled() && acting.realUser?.role === "super_admin" && !acting.impersonating;
 
   // Global "agents need updating" banner — on every page EXCEPT /agents (which has its own controls)
   // and /login. Only query when it would actually render (logged in, off those pages).
@@ -51,10 +56,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
               <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
-              {user && <UserMenu email={user.email} name={user.name} role={user.role} />}
+              {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
             </div>
           </header>
         )}
+        {acting.impersonating && user && <ImpersonationBanner name={user.name || user.email} role={user.role} />}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
         {children}
       </body>
