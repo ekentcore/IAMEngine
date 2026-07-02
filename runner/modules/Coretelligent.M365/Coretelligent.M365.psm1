@@ -975,7 +975,10 @@ function Invoke-CtgM365Offboarding {
             }
             if ($direct.Count) {
                 Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $direct } | Out-Null
-                $actions.Add("removed $($direct.Count) directly-assigned license(s)")
+                # Name the freed SKUs (from the pre-removal license detail) so the reclamation shows up in
+                # the case notes + the ServiceNow work-note ("freed 2 license(s): SPE_E5, ENTERPRISEPACK").
+                $freed = @($direct | ForEach-Object { if ($skuName.ContainsKey([string]$_)) { $skuName[[string]$_] } else { [string]$_ } })
+                $actions.Add("freed $($direct.Count) directly-assigned license(s): $($freed -join ', ')")
             }
             $seen = @{}
             foreach ($s in $byGroup) {
