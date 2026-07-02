@@ -47,6 +47,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Nav
               showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
               showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
+              showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
               <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />

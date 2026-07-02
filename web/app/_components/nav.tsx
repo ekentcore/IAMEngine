@@ -14,12 +14,13 @@ const ITEMS = [
   ["/health", "Health"],
 ] as const;
 
-export function Nav({ showUsers = false, showAudit = false }: { showUsers?: boolean; showAudit?: boolean }) {
+export function Nav({ showUsers = false, showAudit = false, showSettings = false }: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean }) {
   const path = usePathname() ?? "";
   const items: ReadonlyArray<readonly [string, string]> = [
     ...ITEMS,
     ...(showAudit ? ([["/audit", "Audit"]] as const) : []),
     ...(showUsers ? ([["/users", "Users"]] as const) : []),
+    ...(showSettings ? ([["/settings", "Settings"]] as const) : []),
   ];
   return (
     <nav style={{ display: "flex", gap: 2 }}>

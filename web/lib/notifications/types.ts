@@ -56,7 +56,7 @@ export type NotificationEvent = {
 // always see a complete object.
 export function normalizeSettings(raw: Partial<NotificationSettings> | null | undefined): NotificationSettings {
   const d = DEFAULT_NOTIFICATIONS;
-  const c = raw?.channels ?? {};
+  const c = (raw?.channels ?? {}) as Partial<NotificationSettings["channels"]>;
   return {
     enabled: Boolean(raw?.enabled),
     channels: {
