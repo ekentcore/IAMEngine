@@ -31,6 +31,10 @@ export type ClientVM = {
   systemCount: number;
   modeled: boolean;
   readiness: ClientReadiness;
+  parentId: string | null;
+  parentName: string | null;
+  parentSystemKeys: string[];
+  coverage: "own" | "parent" | "none";
 };
 
 const BACKBONE_LABEL: Record<string, string> = {
@@ -176,6 +180,19 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
     else setCell(null);
   }
 
+  // A client modeled via its parent (SN account hierarchy) is planned from the PARENT's systems, so
+  // the list shows the parent's systems + readiness (the parent's own row already has them computed),
+  // marked "via <parent>". Falls back to the parent's system keys if the parent row isn't in view.
+  const byId = useMemo(() => new Map(clients.map((c) => [c.id, c])), [clients]);
+  const eff = (c: ClientVM): { readiness: ClientReadiness; systemCount: number; systemKeys: string[]; viaParent: string | null } => {
+    if (c.coverage === "parent") {
+      const p = c.parentId ? byId.get(c.parentId) : undefined;
+      if (p) return { readiness: p.readiness, systemCount: p.systemCount, systemKeys: p.systemKeys, viaParent: c.parentName ?? p.name };
+      return { readiness: c.readiness, systemCount: c.parentSystemKeys.length, systemKeys: c.parentSystemKeys, viaParent: c.parentName };
+    }
+    return { readiness: c.readiness, systemCount: c.systemCount, systemKeys: c.systemKeys, viaParent: null };
+  };
+
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
   const matchesSearch = (c: ClientVM) => {
@@ -189,7 +206,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (modeledFilter === "modeled" && !c.modeled) return false;
       if (modeledFilter === "unmodeled" && c.modeled) return false;
-      if (readyFilter !== "all" && (c.readiness?.tier ?? "no_systems") !== readyFilter) return false;
+      if (readyFilter !== "all" && (eff(c).readiness?.tier ?? "no_systems") !== readyFilter) return false;
       return matchesSearch(c);
     });
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
@@ -218,7 +235,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
   const counts = useMemo(() => {
     const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
     const modeled = inStatus.filter((c) => c.modeled).length;
-    const byTier = (t: string) => inStatus.filter((c) => (c.readiness?.tier ?? "no_systems") === t).length;
+    const byTier = (t: string) => inStatus.filter((c) => (eff(c).readiness?.tier ?? "no_systems") === t).length;
     return {
       total: inStatus.length, modeled, unmodeled: inStatus.length - modeled,
       ready: byTier("ready"), partial: byTier("partial"), not_set_up: byTier("not_set_up"), no_systems: byTier("no_systems"),
@@ -363,7 +380,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
           </tr>
         </thead>
         <tbody>
-          {visible.map((c) => (
+          {visible.map((c) => { const e = eff(c); return (
             <tr key={c.id} className={selected.has(c.slug) ? "row-selected" : undefined}>
               <td>
                 <input
@@ -538,21 +555,25 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
-              <td className={`num tnum ${c.systemCount ? "" : "muted"}`}>
-                {c.systemCount ? (
+              <td className={`num tnum ${e.systemCount ? "" : "muted"}`}>
+                {e.systemCount ? (
                   <span className="tip" tabIndex={0}>
-                    {c.systemCount}
-                    <span className="tip-pop">{c.systemKeys.join(", ")}</span>
+                    {e.systemCount}{e.viaParent ? <sup style={{ fontSize: 9, color: "var(--muted)", marginLeft: 1 }}>P</sup> : null}
+                    <span className="tip-pop">{e.systemKeys.join(", ")}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
                   </span>
                 ) : (
                   "—"
                 )}
               </td>
               <td>
-                {c.readiness && c.readiness.tier !== "no_systems" ? (
-                  <span className="badge" title={c.readiness.summary}
-                    style={{ color: READINESS[c.readiness.tier].color, background: READINESS[c.readiness.tier].bg, borderColor: "transparent", cursor: "help" }}>
-                    {READINESS[c.readiness.tier].mark} {READINESS[c.readiness.tier].label}
+                {e.readiness && e.readiness.tier !== "no_systems" ? (
+                  <span className="tip" tabIndex={0} style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                    <span className="badge"
+                      style={{ color: READINESS[e.readiness.tier].color, background: READINESS[e.readiness.tier].bg, borderColor: "transparent" }}>
+                      {READINESS[e.readiness.tier].mark} {READINESS[e.readiness.tier].label}
+                    </span>
+                    {e.viaParent && <span className="note" style={{ fontSize: 10 }}>via {e.viaParent}</span>}
+                    <span className="tip-pop">{e.readiness.summary}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
                   </span>
                 ) : (
                   <span className="muted">—</span>
@@ -578,7 +599,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 </span>
               </td>
             </tr>
-          ))}
+          ); })}
           {visible.length === 0 && (
             <tr>
               <td colSpan={11}>
