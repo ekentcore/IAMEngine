@@ -25,6 +25,10 @@ export function GET(req: Request) {
   const appUrl = host ? `${proto}://${host}` : url.origin;
   const scope = claims.scope;
   const client = claims.client ?? "";
+  // Bake the runner API bearer into the installer so the SYSTEM task authenticates once the app
+  // fails-closed. Same trust boundary as the enroll token already embedded below: this script is only
+  // served after verifyEnrollToken passes (a short-lived, operator-issued token).
+  const apiToken = process.env.RUNNER_API_TOKEN ?? "";
   const needAd = scope === "client_network"; // on-prem AD only for a client-network agent
   const installDir = "C:\\iam-runner";
   const agentName = scope === "client_network" ? `runner-${client}-$env:COMPUTERNAME` : `central-$env:COMPUTERNAME`;
@@ -34,6 +38,7 @@ export function GET(req: Request) {
 $ErrorActionPreference = 'Stop'
 $AppUrl    = '${appUrl}'
 $Token     = '${token}'
+$ApiToken  = '${apiToken}'
 $InstallDir= '${installDir}'
 $NeedAd    = $${needAd ? "true" : "false"}
 
@@ -103,6 +108,13 @@ $enroll = Invoke-RestMethod -Method Post -Uri "$AppUrl/api/agents" -ContentType 
 $AgentId = $enroll.id
 if (-not $AgentId) { Write-Error "Enrollment failed (no agent id returned)."; return }
 Write-Host "  enrolled: $AgentId" -ForegroundColor Green
+
+# 4b. Bearer token (Machine env) so the SYSTEM task authenticates to the app once it fails-closed.
+# Not put on the task command line, so it isn't visible in the task definition.
+if ($ApiToken) {
+  [Environment]::SetEnvironmentVariable('RUNNER_API_TOKEN', $ApiToken, 'Machine')
+  Write-Host "  set RUNNER_API_TOKEN (Machine env)" -ForegroundColor Green
+}
 
 # 5. Register + start a Scheduled Task (at startup, restart on failure)
 Step "registering Scheduled Task 'iam-runner'"

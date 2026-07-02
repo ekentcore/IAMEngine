@@ -29,8 +29,11 @@ function v2Redirect(req: NextRequest, pathname: string): NextResponse | null {
 }
 
 function isRunnerApi(p: string): boolean {
+  // NOTE: /api/agents (exact) is enrollment — NOT bearer-gated here (a brand-new agent has no token
+  // yet; it's gated in-handler by the enroll token). Only the /api/agents/* sub-paths (heartbeat,
+  // ad-objects, …) are bearer-gated — those are called by already-enrolled agents that carry the token.
   return (
-    p === "/api/agents" || p.startsWith("/api/agents/") ||
+    p.startsWith("/api/agents/") ||
     p === "/api/jobs/claim" ||
     /^\/api\/jobs\/[^/]+\/(credential|result|progress)$/.test(p)
   );
@@ -61,6 +64,7 @@ export function middleware(req: NextRequest) {
   const pass = () => NextResponse.next({ request: { headers } });
 
   if (pathname.startsWith("/api/runner")) return pass(); // runner bundle download / installer — open
+  if (pathname === "/api/agents" && req.method === "POST") return pass(); // agent enrollment — gated in-handler by the enroll token (no operator cookie / no bearer)
   if (process.env.AUTH_ENABLED !== "true") return v2Redirect(req, pathname) ?? pass();
   if (PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return pass();
 
