@@ -1137,8 +1137,15 @@ function Invoke-CtgRelaunch {
         if ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
         $q = { param($s) "'" + ([string]$s -replace "'", "'\''") + "'" }
         $line = (($a | ForEach-Object { & $q $_ }) -join ' ') + " >> $(& $q $log) 2>&1"
-        $launcher = Join-Path ([System.IO.Path]::GetTempPath()) 'iam-runner-relaunch.sh'
-        [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nexec $line`n")
+        # The launcher embeds -ApiToken, so it must NOT be world-readable. Put it in a private per-launch
+        # dir (0700) so it's unreadable even during the brief window before the file's own 0600 lands,
+        # and have the launcher delete itself before exec so the token doesn't linger on disk.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("iam-runner-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        & chmod 700 $dir 2>$null
+        $launcher = Join-Path $dir 'relaunch.sh'
+        [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nrm -f `"`$0`" 2>/dev/null`nexec $line`n")
+        & chmod 600 $launcher 2>$null
         Start-Process -FilePath '/bin/sh' -ArgumentList $launcher | Out-Null
         Write-Host "${Reason}: relaunched detached (log: $log)" -ForegroundColor Green
     }
@@ -1160,14 +1167,29 @@ function Protect-CtgSecretsInText {
     # failing API call can echo a key/token/password in its exception. Only values of secret-named
     # fields are scrubbed, so usernames/servers stay visible for diagnosis.
     param([string]$Text, [hashtable]$Creds)
-    if ([string]::IsNullOrEmpty($Text) -or -not $Creds) { return $Text }
-    foreach ($c in $Creds.Values) {
-        if (-not $c -or -not $c.Fields) { continue }
-        foreach ($k in @($c.Fields.Keys)) {
-            if ($k -notmatch '(?i)pass|secret|key|token|credential') { continue }
-            $v = [string]$c.Fields[$k]
-            if ($v.Length -ge 4 -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    if ($Creds) {
+        foreach ($c in $Creds.Values) {
+            if (-not $c -or -not $c.Fields) { continue }
+            foreach ($k in @($c.Fields.Keys)) {
+                $v = [string]$c.Fields[$k]
+                if ($v.Length -lt 4) { continue }
+                # (1) name-matched secret fields — widened to catch cert/PEM/JSON/private-key fields
+                # (e.g. ServiceAccountJson, CertificateBase64) that the old pass|secret|key|token set missed.
+                $named = $k -match '(?i)pass|secret|key|token|credential|json|cert|pem|private|account'
+                # (2) any value carrying structural chars (/, +, =, {, ", whitespace) is a base64/JSON/PEM
+                # BLOB, never a hostname/username/email — scrub it whatever the field is named, so a secret
+                # in an unrecognized field can't ride along. Plain identifiers stay visible for diagnosis.
+                $blob = $v.Length -ge 8 -and ($v -match '[^A-Za-z0-9._@\-]')
+                if (($named -or $blob) -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+            }
         }
+    }
+    # Never leak the runner's OWN bearer / per-job progress token into a persisted error.
+    $prog = if (Get-Variable -Name CtgProgressToken -Scope Global -ErrorAction SilentlyContinue) { $global:CtgProgressToken } else { $null }
+    foreach ($t in @($ApiToken, $prog)) {
+        $ts = [string]$t
+        if ($ts.Length -ge 4 -and $Text.Contains($ts)) { $Text = $Text.Replace($ts, '***') }
     }
     return $Text
 }

@@ -75,6 +75,12 @@ function Connect-Ctg1Password {
     # Add the account config (idempotent — re-adding the same address is a no-op), then sign in with the
     # password piped to stdin and capture the raw session token. Never log the password/secret-key.
     try {
+        # SECURITY NOTE: --secret-key is on the argv here (briefly visible to a local `ps`/Win32_Process
+        # during the `op account add` subprocess). `op account add` has no confirmed non-interactive
+        # stdin/env path for the Secret Key (OP_SECRET_KEY isn't honored by `account add`), and using one
+        # risks an interactive prompt that would hang this unattended runner. Exposure is accepted: the
+        # host is the client's own restricted runner box, the window is momentary, and Protect-
+        # CtgSecretsInText scrubs the key's value from any error text. Revisit if the CLI adds a stdin flag.
         & op account add --address $SignInAddress --email $Email --secret-key $SecretKey --shorthand $Shorthand 2>$null | Out-Null
         $script:OpSession = ($Password | & op signin --account $Shorthand --raw 2>$null | Select-Object -First 1)
     }
