@@ -187,36 +187,36 @@ model Secret {
 }
 
 model Agent {
-  id                String     @id @default(cuid())
-  client            Client?    @relation(fields: [clientId], references: [id])
-  clientId          String? // null for the central cloud runner
-  name              String
-  scope             AgentScope
-  version           String? // the content-hash build id (canonical "on current code?" check)
-  semver            String? // the human-readable release version from runner/VERSION (display only)
-  lastSeenAt        DateTime?
+  id                 String     @id @default(cuid())
+  client             Client?    @relation(fields: [clientId], references: [id])
+  clientId           String? // null for the central cloud runner
+  name               String
+  scope              AgentScope
+  version            String? // the content-hash build id (canonical "on current code?" check)
+  semver             String? // the human-readable release version from runner/VERSION (display only)
+  lastSeenAt         DateTime?
   // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
   // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
-  bootAt            DateTime?
-  enabled           Boolean    @default(true)
+  bootAt             DateTime?
+  enabled            Boolean    @default(true)
   // Operator-requested self-update: set true by the "Update" button; the next heartbeat returns
   // update:true (consumed — cleared to false), and the runner re-pulls its files and restarts.
   // The two timestamps drive the UI status: requested (queued) -> delivered (agent pulling/
   // restarting) -> back online (lastSeenAt > delivered).
-  updateRequested   Boolean    @default(false)
-  updateRequestedAt DateTime?
-  updateRequestedBy String? // operator (email) who pushed the last self-update — for the Agents page
-  updateDeliveredAt DateTime?
+  updateRequested    Boolean    @default(false)
+  updateRequestedAt  DateTime?
+  updateRequestedBy  String? // operator (email) who pushed the last self-update — for the Agents page
+  updateDeliveredAt  DateTime?
   // Operator-requested plain RESTART (no file pull): the "Restart" button sets it; the next heartbeat
   // returns restart:true (consumed) and the runner re-execs (its supervisor relaunches it). Clears a
   // wedged claim/work loop remotely without touching the box.
-  restartRequested   Boolean   @default(false)
+  restartRequested   Boolean    @default(false)
   restartRequestedAt DateTime?
   restartRequestedBy String?
   restartDeliveredAt DateTime?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
-  deletedAt         DateTime?
-  jobs              Job[]
+  deletedAt          DateTime?
+  jobs               Job[]
 
   @@index([deletedAt])
 }
@@ -280,6 +280,7 @@ model CaseRequest {
   jobs                 Job[]
 
   @@index([deletedAt])
+  @@index([clientId]) // client-network agents claim by case.clientId; client pages filter by it
 }
 
 model Job {
@@ -303,6 +304,14 @@ model Job {
   startedAt        DateTime?
   finishedAt       DateTime?
   procurementWatch ProcurementWatch?
+
+  // Hot path: runners poll every ~5s and each claim runs three scans over this table (candidate fetch,
+  // stale-lease reclaim, wedged-job reclaim). Index the columns those queries filter on.
+  @@index([status, mode]) // candidate fetch
+  @@index([status, startedAt]) // stale dispatched-lease reclaim
+  @@index([status, progressAt]) // wedged running-job reclaim
+  @@index([caseRequestId]) // per-case job load (run report, case advance)
+  @@index([assignedAgentId]) // agent's in-flight jobs
 }
 
 // A Procurement Case (SN) being watched for a job that couldn't finish for lack of license seats.
@@ -355,6 +364,7 @@ model AuditLog {
   @@index([userId, at])
   @@index([action, at])
   @@index([at])
+  @@index([caseRequestId]) // listCases loads recent audit rows per case (action IN … WHERE caseRequestId IN …)
 }
 
 // Append-only outcome log: one row per job result post. Unlike Job (overwritten in place on a
