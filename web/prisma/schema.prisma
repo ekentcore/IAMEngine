@@ -479,6 +479,10 @@ model Session {
   id        String    @id @default(cuid())
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    String
+  // Impersonation (super-admin "view as"): when set, the session RENDERS as this user (their RBAC +
+  // client scope) while the real operator stays `userId`. Plain id (no FK) so a deleted target just
+  // falls back to the real user. Mutations are blocked while set (see requirePermission).
+  impersonatingUserId String?
   tokenHash String    @unique // sha256 of the opaque cookie token (the token itself is never stored)
   createdAt DateTime  @default(now())
   expiresAt DateTime
