@@ -96,6 +96,18 @@ test("resolveZoomTargets: restricted with NO restricted channel sends nowhere (n
   assert.deepEqual(resolveZoomTargets(ch, { ...ev, restricted: true }), []);
 });
 
+test("resolveZoomTargets: restricted + 'also' override adds the RESTRICTED base, never the default (no leak)", () => {
+  const ch = normalizeSettings({
+    channels: {
+      zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" },
+      zoomRestricted: { enabled: true, webhookUrl: "https://internal", token: "t2" },
+    },
+  } as never).channels;
+  const r = resolveZoomTargets(ch, { ...ev, restricted: true, zoomOverride: { webhookUrl: "https://abc", token: "z", mode: "also" } });
+  assert.deepEqual(r.map((t) => t.webhookUrl), ["https://abc", "https://internal"]);
+  assert.ok(!r.some((t) => t.webhookUrl === "https://iam")); // confidentiality: a restricted client never touches the general channel
+});
+
 test("resolveZoomTargets: per-client override 'also' hits override + base; 'only' hits override alone", () => {
   const ch = normalizeSettings({ channels: { zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" } } } as never).channels;
   const also = resolveZoomTargets(ch, { ...ev, restricted: false, zoomOverride: { webhookUrl: "https://abc", token: "z", mode: "also" } });
