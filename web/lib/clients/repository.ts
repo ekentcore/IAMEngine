@@ -137,7 +137,9 @@ export function makeClientRepository(db: PrismaClient) {
           : ["{first}.{last}@{domain}"]).map((p) => p.split("@")[0]).join(" | "),
         systemKeys: orderByRunSequence(r.systems.map((s) => s.systemKey), r.runbook),
         systemCount: r.systems.length,
-        modeled: r.systems.length > 0,
+        // modeled = has its OWN systems, OR inherits a modeled parent (SN account hierarchy) — a child
+        // with no systems is planned from its parent, so it counts as modeled. Matches `coverage`.
+        modeled: r.systems.length > 0 || (r.parentId != null && (r.parent?.systems.length ?? 0) > 0),
         parentId: r.parentId,
         parentName: r.parent?.name ?? null,
         parentSystemKeys: r.parent?.systems.map((s) => s.systemKey) ?? [],

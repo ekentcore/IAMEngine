@@ -96,6 +96,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
   const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
+  const [readyFilter, setReadyFilter] = useState<"all" | "ready" | "partial" | "not_set_up" | "no_systems">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [busy, setBusy] = useState<string | null>(null);
@@ -188,6 +189,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (modeledFilter === "modeled" && !c.modeled) return false;
       if (modeledFilter === "unmodeled" && c.modeled) return false;
+      if (readyFilter !== "all" && (c.readiness?.tier ?? "no_systems") !== readyFilter) return false;
       return matchesSearch(c);
     });
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
@@ -195,7 +197,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
     return sorted;
     // matchesSearch closes over `terms`, which is the real dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients, terms, statusFilter, modeledFilter, sortKey, sortDir]);
+  }, [clients, terms, statusFilter, modeledFilter, readyFilter, sortKey, sortDir]);
 
   // When a search has results that the STATUS filter is hiding, offer a one-click widen — this is
   // the usual "search looks broken" cause (you searched an archived client while viewing active).
@@ -216,7 +218,11 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
   const counts = useMemo(() => {
     const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
     const modeled = inStatus.filter((c) => c.modeled).length;
-    return { total: inStatus.length, modeled, unmodeled: inStatus.length - modeled };
+    const byTier = (t: string) => inStatus.filter((c) => (c.readiness?.tier ?? "no_systems") === t).length;
+    return {
+      total: inStatus.length, modeled, unmodeled: inStatus.length - modeled,
+      ready: byTier("ready"), partial: byTier("partial"), not_set_up: byTier("not_set_up"), no_systems: byTier("no_systems"),
+    };
   }, [clients, statusFilter]);
 
   function toggleSort(key: SortKey) {
@@ -298,6 +304,13 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
           <option value="all">All ({counts.total})</option>
           <option value="modeled">Modeled — can do ({counts.modeled})</option>
           <option value="unmodeled">Not modeled ({counts.unmodeled})</option>
+        </select>
+        <select className="inline" value={readyFilter} onChange={(e) => setReadyFilter(e.target.value as never)} title="Filter by run-readiness">
+          <option value="all">Any readiness</option>
+          <option value="ready">Ready ({counts.ready})</option>
+          <option value="partial">Partial ({counts.partial})</option>
+          <option value="not_set_up">Not set up ({counts.not_set_up})</option>
+          <option value="no_systems">No systems ({counts.no_systems})</option>
         </select>
         <span className="grow" />
         <span className="note result-count">
