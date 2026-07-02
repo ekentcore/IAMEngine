@@ -379,10 +379,13 @@ export function makeCaseRepository(db: PrismaClient) {
     },
 
     // `scope` (default unrestricted) limits the list to cases of the operator's visible clients.
-    async listCases(scope: ClientScope = null): Promise<CaseListItem[]> {
+    // `limit` bounds the query — this table + its inlined jobs/audit grow unboundedly, so the default
+    // returns the most-recent N (an ops list scans recent cases; a history/pagination UI is the follow-up).
+    async listCases(scope: ClientScope = null, limit = 250): Promise<CaseListItem[]> {
       const rows = await db.caseRequest.findMany({
         where: { deletedAt: null, clientId: clientIdWhere(scope) }, // trashed cases live in the Trash section
         orderBy: { createdAt: "desc" },
+        take: limit,
         select: {
           id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,

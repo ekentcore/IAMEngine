@@ -505,18 +505,19 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   // ordering rule can't see: an unset required credential (the claim preflight skips the job) and
   // no runner being online to claim it. This is the on-page answer to "it's just sitting at
   // pending with no feedback".
+  // This client's Delinea secret refs — used by BOTH the per-step "waiting for a runner" refinement
+  // and the case-level credsMissing banner below. Fetch ONCE (was queried twice per run-report load).
+  const clientSecrets = await db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } });
+  const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+
   const ready = report.steps.filter((st) => st.pendingReason === "ready — waiting for a runner to claim it");
   if (ready.length > 0) {
-    const [clientSecrets, onlineAgents] = await Promise.all([
-      db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } }),
-      db.agent.findMany({
-        where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
-        select: { clientId: true, name: true, lastSeenAt: true, version: true },
-      }),
-    ]);
+    const onlineAgents = await db.agent.findMany({
+      where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
+      select: { clientId: true, name: true, lastSeenAt: true, version: true },
+    });
     const build = runnerBuildId();
     const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
-    const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
     // Hybrid (exchange runs on-prem) only when this case actually has an AD/sync job — matches the
     // claim filter. A cloud-only case's exchange is Exchange Online, claimable by the central runner.
     const caseHasOnPremAd = c.jobs.some((j) => ALWAYS_ON_PREM_SYSTEMS.includes(j.systemKey));
@@ -567,8 +568,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   // which required secrets aren't set up for this client. Surfaced as a banner so an auto-imported
   // case for an un-onboarded client is obviously blocked on creds.
   {
-    const clientSecrets = await db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } });
-    const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+    // reuses the hoisted `byName` (client secret refs) fetched once above
     const missMap = new Map<string, Set<string>>();
     for (const job of c.jobs) {
       if (job.mode !== "api") continue;
