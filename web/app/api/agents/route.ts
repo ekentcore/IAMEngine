@@ -40,8 +40,14 @@ export async function POST(request: Request) {
     clientSlug = claims.client;
   } else {
     const shared = process.env.ENROLLMENT_TOKEN;
-    if (shared && !safeEqual(request.headers.get("x-enrollment-token") ?? "", shared)) {
-      return NextResponse.json({ error: "invalid enrollment token" }, { status: 401 });
+    if (shared) {
+      if (!safeEqual(request.headers.get("x-enrollment-token") ?? "", shared)) {
+        return NextResponse.json({ error: "invalid enrollment token" }, { status: 401 });
+      }
+    } else if (process.env.NODE_ENV === "production" || process.env.RUNNER_AUTH_REQUIRED === "true") {
+      // Production-gated fail-CLOSED: no signed enrollToken and no shared ENROLLMENT_TOKEN configured —
+      // refuse open enrollment in prod (an unauthenticated agent could then claim jobs + broker creds).
+      return NextResponse.json({ error: "enrollment requires a token" }, { status: 503 });
     }
     scope = body.scope as string;
     clientSlug = typeof body.clientSlug === "string" ? body.clientSlug : null;

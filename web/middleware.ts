@@ -1,7 +1,8 @@
 // Three classes of request, all decided at the edge (no DB):
 //   1. RUNNER API — the machine endpoints the runner/installer call: /api/agents/*, /api/jobs/claim,
-//      and /api/jobs/<id>/{credential,result,progress}. Bearer-gated (fail-open if RUNNER_API_TOKEN
-//      is unset). These BYPASS the operator session gate (runners have no cookie).
+//      and /api/jobs/<id>/{credential,result,progress}. Bearer-gated; when RUNNER_API_TOKEN is unset
+//      it fails CLOSED in production (or when RUNNER_AUTH_REQUIRED=true) and open in dev/tunnel.
+//      These BYPASS the operator session gate (runners have no cookie).
 //   2. RUNNER DOWNLOADS — /api/runner/* (bundle manifest/file, one-line installer). Open, bypasses
 //      the operator gate so a runner can install/self-update without a session.
 //   3. OPERATOR SURFACE — everything else (pages + the operator API, incl. the job-action routes
@@ -40,7 +41,14 @@ export function middleware(req: NextRequest) {
 
   if (isRunnerApi(pathname)) {
     const token = process.env.RUNNER_API_TOKEN;
-    if (!token) return NextResponse.next();
+    if (!token) {
+      // Production-gated fail-CLOSED: in prod (or when explicitly required) a missing token is a
+      // misconfiguration — refuse rather than serve runner APIs (incl. the Delinea credential broker)
+      // unauthenticated. In dev/tunnel it stays fail-open so a local runner works without a token.
+      const required = process.env.NODE_ENV === "production" || process.env.RUNNER_AUTH_REQUIRED === "true";
+      if (required) return NextResponse.json({ error: "runner auth not configured" }, { status: 503 });
+      return NextResponse.next();
+    }
     const auth = req.headers.get("authorization") ?? "";
     if (!auth.startsWith("Bearer ") || auth.slice(7) !== token) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });

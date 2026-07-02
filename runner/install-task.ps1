@@ -11,7 +11,7 @@
   on self-update and let the task relaunch it.
 
   Run ELEVATED. Example:
-    pwsh -File install-task.ps1 -AppUrl https://iamsetup.kentassociates.org -AgentId cmqlj5d4t00035r7wx941ce4a
+    pwsh -File install-task.ps1 -AppUrl https://iamsetup.kentassociates.org -AgentId cmqlj5d4t00035r7wx941ce4a -RunnerApiToken <token>
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +20,8 @@ param(
   [string]$InstallDir = 'C:\iam-runner',
   [string]$Pwsh = '',                          # default: this pwsh
   [int]$StallTimeoutSeconds = 600,
-  [string]$TaskName = 'iam-runner'
+  [string]$TaskName = 'iam-runner',
+  [string]$RunnerApiToken = $env:RUNNER_API_TOKEN   # bearer for the app's runner APIs; required once the app fails-closed
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'install-task.ps1 is Windows-only — use install-launchd.sh on macOS/Linux.' }
@@ -31,8 +32,17 @@ if (-not $Pwsh) { $Pwsh = (Get-Process -Id $PID).Path; if (-not $Pwsh) { $Pwsh =
 $script = Join-Path $InstallDir 'Start-IamRunner.ps1'
 if (-not (Test-Path $script)) { throw "runner not found at $script — pull it first (Setup-IamRunner.ps1), or set -InstallDir." }
 
-# The runner reads RUNNER_SUPERVISED from env; set it Machine-wide so the SYSTEM task inherits it.
+# The runner reads RUNNER_SUPERVISED + RUNNER_API_TOKEN from env; set them Machine-wide so the SYSTEM
+# task inherits them (the token is NOT put on the task's command line, so it's not visible in the task
+# definition / Get-ScheduledTask). Without this, a Windows agent starts unauthenticated and 401s the
+# moment the app enforces the token — the exact lockout we hit before.
 [Environment]::SetEnvironmentVariable('RUNNER_SUPERVISED', '1', 'Machine')
+if (-not [string]::IsNullOrWhiteSpace($RunnerApiToken)) {
+  [Environment]::SetEnvironmentVariable('RUNNER_API_TOKEN', $RunnerApiToken, 'Machine')
+  Write-Host 'set RUNNER_API_TOKEN (Machine env) — the runner will authenticate to the app.' -ForegroundColor Green
+} else {
+  Write-Host 'WARN no -RunnerApiToken given and $env:RUNNER_API_TOKEN is empty — the agent will NOT authenticate; it will 401 once the app fails-closed. Re-run with -RunnerApiToken <token> (get it from Agents > Add runner, or the admin runner-token endpoint).' -ForegroundColor Yellow
+}
 
 $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -AppUrl `"$AppUrl`" -AgentId `"$AgentId`" -StallTimeoutSeconds $StallTimeoutSeconds"
 $action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arg -WorkingDirectory $InstallDir
