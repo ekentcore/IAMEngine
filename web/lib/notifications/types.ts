@@ -14,7 +14,9 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "needsApproval", label: "Needs approval" },
 ];
 
-export type WebhookChannel = { enabled: boolean; webhookUrl: string };
+// token is only used by Zoom (its incoming webhook requires an Authorization verification token);
+// Teams/Slack ignore it.
+export type WebhookChannel = { enabled: boolean; webhookUrl: string; token?: string };
 export type EmailChannel = { enabled: boolean; recipients: string[] };
 
 export type NotificationSettings = {
@@ -35,7 +37,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   channels: {
     teams: { enabled: false, webhookUrl: "" },
     slack: { enabled: false, webhookUrl: "" },
-    zoom: { enabled: false, webhookUrl: "" },
+    zoom: { enabled: false, webhookUrl: "", token: "" },
     email: { enabled: false, recipients: [] },
   },
   events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true },

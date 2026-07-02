@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageText, sendWebhook, sendToChannels } from "./sender";
+import { messageText, sendWebhook, sendZoom, sendToChannels } from "./sender";
 import { normalizeSettings, type NotificationEvent } from "./types";
 
 const ev: NotificationEvent = {
@@ -42,6 +42,38 @@ test("sendWebhook posts { text } and reports ok/!ok", async () => {
     assert.equal(calls.length, 1);
     assert.match(calls[0].body, /"text"/);
     assert.match(calls[0].body, /UM0028740/);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("sendZoom sends the Authorization token, ?format=message, and a raw JSON-string body", async () => {
+  let captured: { url: string; headers: Record<string, string>; body: string } | null = null;
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    captured = { url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body: String(init?.body) };
+    return { ok: true, status: 200 } as Response;
+  }) as unknown as typeof fetch;
+  try {
+    const r = await sendZoom("https://integrations.zoom.us/chat/webhooks/incomingwebhook/abc", "VTOKEN123", ev);
+    assert.equal(r.ok, true);
+    assert.ok(captured);
+    assert.match(captured!.url, /[?&]format=message/); // format param appended
+    assert.equal(captured!.headers.Authorization, "VTOKEN123"); // verification token
+    assert.equal(captured!.body, JSON.stringify(messageText(ev))); // RAW JSON string, not { text }
+    assert.doesNotMatch(captured!.body, /"text"/);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("sendZoom reports a helpful error when the token is missing", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async () => ({ ok: false, status: 400 }) as Response) as unknown as typeof fetch;
+  try {
+    const r = await sendZoom("https://z", "", ev);
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? "", /verification token/);
   } finally {
     globalThis.fetch = orig;
   }

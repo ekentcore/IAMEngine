@@ -35,9 +35,27 @@ async function postJson(url: string, body: unknown): Promise<SendResult> {
   }
 }
 
-// Teams / Slack / Zoom Team Chat incoming webhooks all accept a simple { text } payload.
+// Teams + Slack incoming webhooks accept a simple { text } payload.
 export const sendWebhook = (webhookUrl: string, e: NotificationEvent): Promise<SendResult> =>
   postJson(webhookUrl, { text: messageText(e) });
+
+// Zoom Team Chat's incoming webhook is DIFFERENT from Teams/Slack: it needs an `Authorization:
+// <verificationToken>` header, a `?format=message` URL param, and a RAW JSON-string body (not { text }).
+// Missing the token → HTTP 400. https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0067640
+export async function sendZoom(webhookUrl: string, token: string, e: NotificationEvent): Promise<SendResult> {
+  try {
+    const url = /[?&]format=/.test(webhookUrl) ? webhookUrl : webhookUrl + (webhookUrl.includes("?") ? "&" : "?") + "format=message";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },
+      body: JSON.stringify(messageText(e)), // a JSON string literal, e.g. "Case failed: …"
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}${token ? "" : " — set the Zoom verification token" }` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 // Email via Microsoft Graph app-only (client credentials). No-ops with a clear reason until the
 // NOTIFY_GRAPH_* env is configured — the webhook channels work without it.
@@ -96,7 +114,7 @@ export async function sendToChannels(
   const web = (channel: NotifChannel, url: string) => sendWebhook(url, e).then((r) => ({ channel, ...r }));
   if (ch.teams.enabled && ch.teams.webhookUrl) tasks.push(web("teams", ch.teams.webhookUrl));
   if (ch.slack.enabled && ch.slack.webhookUrl) tasks.push(web("slack", ch.slack.webhookUrl));
-  if (ch.zoom.enabled && ch.zoom.webhookUrl) tasks.push(web("zoom", ch.zoom.webhookUrl));
+  if (ch.zoom.enabled && ch.zoom.webhookUrl) tasks.push(sendZoom(ch.zoom.webhookUrl, ch.zoom.token ?? "", e).then((r) => ({ channel: "zoom" as const, ...r })));
   if (ch.email.enabled && ch.email.recipients.length) tasks.push(sendEmail(ch.email.recipients, e).then((r) => ({ channel: "email" as const, ...r })));
   return Promise.all(tasks);
 }

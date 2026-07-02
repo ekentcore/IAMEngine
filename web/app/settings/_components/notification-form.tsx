@@ -22,7 +22,7 @@ const WEBHOOKS: { key: "teams" | "slack" | "zoom"; label: string; steps: string;
   {
     key: "zoom",
     label: "Zoom Team Chat",
-    steps: "In Zoom Team Chat, add the “Incoming Webhook” app → pick a channel → copy the Endpoint URL.",
+    steps: "In Zoom Team Chat, add the “Incoming Webhook” app → pick a channel → copy BOTH the Endpoint URL AND the Verification Token it shows (Zoom needs both).",
     link: "https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0067640",
   },
 ];
@@ -95,6 +95,15 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
                 disabled={!ch.enabled}
                 onChange={(e) => edit((d) => { d.channels[w.key].webhookUrl = e.target.value; })}
               />
+              {w.key === "zoom" && (
+                <input
+                  type="text"
+                  placeholder="Paste the Zoom verification token here"
+                  value={ch.token ?? ""}
+                  disabled={!ch.enabled}
+                  onChange={(e) => edit((d) => { d.channels.zoom.token = e.target.value; })}
+                />
+              )}
               <p className="note" style={{ marginTop: "0.4rem" }}>
                 {w.steps} <a href={w.link} target="_blank" rel="noreferrer">Official guide →</a>
               </p>
