@@ -67,3 +67,7 @@ exo.key
 exo.pfx
 *.pfx
 *.key
+
+# tooling/runtime artifacts that must never ship in the runner bundle
+runner/.claude/
+runner/.remember/

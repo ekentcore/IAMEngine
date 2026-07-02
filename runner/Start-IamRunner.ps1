@@ -1209,14 +1209,16 @@ function Get-CtgBuildId {
     $root = $PSScriptRoot
     # Keep in lockstep with SKIP_DIRS in web/lib/runner/bundle.ts. 'scripts' holds operator/diagnostic
     # helpers that never ship to a deployed runner (and so must not move the build hash).
-    $skip = 'tests', 'dist', '.git', 'node_modules', 'scripts'
+    $skip = 'tests', 'dist', 'node_modules', 'scripts'
     try {
-        $rels = foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File) {
+        # -Force so dot-entries are enumerated on EVERY platform (PowerShell hides them on Unix but not
+        # Windows — that divergence is exactly what made a stray .claude/.remember in the bundle loop the
+        # Mac agent forever). Then skip any dot-segment + build/test dirs + logs/test files, matching
+        # bundle.ts so the runner's self-computed hash equals the app's bundle hash on all platforms.
+        $rels = foreach ($f in Get-ChildItem -Force -LiteralPath $root -Recurse -File) {
             $rel = ([System.IO.Path]::GetRelativePath($root, $f.FullName)) -replace '\\', '/'
-            if ($rel.Split('/') | Where-Object { $skip -contains $_ }) { continue }
-            # Skip runtime/non-bundle files (logs, build marker) — they aren't in the app's bundle, so
-            # counting them makes the hash drift forever vs the app ("update available" that never clears).
-            if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log' -or $f.Name -eq '.DS_Store' -or $f.Name -eq '.build' -or $f.Name -eq '.runner.lock') { continue }
+            if ($rel.Split('/') | Where-Object { $skip -contains $_ -or $_.StartsWith('.') }) { continue }
+            if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log') { continue }
             $rel
         }
         $arr = @($rels); [Array]::Sort($arr, [System.StringComparer]::Ordinal)
