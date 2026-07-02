@@ -111,6 +111,14 @@ main {
   animation: rise 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+/* Wider card for dense rosters (clients list has 11 columns). */
+main.wide { max-width: 1300px; }
+/* Scroll a wide/long table INSIDE its card so right-edge action icons never clip and the roster
+   scrolls without pushing the page. A bounded height makes this an internal scroll pane, which also
+   keeps the sticky header working — it pins to the pane top (top:0) instead of the page (top:56px,
+   the value the non-paned tables use). */
+.table-scroll { overflow: auto; max-height: calc(100vh - 240px); scrollbar-gutter: stable; }
+.table-scroll .data-table thead th { top: 0; }
 
 /* ── type ─────────────────────────────────────────────────────────────────── */
 h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; margin: 0; line-height: 1.2; }

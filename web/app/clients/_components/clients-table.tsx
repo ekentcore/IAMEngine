@@ -323,6 +323,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
         <option value="{first}">first</option>
       </datalist>
 
+      <div className="table-scroll">
       <table className="data-table clients-table">
         <thead>
           <tr>
@@ -582,6 +583,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
           )}
         </tbody>
       </table>
+      </div>
 
       <dialog ref={confirmRef}>
         <h2>Archive client</h2>

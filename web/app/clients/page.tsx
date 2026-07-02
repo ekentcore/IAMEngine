@@ -26,7 +26,7 @@ export default async function ClientsPage() {
   const modeled = clients.filter((c) => c.modeled).length;
 
   return (
-    <main>
+    <main className="wide">
       <div className="row-between">
         <div>
           <h1>Clients</h1>
