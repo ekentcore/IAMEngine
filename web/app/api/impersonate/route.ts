@@ -40,6 +40,10 @@ export async function POST(req: Request) {
   if (!target || target.status !== "active") return NextResponse.json({ error: "user not found or inactive" }, { status: 404 });
   if (target.id === real.id) return NextResponse.json({ error: "you can't impersonate yourself" }, { status: 422 });
 
+  // If already impersonating someone else, close that window in the audit trail before switching.
+  if (session.impersonatingUserId && session.impersonatingUserId !== target.id) {
+    await recordAudit("user.impersonate.stop", { user: real, detail: { wasImpersonating: session.impersonatingUserId, reason: "pivot" } });
+  }
   await db.session.update({ where: { id: session.id }, data: { impersonatingUserId: target.id } });
   await recordAudit("user.impersonate.start", { user: real, detail: { targetId: target.id, targetEmail: target.email, targetRole: target.role } });
   return NextResponse.json({ ok: true, impersonating: { name: target.name, email: target.email, role: target.role } });

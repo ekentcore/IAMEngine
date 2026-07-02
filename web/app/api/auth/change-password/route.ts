@@ -3,7 +3,7 @@
 // sessions so a stolen old session can't survive a password change.
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth/current-user";
+import { getActingContext } from "@/lib/auth/current-user";
 import { verifyPassword, hashPassword } from "@/lib/auth/password";
 import { hashToken, SESSION_COOKIE } from "@/lib/auth/session";
 import { recordAudit } from "@/lib/auth/audit";
@@ -12,8 +12,12 @@ import { cookies } from "next/headers";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const me = await getCurrentUser();
+  // Changing your password is always about the REAL operator, and it's a mutation — refuse while
+  // impersonating (the effective user is someone else).
+  const ctx = await getActingContext();
+  const me = ctx.realUser;
   if (!me) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+  if (ctx.impersonating) return NextResponse.json({ error: "exit impersonation before changing your password" }, { status: 403 });
 
   let body: { currentPassword?: unknown; newPassword?: unknown };
   try {

@@ -3,13 +3,13 @@
 // of the same line for the same case — across re-runs — is marked at once and drops out of the log.
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { requireUser, AuthError } from "@/lib/auth/guard";
+import { requirePermission, AuthError } from "@/lib/auth/guard";
 
 type Result = { ok: true; count: number } | { ok: false; error: string };
 
 export async function resolveOutcomes(fingerprint: string): Promise<Result> {
   try {
-    const me = await requireUser();
+    const me = await requirePermission("case.dispatch");
     if (!fingerprint) return { ok: false, error: "no fingerprint" };
     const r = await db.runOutcome.updateMany({
       where: { fingerprint, resolvedAt: null },
@@ -25,7 +25,7 @@ export async function resolveOutcomes(fingerprint: string): Promise<Result> {
 // Bulk "Fixed": resolve every occurrence of each selected line (by fingerprint) in one call.
 export async function resolveManyOutcomes(fingerprints: string[]): Promise<Result> {
   try {
-    const me = await requireUser();
+    const me = await requirePermission("case.dispatch");
     const fps = [...new Set((fingerprints ?? []).filter((f): f is string => typeof f === "string" && f !== ""))];
     if (!fps.length) return { ok: false, error: "nothing selected" };
     const r = await db.runOutcome.updateMany({
@@ -41,7 +41,7 @@ export async function resolveManyOutcomes(fingerprints: string[]): Promise<Resul
 
 export async function reopenOutcomes(fingerprint: string): Promise<Result> {
   try {
-    await requireUser();
+    await requirePermission("case.dispatch");
     if (!fingerprint) return { ok: false, error: "no fingerprint" };
     const r = await db.runOutcome.updateMany({
       where: { fingerprint, resolvedAt: { not: null } },
