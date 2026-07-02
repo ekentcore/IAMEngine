@@ -1144,7 +1144,7 @@ function Invoke-CtgRelaunch {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         & chmod 700 $dir 2>$null
         $launcher = Join-Path $dir 'relaunch.sh'
-        [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nrm -f `"`$0`" 2>/dev/null`nexec $line`n")
+        [System.IO.File]::WriteAllText($launcher, "#!/bin/sh`nrm -f `"`$0`" 2>/dev/null; rmdir -- `"$dir`" 2>/dev/null`nexec $line`n")
         & chmod 600 $launcher 2>$null
         Start-Process -FilePath '/bin/sh' -ArgumentList $launcher | Out-Null
         Write-Host "${Reason}: relaunched detached (log: $log)" -ForegroundColor Green
