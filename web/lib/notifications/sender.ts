@@ -23,9 +23,12 @@ export function messageText(e: NotificationEvent): string {
   return parts.join("\n");
 }
 
+// 8s cap so an awaited notification (fired inline from the job-result path) can never hang the runner.
+const TIMEOUT_MS = 8000;
+
 async function postJson(url: string, body: unknown): Promise<SendResult> {
   try {
-    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT_MS) });
     return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -52,6 +55,7 @@ export async function sendEmail(recipients: string[], e: NotificationEvent): Pro
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: clientId, client_secret: secret, scope: "https://graph.microsoft.com/.default", grant_type: "client_credentials" }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!tok.ok) return { ok: false, error: `token HTTP ${tok.status}` };
     const accessToken = ((await tok.json()) as { access_token?: string }).access_token;
@@ -67,6 +71,7 @@ export async function sendEmail(recipients: string[], e: NotificationEvent): Pro
         },
         saveToSentItems: false,
       }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     return res.ok ? { ok: true } : { ok: false, error: `sendMail HTTP ${res.status}` };
   } catch (err) {

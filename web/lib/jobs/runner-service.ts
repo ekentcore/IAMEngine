@@ -13,6 +13,7 @@ import { sweepServiceNowIntake } from "./intake-sweep";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
+import { fireNotification } from "../notifications/sender";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
 
@@ -252,7 +253,7 @@ export function makeRunnerService(db: PrismaClient) {
           status: "running",
           OR: [{ progressAt: { lt: progressCutoff } }, { progressAt: null, startedAt: { lt: progressCutoff } }],
         },
-        select: { id: true, request: true, caseRequestId: true },
+        select: { id: true, request: true, caseRequestId: true, systemKey: true, case: { select: { serviceNowCaseNumber: true, client: { select: { name: true } } } } },
       });
       for (const w of wedged) {
         const reclaims = Number((req(w) as { progressReclaims?: unknown }).progressReclaims ?? 0);
@@ -263,6 +264,8 @@ export function makeRunnerService(db: PrismaClient) {
           await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date() } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
+          const who = `${w.case?.serviceNowCaseNumber ?? w.caseRequestId}${w.case?.client?.name ? ` (${w.case.client.name})` : ""}`;
+          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, systemKey: w.systemKey, detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
         } else {
           await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.reclaim", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims: reclaims + 1 } } });
@@ -795,6 +798,23 @@ export function makeRunnerService(db: PrismaClient) {
       } // end normal (non-single-step) cascade
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: job.singleRun ? "job.result.single" : "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
+
+      // Failure notifications — best-effort + awaited (the sender is timeout-bounded, so it can't hang
+      // the result path). Only the normal cascade produces a meaningful new case status.
+      if (!job.singleRun) {
+        const caseNumber = job.case.serviceNowCaseNumber;
+        const clientName = job.case.client?.name ?? null;
+        const url = process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${job.caseRequestId}` : null;
+        const who = `${caseNumber ?? job.caseRequestId}${clientName ? ` (${clientName})` : ""}`;
+        if (status === "failed") {
+          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, systemKey: job.systemKey, detail: input.error ?? null, url });
+        }
+        if (caseStatus === "failed") {
+          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, systemKey: job.systemKey, detail: input.error ?? null, url });
+        } else if (caseStatus === "needs_approval") {
+          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, detail: "A destructive offboard step is waiting for approval.", url });
+        }
+      }
 
       // Append-only outcome log: capture this run's success/warning/error per module, with the case
       // number + client + messages, so module problems can be tracked across cases (a re-run
