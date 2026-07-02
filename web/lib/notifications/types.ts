@@ -37,6 +37,14 @@ export type NotificationSettings = {
 // event). mode "also" = client channel PLUS the restricted/default base; "only" = client channel alone.
 export type ZoomOverride = { webhookUrl: string; token: string; mode: "also" | "only" };
 
+// Coerce a stored Client.notifyOverride JSON blob into a ZoomOverride (or null if unset/malformed).
+export function parseZoomOverride(raw: unknown): ZoomOverride | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as { webhookUrl?: unknown; token?: unknown; mode?: unknown };
+  if (typeof o.webhookUrl !== "string" || !o.webhookUrl) return null;
+  return { webhookUrl: o.webhookUrl, token: typeof o.token === "string" ? o.token : "", mode: o.mode === "only" ? "only" : "also" };
+}
+
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   enabled: false,
   channels: {

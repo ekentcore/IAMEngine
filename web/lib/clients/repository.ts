@@ -1,6 +1,7 @@
 // Thin Prisma wrapper for the clients domain. No business logic — callers pass resolved
 // values. Built as a factory so tests can inject a mock/throwaway PrismaClient.
-import type { PrismaClient, Prisma, Backbone } from "@prisma/client";
+import type { PrismaClient, Backbone } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
@@ -298,6 +299,10 @@ export function makeClientRepository(db: PrismaClient) {
     },
     async setRunCloudOnOwnAgent(slug: string, runCloudOnOwnAgent: boolean) {
       return db.client.update({ where: { slug }, data: { runCloudOnOwnAgent } });
+    },
+    // Per-client Zoom notification override (or null to clear it). Shape validated by the API route.
+    async setNotifyOverride(slug: string, notifyOverride: Prisma.InputJsonValue | null) {
+      return db.client.update({ where: { slug }, data: { notifyOverride: notifyOverride ?? Prisma.DbNull } });
     },
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses

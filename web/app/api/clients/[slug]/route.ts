@@ -25,7 +25,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -137,6 +137,23 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (typeof body.runCloudOnOwnAgent !== "boolean") return NextResponse.json({ error: "runCloudOnOwnAgent must be a boolean" }, { status: 422 });
     const client = await repo.setRunCloudOnOwnAgent(params.slug, body.runCloudOnOwnAgent);
     await repo.writeAudit({ actor: "ui", action: "client.run_cloud_on_own_agent.set", clientId: client.id, detail: { runCloudOnOwnAgent: body.runCloudOnOwnAgent } });
+    return NextResponse.json(client);
+  }
+
+  // Per-client Zoom notification override: this client's own channel, added to ("also") or replacing
+  // ("only") the default/restricted base. Send { override: null } to clear it.
+  if (body.action === "set-notify-override") {
+    const ov = body.override as { webhookUrl?: unknown; token?: unknown; mode?: unknown } | null | undefined;
+    let value: { webhookUrl: string; token: string; mode: "also" | "only" } | null = null;
+    if (ov) {
+      const webhookUrl = typeof ov.webhookUrl === "string" ? ov.webhookUrl.trim() : "";
+      const token = typeof ov.token === "string" ? ov.token.trim() : "";
+      const mode = ov.mode === "only" ? "only" : "also";
+      if (!webhookUrl) return NextResponse.json({ error: "a webhook URL is required (or send override:null to clear)" }, { status: 422 });
+      value = { webhookUrl, token, mode };
+    }
+    const client = await repo.setNotifyOverride(params.slug, value);
+    await repo.writeAudit({ actor: "ui", action: "client.notify_override.set", clientId: client.id, detail: { set: Boolean(value), mode: value?.mode ?? null } });
     return NextResponse.json(client);
   }
 

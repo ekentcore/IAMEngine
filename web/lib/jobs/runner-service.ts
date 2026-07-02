@@ -14,6 +14,7 @@ import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
 import { fireNotification } from "../notifications/sender";
+import { parseZoomOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
 
@@ -253,7 +254,7 @@ export function makeRunnerService(db: PrismaClient) {
           status: "running",
           OR: [{ progressAt: { lt: progressCutoff } }, { progressAt: null, startedAt: { lt: progressCutoff } }],
         },
-        select: { id: true, request: true, caseRequestId: true, systemKey: true, case: { select: { serviceNowCaseNumber: true, client: { select: { name: true, restricted: true } } } } },
+        select: { id: true, request: true, caseRequestId: true, systemKey: true, case: { select: { serviceNowCaseNumber: true, client: { select: { name: true, restricted: true, notifyOverride: true } } } } },
       });
       for (const w of wedged) {
         const reclaims = Number((req(w) as { progressReclaims?: unknown }).progressReclaims ?? 0);
@@ -265,7 +266,7 @@ export function makeRunnerService(db: PrismaClient) {
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
           const who = `${w.case?.serviceNowCaseNumber ?? w.caseRequestId}${w.case?.client?.name ? ` (${w.case.client.name})` : ""}`;
-          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, systemKey: w.systemKey, detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
+          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, zoomOverride: parseZoomOverride(w.case?.client?.notifyOverride), systemKey: w.systemKey, detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
         } else {
           await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.reclaim", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims: reclaims + 1 } } });
@@ -711,7 +712,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, singleRun: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true, restricted: true } } } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, singleRun: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true, restricted: true, notifyOverride: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -805,15 +806,16 @@ export function makeRunnerService(db: PrismaClient) {
         const caseNumber = job.case.serviceNowCaseNumber;
         const clientName = job.case.client?.name ?? null;
         const restricted = job.case.client?.restricted ?? false;
+        const zoomOverride = parseZoomOverride(job.case.client?.notifyOverride);
         const url = process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${job.caseRequestId}` : null;
         const who = `${caseNumber ?? job.caseRequestId}${clientName ? ` (${clientName})` : ""}`;
         if (status === "failed") {
-          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, zoomOverride, systemKey: job.systemKey, detail: input.error ?? null, url });
         }
         if (caseStatus === "failed") {
-          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, zoomOverride, systemKey: job.systemKey, detail: input.error ?? null, url });
         } else if (caseStatus === "needs_approval") {
-          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, detail: "A destructive offboard step is waiting for approval.", url });
+          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, zoomOverride, detail: "A destructive offboard step is waiting for approval.", url });
         }
       }
 
