@@ -300,9 +300,10 @@ export function makeClientRepository(db: PrismaClient) {
     async setRunCloudOnOwnAgent(slug: string, runCloudOnOwnAgent: boolean) {
       return db.client.update({ where: { slug }, data: { runCloudOnOwnAgent } });
     },
-    // Per-client Zoom notification override (or null to clear it). Shape validated by the API route.
-    async setNotifyOverride(slug: string, notifyOverride: Prisma.InputJsonValue | null) {
-      return db.client.update({ where: { slug }, data: { notifyOverride: notifyOverride ?? Prisma.DbNull } });
+    // Per-client notification override (per-channel object, or null to clear). Shape sanitized by the
+    // API route via parseClientOverride before it lands here.
+    async setNotifyOverride(slug: string, notifyOverride: unknown | null) {
+      return db.client.update({ where: { slug }, data: { notifyOverride: (notifyOverride ?? Prisma.DbNull) as Prisma.InputJsonValue } });
     },
     // The email/UPN name format (identity.usernamePatterns[0]). `localPattern` is the part before
     // @; we store it as `<local>@{domain}` to match the existing convention (deriveIdentity uses

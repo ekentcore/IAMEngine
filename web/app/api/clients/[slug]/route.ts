@@ -10,6 +10,7 @@ import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
 import { refreshClientName } from "@/lib/clients/refresh-name";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
+import { parseClientOverride } from "@/lib/notifications/types";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
@@ -140,20 +141,13 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
-  // Per-client Zoom notification override: this client's own channel, added to ("also") or replacing
-  // ("only") the default/restricted base. Send { override: null } to clear it.
+  // Per-client notification override: this client's own destination per channel, added to ("also") or
+  // replacing ("only") the resolved base. Send { override: null } (or an empty object) to clear it.
   if (body.action === "set-notify-override") {
-    const ov = body.override as { webhookUrl?: unknown; token?: unknown; mode?: unknown } | null | undefined;
-    let value: { webhookUrl: string; token: string; mode: "also" | "only" } | null = null;
-    if (ov) {
-      const webhookUrl = typeof ov.webhookUrl === "string" ? ov.webhookUrl.trim() : "";
-      const token = typeof ov.token === "string" ? ov.token.trim() : "";
-      const mode = ov.mode === "only" ? "only" : "also";
-      if (!webhookUrl) return NextResponse.json({ error: "a webhook URL is required (or send override:null to clear)" }, { status: 422 });
-      value = { webhookUrl, token, mode };
-    }
-    const client = await repo.setNotifyOverride(params.slug, value);
-    await repo.writeAudit({ actor: "ui", action: "client.notify_override.set", clientId: client.id, detail: { set: Boolean(value), mode: value?.mode ?? null } });
+    const value = parseClientOverride(body.override); // sanitizes per channel; drops empties
+    const channels = Object.keys(value);
+    const client = await repo.setNotifyOverride(params.slug, channels.length ? value : null);
+    await repo.writeAudit({ actor: "ui", action: "client.notify_override.set", clientId: client.id, detail: { channels } }); // never the URLs/tokens/recipients
     return NextResponse.json(client);
   }
 

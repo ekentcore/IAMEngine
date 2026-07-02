@@ -1,11 +1,13 @@
-// Operator-configurable failure notifications. Config lives in the AppSetting table under
-// NOTIFICATIONS_SETTING_KEY (JSON), editable by global_admin+ on the Settings page. Channels:
-// Teams / Slack / Zoom Team Chat via incoming webhooks, and email via Microsoft Graph (app-only).
+// Operator-configurable failure notifications. Config lives in AppSetting under NOTIFICATIONS_SETTING_KEY.
+// Every channel (Teams/Slack/Zoom/Email) has a DEFAULT destination (non-restricted clients) and a
+// RESTRICTED destination (restricted clients). A per-client override (stored on the Client) can, per
+// channel, add to ("also") or replace ("only") the resolved base destination.
 
 export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
 export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval";
+export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "caseFailed", label: "Case failed" },
@@ -14,45 +16,45 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "needsApproval", label: "Needs approval" },
 ];
 
-// token is only used by Zoom (its incoming webhook requires an Authorization verification token);
-// Teams/Slack ignore it.
-export type WebhookChannel = { enabled: boolean; webhookUrl: string; token?: string };
-export type EmailChannel = { enabled: boolean; recipients: string[] };
+// kind drives the sender + the form fields (webhook URL vs Zoom URL+token vs email recipients).
+export const NOTIF_CHANNELS: { key: NotifChannel; label: string; kind: "webhook" | "zoom" | "email" }[] = [
+  { key: "teams", label: "Microsoft Teams", kind: "webhook" },
+  { key: "slack", label: "Slack", kind: "webhook" },
+  { key: "zoom", label: "Zoom Team Chat", kind: "zoom" },
+  { key: "email", label: "Email", kind: "email" },
+];
+
+export type WebhookDest = { enabled: boolean; webhookUrl: string; token?: string }; // token: Zoom only
+export type EmailDest = { enabled: boolean; recipients: string[] };
+export type ChannelPair<D> = { default: D; restricted: D };
 
 export type NotificationSettings = {
   enabled: boolean; // master switch
   channels: {
-    teams: WebhookChannel;
-    slack: WebhookChannel;
-    zoom: WebhookChannel; // default Zoom channel — NON-restricted clients (e.g. "IAM")
-    zoomRestricted: WebhookChannel; // Zoom channel for RESTRICTED clients (e.g. "Internal")
-    email: EmailChannel;
+    teams: ChannelPair<WebhookDest>;
+    slack: ChannelPair<WebhookDest>;
+    zoom: ChannelPair<WebhookDest>;
+    email: ChannelPair<EmailDest>;
   };
   events: Record<NotifEvent, boolean>;
   updatedAt?: string;
   updatedBy?: string;
 };
 
-// A client-specific Zoom override (stored per-Client, resolved at the trigger site and passed on the
-// event). mode "also" = client channel PLUS the restricted/default base; "only" = client channel alone.
-export type ZoomOverride = { webhookUrl: string; token: string; mode: "also" | "only" };
+// Per-client override, per channel. mode "also" = client dest PLUS the resolved base; "only" = alone.
+export type ChannelOverride = { mode: "also" | "only"; webhookUrl?: string; token?: string; recipients?: string[] };
+export type ClientNotifyOverride = Partial<Record<NotifChannel, ChannelOverride>>;
 
-// Coerce a stored Client.notifyOverride JSON blob into a ZoomOverride (or null if unset/malformed).
-export function parseZoomOverride(raw: unknown): ZoomOverride | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as { webhookUrl?: unknown; token?: unknown; mode?: unknown };
-  if (typeof o.webhookUrl !== "string" || !o.webhookUrl) return null;
-  return { webhookUrl: o.webhookUrl, token: typeof o.token === "string" ? o.token : "", mode: o.mode === "only" ? "only" : "also" };
-}
+const emptyWebhook = (): WebhookDest => ({ enabled: false, webhookUrl: "", token: "" });
+const emptyEmail = (): EmailDest => ({ enabled: false, recipients: [] });
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   enabled: false,
   channels: {
-    teams: { enabled: false, webhookUrl: "" },
-    slack: { enabled: false, webhookUrl: "" },
-    zoom: { enabled: false, webhookUrl: "", token: "" },
-    zoomRestricted: { enabled: false, webhookUrl: "", token: "" },
-    email: { enabled: false, recipients: [] },
+    teams: { default: emptyWebhook(), restricted: emptyWebhook() },
+    slack: { default: emptyWebhook(), restricted: emptyWebhook() },
+    zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
+    email: { default: emptyEmail(), restricted: emptyEmail() },
   },
   events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true },
 };
@@ -60,32 +62,71 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
 // The payload a trigger site passes to fireNotification.
 export type NotificationEvent = {
   event: NotifEvent;
-  title: string; // short subject line, e.g. "Case failed: UM0028740 (Acme)"
+  title: string;
   caseNumber?: string | null;
   clientName?: string | null;
   systemKey?: string | null;
-  detail?: string | null; // error / reason
-  url?: string | null; // absolute link to the case
-  restricted?: boolean; // the client is restricted -> route Zoom to the "restricted" channel
-  zoomOverride?: ZoomOverride | null; // this client's own Zoom channel (from the client page), if set
+  detail?: string | null;
+  url?: string | null;
+  restricted?: boolean; // client is restricted -> route to the "restricted" destination of each channel
+  override?: ClientNotifyOverride | null; // this client's per-channel overrides (from the client page)
 };
 
-// Merge a stored (possibly partial / older-shape) settings blob onto the defaults so the UI + sender
-// always see a complete object.
-export function normalizeSettings(raw: Partial<NotificationSettings> | null | undefined): NotificationSettings {
-  const d = DEFAULT_NOTIFICATIONS;
-  const c = (raw?.channels ?? {}) as Partial<NotificationSettings["channels"]>;
+function normWebhook(raw: unknown): WebhookDest {
+  const o = (raw ?? {}) as { enabled?: unknown; webhookUrl?: unknown; token?: unknown };
+  return { enabled: Boolean(o.enabled), webhookUrl: typeof o.webhookUrl === "string" ? o.webhookUrl : "", token: typeof o.token === "string" ? o.token : "" };
+}
+function normEmail(raw: unknown): EmailDest {
+  const o = (raw ?? {}) as { enabled?: unknown; recipients?: unknown };
+  return { enabled: Boolean(o.enabled), recipients: Array.isArray(o.recipients) ? o.recipients.filter((x): x is string => typeof x === "string") : [] };
+}
+// Accept BOTH the new nested { default, restricted } shape AND the old flat one (where the channel WAS
+// the default and a separate `restrictedRaw` — e.g. old `zoomRestricted` — held the restricted dest).
+function normPair<D>(raw: unknown, restrictedRaw: unknown, norm: (r: unknown) => D): ChannelPair<D> {
+  const o = raw as { default?: unknown; restricted?: unknown } | undefined;
+  if (o && (o.default !== undefined || o.restricted !== undefined)) {
+    return { default: norm(o.default), restricted: norm(o.restricted) };
+  }
+  return { default: norm(raw), restricted: norm(restrictedRaw) };
+}
+
+export function normalizeSettings(raw: unknown): NotificationSettings {
+  const r = (raw ?? {}) as Partial<NotificationSettings> & { channels?: Record<string, unknown> };
+  const c = (r.channels ?? {}) as Record<string, unknown>;
   return {
-    enabled: Boolean(raw?.enabled),
+    enabled: Boolean(r.enabled),
     channels: {
-      teams: { ...d.channels.teams, ...(c.teams ?? {}) },
-      slack: { ...d.channels.slack, ...(c.slack ?? {}) },
-      zoom: { ...d.channels.zoom, ...(c.zoom ?? {}) },
-      zoomRestricted: { ...d.channels.zoomRestricted, ...(c.zoomRestricted ?? {}) },
-      email: { ...d.channels.email, ...(c.email ?? {}), recipients: c.email?.recipients ?? [] },
+      teams: normPair(c.teams, undefined, normWebhook),
+      slack: normPair(c.slack, undefined, normWebhook),
+      zoom: normPair(c.zoom, c.zoomRestricted, normWebhook), // migrate the old separate zoomRestricted
+      email: normPair(c.email, undefined, normEmail),
     },
-    events: { ...d.events, ...(raw?.events ?? {}) },
-    updatedAt: raw?.updatedAt,
-    updatedBy: raw?.updatedBy,
+    events: { ...DEFAULT_NOTIFICATIONS.events, ...(r.events ?? {}) },
+    updatedAt: r.updatedAt,
+    updatedBy: r.updatedBy,
   };
+}
+
+// Coerce a stored Client.notifyOverride blob into a ClientNotifyOverride. Accepts the NEW per-channel
+// shape ({ zoom:{...}, teams:{...} }) and the OLD flat zoom-only shape ({ webhookUrl, token, mode }).
+export function parseClientOverride(raw: unknown): ClientNotifyOverride {
+  if (!raw || typeof raw !== "object") return {};
+  const o = raw as Record<string, unknown> & { webhookUrl?: unknown; mode?: unknown; token?: unknown };
+  // old flat zoom override
+  if (typeof o.webhookUrl === "string" && o.webhookUrl && (o.mode === "also" || o.mode === "only") && !o.zoom && !o.teams && !o.slack && !o.email) {
+    return { zoom: { mode: o.mode, webhookUrl: o.webhookUrl, token: typeof o.token === "string" ? o.token : "" } };
+  }
+  const out: ClientNotifyOverride = {};
+  for (const ch of ["teams", "slack", "zoom", "email"] as NotifChannel[]) {
+    const ov = o[ch] as { mode?: unknown; webhookUrl?: unknown; token?: unknown; recipients?: unknown } | undefined;
+    if (!ov || typeof ov !== "object") continue;
+    const mode = ov.mode === "only" ? "only" : "also";
+    if (ch === "email") {
+      const recipients = Array.isArray(ov.recipients) ? ov.recipients.filter((x): x is string => typeof x === "string") : [];
+      if (recipients.length) out.email = { mode, recipients };
+    } else if (typeof ov.webhookUrl === "string" && ov.webhookUrl) {
+      out[ch] = { mode, webhookUrl: ov.webhookUrl, token: typeof ov.token === "string" ? ov.token : "" };
+    }
+  }
+  return out;
 }

@@ -289,6 +289,10 @@ td.module-cell {
 .notif-channel .name { font-weight: 600; }
 .notif-channel .tag { color: var(--muted); font-size: 12px; font-weight: 400; }
 .notif-channel input[type="url"], .notif-channel input[type="text"] { margin-top: 0.55rem; }
+/* default vs restricted destination sub-rows within a channel card */
+.notif-dest { padding: 0.5rem 0 0.6rem 0.8rem; border-left: 2px solid var(--line-2); }
+.notif-dest + .notif-dest { margin-top: 0.3rem; }
+.notif-dest input:first-of-type { margin-top: 0.45rem; }
 .notif-channel input:disabled { opacity: 0.5; }
 .notif-events { display: flex; flex-wrap: wrap; gap: 0.55rem 1.4rem; }
 .notif-actions { display: flex; align-items: center; gap: 0.6rem; }

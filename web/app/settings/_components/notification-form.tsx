@@ -1,65 +1,65 @@
 "use client";
 
 import { useState } from "react";
-import { NOTIF_EVENTS, type NotificationSettings, type NotifEvent } from "@/lib/notifications/types";
+import { NOTIF_EVENTS, NOTIF_CHANNELS, type NotificationSettings, type NotifEvent, type NotifChannel, type NotifVariant, type WebhookDest, type EmailDest } from "@/lib/notifications/types";
 
-type TestResult = { channel: string; ok: boolean; error?: string };
+type TestKey = string; // `${channel}:${variant}`
+type TestState = "…" | { ok: boolean; error?: string };
 
-// Plain-language "where do I get this URL?" help per chat channel.
-const WEBHOOKS: { key: "teams" | "slack" | "zoom"; label: string; steps: string; link: string }[] = [
-  {
-    key: "teams",
-    label: "Microsoft Teams",
-    steps: "Open the Teams channel → the ••• menu → Connectors → find “Incoming Webhook” → Configure → name it → Create → copy the URL it gives you.",
-    link: "https://learn.microsoft.com/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook",
-  },
-  {
-    key: "slack",
-    label: "Slack",
-    steps: "In Slack, add the “Incoming Webhooks” app → choose the channel to post to → copy the Webhook URL.",
-    link: "https://api.slack.com/messaging/webhooks",
-  },
-  {
-    key: "zoom",
-    label: "Zoom Team Chat",
-    steps: "In Zoom Team Chat, add the “Incoming Webhook” app → pick a channel → copy BOTH the Endpoint URL AND the Verification Token it shows (Zoom needs both).",
-    link: "https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0067640",
-  },
+const HELP: Record<NotifChannel, { steps: string; link?: string }> = {
+  teams: { steps: "Teams channel → ••• → Connectors → find “Incoming Webhook” → Configure → Create → copy the URL.", link: "https://learn.microsoft.com/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook" },
+  slack: { steps: "In Slack, add the “Incoming Webhooks” app → choose a channel → copy the Webhook URL.", link: "https://api.slack.com/messaging/webhooks" },
+  zoom: { steps: "In Zoom Team Chat, add the “Incoming Webhook” app → pick a channel → copy BOTH the Endpoint URL and the Verification Token.", link: "https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0067640" },
+  email: { steps: "Email sends via Microsoft 365 (Graph). An admin sets NOTIFY_GRAPH_TENANT/CLIENT_ID/CLIENT_SECRET/SENDER in the app env once — then it works." },
+};
+const VARIANTS: { key: NotifVariant; label: string; hint: string }[] = [
+  { key: "default", label: "All clients", hint: "the default destination" },
+  { key: "restricted", label: "Restricted clients", hint: "restricted clients go here instead — kept out of the default channel" },
 ];
 
 export function NotificationForm({ initial }: { initial: NotificationSettings }) {
   const [s, setS] = useState<NotificationSettings>(initial);
-  // Raw string so typing a comma to add a second address isn't eaten by parse-on-keystroke.
-  const [recipientRaw, setRecipientRaw] = useState(() => initial.channels.email.recipients.join(", "));
+  // raw recipient strings per email variant so typing a comma isn't eaten
+  const [emailRaw, setEmailRaw] = useState<Record<NotifVariant, string>>({
+    default: initial.channels.email.default.recipients.join(", "),
+    restricted: initial.channels.email.restricted.recipients.join(", "),
+  });
   const [status, setStatus] = useState("");
-  const [results, setResults] = useState<TestResult[] | null>(null);
+  const [tests, setTests] = useState<Record<TestKey, TestState>>({});
   const [busy, setBusy] = useState(false);
 
-  const edit = (fn: (d: NotificationSettings) => void) =>
-    setS((prev) => {
-      const next = structuredClone(prev);
-      fn(next);
-      return next;
-    });
+  const edit = (fn: (d: NotificationSettings) => void) => setS((prev) => { const n = structuredClone(prev); fn(n); return n; });
 
-  async function send(action: "save" | "test") {
-    setBusy(true);
-    setStatus("");
-    setResults(null);
+  async function save() {
+    setBusy(true); setStatus("");
     try {
-      const res = await fetch("/api/admin/notifications", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, settings: s }),
-      });
-      const j = (await res.json().catch(() => ({}))) as { results?: TestResult[] };
-      if (action === "test") setResults(j.results ?? []);
-      setStatus(res.ok ? (action === "save" ? "Saved." : "Test sent — check the results below.") : `${action === "save" ? "Save" : "Test"} failed (${res.status}).`);
-    } catch {
-      setStatus("Request failed.");
-    } finally {
-      setBusy(false);
-    }
+      const res = await fetch("/api/admin/notifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", settings: s }) });
+      setStatus(res.ok ? "Saved." : `Save failed (${res.status}).`);
+    } catch { setStatus("Request failed."); } finally { setBusy(false); }
+  }
+
+  async function test(channel: NotifChannel, variant: NotifVariant) {
+    const key = `${channel}:${variant}`;
+    const pair = s.channels[channel];
+    const dest = channel === "email"
+      ? { recipients: (pair as { [k in NotifVariant]: EmailDest })[variant].recipients }
+      : { webhookUrl: (pair as { [k in NotifVariant]: WebhookDest })[variant].webhookUrl, token: (pair as { [k in NotifVariant]: WebhookDest })[variant].token };
+    setTests((t) => ({ ...t, [key]: "…" }));
+    try {
+      const res = await fetch("/api/admin/notifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", channel, dest }) });
+      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: { error?: string } };
+      setTests((t) => ({ ...t, [key]: { ok: Boolean(j.ok), error: j.result?.error } }));
+    } catch { setTests((t) => ({ ...t, [key]: { ok: false, error: "request failed" } })); }
+  }
+
+  function TestButton({ channel, variant }: { channel: NotifChannel; variant: NotifVariant }) {
+    const r = tests[`${channel}:${variant}`];
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <button type="button" onClick={() => test(channel, variant)} disabled={r === "…"}>Test</button>
+        {r && r !== "…" && <span className="note">{r.ok ? "✓ delivered" : `✗ ${r.error ?? "failed"}`}</span>}
+      </span>
+    );
   }
 
   return (
@@ -69,99 +69,50 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
         Failure notifications are {s.enabled ? "ON" : "off"}
       </label>
       <p className="note" style={{ marginTop: "-0.9rem" }}>
-        {s.enabled
-          ? "We'll alert the channels below when something goes wrong. Add at least one channel and pick the events to watch."
-          : "Turn this on, add a channel, and choose which events should alert you — then Save."}
+        Each channel has a destination for <strong>all clients</strong> and one for <strong>restricted clients</strong> (kept
+        private). Test any destination on its own before saving. Per-client overrides live on each client&rsquo;s page.
       </p>
 
-      <section>
-        <h2>Where to send alerts</h2>
-        <p className="note">
-          Each chat app gives you a private &ldquo;incoming webhook&rdquo; link — paste it in and we&rsquo;ll post alerts to that
-          channel. The steps to get each link are right here; no code needed.
-        </p>
-        {WEBHOOKS.map((w) => {
-          const ch = s.channels[w.key];
-          return (
-            <div className="notif-channel" key={w.key}>
-              <label className="notif-check">
-                <input type="checkbox" checked={ch.enabled} onChange={(e) => edit((d) => { d.channels[w.key].enabled = e.target.checked; })} />
-                <span className="name">{w.label}</span>
-              </label>
-              <input
-                type="url"
-                placeholder="Paste the webhook URL here  (https://…)"
-                value={ch.webhookUrl}
-                disabled={!ch.enabled}
-                onChange={(e) => edit((d) => { d.channels[w.key].webhookUrl = e.target.value; })}
-              />
-              {w.key === "zoom" && (
-                <input
-                  type="text"
-                  placeholder="Paste the Zoom verification token here"
-                  value={ch.token ?? ""}
-                  disabled={!ch.enabled}
-                  onChange={(e) => edit((d) => { d.channels.zoom.token = e.target.value; })}
-                />
-              )}
-              <p className="note" style={{ marginTop: "0.4rem" }}>
-                {w.steps} <a href={w.link} target="_blank" rel="noreferrer">Official guide →</a>
-              </p>
-            </div>
-          );
-        })}
-
-        {s.channels.zoom.enabled && (
-          <div className="notif-channel" style={{ borderColor: "var(--accent-ring)" }}>
-            <label className="notif-check">
-              <input type="checkbox" checked={s.channels.zoomRestricted.enabled} onChange={(e) => edit((d) => { d.channels.zoomRestricted.enabled = e.target.checked; })} />
-              <span className="name">Zoom — restricted clients</span> <span className="tag">— sends restricted clients here instead</span>
-            </label>
-            <input
-              type="url"
-              placeholder="Zoom webhook URL for restricted clients (e.g. an “Internal” channel)"
-              value={s.channels.zoomRestricted.webhookUrl}
-              disabled={!s.channels.zoomRestricted.enabled}
-              onChange={(e) => edit((d) => { d.channels.zoomRestricted.webhookUrl = e.target.value; })}
-            />
-            <input
-              type="text"
-              placeholder="Verification token for that channel"
-              value={s.channels.zoomRestricted.token ?? ""}
-              disabled={!s.channels.zoomRestricted.enabled}
-              onChange={(e) => edit((d) => { d.channels.zoomRestricted.token = e.target.value; })}
-            />
-            <p className="note" style={{ marginTop: "0.4rem" }}>
-              Alerts for <strong>restricted</strong> clients (e.g. Coretelligent) go to this channel instead of the
-              default Zoom one above — keeping sensitive clients&rsquo; alerts private. If this is off, restricted
-              clients get <em>no</em> Zoom alert (they never fall back to the general channel).
+      {NOTIF_CHANNELS.map((c) => {
+        const pair = s.channels[c.key];
+        return (
+          <div className="notif-channel" key={c.key}>
+            <div className="name" style={{ marginBottom: 4 }}>{c.label}</div>
+            {VARIANTS.map((v) => {
+              const isEmail = c.kind === "email";
+              const wd = (pair as { [k in NotifVariant]: WebhookDest })[v.key];
+              const ed = (pair as { [k in NotifVariant]: EmailDest })[v.key];
+              const enabled = isEmail ? ed.enabled : wd.enabled;
+              return (
+                <div key={v.key} className="notif-dest">
+                  <label className="notif-check">
+                    <input type="checkbox" checked={enabled} onChange={(e) => edit((d) => { (d.channels[c.key] as { [k in NotifVariant]: { enabled: boolean } })[v.key].enabled = e.target.checked; })} />
+                    <span style={{ fontWeight: 500 }}>{v.label}</span> <span className="tag">— {v.hint}</span>
+                  </label>
+                  {isEmail ? (
+                    <input type="text" placeholder="recipients, comma-separated" value={emailRaw[v.key]} disabled={!enabled}
+                      onChange={(e) => { setEmailRaw((r) => ({ ...r, [v.key]: e.target.value })); edit((d) => { (d.channels.email as { [k in NotifVariant]: EmailDest })[v.key].recipients = e.target.value.split(",").map((x) => x.trim()).filter(Boolean); }); }} />
+                  ) : (
+                    <input type="url" placeholder="webhook URL (https://…)" value={wd.webhookUrl} disabled={!enabled}
+                      onChange={(e) => edit((d) => { (d.channels[c.key] as { [k in NotifVariant]: WebhookDest })[v.key].webhookUrl = e.target.value; })} />
+                  )}
+                  {c.kind === "zoom" && (
+                    <input type="text" placeholder="Zoom verification token" value={wd.token ?? ""} disabled={!enabled}
+                      onChange={(e) => edit((d) => { (d.channels.zoom as { [k in NotifVariant]: WebhookDest })[v.key].token = e.target.value; })} />
+                  )}
+                  <div style={{ marginTop: 6 }}><TestButton channel={c.key} variant={v.key} /></div>
+                </div>
+              );
+            })}
+            <p className="note" style={{ marginTop: "0.5rem" }}>
+              {HELP[c.key].steps} {HELP[c.key].link && <a href={HELP[c.key].link} target="_blank" rel="noreferrer">Official guide →</a>}
             </p>
           </div>
-        )}
-
-        <div className="notif-channel">
-          <label className="notif-check">
-            <input type="checkbox" checked={s.channels.email.enabled} onChange={(e) => edit((d) => { d.channels.email.enabled = e.target.checked; })} />
-            <span className="name">Email</span> <span className="tag">— needs a one-time admin setup</span>
-          </label>
-          <input
-            type="text"
-            placeholder="Who to email, comma-separated  (e.g. team@core.tech, me@core.tech)"
-            value={recipientRaw}
-            disabled={!s.channels.email.enabled}
-            onChange={(e) => { setRecipientRaw(e.target.value); edit((d) => { d.channels.email.recipients = e.target.value.split(",").map((x) => x.trim()).filter(Boolean); }); }}
-          />
-          <p className="note" style={{ marginTop: "0.4rem" }}>
-            Email is sent through Microsoft 365. An admin adds four values to the app&rsquo;s environment once
-            (<code>NOTIFY_GRAPH_TENANT</code>, <code>CLIENT_ID</code>, <code>CLIENT_SECRET</code>, <code>SENDER</code>) — until
-            then, use a chat channel above. You can still fill this in now; it starts working once those are set.
-          </p>
-        </div>
-      </section>
+        );
+      })}
 
       <section>
         <h2>When to alert</h2>
-        <p className="note" style={{ marginBottom: "0.6rem" }}>Pick the events worth interrupting someone for.</p>
         <div className="notif-events">
           {NOTIF_EVENTS.map(({ key, label }) => (
             <label className="notif-check" key={key}>
@@ -173,25 +124,9 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
       </section>
 
       <div className="notif-actions">
-        <button className="primary" onClick={() => send("save")} disabled={busy}>Save</button>
-        <button onClick={() => send("test")} disabled={busy}>Send test alert</button>
+        <button className="primary" onClick={save} disabled={busy}>Save</button>
         {status && <span className="note">{status}</span>}
       </div>
-
-      {results && (
-        <div className="notif-result">
-          {results.length === 0 ? (
-            "Nothing sent — no channel is enabled with a URL yet. Tick a channel above, paste its URL, then test."
-          ) : (
-            results.map((r) => (
-              <div key={r.channel}>
-                {r.ok ? "✓" : "✗"} <strong>{r.channel}</strong>
-                {r.ok ? " — delivered" : ` — ${r.error ?? "failed"}`}
-              </div>
-            ))
-          )}
-        </div>
-      )}
     </div>
   );
 }

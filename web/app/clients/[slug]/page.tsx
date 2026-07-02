@@ -26,7 +26,7 @@ import { RefreshNameButton } from "../_components/refresh-name-button";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { ClientNotifyOverride } from "../_components/client-notify-override";
-import { parseZoomOverride } from "@/lib/notifications/types";
+import { parseClientOverride } from "@/lib/notifications/types";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
 
@@ -88,7 +88,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
   const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true } });
   const notify = await db.client.findUnique({ where: { id: client.id }, select: { notifyOverride: true } });
-  const notifyOverride = parseZoomOverride(notify?.notifyOverride);
+  const notifyOverride = parseClientOverride(notify?.notifyOverride);
 
   // Every-user M365/Entra groups from the globals rules (the always-add string entries) — these are
   // applied to the m365 job at plan time IN ADDITION to the m365 system's own onboarding groups, so
