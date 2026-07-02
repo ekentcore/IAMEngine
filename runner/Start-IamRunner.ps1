@@ -961,21 +961,28 @@ function global:Invoke-CtgHttp {
     # the Invoke-RestMethod behaviour callers relied on. Disposes the request/response, NOT the client.
     param([string]$Method, [string]$Uri, [hashtable]$Headers, [string]$Body)
     $msg = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $Uri)
-    if ($Headers) {
-        foreach ($k in $Headers.Keys) {
-            if ($k -ieq 'Authorization') { $msg.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::Parse([string]$Headers[$k]) }
-            else { [void]$msg.Headers.TryAddWithoutValidation($k, [string]$Headers[$k]) }
+    try {
+        if ($Headers) {
+            foreach ($k in $Headers.Keys) {
+                if ($k -ieq 'Authorization') { $msg.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::Parse([string]$Headers[$k]) }
+                else { [void]$msg.Headers.TryAddWithoutValidation($k, [string]$Headers[$k]) }
+            }
         }
+        if ($Body) { $msg.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json') }
+        # SendAsync throws on timeout/network failure — the finally still disposes $msg (it previously
+        # leaked the request message, incl. its StringContent, on every failed heartbeat/poll ~17k/day).
+        $resp = (Get-CtgHttpClient).SendAsync($msg).GetAwaiter().GetResult()
+        try {
+            $code = [int]$resp.StatusCode
+            $ok   = $resp.IsSuccessStatusCode
+            $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if (-not $ok) { throw "HTTP ${code}: $Method $Uri$(if ($text) { " — $text" })" }
+            if ($text) { return ($text | ConvertFrom-Json) }
+            return $null
+        }
+        finally { $resp.Dispose() }
     }
-    if ($Body) { $msg.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json') }
-    $resp = (Get-CtgHttpClient).SendAsync($msg).GetAwaiter().GetResult()
-    $code = [int]$resp.StatusCode
-    $ok   = $resp.IsSuccessStatusCode
-    $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    $msg.Dispose(); $resp.Dispose()
-    if (-not $ok) { throw "HTTP ${code}: $Method $Uri$(if ($text) { " — $text" })" }
-    if ($text) { return ($text | ConvertFrom-Json) }
-    $null
+    finally { $msg.Dispose() }
 }
 
 function Invoke-AppApi {
@@ -1220,7 +1227,7 @@ function Get-CtgBuildId {
             $ms.Write($rb, 0, $rb.Length); $ms.WriteByte(0); $ms.Write($cb, 0, $cb.Length); $ms.WriteByte(0)
         }
         $ms.Position = 0
-        $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($ms)
+        $h = [System.Security.Cryptography.SHA256]::HashData($ms)   # static — no disposable instance to leak
         $ms.Dispose()
         return (-join ($h | ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
     }
@@ -1714,7 +1721,19 @@ while ($true) {
                 if ($outcome.Result -and $outcome.Result.PSObject.Properties['Evidence'] -and $null -ne $outcome.Result.Evidence) {
                     $body.evidence = $outcome.Result.Evidence
                 }
-                $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body
+                # Retry a TRANSIENT failure of the success post (network blip) before giving up. If it
+                # still won't post, do NOT fall through to the catch — that would record a false 'failed'
+                # for a job that actually SUCCEEDED. Leave it for the app's stale-lease reclaim +
+                # idempotent re-run instead.
+                $posted = $false
+                for ($rp = 0; $rp -lt 3; $rp++) {
+                    try { $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" $body; $posted = $true; break }
+                    catch { if ($rp -lt 2) { Start-Sleep -Seconds 5 } }
+                }
+                if (-not $posted) {
+                    Write-Warning "job $($job.id) SUCCEEDED but the result post failed after 3 tries — leaving it for lease-reclaim + idempotent re-run (not recording a false failure)"
+                    Write-CtgLog -Level WARN -Message "job $($job.id) [$($job.systemKey)] succeeded; result post failed 3x — will be reclaimed and re-run"
+                }
             }
             catch {
                 # Walk the FULL inner-exception chain (deduped) so the real cause surfaces — a generic
