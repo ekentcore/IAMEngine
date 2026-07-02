@@ -51,6 +51,15 @@ test("postWorkNote resolves the sys_id then PATCHes work_notes when enabled", as
   delete process.env.SN_WRITE_ENABLED;
 });
 
+test("postWorkNote refuses an injection-shaped case number WITHOUT issuing a query", async () => {
+  process.env.SN_WRITE_ENABLED = "true";
+  // fakeFetch([]) throws on ANY call — so this passing proves the guard short-circuited before the
+  // sysparm_query fetch (a `^` would otherwise be parsed by SN as an AND operator and redirect the note).
+  const r = await postWorkNote(config, "UM1^ORnumber=UM0000001", "x", fakeFetch([]));
+  assert.equal(r.ok, false);
+  delete process.env.SN_WRITE_ENABLED;
+});
+
 test("postWorkNote returns ok:false when the ticket is missing", async () => {
   process.env.SN_WRITE_ENABLED = "true";
   const r = await postWorkNote(config, "UM9999999", "x", fakeFetch([{ match: () => true, result: [] }]));
