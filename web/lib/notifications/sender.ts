@@ -50,12 +50,16 @@ export async function sendEmail(recipients: string[], e: NotificationEvent): Pro
     return { ok: false, error: "email not configured (set NOTIFY_GRAPH_TENANT/CLIENT_ID/CLIENT_SECRET/SENDER)" };
   }
   if (!recipients.length) return { ok: false, error: "no recipients" };
+  // ONE timeout budget across BOTH calls (token + sendMail) — two independent AbortSignal.timeout()s
+  // would let the total block up to 2×, defeating the cap that makes awaiting this inline safe.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const tok = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: clientId, client_secret: secret, scope: "https://graph.microsoft.com/.default", grant_type: "client_credentials" }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: controller.signal,
     });
     if (!tok.ok) return { ok: false, error: `token HTTP ${tok.status}` };
     const accessToken = ((await tok.json()) as { access_token?: string }).access_token;
@@ -71,11 +75,13 @@ export async function sendEmail(recipients: string[], e: NotificationEvent): Pro
         },
         saveToSentItems: false,
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: controller.signal,
     });
     return res.ok ? { ok: true } : { ok: false, error: `sendMail HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

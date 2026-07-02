@@ -12,6 +12,9 @@ const WEBHOOKS = [
 
 export function NotificationForm({ initial }: { initial: NotificationSettings }) {
   const [s, setS] = useState<NotificationSettings>(initial);
+  // Hold the recipients box as a RAW string so typing a comma (to add a second address) isn't eaten by
+  // parse-on-keystroke; it's split into the settings on every change and re-parsed on save anyway.
+  const [recipientRaw, setRecipientRaw] = useState(() => initial.channels.email.recipients.join(", "));
   const [status, setStatus] = useState("");
   const [results, setResults] = useState<TestResult[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -74,8 +77,8 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
           <input
             type="text"
             placeholder="comma-separated recipients"
-            value={s.channels.email.recipients.join(", ")}
-            onChange={(e) => edit((d) => { d.channels.email.recipients = e.target.value.split(",").map((x) => x.trim()).filter(Boolean); })}
+            value={recipientRaw}
+            onChange={(e) => { setRecipientRaw(e.target.value); edit((d) => { d.channels.email.recipients = e.target.value.split(",").map((x) => x.trim()).filter(Boolean); }); }}
             style={{ flex: 1, minWidth: 0 }}
           />
         </div>
