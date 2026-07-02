@@ -275,6 +275,24 @@ td.module-cell {
 .muted { color: var(--muted); }
 .note { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .note.danger { color: var(--danger); }
+.note a { color: var(--accent-press); }
+
+/* ── notification settings form ───────────────────────────────────────────── */
+.notif-form { max-width: 620px; display: flex; flex-direction: column; gap: 1.5rem; }
+.notif-form h2 { font-size: 14px; margin: 0 0 0.15rem; }
+/* checkbox rows: keep the box its natural size (the base input rule forces width:100%) */
+.notif-form input[type="checkbox"] { width: auto; margin: 0; flex: none; }
+.notif-check { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; color: var(--fg); cursor: pointer; margin: 0; }
+.notif-master { font-weight: 600; font-size: 14px; }
+.notif-channel { border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.95rem; }
+.notif-channel + .notif-channel { margin-top: 0.55rem; }
+.notif-channel .name { font-weight: 600; }
+.notif-channel .tag { color: var(--muted); font-size: 12px; font-weight: 400; }
+.notif-channel input[type="url"], .notif-channel input[type="text"] { margin-top: 0.55rem; }
+.notif-channel input:disabled { opacity: 0.5; }
+.notif-events { display: flex; flex-wrap: wrap; gap: 0.55rem 1.4rem; }
+.notif-actions { display: flex; align-items: center; gap: 0.6rem; }
+.notif-result { border: 1px solid var(--line); border-radius: 8px; padding: 0.55rem 0.8rem; background: var(--bg-soft); font-size: 13px; line-height: 1.7; }
 
 /* ── inputs ───────────────────────────────────────────────────────────────── */
 input, select, textarea {

@@ -19,11 +19,11 @@ export default async function SettingsPage() {
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
   return (
     <main>
-      <h1>Settings</h1>
+      <h1>Notifications</h1>
       <p className="note" style={{ marginBottom: "1.5rem" }}>
-        Failure notifications — alert the team when a case fails, a step fails, a runner wedges, or a case
-        needs approval. Teams / Slack / Zoom use an incoming-webhook URL; email uses Microsoft Graph
-        (set NOTIFY_GRAPH_TENANT/CLIENT_ID/CLIENT_SECRET/SENDER in the app env).
+        Get a message when something needs attention — a case fails, a step fails, a runner wedges, or a
+        case is waiting on approval. Pick where alerts go and what to alert on below; each channel tells
+        you exactly where to find its link.
       </p>
       <NotificationForm initial={settings} />
     </main>
