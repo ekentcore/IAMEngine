@@ -111,6 +111,34 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
           );
         })}
 
+        {s.channels.zoom.enabled && (
+          <div className="notif-channel" style={{ borderColor: "var(--accent-ring)" }}>
+            <label className="notif-check">
+              <input type="checkbox" checked={s.channels.zoomRestricted.enabled} onChange={(e) => edit((d) => { d.channels.zoomRestricted.enabled = e.target.checked; })} />
+              <span className="name">Zoom — restricted clients</span> <span className="tag">— sends restricted clients here instead</span>
+            </label>
+            <input
+              type="url"
+              placeholder="Zoom webhook URL for restricted clients (e.g. an “Internal” channel)"
+              value={s.channels.zoomRestricted.webhookUrl}
+              disabled={!s.channels.zoomRestricted.enabled}
+              onChange={(e) => edit((d) => { d.channels.zoomRestricted.webhookUrl = e.target.value; })}
+            />
+            <input
+              type="text"
+              placeholder="Verification token for that channel"
+              value={s.channels.zoomRestricted.token ?? ""}
+              disabled={!s.channels.zoomRestricted.enabled}
+              onChange={(e) => edit((d) => { d.channels.zoomRestricted.token = e.target.value; })}
+            />
+            <p className="note" style={{ marginTop: "0.4rem" }}>
+              Alerts for <strong>restricted</strong> clients (e.g. Coretelligent) go to this channel instead of the
+              default Zoom one above — keeping sensitive clients&rsquo; alerts private. If this is off, restricted
+              clients get <em>no</em> Zoom alert (they never fall back to the general channel).
+            </p>
+          </div>
+        )}
+
         <div className="notif-channel">
           <label className="notif-check">
             <input type="checkbox" checked={s.channels.email.enabled} onChange={(e) => edit((d) => { d.channels.email.enabled = e.target.checked; })} />

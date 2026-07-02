@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageText, sendWebhook, sendZoom, sendToChannels } from "./sender";
+import { messageText, sendWebhook, sendZoom, sendToChannels, resolveZoomTargets } from "./sender";
 import { normalizeSettings, type NotificationEvent } from "./types";
 
 const ev: NotificationEvent = {
@@ -48,20 +48,21 @@ test("sendWebhook posts { text } and reports ok/!ok", async () => {
 });
 
 test("sendZoom sends the Authorization token, ?format=message, and a raw JSON-string body", async () => {
-  let captured: { url: string; headers: Record<string, string>; body: string } | null = null;
+  // container object avoids TS narrowing a closure-written `let` to `never`
+  const cap: { got?: { url: string; headers: Record<string, string>; body: string } } = {};
   const orig = globalThis.fetch;
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    captured = { url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body: String(init?.body) };
+    cap.got = { url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body: String(init?.body) };
     return { ok: true, status: 200 } as Response;
   }) as unknown as typeof fetch;
   try {
     const r = await sendZoom("https://integrations.zoom.us/chat/webhooks/incomingwebhook/abc", "VTOKEN123", ev);
     assert.equal(r.ok, true);
-    assert.ok(captured);
-    assert.match(captured!.url, /[?&]format=message/); // format param appended
-    assert.equal(captured!.headers.Authorization, "VTOKEN123"); // verification token
-    assert.equal(captured!.body, JSON.stringify(messageText(ev))); // RAW JSON string, not { text }
-    assert.doesNotMatch(captured!.body, /"text"/);
+    assert.ok(cap.got);
+    assert.match(cap.got.url, /[?&]format=message/); // format param appended
+    assert.equal(cap.got.headers.Authorization, "VTOKEN123"); // verification token
+    assert.equal(cap.got.body, JSON.stringify(messageText(ev))); // RAW JSON string, not { text }
+    assert.doesNotMatch(cap.got.body, /"text"/);
   } finally {
     globalThis.fetch = orig;
   }
@@ -77,6 +78,36 @@ test("sendZoom reports a helpful error when the token is missing", async () => {
   } finally {
     globalThis.fetch = orig;
   }
+});
+
+test("resolveZoomTargets: restricted client routes to the restricted channel (no leak to default)", () => {
+  const ch = normalizeSettings({
+    channels: {
+      zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" },
+      zoomRestricted: { enabled: true, webhookUrl: "https://internal", token: "t2" },
+    },
+  } as never).channels;
+  assert.deepEqual(resolveZoomTargets(ch, { ...ev, restricted: false }).map((t) => t.webhookUrl), ["https://iam"]);
+  assert.deepEqual(resolveZoomTargets(ch, { ...ev, restricted: true }).map((t) => t.webhookUrl), ["https://internal"]);
+});
+
+test("resolveZoomTargets: restricted with NO restricted channel sends nowhere (never falls back to default)", () => {
+  const ch = normalizeSettings({ channels: { zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" } } } as never).channels;
+  assert.deepEqual(resolveZoomTargets(ch, { ...ev, restricted: true }), []);
+});
+
+test("resolveZoomTargets: per-client override 'also' hits override + base; 'only' hits override alone", () => {
+  const ch = normalizeSettings({ channels: { zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" } } } as never).channels;
+  const also = resolveZoomTargets(ch, { ...ev, restricted: false, zoomOverride: { webhookUrl: "https://abc", token: "z", mode: "also" } });
+  assert.deepEqual(also.map((t) => t.webhookUrl), ["https://abc", "https://iam"]);
+  const only = resolveZoomTargets(ch, { ...ev, restricted: false, zoomOverride: { webhookUrl: "https://xyz", token: "z", mode: "only" } });
+  assert.deepEqual(only.map((t) => t.webhookUrl), ["https://xyz"]);
+});
+
+test("resolveZoomTargets: de-dups when the override URL equals the base", () => {
+  const ch = normalizeSettings({ channels: { zoom: { enabled: true, webhookUrl: "https://iam", token: "t1" } } } as never).channels;
+  const r = resolveZoomTargets(ch, { ...ev, zoomOverride: { webhookUrl: "https://iam", token: "z", mode: "also" } });
+  assert.deepEqual(r.map((t) => t.webhookUrl), ["https://iam"]);
 });
 
 test("sendToChannels only hits ENABLED channels with a url", async () => {

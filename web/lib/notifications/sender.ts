@@ -8,9 +8,27 @@ import {
   normalizeSettings,
   type NotificationEvent,
   type NotifChannel,
+  type NotificationSettings,
 } from "./types";
 
 export type SendResult = { ok: boolean; error?: string };
+
+// Which Zoom channel(s) a notification goes to. Base = the restricted channel for a restricted client,
+// else the default. A per-client override adds its own channel ("also") or replaces the base ("only").
+// De-duped by URL so one channel is never double-posted.
+export function resolveZoomTargets(ch: NotificationSettings["channels"], e: NotificationEvent): { webhookUrl: string; token: string }[] {
+  const base = e.restricted ? ch.zoomRestricted : ch.zoom;
+  const out: { webhookUrl: string; token: string }[] = [];
+  const ov = e.zoomOverride;
+  if (ov?.webhookUrl) {
+    out.push({ webhookUrl: ov.webhookUrl, token: ov.token ?? "" });
+    if (ov.mode === "also" && base.enabled && base.webhookUrl) out.push({ webhookUrl: base.webhookUrl, token: base.token ?? "" });
+  } else if (base.enabled && base.webhookUrl) {
+    out.push({ webhookUrl: base.webhookUrl, token: base.token ?? "" });
+  }
+  const seen = new Set<string>();
+  return out.filter((t) => (seen.has(t.webhookUrl) ? false : (seen.add(t.webhookUrl), true)));
+}
 
 // One plain-text body shared across channels (Teams/Slack/Zoom all accept { text }).
 export function messageText(e: NotificationEvent): string {
@@ -114,7 +132,12 @@ export async function sendToChannels(
   const web = (channel: NotifChannel, url: string) => sendWebhook(url, e).then((r) => ({ channel, ...r }));
   if (ch.teams.enabled && ch.teams.webhookUrl) tasks.push(web("teams", ch.teams.webhookUrl));
   if (ch.slack.enabled && ch.slack.webhookUrl) tasks.push(web("slack", ch.slack.webhookUrl));
-  if (ch.zoom.enabled && ch.zoom.webhookUrl) tasks.push(sendZoom(ch.zoom.webhookUrl, ch.zoom.token ?? "", e).then((r) => ({ channel: "zoom" as const, ...r })));
+  // Zoom routing: base channel is the RESTRICTED one for a restricted client, else the default. A
+  // per-client override (from the client page) either adds its own channel ("also") or replaces the
+  // base entirely ("only"). De-dup by URL so the same channel isn't hit twice.
+  for (const z of resolveZoomTargets(ch, e)) {
+    tasks.push(sendZoom(z.webhookUrl, z.token, e).then((r) => ({ channel: "zoom" as const, ...r })));
+  }
   if (ch.email.enabled && ch.email.recipients.length) tasks.push(sendEmail(ch.email.recipients, e).then((r) => ({ channel: "email" as const, ...r })));
   return Promise.all(tasks);
 }

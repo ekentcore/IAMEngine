@@ -24,7 +24,8 @@ export type NotificationSettings = {
   channels: {
     teams: WebhookChannel;
     slack: WebhookChannel;
-    zoom: WebhookChannel;
+    zoom: WebhookChannel; // default Zoom channel — NON-restricted clients (e.g. "IAM")
+    zoomRestricted: WebhookChannel; // Zoom channel for RESTRICTED clients (e.g. "Internal")
     email: EmailChannel;
   };
   events: Record<NotifEvent, boolean>;
@@ -32,12 +33,17 @@ export type NotificationSettings = {
   updatedBy?: string;
 };
 
+// A client-specific Zoom override (stored per-Client, resolved at the trigger site and passed on the
+// event). mode "also" = client channel PLUS the restricted/default base; "only" = client channel alone.
+export type ZoomOverride = { webhookUrl: string; token: string; mode: "also" | "only" };
+
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   enabled: false,
   channels: {
     teams: { enabled: false, webhookUrl: "" },
     slack: { enabled: false, webhookUrl: "" },
     zoom: { enabled: false, webhookUrl: "", token: "" },
+    zoomRestricted: { enabled: false, webhookUrl: "", token: "" },
     email: { enabled: false, recipients: [] },
   },
   events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true },
@@ -52,6 +58,8 @@ export type NotificationEvent = {
   systemKey?: string | null;
   detail?: string | null; // error / reason
   url?: string | null; // absolute link to the case
+  restricted?: boolean; // the client is restricted -> route Zoom to the "restricted" channel
+  zoomOverride?: ZoomOverride | null; // this client's own Zoom channel (from the client page), if set
 };
 
 // Merge a stored (possibly partial / older-shape) settings blob onto the defaults so the UI + sender
@@ -65,6 +73,7 @@ export function normalizeSettings(raw: Partial<NotificationSettings> | null | un
       teams: { ...d.channels.teams, ...(c.teams ?? {}) },
       slack: { ...d.channels.slack, ...(c.slack ?? {}) },
       zoom: { ...d.channels.zoom, ...(c.zoom ?? {}) },
+      zoomRestricted: { ...d.channels.zoomRestricted, ...(c.zoomRestricted ?? {}) },
       email: { ...d.channels.email, ...(c.email ?? {}), recipients: c.email?.recipients ?? [] },
     },
     events: { ...d.events, ...(raw?.events ?? {}) },
