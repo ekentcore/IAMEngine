@@ -353,7 +353,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
         <option value="{first}">first</option>
       </datalist>
 
-      <div className="table-scroll">
+      <div className="table-scroll desk-only">
       <table className="data-table clients-table">
         <thead>
           <tr>
@@ -617,6 +617,32 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
           )}
         </tbody>
       </table>
+      </div>
+
+      {/* Mobile: a tappable card per client (same filtered `visible` list) — the dense table is hidden. */}
+      <div className="mob-only m-list">
+        {visible.map((c) => {
+          const e = eff(c);
+          const rd = e.readiness && e.readiness.tier !== "no_systems" ? READINESS[e.readiness.tier] : null;
+          return (
+            <Link key={c.slug} href={`/clients/${c.slug}`} className="m-card">
+              <div className="m-card-top">
+                <span className="m-card-title">{c.name}</span>
+                <span className={`badge ${c.status === "archived" ? "archived" : "active"}`}>{c.status}</span>
+              </div>
+              <div className="m-card-sub">{c.coreId ?? "—"}{c.primaryDomain ? ` · ${c.primaryDomain}` : ""}</div>
+              <div className="m-card-meta">
+                {c.backbone && <span><span className="k">backbone</span> {BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>}
+                <span><span className="k">systems</span> {e.systemCount || "—"}{e.viaParent ? " (via parent)" : ""}</span>
+                <span>
+                  <span className="k">ready</span>{" "}
+                  {rd ? <span className="badge" style={{ color: rd.color, background: rd.bg }}>{rd.mark} {rd.label}</span> : "—"}
+                </span>
+              </div>
+            </Link>
+          );
+        })}
+        {visible.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No clients match.</div>}
       </div>
 
       <dialog ref={confirmRef}>
