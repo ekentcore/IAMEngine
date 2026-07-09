@@ -37,7 +37,7 @@
       "onboard": {
         "when": "always",
         "config": {
-          "ou": "Six One Users",
+          "ou": "SixOneUsers",
           "homeDrive": { "letter": "H", "unc": "\\\\61c-fs01\\Users\\<username>" },
           "groups": ["Back Office Users"],
           "conditionalGroups": [
