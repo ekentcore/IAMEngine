@@ -48,6 +48,21 @@ function Resolve-CtgOuPath {
     "OU=$Ou,$(ConvertTo-CtgDomainDn $Domain)"
 }
 
+# The base for AD DNs must be the ACTUAL AD domain (from the connected DC), NOT the user's email/UPN
+# PrimaryDomain. They differ whenever the AD domain is a subdomain of the mail domain (AD
+# corp.example.com vs mail example.com) — and building a DN from the mail domain targets a naming
+# context the DC isn't authoritative for, so New-ADUser fails "The server is unwilling to process the
+# request". Query the connected domain (honouring the -Server/-Credential splat); fall back to the
+# supplied email domain only if the query fails, so read-only/offline callers still get *a* value.
+function Resolve-CtgAdDomain {
+    param([hashtable]$AdConnection = @{}, [string]$Fallback)
+    try {
+        $root = (Get-ADDomain @AdConnection -ErrorAction Stop).DNSRoot
+        if ($root) { return [string]$root }
+    } catch { }
+    return $Fallback
+}
+
 # Evaluate a conditional-group rule like "avd == true" against the user object.
 function Test-CtgCondition {
     param([string]$When, $User)
@@ -133,7 +148,7 @@ function Invoke-CtgADOnboarding {
     $actions = [System.Collections.Generic.List[string]]::new()
     $primarySam = Get-CtgProp $User 'SamAccountName'   # StrictMode-safe
     $primaryUpn = [string]$User.UserPrincipalName
-    $domain = Get-CtgProp $User 'PrimaryDomain'
+    $domain = Resolve-CtgAdDomain -AdConnection $AdConnection -Fallback (Get-CtgProp $User 'PrimaryDomain')
     $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
 
     # 1. Decide WHICH account to use before creating one: check existence, confirm it's the same
@@ -185,10 +200,16 @@ function Invoke-CtgADOnboarding {
         # A DC won't enable an account without an initial password. Caller may override later /
         # set the same upstream password for mirror clients; this is a compliant placeholder.
         $initial = ConvertTo-SecureString ([System.Guid]::NewGuid().ToString() + '!Aa9') -AsPlainText -Force
-        New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $chosenUpn `
-            -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
-            -Path $ouPath -Enabled $true -AccountPassword $initial `
-            -OtherAttributes @{ proxyAddresses = "SMTP:$chosenUpn" } @AdConnection
+        # Wrap so a create failure names the resolved target DN — a bare "unwilling to process the
+        # request" hides WHERE it tried to write (the #1 cause is a wrong/nonexistent OU DN).
+        try {
+            New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $chosenUpn `
+                -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
+                -Path $ouPath -Enabled $true -AccountPassword $initial `
+                -OtherAttributes @{ proxyAddresses = "SMTP:$chosenUpn" } @AdConnection
+        } catch {
+            throw "creating user '$sam' at '$ouPath' (domain $domain): $($_.Exception.Message)"
+        }
         $actions.Add("created user $sam in $ouPath")
     }
 
@@ -517,7 +538,7 @@ function Confirm-CtgAD {
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
     $sam = [string](Get-CtgProp $User 'SamAccountName')   # StrictMode-safe (payload may lack the property)
-    $domain = Get-CtgProp $User 'PrimaryDomain'
+    $domain = Resolve-CtgAdDomain -AdConnection $AdConnection -Fallback (Get-CtgProp $User 'PrimaryDomain')
 
     # Resolve the SAME way the executor does — by display name when the case has no SamAccountName —
     # so the read-back doesn't pass an empty -Identity (a hard bind error) and doesn't check the wrong

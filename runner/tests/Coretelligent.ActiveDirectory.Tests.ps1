@@ -20,6 +20,7 @@ BeforeAll {
     function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword, $Server, $Credential) }
     function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Properties, $Server, $Credential) }
     function global:Get-ADComputer { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
+    function global:Get-ADDomain { [CmdletBinding()] param($Server, $Credential) }  # Resolve-CtgAdDomain queries this for the real AD domain
 
     Import-Module $ModulePath -Force
 }
@@ -38,6 +39,26 @@ Describe 'Invoke-CtgADOnboarding' {
         $r = Invoke-CtgADOnboarding -User $user -Config $config
         $r.Status | Should -Be 'ok'
         Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Path -match 'Six One Users' }
+    }
+
+    It 'builds the OU DN from the ACTUAL AD domain, not the user email/UPN domain (Six One: AD corp.61commodities.com vs mail 61commodities.com)' {
+        # Regression for UM0029655: the DN was built from PrimaryDomain (61commodities.com) so New-ADUser
+        # targeted OU=...,DC=61commodities,DC=com — a naming context the DC (corp.61commodities.com) doesn't
+        # own -> "The server is unwilling to process the request". The real AD domain must win.
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DNSRoot='corp.61commodities.com' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' })
+        $r.Status | Should -Be 'ok'
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Path -eq 'OU=Six One Users,DC=corp,DC=61commodities,DC=com'
+        }
+    }
+
+    It 'falls back to the email domain when the DC domain cannot be queried' {
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { throw 'no ADWS' }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' })
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Path -eq 'OU=Six One Users,DC=61commodities,DC=com'
+        }
     }
 
     It 'adopts an existing account whose NAME matches (same person, re-run) without creating' {
