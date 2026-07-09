@@ -418,13 +418,48 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .v2-switch-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 140ms; }
 .v2-switch-track.on .v2-switch-thumb { transform: translateX(16px); }
 
-/* ── mobile / narrow screens ──────────────────────────────────────────────────
-   The app is a dense desktop console; this makes it USABLE on a phone (it isn't a
-   separate mobile UI). The header wraps with the nav on its own scrollable row, the
-   card goes full-width, and wide tables scroll horizontally within their card. */
-@media (max-width: 720px) {
-  .app-header { flex-wrap: wrap; gap: 0.4rem 0.7rem; padding: 0.5rem 0.8rem; }
-  .app-header nav { order: 5; width: 100%; overflow-x: auto; padding-bottom: 2px; }
-  main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.85rem; overflow-x: auto; }
-  h1 { font-size: 1.35rem; }
+/* ── mobile ────────────────────────────────────────────────────────────────────
+   A real mobile experience: the dense desktop tables (.desk-only) are swapped for
+   purpose-built card lists (.mob-only) that render from the SAME data, and the header
+   nav becomes a hamburger drawer. Desktop is completely unaffected — these utilities
+   are no-ops above the breakpoint. */
+.mob-only { display: none; }
+.mobile-nav { display: none; }
+
+/* Mobile card list — one tappable card per row (client/case/agent/run). */
+.m-list { display: flex; flex-direction: column; gap: 0.6rem; }
+.m-card {
+  display: block; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+  padding: 0.8rem 0.9rem; box-shadow: var(--shadow-1); color: var(--fg); text-decoration: none;
 }
+.m-card:active { background: var(--bg-soft); }
+.m-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
+.m-card-title { font-weight: 600; font-size: 15px; }
+.m-card-sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+.m-card-meta { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; margin-top: 0.55rem; font-size: 12.5px; }
+.m-card-meta .k { color: var(--muted); }
+.m-card-msg { margin-top: 0.5rem; font-size: 12.5px; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .desk-only { display: none !important; }
+  .mob-only { display: block; }
+  .app-header { gap: 0.5rem; padding: 0.55rem 0.9rem; }
+  .app-header > nav { display: none; }      /* desktop inline nav -> the drawer (fixed-position .mobile-drawer nav is unaffected) */
+  .mobile-nav { display: inline-flex; }
+  main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.9rem; }
+  h1 { font-size: 1.3rem; }
+  /* any remaining desktop tables (pages without a card view yet) scroll instead of breaking layout */
+  main table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+/* Hamburger + slide-in drawer */
+.mobile-nav-btn { font-size: 18px; line-height: 1; padding: 0.35rem 0.55rem; }
+.mobile-drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 60; }
+.mobile-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(78vw, 300px); z-index: 61;
+  background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-2);
+  padding: 1rem; display: flex; flex-direction: column; gap: 0.15rem; overflow-y: auto;
+}
+.mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; }
+.mobile-drawer a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-press); }
+.mobile-drawer a:active { background: var(--bg-soft); }

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
 import { V2Toggle } from "./_components/v2-toggle";
 import { ThemeToggle } from "./_components/theme-toggle";
+import { MobileNav } from "./_components/mobile-nav";
 import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
@@ -60,6 +61,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+              <MobileNav
+                showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
+                showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
+                showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
+              />
               <ThemeToggle dark={theme === "dark"} />
               <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
               {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
