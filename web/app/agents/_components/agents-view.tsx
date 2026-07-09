@@ -204,8 +204,12 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
     const res = await createEnrollToken({ scope, clientSlug: scope === "client_network" ? clientSlug : null });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
+    // Download to a FILE, then run it — the installer re-launches itself under pwsh 7, which needs
+    // a script path on disk (irm|iex can't re-exec, so modules got installed for the wrong shell).
+    // Run via `powershell -ExecutionPolicy Bypass -File` so RemoteSigned + mark-of-the-web on the
+    // downloaded file can't block it (irm|iex never hit execution policy; a .ps1 on disk does).
     // -Headers skips ngrok-free's browser-warning interstitial (harmless on LAN/Cloudflare).
-    setInstall({ command: `irm -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/install.ps1?token=${res.token}" | iex`, token: res.token });
+    setInstall({ command: `$f = "$env:TEMP\\install-iam-runner.ps1"; iwr -UseBasicParsing -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/install.ps1?token=${res.token}" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f`, token: res.token });
   }
 
   // Manual enroll (e.g. a Mac smoke test) — creates the agent now and shows its id + start command.
@@ -479,7 +483,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
         {install ? (
           <div>
             <h2>Install the runner</h2>
-            <p className="note">On the target host, open an <b>elevated PowerShell</b> and paste this. It installs the modules, downloads the runner, auto-enrolls, and registers a Scheduled Task that starts on boot.</p>
+            <p className="note">On the target host, open an <b>elevated PowerShell</b> (5.1 or 7) and paste this. It downloads the installer, re-launches itself under PowerShell 7, installs any missing modules where the runner can load them, downloads the runner, auto-enrolls, and registers a Scheduled Task that starts on boot.</p>
             <textarea readOnly rows={3} style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
               value={install.command} onFocus={(e) => e.currentTarget.select()} />
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>

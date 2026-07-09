@@ -1,12 +1,20 @@
 // GET /api/runner/install.ps1?token=<enrollToken> — returns a self-contained PowerShell installer.
-// One-liner usage (shown on /agents):  irm http://<app>/api/runner/install.ps1?token=… | iex
-// Add &download=1 to serve it as a saved file (Content-Disposition attachment) for shops that block
-// `irm | iex` — the operator saves install-iam-runner.ps1 and runs it locally instead.
+// One-liner usage (shown on /agents) downloads it to a FILE and runs it:
+//   iwr "http://<app>/api/runner/install.ps1?token=…" -OutFile $f; powershell -ExecutionPolicy Bypass -File $f
+// Add &download=1 to serve it as a browser download (Content-Disposition attachment) — the
+// dialog's "Download install.ps1" button; the operator saves install-iam-runner.ps1 and runs it.
+// Either way it must be a file on disk (not `irm | iex`) because the script re-launches ITSELF
+// under pwsh 7 before installing modules. Installing them from the operator's Windows PowerShell
+// 5.1 console is the "Import-Module says it's missing right after I installed it" trap: a
+// CurrentUser install is invisible to the SYSTEM task, and 5.1-installed Graph builds can fail to
+// import under pwsh 7. Installing BY pwsh 7 with -Scope AllUsers lands them where the runner's own
+// runtime provably loads them (the script verifies the import before moving on).
 //
 // The route verifies the enroll token, derives the app URL from the request, and bakes scope/client
-// + token + appUrl into the script. The script: installs modules (scope-aware), downloads the runner
-// via the manifest+file API, auto-enrolls (token -> agent id), registers a "iam-runner" Scheduled
-// Task (at startup, restart on failure), and starts it. Idempotent and re-runnable.
+// + token + appUrl into the script. The script: ensures pwsh 7 and re-execs under it, installs the
+// missing modules (scope-aware), downloads the runner via the manifest+file API, auto-enrolls
+// (token -> agent id), registers a "iam-runner" Scheduled Task (at startup, restart on failure),
+// and starts it. Idempotent and re-runnable.
 import { verifyEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 
 export const dynamic = "force-dynamic";
@@ -79,19 +87,49 @@ if (-not $pwsh) {
   if (-not (Test-Path $pwsh)) { Write-Error "PowerShell 7 not found after install — install it from https://aka.ms/powershell and re-run."; return }
 }
 
-# 2. Cloud modules (Graph, EXO) — BEST EFFORT. A blocked/failed install must NOT abort the install:
-# the runner loads each module only if present, so a missing one just means those jobs skip. AD works
-# without them. (-AcceptLicense isn't on Server's built-in PowerShellGet 1.x, so it's omitted.)
-Step "installing cloud modules (best-effort: Graph, ExchangeOnlineManagement)"
+# 2. Re-exec under pwsh 7. Modules MUST be installed BY pwsh 7, machine-wide: a 5.1 CurrentUser
+# install is invisible to the SYSTEM task, and 5.1-installed Graph builds can fail to import under
+# pwsh 7 — either way the runner then fails Import-Module despite a "successful" install here.
+# Installing from pwsh 7 with -Scope AllUsers lands them where the runner's runtime provably loads.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+  $self = $PSCommandPath
+  if (-not $self) {
+    # piped to iex (legacy one-liner) — persist a copy so pwsh 7 has a file to run
+    $self = Join-Path $env:TEMP 'install-iam-runner.ps1'
+    Invoke-WebRequest -UseBasicParsing -Uri "$AppUrl/api/runner/install.ps1?token=$Token" -Headers @{ 'ngrok-skip-browser-warning' = 'true' } -OutFile $self
+  }
+  Step "re-launching under PowerShell 7 ($pwsh)"
+  & $pwsh -NoProfile -ExecutionPolicy Bypass -File $self
+  return
+}
+
+# 3. Cloud modules (Graph, EXO) — BEST EFFORT, each installed only if missing. A blocked/failed
+# install must NOT abort: the runner loads each module only if present, so a missing one just means
+# those jobs skip (AD works without them), and the runner self-heals any other Microsoft.Graph.*
+# a job turns out to need. Targeted Graph submodules (what the executors actually call) instead of
+# the 40-module Microsoft.Graph meta package: minutes faster, fewer assembly-version conflicts.
+Step "installing cloud modules (best-effort; only the missing ones)"
 try { Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
 if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default -ErrorAction SilentlyContinue }
 Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-foreach ($m in @('Microsoft.Graph','ExchangeOnlineManagement')) {
-  if (-not (Get-Module -ListAvailable -Name $m)) {
-    try { Install-Module $m -Scope AllUsers -Force -ErrorAction Stop }
-    catch { Write-Warning "skipped $m (its jobs will be skipped): $($_.Exception.Message)" }
-  }
+$mods = @(
+  'Microsoft.Graph.Authentication'
+  'Microsoft.Graph.Users'
+  'Microsoft.Graph.Users.Actions'
+  'Microsoft.Graph.Groups'
+  'Microsoft.Graph.Identity.SignIns'
+  'Microsoft.Graph.Identity.DirectoryManagement'
+  'ExchangeOnlineManagement'
+)
+foreach ($m in $mods) {
+  if (Get-Module -ListAvailable -Name $m) { Write-Host "  $m already present" -ForegroundColor DarkGray; continue }
+  Step "installing $m"
+  try { Install-Module $m -Scope AllUsers -Force -AllowClobber -AcceptLicense -ErrorAction Stop }
+  catch { Write-Warning "skipped $m (its jobs will be skipped): $($_.Exception.Message)" }
 }
+# Prove the critical one loads in THIS pwsh — the same runtime the runner's jobs use.
+try { Import-Module Microsoft.Graph.Authentication -ErrorAction Stop; Step "verified: Microsoft.Graph.Authentication imports under pwsh 7" }
+catch { Write-Warning "Microsoft.Graph.Authentication failed to import under pwsh 7: $($_.Exception.Message)" }
 # On a domain controller the ActiveDirectory module is already present (AD DS role).
 if ($NeedAd -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
   try {
@@ -103,7 +141,7 @@ if ($NeedAd -and -not (Get-Module -ListAvailable -Name ActiveDirectory)) {
 # ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
 $H = @{ 'ngrok-skip-browser-warning' = 'true' }
 
-# 3. Download the runner (manifest + per-file)
+# 4. Download the runner (manifest + per-file)
 Step "downloading runner -> $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H
@@ -114,21 +152,21 @@ foreach ($rel in $manifest.files) {
   [System.IO.File]::WriteAllText($dest, $body.Content)
 }
 
-# 4. Auto-enroll (token -> agent id; the token carries scope + client)
+# 5. Auto-enroll (token -> agent id; the token carries scope + client)
 Step "enrolling agent"
 $enroll = Invoke-RestMethod -Method Post -Uri "$AppUrl/api/agents" -ContentType 'application/json' -Headers $H -Body (@{ name = "${agentName}"; enrollToken = $Token } | ConvertTo-Json)
 $AgentId = $enroll.id
 if (-not $AgentId) { Write-Error "Enrollment failed (no agent id returned)."; return }
 Write-Host "  enrolled: $AgentId" -ForegroundColor Green
 
-# 4b. Bearer token (Machine env) so the SYSTEM task authenticates to the app once it fails-closed.
+# 5b. Bearer token (Machine env) so the SYSTEM task authenticates to the app once it fails-closed.
 # Not put on the task command line, so it isn't visible in the task definition.
 if ($ApiToken) {
   [Environment]::SetEnvironmentVariable('RUNNER_API_TOKEN', $ApiToken, 'Machine')
   Write-Host "  set RUNNER_API_TOKEN (Machine env)" -ForegroundColor Green
 }
 
-# 5. Register + start a Scheduled Task (at startup, restart on failure)
+# 6. Register + start a Scheduled Task (at startup, restart on failure)
 Step "registering Scheduled Task 'iam-runner'"
 $start = Join-Path $InstallDir 'Start-IamRunner.ps1'
 $arg = '-NoProfile -ExecutionPolicy Bypass -File "' + $start + '" -AppUrl "' + $AppUrl + '" -AgentId "' + $AgentId + '"'
