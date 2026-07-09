@@ -54,4 +54,37 @@ Describe 'Runner wiring smoke' {
             $m.FunctionsToExport  | Should -Not -BeNullOrEmpty -Because "$($psd1.Name) must export functions"
         }
     }
+
+    Context 'on-prem capability probe' {
+        # Parse the $script:OnPremCapabilityProbe map out of the runner as data (it isn't dot-sourceable).
+        BeforeAll {
+            $runnerSrc = Get-Content "$Root/Start-IamRunner.ps1" -Raw
+            $block = [regex]::Match($runnerSrc, "OnPremCapabilityProbe\s*=\s*\[ordered\]@\{(.+?)\}", 'Singleline').Groups[1].Value
+            $script:Probe = @{}
+            foreach ($m in [regex]::Matches($block, "'([^']+)'\s*=\s*'([^']+)'")) { $script:Probe[$m.Groups[1].Value] = $m.Groups[2].Value }
+        }
+
+        It 'probes exactly the ALWAYS_ON_PREM systems (active-directory, directory-sync)' {
+            # Mirrors ALWAYS_ON_PREM_SYSTEMS in web/lib/cases/case-secrets.ts. If a new on-prem system is
+            # added there, add it here too so incapable agents don't silently claim + hard-fail it.
+            ($script:Probe.Keys | Sort-Object) | Should -Be @('active-directory', 'directory-sync')
+        }
+
+        It 'each probe target is a real exported Coretelligent function (guards against a typo)' {
+            # A typo'd sentinel would make Get-Command always miss -> the agent forever reports it CAN'T
+            # run that system -> the app never dispatches the step. This catches that at build time.
+            foreach ($k in $script:Probe.Keys) {
+                (Get-Command $script:Probe[$k] -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty -Because "probe for '$k' points at $($script:Probe[$k])"
+            }
+        }
+
+        It 'serializes 0/1/N capabilities as a JSON array over the wire' {
+            # The server distinguishes "[]" (reported none -> withhold all on-prem) from missing (legacy
+            # runner -> allow), so the empty case MUST be "[]", not "" or "null".
+            $mk = { param($caps) if ($caps.Count -eq 0) { '[]' } else { ($caps | ConvertTo-Json -Compress -AsArray) } }
+            (& $mk @())                                    | Should -Be '[]'
+            (& $mk @('active-directory'))                  | Should -Be '["active-directory"]'
+            (& $mk @('active-directory','directory-sync')) | Should -Be '["active-directory","directory-sync"]'
+        }
+    }
 }

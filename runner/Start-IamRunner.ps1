@@ -75,6 +75,28 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proo
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
 # module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
 # where its dependency is present so the central cloud runner doesn't fail to import.
+if (-not (Get-Module -ListAvailable ActiveDirectory)) {
+    # Self-heal: a fresh on-prem (DC/member-server) agent that shipped without the ActiveDirectory
+    # RSAT module would otherwise hard-fail every AD job ("Invoke-CtgADOnboarding not loaded"). Try to
+    # add it ONCE at startup. Best-effort + quiet everywhere it doesn't apply: a Mac/Linux central
+    # runner has no Add-WindowsCapability, and a Windows host where RSAT isn't an installable capability
+    # (and has no ServerManager) just no-ops. Needs elevation + Windows Update reachability to succeed;
+    # if it can't, the capability probe below reports "no AD" and the app withholds AD jobs (they stay
+    # pending with a clear reason) instead of dispatching a step this host can't run.
+    try {
+        if ($IsWindows) {
+            $adCap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($adCap -and $adCap.State -ne 'Installed') {
+                Write-Host "ActiveDirectory module missing — installing RSAT capability ($($adCap.Name))…" -ForegroundColor Yellow
+                Add-WindowsCapability -Online -Name $adCap.Name -ErrorAction Stop | Out-Null
+            } elseif (-not $adCap -and (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue)) {
+                # A server with the ServerManager module (e.g. a DC) exposes RSAT-AD-PowerShell as a feature.
+                Write-Host "ActiveDirectory module missing — installing RSAT-AD-PowerShell feature…" -ForegroundColor Yellow
+                Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null
+            }
+        }
+    } catch { Write-Warning "could not auto-install the ActiveDirectory RSAT module (install RSAT-AD-PowerShell manually + restart the runner): $($_.Exception.Message)" }
+}
 if (Get-Module -ListAvailable ActiveDirectory) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psd1" -Force
 }
@@ -1554,6 +1576,26 @@ $script:RunnerSemver = try { (Get-Content -LiteralPath (Join-Path $PSScriptRoot 
 # UPTIME (now - bootAt). Re-exec on update/restart is a new process, so uptime correctly resets then.
 $script:RunnerStartedAt = (Get-Date).ToUniversalTime().ToString("o")
 
+# On-prem CAPABILITY probe: which ALWAYS_ON_PREM system keys THIS host can actually execute — i.e. the
+# host-specific Coretelligent entry function is loaded (its dependency module imported above). Reported
+# each heartbeat so the app WITHHOLDS on-prem jobs from agents that can't run them (they stay pending
+# with a clear reason) instead of dispatching a step that hard-fails with "module not loaded". Extend
+# this map when a new ALWAYS_ON_PREM system is added. (directory-sync's module loads unconditionally and
+# remotes to the sync host, so it's ~always capable; active-directory needs the ActiveDirectory module.)
+$script:OnPremCapabilityProbe = [ordered]@{
+    'active-directory' = 'Invoke-CtgADOnboarding'
+    'directory-sync'   = 'Invoke-CtgDirectorySync'
+}
+$script:RunnerCapabilities = @(
+    $script:OnPremCapabilityProbe.Keys | Where-Object { Get-Command $script:OnPremCapabilityProbe[$_] -ErrorAction SilentlyContinue }
+)
+# Serialize as a JSON-array STRING so 0- and 1-element lists stay arrays over the wire — a bare
+# @('active-directory') would ConvertTo-Json to a scalar and @() would pipe nothing (empty output),
+# making the server unable to tell "reported, none" (withhold all on-prem) from "legacy runner, not
+# reported" (allow, old behavior). Empty is forced to the literal '[]' (an empty pipe emits nothing).
+$script:RunnerCapabilitiesJson = if ($script:RunnerCapabilities.Count -eq 0) { '[]' } else { ($script:RunnerCapabilities | ConvertTo-Json -Compress -AsArray) }
+Write-Host "on-prem capabilities: $script:RunnerCapabilitiesJson" -ForegroundColor DarkGray
+
 # Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
 # at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
 # PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
@@ -1598,7 +1640,7 @@ while ($true) {
         }
     } catch { }
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
