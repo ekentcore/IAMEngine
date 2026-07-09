@@ -5,6 +5,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 
 const ITEMS: ReadonlyArray<readonly [string, string]> = [
   ["/clients", "Clients"],
@@ -27,7 +28,9 @@ export function MobileNav({ showUsers = false, showAudit = false, showSettings =
   return (
     <span className="mobile-nav">
       <button type="button" className="mobile-nav-btn" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}>☰</button>
-      {open && (
+      {/* Portal to <body>: the .app-header has backdrop-filter, which would make it the containing block
+          for the fixed-position drawer and trap it inside the header's height. */}
+      {open && createPortal(
         <>
           <div className="mobile-drawer-backdrop" onClick={() => setOpen(false)} />
           <nav className="mobile-drawer" aria-label="Main menu">
@@ -41,7 +44,8 @@ export function MobileNav({ showUsers = false, showAudit = false, showSettings =
               </Link>
             ))}
           </nav>
-        </>
+        </>,
+        document.body,
       )}
     </span>
   );

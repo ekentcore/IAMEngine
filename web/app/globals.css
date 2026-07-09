@@ -444,7 +444,7 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
   .desk-only { display: none !important; }
   .mob-only { display: block; }
   .app-header { gap: 0.5rem; padding: 0.55rem 0.9rem; }
-  .app-header > nav { display: none; }      /* desktop inline nav -> the drawer (fixed-position .mobile-drawer nav is unaffected) */
+  .app-header > nav { display: none !important; } /* desktop inline nav (has inline display:flex) -> the drawer. .mobile-drawer nav is unaffected (not a direct child). */
   .mobile-nav { display: inline-flex; }
   main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.9rem; }
   h1 { font-size: 1.3rem; }
