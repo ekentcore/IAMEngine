@@ -28,9 +28,9 @@ export function DryRunToggle({ caseId, dryRun, locked }: { caseId: string; dryRu
     <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
       <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: locked ? "default" : "pointer" }} title={locked ? "A job has already started — re-plan to change the mode." : ""}>
         <input type="checkbox" checked={on} disabled={busy || locked} onChange={(e) => set(e.target.checked)} style={{ width: "auto" }} />
-        <b style={{ color: on ? "#7b3fa0" : undefined }}>Dry run</b>
+        <b style={{ color: on ? "var(--info-fg)" : undefined }}>Dry run</b>
       </label>
-      <span className="badge" style={on ? { color: "#7b3fa0", borderColor: "#e0cef0", background: "#f8f3fc" } : { color: "#b3261e", borderColor: "#f0c4c1", background: "#fdf3f2" }}>
+      <span className="badge" style={on ? { color: "var(--info-fg)", borderColor: "var(--info-bg)", background: "var(--info-bg)" } : { color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }}>
         {on ? "dry run · -WhatIf, no changes" : "LIVE · will make changes"}
       </span>
       {locked && <span className="note">locked — a job has started</span>}

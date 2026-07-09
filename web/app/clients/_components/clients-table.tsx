@@ -401,7 +401,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                   title="Intake source — internal scans onboarding incidents, external scans UM cases. Click to toggle."
                   onClick={() => saveCell(c.slug, "set-intake-source", { intakeSource: c.intakeSource === "incident" ? "um" : "incident" })}
                   style={{ cursor: "pointer", ...(c.intakeSource === "incident"
-                    ? { color: "#7b3fa0", borderColor: "#e0cef0", background: "#f8f3fc" }
+                    ? { color: "var(--info-fg)", borderColor: "var(--info-bg)", background: "var(--info-bg)" }
                     : { color: "var(--muted)", opacity: 0.65 }) }}
                 >
                   {c.intakeSource === "incident" ? "internal" : "external"}
@@ -427,7 +427,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                       style={{
                         cursor: "pointer",
                         ...(c.restricted
-                          ? { color: "#a23f3f", borderColor: "#f0cece", background: "#fcf3f3" }
+                          ? { color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }
                           : { color: "var(--muted)", opacity: 0.5 }),
                       }}
                     >

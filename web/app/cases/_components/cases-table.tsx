@@ -50,11 +50,11 @@ const STATUS_LABEL: Record<string, string> = {
 
 // Status -> a subtle colour so the table scans at a glance (failed red, done green, attention amber).
 const STATUS_COLOR: Record<string, string> = {
-  failed: "#b3261e",
-  completed: "#2e7d32",
-  needs_manual: "#8a6d00",
-  needs_approval: "#8a6d00",
-  running: "#1565c0",
+  failed: "var(--err-fg)",
+  completed: "var(--ok-fg)",
+  needs_manual: "var(--warn-fg)",
+  needs_approval: "var(--warn-fg)",
+  running: "var(--info-fg)",
 };
 
 type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "lastRun" | "createdAt";
@@ -80,7 +80,7 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
       className="badge"
       title={title}
       style={{
-        color: c.imported ? "#5b21b6" : c.paused ? "#8a6d00" : warns.length ? "#b45309" : STATUS_COLOR[c.status],
+        color: c.imported ? "var(--info-fg)" : c.paused ? "var(--warn-fg)" : warns.length ? "var(--warn-fg)" : STATUS_COLOR[c.status],
         cursor: title ? "help" : undefined,
         textDecoration: title ? "underline dotted" : undefined,
         textUnderlineOffset: 3,
@@ -300,7 +300,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               key={c.id}
               onMouseEnter={() => setHoveredId(c.id)}
               onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
-              style={selected.has(c.id) ? { background: "#eff6ff" } : undefined}
+              style={selected.has(c.id) ? { background: "var(--accent-soft)" } : undefined}
             >
               <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
               <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
@@ -320,7 +320,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                 {c.effectiveDate
                   ? formatDateOnly(c.effectiveDate)
                   : c.immediate
-                    ? <span className="badge" style={{ color: "#b45309", borderColor: "#fde68a", background: "#fffbeb" }}>Immediate</span>
+                    ? <span className="badge" style={{ color: "var(--warn-fg)", borderColor: "var(--warn-bg)", background: "var(--warn-bg)" }}>Immediate</span>
                     : "—"}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
@@ -350,9 +350,9 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   const off = "#c4c7cc";
                   return (
                     <span className="icon-stack">
-                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "#15803d" : off }} onClick={() => setPaused(c, false)}>{"▶︎"}</button>
-                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "#b45309" : off }} onClick={() => setPaused(c, true)}>{"⏸︎"}</button>
-                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "#b3261e" : off }} onClick={() => cancelRun(c)}>{"⏹︎"}</button>
+                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "var(--ok-fg)" : off }} onClick={() => setPaused(c, false)}>{"▶︎"}</button>
+                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "var(--warn-fg)" : off }} onClick={() => setPaused(c, true)}>{"⏸︎"}</button>
+                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "var(--err-fg)" : off }} onClick={() => cancelRun(c)}>{"⏹︎"}</button>
                     </span>
                   );
                 })()}
@@ -367,7 +367,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                     border: "none",
                     background: "none",
                     cursor: "pointer",
-                    color: "#b3261e",
+                    color: "var(--err-fg)",
                     fontSize: 16,
                     lineHeight: 1,
                     padding: "2px 8px",
@@ -449,7 +449,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                       disabled={busyId === c.id}
                       title="Move this case to the trash (restorable for 30 days)"
                       aria-label="Move this case to the trash"
-                      style={{ border: "none", background: "none", cursor: "pointer", color: "#b3261e", fontSize: 16, lineHeight: 1, padding: "2px 8px", opacity: hoveredId === c.id || busyId === c.id ? 1 : 0, transition: "opacity 120ms" }}
+                      style={{ border: "none", background: "none", cursor: "pointer", color: "var(--err-fg)", fontSize: 16, lineHeight: 1, padding: "2px 8px", opacity: hoveredId === c.id || busyId === c.id ? 1 : 0, transition: "opacity 120ms" }}
                     >
                       {busyId === c.id ? "…" : "×"}
                     </button>
@@ -481,7 +481,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   <td className="muted">{t.serviceNowCaseNumber ?? "—"}</td>
                   <td className="muted">{STATUS_LABEL[t.status] ?? t.status}</td>
                   <td className="muted">{new Date(t.deletedAtIso).toLocaleDateString()}</td>
-                  <td style={{ color: t.daysLeft <= 3 ? "#b3261e" : undefined }}>{t.daysLeft} day{t.daysLeft === 1 ? "" : "s"}</td>
+                  <td style={{ color: t.daysLeft <= 3 ? "var(--err-fg)" : undefined }}>{t.daysLeft} day{t.daysLeft === 1 ? "" : "s"}</td>
                   <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                     <button
                       onClick={() => call(t.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore" }) })}
@@ -497,7 +497,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                         }
                       }}
                       disabled={busyId === t.id}
-                      style={{ marginLeft: 6, color: "#b3261e" }}
+                      style={{ marginLeft: 6, color: "var(--err-fg)" }}
                     >
                       Delete forever
                     </button>

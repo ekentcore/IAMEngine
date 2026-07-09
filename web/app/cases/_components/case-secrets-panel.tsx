@@ -22,9 +22,9 @@ type TestResult = { ok: boolean; label?: string; error?: string };
 
 const SRC: Record<CaseSecret["source"], { text: string; color: string }> = {
   client: { text: "from client", color: "var(--muted)" },
-  case: { text: "overridden", color: "#7b3fa0" },
-  parent: { text: "inherited", color: "#2563eb" },
-  missing: { text: "missing", color: "#b3261e" },
+  case: { text: "overridden", color: "var(--info-fg)" },
+  parent: { text: "inherited", color: "var(--info-fg)" },
+  missing: { text: "missing", color: "var(--err-fg)" },
   not_needed: { text: "not needed", color: "var(--muted)" },
 };
 // Never crash on an unmapped source value (the server may add one before this map does).
@@ -77,7 +77,7 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <p className="note" style={{ margin: 0 }}>
           Delinea references this case needs. Set on the client by default; override or fill one here for a one-off.
-          {anyMissing && <span style={{ color: "#b3261e" }}> · some are missing — fill them before dispatch.</span>}
+          {anyMissing && <span style={{ color: "var(--err-fg)" }}> · some are missing — fill them before dispatch.</span>}
         </p>
         <button onClick={() => test()} disabled={!!busy || !delineaOk} title={delineaOk ? "" : "Delinea not configured — see /health"}>Test all</button>
       </div>
@@ -108,7 +108,7 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
                   {s.overridden && s.clientExternalId && (
                     <button className="note" style={{ marginLeft: 6 }} onClick={() => saveOverride(s.name, "")}>reset to client</button>
                   )}
-                  {res && <span className="badge" style={{ marginLeft: 6, color: res.ok ? "#2e7d32" : "#b3261e" }}>{res.ok ? `✓ ${res.label ?? "ok"}` : `✗ ${res.error ?? "fail"}`}</span>}
+                  {res && <span className="badge" style={{ marginLeft: 6, color: res.ok ? "var(--ok-fg)" : "var(--err-fg)" }}>{res.ok ? `✓ ${res.label ?? "ok"}` : `✗ ${res.error ?? "fail"}`}</span>}
                 </td>
                 <td><button onClick={() => saveOverride(s.name, val)} disabled={busy === s.name || (edit[s.name] ?? "") === ""}>Save</button></td>
                 <td><button onClick={() => test(s.name)} disabled={!!busy || !delineaOk}>Test</button></td>
