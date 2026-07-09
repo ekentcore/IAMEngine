@@ -331,6 +331,22 @@ Describe 'Confirm-CtgAD' {
         ($r.checks | Where-Object { $_.name -eq 'home drive mapped' }).pass | Should -BeTrue
     }
 
+    It 'onboard: still validates on an AD WITHOUT the Exchange schema (msExch property errors the call)' {
+        # Regression (Six One): the shared read-back requested msExchHideFromAddressLists. On an EXO-only
+        # tenant (no on-prem Exchange schema) that fails the WHOLE Get-ADUser call, so a fully-onboarded
+        # user validated as ABSENT (all 4 checks failed). The core read-back must not request that attr.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Laura Munder,OU=SixOneUsers,DC=corp,DC=61commodities,DC=com'; Enabled=$true; HomeDirectory='\\61c-fs01\Users\lauramunder' } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith { throw 'Get-ADUser : One or more properties are invalid.' }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Back Office Users' }) }
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DNSRoot='corp.61commodities.com' } }
+        $user = [pscustomobject]@{ SamAccountName='lauramunder'; PrimaryDomain='61commodities.com' }
+        $config = [pscustomobject]@{ ou='SixOneUsers'; groups=@('Back Office Users'); homeDrive=[pscustomobject]@{ unc='\\61c-fs01\Users\<username>'; letter='H' } }
+        $r = Confirm-CtgAD -User $user -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'user exists' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -match 'in OU' }).pass | Should -BeTrue
+    }
+
     It 'offboard: passes when disabled, groups gone, hidden, and NOT moved (guardrail)' {
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$false; msExchHideFromAddressLists=$true } }
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Domain Users' }) }

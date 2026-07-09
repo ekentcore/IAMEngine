@@ -555,7 +555,12 @@ function Confirm-CtgAD {
         }
     }
 
-    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue @AdConnection
+    # Request ONLY schema-guaranteed properties here. msExchHideFromAddressLists exists only where the
+    # on-prem Exchange schema is installed — an AD without it (M365/EXO-only tenants like Six One) makes
+    # Get-ADUser -Properties <that> throw for the WHOLE call, so -EA SilentlyContinue would null $u and a
+    # fully-onboarded user would look absent → every check "fails". The Exchange attr is fetched
+    # best-effort below, only for the offboard hide-from-GAL check that actually needs it.
+    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory -ErrorAction SilentlyContinue @AdConnection
     $exists = [bool]$u
     $memberObjs = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection) } else { @() }
     $groupNames = @($memberObjs | ForEach-Object { $_.Name })
@@ -591,7 +596,11 @@ function Confirm-CtgAD {
         }
         $hide = Get-CtgProp $Config 'hideFromGal'
         if ($exists -and $hide -and (Get-CtgProp $hide 'attribute')) {
-            & $add 'hidden from GAL' $true ([bool]((Get-CtgProp $u 'msExchHideFromAddressLists')))
+            # Fetch the Exchange attr best-effort (see the read-back note) so a missing schema can't fail
+            # the whole validation — if it isn't queryable, treat "hidden" as not-yet-confirmed (false).
+            $hidden = $false
+            try { $hidden = [bool]((Get-ADUser -Identity $sam -Properties msExchHideFromAddressLists -ErrorAction Stop @AdConnection).msExchHideFromAddressLists) } catch { }
+            & $add 'hidden from GAL' $true $hidden
         }
         # do-not-move-ou guardrail: the DN must NOT sit under the Disabled Users OU.
         $disabledOu = Get-CtgProp $Config 'disabledUsersOu'
