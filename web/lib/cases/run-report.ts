@@ -559,7 +559,12 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
         : eligible;
       if (runnable.length === 0) {
         const names = [...new Set(eligible.map((a) => a.name))].join(", ");
-        st.pendingReason = `ready, but ${names} on ${c.client.name}'s network can't run ${st.systemKey} — the ActiveDirectory (RSAT) module isn't loaded there. Install RSAT-AD-PowerShell (or use the runner's Troubleshoot) and restart it; it claims this step once it reports the capability.`;
+        // AD is the common case with specific remediation (RSAT); keep the advice keyed to the system so
+        // it's never wrong if this ever fires for another on-prem system (e.g. a future addition).
+        const fix = st.systemKey === "active-directory"
+          ? "the ActiveDirectory (RSAT) module isn't loaded there — install RSAT-AD-PowerShell (or use the runner's Troubleshoot) and restart it"
+          : `the module for ${st.systemKey} isn't loaded there — install its host dependency and restart the runner`;
+        st.pendingReason = `ready, but ${names} on ${c.client.name}'s network can't run ${st.systemKey} — ${fix}; it claims this step once it reports the capability.`;
         continue;
       }
       // The agent is online but on an OUTDATED build — the app won't dispatch jobs to it (it would run
