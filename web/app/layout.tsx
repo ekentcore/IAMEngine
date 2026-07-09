@@ -4,6 +4,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
 import { V2Toggle } from "./_components/v2-toggle";
+import { ThemeToggle } from "./_components/theme-toggle";
 import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
@@ -20,11 +21,15 @@ export const metadata = {
   description: "IAM lifecycle automation",
 };
 
+// Mobile: render at device width (without this, phones lay the desktop UI out at ~980px and zoom out).
+export const viewport = { width: "device-width", initialScale: 1 };
+
 export const dynamic = "force-dynamic"; // auth state is per-request
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = headers().get("x-pathname") ?? "";
   const onLogin = pathname === "/login";
+  const theme = cookies().get("theme")?.value === "dark" ? "dark" : "light";
 
   // Server-side enforcement: middleware checked the cookie's PRESENCE at the edge; here we validate
   // it (expiry/revocation/active) and bounce an invalid session to /login. /login itself is exempt
@@ -44,7 +49,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const outdatedAgents = loggedIn && !onLogin && !onAgents ? await outdatedAgentCount(db) : 0;
 
   return (
-    <html lang="en">
+    <html lang="en" data-theme={theme}>
       <body>
         {!onLogin && (
           <header className="app-header">
@@ -55,6 +60,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+              <ThemeToggle dark={theme === "dark"} />
               <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
               {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
             </div>

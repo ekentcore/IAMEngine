@@ -39,6 +39,41 @@
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
 }
 
+/* Dark mode — overrides the theme tokens; set on <html data-theme="dark"> (server-side from a cookie
+   so there's no flash, plus toggled live by the header switch). The chrome (surfaces/text/borders/
+   buttons) is all token-driven so it inverts for free; a few components with inline badge colors are
+   polished separately. */
+[data-theme="dark"] {
+  --fg: #e6e8ee;
+  --ink-2: #c7ccd6;
+  --muted: #99a1b0;
+  --faint: #6c7686;
+  --line: #2b303b;
+  --line-2: #3a4150;
+
+  --bg: #1b1e25;
+  --bg-soft: #262b35;
+  --page: #121419;
+
+  --accent: #6f86ff;
+  --accent-press: #8598ff;
+  --accent-soft: #22283c;
+  --accent-ring: rgba(111, 134, 255, 0.40);
+
+  --ok: #35c07b;
+  --warn: #e0913a;
+  --danger: #f0685a;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40), 0 1px 3px rgba(0, 0, 0, 0.50);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.50), 0 12px 28px rgba(0, 0, 0, 0.60);
+  color-scheme: dark;
+}
+[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 360px at 50% -160px, #1d212b 0%, rgba(0, 0, 0, 0) 70%),
+    var(--page);
+}
+
 * { box-sizing: border-box; }
 
 html { scrollbar-gutter: stable; }
@@ -367,3 +402,14 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .v2-switch-track.on { background: var(--accent, #2563eb); }
 .v2-switch-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 140ms; }
 .v2-switch-track.on .v2-switch-thumb { transform: translateX(16px); }
+
+/* ── mobile / narrow screens ──────────────────────────────────────────────────
+   The app is a dense desktop console; this makes it USABLE on a phone (it isn't a
+   separate mobile UI). The header wraps with the nav on its own scrollable row, the
+   card goes full-width, and wide tables scroll horizontally within their card. */
+@media (max-width: 720px) {
+  .app-header { flex-wrap: wrap; gap: 0.4rem 0.7rem; padding: 0.5rem 0.8rem; }
+  .app-header nav { order: 5; width: 100%; overflow-x: auto; padding-bottom: 2px; }
+  main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.85rem; overflow-x: auto; }
+  h1 { font-size: 1.35rem; }
+}
