@@ -240,6 +240,15 @@ button {
 button:hover { background: var(--bg-soft); border-color: #cbced8; }
 button:active { transform: translateY(0.5px); }
 button:disabled { opacity: 0.5; cursor: default; box-shadow: none; transform: none; }
+/* Anchor styled as a button — e.g. a download link (<a download>) that must look like the buttons beside it. */
+a.button {
+  display: inline-flex; align-items: center; text-decoration: none;
+  font: inherit; font-weight: 500; padding: 0.42rem 0.8rem;
+  border: 1px solid var(--line-2); background: var(--bg); color: var(--ink-2);
+  border-radius: 8px; cursor: pointer; box-shadow: 0 1px 1.5px rgba(20, 22, 30, 0.04);
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.06s ease, box-shadow 0.14s ease;
+}
+a.button:hover { background: var(--bg-soft); border-color: #cbced8; }
 button.primary {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent));
   color: #fff; border-color: var(--accent-press);

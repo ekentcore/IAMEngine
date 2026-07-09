@@ -1,5 +1,7 @@
 // GET /api/runner/install.ps1?token=<enrollToken> — returns a self-contained PowerShell installer.
 // One-liner usage (shown on /agents):  irm http://<app>/api/runner/install.ps1?token=… | iex
+// Add &download=1 to serve it as a saved file (Content-Disposition attachment) for shops that block
+// `irm | iex` — the operator saves install-iam-runner.ps1 and runs it locally instead.
 //
 // The route verifies the enroll token, derives the app URL from the request, and bakes scope/client
 // + token + appUrl into the script. The script: installs modules (scope-aware), downloads the runner
@@ -9,11 +11,21 @@ import { verifyEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 
 export const dynamic = "force-dynamic";
 
-const ps = (s: string) => new Response(s, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+// download=true adds a Content-Disposition attachment so a browser saves the file (named so the run
+// command below matches) rather than rendering it inline; the `irm | iex` path leaves it inline.
+const ps = (s: string, download = false) =>
+  new Response(s, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      ...(download ? { "Content-Disposition": 'attachment; filename="install-iam-runner.ps1"' } : {}),
+    },
+  });
 
 export function GET(req: Request) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token") ?? "";
+  const download = url.searchParams.get("download") === "1";
   const claims = verifyEnrollToken(token, enrollSecret(), Date.now());
   if (!claims) {
     return ps(`Write-Error "Runner install link is invalid or expired. Generate a fresh one from the Agents page."`);
@@ -133,5 +145,5 @@ Write-Host ""
 Write-Host "Done. Runner '$AgentId' installed at $InstallDir and started (Scheduled Task 'iam-runner')." -ForegroundColor Green
 Write-Host "It should appear Online on the Agents page within ~30s." -ForegroundColor Green
 `;
-  return ps(script);
+  return ps(script, download);
 }
