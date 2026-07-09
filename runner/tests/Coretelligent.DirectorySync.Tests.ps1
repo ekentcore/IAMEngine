@@ -62,6 +62,16 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
         Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
         { Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync' }) } | Should -Throw -ExpectedMessage '*credential*'
     }
+
+    It 'surfaces a real remote failure — the pwsh7->5.1 fallback must not swallow a non-System.Web error' {
+        # A genuine auth/connectivity error (not the .NET Core System.Web assembly gap) must propagate,
+        # not be masked by the fallback. On the non-Windows test host the fallback is never attempted, so
+        # the error surfaces directly — which is exactly the behaviour we want to lock.
+        Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
+        Mock Invoke-Command -ModuleName Coretelligent.DirectorySync -MockWith { throw 'Access is denied' }
+        $cred = [pscredential]::new('CORP\svc', (ConvertTo-SecureString 'x' -AsPlainText -Force))
+        { Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync' }) -Credential $cred } | Should -Throw -ExpectedMessage '*Access is denied*'
+    }
 }
 
 Describe 'Confirm-CtgDirectorySync' {

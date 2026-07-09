@@ -81,6 +81,52 @@ function Resolve-CtgADSyncTarget {
     return @{ Remote = $true; Host = $h; Discovered = $discovered }
 }
 
+# WinRM remoting with an explicit credential FAILS under pwsh 7 (.NET Core): the NTLM/Negotiate auth
+# path reaches for 'System.Web.Util.Utf16StringValidator', and System.Web isn't in .NET Core -> "Could
+# not load type ... System.Web". Windows PowerShell 5.1 (.NET Framework) HAS that assembly. So: try
+# in-process first (works under 5.1, or under pwsh 7 where Kerberos/config avoids that path), and on
+# THAT specific assembly-load failure retry the SAME Invoke-Command under Windows PowerShell 5.1. The
+# credential is handed to the 5.1 child via a DPAPI-protected CLIXML file — encrypted for the current
+# account (the runner's SYSTEM), which is the same account the child runs as on the same box, so it
+# decrypts there and never touches disk in cleartext. Only the failing call drops to 5.1; the runner
+# stays on pwsh 7. A non-assembly error (real auth/connectivity) is re-thrown unchanged, not masked.
+function Invoke-CtgAdSyncRemote {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][pscredential]$Credential, [Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    try {
+        return Invoke-Command -ComputerName $ComputerName -Credential $Credential -ScriptBlock $ScriptBlock -ErrorAction Stop
+    } catch {
+        $err = $_
+        # Decide fallback WITHOUT touching Windows-only state off-Windows ($env:SystemRoot is null there,
+        # and Join-Path would throw a NEW error that masks the real one). Only the .NET Core System.Web
+        # assembly gap qualifies — a real auth/connectivity error is re-thrown unchanged.
+        $winPS = $null
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows -and ("$($err.Exception.Message)" -match 'Could not load type|System\.Web')) {
+            $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (Test-Path $candidate) { $winPS = $candidate }
+        }
+        if (-not $winPS) { throw $err }
+        $credFile = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-adsync-" + [guid]::NewGuid().ToString('N') + ".xml")
+        try {
+            $Credential | Export-Clixml -Path $credFile
+            # The remote ScriptBlock is our own fixed ADSync script (no $-vars), embedded as text; the
+            # child's OWN vars are backtick-escaped so the outer pwsh doesn't expand them. The child emits
+            # its result as compact JSON so a structured return (the validator's @{Enabled;InProgress})
+            # survives the process boundary; a bare string ('started') round-trips as "started".
+            $inner = "`$ErrorActionPreference='Stop'; `$c = Import-Clixml -LiteralPath '$credFile'; " +
+                     "`$r = Invoke-Command -ComputerName '$ComputerName' -Credential `$c -ScriptBlock { $($ScriptBlock.ToString()) }; " +
+                     "`$r | ConvertTo-Json -Compress -Depth 6"
+            $out = & $winPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $inner 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "directory-sync fell back to Windows PowerShell 5.1 (pwsh 7 can't WinRM with a credential: $($err.Exception.Message)), but 5.1 also failed: $out" }
+            $line = (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Last 1)
+            if (-not $line) { return $null }
+            try { return (ConvertFrom-Json $line) } catch { return $line }
+        } finally {
+            Remove-Item -LiteralPath $credFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-CtgDirectorySync {
     <#
     .SYNOPSIS
@@ -113,7 +159,7 @@ function Invoke-CtgDirectorySync {
         else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
     }
     $outcome =
-        if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
+        if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
         elseif ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
         else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
 
@@ -145,7 +191,7 @@ function Confirm-CtgDirectorySync {
     try {
         $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
         $state =
-            if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
+            if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
             else { $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
     } catch {
         return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
