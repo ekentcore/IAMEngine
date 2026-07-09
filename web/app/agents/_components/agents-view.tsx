@@ -62,6 +62,14 @@ function installCommand(a: AgentVM, origin: string): string {
   return lines.join("\n");
 }
 
+// One-liner that pulls + runs the per-agent troubleshoot script (served by /api/runner/
+// troubleshoot.ps1) — for a runner that enrolled but never comes online: it checks pwsh 7, the
+// runner files, the Scheduled Task, RUNNER_API_TOKEN, reachability and auth, then offers a
+// foreground run. -Headers skips ngrok-free's browser-warning interstitial (harmless elsewhere).
+function troubleshootCommand(a: AgentVM, origin: string): string {
+  return `irm -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/troubleshoot.ps1?agent=${a.id}" | iex`;
+}
+
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
   const by = a.updateRequestedBy ? ` (by ${a.updateRequestedBy})` : "";
   if (a.updateRequested) return { label: `↻ update queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
@@ -144,6 +152,10 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
   const installRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
+
+  const [troubleshootAgent, setTroubleshootAgent] = useState<AgentVM | null>(null);
+  const troubleshootRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (troubleshootAgent) troubleshootRef.current?.showModal(); else troubleshootRef.current?.close(); }, [troubleshootAgent]);
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -387,6 +399,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
                     <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
                     <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                    <button onClick={() => setTroubleshootAgent(a)} title="Get a diagnostic command for a runner that never comes online (pre-build / update stuck on queued)">Troubleshoot</button>
                     {a.enabled && !upToDate && (
                       <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)">
                         {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
@@ -575,6 +588,39 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               <button onClick={() => navigator.clipboard?.writeText(installCommand(installAgent, origin))}>Copy command</button>
               <span className="grow" />
               <button className="primary" onClick={() => setInstallAgent(null)}>Done</button>
+            </div>
+          </div>
+        )}
+      </dialog>
+
+      {/* Per-agent troubleshoot: diagnose a runner that enrolled but never heartbeats (the "pre-build
+          runner" that stays that way, an update stuck on "queued…"). The served script checks each
+          layer on the host and ends with a verdict + an optional foreground run. */}
+      <dialog ref={troubleshootRef} onClose={() => setTroubleshootAgent(null)} style={{ maxWidth: 680 }}>
+        {troubleshootAgent && (
+          <div>
+            <div className="row-between">
+              <h2>Troubleshoot runner: {troubleshootAgent.name}</h2>
+              <button onClick={() => setTroubleshootAgent(null)} aria-label="Close">×</button>
+            </div>
+            <p className="note">
+              For a runner that <b>never comes online</b> — it shows &ldquo;pre-build runner&rdquo; forever, or an update
+              sits on &ldquo;queued — waiting for the runner to poll&rdquo;. Run this in <b>PowerShell on the runner host</b>{" "}
+              (elevated, so it can read the machine-level token). It checks PowerShell 7, the runner files, the
+              Scheduled Task, <code>RUNNER_API_TOKEN</code>, connectivity and auth, then prints a verdict and offers to
+              run the runner in the foreground so you can watch it live.
+            </p>
+            <textarea readOnly rows={2} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
+              value={troubleshootCommand(troubleshootAgent, origin)} onFocus={(e) => e.currentTarget.select()} />
+            <p className="note" style={{ color: "var(--muted)" }}>
+              Diagnostics are read-only and never touch this agent&apos;s status here (the auth check uses a probe id, so
+              it can&apos;t consume a queued update or fake &ldquo;last seen&rdquo;). Common outcome: everything passes but the
+              service started before the token landed — the fix is a <b>reboot</b> of the runner host.
+            </p>
+            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+              <button onClick={() => navigator.clipboard?.writeText(troubleshootCommand(troubleshootAgent, origin))}>Copy command</button>
+              <span className="grow" />
+              <button className="primary" onClick={() => setTroubleshootAgent(null)}>Done</button>
             </div>
           </div>
         )}
