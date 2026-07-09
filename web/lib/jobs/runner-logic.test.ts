@@ -55,6 +55,14 @@ test("isClaimable: completed case blocks; a FAILED case still runs its independe
   assert.equal(isClaimable(dep, [j({ id: "m365", sequence: 0, status: "failed" }), dep], "failed"), false);
 });
 
+test("isClaimable: a dependency FAILED but ACCEPTED (operator ignored) no longer blocks the dependent", () => {
+  // Six One: directory-sync fails, operator marks it accepted -> m365 must stop waiting on it.
+  const m365 = j({ id: "m365", sequence: 1, dependsOn: ["directory-sync"] });
+  const failedDep = j({ id: "directory-sync", sequence: 0, status: "failed" });
+  assert.equal(isClaimable(m365, [failedDep, m365], "running"), false); // failed -> blocks
+  assert.equal(isClaimable(m365, [{ ...failedDep, accepted: true }, m365], "running"), true); // accepted -> proceeds
+});
+
 test("isClaimable: approval-gated job not claimable unless approved", () => {
   const gated = j({ id: "x", sequence: 0, requiresApproval: true });
   assert.equal(isClaimable(gated, [gated], "needs_approval"), false);

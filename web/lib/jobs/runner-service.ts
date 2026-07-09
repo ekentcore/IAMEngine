@@ -326,10 +326,19 @@ export function makeRunnerService(db: PrismaClient) {
         where: { caseRequestId: { in: caseIds } },
         select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
       });
-      const lite = (j: { id: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
+      // A FAILED step the operator ACCEPTED ("ignore warning — mark complete") resolves its run-log
+      // outcome. Treat that step as satisfied for the dependency gate so its dependents proceed (e.g.
+      // an accepted directory-sync failure stops blocking m365). Keyed by case+systemKey.
+      const acceptedOutcomes = await db.runOutcome.findMany({
+        where: { caseRequestId: { in: caseIds }, status: "failed", resolvedAt: { not: null } },
+        select: { caseRequestId: true, systemKey: true },
+      });
+      const acceptedSet = new Set(acceptedOutcomes.map((o) => `${o.caseRequestId}|${o.systemKey}`));
+      const lite = (j: { id: string; caseRequestId: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
         const r = req(j) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown };
         const deps = Array.isArray(r.dependsOn) ? (r.dependsOn as unknown[]).filter((d): d is string => typeof d === "string") : null;
-        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps };
+        const accepted = j.status === "failed" && acceptedSet.has(`${j.caseRequestId}|${j.systemKey}`);
+        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps, accepted };
       };
       const byCase = new Map<string, JobLite[]>();
       for (const j of allJobs) {

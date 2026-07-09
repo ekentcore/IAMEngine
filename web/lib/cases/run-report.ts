@@ -118,6 +118,9 @@ export type BuildRunReportInput = {
   payload: Record<string, unknown>;
   jobs: JobRow[];
   names: Map<string, string>;
+  // systemKeys whose FAILED outcome the operator accepted ("ignore warning") — they no longer block
+  // dependents, so a step waiting on an accepted failure reads "ready", matching the claim gate.
+  acceptedSystemKeys?: Set<string>;
 };
 
 // Pull the human-readable action lines out of a module result envelope ({ Actions: [...] } —
@@ -286,7 +289,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     let pendingReason: string | null = null;
     if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
       const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
-      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped";
+      const accepted = input.acceptedSystemKeys ?? new Set<string>();
+      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped" && !accepted.has(o.systemKey);
       const blockers = Array.isArray(deps)
         ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
         : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
@@ -465,6 +469,12 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const catalog = await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } });
   const names = new Map(catalog.map((sc) => [sc.key, sc.name]));
 
+  // systemKeys whose FAILED run was accepted ("ignore warning") — they no longer block dependents,
+  // matching the claim gate, so a step waiting only on an accepted failure reads "ready".
+  const acceptedSystemKeys = new Set(
+    (await db.runOutcome.findMany({ where: { caseRequestId: c.id, status: "failed", resolvedAt: { not: null } }, select: { systemKey: true } })).map((o) => o.systemKey)
+  );
+
   const report = buildRunReport({
     caseId: c.id,
     caseNumber: c.serviceNowCaseNumber,
@@ -477,6 +487,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     payload: (c.payload ?? {}) as Record<string, unknown>,
     jobs: c.jobs,
     names,
+    acceptedSystemKeys,
   });
 
   // "Ignore warning" — a step whose run-log fingerprint the operator resolved is ACCEPTED: it no

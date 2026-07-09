@@ -12,6 +12,10 @@ export type JobLite = {
   // The system keys this job depends on (persisted into request.dependsOn at plan time).
   // undefined/null = planned before deps were persisted -> strict sequence-order fallback.
   dependsOn?: string[] | null;
+  // The operator ACCEPTED this step's failure ("ignore warning — mark complete", which resolves its
+  // run-log outcome). A failed-but-accepted step counts as satisfied for the dependency gate, so
+  // downstream steps proceed (e.g. accept a failed directory-sync -> m365 stops waiting on it).
+  accepted?: boolean;
 };
 
 const OPEN: JobStatus[] = ["pending", "dispatched", "running"];
@@ -36,7 +40,8 @@ export function isClaimable(job: JobLite, caseJobs: JobLite[], caseStatus: CaseS
 // persisted fall back to the old strict rule (every earlier api job must finish). Manual
 // checklist items never block either way.
 export function blockingJobs(job: JobLite, caseJobs: JobLite[]): JobLite[] {
-  const unmet = (j: JobLite) => j.mode === "api" && j.status !== "succeeded" && j.status !== "skipped";
+  // succeeded/skipped satisfy a dependency; so does a failure the operator explicitly ACCEPTED.
+  const unmet = (j: JobLite) => j.mode === "api" && j.status !== "succeeded" && j.status !== "skipped" && !j.accepted;
   if (Array.isArray(job.dependsOn)) {
     return caseJobs.filter((j) => unmet(j) && job.dependsOn!.includes(j.systemKey));
   }
