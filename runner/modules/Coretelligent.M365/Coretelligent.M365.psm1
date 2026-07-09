@@ -655,6 +655,23 @@ function Invoke-CtgM365Onboarding {
     # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
     $seatShortage = $false  # set when an assignment fails for no seats -> return the SKU inventory so the operator can pick another
     $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+    # Licensing REQUIRES a usageLocation on the user, else Graph rejects "License assignment cannot be
+    # done for user with invalid usage location". A synced/adopted user (hybrid clients — the account is
+    # AD-mastered) often has none: New-MgUser sets it only when WE create the user, and the AD lane
+    # doesn't. Set it in its OWN call (not bundled with the profile attrs above — several of those are
+    # on-prem-mastered and can fail for a synced user, which would take usageLocation down with them).
+    # usageLocation is a CLOUD attribute, writable via Graph even on a synced user.
+    if (@($licenseSpecs).Count -gt 0) {
+        $wantLoc = [string]((Get-CtgProp $User 'UsageLocation') ?? 'US')
+        if ($wantLoc -and $PSCmdlet.ShouldProcess($upn, "Set usageLocation $wantLoc")) {
+            try {
+                Invoke-CtgM365Write { Update-MgUser -UserId $userId -UsageLocation $wantLoc -ErrorAction Stop } | Out-Null
+                $actions.Add("set usageLocation: $wantLoc"); Write-CtgM365Step "✓ set usageLocation: $wantLoc"
+            } catch {
+                $actions.Add("WARN could not set usageLocation '$wantLoc': $($_.Exception.Message)")
+            }
+        }
+    }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
     foreach ($lic in $licenseSpecs) {
         $name  = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }

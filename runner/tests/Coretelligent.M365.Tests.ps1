@@ -17,7 +17,7 @@ BeforeAll {
     function global:Get-MgGroup {}
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
-    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses) }
+    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation) }
     function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef { param($GroupId, $DirectoryObjectId) }
@@ -60,6 +60,7 @@ Describe 'Invoke-CtgM365Onboarding' {
         Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:Skus }
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }   # user does not exist yet
         Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1' } }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }       # profile attrs + usageLocation
         Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ SkuId = 'sku-e3' }) } # E3 already present
         Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
         Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'grp-1' } }
@@ -147,6 +148,18 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
         ($r.Actions -join ' ') | Should -Match 'assigned license: Microsoft Entra ID P2'
         ($r.Actions -join ' ') | Should -Match 'license present'
+        # usageLocation must be set before licensing (else Graph: "invalid usage location") — regression
+        # for UM0029655, where a synced user had no usageLocation and the E3 assignment was rejected.
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UsageLocation -eq 'US' } -Times 1
+    }
+
+    It 'defaults usageLocation to US before licensing when the intake omits it (synced user)' {
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone='' }  # no UsageLocation
+        $config = [pscustomobject]@{ licenses = @('Microsoft Entra ID P2') }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UsageLocation -eq 'US' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'set usageLocation: US'
     }
 
     It 'adds the user to Config.groups when not already a member' {

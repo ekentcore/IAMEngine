@@ -97,11 +97,16 @@ function Invoke-CtgAdSyncRemote {
         return Invoke-Command -ComputerName $ComputerName -Credential $Credential -ScriptBlock $ScriptBlock -ErrorAction Stop
     } catch {
         $err = $_
-        # Decide fallback WITHOUT touching Windows-only state off-Windows ($env:SystemRoot is null there,
-        # and Join-Path would throw a NEW error that masks the real one). Only the .NET Core System.Web
-        # assembly gap qualifies — a real auth/connectivity error is re-thrown unchanged.
+        # Match the WHOLE error, not just the top .Message — the System.Web type-load surfaces in an
+        # INNER exception (the outer is a generic remoting error), so a top-only check misses it and the
+        # fallback never fires. Decide WITHOUT touching Windows-only state off-Windows ($env:SystemRoot is
+        # null there; Join-Path would throw a NEW error that masks the real one). A real auth/connectivity
+        # error (no System.Web) is re-thrown unchanged.
+        $full = "$err"
+        $e = $err.Exception
+        while ($e) { if ($e.Message) { $full += " | $($e.Message)" }; $e = $e.InnerException }
         $winPS = $null
-        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows -and ("$($err.Exception.Message)" -match 'Could not load type|System\.Web')) {
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows -and ($full -match 'Could not load type|System\.Web|Utf16StringValidator')) {
             $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             if (Test-Path $candidate) { $winPS = $candidate }
         }
