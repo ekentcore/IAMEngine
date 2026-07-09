@@ -75,30 +75,47 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proo
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
 # module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
 # where its dependency is present so the central cloud runner doesn't fail to import.
-if (-not (Get-Module -ListAvailable ActiveDirectory)) {
-    # Self-heal: a fresh on-prem (DC/member-server) agent that shipped without the ActiveDirectory
-    # RSAT module would otherwise hard-fail every AD job ("Invoke-CtgADOnboarding not loaded"). Try to
-    # add it ONCE at startup. Best-effort + quiet everywhere it doesn't apply: a Mac/Linux central
-    # runner has no Add-WindowsCapability, and a Windows host where RSAT isn't an installable capability
-    # (and has no ServerManager) just no-ops. Needs elevation + Windows Update reachability to succeed;
-    # if it can't, the capability probe below reports "no AD" and the app withholds AD jobs (they stay
-    # pending with a clear reason) instead of dispatching a step this host can't run.
+#
+# Loading ActiveDirectory on a DC is subtle. It's a Windows PowerShell module, and pwsh 7 (what the
+# runner runs) frequently CANNOT see it via Get-Module -ListAvailable — RSAT installs it off pwsh 7's
+# PSModulePath, so only Windows PowerShell 5.1 enumerates it (verified on 61C-DC01: -ListAvailable blank
+# in pwsh 7, but 5.1 has it and Import-Module ActiveDirectory -UseWindowsPowerShell works). pwsh 7 loads
+# it through the Windows-compat proxy: a background 5.1 session that proxies the AD cmdlets. So try native
+# in-proc first (fastest, when pwsh 7 can see it), then the compat proxy, and only self-heal-install RSAT
+# when it's genuinely absent from BOTH. Whatever loads it, Coretelligent.ActiveDirectory's RequiredModules
+# is then satisfied by the already-loaded 'ActiveDirectory' module (name match — no native re-resolve).
+function Import-CtgActiveDirectory {
+    if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) { return $true }  # already loaded this process
+    if (Get-Module -ListAvailable ActiveDirectory) {
+        try { Import-Module ActiveDirectory -Force -ErrorAction Stop; return $true } catch { }
+    }
+    if ($IsWindows) {
+        # Windows-compat proxy — the path that works on a DC where RSAT is visible only to WinPS 5.1.
+        try { Import-Module ActiveDirectory -UseWindowsPowerShell -WarningAction SilentlyContinue -ErrorAction Stop; return $true } catch { }
+    }
+    return $false
+}
+$adReady = Import-CtgActiveDirectory
+if (-not $adReady -and $IsWindows) {
+    # Not loadable natively OR via the compat proxy -> RSAT is genuinely absent. Self-heal: add it ONCE
+    # (best-effort; needs elevation + Windows Update), then retry the load. Quiet where it doesn't apply.
     try {
-        if ($IsWindows) {
-            $adCap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($adCap -and $adCap.State -ne 'Installed') {
-                Write-Host "ActiveDirectory module missing — installing RSAT capability ($($adCap.Name))…" -ForegroundColor Yellow
-                Add-WindowsCapability -Online -Name $adCap.Name -ErrorAction Stop | Out-Null
-            } elseif (-not $adCap -and (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue)) {
-                # A server with the ServerManager module (e.g. a DC) exposes RSAT-AD-PowerShell as a feature.
-                Write-Host "ActiveDirectory module missing — installing RSAT-AD-PowerShell feature…" -ForegroundColor Yellow
-                Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null
-            }
+        $adCap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($adCap -and $adCap.State -ne 'Installed') {
+            Write-Host "ActiveDirectory module missing — installing RSAT capability ($($adCap.Name))…" -ForegroundColor Yellow
+            Add-WindowsCapability -Online -Name $adCap.Name -ErrorAction Stop | Out-Null
+        } elseif (-not $adCap -and (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue)) {
+            # A server with the ServerManager module (e.g. a DC) exposes RSAT-AD-PowerShell as a feature.
+            Write-Host "ActiveDirectory module missing — installing RSAT-AD-PowerShell feature…" -ForegroundColor Yellow
+            Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null
         }
+        $adReady = Import-CtgActiveDirectory
     } catch { Write-Warning "could not auto-install the ActiveDirectory RSAT module (install RSAT-AD-PowerShell manually + restart the runner): $($_.Exception.Message)" }
 }
-if (Get-Module -ListAvailable ActiveDirectory) {
+if ($adReady) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psd1" -Force
+} else {
+    Write-Warning "ActiveDirectory module could not be loaded on this host — AD jobs will be withheld (this agent reports no 'active-directory' capability)."
 }
 $exoAvail = Get-Module -ListAvailable ExchangeOnlineManagement
 if ($exoAvail) {
