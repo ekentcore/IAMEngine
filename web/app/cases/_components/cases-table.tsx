@@ -274,7 +274,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
       )}
       {error && <p className="note danger">{error}</p>}
 
-      <table>
+      <table className="desk-only">
         <thead>
           <tr>
             <th style={{ width: 24 }}>
@@ -389,6 +389,27 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
           )}
         </tbody>
       </table>
+
+      {/* Mobile: a tappable card per case (same filtered `visible` list). Tap to open the case (where
+          the run controls live). */}
+      <div className="mob-only m-list">
+        {visible.map((c) => (
+          <Link key={c.id} href={`/cases/${c.id}`} className="m-card">
+            <div className="m-card-top">
+              <span className="m-card-title">{c.subject ?? c.id.slice(0, 8)}</span>
+              <StatusBadge c={c} />
+            </div>
+            <div className="m-card-sub">{c.clientName}</div>
+            <div className="m-card-meta">
+              <span><span className="k">action</span> {c.action}</span>
+              {c.serviceNowCaseNumber && <span><span className="k">SN</span> {c.serviceNowCaseNumber}</span>}
+              <span><span className="k">{c.action === "offboard" ? "off date" : "start"}</span> {c.effectiveDate ? formatDateOnly(c.effectiveDate) : c.immediate ? "Immediate" : "—"}</span>
+              {c.lastRunIso && <span><span className="k">last run</span> {new Date(c.lastRunIso).toLocaleDateString([], { month: "short", day: "numeric" })}</span>}
+            </div>
+          </Link>
+        ))}
+        {visible.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No cases match.</div>}
+      </div>
 
       {splitCompleted && (
         <details style={{ marginTop: "1.25rem" }} open>

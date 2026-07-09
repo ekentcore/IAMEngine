@@ -304,7 +304,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
         </div>
       </details>
 
-      <table>
+      <table className="desk-only">
         <thead>
           <tr>
             <th style={{ width: 28 }}>
@@ -410,6 +410,30 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
           )}
         </tbody>
       </table>
+
+      {/* Mobile: status-focused card per agent (online/version/last-seen/uptime). Enroll + per-agent
+          actions stay on desktop. */}
+      <div className="mob-only m-list">
+        {agents.map((a) => {
+          const ls = lastSeen(a.lastSeenAt, nowMs);
+          return (
+            <div key={a.id} className="m-card" style={{ opacity: a.enabled ? 1 : 0.6 }}>
+              <div className="m-card-top">
+                <span className="m-card-title">{a.name}</span>
+                <span className="badge" style={{ color: ls.online ? "var(--ok-fg)" : "var(--muted)", background: ls.online ? "var(--ok-bg)" : "var(--neutral-bg)" }}>{ls.online ? "● online" : "○ offline"}</span>
+              </div>
+              <div className="m-card-sub">{a.scope === "central" ? "central" : "client-network"}{a.clientName ? ` · ${a.clientName}` : " · all"}{a.enabled ? "" : " · disabled"}</div>
+              <div className="m-card-meta">
+                <span><span className="k">version</span> {a.semver ?? "—"}</span>
+                <span><span className="k">build</span> <code style={{ fontSize: 11 }}>{a.version ? a.version.slice(0, 8) : "—"}</code></span>
+                <span><span className="k">last seen</span> {ls.text}</span>
+                <span><span className="k">uptime</span> {uptime(a.bootAt, nowMs)}</span>
+              </div>
+            </div>
+          );
+        })}
+        {agents.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No agents enrolled.</div>}
+      </div>
       {error && <p className="note danger">{error}</p>}
 
       {trashed.length > 0 && (

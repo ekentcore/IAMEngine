@@ -80,7 +80,7 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
 
       {/* Fixed layout + explicit column widths so a long, unbreakable message (URLs, snake_case tokens)
           wraps inside the Message column instead of widening the table and pushing the actions off-card. */}
-      <table style={{ width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
+      <table className="desk-only" style={{ width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line, #e5e7eb)" }}>
             <th style={{ padding: "4px 8px", width: 28 }}>
@@ -134,6 +134,31 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
           )}
         </tbody>
       </table>
+
+      {/* Mobile: message-focused card per line, with the case/client/module + copy/Fixed actions. */}
+      <div className="mob-only m-list">
+        {rows.map((r) => (
+          <div key={r.id} className="m-card" style={{ opacity: r.done ? 0.55 : 1 }}>
+            <div className="m-card-top">
+              <span className="m-card-title" style={{ fontSize: 13 }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</span>
+              <Badge verdict={r.verdict} />
+            </div>
+            <div className="m-card-msg" style={{ color: r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
+              {r.messages.length ? r.messages.join(" ") : (r.verdict === "verified" ? "—" : "")}
+            </div>
+            <div className="m-card-meta">
+              <Link href={`/cases/${r.caseRequestId}`}>{r.caseNumber}</Link>
+              <span className="k">{r.clientName}</span>
+              <span className="k">{r.atLabel}{r.count > 1 ? ` ×${r.count}` : ""}</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <CopyButton text={r.copyText} />
+              <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>{emptyText}</div>}
+      </div>
     </>
   );
 }
