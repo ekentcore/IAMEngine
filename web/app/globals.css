@@ -448,8 +448,13 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
   .mobile-nav { display: inline-flex; }
   main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.9rem; }
   h1 { font-size: 1.3rem; }
-  /* any remaining desktop tables (pages without a card view yet) scroll instead of breaking layout */
+  /* any remaining desktop tables (detail pages: systems matrix, secret wiring, run-report steps, …)
+     scroll instead of breaking layout */
   main table { display: block; overflow-x: auto; white-space: nowrap; }
+  /* detail-page header + two-column rows stack; nothing overflows the card */
+  .row-between { flex-wrap: wrap; gap: 0.5rem; }
+  main pre, main code { overflow-x: auto; max-width: 100%; }
+  main img { max-width: 100%; height: auto; }
 }
 
 /* Hamburger + slide-in drawer */
