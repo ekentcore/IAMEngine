@@ -1,12 +1,14 @@
 // GET /api/runner/install.ps1?token=<enrollToken> — returns a self-contained PowerShell installer.
 // One-liner usage (shown on /agents) downloads it to a FILE and runs it:
 //   iwr "http://<app>/api/runner/install.ps1?token=…" -OutFile $f; powershell -ExecutionPolicy Bypass -File $f
-// It must be a file on disk (not `irm | iex`) because the script re-launches ITSELF under pwsh 7
-// before installing modules. Installing them from the operator's Windows PowerShell 5.1 console is
-// the "Import-Module says it's missing right after I installed it" trap: a CurrentUser install is
-// invisible to the SYSTEM task, and 5.1-installed Graph builds can fail to import under pwsh 7.
-// Installing BY pwsh 7 with -Scope AllUsers lands them where the runner's own runtime provably
-// loads them (the script verifies the import before moving on).
+// Add &download=1 to serve it as a browser download (Content-Disposition attachment) — the
+// dialog's "Download install.ps1" button; the operator saves install-iam-runner.ps1 and runs it.
+// Either way it must be a file on disk (not `irm | iex`) because the script re-launches ITSELF
+// under pwsh 7 before installing modules. Installing them from the operator's Windows PowerShell
+// 5.1 console is the "Import-Module says it's missing right after I installed it" trap: a
+// CurrentUser install is invisible to the SYSTEM task, and 5.1-installed Graph builds can fail to
+// import under pwsh 7. Installing BY pwsh 7 with -Scope AllUsers lands them where the runner's own
+// runtime provably loads them (the script verifies the import before moving on).
 //
 // The route verifies the enroll token, derives the app URL from the request, and bakes scope/client
 // + token + appUrl into the script. The script: ensures pwsh 7 and re-execs under it, installs the
@@ -17,11 +19,21 @@ import { verifyEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 
 export const dynamic = "force-dynamic";
 
-const ps = (s: string) => new Response(s, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+// download=true adds a Content-Disposition attachment so a browser saves the file (named so the run
+// command below matches) rather than rendering it inline; the `irm | iex` path leaves it inline.
+const ps = (s: string, download = false) =>
+  new Response(s, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      ...(download ? { "Content-Disposition": 'attachment; filename="install-iam-runner.ps1"' } : {}),
+    },
+  });
 
 export function GET(req: Request) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token") ?? "";
+  const download = url.searchParams.get("download") === "1";
   const claims = verifyEnrollToken(token, enrollSecret(), Date.now());
   if (!claims) {
     return ps(`Write-Error "Runner install link is invalid or expired. Generate a fresh one from the Agents page."`);
@@ -171,5 +183,5 @@ Write-Host ""
 Write-Host "Done. Runner '$AgentId' installed at $InstallDir and started (Scheduled Task 'iam-runner')." -ForegroundColor Green
 Write-Host "It should appear Online on the Agents page within ~30s." -ForegroundColor Green
 `;
-  return ps(script);
+  return ps(script, download);
 }

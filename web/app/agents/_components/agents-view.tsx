@@ -136,7 +136,7 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ id: string; scope: string } | null>(null);
-  const [install, setInstall] = useState<{ command: string } | null>(null);
+  const [install, setInstall] = useState<{ command: string; token: string } | null>(null);
   const [clientSlug, setClientSlug] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -197,7 +197,7 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
     // Run via `powershell -ExecutionPolicy Bypass -File` so RemoteSigned + mark-of-the-web on the
     // downloaded file can't block it (irm|iex never hit execution policy; a .ps1 on disk does).
     // -Headers skips ngrok-free's browser-warning interstitial (harmless on LAN/Cloudflare).
-    setInstall({ command: `$f = "$env:TEMP\\install-iam-runner.ps1"; iwr -UseBasicParsing -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/install.ps1?token=${res.token}" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f` });
+    setInstall({ command: `$f = "$env:TEMP\\install-iam-runner.ps1"; iwr -UseBasicParsing -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/install.ps1?token=${res.token}" -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f`, token: res.token });
   }
 
   // Manual enroll (e.g. a Mac smoke test) — creates the agent now and shows its id + start command.
@@ -473,10 +473,17 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
               value={install.command} onFocus={(e) => e.currentTarget.select()} />
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>
               <button onClick={() => navigator.clipboard?.writeText(install.command)}>Copy command</button>
+              {/* Same installer as a saved file for shops that block `irm | iex`: save it, then run it
+                  locally. `download` + attachment header name it install-iam-runner.ps1 to match the run line. */}
+              <a className="button" href={`${origin}/api/runner/install.ps1?token=${install.token}&download=1`} download="install-iam-runner.ps1">Download install.ps1</a>
               <span className="grow" />
               <button className="primary" onClick={() => ref.current?.close()}>Done</button>
             </div>
             <p className="note" style={{ marginTop: "0.75rem", color: "var(--muted)" }}>
+              Prefer a file? <b>Download install.ps1</b>, copy it to the host, then in an <b>elevated PowerShell</b> run{" "}
+              <code>powershell -ExecutionPolicy Bypass -File .\install-iam-runner.ps1</code> (run <code>Unblock-File .\install-iam-runner.ps1</code> first if Windows flags it as downloaded). Same result as the one-liner.
+            </p>
+            <p className="note" style={{ marginTop: "0.5rem", color: "var(--muted)" }}>
               Link is valid for 1 hour. The runner appears Online here within ~30s of finishing.
               {" "}AD/Exchange jobs need a Windows host on the client network; a Mac can run the loop for a connectivity test (enroll manually below).
             </p>
