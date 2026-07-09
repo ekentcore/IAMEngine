@@ -87,10 +87,10 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
               <input type="checkbox" aria-label="Select all fixable" checked={allSelected} disabled={fixableFps.length === 0}
                 ref={(el) => { if (el) el.indeterminate = sel.size > 0 && !allSelected; }} onChange={toggleAll} />
             </th>
-            <th style={{ padding: "4px 8px", width: 84 }}>When</th>
-            <th style={{ padding: "4px 8px", width: 116 }}>Case</th>
-            <th style={{ padding: "4px 8px", width: 130 }}>Client</th>
-            <th style={{ padding: "4px 8px", width: 86 }}>Module</th>
+            <th style={{ padding: "4px 8px", width: 120 }}>When</th>
+            <th style={{ padding: "4px 8px", width: 100 }}>Case</th>
+            <th style={{ padding: "4px 8px", width: 150 }}>Client</th>
+            <th style={{ padding: "4px 8px", width: 116 }}>Module</th>
             <th style={{ padding: "4px 8px", width: 78 }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Message</th>
           </tr>
@@ -103,10 +103,13 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
                 <td style={{ padding: "4px 8px" }}>
                   {fixable && <input type="checkbox" aria-label="Select line" checked={sel.has(r.fingerprint)} onChange={() => toggle(r.fingerprint)} />}
                 </td>
-                <td style={{ padding: "4px 8px", whiteSpace: "nowrap", color: "var(--muted, #6b7280)" }}>{r.atLabel}{r.count > 1 && <span className="note" style={{ marginLeft: 4 }}>×{r.count}</span>}</td>
-                <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
-                  <Link href={`/cases/${r.caseRequestId}`}>{r.caseNumber}</Link>
-                  <span className="note" style={{ marginLeft: 4, fontSize: 11 }}>{r.action}</span>
+                <td style={{ padding: "4px 8px", color: "var(--muted, #6b7280)" }}>
+                  <span style={{ whiteSpace: "nowrap" }}>{r.atLabel}</span>
+                  {r.count > 1 && <span className="note" style={{ display: "block" }}>×{r.count}</span>}
+                </td>
+                <td style={{ padding: "4px 8px" }}>
+                  <Link href={`/cases/${r.caseRequestId}`} style={{ whiteSpace: "nowrap" }}>{r.caseNumber}</Link>
+                  <span className="note" style={{ display: "block", fontSize: 11 }}>{r.action}</span>
                 </td>
                 <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
                 <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
