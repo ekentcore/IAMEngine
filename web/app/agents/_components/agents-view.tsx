@@ -64,13 +64,13 @@ function installCommand(a: AgentVM, origin: string): string {
 
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
   const by = a.updateRequestedBy ? ` (by ${a.updateRequestedBy})` : "";
-  if (a.updateRequested) return { label: `↻ update queued${by} — waiting for the runner to poll…`, color: "#8a6d00" };
+  if (a.updateRequested) return { label: `↻ update queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
   if (a.updateDeliveredAt) {
     const del = new Date(a.updateDeliveredAt).getTime();
     if (Date.now() - del > 5 * 60_000) return null;
     const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
-    if (seen > del + 3000) return { label: `✓ updated${by} — runner back online on new code`, color: "#2e7d32" };
-    return { label: `↻ updating${by} — pulling files + restarting…`, color: "#1565c0" };
+    if (seen > del + 3000) return { label: `✓ updated${by} — runner back online on new code`, color: "var(--ok-fg)" };
+    return { label: `↻ updating${by} — pulling files + restarting…`, color: "var(--info-fg)" };
   }
   return null;
 }
@@ -347,7 +347,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     // Goes amber if it differs from the app's current VERSION (a release the runner
                     // hasn't pulled yet) — the hash below is still the authoritative up-to-date check.
                     const semverLine = a.semver
-                      ? <div style={{ fontWeight: 600, color: currentVersion && a.semver !== currentVersion ? "#8a6d00" : undefined }}>v{a.semver}</div>
+                      ? <div style={{ fontWeight: 600, color: currentVersion && a.semver !== currentVersion ? "var(--warn-fg)" : undefined }}>v{a.semver}</div>
                       : null;
                     if (isBuild) {
                       return (
@@ -355,24 +355,24 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                           {semverLine}
                           <code className="muted" style={{ fontSize: 11 }}>build {v.slice(0, 7)}</code>
                           {v === currentBuild
-                            ? <div className="note" style={{ color: "#2e7d32" }}>✓ up to date</div>
-                            : <div className="note" style={{ color: "#8a6d00" }}>⚠ update available</div>}
+                            ? <div className="note" style={{ color: "var(--ok-fg)" }}>✓ up to date</div>
+                            : <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ update available</div>}
                         </>
                       );
                     }
                     return (
                       <>
                         <span className="muted">{v ?? "—"}</span>
-                        {a.enabled && <div className="note" style={{ color: "#8a6d00" }}>⚠ pre-build runner — Update to report its build</div>}
+                        {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build</div>}
                       </>
                     );
                   })()}
                 </td>
                 <td>
-                  <span style={{ color: ls.online ? "#2e7d32" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span>
+                  <span style={{ color: ls.online ? "var(--ok-fg)" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span>
                   {(() => {
                     const s = stuckLabel(a, ls.online, nowMs);
-                    return s ? <div className="note" style={{ color: "#b3261e" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{s}</div> : null;
+                    return s ? <div className="note" style={{ color: "var(--err-fg)" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{s}</div> : null;
                   })()}
                 </td>
                 <td className="muted tnum" title={a.bootAt ? `up since ${a.bootAt}` : "uptime unknown — the runner hasn't reported a start time yet"}>
@@ -424,10 +424,10 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   <td><span className="badge">{a.scope === "central" ? "central" : "client-network"}</span></td>
                   <td>{a.clientName ?? <span className="muted">— all —</span>}</td>
                   <td className="muted">{new Date(a.deletedAt).toLocaleDateString()}</td>
-                  <td style={{ color: a.daysLeft <= 3 ? "#b3261e" : undefined }}>{a.daysLeft} day{a.daysLeft === 1 ? "" : "s"}</td>
+                  <td style={{ color: a.daysLeft <= 3 ? "var(--err-fg)" : undefined }}>{a.daysLeft} day{a.daysLeft === 1 ? "" : "s"}</td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     <button onClick={() => run(a.id, restoreAgent)} disabled={toggling === a.id}>Restore</button>
-                    <button onClick={() => { if (confirm(`Permanently delete runner "${a.name}"? This can't be undone.`)) run(a.id, deleteAgentForever); }} disabled={toggling === a.id} style={{ marginLeft: 6, color: "#b3261e" }}>Delete forever</button>
+                    <button onClick={() => { if (confirm(`Permanently delete runner "${a.name}"? This can't be undone.`)) run(a.id, deleteAgentForever); }} disabled={toggling === a.id} style={{ marginLeft: 6, color: "var(--err-fg)" }}>Delete forever</button>
                   </td>
                 </tr>
               ))}
@@ -508,7 +508,7 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               </>
             )}
 
-            {error && <p className="note" style={{ color: "#9a3a3a" }}>{error}</p>}
+            {error && <p className="note" style={{ color: "var(--err-fg)" }}>{error}</p>}
 
             <div className="toolbar" style={{ marginTop: "1rem", justifyContent: "flex-end" }}>
               <button type="button" onClick={() => ref.current?.close()} disabled={busy}>Cancel</button>

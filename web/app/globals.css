@@ -30,6 +30,14 @@
   --warn: #b25e09;
   --danger: #c0392b;
 
+  /* status badge pairs (bg + fg) — used by readiness/verdict/status pills so they adapt to dark mode.
+     Light values match the hexes previously inlined in the components. */
+  --ok-fg: #2e7d32;      --ok-bg: #eaf5ec;
+  --warn-fg: #8a6d00;    --warn-bg: #fbf4e0;
+  --err-fg: #b3261e;     --err-bg: #fdeceb;
+  --info-fg: #2563eb;    --info-bg: #eef2ff;
+  --neutral-fg: #4b5563; --neutral-bg: #f3f4f6;
+
   /* depth */
   --shadow-1: 0 1px 2px rgba(20, 22, 30, 0.04), 0 1px 3px rgba(20, 22, 30, 0.06);
   --shadow-2: 0 4px 12px rgba(20, 22, 30, 0.06), 0 12px 28px rgba(20, 22, 30, 0.10);
@@ -67,6 +75,13 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40), 0 1px 3px rgba(0, 0, 0, 0.50);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.50), 0 12px 28px rgba(0, 0, 0, 0.60);
   color-scheme: dark;
+
+  /* status pills tuned for a dark surface (deep tint bg + bright fg) */
+  --ok-fg: #58cf8c;      --ok-bg: #17291f;
+  --warn-fg: #e3ab52;    --warn-bg: #2b2513;
+  --err-fg: #f2897c;     --err-bg: #301a18;
+  --info-fg: #86a4ff;    --info-bg: #1b2340;
+  --neutral-fg: #aab2c0; --neutral-bg: #272c36;
 }
 [data-theme="dark"] body {
   background:
@@ -300,12 +315,12 @@ td.module-cell {
   background: var(--bg-soft);
   white-space: nowrap;
 }
-.badge.active   { color: var(--ok);   background: #e8f5ee; }
-.badge.modeled  { color: var(--ink-2); background: #eceef4; }
-.badge.unmodeled{ color: var(--faint); background: #f1f2f6; }
-.badge.archived { color: var(--danger); background: #fcebe9; }
-.badge.automated{ color: var(--ok);   background: #e8f5ee; }
-.badge.human    { color: var(--warn); background: #fdf2e3; }
+.badge.active   { color: var(--ok-fg);   background: var(--ok-bg); }
+.badge.modeled  { color: var(--ink-2); background: var(--neutral-bg); }
+.badge.unmodeled{ color: var(--faint); background: var(--neutral-bg); }
+.badge.archived { color: var(--err-fg); background: var(--err-bg); }
+.badge.automated{ color: var(--ok-fg);   background: var(--ok-bg); }
+.badge.human    { color: var(--warn-fg); background: var(--warn-bg); }
 
 .muted { color: var(--muted); }
 .note { color: var(--muted); font-size: 12.5px; line-height: 1.5; }

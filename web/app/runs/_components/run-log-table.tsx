@@ -28,12 +28,12 @@ export type RunLogRow = {
 };
 
 const VERDICT_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  failed: { bg: "#fef2f2", fg: "#b91c1c", label: "✗ error" },
-  warning: { bg: "#fffbeb", fg: "#92400e", label: "⚠ warning" },
-  verified: { bg: "#f0fdf4", fg: "#166534", label: "✓ success" },
-  skipped: { bg: "#f3f4f6", fg: "#6b7280", label: "skipped" },
-  manual: { bg: "#eef2ff", fg: "#3730a3", label: "✋ manual" },
-  pending: { bg: "#f3f4f6", fg: "#6b7280", label: "pending" },
+  failed: { bg: "var(--err-bg)", fg: "var(--err-fg)", label: "✗ error" },
+  warning: { bg: "var(--warn-bg)", fg: "var(--warn-fg)", label: "⚠ warning" },
+  verified: { bg: "var(--ok-bg)", fg: "var(--ok-fg)", label: "✓ success" },
+  skipped: { bg: "var(--neutral-bg)", fg: "var(--neutral-fg)", label: "skipped" },
+  manual: { bg: "var(--info-bg)", fg: "var(--info-fg)", label: "✋ manual" },
+  pending: { bg: "var(--neutral-bg)", fg: "var(--neutral-fg)", label: "pending" },
 };
 
 function Badge({ verdict }: { verdict: string }) {
@@ -114,7 +114,7 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
                 <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
                 <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
                 <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-                <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: r.done ? "var(--muted, #6b7280)" : r.verdict === "failed" ? "#b91c1c" : r.verdict === "warning" ? "#92400e" : "var(--muted, #6b7280)" }}>
+                <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: r.done ? "var(--muted)" : r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
                   {/* Actions float top-right INSIDE the message cell: pinned to the row's right edge while
                       the message text fills the full width and wraps under them — no sparse actions column. */}
                   {(r.verdict === "warning" || r.verdict === "failed") && (

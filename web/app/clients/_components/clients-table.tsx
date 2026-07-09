@@ -46,9 +46,9 @@ const BACKBONE_LABEL: Record<string, string> = {
 
 // Run-readiness badge styling per tier (computed from wired secrets + connection-test results).
 const READINESS: Record<string, { label: string; mark: string; color: string; bg: string }> = {
-  ready: { label: "ready", mark: "✓", color: "#2e7d32", bg: "#eaf5ec" },
-  partial: { label: "partial", mark: "◑", color: "#8a6d00", bg: "#fbf4e0" },
-  not_set_up: { label: "not set up", mark: "✗", color: "#b3261e", bg: "#fdeceb" },
+  ready: { label: "ready", mark: "✓", color: "var(--ok-fg)", bg: "var(--ok-bg)" },
+  partial: { label: "partial", mark: "◑", color: "var(--warn-fg)", bg: "var(--warn-bg)" },
+  not_set_up: { label: "not set up", mark: "✗", color: "var(--err-fg)", bg: "var(--err-bg)" },
   no_systems: { label: "—", mark: "", color: "var(--muted)", bg: "transparent" },
 };
 
