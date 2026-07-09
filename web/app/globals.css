@@ -426,8 +426,10 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .mob-only { display: none; }
 .mobile-nav { display: none; }
 
-/* Mobile card list — one tappable card per row (client/case/agent/run). */
-.m-list { display: flex; flex-direction: column; gap: 0.6rem; }
+/* Mobile card list — one tappable card per row (client/case/agent/run). NOTE: no `display` here — the
+   .mob-only class owns visibility (else `.m-list { display:flex }` would beat `.mob-only { display:none }`
+   by source order and show the cards on desktop). It becomes a flex column only when shown (below). */
+.m-list { flex-direction: column; gap: 0.6rem; }
 .m-card {
   display: block; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
   padding: 0.8rem 0.9rem; box-shadow: var(--shadow-1); color: var(--fg); text-decoration: none;
@@ -443,6 +445,7 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 @media (max-width: 760px) {
   .desk-only { display: none !important; }
   .mob-only { display: block; }
+  .mob-only.m-list { display: flex; } /* two classes -> beats .mob-only; the card list is a flex column */
   .app-header { gap: 0.5rem; padding: 0.55rem 0.9rem; }
   .app-header > nav { display: none !important; } /* desktop inline nav (has inline display:flex) -> the drawer. .mobile-drawer nav is unaffected (not a direct child). */
   .mobile-nav { display: inline-flex; }
