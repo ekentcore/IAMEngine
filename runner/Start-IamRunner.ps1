@@ -1801,7 +1801,8 @@ while ($true) {
                 # outer like "Authentication failed, see inner exception" usually wraps the actual
                 # logon/LDAP error (e.g. "The user name or password is incorrect", "account locked").
                 $chain = [System.Collections.Generic.List[string]]::new()
-                $ex = $_.Exception
+                $exObj = $_.Exception  # keep the top exception object for provider-specific enrichment below
+                $ex = $exObj
                 while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
                 $msg = (($chain | Select-Object -Unique) -join ' <- ')
                 if (-not $msg) { $msg = $_.Exception.GetType().Name }
@@ -1838,6 +1839,40 @@ while ($true) {
                         else { $hint = "$hint — note: couldn't read the app's consented permissions to confirm ($($real.reason))." }
                     } catch { }
                     $msg += " — $hint"
+                }
+                # An AD failure ("unwilling to process the request" = LDAP 53, "access is denied", a
+                # referral, a constraint violation) names no DC and no reason. Append the ACTIONABLE
+                # context so the operator sees the cause without hand-running DC tests: which DC the
+                # connection targeted, whether that DC is WRITABLE (a read-only DC / RODC refuses EVERY
+                # write — it returns exactly this error), the identity used, and any richer server-side AD
+                # error message. Best-effort + read-only; never let the enrichment mask the real failure.
+                if (($job.systemKey -in @('active-directory', 'directory-sync')) -and
+                    ($msg -match 'unwilling to process|will not perform|[Aa]ccess is denied|referral was returned|constraint violation|not a valid')) {
+                    try {
+                        $bits = [System.Collections.Generic.List[string]]::new()
+                        $adc = New-CtgAdConnection $creds
+                        $srv = if ($adc.Server) { [string]$adc.Server } else { $env:COMPUTERNAME }
+                        [void]$bits.Add("target DC: $srv")
+                        $dc = Get-ADDomainController -Identity $srv -ErrorAction SilentlyContinue
+                        if ($dc) {
+                            [void]$bits.Add("writable: $(-not [bool]$dc.IsReadOnly)")
+                            if ($dc.IsReadOnly) { [void]$bits.Add("*** READ-ONLY DC (RODC) — it refuses ALL writes; point the ad-dc secret's Server/DomainController at a WRITABLE DC ***") }
+                        }
+                        [void]$bits.Add("as: $(if ($adc.Credential) { $adc.Credential.UserName } else { "$env:USERDOMAIN\$env:USERNAME (agent SYSTEM identity)" })")
+                        # ADException carries a richer server reason than .Message (survives remoting as a note property).
+                        $adEx = $exObj
+                        while ($adEx) {
+                            foreach ($p in 'ServerErrorMessage', 'ExtendedErrorMessage') {
+                                $pv = $adEx.PSObject.Properties[$p]
+                                if ($pv -and $pv.Value) { [void]$bits.Add("${p}: $($pv.Value)") }
+                            }
+                            $adEx = $adEx.InnerException
+                        }
+                        if ($msg -match 'unwilling to process|will not perform') {
+                            [void]$bits.Add("LDAP 53 usually = read-only/RODC target, RID pool exhausted, or the account can't create the object in the target OU — verify the target DC is writable and the ad-dc account can create in that OU")
+                        }
+                        $msg += " — [$($bits -join ' | ')]"
+                    } catch { }
                 }
                 # Name the phase that failed ("while connecting to on-prem Exchange (…): Unauthorized")
                 # so the operator sees WHAT broke, not just the bare provider message.
