@@ -14,7 +14,14 @@ export function redact(text: string): string {
   t = t.replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[ssn]");
   // US phone numbers
   t = t.replace(/\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, "[phone]");
-  // emails: keep the domain (identity-backbone signal), mask the local part
-  t = t.replace(/\b[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, "[user]@$1");
+  // emails: keep the domain (identity-backbone signal), mask the local part — UNLESS the local part
+  // is a naming-convention TEMPLATE (e.g. "FirstName.LastName", "Firstname.middleinitial",
+  // "[FirstName].[LastName]", "{first}.{last}", "[user]"). Those are documentation, not PII, and the
+  // runbook is unreadable if they're collapsed to "[user]". Real names ("felix.kessler") still mask.
+  // The local-part class includes [ ] { } < > so bracketed/braced placeholders match (and are kept).
+  t = t.replace(
+    /(?<![\w.%+\-@])([A-Za-z0-9._%+\-[\]{}<>]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g,
+    (_full, local: string, domain: string) => (/first|last|initial|middle|\buser\b|[[\]{}<>]/i.test(local) ? `${local}@${domain}` : `[user]@${domain}`)
+  );
   return t;
 }

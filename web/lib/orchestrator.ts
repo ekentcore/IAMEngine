@@ -2,14 +2,25 @@
 // See docs/DATA_MODEL.md ("Planning a case").
 import type { ClientSystem, Action, Mode } from "@prisma/client";
 
+// A step's INTENT — chiefly for offboarding. "disable" = reversible containment (lock the account,
+// isolate the device, revoke sessions); eventually safe to automate. "destructive" = actually deletes
+// / unrecoverable (delete a mailbox, hard-delete the user); ALWAYS gated for human approval AND we
+// snapshot state first (captureEvidence) so it's redoable/auditable. null = unclassified (the default
+// for onboard, which isn't disable/destructive in this sense).
+export type StepIntent = "disable" | "destructive";
+
 export type PlannedJob = {
   systemKey: string;
   sequence: number;
   mode: Mode;
   requiresApproval: boolean;
   captureEvidence: boolean;
+  intent: StepIntent | null;
   secretNames: string[];
   config: unknown;
+  // Effective dependencies (lane-specific override applied, filtered to systems in this plan).
+  // Persisted on the job so the claim gate runs the DAG, not strict sequence order.
+  dependsOn: string[];
 };
 
 // The per-lane config shape seed.ts writes into ClientSystem.config.
@@ -17,9 +28,11 @@ type SystemConfig = {
   onboard?: unknown;
   offboard?: unknown;
   dependsOn?: Record<string, string[]>;
+  runLast?: boolean;
   requestKey?: string;
   requiresApproval?: Record<string, boolean | undefined>;
   captureEvidence?: Record<string, boolean | undefined>;
+  intent?: Record<string, StepIntent | undefined>;
 };
 
 // Maps an on-request system to the intake-payload signal that turns it on. This is the
@@ -29,6 +42,33 @@ type SystemConfig = {
 const REQUEST_SIGNALS: Record<string, (payload: Record<string, unknown>, action: Action) => boolean> = {
   teams: (p, a) => a === "onboard" && Boolean(p.officeLineRequired || p.cellPhoneRequired),
 };
+
+// Identity-flow invariant for on-prem-origin clients: when the identity ORIGINATES in on-prem AD, the
+// order is ALWAYS create-in-AD -> directory-sync (push to the cloud) -> cloud consumers (entra / m365 /
+// exchange, which need the synced user to exist). We enforce it at plan time so a mis-wired client can't
+// deadlock — e.g. exchange waiting for a mailbox while the directory-sync that would create it is gated
+// behind exchange. No-op for cloud-native clients (no active-directory system) — their ordering differs.
+const IDENTITY_PIPELINE = ["active-directory", "directory-sync", "entra", "m365", "exchange"];
+
+// For an on-prem-origin client, the corrected dependencies for the pipeline systems: each keeps its
+// NON-pipeline deps (e.g. servicenow) but its pipeline-to-pipeline edges (forward OR reversed) are
+// replaced by the single chain edge to the previous ACTIVE pipeline system. Returns null (leave deps
+// untouched) when the client is cloud-native.
+function identityPipelineDeps(active: ClientSystem[], declaredOf: (s: ClientSystem) => string[]): Map<string, string[]> | null {
+  const activeKeys = new Set(active.map((s) => s.systemKey));
+  if (!activeKeys.has("active-directory")) return null;
+  const pipeActive = IDENTITY_PIPELINE.filter((k) => activeKeys.has(k));
+  const pipeSet = new Set(pipeActive);
+  const byKey = new Map(active.map((s) => [s.systemKey, s]));
+  const out = new Map<string, string[]>();
+  for (let i = 0; i < pipeActive.length; i++) {
+    const key = pipeActive[i];
+    const prev = i > 0 ? pipeActive[i - 1] : null;
+    const nonPipeline = declaredOf(byKey.get(key)!).filter((d) => !pipeSet.has(d));
+    out.set(key, prev ? [...new Set([...nonPipeline, prev])] : nonPipeline);
+  }
+  return out;
+}
 
 // Decide whether a system participates in this action, given the case payload.
 function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>): boolean {
@@ -52,9 +92,24 @@ export function planCase(
 ): PlannedJob[] {
   const active = systems.filter((s) => included(s, action, payload));
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
-  const depsOf = (s: ClientSystem): string[] => {
+  // Closing steps must run AFTER everything else, whatever the declared deps say — under DAG
+  // gating an under-declared dependsOn would otherwise let case-resolution dispatch first.
+  // runLast systems implicitly depend on every other (non-runLast) active system; among multiple
+  // runLast systems the declared deps/order decide.
+  const runLast = (s: ClientSystem) =>
+    s.systemKey === "case-resolution" || Boolean((s.config as SystemConfig | null)?.runLast);
+  const declaredOf = (s: ClientSystem): string[] => {
     const laneDeps = (s.config as SystemConfig | null)?.dependsOn?.[action];
     return (laneDeps ?? s.dependsOn).filter((d) => byKey.has(d));
+  };
+  // Enforce the on-prem identity flow (AD -> directory-sync -> cloud) for pipeline systems; other
+  // systems keep their declared deps. This can't be reversed by bad data, so it's deadlock-proof.
+  const pipelineDeps = identityPipelineDeps(active, declaredOf);
+  const depsOf = (s: ClientSystem): string[] => {
+    const declared = pipelineDeps?.get(s.systemKey) ?? declaredOf(s);
+    if (!runLast(s)) return declared;
+    const everyoneElse = active.filter((o) => o.systemKey !== s.systemKey && !runLast(o)).map((o) => o.systemKey);
+    return [...new Set([...declared, ...everyoneElse])];
   };
 
   const order: ClientSystem[] = [];
@@ -75,13 +130,28 @@ export function planCase(
     // lane means false — no cross-lane bleed); otherwise fall back to the collapsed column.
     const ra = cfg?.requiresApproval;
     const ce = cfg?.captureEvidence;
+    // Effective intent for this lane. Offboard defaults to "disable" (most offboard work is
+    // reversible containment) so every offboard step carries a classification; onboard is unclassified.
+    const intent: StepIntent | null = cfg?.intent?.[action] ?? (action === "offboard" ? "disable" : null);
+    const destructive = intent === "destructive";
     return {
       systemKey: s.systemKey,
       sequence: i,
       mode: s.mode,
-      requiresApproval: ra ? Boolean(ra[action]) : s.requiresApproval,
-      captureEvidence: ce ? Boolean(ce[action]) : s.captureEvidence,
-      secretNames: s.secretNames,
+      dependsOn: depsOf(s),
+      intent,
+      // Approval gates only auto-executing API steps. A manual/browser step is done by a human, so
+      // the act of doing it IS the approval — it must never put the case in "needs approval".
+      // A DESTRUCTIVE step ALWAYS requires approval (and evidence below) — it can't be turned off.
+      requiresApproval: s.mode === "api" ? (destructive || (ra ? Boolean(ra[action]) : s.requiresApproval)) : false,
+      // Destructive steps ALWAYS snapshot state first ("save the settings so we can redo it").
+      captureEvidence: destructive || (ce ? Boolean(ce[action]) : s.captureEvidence),
+      // SentinelOne's offboard resolves the user's machines from their Entra registered devices, so it
+      // also needs the m365-admin app brokered (catalog-wide, no per-client wiring). If the client has
+      // no m365-admin it simply isn't brokered and the runner falls back to config/payload machineName.
+      secretNames: s.systemKey === "sentinelone" && !s.secretNames.includes("m365-admin")
+        ? [...s.secretNames, "m365-admin"]
+        : s.secretNames,
       // The runner needs only this action's resolved config, not the whole blob.
       config: cfg ? (cfg[action] ?? null) : null,
     };

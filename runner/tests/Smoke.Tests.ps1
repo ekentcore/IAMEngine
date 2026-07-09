@@ -21,7 +21,7 @@ Describe 'Runner wiring smoke' {
         @{ System = 'active-directory'; Fns = @('Invoke-CtgADOnboarding', 'Invoke-CtgADOffboarding', 'Confirm-CtgAD') }
         @{ System = 'mimecast';         Fns = @('Connect-CtgMimecast', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast') }
         @{ System = 'directory-sync';   Fns = @('Invoke-CtgDirectorySync', 'Confirm-CtgDirectorySync') }
-        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange') }
+        @{ System = 'exchange';         Fns = @('Connect-CtgExchange', 'Invoke-CtgExchangeHybridOnboard', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange') }
         @{ System = 'zoom';             Fns = @('Connect-CtgZoom', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding', 'Confirm-CtgZoom') }
         @{ System = 'adobe';            Fns = @('Connect-CtgAdobe', 'Invoke-CtgAdobeOnboarding', 'Invoke-CtgAdobeOffboarding', 'Confirm-CtgAdobe') }
         @{ System = 'perimeter81';      Fns = @('Connect-CtgPerimeter81', 'Invoke-CtgPerimeter81Onboarding', 'Invoke-CtgPerimeter81Offboarding', 'Confirm-CtgPerimeter81') }
@@ -29,6 +29,19 @@ Describe 'Runner wiring smoke' {
     It 'exports every function the <System> lane dispatches' -ForEach $cases {
         foreach ($fn in $Fns) {
             (Get-Command $fn -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty -Because "$fn is dispatched for $System"
+        }
+    }
+
+    It 'Start-IamRunner.ps1 Import-Modules the module behind EVERY dispatched function' {
+        # Catches "added a DISPATCH lane + Use-*Secret but forgot the Import-Module" — the smoke
+        # BeforeAll imports every .psm1 itself, so it can't see what the RUNNER actually loads.
+        $runner = Get-Content "$Root/Start-IamRunner.ps1" -Raw
+        $imported = @([regex]::Matches($runner, 'modules/(Coretelligent\.[A-Za-z0-9]+)/') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $referenced = @([regex]::Matches($runner, '\b((?:Invoke|Confirm|Connect)-Ctg[A-Za-z0-9]+)\b') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        foreach ($fn in $referenced) {
+            $cmd = Get-Command $fn -ErrorAction SilentlyContinue
+            if (-not $cmd -or $cmd.ModuleName -notlike 'Coretelligent.*') { continue }  # runner-local helper -> not a module import
+            $imported | Should -Contain $cmd.ModuleName -Because "$fn lives in $($cmd.ModuleName) — Start-IamRunner.ps1 must Import-Module it"
         }
     }
 

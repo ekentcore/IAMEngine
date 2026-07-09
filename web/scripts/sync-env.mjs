@@ -24,6 +24,23 @@ const lines = [
   `AZURE_OPENAI_DEPLOYMENT="${env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini"}"`,
   `AZURE_OPENAI_VERSION="${env.AZURE_OPENAI_VERSION ?? "2025-01-01-preview"}"`,
   "",
+  `# Operator login. "true" requires every operator to sign in at /login (create an admin first:`,
+  `#   npx tsx scripts/auth-user.ts create <email> global_admin). Leave blank to keep the app open.`,
+  `AUTH_ENABLED="${env.AUTH_ENABLED ?? ""}"`,
+  "",
+  `# Runner API auth. When set, EVERY runner must send this as a Bearer token or it gets 401 (the`,
+  `# middleware fails OPEN only while this is blank). Roll the token to all runners BEFORE setting it`,
+  `# here + restarting the app, or unauthenticated runners drop offline.`,
+  `RUNNER_API_TOKEN="${env.RUNNER_API_TOKEN ?? ""}"`,
+  "",
+  `# Microsoft 365 single sign-on (Entra app registration). Set all three to enable the SSO button.`,
+  `# Register the redirect URI <origin>/api/auth/sso/callback in the app. AUTH_PUBLIC_ORIGIN forces`,
+  `# that origin behind a tunnel/proxy (cloudflared/ngrok) — set it to the URL you sign in through.`,
+  `AUTH_PUBLIC_ORIGIN="${env.AUTH_PUBLIC_ORIGIN ?? ""}"`,
+  `AZURE_SSO_TENANT_ID="${env.AZURE_SSO_TENANT_ID ?? ""}"`,
+  `AZURE_SSO_CLIENT_ID="${env.AZURE_SSO_CLIENT_ID ?? ""}"`,
+  `AZURE_SSO_CLIENT_SECRET="${env.AZURE_SSO_CLIENT_SECRET ?? ""}"`,
+  "",
 ];
 
 writeFileSync(OUT, lines.join("\n"));

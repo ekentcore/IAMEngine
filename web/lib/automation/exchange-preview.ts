@@ -9,8 +9,15 @@ type ExchangeConfig = {
   blockMobileDevices?: boolean;
 };
 
+type ExchangeOnboardConfig = {
+  enableRemoteMailbox?: { routingDomain?: string; emailAddressPolicyEnabled?: boolean } | null;
+  regional?: { language?: string; timezone?: string; defaultTimezone?: string } | null;
+  calendar?: { grantManagerReviewer?: boolean } | null;
+  waitForSync?: boolean;
+};
+
 export function previewExchange(action: "onboard" | "offboard", config: unknown, _identity: unknown, _domain: string, user?: PreviewUser): string {
-  if (action === "onboard") return "# Exchange Online has no onboard lane (the mailbox is created with the M365 user).";
+  if (action === "onboard") return onboard((config ?? {}) as ExchangeOnboardConfig, user);
   const cfg = (config ?? {}) as ExchangeConfig;
   const lines = [
     "# --- variables (resolved from the UM case) ---",
@@ -27,5 +34,31 @@ export function previewExchange(action: "onboard" | "offboard", config: unknown,
   if (cfg.autoReply?.message) lines.push("", "# set out-of-office", `Set-MailboxAutoReplyConfiguration -Identity $Upn -AutoReplyState Enabled -InternalMessage "${cfg.autoReply.message}" -ExternalMessage "${cfg.autoReply.message}"`);
   if (cfg.forwarding?.address) lines.push("", "# forwarding", `Set-Mailbox -Identity $Upn -ForwardingSmtpAddress "${cfg.forwarding.address}" -DeliverToMailboxAndForward:$${cfg.forwarding.keepCopy ? "true" : "false"}`);
   if (cfg.blockMobileDevices !== false) lines.push("", "# block ActiveSync + OWA", `Set-CASMailbox -Identity $Upn -ActiveSyncEnabled $false -OWAEnabled $false`);
+  return lines.join("\n");
+}
+
+// Hybrid onboard (mirrors Invoke-CtgExchangeHybridOnboard): enable the on-prem remote mailbox so
+// AAD Connect provisions an EXO mailbox, wait for it to land, then finish regional + calendar.
+function onboard(cfg: ExchangeOnboardConfig, user?: PreviewUser): string {
+  if (!cfg.enableRemoteMailbox) return "# No remote-mailbox config — Exchange onboard step is skipped for this client.";
+  const routing = cfg.enableRemoteMailbox.routingDomain ?? "<tenant>.mail.onmicrosoft.com";
+  const sam = user && "samAccountName" in user ? String((user as Record<string, unknown>).samAccountName ?? "<sam>") : "<sam>";
+  const lines = [
+    "# --- variables (resolved from the case) ---",
+    `$Sam   = "${sam}"`,
+    `$Smtp  = "${resolveUpn(user)}"`,
+    `$Route = "$Sam@${routing}"`,
+    "",
+    "# --- intended automation (Coretelligent.Exchange hybrid onboard, ON-PREM Exchange session) ---",
+    "# 1. enable the remote mailbox (skips if already remote-enabled)",
+    `Enable-RemoteMailbox -Identity $Sam -RemoteRoutingAddress $Route -PrimarySmtpAddress $Smtp`,
+  ];
+  if (cfg.enableRemoteMailbox.emailAddressPolicyEnabled !== false) lines.push(`Set-RemoteMailbox -Identity $Sam -EmailAddressPolicyEnabled $true`);
+  if (cfg.waitForSync !== false) lines.push("", "# 2. wait for AAD Connect to sync the mailbox into Exchange Online (bounded poll)", `Wait-CtgMailbox -Identity $Sam`);
+  if (cfg.regional) {
+    const tz = cfg.regional.timezone && !/\{/.test(cfg.regional.timezone) ? cfg.regional.timezone : (cfg.regional.defaultTimezone ?? "Eastern Standard Time");
+    lines.push("", "# 3. regional config (EXO)", `Set-MailboxRegionalConfiguration -Identity $Sam -Language "${cfg.regional.language ?? "en-us"}" -TimeZone "${tz}"`);
+  }
+  if (cfg.calendar?.grantManagerReviewer) lines.push("", "# grant the manager Reviewer on the calendar", `Add-MailboxFolderPermission -Identity "${"${Sam}"}:\\Calendar" -User $ManagerEmail -AccessRights Reviewer`);
   return lines.join("\n");
 }

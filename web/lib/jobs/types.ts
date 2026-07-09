@@ -4,6 +4,7 @@ import type { Action, Backbone, Mode } from "@prisma/client";
 // What a runner receives per claimed job.
 export type RunnerJob = {
   id: string;
+  caseNumber: string | null; // the ServiceNow case number (e.g. UM0029329) this job belongs to
   action: Action;
   systemKey: string;
   mode: Mode;
@@ -14,6 +15,7 @@ export type RunnerJob = {
   requiresApproval: boolean;
   captureEvidence: boolean;
   dryRun: boolean; // when true the runner runs -WhatIf (no mutations) + validation-only read-backs
+  validateOnly: boolean; // "Verify" pass — run ONLY the Confirm-Ctg* validator, no executor
 };
 
 export type ResultInput = {
@@ -34,6 +36,10 @@ export type BrokeredCredential = {
   expiresInSeconds: number;
   label?: string; // Delinea secret name (a human label) — never the secret value
   note?: string;
+  // The resolved secret VALUE (Username/Password/Server/...), pushed down so the runner doesn't
+  // need its own Delinea creds. Sensitive: returned over TLS to the owning agent, never logged or
+  // persisted. Absent when the app can't resolve (Delinea not configured) — then `note` explains.
+  fields?: Record<string, string>;
 };
 
 // Lets the service signal an HTTP status; routes translate it to a response.

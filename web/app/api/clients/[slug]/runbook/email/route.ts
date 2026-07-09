@@ -2,12 +2,14 @@
 // Download the email template of a runbook section as a .eml. Placeholders are the KB
 // template's; a pulled UM case fills them later. First file-download route in the app.
 import { db } from "@/lib/db";
+import { guardAuth } from "@/lib/auth/route-guard";
 import { asArtifacts, isEmail } from "@/lib/runbook/artifacts";
 import { buildEml, emlFilename } from "@/lib/runbook/eml";
 
 type Ctx = { params: { slug: string } };
 
 export async function GET(req: Request, { params }: Ctx) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const url = new URL(req.url);
   const action = url.searchParams.get("action");
   const seq = Number(url.searchParams.get("seq"));

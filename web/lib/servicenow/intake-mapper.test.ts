@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeIntake, deriveIdentity, emailTemplateFields, applyUsernamePattern } from "./intake-mapper";
+import { normalizeIntake, deriveIdentity, emailTemplateFields, applyUsernamePattern, umIntakeAction } from "./intake-mapper";
 import type { SnUserMgmtRecord } from "./intake";
 
 // Build a raw {value, display_value} record from a plain map (value === display unless given).
@@ -30,6 +30,13 @@ const onboard = rec({
   u_product_licenses: ["52d,01e", "Microsoft 365 Copilot, Microsoft 365 E3"],
 });
 
+test("umIntakeAction: lifecycle subcategories map; non-lifecycle (Computer Build 30300) is skipped", () => {
+  assert.equal(umIntakeAction(rec({ number: "UM1", subcategory: "30000" })), "onboard");
+  assert.equal(umIntakeAction(rec({ number: "UM2", subcategory: "30100" })), "offboard");
+  // Computer Build is a hardware request, NOT a user lifecycle case — must not import as a bogus onboard.
+  assert.equal(umIntakeAction(rec({ number: "UM3", subcategory: ["30300", "Computer Build"], short_description: "Computer Request - Pat" })), null);
+});
+
 test("onboard payload emits the canonical identity fields the modules read", () => {
   const { action, payload } = normalizeIntake(onboard);
   assert.equal(action, "onboard");
@@ -39,6 +46,48 @@ test("onboard payload emits the canonical identity fields the modules read", () 
   assert.equal(payload.usageLocation, "US"); // from "United States"
   assert.deepEqual(payload.productLicenses, ["Microsoft 365 Copilot", "Microsoft 365 E3"]);
   assert.equal(payload.managerName, "Evan Kent");
+});
+
+test("manager/mirror resolve to the customer_contact email (stable across SNOW/365), else the name", () => {
+  const r = rec({
+    number: "UM2", subcategory: "30000", u_first: "Jane", u_last: "Doe",
+    u_manager_name: ["mgr-sys-id", "James (Jim) Goodmiller"],
+    u_mirror_existing_user: ["mir-sys-id", "Bob (Bobby) Smith"],
+    // fetchUserManagementCase stashes resolved emails here:
+    "__email:u_manager_name": "jim.goodmiller@acme.com",
+  });
+  const { payload } = normalizeIntake(r);
+  assert.equal(payload.managerName, "James (Jim) Goodmiller"); // display name kept
+  assert.equal(payload.managerEmail, "jim.goodmiller@acme.com"); // resolved email preferred for lookup
+  // the mirror had no resolved email -> falls back to the display name
+  assert.equal(payload.mirrorPermissionsFromUser, "Bob (Bobby) Smith");
+});
+
+test("usageLocation resolves from a US state/city (not blind US default) and flags nothing", () => {
+  const p = normalizeIntake(rec({ number: "UM1", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Atlanta, GA"] })).payload;
+  assert.equal(p.usageLocation, "US");
+  assert.equal(p.usageLocationDerived, true);
+  assert.deepEqual(p.unknownFields, []);
+});
+
+test("usageLocation falls back to the contact timezone when the office location is unclear", () => {
+  const p = normalizeIntake(rec({ number: "UM2", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "HQ"], u_new_contact_time_zone: ["x", "US/Eastern"] })).payload;
+  assert.equal(p.usageLocation, "US");
+  assert.equal(p.usageLocationDerived, true);
+});
+
+test("usageLocation is FLAGGED (not silently US) when neither location nor timezone is recognized", () => {
+  const p = normalizeIntake(rec({ number: "UM3", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "Mars Office"] })).payload;
+  assert.equal(p.usageLocation, "US"); // safe default so onboarding isn't blocked
+  assert.equal(p.usageLocationDerived, false);
+  const unk = p.unknownFields as { field: string }[];
+  assert.equal(unk.length, 1);
+  assert.equal(unk[0].field, "usageLocation");
+});
+
+test("a non-US country resolves correctly", () => {
+  const p = normalizeIntake(rec({ number: "UM4", subcategory: "30000", u_first: "A", u_last: "B", u_office_location: ["x", "London, United Kingdom"] })).payload;
+  assert.equal(p.usageLocation, "GB");
 });
 
 test("deriveAction prefers the coded subcategory value over display text", () => {
@@ -74,6 +123,22 @@ test("deriveIdentity computes UPN / SamAccountName from the client's pattern + d
   assert.equal(enriched.displayName, "Jane Van Doe");
 });
 
+test("deriveIdentity drops a fallback whose tokens resolve empty (no '{first}.{mi}' -> 'felix.')", () => {
+  // The bug: no middle initial made "{first}.{mi}" yield "felix." -> Entra rejects the UPN/mailNickname.
+  const withMi = deriveIdentity({ firstName: "Felix", lastName: "Kessler", mi: "" }, {
+    usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com",
+  });
+  assert.equal(withMi.userPrincipalName, "felix.kessler@drakestar.com");
+  assert.equal(withMi.mailNickname, "felix.kessler");
+  assert.deepEqual(withMi.userPrincipalNameFallbacks, []); // the "{first}.{mi}" fallback is unusable -> dropped
+
+  // When a middle initial IS present, the fallback is kept and well-formed.
+  const okMi = deriveIdentity({ firstName: "Felix", lastName: "Kessler", mi: "J" }, {
+    usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com",
+  });
+  assert.deepEqual(okMi.userPrincipalNameFallbacks, ["felix.j@drakestar.com"]);
+});
+
 test("deriveIdentity falls back to a default pattern and yields no UPN without a domain", () => {
   const { payload } = normalizeIntake(onboard);
   const noDomain = deriveIdentity(payload, { usernamePatterns: null, primaryDomain: null });
@@ -93,4 +158,21 @@ test("emailTemplateFields fills the .eml variable labels from the payload", () =
   assert.equal(f["Start Date"], "2026-07-06");
   assert.equal(f["Personal Email"], "jane.personal@gmail.com");
   assert.equal(f["Work Email"], "janevandoe@acme.com");
+});
+
+test("deriveIdentity derives fallback UPNs from extra username patterns", () => {
+  const p = deriveIdentity(
+    { firstName: "Jane", lastName: "Doe", mi: "M" },
+    { usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "drakestar.com" }
+  );
+  assert.equal(p.userPrincipalName, "jane.doe@drakestar.com");
+  assert.deepEqual(p.userPrincipalNameFallbacks, ["jane.m@drakestar.com"]);
+});
+
+test("deriveIdentity yields no fallbacks when only one pattern is set", () => {
+  const p = deriveIdentity(
+    { firstName: "Jane", lastName: "Doe" },
+    { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "x.com" }
+  );
+  assert.deepEqual(p.userPrincipalNameFallbacks, []);
 });

@@ -16,6 +16,11 @@ export function writeBackEnabled(): boolean {
 // Resolve a UM number -> record sys_id. Returns null if the ticket isn't found.
 export async function resolveUmSysId(config: SnConfig, number: string, fetcher: typeof fetch = fetch): Promise<string | null> {
   assertConfig(config);
+  // A case number is letters + digits (e.g. UM0028740, INC0850968). Validate before interpolating into
+  // sysparm_query: ServiceNow decodes the query and parses `^` as an AND operator, so an operator-set
+  // number like "UM1^ORnumber=UM2" could redirect the work note to another ticket. Same guard style as
+  // gateway.ts's sys_id check. A malformed value resolves to "not found" (null) rather than injecting.
+  if (!/^[A-Za-z]{2,6}\d{5,}$/.test(number)) return null;
   const rows = await snGet<{ sys_id?: string }[]>(
     config,
     TABLE,

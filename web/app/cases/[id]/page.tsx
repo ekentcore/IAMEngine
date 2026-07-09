@@ -4,19 +4,35 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
+import { intakeLabel } from "@/lib/cases/intake-labels";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { writeBackEnabled } from "@/lib/servicenow/worknote";
 import { PlaybookView } from "../_components/playbook-view";
+import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
+import { RescanButton } from "../_components/rescan-button";
+import { DryRunToggle } from "../_components/dry-run-toggle";
+import { PauseButton } from "../_components/pause-button";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
 export const dynamic = "force-dynamic";
 
+// Tab title = the UM number (or subject), so open case tabs are tellable apart.
+export async function generateMetadata({ params }: { params: { id: string } }) {
+  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { clientId: true, serviceNowCaseNumber: true, subject: true } });
+  // Don't leak an out-of-scope case's subject in the tab title (the page itself 404s).
+  if (c && !scopeAllows(await currentClientScope(db), c.clientId)) return { title: "Case" };
+  return { title: c?.serviceNowCaseNumber ?? c?.subject ?? "Case" };
+}
+
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
-  const c = await makeCaseRepository(db).getCase(params.id);
+  // scope-gated: a case of an out-of-scope (e.g. restricted) client reads as not-found here.
+  const scope = await currentClientScope(db);
+  const c = await makeCaseRepository(db).getCase(params.id, scope);
   if (!c) notFound();
 
   const [playbook, runReport] = await Promise.all([loadPlaybook(db, params.id), loadRunReport(db, params.id)]);
@@ -24,10 +40,16 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
   const manual = c.jobs.filter((j) => j.isManual);
   const automated = c.jobs.filter((j) => !j.isManual);
-  const canReplan = !hasStartedJobs(c.jobs);
+  // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
+  // incrementally (kept steps survive, new/changed systems get fresh jobs).
+  const started = hasStartedJobs(c.jobs);
+  const paused = Boolean((await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true } }))?.pausedAt);
 
   return (
     <main>
+      {/* Sticky slot: the run report portals the "current step" banner here so it stays visible under
+          the title no matter where you've scrolled on the case. Empty (0-height) when nothing runs. */}
+      <div id="case-running-banner-slot" style={{ position: "sticky", top: 0, zIndex: 30, margin: "0 0 0.25rem", borderRadius: 4, overflow: "hidden" }} />
       <p className="note"><Link href="/cases">← Cases</Link></p>
       <div className="row-between">
         <div>
@@ -37,7 +59,19 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
           </p>
         </div>
-        <ReplanButton caseId={c.id} canReplan={canReplan} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <PauseButton caseId={c.id} paused={paused} />
+          <ReplanButton caseId={c.id} canReplan={true} started={started} />
+        </div>
+      </div>
+      {paused && (
+        <p className="note" style={{ color: "#8a6d00" }}>
+          ⏸ This case is paused — runners won&rsquo;t claim its steps until you resume (a step already running finishes normally).
+        </p>
+      )}
+
+      <div style={{ margin: "0.5rem 0 1rem" }}>
+        <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={started} />
       </div>
 
       {playbook && playbook.steps.length > 0 && (
@@ -46,6 +80,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <PlaybookView playbook={playbook} caseId={c.id} />
         </>
       )}
+
+      <h2>Credentials</h2>
+      <CaseSecretsPanel caseId={c.id} />
 
       {runReport && runReport.steps.length > 0 && (
         <>
@@ -102,13 +139,23 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         </>
       )}
 
-      <h2>Planned identity</h2>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <h2 style={{ marginBottom: 0 }}>Intake details</h2>
+        {c.serviceNowCaseNumber && <RescanButton caseId={c.id} caseNumber={c.serviceNowCaseNumber} />}
+      </div>
+      <p className="note" style={{ marginTop: "0.25rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
       <table>
         <tbody>
           {Object.entries(c.payload).map(([k, v]) => (
             <tr key={k}>
-              <th style={{ width: 240 }}>{k}</th>
-              <td>{v === null || v === "" ? <span className="muted">—</span> : String(typeof v === "boolean" ? (v ? "yes" : "no") : v)}</td>
+              <th style={{ width: 240 }}>{intakeLabel(k)}</th>
+              <td>
+                {v === null || v === "" || (Array.isArray(v) && v.length === 0)
+                  ? <span className="muted">—</span>
+                  : typeof v === "boolean" ? (v ? "yes" : "no")
+                  : Array.isArray(v) ? v.map(String).join(", ")
+                  : String(v)}
+              </td>
             </tr>
           ))}
           {Object.keys(c.payload).length === 0 && (

@@ -1,31 +1,65 @@
 // Cases list (server component).
-import Link from "next/link";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
+import { purgeCutoff, trashDaysLeft } from "@/lib/jobs/agent-trash";
 import { CasesToolbar } from "./_components/cases-toolbar";
+import { CasesTable } from "./_components/cases-table";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_LABEL: Record<string, string> = {
-  queued: "queued",
-  planning: "planning",
-  running: "running",
-  needs_manual: "needs manual",
-  needs_approval: "needs approval",
-  completed: "completed",
-  failed: "failed",
-};
+export const metadata = { title: "Cases" };
 
 export default async function CasesPage() {
-  // Clients for the "new case" picker (slug + name only).
-  const [cases, clients] = await Promise.all([
-    makeCaseRepository(db).listCases(),
+  const repo = makeCaseRepository(db);
+  // Purge cases that have sat in the trash past the retention window (mirrors the agents page).
+  await repo.purgeExpiredTrashedCases(purgeCutoff(new Date()));
+
+  // Scope-gate everything to the operator's visible clients (lists + the "new case" picker).
+  const scope = await currentClientScope(db);
+  const [cases, trashed, clients] = await Promise.all([
+    repo.listCases(scope),
+    repo.listTrashedCases(scope),
     db.client.findMany({
-      where: { status: "active" },
+      where: { status: "active", id: clientIdWhere(scope) },
       orderBy: { name: "asc" },
       select: { slug: true, name: true },
     }),
   ]);
+
+  // Date isn't safe to hand a client component as-is — send an ISO string the table sorts on.
+  const rows = cases.map((c) => ({
+    id: c.id,
+    action: c.action,
+    status: c.status,
+    paused: c.paused,
+    imported: c.imported,
+    pausedBy: c.pausedBy,
+    warnings: c.warnings,
+    subject: c.subject,
+    serviceNowCaseNumber: c.serviceNowCaseNumber,
+    clientName: c.clientName,
+    jobCount: c.jobCount,
+    statusHint: c.statusHint,
+    effectiveDate: c.effectiveDate,
+    immediate: c.immediate,
+    lastRunIso: c.lastRunAt ? c.lastRunAt.toISOString() : null,
+    ranBy: c.ranBy,
+    lastActionLabel: c.lastActionLabel,
+    lastActionBy: c.lastActionBy,
+    createdAtIso: c.createdAt.toISOString(),
+  }));
+
+  const now = new Date();
+  const trashedRows = trashed.map((c) => ({
+    id: c.id,
+    subject: c.subject,
+    serviceNowCaseNumber: c.serviceNowCaseNumber,
+    clientName: c.clientName,
+    status: c.status,
+    jobCount: c.jobCount,
+    deletedAtIso: c.deletedAt.toISOString(),
+    daysLeft: trashDaysLeft(c.deletedAt, now),
+  }));
 
   return (
     <main>
@@ -38,39 +72,7 @@ export default async function CasesPage() {
 
       <CasesToolbar clients={clients} />
 
-      <table>
-        <thead>
-          <tr>
-            <th>Subject</th>
-            <th>Client</th>
-            <th>Action</th>
-            <th>SN case</th>
-            <th>Jobs</th>
-            <th>Status</th>
-            <th>Created</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cases.map((c) => (
-            <tr key={c.id}>
-              <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
-              <td className="muted">{c.clientName}</td>
-              <td><span className="badge">{c.action}</span></td>
-              <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
-              <td className="muted">{c.jobCount}</td>
-              <td><span className="badge">{STATUS_LABEL[c.status] ?? c.status}</span></td>
-              <td className="muted">{c.createdAt.toLocaleDateString()}</td>
-            </tr>
-          ))}
-          {cases.length === 0 && (
-            <tr>
-              <td colSpan={7} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
-                No cases yet. Import a ServiceNow ticket or create one.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <CasesTable cases={rows} trashed={trashedRows} />
     </main>
   );
 }

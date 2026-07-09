@@ -1,14 +1,17 @@
 // POST /api/cases/import — import + plan a case from a ServiceNow ticket number (UM…).
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
-import { importCaseFromServiceNow } from "@/lib/cases/import-service";
+import { importByNumber } from "@/lib/cases/import-service";
+import { actorLabel } from "@/lib/auth/audit";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  let body: { number?: string; emailDomain?: string };
+  const _g = await guard("case.import"); if (_g.res) return _g.res;
+  let body: { number?: string; emailDomain?: string; dryRun?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -28,7 +31,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await importCaseFromServiceNow(db, body.number, "ui:import", { emailDomainOverride });
+    const result = await importByNumber(db, body.number, actorLabel(_g.user, "ui:import"), { emailDomainOverride, dryRun: body.dryRun === true });
     if (!result.ok) {
       const status = result.code === "not_found" || result.code === "no_client" ? 404 : 422;
       return NextResponse.json({ error: result.error }, { status });

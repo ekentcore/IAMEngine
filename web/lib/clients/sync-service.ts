@@ -43,6 +43,8 @@ export async function syncClientsFromSn(
   );
 
   const result: SyncResult = { total: snClients.length, created: 0, updated: 0, reconciled: 0, errors: [] };
+  // Parent links resolve AFTER the main loop — a child can arrive before its parent in the batch.
+  const parentLinks: Array<{ childSysId: string; parentSysId: string }> = [];
 
   for (const c of snClients) {
     try {
@@ -50,6 +52,7 @@ export async function syncClientsFromSn(
         result.errors.push({ sysId: "", name: c.name, reason: "missing sys_id" });
         continue;
       }
+      if (c.parentSysId) parentLinks.push({ childSysId: c.serviceNowSysId, parentSysId: c.parentSysId });
 
       const bySys = bySysId.get(c.serviceNowSysId);
       if (bySys) {
@@ -96,6 +99,10 @@ export async function syncClientsFromSn(
     }
   }
 
+  // Account hierarchy: children (e.g. CORE2181..89 under CORE1456) inherit the parent's modeled
+  // systems at plan time when they have none of their own.
+  const parentsLinked = await repo.linkParentsBySysId(parentLinks);
+
   await repo.writeAudit({
     actor,
     action: "servicenow.sync",
@@ -104,6 +111,7 @@ export async function syncClientsFromSn(
       created: result.created,
       updated: result.updated,
       reconciled: result.reconciled,
+      parentsLinked,
       errors: result.errors.length,
     },
   });

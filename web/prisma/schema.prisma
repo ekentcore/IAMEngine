@@ -66,55 +66,98 @@ enum AgentScope {
 }
 
 model Client {
-  id            String         @id @default(cuid())
-  slug          String         @unique
-  name          String
-  primaryDomain String         // website domain (from SN `website`) — informational
-  domains       String[]
+  id                     String       @id @default(cuid())
+  slug                   String       @unique
+  name                   String
+  primaryDomain          String // website domain (from SN `website`) — informational
+  domains                String[]
   // Email/UPN domain, derived from the dominant domain of the client's SN contacts (ground truth,
   // vs the website which often differs). Used for identity derivation. emailDomainLocked = a human
   // curated it; sync + contact-derivation must not overwrite a locked value.
-  emailDomain        String?
-  emailDomainLocked  Boolean   @default(false)
+  emailDomain            String?
+  emailDomainLocked      Boolean      @default(false)
   // Field names hand-edited in the UI (e.g. "primaryDomain", "backbone"). The routine ServiceNow
   // sync skips these so a manual correction isn't clobbered; a "hard refresh" clears them and
   // overwrites from ServiceNow.
-  editedFields       String[]  @default([])
-  backbone      Backbone?      // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
-  pod           String?
-  identity      Json?          // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
-  status        ClientStatus   @default(active)
-  createdAt     DateTime       @default(now())
-  archivedAt    DateTime?
+  editedFields           String[]     @default([])
+  backbone               Backbone? // null = roster-only (pulled from ServiceNow, not yet modeled by a profile)
+  pod                    String?
+  // ServiceNow account hierarchy: children (e.g. CORE2181..89 under CORE1456) share the parent's
+  // onboarding. When a child has NO modeled systems, planning falls back to the parent's systems +
+  // modeling (see clientForPlanning). Synced from customer_account.parent.
+  parentId               String?
+  parent                 Client?      @relation("ClientParent", fields: [parentId], references: [id])
+  children               Client[]     @relation("ClientParent")
+  identity               Json? // profile identity: { usernamePatterns, password, directorySync } — drives the automation preview
+  // v2.1 plan-time resolution inputs (from the profile): role/persona bundles, every-user config
+  // fragments, and the location data table. The planner merges these into each job's config.
+  personas               Json?
+  globals                Json? // every-user ONBOARD rules (add groups, place OU, set attributes)
+  globalsOffboard        Json? // every-user OFFBOARD rules (remove groups, move OU, set attributes)
+  locations              Json?
+  // AD objects discovered from the client's DC by its agent (read-only Get-ADOrganizationalUnit /
+  // Get-ADGroup), to back the rules editor's OU/group pickers. { ous: string[], groups: string[],
+  // discoveredAt }. adDiscoverRequestedAt is set by the "Refresh AD objects" button and consumed by
+  // the next client-network heartbeat (which tells the agent to run discovery).
+  adObjects              Json?
+  adDiscoverRequestedAt  DateTime?
+  // Cloud (Entra) groups discovered from the tenant via the m365-admin secret (Get-MgGroup), to back
+  // the same group pickers for cloud-only groups AD sync never covers — DLs, Security, M365 Groups.
+  // { groups: [{ name, type }], discoveredAt }. cloudGroupsRequestedAt is set by "Refresh cloud
+  // groups" and consumed by the CENTRAL runner (it has Graph), which posts the result back.
+  cloudGroups            Json?
+  cloudGroupsRequestedAt DateTime?
+  status                 ClientStatus @default(active)
+  // Where this client's onboarding/offboarding requests come from, so case-scanning hits the right
+  // ServiceNow table: "um" = external clients (sn_customerservice_user_management cases, the default),
+  // "incident" = internal (Coretelligent's own onboarding incidents, subcategory "User / On-Boarding",
+  // whose form data lives in record-producer variables, not columns).
+  intakeSource           String       @default("um")
+  // Internal-only: a restricted client is hidden from every operator EXCEPT those explicitly granted
+  // it (and super admins), regardless of their access mode. Use for sensitive orgs like Coretelligent.
+  restricted             Boolean      @default(false)
+  // When true AND this client has its own (client-network) agent, ALL of its jobs — including cloud
+  // ones (m365/exchange) — are claimed by that agent, not the central runner. Lets a client run
+  // everything on-prem the way its native script did (e.g. Windows-store EXO cert). Falls back to the
+  // central runner if the client has no agent. Off by default (cloud jobs go to the central runner).
+  runCloudOnOwnAgent     Boolean      @default(false)
+  // Per-client notification override: this client's own Zoom channel for failure alerts.
+  // { webhookUrl, token, mode: "also" | "only" } — "also" = client channel PLUS the default/restricted
+  // base, "only" = client channel alone. Null = use the global routing (default vs restricted).
+  notifyOverride         Json?
+  createdAt              DateTime     @default(now())
+  archivedAt             DateTime?
 
   // --- ServiceNow roster fields (source of truth for which clients exist) ---
-  serviceNowSysId  String?   @unique // CSM customer_account sys_id
-  coreId           String?   @unique // u_core_id, e.g. "CORE832"
-  region           String?           // u_region (Core, Olympus, ...)
-  timezone         String?           // u_time_zone
-  supportStatus    String?           // u_support_status
-  coManaged        Boolean   @default(false) // u_comanaged_it
-  onboardingRating Int?              // u_onboarding raw 1|2|3 (null if a text choice)
-  offboardingRating Int?             // u_offboarding raw 1|2|3 (null if a text choice)
-  snLastSyncedAt   DateTime?         // last successful ServiceNow sync for this row
-  metadata         Json?             // raw SN choice labels (e.g. offboarding = "Document Missing")
+  serviceNowSysId   String?   @unique // CSM customer_account sys_id
+  coreId            String?   @unique // u_core_id, e.g. "CORE832"
+  region            String? // u_region (Core, Olympus, ...)
+  timezone          String? // u_time_zone
+  supportStatus     String? // u_support_status
+  coManaged         Boolean   @default(false) // u_comanaged_it
+  onboardingRating  Int? // u_onboarding raw 1|2|3 (null if a text choice)
+  offboardingRating Int? // u_offboarding raw 1|2|3 (null if a text choice)
+  snLastSyncedAt    DateTime? // last successful ServiceNow sync for this row
+  metadata          Json? // raw SN choice labels (e.g. offboarding = "Document Missing")
 
-  systems       ClientSystem[]
-  secrets       Secret[]
-  agents        Agent[]
-  cases         CaseRequest[]
-  runbook       RunbookSection[]
+  systems         ClientSystem[]
+  secrets         Secret[]
+  agents          Agent[]
+  cases           CaseRequest[]
+  runbook         RunbookSection[]
+  connectionTests ConnectionTest[]
+  userAccess      UserClientAccess[]
 }
 
 model SystemCatalog {
-  key            String         @id // servicenow, m365, active-directory, ...
-  name           String
-  defaultMode    Mode           @default(api)
-  supportsOnboard  Boolean      @default(true)
-  supportsOffboard Boolean      @default(true)
-  moduleName     String?        // e.g. Coretelligent.M365
-  buildTier      Int            @default(3) // 1 = core/built, 3 = long tail
-  clientSystems  ClientSystem[]
+  key              String         @id // servicenow, m365, active-directory, ...
+  name             String
+  defaultMode      Mode           @default(api)
+  supportsOnboard  Boolean        @default(true)
+  supportsOffboard Boolean        @default(true)
+  moduleName       String? // e.g. Coretelligent.M365
+  buildTier        Int            @default(3) // 1 = core/built, 3 = long tail
+  clientSystems    ClientSystem[]
 }
 
 model ClientSystem {
@@ -126,11 +169,11 @@ model ClientSystem {
   mode             Mode
   onboardWhen      Lifecycle     @default(never)
   offboardWhen     Lifecycle     @default(never)
-  dependsOn        String[]      // system keys
+  dependsOn        String[] // system keys
   requiresApproval Boolean       @default(false)
   captureEvidence  Boolean       @default(false)
-  secretNames      String[]      // references Secret.name for this client
-  config           Json?         // per-client, per-lane settings (loose)
+  secretNames      String[] // references Secret.name for this client
+  config           Json? // per-client, per-lane settings (loose)
 
   @@unique([clientId, systemKey])
 }
@@ -139,56 +182,155 @@ model Secret {
   id         String  @id @default(cuid())
   client     Client  @relation(fields: [clientId], references: [id])
   clientId   String
-  name       String  // logical key used by ClientSystem.secretNames
+  name       String // logical key used by ClientSystem.secretNames
   provider   String  @default("delinea")
-  externalId String  // Delinea secret id — NEVER a value
+  externalId String // Delinea secret id — NEVER a value
   label      String?
 
   @@unique([clientId, name])
 }
 
 model Agent {
-  id         String     @id @default(cuid())
-  client     Client?    @relation(fields: [clientId], references: [id])
-  clientId   String?    // null for the central cloud runner
-  name       String
-  scope      AgentScope
-  version    String?
-  lastSeenAt DateTime?
-  enabled    Boolean    @default(true)
-  jobs       Job[]
+  id                 String     @id @default(cuid())
+  client             Client?    @relation(fields: [clientId], references: [id])
+  clientId           String? // null for the central cloud runner
+  name               String
+  scope              AgentScope
+  version            String? // the content-hash build id (canonical "on current code?" check)
+  semver             String? // the human-readable release version from runner/VERSION (display only)
+  lastSeenAt         DateTime?
+  // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
+  // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
+  bootAt             DateTime?
+  enabled            Boolean    @default(true)
+  // Operator-requested self-update: set true by the "Update" button; the next heartbeat returns
+  // update:true (consumed — cleared to false), and the runner re-pulls its files and restarts.
+  // The two timestamps drive the UI status: requested (queued) -> delivered (agent pulling/
+  // restarting) -> back online (lastSeenAt > delivered).
+  updateRequested    Boolean    @default(false)
+  updateRequestedAt  DateTime?
+  updateRequestedBy  String? // operator (email) who pushed the last self-update — for the Agents page
+  updateDeliveredAt  DateTime?
+  // Operator-requested plain RESTART (no file pull): the "Restart" button sets it; the next heartbeat
+  // returns restart:true (consumed) and the runner re-execs (its supervisor relaunches it). Clears a
+  // wedged claim/work loop remotely without touching the box.
+  restartRequested   Boolean    @default(false)
+  restartRequestedAt DateTime?
+  restartRequestedBy String?
+  restartDeliveredAt DateTime?
+  // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
+  deletedAt          DateTime?
+  jobs               Job[]
+
+  @@index([deletedAt])
+}
+
+// A one-off "does the credential actually connect, with the right permissions?" probe. ISOLATED
+// from the Job/CaseRequest pipeline so a probe can never affect a real onboarding: its own table,
+// its own claim, its own runner loop. Routed like a job — cloud systems to the central runner, on-
+// prem (AD/sync, hybrid Exchange) to the client agent — via the onPrem flag the app stamps.
+model ConnectionTest {
+  id              String    @id @default(cuid())
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId        String
+  systemKey       String
+  status          String    @default("pending") // pending | running | ok | fail (overall)
+  detail          String? // the API stage's one-line summary ("users readable") or its error
+  // Two-stage result: accessOk = the runner could RESOLVE the secret from Delinea; the API stage
+  // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
+  accessOk        Boolean?
+  accessDetail    String?
+  onPrem          Boolean   @default(false) // true -> only the client's agent claims it
+  secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
+  config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri
+  requestedAt     DateTime  @default(now())
+  claimedAt       DateTime?
+  finishedAt      DateTime?
+  assignedAgentId String?
+
+  @@index([status])
+  @@index([clientId])
 }
 
 model CaseRequest {
-  id                  String     @id @default(cuid())
-  client              Client     @relation(fields: [clientId], references: [id])
-  clientId            String
-  action              Action
-  serviceNowCaseNumber String?   @unique // e.g. UM0028698 — used to make import idempotent
-  subject             String?            // short description for list display
-  status              CaseStatus @default(queued)
-  payload             Json       // the ServiceNow intake form (see DATA_MODEL.md)
-  createdAt           DateTime   @default(now())
-  jobs                Job[]
+  id                   String     @id @default(cuid())
+  client               Client     @relation(fields: [clientId], references: [id])
+  clientId             String
+  action               Action
+  serviceNowCaseNumber String?    @unique // e.g. UM0028698 — used to make import idempotent
+  subject              String? // short description for list display
+  status               CaseStatus @default(queued)
+  // When true, dispatched jobs run -WhatIf (read-only validation, NO mutations). Propagated onto
+  // each pending job's request.dryRun; toggled on the case before dispatch for a safe first run.
+  dryRun               Boolean    @default(false)
+  payload              Json // the ServiceNow intake form (see DATA_MODEL.md)
+  // Per-case secret-reference overrides: { "<secretName>": "<delinea externalId>" }. The credential
+  // broker prefers these over the client's default reference — for a one-off cred or to fill one the
+  // client hasn't set. Still a REFERENCE only (a Delinea id), never a value.
+  secretOverrides      Json?
+  // Set once the post-onboard verification sweep (re-run of every step's read-only validator) has
+  // completed — so it auto-runs exactly once before the case is considered done, and case-resolution.
+  verifiedAt           DateTime?
+  // Operator pause: a paused case's jobs are never claimed (the runner skips them) until resumed.
+  // Use it to safely adjust systems / re-plan mid-run without a runner grabbing the next step.
+  pausedAt             DateTime?
+  // Why it's held: "operator" (manual pause) or "needs_info" (intake had unknowns to fill before it
+  // can run — the case is auto-held on import and released once the fields are provided).
+  pausedReason         String?
+  createdAt            DateTime   @default(now())
+  // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
+  // purged. Excluded from the active list and from runner claims while trashed.
+  deletedAt            DateTime?
+  jobs                 Job[]
+
+  @@index([deletedAt])
+  @@index([clientId]) // client-network agents claim by case.clientId; client pages filter by it
 }
 
 model Job {
-  id            String      @id @default(cuid())
-  case          CaseRequest @relation(fields: [caseRequestId], references: [id])
-  caseRequestId String
-  systemKey     String
-  sequence      Int
-  mode          Mode
-  status        JobStatus   @default(pending)
-  assignedAgent Agent?      @relation(fields: [assignedAgentId], references: [id])
-  assignedAgentId String?
-  request       Json?       // resolved instructions for the runner
-  result        Json?
-  evidence      Json?       // screenshots / membership snapshots refs
-  validation    Json?       // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
-  error         String?
-  startedAt     DateTime?
-  finishedAt    DateTime?
+  id               String            @id @default(cuid())
+  case             CaseRequest       @relation(fields: [caseRequestId], references: [id])
+  caseRequestId    String
+  systemKey        String
+  sequence         Int
+  mode             Mode
+  status           JobStatus         @default(pending)
+  assignedAgent    Agent?            @relation(fields: [assignedAgentId], references: [id])
+  assignedAgentId  String?
+  request          Json? // resolved instructions for the runner
+  singleRun        Boolean           @default(false) // operator "run this step only": claimable even while the case is paused, runs in isolation (no cascade), cleared on result
+  result           Json?
+  evidence         Json? // screenshots / membership snapshots refs
+  validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
+  progress         Json? // live phase trail while running: [{ ts, phase }] — shown in the run report
+  progressAt       DateTime? // when progress last moved — the per-job "is it still working?" signal
+  error            String?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  procurementWatch ProcurementWatch?
+
+  // Hot path: runners poll every ~5s and each claim runs three scans over this table (candidate fetch,
+  // stale-lease reclaim, wedged-job reclaim). Index the columns those queries filter on.
+  @@index([status, mode]) // candidate fetch
+  @@index([status, startedAt]) // stale dispatched-lease reclaim
+  @@index([status, progressAt]) // wedged running-job reclaim
+  @@index([caseRequestId]) // per-case job load (run report, case advance)
+  @@index([assignedAgentId]) // agent's in-flight jobs
+}
+
+// A Procurement Case (SN) being watched for a job that couldn't finish for lack of license seats.
+// Heartbeat-driven sweep checks the PC's state every ~5 minutes; when it resolves, the job is
+// automatically re-queued (re-runs the assignment + verifies). One watch per job.
+model ProcurementWatch {
+  id            String    @id @default(cuid())
+  job           Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId         String    @unique
+  number        String // e.g. PC0012345
+  state         String    @default("watching") // watching | resolved | cancelled | error
+  note          String? // last observed SN state / error detail
+  lastCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 // The full per-client runbook, generated from the KB by tools/profile-generator and loaded
@@ -200,13 +342,13 @@ model RunbookSection {
   clientId  String
   action    Action
   seq       Int
-  systemKey String?  // null when the section is not modeled as a system yet
-  title     String   // the runbook section header
-  status    String   // automated | manual | unmodeled
-  guess     String?  // vendor guess for an unmodeled section
+  systemKey String? // null when the section is not modeled as a system yet
+  title     String // the runbook section header
+  status    String // automated | manual | unmodeled
+  guess     String? // vendor guess for an unmodeled section
   steps     String[] // ordered runbook steps (nested items indented)
-  kbArticle String?  // source ServiceNow KB number for this action (e.g. KB0034662)
-  artifacts Json?    // typed non-step content: email templates, linked attachments
+  kbArticle String? // source ServiceNow KB number for this action (e.g. KB0034662)
+  artifacts Json? // typed non-step content: email templates, linked attachments
 
   @@index([clientId, action, seq])
 }
@@ -214,10 +356,148 @@ model RunbookSection {
 model AuditLog {
   id            String   @id @default(cuid())
   at            DateTime @default(now())
-  actor         String   // system | <user> | agent:<id>
+  actor         String // system | ui | agent:<id> | user:<email> — human label, kept for non-user rows
+  userId        String? // FK when a logged-in operator performed the action (per-user audit trail)
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   clientId      String?
   caseRequestId String?
   jobId         String?
   action        String
   detail        Json?
+
+  @@index([userId, at])
+  @@index([action, at])
+  @@index([at])
+  @@index([caseRequestId]) // listCases loads recent audit rows per case (action IN … WHERE caseRequestId IN …)
+}
+
+// Append-only outcome log: one row per job result post. Unlike Job (overwritten in place on a
+// re-run), this preserves the history of successes / warnings / errors so module problems can be
+// tracked and fixed across cases. Backs the /runs page.
+model RunOutcome {
+  id            String    @id @default(cuid())
+  at            DateTime  @default(now())
+  caseRequestId String
+  caseNumber    String // SN UM number (else the case id) — shown in the log
+  action        Action // onboard | offboard
+  clientId      String
+  clientName    String
+  systemKey     String // the module / system that ran
+  verdict       String // verified | warning | failed | skipped | manual
+  status        String // raw job status: succeeded | failed | skipped
+  messages      String[] // warning / error / validation-miss lines (empty for a clean success)
+  error         String? // the top-level failure message, if any
+  validateOnly  Boolean   @default(false) // true = an auto-verify read-back, not the action run
+  // Stable hash of (case + module + verdict + messages + error): the SAME line for the SAME case
+  // recurs across re-runs under one fingerprint, so marking it "Fixed" resolves every occurrence and
+  // the log collapses duplicates instead of repeating noise.
+  fingerprint   String    @default("")
+  resolvedAt    DateTime? // set when an operator marks the line "Fixed" (hides it from the default view)
+  resolvedBy    String? // who resolved it (email / "system")
+
+  @@index([systemKey, verdict, at])
+  @@index([clientId, at])
+  @@index([verdict, at])
+  @@index([at])
+  @@index([fingerprint])
+  @@index([resolvedAt])
+}
+
+// ── Auth: operators, their roles, and live sessions ──────────────────────────
+// Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
+// authorization is permission-based and roles stay easy to re-compose.
+enum Role {
+  super_admin // top tier: everything a global admin can do, plus only a super can reset/assign supers
+  global_admin // everything incl. user/role + settings + approve destructive (but not supers)
+  ops_manager // all case ops + approve destructive + edit systems + manage agents
+  engineer // import/plan/dispatch/rerun/pause/verify/schedule; NOT approve destructive
+  importer // import + view only
+  auditor // read-only everywhere + audit log
+}
+
+enum AuthType {
+  local // email + password (Admin control, break-glass)
+  sso // Entra / O365 OIDC
+  both
+}
+
+// How a user's client visibility is scoped (see lib/auth/client-scope.ts for the resolution rule):
+//   all     — every client EXCEPT restricted ones the user hasn't been granted (the default)
+//   only     — ONLY the clients in the user's scope list (an allowlist; a restricted client listed
+//              here is thereby granted)
+//   exclude  — every client EXCEPT the ones in the user's scope list (and except ungranted restricted)
+enum ClientAccessMode {
+  all
+  only
+  exclude
+}
+
+// A row in the user↔client access junction. Two kinds share one table:
+//   scope — the client list the only/exclude mode operates on
+//   grant — explicit access to a `restricted` (internal-only) client, consulted for all/exclude users
+enum ClientAccessKind {
+  scope
+  grant
+}
+
+model User {
+  id               String             @id @default(cuid())
+  email            String             @unique
+  name             String?
+  role             Role               @default(auditor) // least privilege by default; an admin elevates
+  status           String             @default("active") // active | disabled
+  authType         AuthType           @default(local)
+  passwordHash     String? // scrypt(salt:hash); local accounts only
+  isBreakGlass     Boolean            @default(false) // emergency local super-admin — use is loudly audited
+  mfaSecret        String? // TOTP seed (optional; reserved)
+  entraOid         String?            @unique // Entra object id, set when linked to an O365 identity
+  lastLoginAt      DateTime?
+  // Which clients this operator may see. `all` (default) preserves today's behavior — everyone sees
+  // every non-restricted client — so the feature is inert until an admin scopes a user down.
+  clientAccessMode ClientAccessMode   @default(all)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  sessions         Session[]
+  auditLogs        AuditLog[]
+  clientAccess     UserClientAccess[]
+}
+
+// Per-user client visibility. `scope` rows are the only/exclude list; `grant` rows unlock a
+// restricted client for this user. Enforced server-side at every read path via lib/auth/client-scope.
+model UserClientAccess {
+  userId   String
+  clientId String
+  kind     ClientAccessKind
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client   Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@id([userId, clientId, kind])
+  @@index([clientId])
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  // Impersonation (super-admin "view as"): when set, the session RENDERS as this user (their RBAC +
+  // client scope) while the real operator stays `userId`. Plain id (no FK) so a deleted target just
+  // falls back to the real user. Mutations are blocked while set (see requirePermission).
+  impersonatingUserId String?
+  tokenHash String    @unique // sha256 of the opaque cookie token (the token itself is never stored)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  ip        String?
+  userAgent String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// App-level singleton key/value state (no per-client owner). Holds the ServiceNow intake poller's
+// enabled flag + high-water mark, and is the home for future app settings. Value is JSON-as-text.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt
 }

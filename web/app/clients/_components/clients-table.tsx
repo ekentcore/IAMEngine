@@ -7,6 +7,7 @@ import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
 import { SystemsEditor } from "./systems-editor";
+import type { ClientReadiness } from "@/lib/clients/readiness";
 
 export type ClientVM = {
   id: string;
@@ -15,6 +16,8 @@ export type ClientVM = {
   primaryDomain: string;
   backbone: Backbone | null;
   status: ClientStatus;
+  intakeSource: string;
+  restricted: boolean;
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;
@@ -27,6 +30,11 @@ export type ClientVM = {
   systemKeys: string[];
   systemCount: number;
   modeled: boolean;
+  readiness: ClientReadiness;
+  parentId: string | null;
+  parentName: string | null;
+  parentSystemKeys: string[];
+  coverage: "own" | "parent" | "none";
 };
 
 const BACKBONE_LABEL: Record<string, string> = {
@@ -34,6 +42,14 @@ const BACKBONE_LABEL: Record<string, string> = {
   google: "Google",
   ad_synced: "AD synced",
   ad_standalone: "AD standalone",
+};
+
+// Run-readiness badge styling per tier (computed from wired secrets + connection-test results).
+const READINESS: Record<string, { label: string; mark: string; color: string; bg: string }> = {
+  ready: { label: "ready", mark: "✓", color: "var(--ok-fg)", bg: "var(--ok-bg)" },
+  partial: { label: "partial", mark: "◑", color: "var(--warn-fg)", bg: "var(--warn-bg)" },
+  not_set_up: { label: "not set up", mark: "✗", color: "var(--err-fg)", bg: "var(--err-bg)" },
+  no_systems: { label: "—", mark: "", color: "var(--muted)", bg: "transparent" },
 };
 
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
@@ -46,6 +62,7 @@ function haystack(c: ClientVM): string {
     c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus,
     c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
     c.systemKeys.join(" "),
+    c.readiness ? READINESS[c.readiness.tier]?.label : "",
   ]
     .filter(Boolean)
     .join(" ")
@@ -78,11 +95,12 @@ function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
   return String(av).localeCompare(String(bv));
 }
 
-export function ClientsTable({ clients }: { clients: ClientVM[] }) {
+export function ClientsTable({ clients, canRestrict = false }: { clients: ClientVM[]; canRestrict?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
   const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
+  const [readyFilter, setReadyFilter] = useState<"all" | "ready" | "partial" | "not_set_up" | "no_systems">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [busy, setBusy] = useState<string | null>(null);
@@ -91,7 +109,8 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   // inline cell editing (double-click)
   const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
   const [savingCell, setSavingCell] = useState(false);
-  const [draft, setDraft] = useState(""); // live value while editing the email-format cell
+  const [draft, setDraft] = useState(""); // live PRIMARY value while editing the email-format cell
+  const [draftBackup, setDraftBackup] = useState(""); // live BACKUP (conflict fallback) value
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -153,6 +172,27 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     }
   }
 
+  // Commit the email-format edit: combine Primary + optional Backup into "primary | backup" (the
+  // route splits on "|"; the backup is used when the primary UPN is already taken by someone else).
+  function commitUsername(slug: string, currentPattern: string) {
+    const combined = draft.trim() + (draftBackup.trim() ? ` | ${draftBackup.trim()}` : "");
+    if (draft.trim() && combined !== currentPattern) saveCell(slug, "set-username-pattern", { pattern: combined });
+    else setCell(null);
+  }
+
+  // A client modeled via its parent (SN account hierarchy) is planned from the PARENT's systems, so
+  // the list shows the parent's systems + readiness (the parent's own row already has them computed),
+  // marked "via <parent>". Falls back to the parent's system keys if the parent row isn't in view.
+  const byId = useMemo(() => new Map(clients.map((c) => [c.id, c])), [clients]);
+  const eff = (c: ClientVM): { readiness: ClientReadiness; systemCount: number; systemKeys: string[]; viaParent: string | null } => {
+    if (c.coverage === "parent") {
+      const p = c.parentId ? byId.get(c.parentId) : undefined;
+      if (p) return { readiness: p.readiness, systemCount: p.systemCount, systemKeys: p.systemKeys, viaParent: c.parentName ?? p.name };
+      return { readiness: c.readiness, systemCount: c.parentSystemKeys.length, systemKeys: c.parentSystemKeys, viaParent: c.parentName };
+    }
+    return { readiness: c.readiness, systemCount: c.systemCount, systemKeys: c.systemKeys, viaParent: null };
+  };
+
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
   const matchesSearch = (c: ClientVM) => {
@@ -166,6 +206,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (modeledFilter === "modeled" && !c.modeled) return false;
       if (modeledFilter === "unmodeled" && c.modeled) return false;
+      if (readyFilter !== "all" && (eff(c).readiness?.tier ?? "no_systems") !== readyFilter) return false;
       return matchesSearch(c);
     });
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
@@ -173,7 +214,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
     return sorted;
     // matchesSearch closes over `terms`, which is the real dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients, terms, statusFilter, modeledFilter, sortKey, sortDir]);
+  }, [clients, terms, statusFilter, modeledFilter, readyFilter, sortKey, sortDir]);
 
   // When a search has results that the STATUS filter is hiding, offer a one-click widen — this is
   // the usual "search looks broken" cause (you searched an archived client while viewing active).
@@ -194,7 +235,11 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
   const counts = useMemo(() => {
     const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
     const modeled = inStatus.filter((c) => c.modeled).length;
-    return { total: inStatus.length, modeled, unmodeled: inStatus.length - modeled };
+    const byTier = (t: string) => inStatus.filter((c) => (eff(c).readiness?.tier ?? "no_systems") === t).length;
+    return {
+      total: inStatus.length, modeled, unmodeled: inStatus.length - modeled,
+      ready: byTier("ready"), partial: byTier("partial"), not_set_up: byTier("not_set_up"), no_systems: byTier("no_systems"),
+    };
   }, [clients, statusFilter]);
 
   function toggleSort(key: SortKey) {
@@ -277,6 +322,13 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           <option value="modeled">Modeled — can do ({counts.modeled})</option>
           <option value="unmodeled">Not modeled ({counts.unmodeled})</option>
         </select>
+        <select className="inline" value={readyFilter} onChange={(e) => setReadyFilter(e.target.value as never)} title="Filter by run-readiness">
+          <option value="all">Any readiness</option>
+          <option value="ready">Ready ({counts.ready})</option>
+          <option value="partial">Partial ({counts.partial})</option>
+          <option value="not_set_up">Not set up ({counts.not_set_up})</option>
+          <option value="no_systems">No systems ({counts.no_systems})</option>
+        </select>
         <span className="grow" />
         <span className="note result-count">
           {visible.length === clients.length ? `${clients.length} clients` : `${visible.length} of ${clients.length}`}
@@ -301,6 +353,7 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
         <option value="{first}">first</option>
       </datalist>
 
+      <div className="table-scroll desk-only">
       <table className="data-table clients-table">
         <thead>
           <tr>
@@ -318,15 +371,16 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
             <SortHead k="coreId" label="CORE id" />
             <SortHead k="primaryDomain" label="Domain" />
             <th>Backbone</th>
-            <th className="help" title="Email/UPN name format — e.g. {first}.{last} → jane.doe@domain">Email format</th>
+            <th className="help" title="Email/UPN name format. Add a conflict fallback after a | — e.g. {first}.{last} | {first}.{mi} (used when the primary username is already taken).">Email format</th>
             <SortHead k="onboardingRating" label="On / Off" num />
             <SortHead k="systemCount" label="Systems" num />
+            <th className="help" title="Run-readiness, computed from wired credentials + connection-test results. ready = all systems wired and tested; partial = core wired but some missing/untested/failing; not set up = nothing wired.">Ready</th>
             <SortHead k="status" label="Status" />
             <th aria-label="Actions"></th>
           </tr>
         </thead>
         <tbody>
-          {visible.map((c) => (
+          {visible.map((c) => { const e = eff(c); return (
             <tr key={c.id} className={selected.has(c.slug) ? "row-selected" : undefined}>
               <td>
                 <input
@@ -337,7 +391,51 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                   onChange={() => toggleSelect(c.slug)}
                 />
               </td>
-              <td><Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link></td>
+              <td>
+                <Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link>
+                {" "}
+                <span
+                  className="badge"
+                  role="button"
+                  tabIndex={0}
+                  title="Intake source — internal scans onboarding incidents, external scans UM cases. Click to toggle."
+                  onClick={() => saveCell(c.slug, "set-intake-source", { intakeSource: c.intakeSource === "incident" ? "um" : "incident" })}
+                  style={{ cursor: "pointer", ...(c.intakeSource === "incident"
+                    ? { color: "var(--info-fg)", borderColor: "var(--info-bg)", background: "var(--info-bg)" }
+                    : { color: "var(--muted)", opacity: 0.65 }) }}
+                >
+                  {c.intakeSource === "incident" ? "internal" : "external"}
+                </span>
+                {/* Restricted (internal-only) flag — SUPER ADMIN ONLY (the option is hidden from
+                    everyone else). Restricting hides the client from every operator not granted it. */}
+                {canRestrict && (
+                  <>
+                    {" "}
+                    <span
+                      className="badge"
+                      role="button"
+                      tabIndex={0}
+                      title={
+                        c.restricted
+                          ? "Restricted (internal-only): hidden from operators not granted it. Click to unrestrict."
+                          : "Click to restrict: hide this client from operators who haven't been granted it (grant per-user on the Users page)."
+                      }
+                      onClick={() => {
+                        if (!c.restricted && !confirm(`Restrict ${c.name}? It will be hidden from every operator (except super admins and those you grant it to on the Users page).`)) return;
+                        saveCell(c.slug, "set-restricted", { restricted: !c.restricted });
+                      }}
+                      style={{
+                        cursor: "pointer",
+                        ...(c.restricted
+                          ? { color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }
+                          : { color: "var(--muted)", opacity: 0.5 }),
+                      }}
+                    >
+                      {c.restricted ? "🔒 restricted" : "🔓 restrict"}
+                    </span>
+                  </>
+                )}
+              </td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
               <td
                 className="muted mono editable"
@@ -398,49 +496,87 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
               </td>
               <td
                 className="mono editable"
+                style={{ position: "relative" }}
                 title="Double-click to edit the email name format"
-                onDoubleClick={() => { setCell({ slug: c.slug, field: "username" }); setDraft(c.usernamePattern); }}
+                onDoubleClick={() => {
+                  const parts = c.usernamePattern.split("|").map((s) => s.trim());
+                  setCell({ slug: c.slug, field: "username" });
+                  setDraft(parts[0] ?? "");
+                  setDraftBackup(parts.slice(1).join(" | "));
+                }}
               >
-                {cell?.slug === c.slug && cell.field === "username" ? (
-                  <div>
+                {/* Value stays in the cell so the row never resizes; the editor floats over it. */}
+                {c.usernamePattern}
+                {c.editedFields.includes("usernamePattern") && (
+                  <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                )}
+                {cell?.slug === c.slug && cell.field === "username" && (
+                  <div
+                    // Save when focus leaves the whole editor — NOT when moving between Primary/Backup.
+                    onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commitUsername(c.slug, c.usernamePattern); }}
+                    style={{
+                      position: "absolute", top: "100%", left: 0, zIndex: 40, marginTop: 2,
+                      background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6,
+                      padding: "8px 10px", boxShadow: "0 6px 18px rgba(0,0,0,0.18)", width: 200, textAlign: "left",
+                    }}
+                  >
+                    <label className="muted" style={{ display: "block", fontSize: 10 }}>Primary</label>
                     <input
                       autoFocus
                       list="username-patterns"
                       value={draft}
                       disabled={savingCell}
-                      style={{ width: 130, padding: "2px 6px" }}
+                      placeholder="{first}.{last}"
+                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") saveCell(c.slug, "set-username-pattern", { pattern: draft });
+                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
                         else if (e.key === "Escape") setCell(null);
                       }}
-                      onBlur={() => {
-                        if (draft.trim() && draft !== c.usernamePattern) saveCell(c.slug, "set-username-pattern", { pattern: draft });
-                        else setCell(null);
+                    />
+                    <label className="muted" style={{ display: "block", fontSize: 10, marginTop: 6 }}>Backup (if primary is taken)</label>
+                    <input
+                      list="username-patterns"
+                      value={draftBackup}
+                      disabled={savingCell}
+                      placeholder="{first}.{mi} (optional)"
+                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
+                      onChange={(e) => setDraftBackup(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
+                        else if (e.key === "Escape") setCell(null);
                       }}
                     />
-                    <div className="note" style={{ marginTop: 2, whiteSpace: "nowrap" }}>
+                    <div className="note" style={{ marginTop: 4 }}>
                       John Jason Doe → {formatPreview(draft, c.emailDomain ?? c.primaryDomain)}
+                      {draftBackup.trim() && <><br />backup → {formatPreview(draftBackup, c.emailDomain ?? c.primaryDomain)}</>}
                     </div>
                   </div>
-                ) : (
-                  <>
-                    {c.usernamePattern}
-                    {c.editedFields.includes("usernamePattern") && (
-                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
-                    )}
-                  </>
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
-              <td className={`num tnum ${c.systemCount ? "" : "muted"}`}>
-                {c.systemCount ? (
+              <td className={`num tnum ${e.systemCount ? "" : "muted"}`}>
+                {e.systemCount ? (
                   <span className="tip" tabIndex={0}>
-                    {c.systemCount}
-                    <span className="tip-pop">{c.systemKeys.join(", ")}</span>
+                    {e.systemCount}{e.viaParent ? <sup style={{ fontSize: 9, color: "var(--muted)", marginLeft: 1 }}>P</sup> : null}
+                    <span className="tip-pop">{e.systemKeys.join(", ")}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
                   </span>
                 ) : (
                   "—"
+                )}
+              </td>
+              <td>
+                {e.readiness && e.readiness.tier !== "no_systems" ? (
+                  <span className="tip" tabIndex={0} style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                    <span className="badge"
+                      style={{ color: READINESS[e.readiness.tier].color, background: READINESS[e.readiness.tier].bg, borderColor: "transparent" }}>
+                      {READINESS[e.readiness.tier].mark} {READINESS[e.readiness.tier].label}
+                    </span>
+                    {e.viaParent && <span className="note" style={{ fontSize: 10 }}>via {e.viaParent}</span>}
+                    <span className="tip-pop">{e.readiness.summary}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
+                  </span>
+                ) : (
+                  <span className="muted">—</span>
                 )}
               </td>
               <td>
@@ -451,24 +587,22 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
                 )}
               </td>
               <td className="row-actions">
-                <button onClick={() => setEditSlug(c.slug)}>Edit</button>
-                <button
-                  title="Re-pull this client from ServiceNow, discarding manual edits"
-                  onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}
-                >
-                  ↻
-                </button>
-                {c.status === "archived" ? (
-                  <button onClick={() => patch(c, "restore")} disabled={busy === c.slug}>Restore</button>
-                ) : (
-                  <button onClick={() => askArchive(c)} disabled={busy === c.slug}>Archive</button>
-                )}
+                <span className="icon-stack" style={{ flexDirection: "row" }}>
+                  <button className="icon-btn" title="Edit systems" aria-label="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
+                  <button className="icon-btn" title="Re-pull this client from ServiceNow, discarding manual edits" aria-label="Hard refresh"
+                    onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}>↻</button>
+                  {c.status === "archived" ? (
+                    <button className="icon-btn" title="Restore (unarchive)" aria-label="Restore" disabled={busy === c.slug} onClick={() => patch(c, "restore")}>↩</button>
+                  ) : (
+                    <button className="icon-btn" title="Archive" aria-label="Archive" disabled={busy === c.slug} onClick={() => askArchive(c)}>🗄</button>
+                  )}
+                </span>
               </td>
             </tr>
-          ))}
+          ); })}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={10}>
+              <td colSpan={11}>
                 <div className="empty-state">
                   {clients.length === 0 ? (
                     <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
@@ -483,6 +617,33 @@ export function ClientsTable({ clients }: { clients: ClientVM[] }) {
           )}
         </tbody>
       </table>
+      </div>
+
+      {/* Mobile: a tappable card per client (same filtered `visible` list) — the dense table is hidden. */}
+      <div className="mob-only m-list">
+        {visible.map((c) => {
+          const e = eff(c);
+          const rd = e.readiness && e.readiness.tier !== "no_systems" ? READINESS[e.readiness.tier] : null;
+          return (
+            <Link key={c.slug} href={`/clients/${c.slug}`} className="m-card">
+              <div className="m-card-top">
+                <span className="m-card-title">{c.name}</span>
+                <span className={`badge ${c.status === "archived" ? "archived" : "active"}`}>{c.status}</span>
+              </div>
+              <div className="m-card-sub">{c.coreId ?? "—"}{c.primaryDomain ? ` · ${c.primaryDomain}` : ""}</div>
+              <div className="m-card-meta">
+                {c.backbone && <span><span className="k">backbone</span> {BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>}
+                <span><span className="k">systems</span> {e.systemCount || "—"}{e.viaParent ? " (via parent)" : ""}</span>
+                <span>
+                  <span className="k">ready</span>{" "}
+                  {rd ? <span className="badge" style={{ color: rd.color, background: rd.bg }}>{rd.mark} {rd.label}</span> : "—"}
+                </span>
+              </div>
+            </Link>
+          );
+        })}
+        {visible.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No clients match.</div>}
+      </div>
 
       <dialog ref={confirmRef}>
         <h2>Archive client</h2>

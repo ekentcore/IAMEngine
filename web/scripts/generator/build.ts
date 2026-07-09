@@ -5,7 +5,7 @@ import { CATALOG, inferBackbone, type Lane } from "../../lib/generator/system-ma
 import type { ClientKb } from "./kb";
 
 export type DraftProfile = {
-  schemaVersion: "2.0";
+  schemaVersion: "2.0" | "2.1";
   client: { id: string; name: string; primaryDomain: string; domains?: string[] };
   identity: Record<string, unknown>;
   secrets: Record<string, { provider: "delinea"; id: string; label?: string }>;
@@ -102,5 +102,9 @@ export function slugify(name: string): string {
 
 export function normalizeDomain(website: string | null): string {
   if (!website) return "";
-  return website.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0].trim();
+  const d = website.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0].trim();
+  // A real domain has a dot (a TLD). The KB's domain_raw is often a SN hierarchy path
+  // ("TOP/Client"), which splits to a bare token like "top" — never a domain. Reject it so
+  // it can't poison roster matching (every client collapsing to one bogus domain key).
+  return d.includes(".") ? d : "";
 }

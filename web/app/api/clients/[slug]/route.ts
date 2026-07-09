@@ -1,35 +1,63 @@
 // GET   /api/clients/:slug — client detail (systems + secrets).
 // PATCH /api/clients/:slug — { action: "archive" | "restore" | "set-email-domain" }.
 import { NextResponse } from "next/server";
+import { guard, guardAuth } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
+import { refreshClientName } from "@/lib/clients/refresh-name";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
+import { parseClientOverride } from "@/lib/notifications/types";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
 type Ctx = { params: { slug: string } };
 
 export async function GET(_req: Request, { params }: Ctx) {
+  const _g = await guardAuth(); if (_g.res) return _g.res;
   const repo = makeClientRepository(db);
-  const client = await repo.getClientBySlug(params.slug);
+  // scope-gated: an out-of-scope client reads as not-found.
+  const client = await repo.getClientBySlug(params.slug, await currentClientScope(db));
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(client);
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
+  // Restricting a client is the most sensitive access-control decision (it hides an org from everyone
+  // but super admins) — SUPER-ADMIN ONLY. Everything else on this route is the usual systems-editing
+  // capability.
+  const _g = body.action === "set-restricted" ? await guardAuth() : await guard("client.edit_systems");
+  if (_g.res) return _g.res;
+  if (body.action === "set-restricted" && _g.user.role !== "super_admin") {
+    return NextResponse.json({ error: "only a super admin can restrict or unrestrict a client" }, { status: 403 });
+  }
 
   const repo = makeClientRepository(db);
-  const existing = await repo.getClientBySlug(params.slug);
+  // scope-gated: you can only edit a client you can see (an out-of-scope client reads as not-found).
+  const existing = await repo.getClientBySlug(params.slug, await currentClientScope(db));
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Pull just the name from ServiceNow (a renamed account, e.g. CORE2224) — narrow, doesn't touch
+  // edits or other fields like a hard refresh does.
+  if (body.action === "refresh-name") {
+    try {
+      const r = await refreshClientName(db, params.slug, "ui");
+      if (!r.ok) return NextResponse.json({ error: r.reason ?? "couldn't refresh the name" }, { status: 422 });
+      return NextResponse.json(r);
+    } catch (e) {
+      if (e instanceof SnGatewayError) return NextResponse.json({ error: `ServiceNow: ${e.message}` }, { status: 502 });
+      return NextResponse.json({ error: "internal error" }, { status: 500 });
+    }
+  }
 
   // Inline table edit: the website domain.
   if (body.action === "set-domain") {
@@ -40,15 +68,18 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
-  // Inline table edit: the email/UPN name format (identity.usernamePatterns[0]).
+  // Inline table edit: the email/UPN name format. Accepts "primary | fallback" — the fallback is
+  // used when the primary UPN is taken by a different person (e.g. "{first}.{last} | {first}.{mi}").
   if (body.action === "set-username-pattern") {
     const raw = typeof body.pattern === "string" ? body.pattern.trim() : "";
-    const local = raw.split("@")[0]; // accept a full pattern or just the local part
-    if (!/\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i.test(local)) {
-      return NextResponse.json({ error: "pattern must include a name token like {first} or {last}" }, { status: 422 });
+    const NAME_TOKEN = /\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i;
+    const parts = raw.split("|").map((s) => s.trim().split("@")[0].trim()).filter(Boolean); // accept full patterns or local parts
+    if (parts.length === 0) return NextResponse.json({ error: "a username pattern is required" }, { status: 422 });
+    for (const p of parts) {
+      if (!NAME_TOKEN.test(p)) return NextResponse.json({ error: `each pattern must include a name token like {first} or {last}: "${p}"` }, { status: 422 });
     }
-    const client = await repo.setUsernamePattern(params.slug, local);
-    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: local } });
+    const client = await repo.setUsernamePattern(params.slug, parts[0], parts.slice(1));
+    await repo.writeAudit({ actor: "ui", action: "client.username_pattern.set", clientId: client.id, detail: { pattern: parts[0], fallbacks: parts.slice(1) } });
     return NextResponse.json(client);
   }
 
@@ -93,9 +124,45 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json(client);
   }
 
+  // Mark the client internal-only (restricted): hidden from operators not granted it. Access-control
+  // decision — guarded above on user.manage.
+  if (body.action === "set-restricted") {
+    if (typeof body.restricted !== "boolean") return NextResponse.json({ error: "restricted must be a boolean" }, { status: 422 });
+    const client = await repo.setRestricted(params.slug, body.restricted);
+    await repo.writeAudit({ actor: "ui", action: "client.restricted.set", clientId: client.id, detail: { restricted: body.restricted } });
+    return NextResponse.json(client);
+  }
+
+  // Run this client's cloud jobs on its own agent (when it has one) rather than the central runner.
+  if (body.action === "set-run-cloud-on-own-agent") {
+    if (typeof body.runCloudOnOwnAgent !== "boolean") return NextResponse.json({ error: "runCloudOnOwnAgent must be a boolean" }, { status: 422 });
+    const client = await repo.setRunCloudOnOwnAgent(params.slug, body.runCloudOnOwnAgent);
+    await repo.writeAudit({ actor: "ui", action: "client.run_cloud_on_own_agent.set", clientId: client.id, detail: { runCloudOnOwnAgent: body.runCloudOnOwnAgent } });
+    return NextResponse.json(client);
+  }
+
+  // Per-client notification override: this client's own destination per channel, added to ("also") or
+  // replacing ("only") the resolved base. Send { override: null } (or an empty object) to clear it.
+  if (body.action === "set-notify-override") {
+    const value = parseClientOverride(body.override); // sanitizes per channel; drops empties
+    const channels = Object.keys(value);
+    const client = await repo.setNotifyOverride(params.slug, channels.length ? value : null);
+    await repo.writeAudit({ actor: "ui", action: "client.notify_override.set", clientId: client.id, detail: { channels } }); // never the URLs/tokens/recipients
+    return NextResponse.json(client);
+  }
+
+  // Mark the client internal (incident intake) vs external (UM intake) — drives case scanning.
+  if (body.action === "set-intake-source") {
+    const src = body.intakeSource;
+    if (src !== "um" && src !== "incident") return NextResponse.json({ error: 'intakeSource must be "um" or "incident"' }, { status: 422 });
+    const client = await repo.setIntakeSource(params.slug, src);
+    await repo.writeAudit({ actor: "ui", action: "client.intake_source.set", clientId: client.id, detail: { intakeSource: src } });
+    return NextResponse.json(client);
+  }
+
   if (body.action !== "archive" && body.action !== "restore") {
     return NextResponse.json(
-      { error: 'action must be one of: archive, restore, set-domain, set-backbone, set-email-domain, hard-refresh' },
+      { error: 'action must be one of: archive, restore, set-domain, set-backbone, set-email-domain, set-intake-source, hard-refresh' },
       { status: 422 }
     );
   }

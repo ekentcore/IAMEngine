@@ -1,6 +1,8 @@
 // POST /api/cases/:id/replan — re-pull the latest UM + re-derive identity + re-plan against the
 // client's current systems, replacing the planned jobs. Pre-execution only.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
+import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { replanCase } from "@/lib/cases/replan-service";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
@@ -9,6 +11,8 @@ import { normalizeDomainInput } from "@/lib/clients/email-domain";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const _g = await guard("case.plan"); if (_g.res) return _g.res;
+  if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let override: string | undefined;
   try {
     const body = (await req.json()) as { emailDomain?: string };

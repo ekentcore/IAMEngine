@@ -21,7 +21,7 @@ clients from the corpus analysis), and status. Specs live alongside this file.
 | Active Directory `active-directory` | api | 2 | both | 37% | spec | create+attrs+groups; evidence+disable |
 | Directory sync `directory-sync` | api | 2 | both | 37% | spec | Start-ADSyncSyncCycle + verify |
 | Mimecast `mimecast` | api | 2 | both | 88% | spec | email security (vendor variant) |
-| Proofpoint `proofpoint` | api | 3 | both | 2% | spec | email security alternative |
+| Proofpoint `proofpoint` | api | 3 | both | 2% | built | read-only sync verify (no API trigger) |
 | Adobe `adobe` | api | 2 | both | 18/37% | spec | license assign/remove/transfer |
 | Google Workspace `google-workspace` | api | 2 | both | 25% | spec | identity origin for google clients |
 | KnowBe4 `knowbe4` | api | 2 | both | 27% | spec | usually AD-group-driven |

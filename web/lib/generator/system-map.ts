@@ -16,7 +16,7 @@ export type CatalogEntry = {
 
 // Per-system defaults for a *draft* profile. Hand-tuned from the module specs + six-one.json.
 export const CATALOG: Record<string, CatalogEntry> = {
-  servicenow:        { mode: "api", tier: 1, onboard: "always", offboard: "always" },
+  servicenow:        { mode: "manual", tier: 1, onboard: "always", offboard: "always" }, // no write-back executor yet — manual checklist
   "active-directory":{ mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "ad-dc", dependsOn: ["servicenow"] },
   "directory-sync":  { mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "ad-dc", dependsOn: ["active-directory"] },
   m365:              { mode: "api", tier: 1, onboard: "always", offboard: "always", secret: "m365-admin", dependsOn: ["servicenow"] },
@@ -31,21 +31,34 @@ export const CATALOG: Record<string, CatalogEntry> = {
   sharepoint:        { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   zoom:              { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "zoom" },
   slack:             { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "slack" },
-  egnyte:            { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "egnyte" },
+  egnyte:            { mode: "manual", tier: 3, onboard: "on-request", offboard: "on-request", secret: "egnyte" }, // executor exists; set mode:"api" per-client once that client's Egnyte is wired
   mdm:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "mdm" },
   dropbox:           { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "dropbox" },
   perimeter81:       { mode: "api", tier: 3, onboard: "on-request", offboard: "always", secret: "perimeter81", dependsOn: ["m365"] },
+  // Endpoint containment + the apps the offboard "please remove from…" email used to name. Offboard-
+  // focused (onboarding is out of band); destructive S1 actions are gated by requiresApproval per client.
+  sentinelone:       { mode: "api", tier: 2, onboard: null, offboard: "always", secret: "sentinelone", dependsOn: ["m365"] },
+  duo:               { mode: "api", tier: 3, onboard: null, offboard: "always", secret: "duo", dependsOn: ["m365"] },
+  xmatters:          { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "xmatters" },
+  logicmonitor:      { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "logicmonitor" },
+  // Offboard completion notice (Graph sendMail via m365-admin): communication email + SN case note.
+  // Runs LAST — its per-client dependsOn lists the other offboard steps.
+  notify:            { mode: "api", tier: 3, onboard: null, offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   teams:             { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "teams-admin", dependsOn: ["m365"] },
   avd:               { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "m365-admin", dependsOn: ["m365"] },
   "1password":       { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "1password" },
   notion:            { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "notion" },
   tableau:           { mode: "manual", tier: 3, onboard: "on-request", offboard: null },
   printix:           { mode: "api", tier: 3, onboard: "on-request", offboard: null, secret: "printix" },
+  uniflow:           { mode: "manual", tier: 3, onboard: "on-request", offboard: null }, // secure pull-printing — manual setup (emails the user a PIN)
+  salesforce:        { mode: "api", tier: 3, onboard: "on-request", offboard: "always", secret: "salesforce", dependsOn: ["m365"] },
+  jira:              { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "jira", dependsOn: ["m365"] },
+  hubspot:           { mode: "api", tier: 3, onboard: "on-request", offboard: "on-request", secret: "hubspot", dependsOn: ["m365"] },
   "welcome-letter":  { mode: "manual", tier: 3, onboard: "always", offboard: null, dependsOn: ["m365"] },
   "first-day-call":  { mode: "manual", tier: 3, onboard: "always", offboard: null },
   hardware:          { mode: "manual", tier: 3, onboard: null, offboard: "on-request" },
   workstation:       { mode: "manual", tier: 3, onboard: "on-request", offboard: null },
-  "case-resolution": { mode: "api", tier: 1, onboard: "always", offboard: "always", dependsOn: ["m365"] },
+  "case-resolution": { mode: "manual", tier: 1, onboard: "always", offboard: "always", dependsOn: ["m365"] }, // SN write-back not available — manual
 };
 
 // Ordered header->systemKey rules. First match wins. Headers are stripped of leading
@@ -66,7 +79,10 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/ad sync|aad ?connect|directory sync/, "directory-sync"],
   [/active directory/, "active-directory"],
   [/exchange|mailbox auditing/, "exchange"],
-  [/knowbe4/, "knowbe4"],
+  [/knowbe4|know be4|security awareness/, "knowbe4"],
+  [/salesforce|sfdc/, "salesforce"],
+  [/jira|atlassian|confluence/, "jira"],
+  [/hubspot|hub spot/, "hubspot"],
   [/g[- ]?suite|gsuite|google/, "google-workspace"],
   [/zoom/, "zoom"],
   [/egnyte/, "egnyte"],
@@ -78,8 +94,13 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/1 ?password/, "1password"],
   [/notion/, "notion"],
   [/tableau/, "tableau"],
+  [/uni ?flow/, "uniflow"],
   [/printix/, "printix"],
   [/perimeter ?81/, "perimeter81"],
+  [/sentinel ?one|sentinel1|\bs1\b/, "sentinelone"],
+  [/\bduo\b/, "duo"],
+  [/x ?matters/, "xmatters"],
+  [/logic ?monitor/, "logicmonitor"],
 ];
 
 // Map a raw runbook header to a system key, or null if it isn't a modeled system.

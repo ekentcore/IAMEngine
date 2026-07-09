@@ -24,7 +24,7 @@ export interface SystemEntry {
 }
 
 export interface Profile {
-  schemaVersion: "2.0";
+  schemaVersion: "2.0" | "2.1"; // 2.1 when the v2.1 enrichment added personas/globals/locations
   client: { id: string; name: string; primaryDomain: string; domains?: string[]; pod?: string };
   identity: {
     backbone: Backbone;
@@ -36,6 +36,10 @@ export interface Profile {
   secrets: Record<string, SecretRef>;
   delivery?: { method: string; welcomeLetter?: boolean; note?: string };
   systems: SystemEntry[];
+  // v2.1 plan-time blocks (added by the optional --v21 enrichment; absent for plain v2.0 drafts)
+  globals?: Record<string, Record<string, unknown>>;
+  personas?: Record<string, unknown>;
+  locations?: Record<string, unknown>;
 }
 
 export interface DraftMeta {

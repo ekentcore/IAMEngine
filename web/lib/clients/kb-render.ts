@@ -15,7 +15,8 @@ const SECTION_TITLE: Record<string, string> = {
   "first-day-call": "First-Day Call", "case-resolution": "Case Resolution",
 };
 
-const title = (key: string) => SECTION_TITLE[key] ?? key;
+export const systemTitle = (key: string) => SECTION_TITLE[key] ?? key;
+const title = systemTitle;
 const laneText = (when: string) =>
   when === "always" ? "Always" : when === "on_request" ? "On request" : "Not applicable";
 
@@ -32,7 +33,7 @@ function sections(c: ClientDetail, action: "onboard" | "offboard"): Section[] {
     }));
 }
 
-function configLines(config: unknown, action: "onboard" | "offboard"): string[] {
+export function configLines(config: unknown, action: "onboard" | "offboard"): string[] {
   const c = (config as { onboard?: Record<string, unknown>; offboard?: Record<string, unknown> } | null) ?? {};
   const block = c[action];
   if (!block || typeof block !== "object") return [];

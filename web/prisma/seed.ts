@@ -6,6 +6,7 @@
 import { PrismaClient, Prisma } from "@prisma/client";
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { parseRunbookText } from "../lib/clients/runbook-parse";
 
 const prisma = new PrismaClient();
 const PROFILES = join(process.cwd(), "..", "profiles");
@@ -24,15 +25,20 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["servicenow", "ServiceNow", 1, "Coretelligent.ServiceNow"],
   ["m365", "Microsoft 365", 1, "Coretelligent.M365"],
   ["entra", "Entra", 1, "Coretelligent.M365"],
+  ["tap", "Temporary Access Pass", 2, "Coretelligent.M365"],
   ["exchange", "Exchange", 1, "Coretelligent.M365"],
   ["active-directory", "Active Directory", 2, "Coretelligent.ActiveDirectory"],
   ["directory-sync", "Entra Connect sync", 2, "Coretelligent.ActiveDirectory"],
-  ["mimecast", "Mimecast", 2], ["adobe", "Adobe", 2], ["google-workspace", "Google Workspace", 2, "Coretelligent.GoogleWorkspace"],
-  ["knowbe4", "KnowBe4", 2], ["sharepoint", "SharePoint", 3], ["spanning", "Spanning", 3],
-  ["zoom", "Zoom", 3], ["slack", "Slack", 3], ["egnyte", "Egnyte", 3], ["mdm", "MDM (Addigy/Jamf/Intune)", 3],
-  ["proofpoint", "Proofpoint", 3], ["dropbox", "Dropbox", 3], ["perimeter81", "Perimeter 81", 3],
-  ["teams", "Teams Phone", 3], ["avd", "Azure Virtual Desktop", 3], ["1password", "1Password", 3],
-  ["tableau", "Tableau", 3], ["notion", "Notion", 3], ["printix", "Printix", 3],
+  ["mimecast", "Mimecast", 2, "Coretelligent.Mimecast"], ["adobe", "Adobe", 2, "Coretelligent.Adobe"], ["google-workspace", "Google Workspace", 2, "Coretelligent.GoogleWorkspace"],
+  ["knowbe4", "KnowBe4", 2, "Coretelligent.KnowBe4"], ["sharepoint", "SharePoint", 3], ["spanning", "Spanning", 3, "Coretelligent.Spanning"],
+  ["zoom", "Zoom", 3, "Coretelligent.Zoom"], ["slack", "Slack", 3], ["egnyte", "Egnyte", 3, "Coretelligent.Egnyte"], ["mdm", "MDM (Addigy/Jamf/Intune)", 3],
+  ["proofpoint", "Proofpoint", 3], ["dropbox", "Dropbox", 3], ["perimeter81", "Perimeter 81", 3, "Coretelligent.Perimeter81"],
+  ["teams", "Teams Phone", 3], ["avd", "Azure Virtual Desktop", 3], ["1password", "1Password", 3, "Coretelligent.1Password"],
+  ["tableau", "Tableau", 3], ["notion", "Notion", 3], ["printix", "Printix", 3], ["uniflow", "UniFlow secure printing", 3],
+  ["salesforce", "Salesforce", 3, "Coretelligent.Salesforce"], ["jira", "Jira (Atlassian)", 3, "Coretelligent.Jira"], ["hubspot", "HubSpot", 3, "Coretelligent.HubSpot"],
+  ["sentinelone", "SentinelOne", 2, "Coretelligent.SentinelOne"], ["duo", "Duo Security", 3, "Coretelligent.Duo"],
+  ["xmatters", "xMatters", 3, "Coretelligent.XMatters"], ["logicmonitor", "LogicMonitor", 3, "Coretelligent.LogicMonitor"],
+  ["notify", "Offboard notification", 3, "Coretelligent.Notify"],
   ["hardware", "Hardware", 3], ["workstation", "Workstation", 3], ["welcome-letter", "Welcome letter", 3],
   ["first-day-call", "First-day call", 3], ["case-resolution", "Case resolution", 1],
   // long-tail keys the Phase-6 generator can emit; needed so a promoted draft seeds without a FK error
@@ -101,20 +107,40 @@ function stripEdited<T extends Record<string, any>>(data: T, editedFields: strin
 // Hand-authored profiles are authoritative: upsert the client by its own slug (create
 // allowed). Returns the client id (so the generated pass can protect it by id, not name).
 async function applyAuthored(p: any): Promise<string | null> {
-  if (p.schemaVersion !== "2.0") return null;
+  if (p.schemaVersion !== "2.0" && p.schemaVersion !== "2.1") return null;
   const backbone = backboneMap[p.identity.backbone];
   if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return null; }
-  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true } });
+  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true, emailDomainLocked: true } });
+  // v2.1 plan-time blocks (undefined for v2.0 profiles → column left null)
+  const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
+  // Don't overwrite an email domain a human locked in the UI.
+  const emailDomain = existing?.emailDomainLocked ? undefined : (p.client.emailDomain ?? undefined);
+  const intakeSource = p.client.intakeSource ?? undefined; // "incident" for internal clients (Coretelligent)
   const update = stripEdited(
-    { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], identity: p.identity ?? undefined },
+    { backbone, pod: p.client.pod ?? undefined, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, identity: p.identity ?? undefined, ...(intakeSource ? { intakeSource } : {}), ...planBlocks },
     existing?.editedFields ?? []
   );
   const client = await prisma.client.upsert({
     where: { slug: p.client.id },
     update,
-    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined },
+    create: { slug: p.client.id, name: p.client.name, primaryDomain: p.client.primaryDomain, domains: p.client.domains ?? [], emailDomain, backbone, pod: p.client.pod ?? null, identity: p.identity ?? undefined, ...(intakeSource ? { intakeSource } : {}), ...planBlocks },
   });
   await upsertSecretsAndSystems(client.id, p);
+  // Hand-authored runbook (for KB-less clients like Coretelligent): { runbook: { onboard, offboard } }
+  // parsed into RunbookSection rows, replacing any existing for that action.
+  if (p.runbook && typeof p.runbook === "object") {
+    for (const action of ["onboard", "offboard"] as const) {
+      const text = (p.runbook as Record<string, unknown>)[action];
+      if (typeof text !== "string" || !text.trim()) continue;
+      const sections = parseRunbookText(text);
+      await prisma.runbookSection.deleteMany({ where: { clientId: client.id, action } });
+      if (sections.length) {
+        await prisma.runbookSection.createMany({
+          data: sections.map((s) => ({ clientId: client.id, action, seq: s.seq, systemKey: s.systemKey, title: s.title, status: s.status, steps: s.steps })),
+        });
+      }
+    }
+  }
   return client.id;
 }
 
@@ -157,7 +183,7 @@ async function main() {
 
     for (const file of readdirSync(GENERATED).filter((f) => f.endsWith(".json") && !f.endsWith(".runbook.json") && !f.startsWith("_"))) {
       const p = JSON.parse(readFileSync(join(GENERATED, file), "utf8"));
-      if (p.schemaVersion !== "2.0") { nonV2++; continue; }
+      if (p.schemaVersion !== "2.0" && p.schemaVersion !== "2.1") { nonV2++; continue; }
       const nn = normName(p.client.name);
       const clientId =
         byName.get(nn) ??
@@ -169,14 +195,17 @@ async function main() {
         curatedRb++;
       } else {
         const backbone = backboneMap[p.identity.backbone];
-        const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined }, editedById.get(clientId) ?? []);
+        // v2.1 plan-time blocks the extractor recovered (groups/attributes -> globals, plus
+        // personas/locations). undefined for a v2.0 draft → column left as-is.
+        const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
+        const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined, ...planBlocks }, editedById.get(clientId) ?? []);
         await prisma.client.update({ where: { id: clientId }, data: update });
         await upsertSecretsAndSystems(clientId, p);
         runbook += await loadRunbook(clientId, p.client.id);
         enriched++;
       }
     }
-    console.log(`generated: ${enriched} enriched, ${curatedRb} curated (runbook only), ${nonV2} non-2.0, ${unmatched} no roster match; ${runbook} runbook sections loaded`);
+    console.log(`generated: ${enriched} enriched, ${curatedRb} curated (runbook only), ${nonV2} unknown-schema, ${unmatched} no roster match; ${runbook} runbook sections loaded`);
   }
 }
 

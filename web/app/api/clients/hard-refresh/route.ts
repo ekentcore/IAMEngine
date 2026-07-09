@@ -1,6 +1,7 @@
 // POST /api/clients/hard-refresh — bulk force-overwrite selected clients from ServiceNow,
 // discarding their manual edits. Body: { slugs: string[] }.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { hardRefreshClients } from "@/lib/clients/hard-refresh";
 
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 const MAX = 200;
 
 export async function POST(req: Request) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: { slugs?: unknown };
   try {
     body = await req.json();

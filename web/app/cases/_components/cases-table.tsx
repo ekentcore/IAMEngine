@@ -1,0 +1,513 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
+import { formatDateOnly, formatDateTime } from "@/lib/dates";
+
+export type CaseRowVM = {
+  id: string;
+  action: string;
+  status: string;
+  paused?: boolean; // operator pause or blocked on missing credentials — shown as "paused"
+  imported?: boolean; // freshly imported from ServiceNow, nothing run yet — shown as "imported"
+  pausedBy?: "needs_info" | "scheduled" | "review" | "operator" | "creds" | null;
+  warnings?: string[]; // completed-with-warnings: badge goes orange, these show on hover
+  subject: string | null;
+  serviceNowCaseNumber: string | null;
+  clientName: string;
+  jobCount: number;
+  statusHint: string;
+  effectiveDate: string | null;
+  immediate?: boolean; // offboard with no scheduled date (subject says "Immediate")
+  lastRunIso?: string | null; // when the case last executed (most recent job start/finish)
+  ranBy?: string | null; // operator who last ran it (email), or null
+  lastActionLabel?: string | null; // most recent tracked action — "Imported"/"Unpaused"/"Paused"/"Verified"/…
+  lastActionBy?: string | null; // who took that action (email), or null when not a signed-in user
+  createdAtIso: string;
+};
+
+export type TrashedCaseRowVM = {
+  id: string;
+  subject: string | null;
+  serviceNowCaseNumber: string | null;
+  clientName: string;
+  status: string;
+  jobCount: number;
+  deletedAtIso: string;
+  daysLeft: number;
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  queued: "queued",
+  planning: "planning",
+  running: "running",
+  needs_manual: "needs manual",
+  needs_approval: "needs approval",
+  completed: "completed",
+  failed: "failed",
+};
+
+// Status -> a subtle colour so the table scans at a glance (failed red, done green, attention amber).
+const STATUS_COLOR: Record<string, string> = {
+  failed: "var(--err-fg)",
+  completed: "var(--ok-fg)",
+  needs_manual: "var(--warn-fg)",
+  needs_approval: "var(--warn-fg)",
+  running: "var(--info-fg)",
+};
+
+type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "lastRun" | "createdAt";
+type SortDir = "asc" | "desc";
+
+function haystack(c: CaseRowVM): string {
+  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, c.imported ? "imported" : STATUS_LABEL[c.status] ?? c.status, c.statusHint, ...(c.warnings ?? [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+// Completed is only green when 100% clean: any step warning turns the badge orange (the run
+// report's warning color) and the hover lists the warning lines. The count is warning STEPS
+// (distinct systems, the lines are "System: …"-prefixed) so it matches the run report's summary
+// — one step with two WARN actions is still one warning.
+function StatusBadge({ c }: { c: CaseRowVM }) {
+  const warns = c.status === "completed" ? (c.warnings ?? []) : [];
+  const steps = new Set(warns.map((w) => w.split(":")[0])).size;
+  const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
+  return (
+    <span
+      className="badge"
+      title={title}
+      style={{
+        color: c.imported ? "var(--info-fg)" : c.paused ? "var(--warn-fg)" : warns.length ? "var(--warn-fg)" : STATUS_COLOR[c.status],
+        cursor: title ? "help" : undefined,
+        textDecoration: title ? "underline dotted" : undefined,
+        textUnderlineOffset: 3,
+      }}
+    >
+      {c.imported
+        ? "✦ imported"
+        : c.paused
+        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? (c.lastRunIso ? "⏸ held — resume to run" : "▶︎ Press Play to Start") : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
+        : warns.length
+          ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
+          : (STATUS_LABEL[c.status] ?? c.status)}
+    </span>
+  );
+}
+
+function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
+  switch (key) {
+    case "jobCount":
+      return a.jobCount - b.jobCount;
+    case "createdAt":
+      return a.createdAtIso.localeCompare(b.createdAtIso);
+    case "lastRun": {
+      const av = a.lastRunIso ?? ""; const bv = b.lastRunIso ?? "";
+      if (!av && bv) return 1; // never-run last
+      if (av && !bv) return -1;
+      return av.localeCompare(bv);
+    }
+    default: {
+      const av = (a[key] ?? "") as string;
+      const bv = (b[key] ?? "") as string;
+      if (!av && bv) return 1; // empties last
+      if (av && !bv) return -1;
+      return av.localeCompare(bv);
+    }
+  }
+}
+
+export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: CaseRowVM[]; trashed: TrashedCaseRowVM[]; splitCompleted?: boolean }) {
+  const router = useRouter();
+  // When splitCompleted is on (the /cases/v2 view), completed cases come OFF the working list into
+  // their own collapsible table — the working table only carries open work. Default off: /cases is
+  // unchanged (working === cases).
+  const working = useMemo(() => (splitCompleted ? cases.filter((c) => c.status !== "completed") : cases), [cases, splitCompleted]);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [hoveredId, setHoveredId] = useState<string | null>(null); // row under the cursor — reveals its trash ×
+
+  const toggleSel = (id: string) => setSelected((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
+
+  async function call(id: string, init: RequestInit, url = `/api/cases/${id}`) {
+    setBusyId(id);
+    setError(null);
+    try {
+      const res = await fetch(url, init);
+      if (!res.ok) setError((await res.json().catch(() => null))?.error ?? `Action failed (${res.status})`);
+      else router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // Run transport: resume (play) a paused case, pause a running one, or cancel a running one (stop
+  // in-flight steps + pause). Terminal cases (completed/failed) have nothing to control.
+  function setPaused(c: CaseRowVM, paused: boolean) {
+    call(c.id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused }) }, `/api/cases/${c.id}/pause`);
+  }
+  function cancelRun(c: CaseRowVM) {
+    const label = c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8);
+    if (!confirm(`Cancel the run for "${label}"? In-flight steps are stopped and the case is paused (not deleted).`)) return;
+    call(c.id, { method: "POST" }, `/api/cases/${c.id}/cancel`);
+  }
+
+  function remove(c: CaseRowVM) {
+    const label = c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8);
+    if (!confirm(`Move case "${label}" to the trash? It leaves the list and is restorable for 30 days.`)) return;
+    call(c.id, { method: "DELETE" });
+  }
+
+  async function bulkTrash(ids: string[]) {
+    if (ids.length === 0) return;
+    if (!confirm(`Move ${ids.length} case${ids.length > 1 ? "s" : ""} to the trash? They leave the list and are restorable for 30 days.`)) return;
+    setBusyId("bulk");
+    setError(null);
+    try {
+      for (const id of ids) {
+        const res = await fetch(`/api/cases/${id}`, { method: "DELETE" });
+        if (!res.ok) { setError((await res.json().catch(() => null))?.error ?? `Failed to trash a case (${res.status})`); break; }
+      }
+      setSelected(new Set());
+      router.refresh();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
+
+  const visible = useMemo(() => {
+    const filtered = working.filter((c) => {
+      if (statusFilter === "imported") { if (!c.imported) return false; }
+      else if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (terms.length === 0) return true;
+      const hay = haystack(c);
+      return terms.every((t) => hay.includes(t));
+    });
+    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+  }, [working, terms, statusFilter, sortKey, sortDir]);
+
+  // The separated completed cases (only when splitCompleted): search-filtered + sorted the same way,
+  // shown in their own collapsible table below the working list.
+  const completed = useMemo(() => {
+    if (!splitCompleted) return [];
+    const filtered = cases.filter((c) => c.status === "completed" && (terms.length === 0 || terms.every((t) => haystack(c).includes(t))));
+    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+  }, [cases, splitCompleted, terms, sortKey, sortDir]);
+
+  const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
+  const selectedVisible = visibleIds.filter((id) => selected.has(id));
+  const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+  const toggleAll = () => setSelected((s) => {
+    const x = new Set(s);
+    if (allSelected) visibleIds.forEach((id) => x.delete(id));
+    else visibleIds.forEach((id) => x.add(id));
+    return x;
+  });
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(key);
+      setSortDir(key === "createdAt" || key === "jobCount" ? "desc" : "asc");
+    }
+  }
+
+  function SortHead({ k, label, num }: { k: SortKey; label: string; num?: boolean }) {
+    return (
+      <th className={`sortable${num ? " num" : ""}${sortKey === k ? " sorted" : ""}`} onClick={() => toggleSort(k)}>
+        {label}
+        <span className="arrow">{sortKey === k ? (sortDir === "asc" ? "▲" : "▼") : ""}</span>
+      </th>
+    );
+  }
+
+  return (
+    <>
+      <div className="filters" style={{ marginTop: "1rem" }}>
+        <div className="search-field">
+          <span className="search-icon" aria-hidden>⌕</span>
+          <input
+            className="search"
+            placeholder="Search subject, client, SN case, status, reason…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+          />
+          {query && (
+            <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
+          )}
+        </div>
+        <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All statuses</option>
+          <option value="imported">imported (just imported)</option>
+          {Object.entries(STATUS_LABEL)
+            .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
+            .map(([k, label]) => (
+              <option key={k} value={k}>{label}</option>
+            ))}
+        </select>
+        <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {working.length}</span>
+      </div>
+      {selected.size > 0 && (
+        <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
+          <b>{selected.size} selected</b>
+          <button className="danger" disabled={busyId === "bulk"} onClick={() => bulkTrash([...selected])}>
+            {busyId === "bulk" ? "moving…" : "🗑 Send to trash"}
+          </button>
+          <button onClick={() => setSelected(new Set())}>Clear selection</button>
+        </div>
+      )}
+      {error && <p className="note danger">{error}</p>}
+
+      <table className="desk-only">
+        <thead>
+          <tr>
+            <th style={{ width: 24 }}>
+              <input type="checkbox" checked={allSelected} aria-label="Select all" onChange={toggleAll}
+                ref={(el) => { if (el) el.indeterminate = selectedVisible.length > 0 && !allSelected; }} />
+            </th>
+            <SortHead k="subject" label="Subject" />
+            <SortHead k="clientName" label="Client" />
+            <SortHead k="action" label="Action" />
+            <SortHead k="serviceNowCaseNumber" label="SN case" />
+            <SortHead k="jobCount" label="Jobs" num />
+            <SortHead k="status" label="Status" />
+            <SortHead k="effectiveDate" label="Start / off date" />
+            <SortHead k="lastRun" label="Last run" />
+            <SortHead k="createdAt" label="Created" />
+            <th aria-label="Run controls"></th>
+            <th style={{ width: 28 }} aria-label="Actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map((c) => (
+            <tr
+              key={c.id}
+              onMouseEnter={() => setHoveredId(c.id)}
+              onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+              style={selected.has(c.id) ? { background: "var(--accent-soft)" } : undefined}
+            >
+              <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
+              <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+              <td className="muted">{c.clientName}</td>
+              <td><span className="badge">{c.action}</span></td>
+              <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
+              <td className="muted">{c.jobCount}</td>
+              <td>
+                <StatusBadge c={c} />
+                {c.lastActionLabel && (
+                  <div className="note" style={{ fontSize: 11, marginTop: 2, whiteSpace: "nowrap" }} title="Most recent action taken on this case">
+                    {c.lastActionLabel}{c.lastActionBy ? `: ${c.lastActionBy}` : ""}
+                  </div>
+                )}
+              </td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
+                {c.effectiveDate
+                  ? formatDateOnly(c.effectiveDate)
+                  : c.immediate
+                    ? <span className="badge" style={{ color: "var(--warn-fg)", borderColor: "var(--warn-bg)", background: "var(--warn-bg)" }}>Immediate</span>
+                    : "—"}
+              </td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
+                {c.lastRunIso ? (
+                  (() => {
+                    const d = new Date(c.lastRunIso!);
+                    return (
+                      <>
+                        {/* date over time keeps this column narrow (was one wide "Jun 26, 2026, 9:13 AM" line) */}
+                        <div>{d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</div>
+                        <div className="note" style={{ fontSize: 11 }}>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+                        {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                      </>
+                    );
+                  })()
+                ) : (
+                  // Not run yet — show how it got here ("Imported") instead of a bare "—" with a stray "by".
+                  c.lastActionLabel ?? "—"
+                )}
+              </td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {(() => {
+                  const terminal = c.status === "completed" || c.status === "failed";
+                  const active = !c.paused && !terminal; // queued/planning/running/needs_* = "running"
+                  const busy = busyId === c.id;
+                  const off = "#c4c7cc";
+                  return (
+                    <span className="icon-stack">
+                      <button className="icon-btn" title="Resume" aria-label="Resume" disabled={!c.paused || busy} style={{ color: c.paused && !busy ? "var(--ok-fg)" : off }} onClick={() => setPaused(c, false)}>{"▶︎"}</button>
+                      <button className="icon-btn" title="Pause" aria-label="Pause" disabled={!active || busy} style={{ color: active && !busy ? "var(--warn-fg)" : off }} onClick={() => setPaused(c, true)}>{"⏸︎"}</button>
+                      <button className="icon-btn" title="Cancel run (stop in-flight steps + pause)" aria-label="Cancel run" disabled={!active || busy} style={{ color: active && !busy ? "var(--err-fg)" : off }} onClick={() => cancelRun(c)}>{"⏹︎"}</button>
+                    </span>
+                  );
+                })()}
+              </td>
+              <td style={{ width: 28, padding: 0, textAlign: "right" }}>
+                <button
+                  onClick={() => remove(c)}
+                  disabled={busyId === c.id}
+                  title="Move this case to the trash (restorable for 30 days)"
+                  aria-label="Move this case to the trash"
+                  style={{
+                    border: "none",
+                    background: "none",
+                    cursor: "pointer",
+                    color: "var(--err-fg)",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    padding: "2px 8px",
+                    opacity: hoveredId === c.id || busyId === c.id ? 1 : 0,
+                    transition: "opacity 120ms",
+                  }}
+                >
+                  {busyId === c.id ? "…" : "×"}
+                </button>
+              </td>
+            </tr>
+          ))}
+          {visible.length === 0 && (
+            <tr>
+              <td colSpan={12} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
+                {working.length === 0 ? (splitCompleted ? "No open cases — completed work is below." : "No cases yet. Import a ServiceNow ticket or create one.") : "No cases match your search."}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {/* Mobile: a tappable card per case (same filtered `visible` list). Tap to open the case (where
+          the run controls live). */}
+      <div className="mob-only m-list">
+        {visible.map((c) => (
+          <Link key={c.id} href={`/cases/${c.id}`} className="m-card">
+            <div className="m-card-top">
+              <span className="m-card-title">{c.subject ?? c.id.slice(0, 8)}</span>
+              <StatusBadge c={c} />
+            </div>
+            <div className="m-card-sub">{c.clientName}</div>
+            <div className="m-card-meta">
+              <span><span className="k">action</span> {c.action}</span>
+              {c.serviceNowCaseNumber && <span><span className="k">SN</span> {c.serviceNowCaseNumber}</span>}
+              <span><span className="k">{c.action === "offboard" ? "off date" : "start"}</span> {c.effectiveDate ? formatDateOnly(c.effectiveDate) : c.immediate ? "Immediate" : "—"}</span>
+              {c.lastRunIso && <span><span className="k">last run</span> {new Date(c.lastRunIso).toLocaleDateString([], { month: "short", day: "numeric" })}</span>}
+            </div>
+          </Link>
+        ))}
+        {visible.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No cases match.</div>}
+      </div>
+
+      {splitCompleted && (
+        <details style={{ marginTop: "1.25rem" }} open>
+          <summary style={{ cursor: "pointer" }}>
+            <b>Completed cases</b> <span className="note">({completed.length}) — off the working list, kept here for reference</span>
+          </summary>
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead>
+              <tr>
+                <th>Subject</th><th>Client</th><th>Action</th><th>SN case</th>
+                <th className="num">Jobs</th><th>Status</th><th>Start / off date</th><th>Last run</th><th>Created</th>
+                <th style={{ width: 28 }} aria-label="Actions"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {completed.map((c) => (
+                <tr
+                  key={c.id}
+                  onMouseEnter={() => setHoveredId(c.id)}
+                  onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+                >
+                  <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+                  <td className="muted">{c.clientName}</td>
+                  <td><span className="badge">{c.action}</span></td>
+                  <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
+                  <td className="muted">{c.jobCount}</td>
+                  <td><StatusBadge c={c} /></td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                    {formatDateTime(c.lastRunIso)}
+                    {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
+                  </td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+                  <td style={{ width: 28, padding: 0, textAlign: "right" }}>
+                    <button
+                      onClick={() => remove(c)}
+                      disabled={busyId === c.id}
+                      title="Move this case to the trash (restorable for 30 days)"
+                      aria-label="Move this case to the trash"
+                      style={{ border: "none", background: "none", cursor: "pointer", color: "var(--err-fg)", fontSize: 16, lineHeight: 1, padding: "2px 8px", opacity: hoveredId === c.id || busyId === c.id ? 1 : 0, transition: "opacity 120ms" }}
+                    >
+                      {busyId === c.id ? "…" : "×"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {completed.length === 0 && (
+                <tr><td colSpan={10} className="muted" style={{ textAlign: "center", padding: "1.5rem" }}>No completed cases{terms.length ? " match your search" : " yet"}.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </details>
+      )}
+
+      {trashed.length > 0 && (
+        <details style={{ marginTop: "1.25rem" }}>
+          <summary style={{ cursor: "pointer" }}>
+            <b>Trash</b> <span className="note">({trashed.length}) — restorable for 30 days, then permanently deleted</span>
+          </summary>
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead>
+              <tr><th>Subject</th><th>Client</th><th>SN case</th><th>Status</th><th>Trashed</th><th>Auto-delete in</th><th></th></tr>
+            </thead>
+            <tbody>
+              {trashed.map((t) => (
+                <tr key={t.id}>
+                  <td>{t.subject ?? t.id.slice(0, 8)}</td>
+                  <td className="muted">{t.clientName}</td>
+                  <td className="muted">{t.serviceNowCaseNumber ?? "—"}</td>
+                  <td className="muted">{STATUS_LABEL[t.status] ?? t.status}</td>
+                  <td className="muted">{new Date(t.deletedAtIso).toLocaleDateString()}</td>
+                  <td style={{ color: t.daysLeft <= 3 ? "var(--err-fg)" : undefined }}>{t.daysLeft} day{t.daysLeft === 1 ? "" : "s"}</td>
+                  <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                    <button
+                      onClick={() => call(t.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore" }) })}
+                      disabled={busyId === t.id}
+                    >
+                      Restore
+                    </button>
+                    <button
+                      onClick={() => {
+                        const label = t.subject ?? t.serviceNowCaseNumber ?? t.id.slice(0, 8);
+                        if (confirm(`Permanently delete case "${label}" and its ${t.jobCount} job(s)? This can't be undone.`)) {
+                          call(t.id, { method: "DELETE" }, `/api/cases/${t.id}?forever=1`);
+                        }
+                      }}
+                      disabled={busyId === t.id}
+                      style={{ marginLeft: 6, color: "var(--err-fg)" }}
+                    >
+                      Delete forever
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+    </>
+  );
+}

@@ -43,6 +43,26 @@ test("planned job config is the lane's config, not the whole blob", () => {
   assert.deepEqual(planCase([sys({ config: cfg })], "offboard", {})[0].config, { blockSignIn: true });
 });
 
+test("identity flow: a mis-wired hybrid client still plans AD -> sync -> cloud (deadlock-proof)", () => {
+  // The exact inversion that stalled Coretelligent: exchange as the root, AD/sync depending on cloud.
+  const systems = [
+    sys({ systemKey: "exchange", dependsOn: [] }),
+    sys({ systemKey: "m365", dependsOn: ["exchange"] }),
+    sys({ systemKey: "directory-sync", dependsOn: ["exchange"] }),
+    sys({ systemKey: "active-directory", dependsOn: ["exchange", "directory-sync"] }),
+  ];
+  const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
+  assert.ok(order.indexOf("active-directory") < order.indexOf("directory-sync"), `AD before sync: ${order}`);
+  assert.ok(order.indexOf("directory-sync") < order.indexOf("m365"), `sync before m365: ${order}`);
+  assert.ok(order.indexOf("m365") < order.indexOf("exchange"), `m365 before exchange: ${order}`);
+});
+
+test("identity flow: a cloud-native client (no AD) is left untouched", () => {
+  const systems = [sys({ systemKey: "m365", dependsOn: [] }), sys({ systemKey: "exchange", dependsOn: ["m365"] })];
+  const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
+  assert.deepEqual(order, ["m365", "exchange"]);
+});
+
 test("requiresApproval/captureEvidence resolve per-lane (no cross-lane bleed)", () => {
   const cfg = { onboard: null, offboard: null, requiresApproval: { offboard: true }, captureEvidence: { offboard: true } };
   // column is the collapsed OR (true) — must NOT leak onto the onboard lane.
@@ -63,4 +83,56 @@ test("topological order honors dependsOn", () => {
   const systems = [sys({ systemKey: "m365", dependsOn: ["servicenow"] }), sys({ systemKey: "servicenow" })];
   const order = planCase(systems, "onboard", {}).map((j) => j.systemKey);
   assert.ok(order.indexOf("servicenow") < order.indexOf("m365"));
+});
+
+test("case-resolution always runs last: implicit dependency on every other system", () => {
+  const systems = [
+    sys({ systemKey: "case-resolution" }), // declared FIRST, no deps — would dispatch first under naive DAG
+    sys({ systemKey: "m365" }),
+    sys({ systemKey: "mimecast", dependsOn: ["m365"] }),
+  ];
+  const plan = planCase(systems, "onboard", {});
+  const resolution = plan.find((j) => j.systemKey === "case-resolution")!;
+  assert.equal(plan[plan.length - 1].systemKey, "case-resolution");
+  assert.deepEqual([...resolution.dependsOn].sort(), ["m365", "mimecast"]);
+});
+
+test("a manual step never carries requiresApproval (approval gates only auto-running API steps)", () => {
+  // sentinelone as a MANUAL checklist item with requiresApproval set: the human doing it IS the
+  // approval, so it must not put the case in "needs approval".
+  const manual = planCase([sys({ systemKey: "sentinelone", mode: "manual", requiresApproval: true })], "offboard", {})[0];
+  assert.equal(manual.requiresApproval, false);
+  // the same system as an API step keeps its approval gate
+  const api = planCase([sys({ systemKey: "sentinelone", mode: "api", requiresApproval: true })], "offboard", {})[0];
+  assert.equal(api.requiresApproval, true);
+});
+
+// ── Offboard intent (disable / destructive) ──────────────────────────────────────────────────────
+test("offboard steps default to intent 'disable'; onboard is unclassified (null)", () => {
+  const s = [sys({ systemKey: "active-directory" })];
+  assert.equal(planCase(s, "offboard", {})[0].intent, "disable");
+  assert.equal(planCase(s, "onboard", {})[0].intent, null);
+});
+
+test("destructive offboard forces requiresApproval + captureEvidence", () => {
+  const s = [sys({ systemKey: "m365", requiresApproval: false, captureEvidence: false, config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "offboard", {})[0];
+  assert.equal(j.intent, "destructive");
+  assert.equal(j.requiresApproval, true);  // forced on
+  assert.equal(j.captureEvidence, true);   // forced on (snapshot before delete)
+});
+
+test("a destructive flag on the OFFBOARD lane does not gate the ONBOARD lane", () => {
+  const s = [sys({ systemKey: "m365", config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "onboard", {})[0];
+  assert.equal(j.intent, null);
+  assert.equal(j.requiresApproval, false);
+});
+
+test("a manual destructive step never requires approval (the human doing it IS the approval)", () => {
+  const s = [sys({ systemKey: "fileserver", mode: "manual", config: { intent: { offboard: "destructive" } } })];
+  const j = planCase(s, "offboard", {})[0];
+  assert.equal(j.intent, "destructive");
+  assert.equal(j.requiresApproval, false);
+  assert.equal(j.captureEvidence, true); // evidence still captured
 });

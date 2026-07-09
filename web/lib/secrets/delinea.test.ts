@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, delineaConfigured, type DelineaConfig, type Fetcher } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, type DelineaConfig, type Fetcher } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -52,4 +52,34 @@ test("checkSecret maps 404 / 403 / other to readable errors", async () => {
   assert.match((await checkSecret(cfg, "1", fakeFetcher({ status: 404 }))).error ?? "", /not found/i);
   assert.match((await checkSecret(cfg, "1", fakeFetcher({ status: 403 }))).error ?? "", /denied/i);
   assert.match((await checkSecret(cfg, "1", fakeFetcher({ status: 500 }))).error ?? "", /500/);
+});
+
+// --- resolveSecretFields: the push-down path. Unlike checkSecret, it DOES return the value
+// (flattened fields) so the app can hand the credential to the runner over the job channel.
+
+test("resolveSecretFields flattens items into fields and returns the label", async () => {
+  const res = await resolveSecretFields(cfg, "56406", fakeFetcher({ status: 200, body: {
+    id: 56406, name: "AD DC Admin", items: [
+      { fieldName: "Username", itemValue: "svc-adjoin" },
+      { fieldName: "Password", itemValue: "hunter2" },
+      { fieldName: "Server", itemValue: "core-cce-dc01" },
+    ],
+  } }));
+  assert.equal(res.ok, true);
+  assert.equal(res.label, "AD DC Admin");
+  assert.deepEqual(res.fields, { Username: "svc-adjoin", Password: "hunter2", Server: "core-cce-dc01" });
+});
+
+test("resolveSecretFields short-circuits on an unset id and on no config", async () => {
+  let called = false;
+  const spy: Fetcher = async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; };
+  assert.match((await resolveSecretFields(cfg, "REPLACE_ME", spy)).error ?? "", /not set/i);
+  assert.equal(called, false);
+  assert.match((await resolveSecretFields({ baseUrl: "", username: "", password: "" }, "1", spy)).error ?? "", /not configured/i);
+});
+
+test("resolveSecretFields maps 404 / 403 / access-denied to readable errors", async () => {
+  assert.match((await resolveSecretFields(cfg, "1", fakeFetcher({ status: 404 }))).error ?? "", /not found/i);
+  assert.match((await resolveSecretFields(cfg, "1", fakeFetcher({ status: 403 }))).error ?? "", /denied/i);
+  assert.match((await resolveSecretFields(cfg, "1", fakeFetcher({ status: 400, body: { errorCode: "API_AccessDenied" } }))).error ?? "", /denied/i);
 });

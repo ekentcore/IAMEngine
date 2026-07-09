@@ -17,11 +17,16 @@ $script:ZoomToken  = $null
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Object) { return $null }
-    if ($Object -is [hashtable]) { return $Object[$Name] }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value }
     return $null
 }
+
+# Zoom user license tiers (the `type` field): 1 = Basic (free, no license), 2 = Licensed (Pro),
+# 3 = On-Prem. Onboarding ensures the user is Licensed (2) by default; offboarding deactivates,
+# which drops the license back to the account pool.
+$script:ZoomTypeName = @{ 1 = 'Basic'; 2 = 'Licensed'; 3 = 'On-Prem' }
 
 function Connect-CtgZoom {
     [CmdletBinding()]
@@ -29,10 +34,48 @@ function Connect-CtgZoom {
         [Parameter(Mandatory)][pscredential]$Credential,
         [Parameter(Mandatory)][string]$AccountId
     )
-    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(
-        "$($Credential.UserName):$(ConvertFrom-SecureString $Credential.Password -AsPlainText)"))
-    $uri = "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=$AccountId"
-    $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers @{ Authorization = "Basic $basic" }
+    # Guard up front so a blank field fails with a clear message, not an opaque 400 from Zoom.
+    $clientId = [string]$Credential.UserName
+    $clientSecret = ConvertFrom-SecureString $Credential.Password -AsPlainText
+    if ([string]::IsNullOrWhiteSpace($AccountId))    { throw "Zoom: the 'zoom' secret has no Account ID — set AccountId to the Server-to-Server OAuth app's Account ID (see /help/zoom)." }
+    if ([string]::IsNullOrWhiteSpace($clientId))     { throw "Zoom: the 'zoom' secret has no Client ID — set Username = Client ID (see /help/zoom)." }
+    if ([string]::IsNullOrWhiteSpace($clientSecret)) { throw "Zoom: the 'zoom' secret has no Client Secret — set Password = Client Secret (see /help/zoom)." }
+
+    # Zoom credentials are plain ASCII. A non-ASCII character (most often a 'smart quote' ' ' or a
+    # stray symbol introduced by copy-paste through an app that auto-corrects) is the #1 cause of an
+    # invalid_client where the value "looks right" — catch it here and name the exact field, since
+    # Zoom's error can't tell you which one.
+    foreach ($pair in @(@('Account ID', $AccountId), @('Client ID', $clientId), @('Client Secret', $clientSecret))) {
+        if ($pair[1] -match '[^\x20-\x7E]') {
+            throw "Zoom: the $($pair[0]) on the 'zoom' secret contains a non-ASCII character (likely a 'smart quote' or stray symbol from copy-paste) — re-paste it as PLAIN TEXT straight from the Zoom app's App Credentials page (see /help/zoom)."
+        }
+    }
+
+    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${clientId}:${clientSecret}"))
+    $uri = "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=$([uri]::EscapeDataString($AccountId))"
+    try {
+        $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers @{ Authorization = "Basic $basic" } -ErrorAction Stop
+    }
+    catch {
+        # Surface Zoom's actual error body (e.g. {"reason":"Invalid client_id or client_secret",
+        # "error":"invalid_client"}) instead of the opaque "400 ()". The body is the real diagnosis:
+        # invalid_client -> wrong Client ID/Secret; invalid_request / "account does not exist" -> wrong
+        # Account ID; "scope" -> the S2S app is missing a scope or isn't activated.
+        # Probe each source SAFELY — StrictMode throws on a missing property, and the error shape
+        # varies (HttpResponseException vs a plain RuntimeException). Prefer Zoom's JSON body
+        # (ErrorDetails.Message), then the raw response stream, then the exception message.
+        $detail = ''
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        $resp = $null; try { $resp = $_.Exception.Response } catch { }
+        if (-not $detail -and $resp) {
+            try { $detail = [IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd() } catch { }
+        }
+        if (-not $detail) { try { $detail = [string]$_.Exception.Message } catch { } }
+        $status = ''
+        if ($resp) { try { $status = [int]$resp.StatusCode } catch { } }
+        throw "Zoom token request failed ($status): $($detail.Trim()) — verify the 'zoom' secret's Account ID + Client ID/Secret and that the Server-to-Server OAuth app is ACTIVATED with the required scopes (see /help/zoom)."
+    }
+    if (-not $resp.access_token) { throw "Zoom token request returned no access_token (response: $($resp | ConvertTo-Json -Depth 4 -Compress))." }
     $script:ZoomToken = $resp.access_token
     Write-Verbose "Zoom session established."
 }
@@ -51,8 +94,17 @@ function Invoke-CtgZoomApi {
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { return Invoke-RestMethod @p }
     catch {
-        if ($_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
-        throw
+        # Probe the response safely (StrictMode + varying exception types). 404 = not found -> $null.
+        $resp = $null; try { $resp = $_.Exception.Response } catch { }
+        $status = $null; if ($resp) { try { $status = [int]$resp.StatusCode } catch { } }
+        if ($status -eq 404) { return $null }
+        # Surface Zoom's actual error body ({"code":..,"message":".."}) instead of the opaque "400 ()",
+        # tagged with the method + path so it's clear WHICH call failed.
+        $detail = ''
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        if (-not $detail -and $resp) { try { $detail = [IO.StreamReader]::new($resp.GetResponseStream()).ReadToEnd() } catch { } }
+        if (-not $detail) { try { $detail = [string]$_.Exception.Message } catch { } }
+        throw "Zoom API $Method $Path failed ($status): $($detail.Trim())"
     }
 }
 
@@ -61,33 +113,121 @@ function Get-CtgZoomUser {
     Invoke-CtgZoomApi -Method GET -Path "/users/$Email"
 }
 
+# Zoom keys users by EMAIL. Offboard intakes often carry no UserPrincipalName (display-name-only),
+# so resolve the address from any of the case's email-ish fields. Returns '' when none is set.
+function Resolve-CtgZoomEmail {
+    param([pscustomobject]$User)
+    foreach ($k in 'UserPrincipalName', 'email', 'Email', 'mail', 'Mail', 'EmailAddress', 'PrimarySmtpAddress', 'userPrincipalName') {
+        $v = [string](Get-CtgProp $User $k)
+        if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+    }
+    return ''
+}
+
+# Find Zoom users whose name matches a display name, by paging the account's user list and comparing
+# "first last" (and display_name) case-insensitively. Returns ALL matches so the caller can refuse on
+# ambiguity. The Zoom API has no name search, so this is the equivalent of Exchange's by-name lookup.
+function Find-CtgZoomUserByName {
+    param([Parameter(Mandatory)][string]$DisplayName)
+    $needle = (($DisplayName -replace '\s+', ' ').Trim()).ToLower()
+    $hits = [System.Collections.Generic.List[object]]::new()
+    if (-not $needle) { return $hits.ToArray() }
+    # Page EACH status — the default list is active-only, so an already-deactivated (inactive) user
+    # wouldn't be found, and an offboard must still recognise them. A user has one status, so no dupes.
+    foreach ($status in @('active', 'inactive', 'pending')) {
+        $next = ''
+        do {
+            $path = "/users?page_size=300&status=$status" + $(if ($next) { "&next_page_token=$([uri]::EscapeDataString($next))" } else { '' })
+            $resp = Invoke-CtgZoomApi -Method GET -Path $path
+            foreach ($u in @(Get-CtgProp $resp 'users')) {
+                $full = ((("$([string](Get-CtgProp $u 'first_name')) $([string](Get-CtgProp $u 'last_name'))")) -replace '\s+', ' ').Trim().ToLower()
+                $disp = (([string](Get-CtgProp $u 'display_name')) -replace '\s+', ' ').Trim().ToLower()
+                if ($full -eq $needle -or $disp -eq $needle) { $hits.Add($u) }
+            }
+            $next = [string](Get-CtgProp $resp 'next_page_token')
+        } while ($next)
+    }
+    return $hits.ToArray()
+}
+
+# Resolve an EXISTING Zoom user's email so the executor + validator agree: a case email field FIRST,
+# else by DISPLAY NAME against the Zoom user list (exactly-one match wins; 0/many -> Email '').
+# Returns @{ Email; MatchCount; DisplayName }.
+function Resolve-CtgZoomTarget {
+    param([pscustomobject]$User)
+    $email = Resolve-CtgZoomEmail $User
+    if ($email) { return @{ Email = $email; MatchCount = 1; DisplayName = '' } }
+    $dn = [string]((Get-CtgProp $User 'DisplayName') ?? (Get-CtgProp $User 'displayName') ?? (Get-CtgProp $User 'userToOffboard'))
+    if (-not $dn) { return @{ Email = ''; MatchCount = 0; DisplayName = '' } }
+    $hits = @(Find-CtgZoomUserByName -DisplayName $dn)
+    $em = if ($hits.Count -eq 1) { [string](Get-CtgProp $hits[0] 'email') } else { '' }
+    return @{ Email = $em; MatchCount = $hits.Count; DisplayName = $dn }
+}
+
 function Invoke-CtgZoomOnboarding {
     <#
     .SYNOPSIS
-        Idempotently create a Zoom user. Config: type (1=Basic,2=Licensed; default 2), action
-        (create|ssoCreate|autoCreate|custCreate; default 'create').
+        Idempotently create a Zoom user and (if configured) assign a Zoom Phone calling plan + number.
+        Config: type (1=Basic,2=Licensed; default 2), action (create|ssoCreate|autoCreate|custCreate;
+        default 'create'), phone{ callingPlanType, number | numberId } (omit phone to skip).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    $email = Resolve-CtgZoomEmail $User
+    if (-not $email) {
+        $actions.Add("WARN no email/UPN on the case — can't provision the Zoom user. Set the new user's email and re-run. Nothing done.")
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = ''; Actions = $actions.ToArray() }
+    }
+    $desiredType = [int]((Get-CtgProp $Config 'type') ?? 2)   # 2 = Licensed (Pro) by default
+    $typeName = { param($t) ($script:ZoomTypeName[[int]$t]) ?? "type $t" }
 
-    if (Get-CtgZoomUser -Email $email) {
+    $existing = Get-CtgZoomUser -Email $email
+    if ($existing) {
         $actions.Add("Zoom user already exists: $email")
+        # Ensure they hold the desired LICENSE — a pre-existing Basic user is upgraded to Licensed
+        # (the create call below only runs for a brand-new user, so without this an existing Basic
+        # account would never get its license). PATCH /users/{id} { type } is the assignment.
+        $curType = [int]((Get-CtgProp $existing 'type') ?? 0)
+        if ($curType -ne $desiredType -and $PSCmdlet.ShouldProcess($email, "Set Zoom license to $(& $typeName $desiredType)")) {
+            Invoke-CtgZoomApi -Method PATCH -Path "/users/$email" -Body @{ type = $desiredType } | Out-Null
+            $actions.Add("set Zoom license: $(& $typeName $curType) -> $(& $typeName $desiredType)")
+        }
     }
     elseif ($PSCmdlet.ShouldProcess($email, "Create Zoom user")) {
         $body = @{
             action    = ((Get-CtgProp $Config 'action') ?? 'create')
             user_info = @{
                 email      = $email
-                type       = [int]((Get-CtgProp $Config 'type') ?? 2)
+                type       = $desiredType
                 first_name = $User.FirstName
                 last_name  = $User.LastName
             }
         }
         Invoke-CtgZoomApi -Method POST -Path '/users' -Body $body | Out-Null
-        $actions.Add("created Zoom user: $email (type $($body.user_info.type))")
+        $actions.Add("created Zoom user: $email ($(& $typeName $desiredType))")
+    }
+
+    # Zoom Phone: assign a calling plan + number when configured. Idempotent — skips whichever is
+    # already present. Requires Zoom Phone to be licensed on the account; the number must already
+    # exist in the account's number pool (config 'number' or 'numberId').
+    $phone = Get-CtgProp $Config 'phone'
+    if ($phone) {
+        $current  = Invoke-CtgZoomApi -Method GET -Path "/phone/users/$email"   # $null if not yet a phone user
+        $planType = Get-CtgProp $phone 'callingPlanType'
+        $hasPlan  = [bool]($current -and @(Get-CtgProp $current 'calling_plans').Count)
+        if ($planType -and -not $hasPlan -and $PSCmdlet.ShouldProcess($email, "Assign Zoom calling plan $planType")) {
+            Invoke-CtgZoomApi -Method POST -Path "/phone/users/$email/calling_plans" -Body @{ calling_plans = @(@{ type = [int]$planType }) } | Out-Null
+            $actions.Add("assigned Zoom calling plan: $planType")
+        }
+        $numId = [string](Get-CtgProp $phone 'numberId'); $num = [string](Get-CtgProp $phone 'number')
+        $hasNumber = [bool]($current -and @(Get-CtgProp $current 'phone_numbers').Count)
+        if (($numId -or $num) -and -not $hasNumber -and $PSCmdlet.ShouldProcess($email, "Assign Zoom phone number")) {
+            $entry = if ($numId) { @{ id = $numId } } else { @{ number = $num } }
+            Invoke-CtgZoomApi -Method POST -Path "/phone/users/$email/phone_numbers" -Body @{ phone_numbers = @($entry) } | Out-Null
+            $actions.Add("assigned Zoom phone number: $(if ($numId) { $numId } else { $num })")
+        }
     }
 
     [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
@@ -102,9 +242,18 @@ function Invoke-CtgZoomOffboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    $t = Resolve-CtgZoomTarget $User
+    $email = $t.Email
+    if (-not $email) {
+        $msg = if ($t.MatchCount -gt 1) { "WARN $($t.MatchCount) Zoom users match display name '$($t.DisplayName)' — set the exact email on the case. Nothing done." }
+        else { "WARN no email/UPN on the case$(if ($t.DisplayName) { " and no Zoom user matched display name '$($t.DisplayName)'" }) — set the offboard target's email and re-run. Nothing done." }
+        $actions.Add($msg)
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = ''; Actions = $actions.ToArray() }
+    }
+    if ($t.DisplayName) { $actions.Add("resolved Zoom user by display name '$($t.DisplayName)' -> $email") }
 
-    if (-not (Get-CtgZoomUser -Email $email)) {
+    $zu = Get-CtgZoomUser -Email $email
+    if (-not $zu) {
         $actions.Add("Zoom user not found: $email")
         return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
@@ -114,10 +263,33 @@ function Invoke-CtgZoomOffboarding {
             Invoke-CtgZoomApi -Method DELETE -Path "/users/$email" | Out-Null
             $actions.Add("deleted Zoom user: $email")
         }
+        # A deleted user has no session to revoke — the DELETE already ends access.
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
-    elseif ($PSCmdlet.ShouldProcess($email, "Deactivate Zoom user")) {
+
+    # Idempotent: if the user is ALREADY deactivated (status 'inactive'), don't re-deactivate — Zoom
+    # returns a 400 for that — just report it as done. ('pending' users have never activated.)
+    $status = [string](Get-CtgProp $zu 'status')
+    if ($status -eq 'inactive') {
+        $actions.Add("Zoom user already deactivated: $email — no change")
+        return [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+    }
+
+    if ($PSCmdlet.ShouldProcess($email, "Deactivate Zoom user")) {
         Invoke-CtgZoomApi -Method PUT -Path "/users/$email/status" -Body @{ action = 'deactivate' } | Out-Null
         $actions.Add("deactivated Zoom user: $email")
+    }
+
+    # Revoke the SSO token / sign the user out of all sessions — deactivation blocks new logins
+    # but doesn't end live sessions. DELETE /users/{id}/token revokes the user's SSO token.
+    if ((Get-CtgProp $Config 'revokeSso') -ne $false) {
+        if ($PSCmdlet.ShouldProcess($email, "Revoke Zoom SSO token")) {
+            try {
+                Invoke-CtgZoomApi -Method DELETE -Path "/users/$email/token" | Out-Null
+                $actions.Add("revoked Zoom SSO token (signed out of all sessions)")
+            }
+            catch { $actions.Add("WARN could not revoke Zoom SSO token: $($_.Exception.Message)") }
+        }
     }
 
     [pscustomobject]@{ System = 'zoom'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
@@ -135,17 +307,27 @@ function Confirm-CtgZoom {
         [Parameter(Mandatory)][pscustomobject]$Config,
         [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
     )
-    $email = $User.UserPrincipalName
+    $email = (Resolve-CtgZoomTarget $User).Email
+    if (-not $email) {
+        # No resolvable target — nothing to verify (mirrors the executor's graceful skip).
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no resolvable Zoom target — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
     $u = Get-CtgZoomUser -Email $email
     if ($Action -eq 'onboard') {
-        $check = @{ name = 'Zoom user present'; expected = $true; actual = [bool]$u; pass = [bool]$u }
+        $present = [bool]$u
+        $checks = @(@{ name = 'Zoom user present'; expected = $true; actual = $present; pass = $present })
+        # Verify the LICENSE landed: the user's type matches the desired tier (default 2 = Licensed).
+        $desiredType = [int]((Get-CtgProp $Config 'type') ?? 2)
+        if ($present) {
+            $curType = [int]((Get-CtgProp $u 'type') ?? 0)
+            $checks += @{ name = "Zoom license = $(($script:ZoomTypeName[$desiredType]) ?? $desiredType)"; expected = $desiredType; actual = $curType; pass = ($curType -eq $desiredType) }
+        }
+        return [pscustomobject]@{ ok = ($checks.pass -notcontains $false); checks = $checks }
     }
-    else {
-        # Deleted users return $null; deactivated users have status != 'active'.
-        $gone = (-not $u) -or ((Get-CtgProp $u 'status') -and (Get-CtgProp $u 'status') -ne 'active')
-        $check = @{ name = 'Zoom user removed/deactivated'; expected = $true; actual = [bool]$gone; pass = [bool]$gone }
-    }
+    # Deleted users return $null; deactivated users have status != 'active'.
+    $gone = (-not $u) -or ((Get-CtgProp $u 'status') -and (Get-CtgProp $u 'status') -ne 'active')
+    $check = @{ name = 'Zoom user removed/deactivated'; expected = $true; actual = [bool]$gone; pass = [bool]$gone }
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }
 
-Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom
+Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom

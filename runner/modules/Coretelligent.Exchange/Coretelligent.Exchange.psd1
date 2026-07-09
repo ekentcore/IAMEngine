@@ -9,7 +9,7 @@
 
     RequiredModules   = @(@{ ModuleName = 'ExchangeOnlineManagement'; ModuleVersion = '3.0.0' })
 
-    FunctionsToExport = @('Connect-CtgExchange', 'Get-CtgMailboxSizeGB', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange')
+    FunctionsToExport = @('Connect-CtgExchange', 'Connect-CtgExchangeOnPrem', 'Get-CtgMailboxSizeGB', 'Invoke-CtgExchangeOnboarding', 'Invoke-CtgExchangeHybridOnboard', 'Invoke-CtgExchangeCloudOnboard', 'Invoke-CtgExchangeNamedGroups', 'Invoke-CtgExchangeDistListMirror', 'Invoke-CtgExchangeSharedMailboxMirror', 'Set-CtgMailboxRegional', 'Wait-CtgMailbox', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

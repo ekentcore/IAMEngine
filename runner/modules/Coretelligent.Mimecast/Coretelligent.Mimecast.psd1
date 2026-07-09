@@ -4,10 +4,10 @@
     GUID              = 'd5c3f4e6-2f7a-4c8d-ae9f-3a4b5c6d7e8f'
     Author            = 'Coretelligent Remote Operations'
     CompanyName       = 'Coretelligent'
-    Description       = 'Idempotent Mimecast email-security lifecycle via the Mimecast 2.0 API (cloud-gateway). No external module dependencies (uses Invoke-RestMethod).'
+    Description       = 'Idempotent Mimecast email-security lifecycle via the Mimecast 2.0 API (OAuth2 client-credentials; classic data/fail envelope): directory sync trigger, user visibility check, optional Internal Directory cloud-user creation, group removals on offboard.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgMimecast', 'Invoke-CtgMimecastApi', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast')
+    FunctionsToExport = @('Connect-CtgMimecast', 'Invoke-CtgMimecastApi', 'Get-CtgMimecastProfile', 'Find-CtgMimecastGroup', 'Invoke-CtgMimecastOnboarding', 'Invoke-CtgMimecastOffboarding', 'Confirm-CtgMimecast')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

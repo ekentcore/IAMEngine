@@ -29,3 +29,17 @@ test("null config does not throw", () => {
   const out = previewActiveDirectory("onboard", null, null, "acme.com");
   assert.match(out, /New-ADUser/);
 });
+
+test("onboard: renders the attribute map and the mirror-user step when present", () => {
+  const out = previewActiveDirectory(
+    "onboard",
+    { ou: "Finance", groups: ["DEPT-Finance"], attributes: { title: "Analyst", department: "Finance" }, mirrorFromUser: "Christine Holleran" },
+    null,
+    "core.tech",
+    { samAccountName: "aanand", displayName: "Avni Anand", userPrincipalName: "aanand@core.tech", firstName: "Avni", lastName: "Anand" }
+  );
+  assert.match(out, /\$Attributes = @\{/);
+  assert.match(out, /department = "Finance"/);
+  assert.match(out, /mirror — union the LIVE group memberships of "Christine Holleran"/);
+  assert.match(out, /Get-ADUser -Filter "DisplayName -eq 'Christine Holleran'" -Properties MemberOf/);
+});

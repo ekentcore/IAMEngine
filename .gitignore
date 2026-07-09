@@ -60,3 +60,14 @@ test-results/
 playwright-report/
 web/test-results/
 web/playwright-report/
+
+# Local certificates / private keys (e.g. Exchange Online app-only auth) — NEVER commit
+exo.cer
+exo.key
+exo.pfx
+*.pfx
+*.key
+
+# tooling/runtime artifacts that must never ship in the runner bundle
+runner/.claude/
+runner/.remember/

@@ -9,11 +9,37 @@ import { applyTemplate } from "./templates.js";
 import { makeValidator, formatErrors } from "./validate.js";
 import { diffAgainstCurated } from "./diff.js";
 import { buildRunbook, runbookTitle, type RunbookItem } from "./runbook.js";
+import { azureConfigFromEnv, azureConfigured } from "./llm.js";
+import { enrichV21, applyV21Enrichment } from "./enrich-v21.js";
 import type { IR } from "./ir.js";
 import type { DraftMeta, Profile } from "./profile.js";
 
 const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+// Load REPO_ROOT/env.env into process.env (for AZUREAI_*) without overriding existing vars.
+function loadRootEnv(): void {
+  const path = join(REPO_ROOT, "env.env");
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || t.startsWith("@")) continue;
+    const eq = t.indexOf("=");
+    if (eq < 1) continue;
+    const k = t.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || process.env[k]) continue;
+    let v = t.slice(eq + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    process.env[k] = v;
+  }
+}
+
+async function pool<T>(items: T[], n: number, fn: (item: T, i: number) => Promise<void>): Promise<void> {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; await fn(items[idx], idx); }
+  }));
+}
 
 interface Args { [k: string]: string | boolean }
 function parseArgs(argv: string[]): Args {
@@ -29,7 +55,7 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const irDir = String(args.ir ?? join(TOOL_ROOT, "out", "ir"));
   const outDir = String(args.out ?? join(REPO_ROOT, "profiles", "_drafts"));
@@ -39,6 +65,7 @@ function main(): number {
   const curatedDir = String(args.curated ?? join(REPO_ROOT, "profiles"));
   const reportOnly = Boolean(args["report-only"]);
   const doDiff = Boolean(args["diff-curated"]);
+  const v21 = Boolean(args.v21); // opt-in LLM pass: extract groups/attributes/personas/locations
 
   if (!existsSync(irDir)) { console.error(`No IR dir: ${irDir} (run the extract stage first)`); return 2; }
   const irFiles = readdirSync(irDir).filter((f) => f.endsWith(".ir.json"));
@@ -56,6 +83,9 @@ function main(): number {
   const stepsDir = join(reportsDir, "steps");
   mkdirSync(stepsDir, { recursive: true });
 
+  // Phase 1: assemble every IR into a profile (deterministic). Diverted cases (unreadable IR,
+  // no modeled systems) are recorded now; the rest become candidates for optional enrichment.
+  const candidates: { ir: IR; profile: Profile; meta: DraftMeta }[] = [];
   for (const f of irFiles) {
     let ir: IR;
     try {
@@ -73,6 +103,30 @@ function main(): number {
       needsManual.push({ id: meta.id, name: meta.name, unmodeled: ir.unmodeled.length });
       continue;
     }
+    candidates.push({ ir, profile, meta });
+  }
+
+  // Phase 2 (optional): LLM v2.1 enrichment — fold recovered groups/attributes/personas/
+  // locations into each profile (bumping it to schemaVersion 2.1) BEFORE the schema gate.
+  let v21Count = 0;
+  if (v21) {
+    loadRootEnv();
+    const cfg = azureConfigFromEnv();
+    if (!azureConfigured(cfg)) {
+      console.warn("--v21 set but Azure OpenAI not configured (AZUREAI_BASE/AZUREAI_API); skipping enrichment.");
+    } else {
+      console.log(`v2.1 enrichment on ${candidates.length} drafts via ${cfg.deployment}…`);
+      let done = 0;
+      await pool(candidates, 6, async (c) => {
+        const e = await enrichV21(cfg, c.ir);
+        if (e) { applyV21Enrichment(c.profile, e); v21Count++; }
+        if (++done % 25 === 0) console.log(`  enriched ${done}/${candidates.length}`);
+      });
+    }
+  }
+
+  // Phase 3: schema gate + write (profile + companion runbook).
+  for (const { ir, profile, meta } of candidates) {
     if (validate(profile)) {
       metas.push(meta);
       generated.set(profile.client.name.toLowerCase(), profile);
@@ -90,6 +144,7 @@ function main(): number {
       writeFileSync(join(invalidDir, `${meta.id}.json`), JSON.stringify({ profile, errors }, null, 2) + "\n");
     }
   }
+  if (v21) console.log(`  v2.1: ${v21Count}/${candidates.length} drafts gained signal`);
 
   writeReport(join(reportsDir, "drafts.md"), metas, invalid, needsManual, doDiff ? diffAgainstCurated(curatedDir, generated) : []);
 
@@ -183,4 +238,4 @@ function writeReport(path: string, metas: DraftMeta[], invalid: { id: string; er
   writeFileSync(path, lines.join("\n") + "\n");
 }
 
-process.exit(main());
+main().then((code) => process.exit(code)).catch((e) => { console.error(e); process.exit(1); });

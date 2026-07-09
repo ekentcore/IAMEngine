@@ -1,5 +1,6 @@
 // PUT /api/clients/:slug/systems — replace the client's system set (+ optional backbone).
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -29,6 +30,7 @@ function sanitize(s: unknown): EditableSystem | null {
 }
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   let body: { systems?: unknown; backbone?: unknown };
   try {
     body = await req.json();

@@ -1,9 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type ClientOpt = { slug: string; name: string };
+type PlanFields = { personas: { name: string; titles: string[] }[]; locations: string[]; hasPlanConfig: boolean };
+const EMPLOYMENT_TYPES = ["Full-Time", "Part-Time", "Contractor", "Temp"];
 type PlanOutcome = { caseId: string; status: string; jobCount: number; manualCount: number; approvalCount: number };
 
 export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
@@ -11,7 +13,56 @@ export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
     <div className="toolbar" style={{ marginTop: "1rem" }}>
       <ImportButton />
       <NewCaseDialog clients={clients} />
+      <span className="grow" />
+      <AutoImportToggle />
     </div>
+  );
+}
+
+// Turn the automated ServiceNow intake poller on/off. When on, heartbeats pull open/unassigned UM
+// tickets + internal on/off-boarding incidents ~every 15 min and auto-import + plan them (held for review).
+function AutoImportToggle() {
+  const router = useRouter();
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [info, setInfo] = useState<{ lastRunAt?: string; imported?: number; lastRunImported?: number } | null>(null);
+  useEffect(() => { fetch("/api/admin/intake").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) { setOn(Boolean(d.enabled)); setInfo(d); } }).catch(() => {}); }, []);
+  if (on === null) return null; // not loaded / not permitted
+  async function toggle() {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/admin/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !on }) });
+      if (r.ok) setOn(!on);
+    } finally { setBusy(false); }
+  }
+  // Run the sweep on demand (ignores the ~15-min throttle + the enabled flag) and surface the result.
+  async function importNow() {
+    setRunning(true); setMsg(null);
+    try {
+      const r = await fetch("/api/admin/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-now" }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg({ ok: false, text: d.error ?? `failed (${r.status})` }); return; }
+      if (d.setting) setInfo((p) => ({ ...(p ?? {}), ...d.setting }));
+      setMsg({ ok: true, text: `Imported ${d.imported} new of ${d.scanned} open${d.alreadyImported ? `, ${d.alreadyImported} already imported` : ""}${d.failed ? `, ${d.failed} failed` : ""}.` });
+      if (d.imported > 0) router.refresh(); // surface the new cases in the list
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally { setRunning(false); }
+  }
+  const last = info?.lastRunAt ? `last run ${new Date(info.lastRunAt).toLocaleTimeString()}${typeof info.lastRunImported === "number" ? `, ${info.lastRunImported} imported` : info.imported ? `, ${info.imported} imported` : ""}` : "not run yet";
+  return (
+    <span style={{ display: "inline-flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <button onClick={importNow} disabled={running} title="Pull open/unassigned ServiceNow UMs + incidents now and import any new ones (held for review)">
+        {running ? "Importing…" : "Import now"}
+      </button>
+      <label className="note" style={{ display: "inline-flex", gap: 6, alignItems: "center" }} title={`Auto-import open/unassigned ServiceNow tickets every ~15 min (held for review). ${last}.`}>
+        <input type="checkbox" checked={on} disabled={busy} onChange={toggle} style={{ width: "auto" }} />
+        Auto-import from ServiceNow {on && <span className="muted">· {last}</span>}
+      </label>
+      {msg && <span className="note" style={{ color: msg.ok ? "#15803d" : "#b91c1c" }}>{msg.text}</span>}
+    </span>
   );
 }
 
@@ -19,6 +70,7 @@ function ImportButton() {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [number, setNumber] = useState("");
+  const [dryRun, setDryRun] = useState(false); // default OFF — imports run normally unless dry-run is opted into
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<(PlanOutcome & { caseNumber: string; alreadyImported?: boolean }) | null>(null);
@@ -30,7 +82,7 @@ function ImportButton() {
       const res = await fetch("/api/cases/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number }),
+        body: JSON.stringify({ number, dryRun }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? res.statusText);
@@ -51,7 +103,14 @@ function ImportButton() {
         <h2>Import from ServiceNow</h2>
         <form onSubmit={submit}>
           <label htmlFor="um">Case number</label>
-          <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698" autoFocus />
+          <input id="um" value={number} onChange={(e) => setNumber(e.target.value)} placeholder="UM0028698 or INC0836187" autoFocus />
+          <p className="note" style={{ marginTop: "0.25rem" }}>UM = external client case · INC = internal Coretelligent on/off-boarding incident</p>
+          {!result && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.5rem 0 0", fontSize: 13, color: "var(--fg)" }}>
+              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} style={{ width: "auto" }} />
+              Import in <b>dry run</b> — plan + show the exact scripts/decisions, change nothing until you turn it off
+            </label>
+          )}
           {busy && <p className="note"><span className="spinner" />Fetching and planning…</p>}
           {error && <p className="note danger">{error}</p>}
           {result && (
@@ -85,6 +144,23 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
+  const [clientSlug, setClientSlug] = useState("");
+  const [fields, setFields] = useState<PlanFields | null>(null);
+  const [role, setRole] = useState("");
+
+  // Pull the selected client's personas/locations so the form can offer role-driven onboarding.
+  useEffect(() => {
+    if (!clientSlug) { setFields(null); setRole(""); return; }
+    let cancelled = false;
+    fetch(`/api/clients/${clientSlug}/plan-fields`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) { setFields(d); setRole(""); } })
+      .catch(() => { if (!cancelled) setFields(null); });
+    return () => { cancelled = true; };
+  }, [clientSlug]);
+
+  const roleDriven = action === "onboard" && !!fields?.hasPlanConfig;
+  const titles = fields?.personas.find((p) => p.name === role)?.titles ?? [];
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -93,15 +169,22 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
     const first = String(f.get("first") ?? "").trim();
     const last = String(f.get("last") ?? "").trim();
     const date = String(f.get("date") ?? "").trim();
+    const str = (k: string) => { const v = String(f.get(k) ?? "").trim(); return v || null; };
     const payload = action === "onboard"
-      ? { firstName: first, lastName: last, startDate: date || null, emailAddressNeeded: f.get("email") === "on", officeLineRequired: f.get("phone") === "on" }
+      ? {
+          firstName: first, lastName: last, startDate: date || null,
+          // v2.1 role-driven fields (drive persona/location/attribute resolution)
+          department: str("role"), officeLocation: str("location"), jobTitle: str("title"),
+          employmentType: str("employmentType"), managerName: str("manager"),
+          emailAddressNeeded: f.get("email") === "on", officeLineRequired: f.get("phone") === "on",
+        }
       : { userToOffboard: `${first} ${last}`.trim(), dateOfOffboarding: date || null, allowedToMaintainEmail: f.get("email") === "on" };
     const subject = `${action === "onboard" ? "New User" : "Offboard"} - ${first} ${last}`.trim();
     try {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientSlug: f.get("clientSlug"), action, subject, payload }),
+        body: JSON.stringify({ clientSlug, action, subject, payload, dryRun: f.get("dryRun") === "on" }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? res.statusText);
@@ -118,7 +201,7 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
         <h2>New case</h2>
         <form onSubmit={submit}>
           <label htmlFor="clientSlug">Client</label>
-          <select id="clientSlug" name="clientSlug" required defaultValue="">
+          <select id="clientSlug" required value={clientSlug} onChange={(e) => setClientSlug(e.target.value)}>
             <option value="" disabled>Select a client…</option>
             {clients.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
           </select>
@@ -134,6 +217,35 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
           <label htmlFor="last">Last name</label>
           <input id="last" name="last" required />
 
+          {roleDriven && (
+            <>
+              <label htmlFor="role">Role</label>
+              <select id="role" name="role" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="">Select a role…</option>
+                {fields!.personas.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+              </select>
+
+              <label htmlFor="title">Title</label>
+              <input id="title" name="title" list="nc-titles" placeholder={titles.length ? "Pick or type…" : "Type a title"} />
+              <datalist id="nc-titles">{titles.map((t) => <option key={t} value={t} />)}</datalist>
+
+              <label htmlFor="location">Location</label>
+              <select id="location" name="location" defaultValue="">
+                <option value="">Select a location…</option>
+                {fields!.locations.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+
+              <label htmlFor="employmentType">Employment type</label>
+              <select id="employmentType" name="employmentType" defaultValue="">
+                <option value="">Select…</option>
+                {EMPLOYMENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+
+              <label htmlFor="manager">Manager (name or DN)</label>
+              <input id="manager" name="manager" placeholder="Jane Boss" />
+            </>
+          )}
+
           <label htmlFor="date">{action === "onboard" ? "Start date" : "Offboarding date"}</label>
           <input id="date" name="date" type="date" />
 
@@ -146,7 +258,11 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
               <input type="checkbox" name="phone" style={{ width: "auto" }} /> Office line required
             </label>
           )}
+          <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginTop: "0.4rem" }}>
+            <input type="checkbox" name="dryRun" style={{ width: "auto" }} /> Dry run (-WhatIf — no changes; you can flip this on the case later)
+          </label>
 
+          {roleDriven && <p className="note" style={{ marginTop: "0.5rem" }}>Role/location/title drive the resolved OU, groups, and attributes — review them in the playbook after planning.</p>}
           {error && <p className="note danger">{error}</p>}
           <div className="dialog-actions">
             <button type="button" onClick={() => ref.current?.close()} disabled={busy}>Cancel</button>

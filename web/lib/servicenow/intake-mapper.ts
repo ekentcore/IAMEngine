@@ -20,6 +20,9 @@ const disp = (r: SnUserMgmtRecord, k: string): string | null => {
   const v = r[k]?.display_value;
   return v == null || v === "" ? null : v;
 };
+// The email fetchUserManagementCase resolved for a reference field (manager / mirror user) from the
+// customer_contact table, stashed under "__email:<field>". Null when it couldn't be resolved.
+const contactEmail = (r: SnUserMgmtRecord, k: string): string | null => val(r, `__email:${k}`);
 const bool = (r: SnUserMgmtRecord, k: string): boolean => r[k]?.value === "true";
 const yes = (r: SnUserMgmtRecord, k: string): boolean => (val(r, k) ?? "").toLowerCase() === "yes";
 const trimmed = (s: string | null): string | null => (s ? s.trim() : null);
@@ -41,19 +44,61 @@ const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => {
   return [];
 };
 
-// Office-location display ("United States") -> M365 UsageLocation (ISO-3166 alpha-2). Default US.
+// Office-location display -> M365 UsageLocation (ISO-3166 alpha-2). The office location is often a
+// CITY or STATE, not a country, so match those too; a US state/city resolves to US by a real match,
+// not by blind default. Returns null when it genuinely can't tell — the caller flags it (so we don't
+// silently mis-stamp a non-US user as US, and so the gap is noted for follow-up / an LLM pass).
 const COUNTRY_TO_ISO2: Record<string, string> = {
-  "united states": "US", "united states of america": "US", "usa": "US",
-  "canada": "CA", "united kingdom": "GB", "uk": "GB", "ireland": "IE",
-  "australia": "AU", "india": "IN", "singapore": "SG", "germany": "DE",
-  "france": "FR", "spain": "ES", "netherlands": "NL", "mexico": "MX",
+  "united states": "US", "united states of america": "US", "usa": "US", "u.s.": "US", "u.s.a.": "US",
+  "canada": "CA", "united kingdom": "GB", "uk": "GB", "great britain": "GB", "england": "GB", "scotland": "GB",
+  "ireland": "IE", "australia": "AU", "india": "IN", "singapore": "SG", "germany": "DE", "france": "FR",
+  "spain": "ES", "netherlands": "NL", "mexico": "MX", "italy": "IT", "switzerland": "CH", "japan": "JP",
+  "china": "CN", "brazil": "BR", "israel": "IL", "united arab emirates": "AE", "uae": "AE",
 };
-function deriveUsageLocation(officeLocation: string | null): string {
-  if (!officeLocation) return "US";
-  const m = officeLocation.trim().toLowerCase();
-  if (/^[a-z]{2}$/.test(m)) return m.toUpperCase(); // already a code
-  return COUNTRY_TO_ISO2[m] ?? "US";
+// US states + DC — a location naming any of these is US.
+const US_STATE_NAMES = "alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia";
+const US_STATE_ABBR = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+const KNOWN_ISO = new Set(Object.values(COUNTRY_TO_ISO2)); // valid 2-letter country codes we recognize
+
+// Timezone as a secondary signal when the office location is unclear (US/Eastern, America/New_York,
+// "Eastern Standard Time" → US; London/GMT → GB; etc.). Returns null when ambiguous.
+function usageLocationFromTimezone(tz: string | null): string | null {
+  if (!tz) return null;
+  const t = tz.toLowerCase();
+  if (/\bcanada\b|toronto|vancouver|halifax|winnipeg/.test(t)) return "CA";
+  if (/london|europe\/london|\bbst\b|\bgmt\b(?!\+)/.test(t)) return "GB";
+  if (/\b(us|usa)\b|america\/(new_york|chicago|denver|los_angeles|phoenix|anchorage)|eastern|central|mountain|pacific|alaska|hawaii/.test(t)) {
+    if (/central america|south america/.test(t)) return null;
+    return "US";
+  }
+  return null;
 }
+
+// Returns the ISO2 code, or null when undeterminable (caller flags it as unknown to resolve).
+function deriveUsageLocation(officeLocation: string | null, timezone: string | null = null): string | null {
+  const loc = officeLocation?.trim();
+  if (loc) {
+    const m = loc.toLowerCase();
+    if (/^[a-z]{2}$/.test(m)) {
+      const up = m.toUpperCase();
+      if (US_STATE_ABBR.has(up)) return "US"; // a 2-letter US state code is US, not a country code
+      if (KNOWN_ISO.has(up)) return up; // a real ISO country code (GB, CA, …)
+      // else: a 2-letter token that's neither (e.g. "HQ") — not a location; fall through
+    }
+    if (COUNTRY_TO_ISO2[m]) return COUNTRY_TO_ISO2[m];
+    for (const [name, iso] of Object.entries(COUNTRY_TO_ISO2)) if (m.includes(name)) return iso; // "London, United Kingdom"
+    if (new RegExp(`\\b(${US_STATE_NAMES})\\b`).test(m)) return "US"; // "Atlanta, Georgia"
+    if (US_STATE_ABBR.has((loc.match(/\b([A-Z]{2})\b/) ?? [])[1] ?? "")) return "US"; // "Tampa, FL"
+  }
+  return usageLocationFromTimezone(timezone); // null when even the timezone is ambiguous → flagged upstream
+}
+
+// Non-lifecycle UM subcategories we never import — the app only does on/off-boarding. Computer Build
+// (30300) is a hardware request, not a user lifecycle case; without this it fell through the heuristic
+// to the onboard default and got imported as a bogus onboard. Extend as other non-lifecycle codes surface.
+export const NON_LIFECYCLE_SUBCATEGORIES: Record<string, string> = {
+  "30300": "Computer Build",
+};
 
 function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   // The coded subcategory value is the authoritative signal: 30000 = User Onboarding,
@@ -68,11 +113,36 @@ function deriveAction(r: SnUserMgmtRecord): IntakeAction {
   return "onboard";
 }
 
+// The intake action, or null when the ticket isn't an on/off-boarding case (a non-lifecycle
+// subcategory like Computer Build) — callers SKIP a null instead of importing it as a bogus onboard.
+export function umIntakeAction(r: SnUserMgmtRecord): IntakeAction | null {
+  const subVal = val(r, "subcategory") ?? "";
+  if (NON_LIFECYCLE_SUBCATEGORIES[subVal]) return null;
+  return deriveAction(r);
+}
+
+// Readable subcategory for a UM record (display value, else the coded value).
+export function umSubcategoryLabel(r: SnUserMgmtRecord): string {
+  return disp(r, "subcategory") ?? val(r, "subcategory") ?? "";
+}
+
 function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
   const firstName = trimmed(val(r, "u_first"));
   const lastName = trimmed(val(r, "u_last"));
   const title = val(r, "u_title");
   const officeLocation = disp(r, "u_office_location");
+  const timezone = disp(r, "u_new_contact_time_zone") ?? val(r, "contact_time_zone");
+  const derivedUsage = deriveUsageLocation(officeLocation, timezone);
+  // "Note any unknown data so we can improve" — fields we couldn't confidently derive. Each is an
+  // editable field on the case (the "Needs Information" fill-in); the case holds until they're set.
+  const unknownFields: { field: string; label: string; note: string }[] = [];
+  if (!derivedUsage) {
+    unknownFields.push({
+      field: "usageLocation",
+      label: "Usage location (M365)",
+      note: `couldn't determine from office location "${officeLocation ?? "—"}" / timezone "${timezone ?? "—"}" — enter the ISO country code (e.g. US, GB, CA)`,
+    });
+  }
   return {
     // person
     firstName,
@@ -84,7 +154,9 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     displayName: [firstName, lastName].filter(Boolean).join(" ") || null,
     jobTitle: title,
     mobilePhone: val(r, "u_personal_phone"),
-    usageLocation: deriveUsageLocation(officeLocation),
+    usageLocation: derivedUsage ?? "US",
+    usageLocationDerived: Boolean(derivedUsage), // false = fell back to the US default; flagged in unknownFields
+    unknownFields,
     startDate: dateOnly(val(r, "u_start_date")),
     isRehire: yes(r, "u_is_this_a_re_hire"),
     newOrExisting: disp(r, "u_new_or_existing"),
@@ -93,6 +165,7 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     title,
     department: val(r, "u_department"),
     managerName: disp(r, "u_manager_name"), // readable name, not sys_id
+    managerEmail: contactEmail(r, "u_manager_name"), // resolved from customer_contact — preferred for 365 lookup
     officeLocation,
     personalEmail: val(r, "u_personal_email"),
     personalPhone: val(r, "u_personal_phone"),
@@ -101,7 +174,8 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     isPrimaryWorkspaceWfh: yes(r, "u_is_their_primary_workspace_wfh"),
     hasDirectReports: yes(r, "u_will_this_individual_have_direct_reports"),
     directReports: dispList(r, "u_who_are_direct_reports"),
-    mirrorPermissionsFromUser: disp(r, "u_mirror_existing_user"),
+    // Prefer the resolved email (stable across SNOW & 365); fall back to the display name.
+    mirrorPermissionsFromUser: contactEmail(r, "u_mirror_existing_user") ?? disp(r, "u_mirror_existing_user"),
     roles: dispList(r, "u_role_s"),
     listMembership: dispList(r, "u_coretelligent_list_membership"),
     requestedBy: disp(r, "opened_by"),
@@ -206,19 +280,43 @@ export function deriveIdentity(
   const last = String(payload.lastName ?? "");
   const mi = String(payload.mi ?? "");
   const domain = (opts.primaryDomain ?? "").trim().toLowerCase();
-  const pattern = opts.usernamePatterns?.[0] || "{first}.{last}@{domain}";
+  // usernamePatterns[0] is the primary; [1..] are conflict fallbacks tried in order when the primary
+  // UPN is already taken by a DIFFERENT person (e.g. "{first}.{last}" then "{first}.{mi}").
+  const patterns = opts.usernamePatterns?.length ? opts.usernamePatterns : ["{first}.{last}@{domain}"];
 
-  // Build the local part from the pattern's left-of-@ portion so a missing domain still yields
-  // a SamAccountName (the UPN/work email need a domain).
-  const localPattern = pattern.split("@")[0];
-  const localPart = applyUsernamePattern(localPattern, { first, last, mi, domain: "" });
-  const upn = domain && localPart ? `${localPart}@${domain}` : null;
+  // A pattern is usable only if every NAME token it references resolved to a non-empty value — so
+  // "{first}.{mi}" is DROPPED when there's no middle initial (it would yield "felix." -> a UPN/
+  // mailNickname Entra rejects with "Invalid value specified for property 'mailNickname'"). Unknown
+  // tokens are left for a reviewer, never treated as empty.
+  const cf = cleanToken(first), cl = cleanToken(last), cm = cleanToken(mi);
+  const EMPTY_TOKEN: Record<string, boolean> = {
+    "{first}": !cf, "{last}": !cl, "{mi}": !cm,
+    "{firstinitial}": !cf, "{lastinitial}": !cl, "{f}": !cf, "{l}": !cl,
+  };
+  const patternUsable = (pat: string) =>
+    (pat.split("@")[0].match(/\{[a-z]+\}/gi) ?? []).every((t) => !(EMPTY_TOKEN[t.toLowerCase()] ?? false));
+  // Trim/collapse stray separators a missing token can leave behind ("felix..k" -> "felix.k",
+  // "felix." -> "felix"), so a local part is never malformed.
+  const sanitizeLocal = (lp: string) => lp.replace(/[._-]{2,}/g, (s) => s[0]).replace(/^[._-]+|[._-]+$/g, "");
+
+  // Build a UPN (and the local part) from a pattern's left-of-@ portion so a missing domain still
+  // yields a SamAccountName (the UPN/work email need a domain).
+  const buildLocal = (pat: string) => sanitizeLocal(applyUsernamePattern(pat.split("@")[0], { first, last, mi, domain: "" }));
+  const buildUpn = (pat: string) => {
+    const lp = buildLocal(pat);
+    return domain && lp ? `${lp}@${domain}` : null;
+  };
+  const localPart = buildLocal(patterns[0]);
+  const upn = buildUpn(patterns[0]);
+  // Fallback UPNs from the remaining USABLE patterns (deduped, excluding the primary).
+  const fallbacks = [...new Set(patterns.slice(1).filter(patternUsable).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
   const displayName = (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
 
   const merged = {
     ...payload,
     displayName,
     userPrincipalName: upn,
+    userPrincipalNameFallbacks: fallbacks, // runner tries these when the primary is taken by another person
     samAccountName: localPart || null,
     mailNickname: localPart || null,
     primaryDomain: domain || null,

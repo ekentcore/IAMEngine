@@ -42,6 +42,43 @@ Describe 'Invoke-CtgGoogleOnboarding' {
     It 'refuses to place a user in the Root OU' {
         { Invoke-CtgGoogleOnboarding -User $user -Config ([pscustomobject]@{ ou = '/' }) -InitialPassword $script:TestPassword } | Should -Throw
     }
+
+    It 'adopts an existing account whose NAME matches (same person, re-run) without creating' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; name = @{ givenName = 'Jane'; familyName = 'Doe' } } }
+            if ($Method -eq 'GET' -and $Path -like '/groups*')  { return $null }
+            return $null
+        }
+        $r = Invoke-CtgGoogleOnboarding -User $user -Config ([pscustomobject]@{ ou = '/Active Users' }) -InitialPassword $script:TestPassword
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users' } -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'same person'
+    }
+
+    It 'PAUSES for a decision when the username is taken by a different person and no fallback is free' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; name = @{ givenName = 'John'; familyName = 'Doe' } } }
+            return $null
+        }
+        { Invoke-CtgGoogleOnboarding -User $user -Config ([pscustomobject]@{ ou = '/Active Users' }) -InitialPassword $script:TestPassword } |
+            Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+    }
+
+    It 'uses a FALLBACK username when the primary is taken by a different person' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            # primary taken by someone else; the fallback is free
+            if ($Method -eq 'GET' -and $Path -eq '/users/jdoe@brightonpark.com')      { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; name = @{ givenName = 'John'; familyName = 'Doe' } } }
+            if ($Method -eq 'GET' -and $Path -eq '/users/jane.doe@brightonpark.com')  { return $null }
+            if ($Method -eq 'GET' -and $Path -like '/groups*') { return $null }
+            return $null
+        }
+        $u = [pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com'; UserPrincipalNameFallbacks = @('jane.doe@brightonpark.com'); FirstName = 'Jane'; LastName = 'Doe' }
+        $r = Invoke-CtgGoogleOnboarding -User $u -Config ([pscustomobject]@{ ou = '/Active Users' }) -InitialPassword $script:TestPassword
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users' -and $Body.primaryEmail -eq 'jane.doe@brightonpark.com' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'fallback username'
+    }
 }
 
 Describe 'Invoke-CtgGoogleOffboarding' {
@@ -57,6 +94,38 @@ Describe 'Invoke-CtgGoogleOffboarding' {
         $r.Evidence.Groups | Should -Contain 'staff@brightonpark.com'
         Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'PUT' -and $Body.suspended -eq $true } -Times 1
         Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'DELETE' -and $Path -like '/users/*' } -Times 0 -Exactly
+    }
+}
+
+Describe 'Connect-CtgGoogle (service-account JWT)' {
+    It 'signs an RS256 JWT with the service-account key and exchanges it for an access token' {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+        $pem = $rsa.ExportPkcs8PrivateKeyPem()   # stand-in for the JSON key's private_key
+        $script:captured = $null
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Uri, $ContentType, $Body)
+            $script:captured = @{ Uri = $Uri; Body = $Body }
+            [pscustomobject]@{ access_token = 'ya29.test-token'; expires_in = 3600 }
+        }
+        Connect-CtgGoogle -ClientEmail 'svc@proj.iam.gserviceaccount.com' -PrivateKey $pem -Impersonate 'admin@legalsifter.com'
+
+        $script:captured.Uri | Should -Be 'https://oauth2.googleapis.com/token'
+        $script:captured.Body.grant_type | Should -Be 'urn:ietf:params:oauth:grant-type:jwt-bearer'
+        $parts = $script:captured.Body.assertion -split '\.'
+        $parts.Count | Should -Be 3   # header.claims.signature
+        $padFix = { param($x) $x.Replace('-', '+').Replace('_', '/').PadRight([math]::Ceiling($x.Length / 4) * 4, '=') }
+        $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((& $padFix $parts[1]))) | ConvertFrom-Json
+        $claims.iss   | Should -Be 'svc@proj.iam.gserviceaccount.com'
+        $claims.sub   | Should -Be 'admin@legalsifter.com'   # impersonated admin (domain-wide delegation)
+        $claims.aud   | Should -Be 'https://oauth2.googleapis.com/token'
+        $claims.scope | Should -Match 'admin\.directory\.user'
+    }
+
+    It 'throws when the token endpoint returns no access_token' {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+        $pem = $rsa.ExportPkcs8PrivateKeyPem()
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ error = 'unauthorized_client' } }
+        { Connect-CtgGoogle -ClientEmail 'svc@x' -PrivateKey $pem -Impersonate 'a@b.com' } | Should -Throw
     }
 }
 

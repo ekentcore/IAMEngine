@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "2.1",
+
+  "client": {
+    "id": "coretelligent",
+    "name": "Coretelligent",
+    "primaryDomain": "coretelligent.com",
+    "emailDomain": "core.tech",
+    "domains": ["core.tech"],
+    "intakeSource": "incident"
+  },
+
+  "identity": {
+    "backbone": "ad-synced",
+    "usernamePatterns": ["{firstInitial}{last}"],
+    "lowercase": true,
+    "password": { "mode": "generate", "minLength": 16, "onOffboard": "reset-and-capture" },
+    "directorySync": { "host": "CORE-CCE-AZSYNC.coretelligent.local", "command": "Start-ADSyncSyncCycle -PolicyType Delta" }
+  },
+
+  "secrets": {
+    "ad-dc": { "provider": "delinea", "id": "REPLACE_ME", "label": "Domain controller (core-cce-dc01) admin" },
+    "exchange-onprem": { "provider": "delinea", "id": "REPLACE_ME", "label": "On-prem Exchange (core-cce1-ex01) admin" },
+    "m365-admin": { "provider": "delinea", "id": "REPLACE_ME", "label": "Entra app (On-Boarding Script) cert + tenant" }
+  },
+
+  "locations": {
+    "CA": { "timezone": "Pacific Standard Time", "country": { "short": "US", "name": "United States", "code": 840 } },
+    "GA": { "country": { "short": "US", "name": "United States", "code": 840 } },
+    "MA": { "address": "197 1st Ave, Suite 360", "city": "Needham", "state": "MA", "zip": "02494", "country": { "short": "US", "name": "United States", "code": 840 } },
+    "ME": { "address": "8 Science Park Rd, Suite 201", "city": "Scarborough", "state": "ME", "zip": "04074", "country": { "short": "US", "name": "United States", "code": 840 } },
+    "NY Metro": { "country": { "short": "US", "name": "United States", "code": 840 } },
+    "India": { "timezone": "India Standard Time", "country": { "short": "IN", "name": "India", "code": 356 } },
+    "Remote (US)": { "country": { "short": "US", "name": "United States", "code": 840 } },
+    "Remote (Other)": {}
+  },
+
+  "globals": {
+    "active-directory": {
+      "groups": [
+        "Egnyte-CS-CORE",
+        "Centrify - Egnyte Power Users",
+        { "groups": ["RDS-Users", "VPN-Split", "Core-ALL"], "when": "country.short == US && employmentType == Full-Time" },
+        { "groups": ["Podshore-ALL"], "when": "country.short == IN" }
+      ],
+      "attributes": {
+        "company": "Coretelligent",
+        "title": "{title}",
+        "department": "{role.name}",
+        "manager": "{manager}",
+        "l": "{location.city}",
+        "st": "{location.state}",
+        "physicalDeliveryOfficeName": "{location.name}",
+        "telephoneNumber": "{did}",
+        "homePhone": "{mobile}",
+        "ipPhone": "{extension}",
+        "extensionAttribute4": "{startDate}",
+        "employeeType": "{employmentType}",
+        "c": "{country.short}",
+        "co": "{country.name}",
+        "countryCode": "{country.code}"
+      }
+    },
+    "m365": {
+      "seatAwareLicense": {
+        "skuId": "ed26ce6d-09d3-47fe-a53b-ae551831f58e_06ebc4ee-1bb5-47dd-8120-11324bc54e06",
+        "entraGroupWhenAvailable": "7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99",
+        "adGroupFallback": "M365 E3 Users Group"
+      }
+    }
+  },
+
+  "personas": {
+    "Account Services": {
+      "systems": {
+        "active-directory": { "ou": "OU=Account Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["Centrify - Salesforce Users", "SSO - Zoom Pro Users", "DEPT-AccountServices", "Egnyte-CS-BIZDEV", "Egnyte-CS-OPS", "Egnyte-DF-AS", "AccountServicesDL-11624851762"] },
+        "case-resolution": { "salesforceNotification": true }
+      }
+    },
+    "Client Lifecycle Management": {
+      "titles": ["Client Lifecycle Specialist", "Senior Client Lifecycle Specialist"],
+      "systems": { "active-directory": { "ou": "OU=Client Lifecycle Management,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["Notifications", "TechStaff"] } }
+    },
+    "Digital Transformation Services": {
+      "systems": {
+        "active-directory": {
+          "ou": [
+            { "path": "OU=Podshore,OU=Digital Transformation,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "country.name == India" },
+            { "path": "OU=Digital Transformation,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" }
+          ],
+          "groups": ["SSO - Zoom Pro Users", "DEPT-DigitalTransformation"]
+        }
+      }
+    },
+    "Field Services": {
+      "titles": ["Client Support Engineer I", "Client Support Engineer II", "Senior Client Support Engineer"],
+      "systems": {
+        "active-directory": {
+          "ou": [
+            { "path": "OU=CA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == CA" },
+            { "path": "OU=GA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == GA" },
+            { "path": "OU=MA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == MA" },
+            { "path": "OU=NY,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == NY Metro" },
+            { "path": "OU=Other,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "location.name == Remote (US)" },
+            { "path": "OU=Other,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" }
+          ],
+          "groups": ["DEPT-Field", "ExchStatusReport", "Notifications", "TechStaff", "SSO - Zoom Pro Users"]
+        }
+      }
+    },
+    "Finance": {
+      "systems": { "active-directory": { "ou": "OU=Finance & Operations,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["DEPT-Finance", "RDS-Finance", "Egnyte-DF-Finance", "Share - Quickbooks", "SSO - Zoom Pro Users"] } }
+    },
+    "Human Resources": {
+      "systems": { "active-directory": { "ou": "OU=Finance & Operations,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["DEPT-HR", "Egnyte-CS-HR", "Egnyte-DF-HR", "SSO - Zoom Pro Users"] } }
+    },
+    "Marketing": {
+      "systems": {
+        "active-directory": { "ou": "OU=Finance & Operations,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" },
+        "case-resolution": { "salesforceNotification": true }
+      }
+    },
+    "Procurement": {
+      "titles": ["Procurement Director", "Procurement Specialist"],
+      "systems": { "active-directory": { "ou": "OU=Finance & Operations,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["Egnyte-DF-PROC", "DEPT-Procurement", "Procurement Team", "Egnyte-DF-Finance", "SSO - Zoom Pro Users"] } }
+    },
+    "Professional Services": {
+      "titles": ["Project Engineer", "Project Manager"],
+      "systems": {
+        "active-directory": {
+          "ou": "OU=Professional Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local",
+          "groups": [
+            "DEPT-ProfessionalServices", "Egnyte-DF-PS", "Notifications", "TechStaff", "SSO - Zoom Pro Users", "SSO - Zoom Phone Users",
+            { "groups": ["TEAM-ProfSvcs-Engineering", "Project Engineers"], "when": "title == Project Engineer" },
+            { "groups": ["Project Managers", "Egnyte-CS-BIZDEV", "Egnyte-DF-Finance"], "when": "title == Project Manager" }
+          ]
+        }
+      }
+    },
+    "Recruiting": {
+      "titles": ["Talent Acquisition Associate"],
+      "systems": { "active-directory": { "ou": "OU=Finance & Operations,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["SSO - Zoom Pro Users", "DEPT-Recruiting", "Egnyte-DF-HR", "Recruiting", "Talent"] } }
+    },
+    "Remote Support": {
+      "titles": ["Remote Support Technician", "Remote Support Engineer I", "Remote Support Engineer II"],
+      "systems": {
+        "active-directory": {
+          "ou": [
+            { "path": "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "when": "title ~= ^Remote Support" },
+            { "path": "OU=Support,OU=Remote Support,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" }
+          ],
+          "groups": [
+            "Notifications", "TechStaff",
+            { "groups": ["Core-RST-Support", "TEAM-RST-Support"], "when": "title ~= ^Remote Support" }
+          ]
+        }
+      }
+    },
+    "Platform & Tools": {
+      "titles": ["Internal Support Engineer", "Salesforce Administrator"],
+      "systems": { "active-directory": { "ou": "OU=Platform & Tools,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" } }
+    },
+    "Sales": {
+      "titles": ["Business Development Representative", "Business Development Manager", "Business Development Director", "Pre-Sales Solutions Architect"],
+      "systems": {
+        "active-directory": {
+          "ou": "OU=Sales Team,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local",
+          "groups": [
+            "SSO - Zoom Pro Users", "DEPT-Sales", "Sales",
+            { "groups": ["SSO - Outreach Users"], "when": "title ~= ^Business Development" }
+          ]
+        },
+        "case-resolution": { "salesforceNotification": true }
+      }
+    },
+    "Security": {
+      "titles": ["Compliance Analyst", "Cyber Security Analyst", "Penetration Tester", "Senior Penetration Tester"],
+      "systems": { "active-directory": { "ou": "OU=Security,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["CoreSecret - CoreArmor", "DEPT-Security", "Notifications", "CoreArmor Team-1-1109108992"] } }
+    },
+    "Strategic Services": {
+      "titles": ["Strategic Services Engineer", "Senior Strategic Services Engineer"],
+      "systems": {
+        "active-directory": { "ou": "OU=Strategic Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["DEPT-StrategicSvcs", "Egnyte-CS-BIZDEV", "Strategic Services", "SSO - Zoom Pro Users", "Centrify - Salesforce Users", "FWD-NewAgreements", "Notifications", "TechStaff"] },
+        "case-resolution": { "salesforceNotification": true }
+      }
+    },
+    "Systems Team": {
+      "titles": ["Remote Support Technician", "Remote Systems Engineer I", "Remote Systems Engineer II", "Remote Systems Engineer III", "Senior Systems Engineer"],
+      "systems": { "active-directory": { "ou": "OU=Systems Team,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local", "groups": ["Core-RST-NOC", "TEAM-RST-Systems", "Notifications", "TechStaff"] } }
+    },
+    "Contractors": {
+      "systems": { "active-directory": { "ou": "OU=Contractors,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" } }
+    },
+    "Other": {
+      "systems": { "active-directory": { "ou": "OU=Misc,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local" } }
+    }
+  },
+
+  "systems": [
+    {
+      "key": "servicenow",
+      "mode": "api",
+      "dependsOn": [],
+      "onboard": { "when": "always", "config": { "requiredFields": ["email", "title", "manager", "location", "role", "startDate"] } },
+      "offboard": { "when": "always", "config": { "action": "mark-inactive-on-end-date" } }
+    },
+    {
+      "key": "active-directory",
+      "mode": "api",
+      "secrets": ["ad-dc"],
+      "dependsOn": ["servicenow"],
+      "onboard": { "when": "always", "config": { "enabled": true } },
+      "offboard": { "when": "always", "captureEvidence": true, "guardrails": ["do-not-move-ou"], "config": { "disable": true, "resetPassword": true, "hideFromGAL": true, "removeGroups": true } }
+    },
+    {
+      "key": "exchange",
+      "mode": "api",
+      "secrets": ["exchange-onprem", "m365-admin"],
+      "dependsOn": ["active-directory"],
+      "onboard": {
+        "when": "always",
+        "config": {
+          "onPremExchangeUri": "http://core-cce1-ex01.coretelligent.local/PowerShell/",
+          "enableRemoteMailbox": { "routingDomain": "coretell.mail.onmicrosoft.com", "emailAddressPolicyEnabled": true },
+          "regional": { "language": "en-us", "timezone": "{location.timezone}", "defaultTimezone": "Eastern Standard Time" },
+          "calendar": { "grantManagerReviewer": true }
+        }
+      },
+      "offboard": { "when": "always", "config": { "convertToShared": { "skipIfMailboxOverGB": 50 }, "blockMobileDevices": true } }
+    },
+    {
+      "key": "directory-sync",
+      "mode": "api",
+      "secrets": ["ad-dc"],
+      "dependsOn": ["exchange"],
+      "onboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta", "waitForMailbox": true } },
+      "offboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta" } }
+    },
+    {
+      "key": "m365",
+      "mode": "api",
+      "secrets": ["m365-admin"],
+      "dependsOn": ["directory-sync"],
+      "onboard": { "when": "always", "config": {} },
+      "offboard": { "when": "always", "config": { "blockSignIn": true } }
+    },
+    {
+      "key": "case-resolution",
+      "mode": "manual",
+      "dependsOn": ["m365"],
+      "onboard": { "when": "always", "config": {} },
+      "offboard": { "when": "always", "config": {} }
+    }
+  ],
+
+  "runbook": {
+    "onboard": "Active Directory\n- Create the user in the role + location OU (e.g. OU=CA,OU=Field Services,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local).\n- Set directory attributes from the case: title, department, manager, company, c / co / countryCode, employeeType, extensionAttribute4 (start date), ipPhone (DID extension), physicalDeliveryOfficeName.\n- Add to the global groups (Egnyte-CS-CORE, Centrify - Egnyte Power Users, RDS-Users, VPN-Split, Core-ALL, ...) plus the selected persona's role groups.\n- If the request says \"mirror <user>\", union that reference user's live group memberships.\n- Map the home drive if the persona configures one.\n\nEntra Connect sync\n- Trigger an Azure AD Connect delta sync (Start-ADSyncSyncCycle) so the user provisions into Entra / Microsoft 365.\n\nExchange\n- Enable the on-prem remote mailbox (Enable-RemoteMailbox) with the tenant routing address.\n- Wait for the mailbox to land in Exchange Online.\n- Set regional config (language / timezone) and grant the hiring manager Reviewer on the calendar.\n\nMicrosoft 365\n- Assign a seat-aware license: E5 if a seat is available, otherwise E3 (flag the fallback for review).\n- Add to the M365 / seat groups.\n\nServiceNow\n- Post a work note to the ticket and resolve the case.\n\nEquipment & access\n- Order the laptop and any monitor / keyboard / mouse / docking station per the request.\n- Fulfill any app / SaaS access not covered above.",
+    "offboard": "Active Directory\n- Capture the user's group memberships as evidence, then remove them (Domain Users stays).\n- Reset the password and disable the account; set the hide-from-GAL attribute.\n- Do NOT move the OU (moving deletes the synced 365 account).\n\nExchange\n- Convert the mailbox to shared (unless over the size threshold — then keep it licensed).\n- Block ActiveSync / OWA; set out-of-office and forwarding on request.\n\nMicrosoft 365\n- Remove licenses once the mailbox is handled.\n\nServiceNow\n- Post a work note and resolve the case."
+  }
+}

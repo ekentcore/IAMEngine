@@ -1,17 +1,22 @@
-// POST /api/clients/:slug/secrets/test — preflight: resolve each Delinea reference far enough to
-// prove the app can read it, WITHOUT pulling the value. Tests the ids in the request body (the
-// engineer's current edits) so "Test" reflects what's on screen, saved or not. Returns pass/fail
-// per secret; the value never leaves Delinea.
+// POST /api/clients/:slug/secrets/test — preflight: resolve each Delinea reference to prove (a) the
+// app can READ it (the account has Read on the secret) and (b) it carries the FIELDS its provider's
+// connector needs (e.g. m365-admin has a TenantId, exchange a CertificateThumbprint, mimecast a
+// client id + secret). Tests the ids in the request body (the engineer's current edits) so "Test"
+// reflects what's on screen, saved or not. The shape check reads the secret like the broker does,
+// but ONLY field NAMES and missing-requirement LABELS are returned — values never leave the server.
 import { NextResponse } from "next/server";
+import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
-import { checkSecret, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
+import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
+import { checkFieldShape } from "@/lib/secrets/field-requirements";
 
 export const dynamic = "force-dynamic";
 
 type TestItem = { name: string; externalId: string };
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   let body: { secrets?: unknown };
   try {
     body = await req.json();
@@ -36,18 +41,25 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     })
     .filter((i): i is TestItem => i !== null);
 
+  // The client's primary domain can supply the M365 tenant even when the secret has no TenantId field.
+  const client = await db.client.findUnique({ where: { id: wiring.clientId }, select: { primaryDomain: true } });
+  const hasTenantHint = Boolean(client?.primaryDomain && client.primaryDomain.trim());
+
   const cfg = delineaConfigFromEnv();
   // One token for the whole batch ("Test all") — not one password-grant per secret.
   let token: string | undefined;
   try {
     if (delineaConfigured(cfg)) token = await getDelineaToken(cfg);
   } catch {
-    // leave token undefined — each checkSecret reports the auth failure itself.
+    // leave token undefined — each resolve reports the auth failure itself.
   }
   const results = await Promise.all(
     items.map(async (i) => {
-      const r = await checkSecret(cfg, i.externalId, undefined, token);
-      return { name: i.name, ok: r.ok, label: r.label, error: r.error };
+      const r = await resolveSecretFields(cfg, i.externalId, undefined, token);
+      if (!r.ok) return { name: i.name, ok: false, error: r.error };
+      // Shape check on field NAMES only — values are never read into the response.
+      const shape = checkFieldShape(i.name, Object.keys(r.fields ?? {}), { clientHasTenantHint: hasTenantHint });
+      return { name: i.name, ok: true, label: r.label, missingFields: shape.missing };
     })
   );
 

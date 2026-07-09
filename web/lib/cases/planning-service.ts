@@ -6,6 +6,8 @@ import { deriveIdentity } from "../servicenow/intake-mapper";
 import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
 import type { ResolveClient } from "../clients/email-domain";
+import { resolvePlannedConfigs } from "../profiles/plan-resolve";
+import { resolveUnknownsWithAI } from "./ai-resolve";
 
 export type PlanOutcome = {
   caseId: string;
@@ -39,9 +41,12 @@ export async function createAndPlanCase(
   // refreshes it from contacts and applies any per-case override. Offboarding identifies an
   // existing user, so no derivation is needed.
   const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null };
+  // Offboarding identifies an EXISTING user — the executors resolve them by UPN/email when the
+  // intake carries one, else by DISPLAY NAME against the live directory (more reliable than guessing
+  // a UPN from a username pattern). So no identity derivation here for offboard.
   let domain = client.emailDomain ?? client.primaryDomain;
   if (input.action === "onboard" && opts?.resolveDomain) domain = await opts.resolveDomain(client);
-  const payload =
+  let payload =
     input.action === "onboard"
       ? deriveIdentity(input.payload, {
           usernamePatterns: identity.usernamePatterns ?? null,
@@ -49,9 +54,31 @@ export async function createAndPlanCase(
         })
       : input.payload;
 
-  const planned = planCase(client.systems, input.action, payload);
+  // LLM last resort: before holding the case for unknowns, let the AI take a confident guess at the
+  // fields the deterministic mapping couldn't resolve (marked AI-derived for an operator to confirm).
+  if (input.action === "onboard" && Array.isArray((payload as { unknownFields?: unknown }).unknownFields) && (payload as { unknownFields: unknown[] }).unknownFields.length > 0) {
+    const ai = await resolveUnknownsWithAI(payload as Record<string, unknown>);
+    payload = ai.payload;
+  }
+
+  // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
+  const planned = resolvePlannedConfigs(client, payload, input.action, planCase(client.systems, input.action, payload));
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
+
+  // Every imported case is HELD on import — nothing auto-dispatches. An operator reviews it and
+  // resumes to run (and is recorded as the case's "ran by"). The hold reason is the most specific
+  // one that applies:
+  //   - needs_info: the intake left fields we couldn't determine — fill them in to release it.
+  //   - scheduled:  an offboard that may be future-dated — resume when the offboard date arrives.
+  //   - review:     anything else (a ready onboard) — a generic "review & run" hold.
+  // A dry-run preview is exempt — the operator wants to see it run read-only now.
+  const unknownFields = Array.isArray((payload as { unknownFields?: unknown }).unknownFields) ? (payload as { unknownFields: unknown[] }).unknownFields : [];
+  if (input.action === "onboard" && unknownFields.length > 0) {
+    await repo.setHold(caseId, "needs_info");
+  } else if (!input.dryRun) {
+    await repo.setHold(caseId, input.action === "offboard" ? "scheduled" : "review");
+  }
 
   await repo.writeAudit({
     actor,

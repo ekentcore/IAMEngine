@@ -6,6 +6,7 @@ test("secretIsSet is false for empty / unset / REPLACE_ME placeholders", () => {
   assert.equal(secretIsSet(""), false);
   assert.equal(secretIsSet("   "), false);
   assert.equal(secretIsSet("REPLACE_ME"), false);
+  assert.equal(secretIsSet("NOT_NEEDED"), false); // manual-step sentinel is not a real credential
   assert.equal(secretIsSet("48213"), true);
 });
 

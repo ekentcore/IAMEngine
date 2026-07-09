@@ -16,7 +16,8 @@
     "db:setup": "npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed",
     "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts",
     "test": "tsx --test \"lib/**/*.test.ts\"",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "db:provision": "node scripts/provision-db.mjs"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
@@ -24,6 +25,7 @@
   "dependencies": {
     "@prisma/client": "^5.18.0",
     "next": "^14.2.5",
+    "node-forge": "^1.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx": "^0.18.5"
@@ -31,6 +33,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^20.14.10",
+    "@types/node-forge": "^1.3.14",
     "@types/pg": "^8.11.6",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

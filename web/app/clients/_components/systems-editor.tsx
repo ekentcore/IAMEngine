@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CATALOG } from "@/lib/generator/system-map";
 
 type Lane = "always" | "on_request" | "never";
@@ -14,6 +14,7 @@ type Row = {
   dependsOn: string[];
   requiresApproval: boolean;
   captureEvidence: boolean;
+  offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
   secretNames: string[];
   configText: string; // JSON text; parsed on save
 };
@@ -27,6 +28,38 @@ const BACKBONES = [
 ];
 const LANES: Lane[] = ["always", "on_request", "never"];
 const MODES: Mode[] = ["api", "browser", "manual"];
+// Color the lane selects so onboard/offboard participation is scannable at a glance: green = runs,
+// amber = only on request, grey = off. (Flat tints, no gradients — matches the host design system.)
+const LANE_STYLE: Record<Lane, CSSProperties> = {
+  always: { background: "#e8f5ee", color: "#15803d", borderColor: "#bbf7d0" },
+  on_request: { background: "#fef6e7", color: "#92400e", borderColor: "#fde9c8" },
+  never: { background: "#f4f4f5", color: "#9ca3af", borderColor: "#e5e7eb" },
+};
+// Hover help for each field — the ⓘ next to every label (sentence case, plain English).
+const HELP = {
+  mode: "How the step runs — api: automated via a Coretelligent.* module · browser: Playwright automation · manual: a human checklist item recorded on the case.",
+  onboard: "When this system runs on ONBOARDING — always · on request (only when the intake asks for it) · never (not part of onboarding).",
+  offboard: "When this system runs on OFFBOARDING — always · on request · never. Onboard and Offboard are the two runbooks; set each independently.",
+  depends: "System keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
+  approval: "Destructive step — gated server-side. The job won't run until an operator approves it on the case (offboarding deletes/disables).",
+  evidence: "Before doing anything, snapshot the user's current state (group memberships, license/app assignments) and attach it to the case — so there's an audit trail and you can restore if needed. Mainly used on offboarding.",
+  intent: "How destructive this system's OFFBOARD step is. disable = reversible containment (lock the account, isolate the device, revoke sessions) — undoable, and a candidate for future automation. destructive = actually deletes data (e.g. delete a mailbox) — always requires operator approval AND snapshots state first so it's redoable.",
+  secrets: "The Delinea secret references this system needs at run time (comma-separated names, e.g. m365-admin). Names only — never the values.",
+  config: 'Per-lane JSON settings, nested under onboard / offboard. e.g. { "offboard": { "delete": true } }. Leave blank for defaults.',
+};
+
+function Field({ label, help, children, grow }: { label: string; help: string; children: ReactNode; grow?: boolean }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3, ...(grow ? { flex: "1 1 280px" } : {}) }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted, #6b7280)", whiteSpace: "nowrap" }}>
+        {label}{" "}
+        <span title={help} style={{ cursor: "help", color: "var(--faint, #9ca3af)", borderBottom: "1px dotted currentColor" }}>ⓘ</span>
+      </span>
+      {children}
+    </label>
+  );
+}
+
 const ALL_KEYS = Object.keys(CATALOG).sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "always" ? "always" : "never");
 
@@ -40,6 +73,7 @@ function rowFromCatalog(key: string): Row {
     dependsOn: [],
     requiresApproval: false,
     captureEvidence: false,
+    offboardIntent: "disable",
     secretNames: c?.secret ? [c.secret] : [],
     configText: "",
   };
@@ -91,6 +125,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           dependsOn: Array.isArray(sys.dependsOn) ? sys.dependsOn : [],
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
+          offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
           configText: sys.config ? JSON.stringify(sys.config, null, 2) : "",
         }))
@@ -117,11 +152,16 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
     // validate config JSON
     const systems = [];
     for (const r of rows) {
-      let config: unknown = null;
+      let config: Record<string, unknown> | null = null;
       if (r.configText.trim()) {
         try { config = JSON.parse(r.configText); }
         catch { setError(`Invalid JSON config for ${r.systemKey}`); setSaving(false); return; }
       }
+      // The Offboard-intent select is authoritative: merge it into config.intent.offboard so a
+      // destructive step is auto-gated (approval + evidence) by the orchestrator at plan time.
+      if (config === null) config = {};
+      const intent = { ...((config.intent as Record<string, unknown> | undefined) ?? {}), offboard: r.offboardIntent };
+      config = { ...config, intent };
       systems.push({ ...r, secretNames: r.secretNames, config });
     }
     try {
@@ -167,7 +207,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
 
   return (
-    <dialog ref={ref} onClose={onClose} style={{ width: 820, maxWidth: "95vw" }}>
+    <dialog ref={ref} onClose={onClose} style={{ width: 1080, maxWidth: "96vw" }}>
       <div className="row-between">
         <h2>Edit systems — {name}</h2>
         <button onClick={onClose}>Close</button>
@@ -196,28 +236,61 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             <button onClick={() => addSystem(addKey)} disabled={!addKey}>Add</button>
           </div>
 
-          <table>
-            <thead>
-              <tr><th>System</th><th>Mode</th><th>Onboard</th><th>Offboard</th><th>Deps</th><th>Appr</th><th>Evid</th><th>Secrets</th><th>Config</th><th></th></tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.systemKey}>
-                  <td>{r.systemKey}</td>
-                  <td><select value={r.mode} onChange={(e) => update(i, { mode: e.target.value as Mode })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select></td>
-                  <td><select value={r.onboardWhen} onChange={(e) => update(i, { onboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
-                  <td><select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })}>{LANES.map((l) => <option key={l} value={l}>{l}</option>)}</select></td>
-                  <td><input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 90 }} /></td>
-                  <td><input type="checkbox" style={{ width: "auto" }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} /></td>
-                  <td><input type="checkbox" style={{ width: "auto" }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} /></td>
-                  <td><input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} style={{ width: 90 }} /></td>
-                  <td><textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder="{ }" rows={1} style={{ width: 120, fontFamily: "monospace", fontSize: 11 }} /></td>
-                  <td><button onClick={() => remove(i)}>✕</button></td>
-                </tr>
-              ))}
-              {rows.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: "center" }}>No systems. Add one or use “Parse instructions”.</td></tr>}
-            </tbody>
-          </table>
+          <p className="note" style={{ margin: "0.4rem 0 0.3rem" }}>
+            <b>Onboard</b> and <b>Offboard</b> are the two runbooks — set when each system runs:{" "}
+            <span className="badge" style={LANE_STYLE.always}>always</span>{" "}
+            <span className="badge" style={LANE_STYLE.on_request}>on request</span>{" "}
+            <span className="badge" style={LANE_STYLE.never}>never</span>. (e.g. for xMatters onboarding-only: Onboard = always, Offboard = never.)
+          </p>
+          <div style={{ display: "grid", gap: 10 }}>
+            {rows.map((r, i) => (
+              <div key={r.systemKey} style={{ border: "1px solid var(--line, #e5e7eb)", borderRadius: 10, padding: "0.7rem 0.85rem" }}>
+                <div className="row-between" style={{ alignItems: "center" }}>
+                  <b style={{ fontFamily: "monospace", fontSize: 14 }}>{r.systemKey}</b>
+                  <button title={`Remove ${r.systemKey}`} onClick={() => remove(i)} style={{ fontSize: 12 }}>✕ remove</button>
+                </div>
+                {/* Row 1 — what & when */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: "0.55rem", alignItems: "flex-end" }}>
+                  <Field label="Mode" help={HELP.mode}>
+                    <select value={r.mode} onChange={(e) => update(i, { mode: e.target.value as Mode })}>{MODES.map((m) => <option key={m}>{m}</option>)}</select>
+                  </Field>
+                  <Field label="Onboard" help={HELP.onboard}>
+                    <select value={r.onboardWhen} onChange={(e) => update(i, { onboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.onboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select>
+                  </Field>
+                  <Field label="Offboard" help={HELP.offboard}>
+                    <select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.offboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select>
+                  </Field>
+                  <Field label="Depends on" help={HELP.depends}>
+                    <input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 150 }} />
+                  </Field>
+                  <Field label="Approval" help={HELP.approval}>
+                    <input type="checkbox" style={{ width: "auto", height: 18 }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} />
+                  </Field>
+                </div>
+                {/* Row 2 — evidence, secrets, config */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: "0.55rem", alignItems: "flex-start" }}>
+                  <Field label="Evidence" help={HELP.evidence}>
+                    <input type="checkbox" style={{ width: "auto", height: 18 }} checked={r.captureEvidence} onChange={(e) => update(i, { captureEvidence: e.target.checked })} />
+                  </Field>
+                  <Field label="Offboard intent" help={HELP.intent}>
+                    <select value={r.offboardIntent} onChange={(e) => update(i, { offboardIntent: e.target.value as Row["offboardIntent"] })}
+                      style={r.offboardIntent === "destructive" ? { color: "#b3261e", borderColor: "#f3c0bb", fontWeight: 600 } : { color: "#1d4ed8" }}
+                      disabled={r.offboardWhen === "never"}>
+                      <option value="disable">disable (reversible)</option>
+                      <option value="destructive">destructive (delete)</option>
+                    </select>
+                  </Field>
+                  <Field label="Secrets" help={HELP.secrets}>
+                    <input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 200 }} />
+                  </Field>
+                  <Field label="Config (JSON)" help={HELP.config} grow>
+                    <textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder={'{ "offboard": { } }'} rows={2} style={{ width: "100%", minWidth: 260, fontFamily: "monospace", fontSize: 12 }} />
+                  </Field>
+                </div>
+              </div>
+            ))}
+            {rows.length === 0 && <p className="muted" style={{ textAlign: "center", padding: "1rem", border: "1px dashed var(--line, #e5e7eb)", borderRadius: 10 }}>No systems. Add one above or use “Parse instructions”.</p>}
+          </div>
 
           {error && <p className="note danger">{error}</p>}
           <div className="dialog-actions">

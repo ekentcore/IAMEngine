@@ -46,7 +46,7 @@ function simulateCase(systems: ClientSystem[], action: Action, payload: Record<s
     result: null, validation: null, error: null, startedAt: null, finishedAt: null,
   }));
 
-  const lite = (j: MemJob): JobLite => ({ id: j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: j.requiresApproval, approved: j.approved });
+  const lite = (j: MemJob): JobLite => ({ id: j.id, systemKey: j.systemKey ?? j.id, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: j.requiresApproval, approved: j.approved });
   const order: string[] = [];
 
   for (let round = 0; round < 200; round++) {
@@ -56,9 +56,9 @@ function simulateCase(systems: ClientSystem[], action: Action, payload: Record<s
     if (claimable.length > 0) {
       const j = claimable.sort((a, b) => a.sequence - b.sequence)[0];
       const runnerJob: RunnerJob = {
-        id: j.id, action, systemKey: j.systemKey, mode: j.mode, client,
+        id: j.id, caseNumber: null, action, systemKey: j.systemKey, mode: j.mode, client,
         config: (j.request as { config?: unknown }).config ?? null, secretNames: [],
-        payload, requiresApproval: j.requiresApproval, captureEvidence: false, dryRun: false,
+        payload, requiresApproval: j.requiresApproval, captureEvidence: false, dryRun: false, validateOnly: false,
       };
       const r = simulateJob(runnerJob);
       j.status = r.status; j.result = r.result ?? null; j.validation = r.validation ?? null; j.error = r.error ?? null;

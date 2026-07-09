@@ -21,6 +21,7 @@ const FIELDS = [
   "u_comanaged_it",
   "u_onboarding",
   "u_offboarding",
+  "account_parent", // the SN account-hierarchy field (NOT "parent") — child accounts point here
 ].join(",");
 
 const PAGE_SIZE = 100;
@@ -66,6 +67,25 @@ export async function fetchSnAccountById(
     config,
     "/api/now/table/customer_account",
     { sysparm_query: `sys_id=${sysId}`, sysparm_fields: FIELDS, sysparm_display_value: "all", sysparm_limit: "1" },
+    fetcher
+  );
+  return rows[0] ?? null;
+}
+
+// One account by CORE id (u_core_id, e.g. "CORE2224") — the fallback when a client has no stored
+// sys_id link. Returns null if it isn't found.
+export async function fetchSnAccountByCoreId(
+  config: SnConfig,
+  coreId: string,
+  fetcher: Fetcher = fetch
+): Promise<SnAccount | null> {
+  const id = (coreId ?? "").trim();
+  if (!id) return null;
+  assertConfig(config);
+  const rows = await snGet<SnAccount[]>(
+    config,
+    "/api/now/table/customer_account",
+    { sysparm_query: `u_core_id=${id}`, sysparm_fields: FIELDS, sysparm_display_value: "all", sysparm_limit: "1" },
     fetcher
   );
   return rows[0] ?? null;

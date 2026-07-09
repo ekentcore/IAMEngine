@@ -20,7 +20,9 @@ export function PlaybookView({ playbook, caseId }: { playbook: Playbook; caseId:
         <p className="note" style={{ margin: 0 }}>
           {playbook.steps.length} steps, in order — dry run, nothing executes.
         </p>
-        <div className="toolbar">
+        <div className="toolbar" style={{ gap: "0.5rem" }}>
+          <button className="note" onClick={() => setOpen(new Set(playbook.steps.map((s) => s.seq)))}>Expand all</button>
+          <button className="note" onClick={() => setOpen(new Set())}>Collapse all</button>
           <a href={`/api/cases/${caseId}/playbook?format=md`} download className="note">download .md →</a>
         </div>
       </div>
@@ -36,6 +38,7 @@ export function PlaybookView({ playbook, caseId }: { playbook: Playbook; caseId:
               {s.dependsOn.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {s.dependsOn.join(", ")}</span>}
             </summary>
             <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>
+              <div className="note">Runs on: <b>{s.runsOn}</b></div>
               {s.secretNames.length > 0 && <div className="note">Secrets: {s.secretNames.join(", ")}</div>}
               {auto && s.willRun ? (
                 <>
