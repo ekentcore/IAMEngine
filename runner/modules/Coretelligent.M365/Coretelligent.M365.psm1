@@ -688,13 +688,29 @@ function Invoke-CtgM365Onboarding {
                 $actions.Add("assigned license: $name")
                 Write-CtgM365Step "✓ assigned license: $name"
             } catch {
+                $lm = [string]$_.Exception.Message
                 # No seats left in the tenant: don't fail the onboard — the account is already created,
                 # it just needs a license ordered. Surface a clear procurement action; the step is a
                 # warning, not a failure.
-                if ($_.Exception.Message -match 'does not have any available licenses|no available licenses|not have any available') {
+                if ($lm -match 'does not have any available licenses|no available licenses|not have any available') {
                     $seatShortage = $true
                     $actions.Add("WARN no available '$name' license seats — user CREATED UNLICENSED. Pick another license below (owned SKUs + free seats shown), or open a Procurement Case to order a $name license, then re-run.")
                     Write-CtgM365Step "⚠ $name — no seats available; user left unlicensed. Pick another license or order one."
+                } elseif ($lm -match 'invalid usage location|usageLocation|usage location') {
+                    # The pre-set above didn't stick (timing, or it was rejected). Set it explicitly, read it
+                    # back, and retry the license ONCE. If it still fails, throw a DIAGNOSTIC error that shows
+                    # the user's actual usageLocation + whether the set was rejected (which points at an
+                    # on-prem-mastered attribute — then it must be set in AD to sync, or in the admin center).
+                    $loc = [string]((Get-CtgProp $User 'UsageLocation') ?? 'US')
+                    $setErr = $null
+                    try { Invoke-CtgM365Write { Update-MgUser -UserId $userId -UsageLocation $loc -ErrorAction Stop } | Out-Null } catch { $setErr = $_.Exception.Message }
+                    $confirmed = [string]((Get-MgUser -UserId $userId -Property UsageLocation -ErrorAction SilentlyContinue).UsageLocation)
+                    try {
+                        Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+                        $actions.Add("set usageLocation $loc, then assigned license: $name"); Write-CtgM365Step "✓ set usageLocation $loc + assigned license: $name"
+                    } catch {
+                        throw "assigning '$name' failed — user usageLocation is '$confirmed' (tried to set '$loc'$(if ($setErr) { "; the set was REJECTED: $setErr — usageLocation is on-prem mastered here, so set it in AD (it'll sync) or in the M365 admin center" } else { '' })). Underlying: $($_.Exception.Message)"
+                    }
                 } else { throw }
             }
         }

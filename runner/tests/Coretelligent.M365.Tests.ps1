@@ -10,7 +10,7 @@ BeforeAll {
 
     # Global stubs so Pester can Mock these in the module scope (real cmdlets come from Microsoft.Graph).
     function global:Get-MgSubscribedSku { param($SubscribedSkuId, [switch]$All) }
-    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel) }
+    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel, $Property) }
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
     function global:Set-MgUserLicense { param($UserId, $AddLicenses, $RemoveLicenses) }

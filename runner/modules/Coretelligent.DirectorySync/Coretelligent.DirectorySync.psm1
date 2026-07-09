@@ -97,20 +97,21 @@ function Invoke-CtgAdSyncRemote {
         return Invoke-Command -ComputerName $ComputerName -Credential $Credential -ScriptBlock $ScriptBlock -ErrorAction Stop
     } catch {
         $err = $_
-        # Match the WHOLE error, not just the top .Message — the System.Web type-load surfaces in an
-        # INNER exception (the outer is a generic remoting error), so a top-only check misses it and the
-        # fallback never fires. Decide WITHOUT touching Windows-only state off-Windows ($env:SystemRoot is
-        # null there; Join-Path would throw a NEW error that masks the real one). A real auth/connectivity
-        # error (no System.Web) is re-thrown unchanged.
+        # Full text (whole inner chain) for diagnostics.
         $full = "$err"
         $e = $err.Exception
         while ($e) { if ($e.Message) { $full += " | $($e.Message)" }; $e = $e.InnerException }
+        # BROADENED: retry ANY pwsh-7-on-Windows remote failure under Windows PowerShell 5.1, not just a
+        # matched 'System.Web' string. pwsh 7 (.NET Core) can't WinRM-with-a-credential (the NTLM/Negotiate
+        # path needs System.Web, which .NET Core lacks); 5.1 (.NET Framework) can. If the real problem is
+        # auth/connectivity (not the assembly gap), 5.1 just re-fails and we surface THAT — never the opaque
+        # System.Web load error. Only skip the retry where 5.1 can't exist (non-Windows / non-Core).
         $winPS = $null
-        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows -and ($full -match 'Could not load type|System\.Web|Utf16StringValidator')) {
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows) {
             $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             if (Test-Path $candidate) { $winPS = $candidate }
         }
-        if (-not $winPS) { throw $err }
+        if (-not $winPS) { throw "directory-sync remote failed and no Windows PowerShell 5.1 fallback is available here (edition=$($PSVersionTable.PSEdition), windows=$IsWindows): $full" }
         $credFile = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-adsync-" + [guid]::NewGuid().ToString('N') + ".xml")
         try {
             $Credential | Export-Clixml -Path $credFile
@@ -122,7 +123,7 @@ function Invoke-CtgAdSyncRemote {
                      "`$r = Invoke-Command -ComputerName '$ComputerName' -Credential `$c -ScriptBlock { $($ScriptBlock.ToString()) }; " +
                      "`$r | ConvertTo-Json -Compress -Depth 6"
             $out = & $winPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $inner 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "directory-sync fell back to Windows PowerShell 5.1 (pwsh 7 can't WinRM with a credential: $($err.Exception.Message)), but 5.1 also failed: $out" }
+            if ($LASTEXITCODE -ne 0) { throw "directory-sync retried under Windows PowerShell 5.1 (pwsh 7 remote failed: $full) and 5.1 ALSO failed on '$ComputerName': $out" }
             $line = (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Last 1)
             if (-not $line) { return $null }
             try { return (ConvertFrom-Json $line) } catch { return $line }
