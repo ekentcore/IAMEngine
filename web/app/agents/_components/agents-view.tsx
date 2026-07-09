@@ -375,7 +375,9 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     return (
                       <>
                         <span className="muted">{v ?? "—"}</span>
-                        {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build</div>}
+                        {/* An update only lands if the runner heartbeats; if this never clears, the
+                            runner isn't reaching the app at all — point at Troubleshoot, not Update. */}
+                        {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
                       </>
                     );
                   })()}
