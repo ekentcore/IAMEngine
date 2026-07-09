@@ -7,6 +7,7 @@ import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
+import { parseCapabilities, onPremExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
 import { sweepProcurementWatches } from "./procurement-watch";
 import { sweepServiceNowIntake } from "./intake-sweep";
@@ -116,7 +117,7 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
@@ -151,7 +152,10 @@ export function makeRunnerService(db: PrismaClient) {
       // set it when a valid value is sent (older runners don't report it — keep whatever's stored).
       const boot = startedAt ? new Date(startedAt) : null;
       const bootAt = boot && !Number.isNaN(boot.getTime()) ? boot : undefined;
-      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}) } });
+      // Persist reported on-prem capabilities only when the runner sent them (1.31+). A legacy runner
+      // passes null → keep whatever's stored (stays null → treated as capable). An empty array IS a
+      // report ("can run no on-prem system") and is persisted as [].
+      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}), ...(capabilities != null ? { capabilities: capabilities as Prisma.InputJsonValue } : {}) } });
       // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.
@@ -219,7 +223,7 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
     async claim(agentId: string, batchSize: number, version?: string | null): Promise<RunnerJob[]> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
 
@@ -287,16 +291,19 @@ export function makeRunnerService(db: PrismaClient) {
 
       // central runner (clientId null) sees all clients' api jobs; a client agent sees only
       // its own. Jobs on a failed/completed case are excluded so a dead case can't run more.
-      // Host affinity: the central (cloud) runner must NOT claim systems that require on-prem
-      // execution (the ActiveDirectory/RSAT module, the EXO cert + on-prem Exchange session, the
-      // ADSync module) — those only work on the client-network agent. Otherwise it grabs an AD job it
-      // can't run ("Invoke-CtgADOnboarding not recognized"). Client agents still claim everything.
+      // Host affinity + capability gate: the central (cloud) runner must NEVER claim on-prem systems
+      // (the ActiveDirectory/RSAT module, ADSync) — those only work on a client-network agent. A client
+      // agent claims its client's jobs, but an on-prem system is withheld unless the agent REPORTS it can
+      // run it (its Coretelligent module loaded) — so a DC missing RSAT doesn't grab an AD job it would
+      // hard-fail ("Invoke-CtgADOnboarding not recognized"); it stays pending with a clear reason. A
+      // legacy (pre-1.31) agent reports nothing (caps null) → withholds nothing → old behavior preserved.
       const scope = agent.clientId ? { clientId: agent.clientId } : {};
+      const onPremExclude = agent.clientId ? onPremExclusions(parseCapabilities(agent.capabilities)) : ALWAYS_ON_PREM_SYSTEMS;
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
           mode: "api",
-          ...(agent.clientId ? {} : { systemKey: { notIn: ALWAYS_ON_PREM_SYSTEMS } }),
+          ...(onPremExclude.length ? { systemKey: { notIn: onPremExclude } } : {}),
           OR: [
             // Normal flow. Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand
             // an unrelated pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are

@@ -7,6 +7,7 @@
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
+import { parseCapabilities, agentCanRun } from "../runner/capabilities";
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 
@@ -514,7 +515,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   if (ready.length > 0) {
     const onlineAgents = await db.agent.findMany({
       where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
-      select: { clientId: true, name: true, lastSeenAt: true, version: true },
+      select: { clientId: true, name: true, lastSeenAt: true, version: true, capabilities: true },
     });
     const build = runnerBuildId();
     const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
@@ -548,12 +549,25 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
           : "ready, but no runner is online to claim it — check the Agents page";
         continue;
       }
+      // Capability gate — mirrors the claim filter: an on-prem system is only claimable by an agent that
+      // REPORTS it can run it. If the client's agent is online but doesn't advertise this system (e.g. a DC
+      // whose ActiveDirectory/RSAT module didn't load), the app withholds the job — say so, instead of
+      // showing "about to start" for a step that will never be claimed. A legacy agent reports nothing →
+      // treated as capable, so this only fires for an agent actually reporting it can't run the system.
+      const runnable = ALWAYS_ON_PREM_SYSTEMS.includes(st.systemKey)
+        ? eligible.filter((a) => agentCanRun(st.systemKey, parseCapabilities(a.capabilities)))
+        : eligible;
+      if (runnable.length === 0) {
+        const names = [...new Set(eligible.map((a) => a.name))].join(", ");
+        st.pendingReason = `ready, but ${names} on ${c.client.name}'s network can't run ${st.systemKey} — the ActiveDirectory (RSAT) module isn't loaded there. Install RSAT-AD-PowerShell (or use the runner's Troubleshoot) and restart it; it claims this step once it reports the capability.`;
+        continue;
+      }
       // The agent is online but on an OUTDATED build — the app won't dispatch jobs to it (it would run
       // stale code), so the step sits. Tell the operator exactly that instead of "about to start".
-      const current = eligible.filter((a) => upToDate(a.version));
+      const current = runnable.filter((a) => upToDate(a.version));
       if (current.length === 0) {
-        const names = [...new Set(eligible.map((a) => a.name))].join(", ");
-        st.pendingReason = `ready, but ${names} ${eligible.length > 1 ? "are" : "is"} on an OUTDATED build — the app won't dispatch jobs to it until you update it on the Agents page`;
+        const names = [...new Set(runnable.map((a) => a.name))].join(", ");
+        st.pendingReason = `ready, but ${names} ${runnable.length > 1 ? "are" : "is"} on an OUTDATED build — the app won't dispatch jobs to it until you update it on the Agents page`;
         continue;
       }
       // Pull model: the runner claims on its next poll (~15s). Name it + show how fresh it is, so

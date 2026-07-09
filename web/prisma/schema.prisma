@@ -198,6 +198,12 @@ model Agent {
   scope              AgentScope
   version            String? // the content-hash build id (canonical "on current code?" check)
   semver             String? // the human-readable release version from runner/VERSION (display only)
+  // Which ALWAYS_ON_PREM system keys this host can actually execute (its host-specific Coretelligent
+  // module loaded) — reported each heartbeat as a JSON string[]. The claim gate withholds an on-prem
+  // job from an agent that doesn't list it (e.g. a DC missing RSAT), so it stays pending with a clear
+  // reason instead of being dispatched and hard-failing. NULL = a legacy runner that doesn't report
+  // (treated as capable, preserving pre-capability behavior); [] = reports it can run no on-prem system.
+  capabilities       Json?
   lastSeenAt         DateTime?
   // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
   // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
