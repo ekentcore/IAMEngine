@@ -10,6 +10,7 @@ export const V2_ROUTES: Record<string, string> = {
   "/cases": "/cases/v2",
   "/audit": "/audit/v2",
   "/users": "/users/v2",
+  "/agents": "/agents/v2",
 };
 
 // reverse: v2 route -> canonical base.

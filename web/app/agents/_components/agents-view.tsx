@@ -160,7 +160,70 @@ function PriorityControl({ a }: { a: AgentVM }) {
   );
 }
 
-export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number }) {
+// Version display (semver line + build hash + up-to-date/needs-update note). Shared so the v2 table
+// reads the same as the classic one without inlining the branch twice.
+function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentBuild: string; currentVersion: string | null }) {
+  const v = a.version;
+  const isBuild = !!v && /^[0-9a-f]{6,}$/.test(v); // a build hash vs legacy "0.1.0"/"unknown"
+  const semverLine = a.semver
+    ? <div style={{ fontWeight: 600, color: currentVersion && a.semver !== currentVersion ? "var(--warn-fg)" : undefined }}>v{a.semver}</div>
+    : null;
+  if (isBuild) {
+    return (
+      <>
+        {semverLine}
+        <code className="muted" style={{ fontSize: 11 }}>build {v!.slice(0, 7)}</code>
+        {v === currentBuild
+          ? <div className="note" style={{ color: "var(--ok-fg)" }}>✓ up to date</div>
+          : <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ update available</div>}
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="muted">{v ?? "—"}</span>
+      {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
+    </>
+  );
+}
+
+// v2 per-agent actions, collapsed into a single "Actions ▾" menu (the classic view shows every button
+// inline). Opening/closing is lifted to the parent (one menu open at a time + shared click-away).
+function ActionsMenu({
+  a, toggling, upToDate, open, onOpen,
+  onInstall, onToggleEnabled, onTroubleshoot, onLocalRestart, onUpdate, onRestart, onTrash,
+}: {
+  a: AgentVM; toggling: string | null; upToDate: boolean; open: boolean; onOpen: (id: string | null) => void;
+  onInstall: () => void; onToggleEnabled: () => void; onTroubleshoot: () => void; onLocalRestart: () => void;
+  onUpdate: () => void; onRestart: () => void; onTrash: () => void;
+}) {
+  const pick = (fn: () => void) => () => { onOpen(null); fn(); };
+  return (
+    <div className="agent-actions" style={{ position: "relative", display: "inline-block" }}>
+      <button className="agent-actions-trigger" aria-haspopup="menu" aria-expanded={open}
+        onClick={() => onOpen(open ? null : a.id)}>Actions&nbsp;▾</button>
+      {open && (
+        <div role="menu" className="agent-actions-menu">
+          <button onClick={pick(onInstall)}>Install</button>
+          <button disabled={toggling === a.id} onClick={pick(onToggleEnabled)}>{a.enabled ? "Disable" : "Enable"}</button>
+          <button onClick={pick(onTroubleshoot)}>Troubleshoot</button>
+          <button onClick={pick(onLocalRestart)}>Local restart</button>
+          {a.enabled && !upToDate && (
+            <button disabled={toggling === a.id || a.updateRequested} onClick={pick(onUpdate)}>{a.updateRequested ? "Queued…" : "Update"}</button>
+          )}
+          {a.enabled && (
+            <button disabled={toggling === a.id || a.restartRequested} onClick={pick(onRestart)}>{a.restartRequested ? "Restarting…" : "Restart"}</button>
+          )}
+          {!a.enabled && (
+            <button className="danger" onClick={pick(onTrash)}>Trash</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now, v2 = false }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number; v2?: boolean }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -188,6 +251,15 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
   const localRestartRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
+
+  // v2 only: which agent's actions menu is open (one at a time). Close on any click outside a menu.
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openMenu) return;
+    const h = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest(".agent-actions")) setOpenMenu(null); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [openMenu]);
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -352,6 +424,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
         </div>
       </details>
 
+      {!v2 && (
       <table className="desk-only">
         <thead>
           <tr>
@@ -463,6 +536,87 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
           )}
         </tbody>
       </table>
+      )}
+
+      {/* v2: fewer, denser columns. Identity (name · scope · client · id · priority) in one cell,
+          version, activity (last seen · uptime · status), and every action behind one Actions ▾ menu. */}
+      {v2 && (
+      <table className="desk-only agents-v2">
+        <thead>
+          <tr>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                title="Select all runners that can take an update"
+                checked={updatableAgents.length > 0 && selectedUpdatable.length === updatableAgents.length}
+                disabled={updatableAgents.length === 0}
+                onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
+              />
+            </th>
+            <th>Runner</th><th>Version</th><th>Activity</th><th style={{ textAlign: "right" }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {agents.map((a) => {
+            const ls = lastSeen(a.lastSeenAt, nowMs);
+            const upToDate = isUpToDate(a);
+            const u = updateStatus(a);
+            const stuck = stuckLabel(a, ls.online, nowMs);
+            return (
+              <tr key={a.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(a.id)}
+                    disabled={!updatable(a)}
+                    title={updatable(a) ? "Select for bulk update" : !a.enabled ? "Disabled — enable it first" : a.updateRequested ? "Update already queued" : "Already up to date"}
+                    onChange={() => toggleSelect(a.id)}
+                  />
+                </td>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{a.name}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
+                    <span className="badge">{a.scope === "central" ? "central" : "client-network"}</span>
+                    {a.clientName
+                      ? <span className="muted" style={{ fontSize: 12 }}>{a.clientName}</span>
+                      : <span className="muted" style={{ fontSize: 12 }}>— all —</span>}
+                  </div>
+                  <code className="muted" style={{ fontSize: 11, display: "block", marginTop: 2 }}>{a.id}</code>
+                  <div style={{ marginTop: 4 }}><PriorityControl a={a} /></div>
+                </td>
+                <td><VersionCell a={a} currentBuild={currentBuild} currentVersion={currentVersion} /></td>
+                <td>
+                  <div>
+                    <span style={{ color: ls.online ? "var(--ok-fg)" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span>
+                    {a.enabled ? null : <span className="muted"> · disabled</span>}
+                  </div>
+                  {a.enabled && ls.online && (
+                    <div className="note muted" title={a.bootAt ? `up since ${a.bootAt}` : "uptime unknown"}>up {uptime(a.bootAt, nowMs)}</div>
+                  )}
+                  {stuck && <div className="note" style={{ color: "var(--err-fg)" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{stuck}</div>}
+                  {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <ActionsMenu
+                    a={a} toggling={toggling} upToDate={upToDate} open={openMenu === a.id} onOpen={setOpenMenu}
+                    onInstall={() => setInstallAgent(a)}
+                    onToggleEnabled={() => toggle(a.id, !a.enabled)}
+                    onTroubleshoot={() => setTroubleshootAgent(a)}
+                    onLocalRestart={() => setLocalRestartAgent(a)}
+                    onUpdate={() => run(a.id, requestAgentUpdate)}
+                    onRestart={() => run(a.id, requestAgentRestart)}
+                    onTrash={() => run(a.id, trashAgent)}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+          {agents.length === 0 && (
+            <tr><td colSpan={5} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
+          )}
+        </tbody>
+      </table>
+      )}
 
       {/* Mobile: status-focused card per agent (online/version/last-seen/uptime). Enroll + per-agent
           actions stay on desktop. */}
@@ -481,6 +635,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 <span><span className="k">build</span> <code style={{ fontSize: 11 }}>{a.version ? a.version.slice(0, 8) : "—"}</code></span>
                 <span><span className="k">last seen</span> {ls.text}</span>
                 <span><span className="k">uptime</span> {uptime(a.bootAt, nowMs)}</span>
+                {v2 && <span><span className="k">priority</span> {a.priority}</span>}
               </div>
             </div>
           );
