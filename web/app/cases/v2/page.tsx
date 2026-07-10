@@ -73,7 +73,7 @@ export default async function CasesV2Page() {
         <Link href="/cases" className="note" style={{ alignSelf: "flex-start" }}>← back to Cases</Link>
       </div>
 
-      <CasesToolbar clients={clients} />
+      <CasesToolbar clients={clients} snScan />
 
       <CasesTable cases={rows} trashed={trashedRows} splitCompleted />
     </main>
