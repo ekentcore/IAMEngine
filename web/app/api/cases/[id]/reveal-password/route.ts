@@ -1,14 +1,18 @@
 // POST /api/cases/:id/reveal-password — reveal the generated initial password EXACTLY ONCE, then wipe
 // it. The value is never logged (the audit records the reveal, not the password). 404 once it's gone.
+// Gated by case.dispatch: handing over the initial credential is part of EXECUTING the onboard, so it
+// belongs to the roles that run/verify the case — not to read-only roles (auditor/importer) or
+// impersonated sessions, which guardAuth would admit. This both discloses a live credential and
+// mutates state (consumes the one-time reveal), so it must not sit behind an auth-only guard.
 import { NextResponse } from "next/server";
-import { guardAuth } from "@/lib/auth/route-guard";
+import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
-  const _g = await guardAuth(); if (_g.res) return _g.res;
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { initialPassword: true } });

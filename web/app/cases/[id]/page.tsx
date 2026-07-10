@@ -5,6 +5,8 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
+import { authEnabled, getActingContext } from "@/lib/auth/current-user";
+import { can } from "@/lib/auth/permissions";
 import { intakeLabel } from "@/lib/cases/intake-labels";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
@@ -76,7 +78,11 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   const started = hasStartedJobs(c.jobs);
   const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true } });
   const paused = Boolean(caseMeta?.pausedAt);
-  const hasInitialPassword = Boolean(caseMeta?.initialPassword);
+  // Mirror the reveal route's guard (case.dispatch, no impersonation) so read-only roles don't see
+  // a button the server will 403 — the route stays the real boundary.
+  const acting = authEnabled() ? await getActingContext() : { user: null, realUser: null, impersonating: false };
+  const canRevealPassword = !authEnabled() || (!!acting.user && !acting.impersonating && can(acting.user.role, "case.dispatch"));
+  const hasInitialPassword = Boolean(caseMeta?.initialPassword) && canRevealPassword;
   // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
   // has been dispatched yet → offer the operator-confirmed "Link" action.
   const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
