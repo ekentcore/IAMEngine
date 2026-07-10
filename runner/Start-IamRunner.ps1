@@ -1758,10 +1758,16 @@ while ($true) {
                     try { $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun; break }
                     catch {
                         $missing = Get-CtgMissingCommandName $_
-                        # A missing '*-Ctg*' function is one of OUR bundled module functions — it means
-                        # the Coretelligent.* module didn't load on this host (a missing host dependency),
-                        # NOT a gallery module to install. Surface a clear, actionable error instead.
+                        # A missing '*-Ctg*' function is one of OUR bundled module functions, NOT a
+                        # gallery module to install. Two causes, distinguished so the operator isn't
+                        # sent chasing RSAT on a host where the module loaded fine (INC0858516):
+                        # loaded-but-unexported = the module's .psd1 FunctionsToExport filters out
+                        # whatever Export-ModuleMember says; not loaded = missing host dependency.
                         if ($missing -like '*-Ctg*') {
+                            $owner = Get-Module Coretelligent.* | Where-Object { $_.ExportedFunctions.Keys -notcontains $missing -and (Get-Content -Raw "$($_.ModuleBase)/$($_.Name).psm1" -ErrorAction SilentlyContinue) -match "function\s+$([regex]::Escape($missing))\b" } | Select-Object -First 1
+                            if ($owner) {
+                                throw "'$missing' exists in the $($owner.Name) module (loaded on this host) but is NOT exported — its .psd1 FunctionsToExport is missing it (manifest drift). Fix the manifest and update the runner; nothing needs installing on this host."
+                            }
                             throw "the Coretelligent module providing '$missing' isn't loaded on this host — it needs a host-specific dependency (the ActiveDirectory/RSAT module for AD, ExchangeOnlineManagement for Exchange, the ADSync module for directory-sync). This step must run on the client-network agent that has it, not the central/cloud runner."
                         }
                         if ($try -eq 0 -and $missing) {
