@@ -60,6 +60,7 @@ export function normalizeTz(tz: string | null): string | null {
   let z = tz.trim();
   if (z.includes("/")) z = z.split("/").pop()!.trim(); // drop US/ Canada/ America/ …
   z = z.replace(/\s+(Standard|Daylight)\s+Time$/i, "").trim(); // Windows display → zone word
+  z = z.replace(/_/g, " ").trim(); // IANA city zones: "Mexico_City" → "Mexico City"
   return z || tz;
 }
 
