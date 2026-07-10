@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { guardAuth } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
+import { actorLabel } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 
@@ -31,8 +32,13 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: "already revealed — a password is shown exactly once and can't be recalled" }, { status: 410 });
   }
 
+  // Atomic claim of the one-time reveal: only the caller whose conditional wipe actually flips the
+  // column gets the value — two concurrent pollers (two tabs, popup + line button) can't both win.
   const password = job.oneTimePassword;
-  await db.job.update({ where: { id: params.id }, data: { oneTimePassword: null } }); // shown once → wipe
-  await db.auditLog.create({ data: { actor: _g.user.email || "ui", action: "job.password_reset.reveal", jobId: params.id, caseRequestId: job.caseRequestId, clientId: job.case.clientId } });
+  const claimed = await db.job.updateMany({ where: { id: params.id, oneTimePassword: password }, data: { oneTimePassword: null } });
+  if (claimed.count !== 1) {
+    return NextResponse.json({ error: "already revealed — a password is shown exactly once and can't be recalled" }, { status: 410 });
+  }
+  await db.auditLog.create({ data: { actor: actorLabel(_g.user, "ui"), action: "job.password_reset.reveal", jobId: params.id, caseRequestId: job.caseRequestId, clientId: job.case.clientId } });
   return NextResponse.json({ ready: true, password });
 }

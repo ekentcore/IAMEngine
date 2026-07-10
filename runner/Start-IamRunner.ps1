@@ -686,28 +686,6 @@ $DISPATCH = @{
     'ad-hard-match' = @{
         Onboard = { param($job, $creds) Invoke-CtgADHardMatch -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
     }
-    # Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
-    # never planned. The app generates the value, injects it as config.newPassword at claim, and
-    # reveals it once operator-side — the executors never return it. Onboard/Offboard point at the
-    # same executor because the wire `action` is the CASE's, and a reset can ride either kind of case.
-    'ad-password-reset' = @{
-        Onboard  = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
-        Offboard = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
-    }
-    'm365-password-reset' = @{
-        Connect  = { param($job, $creds)
-            $tenant = Get-CtgTenantDomain $job $creds
-            Set-CtgPhase $job.id "connecting to m365 (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
-            Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
-        }
-        Onboard  = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
-        Offboard = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
-    }
-    'google-password-reset' = @{
-        Connect  = { param($job, $creds) Use-CtgGoogleSecret -Job $job -Creds $creds }
-        Onboard  = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
-        Offboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
-    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in
@@ -937,6 +915,24 @@ $DISPATCH = @{
 # entra is the Entra-ID slice of the M365 module — same executor + read-backs (catalog
 # moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
 $DISPATCH['entra'] = $DISPATCH['m365']
+
+# Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
+# never planned. The app generates the value, injects it as config.newPassword at claim, and reveals
+# it once operator-side — the executors never return it. One executor per system serves both lanes
+# (the wire `action` is the CASE's, and a reset can ride either kind of case); Connect lanes are
+# aliased from the owning system so a connection fix reaches the reset automatically.
+$DISPATCH['ad-password-reset'] = @{
+    Onboard = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+}
+$DISPATCH['m365-password-reset'] = @{
+    Connect = $DISPATCH['m365'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
+}
+$DISPATCH['google-password-reset'] = @{
+    Connect = $DISPATCH['google-workspace'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
+}
+foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-reset') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
 
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).

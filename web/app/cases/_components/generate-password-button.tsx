@@ -6,7 +6,6 @@
 // failure) — it cannot be recalled. If the popup is closed before the reveal, the reset line itself
 // offers a one-shot "reveal password" until it's shown.
 import { useEffect, useRef, useState } from "react";
-import { PASSWORD_RESET_KEY } from "@/lib/jobs/password-reset";
 
 type RevealResponse = { ready?: boolean; status?: string; password?: string; error?: string };
 
@@ -33,7 +32,7 @@ function RevealDialog({ resetJobId, systemName, onClose }: { resetJobId: string;
           done.current = true; setState({ error: d.error ?? `the reset ${d.status} — the password was NOT changed`, status: d.status }); return;
         }
         setState({ status: d.status ?? "pending" });
-      } catch (e) { if (!cancelled) setState({ status: "pending", error: (e as Error).message }); }
+      } catch { /* transient network blip — keep waiting; the next poll retries */ }
       if (!cancelled && !done.current) setTimeout(poll, 2500);
     }
     void poll();
@@ -76,13 +75,13 @@ function RevealDialog({ resetJobId, systemName, onClose }: { resetJobId: string;
   );
 }
 
-// The per-line entry point on AD / M365 / Entra / Google Workspace steps.
-export function GeneratePasswordButton({ jobId, systemKey, systemName, refresh }: { jobId: string; systemKey: string; systemName: string; refresh?: () => Promise<void> | void }) {
+// The per-line entry point on AD / M365 / Entra / Google Workspace steps (the run report only
+// renders it for systemKeys in PASSWORD_RESET_KEY).
+export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: string; systemName: string; refresh?: () => Promise<void> | void }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  if (!PASSWORD_RESET_KEY[systemKey]) return null;
 
   async function dispatch() {
     setBusy(true); setErr(null);

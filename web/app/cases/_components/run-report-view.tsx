@@ -762,7 +762,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {/* Generate a fresh random password on this account and show it once (INC0855142) —
                   offered on the AD / M365 / Entra / Google Workspace lines once the account exists. */}
               {["verified", "warning"].includes(step.verdict) && step.jobId && PASSWORD_RESET_KEY[step.systemKey] && (
-                <GeneratePasswordButton jobId={step.jobId} systemKey={step.systemKey} systemName={step.systemName} refresh={refresh} />
+                <GeneratePasswordButton jobId={step.jobId} systemName={step.systemName} refresh={refresh} />
               )}
               {/* On the reset line itself: the one-time reveal, for a popup closed before it showed. */}
               {step.verdict === "verified" && step.jobId && PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (

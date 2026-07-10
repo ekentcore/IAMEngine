@@ -280,7 +280,7 @@ export function makeRunnerService(db: PrismaClient) {
           // Auto-stop: mark it failed but TAG it (request.autoStopped) so the run report shows a distinct
           // "⏱ auto-stopped — no progress" warning rather than a generic failure. refreshCaseStatus then
           // advances the case (a failed step doesn't block independent siblings) — "move on + warn".
-          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date() } });
+          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date(), oneTimePassword: null } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
           const who = `${w.case?.serviceNowCaseNumber ?? w.caseRequestId}${w.case?.client?.name ? ` (${w.case.client.name})` : ""}`;
@@ -823,7 +823,9 @@ export function makeRunnerService(db: PrismaClient) {
         throw new HttpError(409, `job is ${job.status} — only an in-flight or queued step can be stopped`);
       }
       const who = actor.startsWith("user:") ? actor.slice(5) : "an operator";
-      await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date() } });
+      // oneTimePassword: a stopped password reset may or may not have landed — the value is unverified,
+      // so wipe it (same as a failed result); null is a no-op for every other job type.
+      await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date(), oneTimePassword: null } });
       const caseStatus = await refreshCaseStatus(db, job.caseRequestId);
       await db.auditLog.create({ data: { actor, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
       return { jobId, status: "failed", caseStatus };
