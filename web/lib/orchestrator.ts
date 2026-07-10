@@ -91,6 +91,28 @@ export function planCase(
   payload: Record<string, unknown>
 ): PlannedJob[] {
   const active = systems.filter((s) => included(s, action, payload));
+  // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
+  // `mail` attribute. Applies to every AD-origin client (identity starts on-prem) automatically — no
+  // per-client ClientSystem row or migration. It depends on the cloud consumers present (m365/exchange)
+  // so it runs after them; the actual address is resolved + injected at dispatch time (runner-service
+  // claim), since it isn't known until those run. Routed on-prem via ALWAYS_ON_PREM_SYSTEMS.
+  const activeKeys = new Set(active.map((s) => s.systemKey));
+  if (action === "onboard" && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("exchange")) && !activeKeys.has("ad-email-writeback")) {
+    const base = active.find((s) => s.systemKey === "active-directory")!;
+    active.push({
+      ...base,
+      id: `${base.clientId}:ad-email-writeback`,
+      systemKey: "ad-email-writeback",
+      mode: "api",
+      onboardWhen: "always",
+      offboardWhen: "never",
+      dependsOn: ["m365", "exchange"].filter((k) => activeKeys.has(k)),
+      requiresApproval: false,
+      captureEvidence: false,
+      secretNames: ["ad-dc"],
+      config: null,
+    } as ClientSystem);
+  }
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
   // Closing steps must run AFTER everything else, whatever the declared deps say — under DAG
   // gating an under-declared dependsOn would otherwise let case-resolution dispatch first.

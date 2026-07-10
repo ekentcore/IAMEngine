@@ -438,8 +438,33 @@ export function makeRunnerService(db: PrismaClient) {
       const runningCaseIds = [...new Set(claimed.map((c) => c.caseRequestId))];
       await db.caseRequest.updateMany({ where: { id: { in: runningCaseIds }, status: { in: ["queued", "planning"] } }, data: { status: "running" } });
 
+      // AD email write-back (B1): for any ad-email-writeback job being handed out, resolve the
+      // mailbox's ASSIGNED primary SMTP from the sibling cloud job's result (exchange preferred, then
+      // m365) and inject it into the payload as `writebackEmail`, so the on-prem agent just writes AD
+      // `mail` = that address without needing cloud creds. The executor falls back to the deterministic
+      // workEmail/UPN when no result carries an address (e.g. an older runner that didn't return it).
+      const writebackCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-email-writeback").map((j) => j.caseRequestId))];
+      const emailByCase = new Map<string, string>();
+      if (writebackCaseIds.length > 0) {
+        const siblings = await db.job.findMany({
+          where: { caseRequestId: { in: writebackCaseIds }, systemKey: { in: ["exchange", "m365"] }, status: "succeeded" },
+          select: { caseRequestId: true, systemKey: true, result: true },
+        });
+        for (const s of siblings) {
+          const addr = (s.result as { primarySmtpAddress?: unknown } | null)?.primarySmtpAddress;
+          if (typeof addr === "string" && addr.includes("@")) {
+            const cur = emailByCase.get(s.caseRequestId);
+            if (!cur || s.systemKey === "exchange") emailByCase.set(s.caseRequestId, addr); // exchange wins over m365
+          }
+        }
+      }
+
       return claimed.map((j) => {
         const r = req(j);
+        const payload =
+          j.systemKey === "ad-email-writeback"
+            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
+            : j.case.payload;
         return {
           id: j.id,
           caseNumber: j.case.serviceNowCaseNumber ?? null,
@@ -449,7 +474,7 @@ export function makeRunnerService(db: PrismaClient) {
           client: { slug: j.case.client.slug, primaryDomain: j.case.client.primaryDomain, backbone: j.case.client.backbone },
           config: r.config ?? null,
           secretNames: r.secretNames ?? [],
-          payload: j.case.payload,
+          payload,
           requiresApproval: Boolean(r.requiresApproval),
           captureEvidence: Boolean(r.captureEvidence),
           // case.dryRun is AUTHORITATIVE at claim time (the per-job request.dryRun stamp is only a

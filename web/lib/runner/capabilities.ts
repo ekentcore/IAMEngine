@@ -33,18 +33,27 @@ export function parseCapabilities(v: unknown): string[] | null {
   return arr.filter((x): x is string => typeof x === "string");
 }
 
+// The reported CAPABILITY that a given on-prem systemKey actually needs. Usually the key itself, but
+// some steps ride another module: `ad-email-writeback` runs on the ActiveDirectory module (writes the
+// `mail` attribute), so an agent that can run "active-directory" can run it too — no separate capability
+// to report. Keeps a runner from having to advertise a new cap for the write-back step.
+function capabilityKey(systemKey: string): string {
+  return systemKey === "ad-email-writeback" ? "active-directory" : systemKey;
+}
+
 // Can this agent claim/run a job for `systemKey`? Non-on-prem systems are always runnable here (the
 // separate central-vs-client scope rule still applies). An on-prem system requires the agent to REPORT
-// the capability; a legacy agent (caps === null) is treated as capable so rollout doesn't strand jobs.
+// the needed capability; a legacy agent (caps === null) is treated as capable so rollout doesn't strand jobs.
 export function agentCanRun(systemKey: string, caps: string[] | null): boolean {
   if (!ALWAYS_ON_PREM_SYSTEMS.includes(systemKey)) return true;
   if (caps === null) return true; // legacy runner — don't block during rollout
-  return caps.includes(systemKey);
+  return caps.includes(capabilityKey(systemKey));
 }
 
 // The on-prem system keys to WITHHOLD from a client agent's claim query given its reported caps. Legacy
-// (null) withholds nothing (old behavior); a reporting agent withholds every on-prem key it didn't list.
+// (null) withholds nothing (old behavior); a reporting agent withholds every on-prem key whose needed
+// capability it didn't list.
 export function onPremExclusions(caps: string[] | null): string[] {
   if (caps === null) return [];
-  return ALWAYS_ON_PREM_SYSTEMS.filter((k) => !caps.includes(k));
+  return ALWAYS_ON_PREM_SYSTEMS.filter((k) => !caps.includes(capabilityKey(k)));
 }
