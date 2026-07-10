@@ -63,6 +63,27 @@ function Resolve-CtgAdDomain {
     return $Fallback
 }
 
+# Space/punctuation-insensitive AD group lookup. A profile often has a group name that's off only by
+# spacing ("Perimeter81 Users" vs the real "Perimeter 81 Users") or punctuation. Try the exact identity
+# first; if that misses, search a small candidate set (by the first alphabetic token) and match on a
+# NORMALIZED name (letters+digits only, lowercased). Returns the AD group object on a SINGLE confident
+# match, else $null (0 or ambiguous -> caller keeps the original name + warns). Read-only.
+function Resolve-CtgAdGroup {
+    param([Parameter(Mandatory)][string]$Name, [hashtable]$AdConnection = @{})
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    $exact = Get-ADGroup -Identity $Name -ErrorAction SilentlyContinue @AdConnection
+    if ($exact) { return $exact }
+    $norm = { param($s) ([string]$s -replace '[^A-Za-z0-9]', '').ToLowerInvariant() }
+    $target = & $norm $Name
+    if (-not $target) { return $null }
+    $token = ([regex]::Match($Name, '[A-Za-z]{3,}')).Value   # keep the AD query narrow
+    if (-not $token) { return $null }
+    $cands = @(Get-ADGroup -Filter "Name -like '*$token*'" -ErrorAction SilentlyContinue @AdConnection)
+    $hits = @($cands | Where-Object { (& $norm $_.Name) -eq $target })
+    if (@($hits).Count -eq 1) { return $hits[0] }
+    return $null
+}
+
 # Evaluate a conditional-group rule like "avd == true" against the user object.
 function Test-CtgCondition {
     param([string]$When, $User)
@@ -265,6 +286,23 @@ function Invoke-CtgADOnboarding {
                 if ($msg -match 'already a member') {
                     $actions.Add("already in group: $group")
                     Write-CtgADStep "✓ already in group: $group"
+                } elseif ($msg -match '[Cc]annot find|does not exist|No such object|not.*found|identity') {
+                    # Group name is likely off by spacing/punctuation ("Perimeter81 Users" vs the real
+                    # "Perimeter 81 Users"). Resolve it to a real AD group by a normalized match and retry.
+                    $resolved = Resolve-CtgAdGroup -Name $group -AdConnection $AdConnection
+                    if ($resolved) {
+                        try {
+                            Add-ADGroupMember -Identity $resolved.DistinguishedName -Members $sam -ErrorAction Stop @AdConnection
+                            $actions.Add("added to group: $($resolved.Name) (matched config '$group')")
+                            Write-CtgADStep "✓ group: $($resolved.Name) — matched '$group'"
+                        } catch {
+                            if ($_.Exception.Message -match 'already a member') { $actions.Add("already in group: $($resolved.Name) (matched '$group')") }
+                            else { $actions.Add("WARN could not add to group '$($resolved.Name)' (matched '$group'): $($_.Exception.Message)") ; Write-CtgADStep "✗ group: $($resolved.Name) — $($_.Exception.Message)" }
+                        }
+                    } else {
+                        $actions.Add("WARN group not found in AD: '$group' (no unique space/punctuation match — check the name in the rules editor)")
+                        Write-CtgADStep "✗ group not found: $group"
+                    }
                 } else {
                     $actions.Add("WARN could not add to group ${group}: $msg")
                     Write-CtgADStep "✗ group: $group — $msg"

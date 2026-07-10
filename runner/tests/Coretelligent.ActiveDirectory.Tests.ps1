@@ -18,7 +18,7 @@ BeforeAll {
     function global:Disable-ADAccount { [CmdletBinding()] param($Identity, $Server, $Credential) }
     function global:Move-ADObject { [CmdletBinding()] param($Identity, $TargetPath, $Server, $Credential) }
     function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword, $Server, $Credential) }
-    function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Properties, $Server, $Credential) }
+    function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
     function global:Get-ADComputer { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
     function global:Get-ADDomain { [CmdletBinding()] param($Server, $Credential) }  # Resolve-CtgAdDomain queries this for the real AD domain
 
@@ -80,6 +80,16 @@ Describe 'Invoke-CtgADOnboarding' {
     It 'PAUSES for a decision when the only username is taken by a different person' {
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; GivenName='John'; Surname='Doe'; DisplayName='John Doe' } }
         { Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' }) } | Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+    }
+
+    It 'resolves a group name that is off only by spacing (Perimeter81 Users -> Perimeter 81 Users)' {
+        # UM0029655: the profile said "Perimeter81 Users" but the real AD group is "Perimeter 81 Users".
+        # Exact add fails -> resolve by a space-insensitive match against AD and retry by DN.
+        Mock Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Identity" -eq 'Perimeter81 Users' } -MockWith { throw 'Cannot find an object with identity: Perimeter81 Users' }
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity } -MockWith { $null }                 # exact miss
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter } -MockWith { [pscustomobject]@{ Name='Perimeter 81 Users'; DistinguishedName='CN=Perimeter 81 Users,OU=Groups,DC=x' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='SixOneUsers'; groups=@('Perimeter81 Users') })
+        ($r.Actions -join ' ') | Should -Match "added to group: Perimeter 81 Users \(matched config 'Perimeter81 Users'\)"
     }
 
     It 'adds base groups and conditional groups only when their condition holds' {
