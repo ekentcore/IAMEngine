@@ -186,7 +186,13 @@ function Invoke-CtgDirectorySync {
     # Self-contained for remoting (the target imports ADSync itself); local path calls the cmdlets
     # directly so unit-test mocks of Get-ADSyncScheduler/Start-ADSyncSyncCycle still apply.
     $remoteScript = {
-        Import-Module ADSync -ErrorAction Stop
+        # ADSync isn't on the default module path (it lives under Program Files\Microsoft Azure AD*),
+        # so `Import-Module ADSync` by NAME fails ("Start-ADSyncSyncCycle is not recognized"). Import it
+        # by its full .psd1 path; only if the cmdlets aren't already available.
+        if (-not (Get-Command Start-ADSyncSyncCycle -ErrorAction SilentlyContinue)) {
+            $adm = Get-ChildItem "$env:ProgramFiles\Microsoft Azure AD*" -Recurse -Filter ADSync.psd1 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($adm) { Import-Module $adm.FullName -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+        }
         if ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
         else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
     }
@@ -218,7 +224,13 @@ function Confirm-CtgDirectorySync {
     $syncHost = Get-CtgProp $Config 'host'
     # Return scheduler health, not just in-progress. Enabled = the sync mechanism is working; a cycle
     # in progress right after we triggered one is the expected, healthy state.
-    $remoteScript = { Import-Module ADSync -ErrorAction Stop; $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
+    $remoteScript = {
+        if (-not (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue)) {
+            $adm = Get-ChildItem "$env:ProgramFiles\Microsoft Azure AD*" -Recurse -Filter ADSync.psd1 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($adm) { Import-Module $adm.FullName -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+        }
+        $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress }
+    }
     try {
         $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
         $state =
