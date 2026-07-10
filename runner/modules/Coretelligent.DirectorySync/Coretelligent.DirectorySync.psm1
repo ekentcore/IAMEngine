@@ -24,10 +24,21 @@ function Get-CtgProp {
 # the call sites when it can't be loaded (i.e. Azure AD Connect isn't installed on this host).
 function Initialize-CtgADSync {
     if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
+    # Only attempt a LOCAL load when ADSync is actually installed on this host. Critically, do NOT run
+    # the WinPS-compat load (`-UseWindowsPowerShell`) speculatively: it spins up a loopback-WinRM compat
+    # session, and on pwsh 7 (.NET Core) WinRM init throws "Could not load type 'System.Web...'" (System.Web
+    # isn't in .NET Core) — an error that ESCAPES here and surfaces as the step failure BEFORE the remote
+    # sync's 5.1 fallback can run. On a DC whose Entra Connect lives on a REMOTE host, ADSync isn't
+    # installed locally, so we return $false immediately and take the remote path (which the fallback covers).
+    $adSyncPsd1 = "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1"
+    $localAdSync = [bool](Get-Module -ListAvailable -Name ADSync -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $adSyncPsd1 -ErrorAction SilentlyContinue)
+    if (-not $localAdSync) { return $false }
+    # Installed locally — load it (native first, then the explicit path, then WinPS-compat as a last resort
+    # since that's the one that can drag in the WinRM/System.Web path).
     $attempts = @(
         { Import-Module ADSync -ErrorAction Stop },
-        { Import-Module ADSync -UseWindowsPowerShell -ErrorAction Stop },
-        { Import-Module "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1" -ErrorAction Stop }
+        { Import-Module $adSyncPsd1 -ErrorAction Stop },
+        { Import-Module ADSync -UseWindowsPowerShell -ErrorAction Stop }
     )
     foreach ($a in $attempts) {
         try { & $a } catch { }
