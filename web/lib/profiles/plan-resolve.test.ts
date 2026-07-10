@@ -147,3 +147,28 @@ test("entra-only client still runs its own EXO mirror (no m365 to defer to)", ()
   assert.equal(entra.mirrorFromUser, "Rodrigo Rapussi");
   assert.equal(entra.skipExoFinish, undefined);
 });
+
+test("a matched location contributes its groups/OU/attributes to the directory jobs (B)", () => {
+  const locClient = {
+    personas: null, globals: null,
+    locations: {
+      FalconBOS: { city: "Boston", groups: ["FalconBOS", "FIA-Boston-LM"], ou: "OU=Boston,DC=x", attributes: { physicalDeliveryOfficeName: "Boston" } },
+      FalconNYC: { city: "New York", groups: ["FalconNYC"] },
+    },
+  };
+  const p = { firstName: "A", lastName: "B", officeLocation: "FalconBOS", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const planned = [job("active-directory", {}), job("m365", {}), job("servicenow", {})];
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", planned);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  const m365 = resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>;
+  const sn = resolved.find((j) => j.systemKey === "servicenow")!.config as Record<string, unknown>;
+  // Boston hire → FalconBOS + the printer group, unioned into every directory system.
+  assert.deepEqual(ad.groups, ["FalconBOS", "FIA-Boston-LM"]);
+  assert.deepEqual(m365.groups, ["FalconBOS", "FIA-Boston-LM"]);
+  assert.equal(ad.ou, "OU=Boston,DC=x"); // OU only on AD
+  assert.equal((ad.attributes as Record<string, string>).physicalDeliveryOfficeName, "Boston");
+  assert.ok(!("groups" in sn)); // non-directory system untouched
+  // a different office resolves to its own groups
+  const nyc = resolvePlannedConfigs(locClient, { ...p, officeLocation: "FalconNYC" }, "onboard", planned);
+  assert.deepEqual((nyc.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["FalconNYC"]);
+});

@@ -56,7 +56,7 @@ export function resolvePlannedConfigs(
 
   // One context for everything below (persona select + condition eval). Safe for v2.0 clients too —
   // selectPersona just returns null with no personas.
-  const { context, persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
+  const { context, persona, location } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
 
   // v2.1 resolution (persona/globals → flattened config) only when the client has those blocks.
   const resolved = (!personas && !globals)
@@ -74,9 +74,33 @@ export function resolvePlannedConfigs(
         ),
       }));
 
-  const withMirror = !mirror
+  // Location-driven targets: a matched location can carry groups (+ an OU / address attributes) that
+  // apply to the directory systems — e.g. a Boston hire gets FalconBOS + the floor-printer groups.
+  // Groups are UNIONED into each directory job (the runner adds the ones each system actually has); an
+  // OU is a default for AD only (a persona OU already set wins); attributes merge with the location
+  // winning (they're office-specific, e.g. physicalDeliveryOfficeName / streetAddress).
+  const locGroups = Array.isArray(location?.groups) ? (location!.groups as string[]).filter((g) => typeof g === "string" && g.trim()) : [];
+  const locOu = typeof location?.ou === "string" ? location.ou : null;
+  const locAttrs = location?.attributes && typeof location.attributes === "object" ? location.attributes as Record<string, unknown> : null;
+  const withLoc = (locGroups.length === 0 && !locOu && !locAttrs)
     ? resolved
-    : resolved.map((j) =>
+    : resolved.map((j) => {
+        if (!DIRECTORY_SYSTEMS.has(j.systemKey)) return j;
+        const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
+        if (locGroups.length) {
+          const base = Array.isArray(cfg.groups) ? [...(cfg.groups as unknown[])] : [];
+          const seen = new Set(base.map((g) => String(g).toLowerCase()));
+          for (const g of locGroups) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
+          cfg.groups = base;
+        }
+        if (j.systemKey === "active-directory" && locOu && !cfg.ou) cfg.ou = locOu;
+        if (locAttrs && Object.keys(locAttrs).length) cfg.attributes = { ...((cfg.attributes as Record<string, unknown> | undefined) ?? {}), ...locAttrs };
+        return { ...j, config: cfg };
+      });
+
+  const withMirror = !mirror
+    ? withLoc
+    : withLoc.map((j) =>
         DIRECTORY_SYSTEMS.has(j.systemKey)
           ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
           : j

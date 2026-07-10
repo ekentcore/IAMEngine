@@ -5,7 +5,13 @@ import { evalCondition, type PlanContext } from "./conditions";
 
 type PersonaDef = { match?: string; titles?: string[]; systems?: Record<string, unknown> };
 type Personas = Record<string, PersonaDef>;
-type LocationDef = { timezone?: string; country?: Record<string, unknown>; city?: string; state?: string; zip?: string; address?: string };
+// A location can also carry AD/Entra TARGETS applied when a hire matches it (e.g. Boston → group
+// FalconBOS + the floor-printer groups). All optional and per-client: groups, an OU placement, address
+// attributes, an AD site. Resolved in plan-resolve, not here.
+export type LocationDef = {
+  timezone?: string; country?: Record<string, unknown>; city?: string; state?: string; zip?: string; address?: string;
+  groups?: string[]; ou?: string; attributes?: Record<string, unknown>; site?: string;
+};
 type Locations = Record<string, LocationDef>;
 
 export type SelectedPersona = { name: string; def: PersonaDef };
@@ -40,7 +46,7 @@ function matchLocation(office: string | undefined, locations: Locations | null |
 export function buildPlanContext(
   payload: Record<string, unknown>,
   profile: { personas?: Personas | null; locations?: Locations | null }
-): { context: PlanContext; persona: SelectedPersona | null } {
+): { context: PlanContext; persona: SelectedPersona | null; location: LocationDef | null } {
   const s = (k: string): string | undefined => (payload[k] == null || payload[k] === "" ? undefined : String(payload[k]));
   // The intake emits `roles` (a list); fall back to `role`/`department` (Coretelligent uses dept).
   const roles = payload.roles;
@@ -74,5 +80,5 @@ export function buildPlanContext(
   // canonical-case the role to the matched persona key
   if (persona && context.role && typeof context.role === "object") (context.role as { name: string }).name = persona.name;
 
-  return { context, persona };
+  return { context, persona, location: loc?.data ?? null };
 }
