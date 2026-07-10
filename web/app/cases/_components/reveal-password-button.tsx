@@ -4,6 +4,7 @@
 // is wiped server-side on reveal, so this shows it in a popup with a save-now warning and won't return
 // it again. Only rendered when a password is pending.
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
 export function RevealPasswordButton({ caseId }: { caseId: string }) {
@@ -24,7 +25,9 @@ export function RevealPasswordButton({ caseId }: { caseId: string }) {
   }
 
   if (pw) {
-    return (
+    // Portal to <body>: rendered inline, the fixed overlay can be positioned by a transformed/contained
+    // ancestor and land far down the page instead of centered in the viewport (INC0855142 follow-up).
+    return createPortal(
       <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "grid", placeItems: "center", zIndex: 80 }}
         onClick={(e) => { if (e.target === e.currentTarget) { setPw(null); router.refresh(); } }}>
         <div style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.3rem", maxWidth: 420, boxShadow: "var(--shadow-2, 0 10px 40px rgba(0,0,0,.3))" }}>
@@ -38,7 +41,8 @@ export function RevealPasswordButton({ caseId }: { caseId: string }) {
             <button className="primary" onClick={() => { setPw(null); router.refresh(); }}>I saved it</button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
