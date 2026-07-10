@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import type { ScanResult } from "@/lib/cases/sn-completion";
 
 type ClientOpt = { slug: string; name: string };
 type PlanFields = { personas: { name: string; titles: string[] }[]; locations: string[]; hasPlanConfig: boolean };
@@ -20,9 +21,6 @@ export function CasesToolbar({ clients, snScan = false }: { clients: ClientOpt[]
   );
 }
 
-type ScanHit = { id: string; caseNumber: string; subject: string | null; clientName: string; status: string; snState: string };
-type ScanResult = { scanned: number; resolved: ScanHit[]; cancelled: ScanHit[]; errors: { caseNumber: string; error: string }[] };
-
 // Scan every open case's ServiceNow ticket; tickets that are resolved/closed come back in a confirm
 // dialog where the operator picks which cases to mark completed (all steps → succeeded, undoable
 // per step on the case page; the case moves to the Completed table).
@@ -34,10 +32,10 @@ function ScanServiceNowButton() {
   const [error, setError] = useState<string | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [failures, setFailures] = useState<{ caseNumber: string; error: string }[]>([]);
+  const [failures, setFailures] = useState<{ id: string; caseNumber: string; error: string }[]>([]);
 
   async function scanNow() {
-    setBusy(true); setError(null); setScan(null); setFailures([]);
+    setBusy(true); setError(null); setScan(null); setFailures([]); setChecked(new Set());
     ref.current?.showModal();
     try {
       const r = await fetch("/api/cases/scan-servicenow", { method: "POST" });
@@ -64,7 +62,7 @@ function ScanServiceNowButton() {
     if (!scan) return;
     setMarking(true); setFailures([]);
     const picked = scan.resolved.filter((c) => checked.has(c.id));
-    const failed: { caseNumber: string; error: string }[] = [];
+    const failed: { id: string; caseNumber: string; error: string }[] = [];
     for (const c of picked) {
       try {
         const r = await fetch(`/api/cases/${c.id}/complete`, {
@@ -74,18 +72,18 @@ function ScanServiceNowButton() {
         });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
-          failed.push({ caseNumber: c.caseNumber, error: d.error ?? `failed (${r.status})` });
+          failed.push({ id: c.id, caseNumber: c.caseNumber, error: d.error ?? `failed (${r.status})` });
         }
       } catch (e) {
-        failed.push({ caseNumber: c.caseNumber, error: (e as Error).message });
+        failed.push({ id: c.id, caseNumber: c.caseNumber, error: (e as Error).message });
       }
     }
     setMarking(false);
     if (failed.length) {
       // Drop the ones that DID complete from the list so a retry only re-sends the failures.
       setFailures(failed);
-      const failedNumbers = new Set(failed.map((f) => f.caseNumber));
-      setScan((p) => (p ? { ...p, resolved: p.resolved.filter((c) => failedNumbers.has(c.caseNumber)) } : p));
+      const failedIds = new Set(failed.map((f) => f.id));
+      setScan((p) => (p ? { ...p, resolved: p.resolved.filter((c) => failedIds.has(c.id)) } : p));
       router.refresh();
     } else {
       ref.current?.close();
