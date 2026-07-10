@@ -735,4 +735,69 @@ function Confirm-CtgADEmailWriteback {
     [pscustomobject]@{ ok = $pass; checks = @(@{ name = "AD mail = $email"; expected = $email; actual = $actual; pass = $pass }) }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+# ── Hybrid identity-link CHECK (Design D, DETECT-ONLY) ────────────────────────────────────────────
+# Verify that the on-prem AD object will LINK to its Entra object rather than spawn a duplicate: the
+# Entra source anchor (immutableId) must equal base64(objectGUID) OR base64(mS-DS-ConsistencyGuid).
+# The app injects the Entra object's { immutableId, syncEnabled, userId } (from the m365 result) into
+# the payload as `cloudObject`. We only READ + FLAG here — no write (that's a later level). Onboard-only.
+function Get-CtgAdCaseUser {
+    param([pscustomobject]$User, [string[]]$Properties, [hashtable]$AdConnection = @{})
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
+    $upn = [string](Get-CtgProp $User 'UserPrincipalName')
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    $u = $null
+    if (-not [string]::IsNullOrWhiteSpace($sam)) { $u = Get-ADUser -Identity $sam -Properties $Properties -ErrorAction SilentlyContinue @AdConnection }
+    if (-not $u -and $upn) { $u = @(Get-ADUser -Filter "UserPrincipalName -eq '$($upn -replace "'", "''")'" -Properties $Properties -ErrorAction SilentlyContinue @AdConnection)[0] }
+    if (-not $u -and $displayName) {
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$($displayName -replace "'", "''")'" -Properties $Properties -ErrorAction SilentlyContinue @AdConnection)
+        if ($byName.Count -eq 1) { $u = $byName[0] }
+    }
+    return $u
+}
+
+function Invoke-CtgADConsistencyCheck {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $u = Get-CtgAdCaseUser -User $User -Properties @('objectGUID', 'mS-DS-ConsistencyGuid') -AdConnection $AdConnection
+    if (-not $u) {
+        return [pscustomobject]@{ System = 'ad-consistency-check'; Status = 'ok'; Actions = @('on-prem user not found — nothing to check') }
+    }
+    # Both possible source anchors, as the base64 immutableId form AAD Connect uses.
+    $anchors = [System.Collections.Generic.List[string]]::new()
+    $og = Get-CtgProp $u 'objectGUID'
+    if ($og) { try { $anchors.Add([System.Convert]::ToBase64String(([guid]$og).ToByteArray())) } catch {} }
+    $cg = Get-CtgProp $u 'mS-DS-ConsistencyGuid'
+    if ($cg) { try { $anchors.Add([System.Convert]::ToBase64String([byte[]]$cg)) } catch {} }
+
+    $cloud = Get-CtgProp $User 'cloudObject'
+    $immutableId = [string](Get-CtgProp $cloud 'immutableId')
+    $syncEnabled = Get-CtgProp $cloud 'syncEnabled'
+    $userId = [string](Get-CtgProp $cloud 'userId')
+
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($userId)) {
+        $actions.Add('no matching Entra object reported — a fresh sync will create + anchor it (ok)')
+    }
+    elseif ($syncEnabled -eq $false) {
+        # A cloud-ONLY object exists (not synced from AD) — the on-prem user will NOT hard-match it and
+        # AAD Connect will create a second object. This is the duplicate risk the operator must resolve.
+        $actions.Add("WARN a CLOUD-ONLY Entra object exists for this user (id $userId) — the on-prem account won't link to it; AAD Connect will create a DUPLICATE. Hard-match it (set mS-DS-ConsistencyGuid to the cloud immutableId) or soft-match by primary SMTP before syncing.")
+    }
+    elseif ([string]::IsNullOrWhiteSpace($immutableId)) {
+        $actions.Add("Entra object $userId is sync-enabled but reported no immutableId — can't confirm the anchor from here; treat as linked")
+    }
+    elseif ($anchors -contains $immutableId) {
+        $actions.Add("linked: Entra immutableId matches the on-prem source anchor (objectGUID / mS-DS-ConsistencyGuid)")
+    }
+    else {
+        $actions.Add("WARN Entra immutableId ($immutableId) does NOT match the on-prem source anchor ($($anchors -join ' / ')) — the objects may be UNLINKED (possible duplicate). Verify the AAD Connect source anchor.")
+    }
+
+    $warned = @($actions | Where-Object { $_ -like 'WARN*' }).Count
+    [pscustomobject]@{ System = 'ad-consistency-check'; Status = 'ok'; Sam = [string](Get-CtgProp $u 'SamAccountName'); Flagged = ($warned -gt 0); Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD

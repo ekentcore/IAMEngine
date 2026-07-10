@@ -676,6 +676,11 @@ $DISPATCH = @{
         Onboard  = { param($job, $creds) Invoke-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
         Validate = { param($job, $creds) Confirm-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
     }
+    # Hybrid identity-link check (onboard only, DETECT-ONLY): does the on-prem object's source anchor
+    # match the Entra immutableId, or would it duplicate? The app injects the Entra object's anchor data.
+    'ad-consistency-check' = @{
+        Onboard = { param($job, $creds) Invoke-CtgADConsistencyCheck -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in

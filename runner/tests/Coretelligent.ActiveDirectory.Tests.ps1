@@ -468,3 +468,40 @@ Describe 'Invoke-CtgADEmailWriteback' {
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
     }
 }
+
+Describe 'Invoke-CtgADConsistencyCheck' {
+    BeforeEach {
+        $script:guid = [guid]'00112233-4455-6677-8899-aabbccddeeff'
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            [pscustomobject]@{ SamAccountName = 'jdoe'; objectGUID = $script:guid; 'mS-DS-ConsistencyGuid' = $null }
+        }
+    }
+
+    It 'passes (linked) when the Entra immutableId matches the objectGUID source anchor' {
+        $b64 = [Convert]::ToBase64String($script:guid.ToByteArray())
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $b64; syncEnabled = $true; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeFalse
+        ($r.Actions -join '|') | Should -Match 'linked'
+    }
+
+    It 'flags a CLOUD-ONLY Entra object (syncEnabled false) as a duplicate risk' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $false; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeTrue
+        ($r.Actions -join '|') | Should -Match 'CLOUD-ONLY'
+    }
+
+    It 'flags a mismatched immutableId (possible duplicate / unlinked)' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = 'AAAAAAAAAAAAAAAAAAAAAA=='; syncEnabled = $true; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeTrue
+        ($r.Actions -join '|') | Should -Match 'does NOT match'
+    }
+
+    It 'is clean when no Entra object was reported (fresh sync)' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $null; userId = $null } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeFalse
+    }
+}

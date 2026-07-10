@@ -113,6 +113,27 @@ export function planCase(
       config: null,
     } as ClientSystem);
   }
+  // Synthetic ONBOARD step: hybrid identity-link CHECK. For every AD + cloud client, after the cloud
+  // account resolves, verify the on-prem object's source anchor (mS-DS-ConsistencyGuid / objectGUID)
+  // matches the Entra immutableId — so a rehire / pre-existing cloud account LINKS instead of spawning
+  // a duplicate. Detect + flag only (no auto-write). Runs on the client agent; the app injects the
+  // Entra object's id/immutableId/sync state (from the m365 result) at dispatch time.
+  if (action === "onboard" && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("entra")) && !activeKeys.has("ad-consistency-check")) {
+    const base = active.find((s) => s.systemKey === "active-directory")!;
+    active.push({
+      ...base,
+      id: `${base.clientId}:ad-consistency-check`,
+      systemKey: "ad-consistency-check",
+      mode: "api",
+      onboardWhen: "always",
+      offboardWhen: "never",
+      dependsOn: ["m365", "entra", "ad-email-writeback"], // filtered to present systems by declaredOf below
+      requiresApproval: false,
+      captureEvidence: false,
+      secretNames: ["ad-dc"],
+      config: null,
+    } as ClientSystem);
+  }
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
   // Closing steps must run AFTER everything else, whatever the declared deps say — under DAG
   // gating an under-declared dependsOn would otherwise let case-resolution dispatch first.

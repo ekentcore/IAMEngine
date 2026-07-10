@@ -461,11 +461,36 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // AD consistency check (Design D, detect-only): inject the Entra object's anchor data (from the
+      // m365 result) so the on-prem agent can compare it to the AD source anchor without cloud creds.
+      const checkCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-consistency-check").map((j) => j.caseRequestId))];
+      const cloudByCase = new Map<string, { immutableId: string | null; syncEnabled: boolean | null; userId: string | null }>();
+      if (checkCaseIds.length > 0) {
+        const m365s = await db.job.findMany({
+          where: { caseRequestId: { in: checkCaseIds }, systemKey: { in: ["m365", "entra"] }, status: "succeeded" },
+          select: { caseRequestId: true, result: true },
+        });
+        for (const s of m365s) {
+          const res = (s.result ?? {}) as Record<string, unknown>;
+          const pick = (a: string, b: string) => res[a] ?? res[b];
+          const immutableId = pick("OnPremImmutableId", "onPremImmutableId");
+          const syncEnabled = pick("OnPremSyncEnabled", "onPremSyncEnabled");
+          const userId = pick("UserId", "userId");
+          cloudByCase.set(s.caseRequestId, {
+            immutableId: typeof immutableId === "string" ? immutableId : null,
+            syncEnabled: typeof syncEnabled === "boolean" ? syncEnabled : null,
+            userId: typeof userId === "string" ? userId : null,
+          });
+        }
+      }
+
       return claimed.map((j) => {
         const r = req(j);
         const payload =
           j.systemKey === "ad-email-writeback"
             ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
+            : j.systemKey === "ad-consistency-check"
+            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), cloudObject: cloudByCase.get(j.caseRequestId) ?? { immutableId: null, syncEnabled: null, userId: null } }
             : j.case.payload;
         return {
           id: j.id,

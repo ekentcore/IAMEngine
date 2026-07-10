@@ -847,7 +847,17 @@ function Invoke-CtgM365Onboarding {
     # Read from Graph; fall back to the UPN (== primary SMTP for these tenants) so the write-back always
     # has an address even if Graph hasn't surfaced `mail` yet (sync lag on a fresh hybrid account).
     $primarySmtp = $null
-    try { $primarySmtp = [string]((Get-MgUser -UserId $userId -Property Mail -ErrorAction SilentlyContinue).Mail) } catch { $primarySmtp = $null }
+    # onPremisesSyncEnabled + onPremisesImmutableId feed the ad-consistency-check step (does the on-prem
+    # object link to this Entra object, or would it duplicate?). One Graph read for all three fields.
+    $onPremImmutableId = $null; $onPremSyncEnabled = $null
+    try {
+        $mgu = Get-MgUser -UserId $userId -Property Mail, OnPremisesSyncEnabled, OnPremisesImmutableId -ErrorAction SilentlyContinue
+        if ($mgu) {
+            $primarySmtp = [string]$mgu.Mail
+            $onPremImmutableId = [string]$mgu.OnPremisesImmutableId
+            if ($null -ne $mgu.OnPremisesSyncEnabled) { $onPremSyncEnabled = [bool]$mgu.OnPremisesSyncEnabled }
+        }
+    } catch { $primarySmtp = $null }
     if ([string]::IsNullOrWhiteSpace($primarySmtp)) { $primarySmtp = $upn }
     [pscustomobject]@{
         System  = 'm365'
@@ -855,6 +865,8 @@ function Invoke-CtgM365Onboarding {
         UserId  = $userId
         Upn     = $upn
         PrimarySmtpAddress = $primarySmtp
+        OnPremImmutableId = $onPremImmutableId  # Entra source anchor (base64) — for the consistency check
+        OnPremSyncEnabled = $onPremSyncEnabled  # $true synced from AD, $false cloud-only (duplicate risk)
         LicenseFallbackAdGroup = $licenseFallbackAdGroup  # AD group the runner must add (E3 fallback), or $null
         # Distribution / mail-enabled groups Graph couldn't write — the runner finishes these over
         # Exchange Online using the SAME m365-admin app, so no separate Exchange system is needed.
