@@ -673,6 +673,31 @@ function Invoke-CtgM365Onboarding {
         }
     }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
+    # Batch pass: assign ALL missing licenses in ONE Set-MgUserLicense call so INTERDEPENDENT service
+    # plans across licenses are enabled together. Assigning one-by-one fails Graph's dependency check —
+    # e.g. Microsoft Defender for Office 365 (Plan 2)'s plan depends on Exchange Online (which lives in
+    # E3), and Teams Phone depends on Teams; added separately, the dependency isn't yet satisfied. On ANY
+    # batch failure we fall through to the per-license loop below (which keeps per-license seat/usage-
+    # location diagnostics). Only batch when 2+ licenses are new (a lone license has no cross-dependency).
+    $newSku = [ordered]@{}
+    foreach ($lic in $licenseSpecs) {
+        $sk = Resolve-CtgSkuId $lic
+        $nm = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
+        if ($sk -and ($assigned -notcontains $sk) -and -not $newSku.Contains($sk)) { $newSku[$sk] = $nm }
+    }
+    if (@($newSku.Keys).Count -gt 1 -and $PSCmdlet.ShouldProcess($upn, "Assign licenses together: $(@($newSku.Values) -join ', ')")) {
+        $addAll = @(@($newSku.Keys) | ForEach-Object { @{ SkuId = $_ } })
+        Write-CtgM365Step "assigning licenses together: $(@($newSku.Values) -join ', ')"
+        try {
+            Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses $addAll -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+            foreach ($nm in @($newSku.Values)) { $actions.Add("assigned license: $nm") }
+            $assigned = @($assigned) + @($newSku.Keys)  # so the per-license loop sees them as present
+            Write-CtgM365Step "✓ assigned licenses together: $(@($newSku.Values) -join ', ')"
+        } catch {
+            $actions.Add("batch license assign failed ($($_.Exception.Message)) — retrying per-license")
+            Write-CtgM365Step "batch assign failed — retrying per-license"
+        }
+    }
     foreach ($lic in $licenseSpecs) {
         $name  = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
         $skuId = Resolve-CtgSkuId $lic

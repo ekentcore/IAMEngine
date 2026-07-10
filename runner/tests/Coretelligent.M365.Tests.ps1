@@ -162,6 +162,20 @@ Describe 'Invoke-CtgM365Onboarding' {
         ($r.Actions -join ' ') | Should -Match 'set usageLocation: US'
     }
 
+    It 'assigns MULTIPLE missing licenses in ONE call (interdependent service plans)' {
+        # UM0029655: Defender for O365 P2's plan depends on Exchange Online (in E3); assigned one-by-one
+        # Graph rejects it ("service plan ... depends on ..."). Batch all new licenses into a single
+        # Set-MgUserLicense so co-dependent plans enable together.
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }  # none assigned yet
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $config = [pscustomobject]@{ licenses = @('Microsoft 365 E3', 'Microsoft Entra ID P2') }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'
+        # ONE call carrying BOTH SkuIds — not two separate per-license calls.
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { @($AddLicenses).Count -eq 2 }
+    }
+
     It 'adds the user to Config.groups when not already a member' {
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
         $config = [pscustomobject]@{ licenses = @(); groups = @('Back Office Users') }
