@@ -367,14 +367,27 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               <td>
                 <StatusBadge c={c} />
                 {c.lastActionLabel && (
-                  <div className="note" style={{ fontSize: 11, marginTop: 2, whiteSpace: "nowrap" }} title="Most recent action taken on this case">
-                    {c.lastActionLabel}{c.lastActionBy ? `: ${c.lastActionBy}` : ""}
+                  <div className="note" style={{ fontSize: 11, marginTop: 2 }} title="Most recent action taken on this case">
+                    {/* email on its OWN line — "Paused: long.email@core.tech" on one line was forcing the column wide */}
+                    <div style={{ whiteSpace: "nowrap" }}>{c.lastActionLabel}{c.lastActionBy ? ":" : ""}</div>
+                    {c.lastActionBy && <div style={{ opacity: 0.85 }}>{c.lastActionBy}</div>}
                   </div>
                 )}
               </td>
-              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date/time" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
                 {c.effectiveDate
-                  ? formatDateOnly(c.effectiveDate)
+                  ? (() => {
+                      const d = new Date(c.effectiveDate!);
+                      // Offboards are scheduled for a specific time — show it below the date. Onboards are
+                      // date-only (start date). Skip a meaningless midnight (date-only value).
+                      const showTime = c.action === "offboard" && (d.getHours() !== 0 || d.getMinutes() !== 0);
+                      return (
+                        <>
+                          <div>{formatDateOnly(c.effectiveDate!)}</div>
+                          {showTime && <div className="note" style={{ fontSize: 11 }}>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>}
+                        </>
+                      );
+                    })()
                   : c.immediate
                     ? <span className="badge" style={{ color: "var(--warn-fg)", borderColor: "var(--warn-bg)", background: "var(--warn-bg)" }}>Immediate</span>
                     : "—"}

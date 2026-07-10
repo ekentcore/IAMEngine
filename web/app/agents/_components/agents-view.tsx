@@ -156,6 +156,9 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [troubleshootAgent, setTroubleshootAgent] = useState<AgentVM | null>(null);
   const troubleshootRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (troubleshootAgent) troubleshootRef.current?.showModal(); else troubleshootRef.current?.close(); }, [troubleshootAgent]);
+  const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
+  const localRestartRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -406,6 +409,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
                     <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
                     <button onClick={() => setTroubleshootAgent(a)} title="Get a diagnostic command for a runner that never comes online (pre-build / update stuck on queued)">Troubleshoot</button>
+                    <button onClick={() => setLocalRestartAgent(a)} title="Get the command to restart this runner ON the device itself — when you can't use the app's Restart">Local Restart</button>
                     {a.enabled && !upToDate && (
                       <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)">
                         {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
@@ -630,6 +634,49 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
             </div>
           </div>
         )}
+      </dialog>
+
+      {/* Per-agent LOCAL restart: the command to restart the runner process ON the device itself — for
+          when the app's Restart (delivered via heartbeat) can't be used because the agent isn't
+          heartbeating. How it's supervised varies by OS, so show each and run the matching block. */}
+      <dialog ref={localRestartRef} onClose={() => setLocalRestartAgent(null)} style={{ maxWidth: 680 }}>
+        {localRestartAgent && (() => {
+          const win = "Stop-ScheduledTask -TaskName iam-runner; Start-ScheduledTask -TaskName iam-runner";
+          const mac = "launchctl kickstart -k gui/$(id -u)/com.coretelligent.iamrunner";
+          const linux = "sudo systemctl restart iam-runner";
+          const pre = { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" as const, fontSize: 12, margin: 0 };
+          const hdr = { margin: "0.6rem 0 0.15rem" };
+          const central = localRestartAgent.scope === "central";
+          return (
+            <div>
+              <div className="row-between">
+                <h2>Local restart: {localRestartAgent.name}</h2>
+                <button onClick={() => setLocalRestartAgent(null)} aria-label="Close">×</button>
+              </div>
+              <p className="note">
+                Restart the runner <b>on the device itself</b> — use this when the app&apos;s <b>Restart</b> can&apos;t reach it
+                (it isn&apos;t heartbeating). Run the block that matches how the host supervises the runner, in an
+                <b> elevated</b> shell on the runner host.{" "}
+                {central ? "This is a central runner — usually macOS (launchd) or Linux (systemd)." : "This is a client-network runner — usually Windows (Scheduled Task)."}
+              </p>
+              <p className="note" style={hdr}><b>Windows</b> (Scheduled Task):</p>
+              <pre style={pre}>{win}</pre>
+              <p className="note" style={hdr}><b>macOS</b> (launchd — adjust the label if different: <code>launchctl list | grep -i iam</code>):</p>
+              <pre style={pre}>{mac}</pre>
+              <p className="note" style={hdr}><b>Linux</b> (systemd):</p>
+              <pre style={pre}>{linux}</pre>
+              <p className="note" style={{ color: "var(--muted)", marginTop: "0.5rem" }}>
+                Last resort on any OS: kill the runner process (<code>pwsh</code> running <code>Start-IamRunner</code>) and
+                its supervisor relaunches it. A local restart re-runs the code already on disk — to get new code, use <b>Update</b>.
+              </p>
+              <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+                <button onClick={() => navigator.clipboard?.writeText(central ? mac : win)}>Copy {central ? "macOS" : "Windows"} command</button>
+                <span className="grow" />
+                <button className="primary" onClick={() => setLocalRestartAgent(null)}>Done</button>
+              </div>
+            </div>
+          );
+        })()}
       </dialog>
     </>
   );
