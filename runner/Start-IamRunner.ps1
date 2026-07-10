@@ -686,6 +686,28 @@ $DISPATCH = @{
     'ad-hard-match' = @{
         Onboard = { param($job, $creds) Invoke-CtgADHardMatch -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
     }
+    # Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
+    # never planned. The app generates the value, injects it as config.newPassword at claim, and
+    # reveals it once operator-side — the executors never return it. Onboard/Offboard point at the
+    # same executor because the wire `action` is the CASE's, and a reset can ride either kind of case.
+    'ad-password-reset' = @{
+        Onboard  = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Offboard = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
+    'm365-password-reset' = @{
+        Connect  = { param($job, $creds)
+            $tenant = Get-CtgTenantDomain $job $creds
+            Set-CtgPhase $job.id "connecting to m365 (tenant $tenant, app $($creds['m365-admin'].Credential.UserName))"
+            Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
+        }
+        Onboard  = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
+    }
+    'google-password-reset' = @{
+        Connect  = { param($job, $creds) Use-CtgGoogleSecret -Job $job -Creds $creds }
+        Onboard  = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
+        Offboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
+    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in
@@ -1228,8 +1250,13 @@ function Protect-CtgSecretsInText {
     # app — Job.error is persisted and shown in the run report + ServiceNow work note + audit, and a
     # failing API call can echo a key/token/password in its exception. Only values of secret-named
     # fields are scrubbed, so usernames/servers stay visible for diagnosis.
-    param([string]$Text, [hashtable]$Creds)
+    # -ExtraValues: additional plaintexts to scrub that aren't brokered fields — e.g. the app-injected
+    # config.newPassword/initialPassword of a password-reset/onboard job echoed by a provider error.
+    param([string]$Text, [hashtable]$Creds, [string[]]$ExtraValues = @())
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    foreach ($v in $ExtraValues) {
+        if ($v -and $v.Length -ge 4 -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+    }
     if ($Creds) {
         foreach ($c in $Creds.Values) {
             if (-not $c -or -not $c.Fields) { continue }
@@ -1900,7 +1927,7 @@ while ($true) {
                 # so the operator sees WHAT broke, not just the bare provider message.
                 $where = if ($script:Phase) { " while $($script:Phase)" } else { "" }
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
-                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
+                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds -ExtraValues @([string](Get-CtgProp $job.config 'newPassword'), [string](Get-CtgProp $job.config 'initialPassword'))
                 Write-Warning "job $($job.id) failed: $err"
                 Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
                 $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
