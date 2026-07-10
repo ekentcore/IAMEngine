@@ -473,6 +473,23 @@ model User {
   clientAccess     UserClientAccess[]
 }
 
+// A verified SSO sign-in from someone who ISN'T a provisioned user — captured (instead of a silent
+// deny) so an admin can approve them from /users. Deny-by-default stays intact: nothing is granted
+// until an admin approves, choosing the role (default auditor) and client scope (default: none).
+model AccessRequest {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String? // display name from the SSO identity
+  status           String    @default("pending") // pending | approved | denied
+  requestCount     Int       @default(1) // how many times they've tried to sign in
+  firstRequestedAt DateTime  @default(now())
+  lastRequestedAt  DateTime  @default(now())
+  reviewedBy       String? // operator email who approved/denied
+  reviewedAt       DateTime?
+
+  @@index([status, lastRequestedAt])
+}
+
 // Per-user client visibility. `scope` rows are the only/exclude list; `grant` rows unlock a
 // restricted client for this user. Enforced server-side at every read path via lib/auth/client-scope.
 model UserClientAccess {

@@ -132,6 +132,54 @@ export async function setUserClientAccess(
   }
 }
 
+// Approve a pending access request: create the (SSO) user with the chosen role + client scope, then
+// mark the request approved. Deny-by-default is preserved — nothing was granted until this call.
+export async function approveAccessRequest(id: string, input: { role: string; mode: string; scopeClientIds?: string[] }): Promise<Result> {
+  try {
+    const me = await requirePermission("user.manage");
+    if (!isRole(input.role)) return { ok: false, error: "invalid role" };
+    if (!isAccessMode(input.mode)) return { ok: false, error: "invalid access mode" };
+    if (input.role === "super_admin" && me.role !== "super_admin") return { ok: false, error: "only a super admin can grant the super admin role" };
+    const reqRow = await db.accessRequest.findUnique({ where: { id } });
+    if (!reqRow) return { ok: false, error: "request not found" };
+    const email = reqRow.email.trim().toLowerCase();
+    if (await db.user.findUnique({ where: { email } })) {
+      await db.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
+      return { ok: false, error: "a user with that email already exists — the request was marked approved" };
+    }
+    // Only/exclude modes carry a scope allowlist; "all" ignores it. Keep only real client ids.
+    const wantScope = input.mode === "all" ? [] : uniq(input.scopeClientIds);
+    const real = wantScope.length ? new Set((await db.client.findMany({ where: { id: { in: wantScope } }, select: { id: true } })).map((c) => c.id)) : new Set<string>();
+    const scopeIds = wantScope.filter((x) => real.has(x));
+    const user = await db.user.create({
+      data: { email, name: reqRow.name?.trim() || null, role: input.role as Role, authType: "sso", clientAccessMode: input.mode as ClientAccessMode },
+    });
+    if (scopeIds.length) {
+      await db.userClientAccess.createMany({ data: scopeIds.map((clientId) => ({ userId: user.id, clientId, kind: "scope" as const })) });
+    }
+    await db.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
+    await recordAudit("access_request.approve", { user: me, detail: { email, role: input.role, mode: input.mode, scope: scopeIds.length } });
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function denyAccessRequest(id: string): Promise<Result> {
+  try {
+    const me = await requirePermission("user.manage");
+    const reqRow = await db.accessRequest.findUnique({ where: { id }, select: { email: true } });
+    if (!reqRow) return { ok: false, error: "request not found" };
+    await db.accessRequest.update({ where: { id }, data: { status: "denied", reviewedBy: me.email, reviewedAt: new Date() } });
+    await recordAudit("access_request.deny", { user: me, detail: { email: reqRow.email } });
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 function uniq(xs?: string[]): string[] {
   return Array.isArray(xs) ? [...new Set(xs.filter((x) => typeof x === "string" && x))] : [];
 }
