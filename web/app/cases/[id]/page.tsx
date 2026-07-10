@@ -29,6 +29,35 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   return { title: c?.serviceNowCaseNumber ?? c?.subject ?? "Case" };
 }
 
+// One intake value cell. Scalars render inline; arrays comma-join; a NESTED OBJECT (e.g. the derived
+// `templateFields` email-template map, or an array of objects) is rendered as readable "key: value"
+// lines instead of the old `String(v)` fallback that produced a literal "[object Object]".
+function fmtScalar(x: unknown): string {
+  if (x === null || x === undefined || x === "") return "—";
+  if (typeof x === "boolean") return x ? "yes" : "no";
+  return String(x);
+}
+function IntakeValue({ v }: { v: unknown }) {
+  if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return <span className="muted">—</span>;
+  if (typeof v === "boolean") return <>{v ? "yes" : "no"}</>;
+  if (Array.isArray(v)) {
+    if (v.some((x) => x && typeof x === "object")) {
+      return <>{v.map((x, i) => <div key={i}>{x && typeof x === "object" ? Object.entries(x).map(([k, vv]) => `${k}: ${fmtScalar(vv)}`).join(" · ") : String(x)}</div>)}</>;
+    }
+    return <>{v.map(String).join(", ")}</>;
+  }
+  if (typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>);
+    if (entries.length === 0) return <span className="muted">—</span>;
+    return (
+      <div style={{ display: "grid", gap: 2 }}>
+        {entries.map(([k, vv]) => <div key={k}><span className="muted">{k}:</span> {fmtScalar(vv)}</div>)}
+      </div>
+    );
+  }
+  return <>{String(v)}</>;
+}
+
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
   // scope-gated: a case of an out-of-scope (e.g. restricted) client reads as not-found here.
   const scope = await currentClientScope(db);
@@ -150,11 +179,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             <tr key={k}>
               <th style={{ width: 240 }}>{intakeLabel(k)}</th>
               <td>
-                {v === null || v === "" || (Array.isArray(v) && v.length === 0)
-                  ? <span className="muted">—</span>
-                  : typeof v === "boolean" ? (v ? "yes" : "no")
-                  : Array.isArray(v) ? v.map(String).join(", ")
-                  : String(v)}
+                <IntakeValue v={v} />
               </td>
             </tr>
           ))}
