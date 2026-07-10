@@ -728,10 +728,15 @@ function Confirm-CtgADEmailWriteback {
         [hashtable]$AdConnection = @{}
     )
     $email = Resolve-CtgWritebackEmail $User
-    $sam = [string](Get-CtgProp $User 'SamAccountName')
-    $u = if ($sam) { Get-ADUser -Identity $sam -Properties mail -ErrorAction SilentlyContinue @AdConnection } else { $null }
+    if (-not $email) {
+        # No email on the case = the executor deliberately wrote nothing; that's a pass, not a miss.
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no email to write back (no writebackEmail/workEmail/UPN on the case) — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
+    # Same lookup fallback as the executor (sam -> UPN -> unique DisplayName): a case without a
+    # SamAccountName otherwise validates against nobody and misses even though the mail is correct.
+    $u = Get-CtgAdCaseUser -User $User -Properties @('mail') -AdConnection $AdConnection
     $actual = [string](Get-CtgProp $u 'mail')
-    $pass = [bool]($email -and $actual -and ($actual -ieq $email))
+    $pass = [bool]($actual -and ($actual -ieq $email))
     [pscustomobject]@{ ok = $pass; checks = @(@{ name = "AD mail = $email"; expected = $email; actual = $actual; pass = $pass }) }
 }
 

@@ -469,6 +469,30 @@ Describe 'Invoke-CtgADEmailWriteback' {
     }
 }
 
+Describe 'Confirm-CtgADEmailWriteback' {
+    It 'passes via the UPN fallback when the case has no SamAccountName (INC0858516)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='mgallant'; mail='mgallant@core.tech' } }
+        $user = [pscustomobject]@{ UserPrincipalName='mgallant@core.tech'; DisplayName='M Gallant'; workEmail='mgallant@core.tech' }
+        $v = Confirm-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $v.ok | Should -BeTrue
+        $v.checks[0].actual | Should -Be 'mgallant@core.tech'
+    }
+
+    It 'passes when there is no email on the case — the executor deliberately wrote nothing' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        $v = Confirm-CtgADEmailWriteback -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config ([pscustomobject]@{})
+        $v.ok | Should -BeTrue
+        Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'misses when the AD mail differs from the target' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail='old@example.com' } }
+        $v = Confirm-CtgADEmailWriteback -User ([pscustomobject]@{ SamAccountName='jdoe'; writebackEmail='new@example.com' }) -Config ([pscustomobject]@{})
+        $v.ok | Should -BeFalse
+        $v.checks[0].actual | Should -Be 'old@example.com'
+    }
+}
+
 Describe 'Invoke-CtgADConsistencyCheck' {
     BeforeEach {
         $script:guid = [guid]'00112233-4455-6677-8899-aabbccddeeff'
