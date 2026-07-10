@@ -121,11 +121,11 @@ export function RolesRulesView({ personas, globals, locations }: {
         <>
           <h3 style={{ margin: "0.8rem 0 2px" }}>Locations ({locNames.length})</h3>
           <table style={{ fontSize: 12 }}>
-            <thead><tr><th style={{ textAlign: "left" }}>Name</th><th style={{ textAlign: "left" }}>City</th><th style={{ textAlign: "left" }}>State</th><th style={{ textAlign: "left" }}>Timezone</th><th style={{ textAlign: "left" }}>Country</th></tr></thead>
+            <thead><tr><th style={{ textAlign: "left" }}>Name</th><th style={{ textAlign: "left" }}>Address</th><th style={{ textAlign: "left" }}>City</th><th style={{ textAlign: "left" }}>State</th><th style={{ textAlign: "left" }}>Zip</th><th style={{ textAlign: "left" }}>Timezone</th><th style={{ textAlign: "left" }}>Country</th></tr></thead>
             <tbody>
               {locNames.map((n) => {
-                const l = locations![n] as { city?: string; state?: string; timezone?: string; country?: { short?: string; name?: string } };
-                return <tr key={n}><td><b>{n}</b></td><td>{l.city ?? "—"}</td><td>{l.state ?? "—"}</td><td>{l.timezone ?? "—"}</td><td>{l.country?.short ?? l.country?.name ?? "—"}</td></tr>;
+                const l = locations![n] as { address?: string; city?: string; state?: string; zip?: string; timezone?: string; country?: { short?: string; name?: string } };
+                return <tr key={n}><td><b>{n}</b></td><td>{l.address ?? "—"}</td><td>{l.city ?? "—"}</td><td>{l.state ?? "—"}</td><td>{l.zip ?? "—"}</td><td>{l.timezone ?? "—"}</td><td>{l.country?.short ?? l.country?.name ?? "—"}</td></tr>;
               })}
             </tbody>
           </table>
