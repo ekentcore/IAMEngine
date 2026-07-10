@@ -23,6 +23,15 @@ const disp = (r: SnUserMgmtRecord, k: string): string | null => {
 // The email fetchUserManagementCase resolved for a reference field (manager / mirror user) from the
 // customer_contact table, stashed under "__email:<field>". Null when it couldn't be resolved.
 const contactEmail = (r: SnUserMgmtRecord, k: string): string | null => val(r, `__email:${k}`);
+// A reference field for DISPLAY: a readable label — the resolved contact email if we have it, else the
+// display name — with the sys_id kept in parens so it stays useful to look the record up. Falls back to
+// the bare sys_id when nothing readable resolved (some references' display_value IS just the sys_id).
+const refLabel = (r: SnUserMgmtRecord, k: string): string | null => {
+  const id = val(r, k);
+  const name = disp(r, k);
+  const label = contactEmail(r, k) ?? (name && name !== id ? name : null);
+  return label ? (id ? `${label} (${id})` : label) : id;
+};
 const bool = (r: SnUserMgmtRecord, k: string): boolean => r[k]?.value === "true";
 const yes = (r: SnUserMgmtRecord, k: string): boolean => (val(r, k) ?? "").toLowerCase() === "yes";
 const trimmed = (s: string | null): string | null => (s ? s.trim() : null);
@@ -227,7 +236,7 @@ function offboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     allowedToMaintainEmail: bool(r, "u_permitted_to_maintain_email"),
     maintainEmailUntil: dateOnly(val(r, "u_maintain_email_until")),
     mailForwarded: bool(r, "u_mail_forwarded"),
-    forwardEmailTo: val(r, "u_forward_email_to"),
+    forwardEmailTo: refLabel(r, "u_forward_email_to"),
     maintainFileShareAccess: bool(r, "u_permitted_to_maintain_file_share_access"),
     maintainAccessUntil: dateOnly(val(r, "u_maintain_access_until")),
     otherEquipment: val(r, "u_what_other_equipment_needs_to_be_collected"),

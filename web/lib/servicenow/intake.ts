@@ -48,7 +48,7 @@ const CONTACT_TABLE = "/api/now/table/customer_contact";
 // by EMAIL (stable across ServiceNow & 365) rather than a display name that's often spelled
 // differently (e.g. "James (Jim) Goodmiller" in SNOW vs "Jim Goodmiller" in 365). The resolved email
 // is stashed on the record under "__email:<field>" for normalizeIntake to read.
-const CONTACT_REF_FIELDS = ["u_manager_name", "u_mirror_existing_user"] as const;
+const CONTACT_REF_FIELDS = ["u_manager_name", "u_mirror_existing_user", "u_forward_email_to"] as const;
 
 // Resolve a set of customer_contact sys_ids -> their email. Best-effort: any failure (table not
 // readable, a sys_id that isn't a customer_contact) just yields no email, and the caller falls back
