@@ -2,7 +2,7 @@
 // PATCH /api/clients/:slug — { action: "archive" | "restore" | "set-email-domain" }.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
-import type { Backbone } from "@prisma/client";
+import { Prisma, type Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope } from "@/lib/auth/client-scope";
@@ -27,7 +27,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -105,6 +105,27 @@ export async function PATCH(req: Request, { params }: Ctx) {
       const msg = e instanceof SnGatewayError ? `ServiceNow: ${e.message}` : (e as Error).message;
       return NextResponse.json({ error: `hard refresh failed: ${msg}` }, { status: 502 });
     }
+  }
+
+  // Location AD/Entra targets: set the groups (+ optional OU) a matched location adds. Merges into the
+  // existing Client.locations entry (keeps city/state/timezone/…). Applied at plan time (plan-resolve).
+  if (body.action === "set-location-targets") {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return NextResponse.json({ error: "location name required" }, { status: 422 });
+    const groups = Array.isArray(body.groups) ? body.groups.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()) : [];
+    const ou = typeof body.ou === "string" ? body.ou.trim() : "";
+    const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true, locations: true } });
+    if (!client) return NextResponse.json({ error: "client not found" }, { status: 404 });
+    const locs = client.locations && typeof client.locations === "object" && !Array.isArray(client.locations)
+      ? { ...(client.locations as Record<string, Record<string, unknown>>) } : {};
+    if (!locs[name]) return NextResponse.json({ error: `no location named "${name}"` }, { status: 422 });
+    const entry = { ...locs[name] };
+    if (groups.length) entry.groups = groups; else delete entry.groups;
+    if (ou) entry.ou = ou; else delete entry.ou;
+    locs[name] = entry;
+    await db.client.update({ where: { id: client.id }, data: { locations: locs as Prisma.InputJsonValue } });
+    await repo.writeAudit({ actor: _g.user.email || "ui", action: "client.location_targets.set", clientId: client.id, detail: { name, groups: groups.length, ou: ou || null } });
+    return NextResponse.json({ ok: true });
   }
 
   // Inline table edit: the backbone (or "" / null to clear).

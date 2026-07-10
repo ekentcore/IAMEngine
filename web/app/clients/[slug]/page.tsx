@@ -346,6 +346,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         globals={v21?.globals as never}
         locations={v21?.locations as never}
         slug={client.slug}
+        groupOptions={[...new Set(knownGroups.map((g) => g.name))]}
       />
 
       {readiness && readiness.tier !== "no_systems" && (
