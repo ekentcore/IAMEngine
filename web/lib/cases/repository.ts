@@ -508,6 +508,16 @@ export function makeCaseRepository(db: PrismaClient) {
         );
         const neededSecrets = [...new Set(claimableNow.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
         const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
+        // Per-case READINESS — across the WHOLE plan (every api job, not just what's claimable now): of
+        // the systems this case needs credentials for, how many are set. ready=all set, partial=some,
+        // blocked=none, none=no credential-gated systems. Reuses the same secret-resolution as the gate.
+        const planSecrets = [...new Set(apiJobs.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
+        const planMissing = missingRequiredSecrets(planSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
+        const readiness: "ready" | "partial" | "blocked" | "none" =
+          planSecrets.length === 0 ? "none"
+          : planMissing.length === 0 ? "ready"
+          : planMissing.length >= planSecrets.length ? "blocked"
+          : "partial";
         // "Paused": the case looks running/queued but nothing is actually executing and a required
         // credential is missing, so the runner won't claim it — surface that as paused, not running.
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
@@ -529,6 +539,7 @@ export function makeCaseRepository(db: PrismaClient) {
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
           lastActionLabel: lastActionByCase.get(r.id)?.label ?? null,
           lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
+          readiness, readinessMissing: planMissing,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: needsInfo
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."

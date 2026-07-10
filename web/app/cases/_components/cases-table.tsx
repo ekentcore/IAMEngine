@@ -24,6 +24,8 @@ export type CaseRowVM = {
   ranBy?: string | null; // operator who last ran it (email), or null
   lastActionLabel?: string | null; // most recent tracked action — "Imported"/"Unpaused"/"Paused"/"Verified"/…
   lastActionBy?: string | null; // who took that action (email), or null when not a signed-in user
+  readiness?: "ready" | "partial" | "blocked" | "none"; // can this case's systems run? (are the creds set)
+  readinessMissing?: string[]; // the unset secret names, for the tooltip
   createdAtIso: string;
 };
 
@@ -71,6 +73,28 @@ function haystack(c: CaseRowVM): string {
 // report's warning color) and the hover lists the warning lines. The count is warning STEPS
 // (distinct systems, the lines are "System: …"-prefixed) so it matches the run report's summary
 // — one step with two WARN actions is still one warning.
+// Per-case run readiness: a small traffic-light dot — can this case actually run (are its systems'
+// credentials set)? Distinct from status (lifecycle). Hidden when there's nothing to gate on, or once
+// the case is terminal (readiness is moot then). The tooltip names the missing credentials.
+const READINESS: Record<string, { color: string; label: string }> = {
+  ready: { color: "var(--ok-fg)", label: "Ready to run — all required credentials are set" },
+  partial: { color: "var(--warn-fg)", label: "Partially set up — some required credentials are missing" },
+  blocked: { color: "var(--err-fg)", label: "Not set up — required credentials are missing" },
+};
+function ReadinessDot({ c }: { c: CaseRowVM }) {
+  const r = c.readiness;
+  if (!r || r === "none" || c.status === "completed" || c.status === "failed") return null;
+  const m = READINESS[r];
+  const miss = c.readinessMissing?.length ? ` — missing: ${c.readinessMissing.join(", ")}` : "";
+  return (
+    <span
+      title={m.label + miss}
+      aria-label={m.label}
+      style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: m.color, marginRight: 6, verticalAlign: "middle", cursor: "help", flexShrink: 0 }}
+    />
+  );
+}
+
 function StatusBadge({ c }: { c: CaseRowVM }) {
   const warns = c.status === "completed" ? (c.warnings ?? []) : [];
   const steps = new Set(warns.map((w) => w.split(":")[0])).size;
@@ -317,7 +341,15 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
           onToggle={(v) => setStatusFilter((s) => { const x = new Set(s); x.has(v) ? x.delete(v) : x.add(v); return x; })}
           onClear={() => setStatusFilter(new Set())}
         />
-        <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {working.length}</span>
+        {/* Readiness legend: the leading dot on each case = can it run (are its systems' creds set). */}
+        <span className="note" style={{ marginLeft: "auto", display: "inline-flex", gap: 12, alignItems: "center", fontSize: 11 }} title="The dot next to each case shows whether its systems' credentials are set">
+          {(["ready", "partial", "blocked"] as const).map((k) => (
+            <span key={k} style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: READINESS[k].color }} />{k}
+            </span>
+          ))}
+        </span>
+        <span className="note">{visible.length} of {working.length}</span>
       </div>
       {selected.size > 0 && (
         <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
@@ -359,7 +391,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               style={selected.has(c.id) ? { background: "var(--accent-soft)" } : undefined}
             >
               <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
-              <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+              <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
               <td className="muted">{c.clientName}</td>
               <td><span className="badge">{c.action}</span></td>
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
@@ -465,7 +497,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
         {visible.map((c) => (
           <Link key={c.id} href={`/cases/${c.id}`} className="m-card">
             <div className="m-card-top">
-              <span className="m-card-title">{c.subject ?? c.id.slice(0, 8)}</span>
+              <span className="m-card-title"><ReadinessDot c={c} />{c.subject ?? c.id.slice(0, 8)}</span>
               <StatusBadge c={c} />
             </div>
             <div className="m-card-sub">{c.clientName}</div>
@@ -500,7 +532,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   onMouseEnter={() => setHoveredId(c.id)}
                   onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
                 >
-                  <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+                  <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
                   <td className="muted">{c.clientName}</td>
                   <td><span className="badge">{c.action}</span></td>
                   <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>

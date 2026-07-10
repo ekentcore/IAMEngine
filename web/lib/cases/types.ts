@@ -49,6 +49,12 @@ export type CaseListItem = {
   // the actor wasn't a signed-in user (auth off).
   lastActionLabel: string | null;
   lastActionBy: string | null;
+  // Per-case run readiness — can this case's systems actually run? Based on whether the required
+  // Delinea credentials are set for the systems in its plan: "ready" (all set), "partial" (some set),
+  // "blocked" (none set), "none" (no credential-gated systems — e.g. all-manual). readinessMissing
+  // lists the unset secret names for the tooltip.
+  readiness: "ready" | "partial" | "blocked" | "none";
+  readinessMissing: string[];
 };
 
 export type TrashedCaseItem = {
