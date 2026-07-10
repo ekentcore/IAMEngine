@@ -72,7 +72,7 @@ export default async function CasesPage() {
 
       <CasesToolbar clients={clients} />
 
-      <CasesTable cases={rows} trashed={trashedRows} />
+      <CasesTable cases={rows} trashed={trashedRows} splitCompleted />
     </main>
   );
 }

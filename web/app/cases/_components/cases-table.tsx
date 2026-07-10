@@ -464,7 +464,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
       </div>
 
       {splitCompleted && (
-        <details style={{ marginTop: "1.25rem" }} open>
+        <details style={{ marginTop: "1.25rem" }}>
           <summary style={{ cursor: "pointer" }}>
             <b>Completed cases</b> <span className="note">({completed.length}) — off the working list, kept here for reference</span>
           </summary>
