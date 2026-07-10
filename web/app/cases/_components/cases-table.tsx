@@ -98,11 +98,15 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
         textDecoration: title ? "underline dotted" : undefined,
         textUnderlineOffset: 3,
         whiteSpace: "nowrap",
-        lineHeight: 1.25,
+        // .badge is display:inline-flex (a ROW) — a plain block child still sits on the same line, so for
+        // the 2-line status we stack the flex direction to column (and square the pill a touch).
+        ...(sub
+          ? { flexDirection: "column" as const, alignItems: "center", gap: 0, borderRadius: 10, lineHeight: 1.15 }
+          : { lineHeight: 1.25 }),
       }}
     >
-      {main}
-      {sub && <span style={{ display: "block", fontSize: 10, fontWeight: 500, opacity: 0.8 }}>{sub}</span>}
+      <span>{main}</span>
+      {sub && <span style={{ fontSize: 9.5, fontWeight: 600, opacity: 0.8, marginTop: 1 }}>{sub}</span>}
     </span>
   );
 }
