@@ -370,12 +370,15 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
               {readiness.systems.map((s) => (
                 <tr key={s.systemKey}>
                   <td>{s.systemKey}</td>
-                  <td>{s.wired
+                  <td>{s.notNeeded
+                    ? <span className="muted">not needed</span>
+                    : s.wired
                     ? <span style={{ color: "#2e7d32" }}>✓ wired</span>
                     : <span style={{ color: "#b3261e" }}>✗ missing: {s.missingSecrets.join(", ")}</span>}</td>
                   <td>{s.test === "ok"
                     ? <span style={{ color: "#2e7d32" }}>✓ passed</span>
                     : s.test === "fail" ? <span style={{ color: "#b3261e" }}>✗ failed</span>
+                    : s.test === "not_needed" ? <span className="muted" title="Manual step — no credential to test">— not needed</span>
                     : <span className="muted">— untested</span>}</td>
                 </tr>
               ))}

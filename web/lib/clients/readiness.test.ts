@@ -48,6 +48,20 @@ test("NOT_NEEDED counts as wired (manual-step module)", () => {
   assert.equal(r.tier, "ready");
 });
 
+test("a NOT_NEEDED system reads 'not needed' + ready even if a stale test says fail (no partial)", () => {
+  const r = computeClientReadiness({
+    systems: [sys("m365", ["m365-admin"]), sys("1password", ["1password"])],
+    secretExternalIds: new Map([["m365-admin", "111"], ["1password", NOT_NEEDED]]),
+    testBySystem: new Map([["m365", "ok"], ["1password", "fail"]]), // stale/irrelevant fail on the manual system
+  });
+  const pw = r.systems.find((s) => s.systemKey === "1password")!;
+  assert.equal(pw.notNeeded, true);
+  assert.equal(pw.test, "not_needed"); // not "fail"
+  assert.equal(pw.ready, true);
+  assert.equal(r.tier, "ready"); // was "partial" before the fix
+  assert.match(r.summary, /manual steps/);
+});
+
 test("no_systems: no credentialed systems modeled", () => {
   const r = computeClientReadiness({ systems: [], secretExternalIds: new Map(), testBySystem: new Map() });
   assert.equal(r.tier, "no_systems");

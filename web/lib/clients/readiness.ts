@@ -9,15 +9,18 @@
 import { NOT_NEEDED } from "../cases/case-secrets";
 
 export type ReadinessTier = "ready" | "partial" | "not_set_up" | "no_systems";
-export type ConnTestState = "ok" | "fail" | "untested";
+// "not_needed" = every required secret is the NOT_NEEDED sentinel — a manual-step system with nothing
+// to connect to. It's satisfied (complete via manual steps), NOT a failed/untested connection test.
+export type ConnTestState = "ok" | "fail" | "untested" | "not_needed";
 
 export type SystemReadiness = {
   systemKey: string;
   required: string[];        // secret names this system needs
   missingSecrets: string[];  // required secrets with no usable reference
   wired: boolean;            // all required secrets resolved (or marked not-needed)
+  notNeeded: boolean;        // ALL required secrets are NOT_NEEDED — a manual step, no live test to run
   test: ConnTestState;       // latest connection-test outcome for this system
-  ready: boolean;            // wired AND tested ok
+  ready: boolean;            // wired AND (tested ok OR not-needed)
 };
 
 export type ClientReadiness = {
@@ -53,8 +56,11 @@ export function computeClientReadiness(input: ReadinessInput): ClientReadiness {
   const systems: SystemReadiness[] = input.systems.map((s) => {
     const missingSecrets = s.secretNames.filter((n) => !satisfied(n, input.secretExternalIds));
     const wired = missingSecrets.length === 0;
-    const test = input.testBySystem.get(s.systemKey) ?? "untested";
-    return { systemKey: s.systemKey, required: s.secretNames, missingSecrets, wired, test, ready: wired && test === "ok" };
+    // A system whose EVERY required secret is marked NOT_NEEDED is a manual step — there's no live
+    // connection to test, so it reads as "not needed" and is ready once wired (never "failed").
+    const notNeeded = s.secretNames.length > 0 && s.secretNames.every((n) => input.secretExternalIds.get(n) === NOT_NEEDED);
+    const test: ConnTestState = notNeeded ? "not_needed" : (input.testBySystem.get(s.systemKey) ?? "untested");
+    return { systemKey: s.systemKey, required: s.secretNames, missingSecrets, wired, notNeeded, test, ready: wired && (test === "ok" || test === "not_needed") };
   });
 
   const systemsTotal = systems.length;
@@ -68,7 +74,9 @@ export function computeClientReadiness(input: ReadinessInput): ClientReadiness {
     return { tier: "not_set_up", label: "not set up", summary: `No credentials wired (0 of ${systemsTotal} systems).`, systemsTotal, systemsReady, systemsWired, systems };
   }
   if (systemsReady === systemsTotal) {
-    return { tier: "ready", label: "ready", summary: `All ${systemsTotal} systems wired and tested.`, systemsTotal, systemsReady, systemsWired, systems };
+    const manual = systems.filter((s) => s.notNeeded).length;
+    const summary = manual ? `All ${systemsTotal} systems ready (${manual} via manual steps).` : `All ${systemsTotal} systems wired and tested.`;
+    return { tier: "ready", label: "ready", summary, systemsTotal, systemsReady, systemsWired, systems };
   }
   // Partial: spell out what's holding it back so the badge tooltip is actionable.
   const missing = systems.filter((s) => !s.wired).length;
