@@ -21,11 +21,14 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const src = await db.job.findUnique({
     where: { id: params.id },
-    select: { systemKey: true, caseRequestId: true, request: true, case: { select: { clientId: true, deletedAt: true } } },
+    select: { systemKey: true, caseRequestId: true, request: true, case: { select: { clientId: true, deletedAt: true, dryRun: true } } },
   });
   if (!src || src.case.deletedAt) return NextResponse.json({ error: "not found" }, { status: 404 });
   const resetKey = PASSWORD_RESET_KEY[src.systemKey];
   if (!resetKey) return NextResponse.json({ error: `password reset isn't supported for ${src.systemKey}` }, { status: 422 });
+  // Dry-run is authoritative at claim time — the reset would run -WhatIf, "succeed", and reveal a
+  // password that was never set. Refuse instead.
+  if (src.case.dryRun) return NextResponse.json({ error: "this case is in dry-run mode — the reset wouldn't actually change the password; turn off dry run first" }, { status: 409 });
 
   // One at a time per system: reuse an in-flight reset instead of stacking a second password change.
   const inflight = await db.job.findFirst({
