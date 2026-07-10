@@ -800,4 +800,44 @@ function Invoke-CtgADConsistencyCheck {
     [pscustomobject]@{ System = 'ad-consistency-check'; Status = 'ok'; Sam = [string](Get-CtgProp $u 'SamAccountName'); Flagged = ($warned -gt 0); Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+# ── Hard-match (operator-confirmed link) ──────────────────────────────────────────────────────────
+# Set the on-prem mS-DS-ConsistencyGuid to the existing Entra object's immutableId so AAD Connect
+# HARD-MATCHES them (links instead of duplicating). Triggered by a human clicking "Link" after the
+# consistency check flagged a mismatch — the app injects the target `immutableId` (from the m365
+# result). Heavily guarded: refuses anything that isn't a 16-byte base64 GUID; idempotent.
+function Invoke-CtgADHardMatch {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $immutableId = [string](Get-CtgProp $Config 'immutableId')
+    if ([string]::IsNullOrWhiteSpace($immutableId)) { $immutableId = [string](Get-CtgProp $User 'immutableId') }
+    if ([string]::IsNullOrWhiteSpace($immutableId)) {
+        return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @('no immutableId provided to hard-match to — nothing done') }
+    }
+    $bytes = $null
+    try { $bytes = [Convert]::FromBase64String($immutableId) } catch { $bytes = $null }
+    if (-not $bytes -or $bytes.Length -ne 16) {
+        return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @("immutableId '$immutableId' is not a 16-byte base64 GUID — refusing to write the anchor") }
+    }
+    $u = Get-CtgAdCaseUser -User $User -Properties @('mS-DS-ConsistencyGuid') -AdConnection $AdConnection
+    if (-not $u) { return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @('on-prem user not found — nothing done') } }
+    $sam = [string](Get-CtgProp $u 'SamAccountName')
+    $current = Get-CtgProp $u 'mS-DS-ConsistencyGuid'
+    $currentB64 = if ($current) { [Convert]::ToBase64String([byte[]]$current) } else { $null }
+    if ($currentB64 -eq $immutableId) {
+        $actions.Add("mS-DS-ConsistencyGuid already = $immutableId — already hard-matched (no change)")
+    }
+    elseif ($PSCmdlet.ShouldProcess($sam, "Set mS-DS-ConsistencyGuid = $immutableId (hard-match)")) {
+        try {
+            Set-ADUser -Identity $sam -Replace @{ 'mS-DS-ConsistencyGuid' = $bytes } -ErrorAction Stop @AdConnection
+            $actions.Add("set mS-DS-ConsistencyGuid = $immutableId — run a directory-sync so AAD Connect links the on-prem + cloud objects")
+        } catch { throw "setting mS-DS-ConsistencyGuid for '$sam': $($_.Exception.Message)" }
+    }
+    [pscustomobject]@{ System = 'ad-hard-match'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD

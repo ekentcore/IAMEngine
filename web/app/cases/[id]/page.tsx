@@ -15,6 +15,7 @@ import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { RescanButton } from "../_components/rescan-button";
 import { RevealPasswordButton } from "../_components/reveal-password-button";
+import { HardMatchButton } from "../_components/hard-match-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
 import { PauseButton } from "../_components/pause-button";
 import { IntakePanel } from "../_components/intake-panel";
@@ -76,6 +77,11 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true } });
   const paused = Boolean(caseMeta?.pausedAt);
   const hasInitialPassword = Boolean(caseMeta?.initialPassword);
+  // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
+  // has been dispatched yet → offer the operator-confirmed "Link" action.
+  const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
+  const showHardMatch = dJobs.some((j) => j.systemKey === "ad-consistency-check" && Boolean((j.result as { Flagged?: unknown } | null)?.Flagged))
+    && !dJobs.some((j) => j.systemKey === "ad-hard-match");
 
   return (
     <main>
@@ -92,6 +98,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {showHardMatch && <HardMatchButton caseId={c.id} />}
           {hasInitialPassword && <RevealPasswordButton caseId={c.id} />}
           <PauseButton caseId={c.id} paused={paused} />
           <ReplanButton caseId={c.id} canReplan={true} started={started} />

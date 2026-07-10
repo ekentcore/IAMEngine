@@ -48,9 +48,16 @@ None. (`m365` returns `OnPremImmutableId` + `OnPremSyncEnabled` for the check.)
   We check BOTH so the compare is correct whichever it uses.
 - **Ordering:** runs after the AD create + sync + m365, so by then a pre-existing cloud twin
   has either hard-matched (ok) or duplicated (flagged) — this surfaces which.
-- **Detect-only:** never writes `mS-DS-ConsistencyGuid`. The hard-match auto-write (read the
-  cloud `immutableId`, set the on-prem anchor to link deterministically) is the next level.
+- **Detect-only:** this step never writes. When it flags an anchor MISMATCH, the case offers a
+  **operator-confirmed "Link to existing Entra account"** action → `ad-hard-match` (below).
+
+### Hard-match (`ad-hard-match`) — operator-confirmed link
+Not planned; dispatched on demand by the "Link" button after a flag. `Invoke-CtgADHardMatch`
+sets `mS-DS-ConsistencyGuid` = the Entra `immutableId` (from the m365 result, injected by
+`POST /api/cases/:id/hard-match`) so AAD Connect links the objects on the next sync. Guarded:
+refuses anything that isn't a 16-byte base64 GUID; idempotent. Anchor-mismatch case only — a
+**cloud-only** object has no `immutableId` to copy (422 → resolve manually / via Graph).
 
 ### Manual fallback
-On a flag, an operator resolves the link (hard-match the anchor, or soft-match by primary
-SMTP) before the duplicate propagates.
+For the cloud-only case (or if the operator prefers), resolve the link by hand — set the cloud
+`immutableId` via Graph, or soft-match by primary SMTP — before the duplicate propagates.

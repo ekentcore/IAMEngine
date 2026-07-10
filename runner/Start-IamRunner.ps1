@@ -681,6 +681,11 @@ $DISPATCH = @{
     'ad-consistency-check' = @{
         Onboard = { param($job, $creds) Invoke-CtgADConsistencyCheck -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
     }
+    # Operator-confirmed hard-match: write mS-DS-ConsistencyGuid = the Entra immutableId (app-injected)
+    # so AAD Connect links the objects. Dispatched on demand by the "Link" action, not part of a plan.
+    'ad-hard-match' = @{
+        Onboard = { param($job, $creds) Invoke-CtgADHardMatch -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in

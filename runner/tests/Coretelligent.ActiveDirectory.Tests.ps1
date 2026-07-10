@@ -505,3 +505,28 @@ Describe 'Invoke-CtgADConsistencyCheck' {
         $r.Flagged | Should -BeFalse
     }
 }
+
+Describe 'Invoke-CtgADHardMatch' {
+    BeforeEach {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe'; 'mS-DS-ConsistencyGuid' = $null } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+    }
+    It 'writes mS-DS-ConsistencyGuid = the injected immutableId (16-byte base64)' {
+        $b64 = [Convert]::ToBase64String(([guid]::NewGuid()).ToByteArray())
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = $b64 })
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Replace['mS-DS-ConsistencyGuid'].Length -eq 16 }
+    }
+    It 'REFUSES a non-16-byte base64 value (never writes garbage into the anchor)' {
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = 'bm90LWEtZ3VpZA==' })
+        $r.Status | Should -Be 'error'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+    It 'is idempotent — no write when the anchor already matches' {
+        $g = [guid]::NewGuid(); $b64 = [Convert]::ToBase64String($g.ToByteArray())
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe'; 'mS-DS-ConsistencyGuid' = $g.ToByteArray() } }
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = $b64 })
+        ($r.Actions -join '|') | Should -Match 'already'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+}
