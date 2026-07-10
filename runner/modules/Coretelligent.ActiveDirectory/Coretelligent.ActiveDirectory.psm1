@@ -845,4 +845,44 @@ function Invoke-CtgADHardMatch {
     [pscustomobject]@{ System = 'ad-hard-match'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+# ── Ad-hoc password reset (INC0855142) ───────────────────────────────────────────────────────────
+# Operator-dispatched "Generate random password" from a case's Active Directory line. The APP
+# generates the value (revealed once to the operator, then wiped) and injects it as config.newPassword
+# at claim; this executor only sets it — the plaintext must NEVER appear in the result, actions, or an
+# error message. For AD-synced tenants, password hash sync carries the change to Entra on its own.
+function Invoke-CtgADPasswordReset {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $newPassword = [string](Get-CtgProp $Config 'newPassword')
+    if ([string]::IsNullOrWhiteSpace($newPassword)) {
+        throw "no newPassword in the job config — the app injects it at claim and wipes it after its one-time reveal; dispatch a fresh reset from the account line instead of re-running this job"
+    }
+    # Same lookup fallback as the write-back/hard-match (sam -> UPN -> unique DisplayName).
+    $u = Get-CtgAdCaseUser -User $User -Properties @('SamAccountName') -AdConnection $AdConnection
+    if (-not $u) {
+        $who = @((Get-CtgProp $User 'SamAccountName'), (Get-CtgProp $User 'UserPrincipalName'), (Get-CtgProp $User 'DisplayName')) | Where-Object { $_ } | Select-Object -First 1
+        throw "AD user not found ($who) — password not reset"
+    }
+    $sam = [string](Get-CtgProp $u 'SamAccountName')
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ($PSCmdlet.ShouldProcess($sam, "Reset password")) {
+        $secure = ConvertTo-SecureString $newPassword -AsPlainText -Force
+        try { Set-ADAccountPassword -Identity $sam -Reset -NewPassword $secure -ErrorAction Stop @AdConnection }
+        catch { throw "resetting the password for '$sam': $($_.Exception.Message)" }
+        $actions.Add("reset password for $sam (shown once to the operator, never stored)")
+        try {
+            Set-ADUser -Identity $sam -ChangePasswordAtLogon $true -ErrorAction Stop @AdConnection
+            $actions.Add("must change password at next logon")
+        } catch {
+            # The reset DID land — a policy that forbids the flag (e.g. password-never-expires) is a warning, not a failure.
+            $actions.Add("WARN could not require change-at-next-logon: $($_.Exception.Message)")
+        }
+    }
+    [pscustomobject]@{ System = 'ad-password-reset'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD

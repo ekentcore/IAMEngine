@@ -1283,4 +1283,36 @@ function Invoke-CtgEntraTap {
     return [pscustomobject]@{ System = 'tap'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap
+# ── Ad-hoc password reset (INC0855142) ───────────────────────────────────────────────────────────
+# Operator-dispatched "Generate random password" from a case's M365/Entra line. The APP generates the
+# value (revealed once to the operator, then wiped) and injects it as config.newPassword at claim;
+# this executor only sets it — the plaintext must NEVER appear in the result, actions, or an error.
+function Invoke-CtgM365PasswordReset {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config
+    )
+    $newPassword = [string](Get-CtgProp $Config 'newPassword')
+    if ([string]::IsNullOrWhiteSpace($newPassword)) {
+        throw "no newPassword in the job config — the app injects it at claim and wipes it after its one-time reveal; dispatch a fresh reset from the account line instead of re-running this job"
+    }
+    # Resolve the SAME way the other executors do (UPN, else unique display name).
+    $upn = [string](Resolve-CtgM365Upn $User)
+    if ([string]::IsNullOrWhiteSpace($upn)) { throw "no resolvable user (no UPN or unique display-name match on the case) — password not reset" }
+    $u = Resolve-CtgM365User -Upn $upn -Property @('Id', 'UserPrincipalName', 'OnPremisesSyncEnabled')
+    if (-not $u) { throw "M365 user '$upn' not found — password not reset" }
+    if ((Get-CtgProp $u 'OnPremisesSyncEnabled') -eq $true) {
+        throw "'$upn' is AD-synced (directory-synced) — reset the password on the Active Directory line instead; Entra rejects cloud resets for synced users unless password write-back is enabled"
+    }
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ($PSCmdlet.ShouldProcess($upn, "Reset password")) {
+        try {
+            Update-MgUser -UserId $u.Id -PasswordProfile @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true } -ErrorAction Stop
+        } catch { throw "resetting the password for '$upn': $($_.Exception.Message)" }
+        $actions.Add("reset password for $upn (must change at next sign-in; shown once to the operator, never stored)")
+    }
+    [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset
