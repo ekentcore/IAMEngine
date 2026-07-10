@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyGateOpen, deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
+import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
 
 function j(over: Partial<JobLite>): JobLite {
   return { id: "j", systemKey: over.id ?? "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
@@ -108,4 +108,16 @@ test("legacy gate (no persisted dependsOn) keeps strict sequence order", () => {
   const early = j({ id: "egnyte", sequence: 1, status: "pending" });
   const late = j({ id: "mimecast", sequence: 2 }); // dependsOn undefined -> legacy rule
   assert.equal(dependencyGateOpen(late, [early, late]), false);
+});
+
+test("shouldStandBy: a strictly higher-priority peer online -> stand by; else claim", () => {
+  // primary=1, this=2 -> stand by while primary (1) is online
+  assert.equal(shouldStandBy(2, [1]), true);
+  // primary offline (not in the online list) -> this backup takes over
+  assert.equal(shouldStandBy(2, []), false);
+  assert.equal(shouldStandBy(2, [2, 3]), false); // only equal/lower-precedence peers online -> claim
+  // equal priority peers load-balance (no stand-by) — preserves pre-failover behavior
+  assert.equal(shouldStandBy(100, [100, 100]), false);
+  // this IS the primary (lowest) -> never stands by
+  assert.equal(shouldStandBy(1, [2, 3, 100]), false);
 });

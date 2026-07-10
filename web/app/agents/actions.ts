@@ -71,6 +71,20 @@ export async function requestAgentUpdate(id: string) {
   }
 }
 
+// Failover priority (LOWER = higher precedence): a backup runner stands by while a higher-priority peer
+// of the same scope is online. Clamped to 1..999.
+export async function setAgentPriority(id: string, priority: number) {
+  try {
+    await requirePermission("agent.manage");
+    const p = Math.max(1, Math.min(999, Math.round(Number(priority) || 100)));
+    await db.agent.update({ where: { id }, data: { priority: p } });
+    revalidatePath("/agents");
+    return { ok: true as const, priority: p };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
 // Ask the runner to restart (re-exec, no file pull) on its next heartbeat — for a wedged agent that
 // heartbeats but stops claiming. Needs a supervised runner to relaunch.
 export async function requestAgentRestart(id: string) {

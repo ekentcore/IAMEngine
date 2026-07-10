@@ -52,6 +52,14 @@ export function dependencyGateOpen(job: JobLite, caseJobs: JobLite[]): boolean {
   return blockingJobs(job, caseJobs).length === 0;
 }
 
+// Priority failover: should THIS runner stand by (claim nothing) because a higher-priority peer of the
+// same scope is currently online? LOWER priority number = higher precedence. Only a STRICTLY higher peer
+// forces stand-by — equal-priority peers load-balance (the pre-failover behavior). So primary=1 + backup=2
+// means the backup idles while the primary heartbeats, and takes over once the primary goes silent.
+export function shouldStandBy(myPriority: number, onlinePeerPriorities: number[]): boolean {
+  return onlinePeerPriorities.some((p) => p < myPriority);
+}
+
 export function deriveCaseStatus(jobs: JobLite[]): CaseStatus {
   if (jobs.some((j) => j.status === "failed")) return "failed";
   const openApi = jobs.filter((j) => j.mode === "api" && OPEN.includes(j.status));

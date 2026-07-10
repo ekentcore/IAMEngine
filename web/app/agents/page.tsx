@@ -74,6 +74,7 @@ export default async function AgentsPage() {
     clientName: a.client?.name ?? null,
     version: a.version,
     semver: a.semver,
+    priority: a.priority ?? 100,
     enabled: a.enabled,
     lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
     bootAt: a.bootAt?.toISOString() ?? null,

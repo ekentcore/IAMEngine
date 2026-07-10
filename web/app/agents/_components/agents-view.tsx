@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -13,6 +13,7 @@ export type AgentVM = {
   clientName: string | null;
   version: string | null; // content-hash build id
   semver: string | null; // human release version (runner/VERSION), display only
+  priority: number; // failover rank (lower = higher precedence); a backup stands by while a higher peer is online
   enabled: boolean;
   lastSeenAt: string | null;
   bootAt: string | null;
@@ -129,6 +130,34 @@ function uptime(iso: string | null, now: number): string {
   if (secs < 3600) return `${Math.floor(secs / 60)}m`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
   return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
+}
+
+// Failover priority editor (LOWER = higher precedence). A backup runner stands by while a higher-priority
+// peer of the same scope is online, and takes over when it goes silent; equal priority load-balances.
+function PriorityControl({ a }: { a: AgentVM }) {
+  const router = useRouter();
+  const [val, setVal] = useState(String(a.priority));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setVal(String(a.priority)); }, [a.priority]);
+  async function save(v: string) {
+    const n = Math.max(1, Math.min(999, Math.round(Number(v) || 100)));
+    if (n === a.priority) { setVal(String(a.priority)); return; }
+    setBusy(true);
+    const r = await setAgentPriority(a.id, n);
+    setBusy(false);
+    if (r.ok) { setVal(String(r.priority)); router.refresh(); } else setVal(String(a.priority));
+  }
+  return (
+    <label className="note" style={{ display: "inline-flex", gap: 4, alignItems: "center", fontSize: 11, whiteSpace: "nowrap" }}
+      title="Failover priority — LOWER = higher precedence. A backup runner stands by while a higher-priority peer of the same scope (this client's agents, or the central runners) is online, and takes over when it goes silent. Equal priority = load-balance.">
+      priority
+      <input type="number" min={1} max={999} value={val} disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={(e) => save(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        style={{ width: 50 }} />
+    </label>
+  );
 }
 
 export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number }) {
@@ -424,6 +453,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)">Trash</button>
                     )}
                   </div>
+                  <div style={{ marginTop: 4 }}><PriorityControl a={a} /></div>
                 </td>
               </tr>
             );

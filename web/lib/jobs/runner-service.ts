@@ -3,7 +3,7 @@
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
@@ -223,9 +223,21 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
     async claim(agentId: string, batchSize: number, version?: string | null): Promise<RunnerJob[]> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true, priority: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
+
+      // Priority failover: stand by (claim nothing) while a STRICTLY higher-priority peer of the same
+      // scope is online — a client's other agents for a client runner, the other central runners for the
+      // central one. Equal priority load-balances (unchanged). When the primary stops heartbeating
+      // (> ONLINE_MS), this backup starts claiming; the stale-lease reclaim below then re-queues the
+      // primary's in-flight jobs so the backup can pick them up.
+      const ONLINE_MS = 90_000;
+      const onlinePeers = await db.agent.findMany({
+        where: { enabled: true, deletedAt: null, id: { not: agent.id }, clientId: agent.clientId, lastSeenAt: { gt: new Date(Date.now() - ONLINE_MS) } },
+        select: { priority: true },
+      });
+      if (shouldStandBy(agent.priority, onlinePeers.map((p) => p.priority))) return [];
 
       // Reclaim stale leases: a job dispatched long ago whose assigned agent is gone/stale/
       // disabled goes back to pending. Scoped to dead agents so a peer can't reset a live

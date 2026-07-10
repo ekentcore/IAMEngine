@@ -204,6 +204,11 @@ model Agent {
   // reason instead of being dispatched and hard-failing. NULL = a legacy runner that doesn't report
   // (treated as capable, preserving pre-capability behavior); [] = reports it can run no on-prem system.
   capabilities       Json?
+  // Failover priority among peer runners of the SAME scope (a client's agents, or all central runners).
+  // LOWER = higher priority. A runner stands by (claims nothing) while a STRICTLY-higher-priority peer of
+  // its scope is online, and takes over when that peer goes silent — so a backup DC / second central
+  // runner only runs when the primary is down. Equal priority = load-balance (the pre-failover behavior).
+  priority           Int        @default(100)
   lastSeenAt         DateTime?
   // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
   // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
