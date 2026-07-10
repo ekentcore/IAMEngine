@@ -18,7 +18,7 @@ export default async function UsersV2Page() {
     meRole = me.role;
     meId = me.id;
   }
-  const [users, clients] = await Promise.all([
+  const [users, clients, accessRequests] = await Promise.all([
     db.user.findMany({
       orderBy: [{ status: "asc" }, { createdAt: "asc" }],
       select: {
@@ -28,6 +28,8 @@ export default async function UsersV2Page() {
       },
     }),
     db.client.findMany({ where: { status: "active" }, orderBy: { name: "asc" }, select: { id: true, name: true, restricted: true } }),
+    // Pending access requests — verified SSO sign-ins from people not yet provisioned, held for approval.
+    db.accessRequest.findMany({ where: { status: "pending" }, orderBy: { lastRequestedAt: "desc" }, select: { id: true, email: true, name: true, requestCount: true, firstRequestedAt: true, lastRequestedAt: true } }),
   ]);
   const vms = users.map((u) => ({
     id: u.id, email: u.email, name: u.name, role: u.role, status: u.status,
@@ -36,11 +38,15 @@ export default async function UsersV2Page() {
     scopeClientIds: u.clientAccess.filter((a) => a.kind === "scope").map((a) => a.clientId),
     grantClientIds: u.clientAccess.filter((a) => a.kind === "grant").map((a) => a.clientId),
   }));
+  const requestVms = accessRequests.map((r) => ({
+    id: r.id, email: r.email, name: r.name, requestCount: r.requestCount,
+    firstRequestedAtIso: r.firstRequestedAt.toISOString(), lastRequestedAtIso: r.lastRequestedAt.toISOString(),
+  }));
   return (
     <main>
       <h1>Users <span className="note">(v2)</span></h1>
       <p className="note">Operators who can sign in, and what each may do. Use <b>Logs</b> to see a single user&rsquo;s audit trail.</p>
-      <UsersView users={vms} meRole={meRole} clients={clients} meId={meId} v2 />
+      <UsersView users={vms} meRole={meRole} clients={clients} meId={meId} accessRequests={requestVms} v2 />
     </main>
   );
 }
