@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateOnly, formatDateTime } from "@/lib/dates";
 
 export type CaseRowVM = {
@@ -75,6 +75,19 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
   const warns = c.status === "completed" ? (c.warnings ?? []) : [];
   const steps = new Set(warns.map((w) => w.split(":")[0])).size;
   const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
+  // Split a long "… — resume to run" into a main label + a second line so the Status column stays
+  // narrow (a wide single line was forcing the whole table wide).
+  let main: string;
+  let sub: string | null = null;
+  if (c.imported) main = "✦ imported";
+  else if (c.paused) {
+    if (c.pausedBy === "needs_info") main = "ℹ︎ needs information";
+    else if (c.pausedBy === "scheduled") { main = "⏸ scheduled"; sub = "resume to run"; }
+    else if (c.pausedBy === "review") { if (c.lastRunIso) { main = "⏸ held"; sub = "resume to run"; } else main = "▶︎ Press Play to Start"; }
+    else if (c.pausedBy === "operator") main = "⏸ paused";
+    else main = "paused — needs creds";
+  } else if (warns.length) main = `completed — ${steps} warning${steps > 1 ? "s" : ""}`;
+  else main = STATUS_LABEL[c.status] ?? c.status;
   return (
     <span
       className="badge"
@@ -84,15 +97,12 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
         cursor: title ? "help" : undefined,
         textDecoration: title ? "underline dotted" : undefined,
         textUnderlineOffset: 3,
+        whiteSpace: "nowrap",
+        lineHeight: 1.25,
       }}
     >
-      {c.imported
-        ? "✦ imported"
-        : c.paused
-        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? (c.lastRunIso ? "⏸ held — resume to run" : "▶︎ Press Play to Start") : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
-        : warns.length
-          ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
-          : (STATUS_LABEL[c.status] ?? c.status)}
+      {main}
+      {sub && <span style={{ display: "block", fontSize: 10, fontWeight: 500, opacity: 0.8 }}>{sub}</span>}
     </span>
   );
 }
@@ -119,6 +129,44 @@ function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
   }
 }
 
+// Multi-select status filter: a compact dropdown of checkboxes (empty selection = all statuses).
+function StatusFilterMenu({ options, selected, onToggle, onClear }: {
+  options: { value: string; label: string }[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+  const label = selected.size === 0 ? "All statuses" : `${selected.size} selected`;
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" className="inline" onClick={() => setOpen((o) => !o)} style={{ minWidth: 128, textAlign: "left", display: "inline-flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span>{label}</span><span aria-hidden style={{ opacity: 0.6 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", zIndex: 30, marginTop: 4, background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "var(--shadow-1)", padding: 6, minWidth: 190 }}>
+          {options.map((o) => (
+            <label key={o.value} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer", borderRadius: 6, whiteSpace: "nowrap" }}>
+              <input type="checkbox" checked={selected.has(o.value)} onChange={() => onToggle(o.value)} style={{ width: "auto" }} />
+              {o.label}
+            </label>
+          ))}
+          {selected.size > 0 && (
+            <button type="button" onClick={onClear} style={{ marginTop: 4, width: "100%", fontSize: 12 }}>Clear</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: CaseRowVM[]; trashed: TrashedCaseRowVM[]; splitCompleted?: boolean }) {
   const router = useRouter();
   // When splitCompleted is on (the /cases/v2 view), completed cases come OFF the working list into
@@ -126,7 +174,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
   // unchanged (working === cases).
   const working = useMemo(() => (splitCompleted ? cases.filter((c) => c.status !== "completed") : cases), [cases, splitCompleted]);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set()); // empty = all statuses (multi-select)
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -188,8 +236,10 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
 
   const visible = useMemo(() => {
     const filtered = working.filter((c) => {
-      if (statusFilter === "imported") { if (!c.imported) return false; }
-      else if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (statusFilter.size > 0) {
+        const key = c.imported ? "imported" : c.status; // a case matches its own status, or "imported" while held after import
+        if (!statusFilter.has(key)) return false;
+      }
       if (terms.length === 0) return true;
       const hay = haystack(c);
       return terms.every((t) => hay.includes(t));
@@ -252,15 +302,17 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
             <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
           )}
         </div>
-        <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All statuses</option>
-          <option value="imported">imported (just imported)</option>
-          {Object.entries(STATUS_LABEL)
-            .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
-            .map(([k, label]) => (
-              <option key={k} value={k}>{label}</option>
-            ))}
-        </select>
+        <StatusFilterMenu
+          options={[
+            { value: "imported", label: "imported (just imported)" },
+            ...Object.entries(STATUS_LABEL)
+              .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
+              .map(([k, label]) => ({ value: k, label })),
+          ]}
+          selected={statusFilter}
+          onToggle={(v) => setStatusFilter((s) => { const x = new Set(s); x.has(v) ? x.delete(v) : x.add(v); return x; })}
+          onClear={() => setStatusFilter(new Set())}
+        />
         <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {working.length}</span>
       </div>
       {selected.size > 0 && (
