@@ -22,18 +22,26 @@ function fail(e: unknown): { ok: false; error: string } {
   return { ok: false, error: e instanceof AuthError ? e.message : e instanceof Error ? e.message : "failed" };
 }
 
-// Restricted-boundary guard: a scoped operator must not CONFER access to a restricted client outside
-// their own visible scope — no self- or lateral-escalation, regardless of role (super admin / auth-off
-// bypass, since they already see everything). `conferred` = the client ids that AUTHORIZE the target's
-// visibility (only-mode scope, or all/exclude grants). Returns an error to fail with, or null when ok.
-async function restrictedGrantGuard(conferred: string[]): Promise<string | null> {
+// Restricted-boundary guard for CONFERRING client access. Two rules, both server-enforced:
+//   1. Only a global admin (or super admin) may grant access to a restricted client at all — no other
+//      role can, even if it somehow held user.manage. ("No one else should be able to.")
+//   2. A global admin may only pass on the restricted access they THEMSELVES hold — no self- or
+//      lateral-escalation to a restricted client outside their own scope. super admin holds all.
+// `conferred` = the client ids that AUTHORIZE the target's visibility (only-mode scope, or all/exclude
+// grants). Returns an error to fail with, or null when allowed.
+async function restrictedGrantGuard(actorRole: Role, conferred: string[]): Promise<string | null> {
   if (conferred.length === 0) return null;
-  const scope = await currentClientScope(db);
-  if (scope === null) return null; // super admin / auth-off — has all clients, can grant any
-  const restricted = new Set(
+  const restrictedIds = new Set(
     (await db.client.findMany({ where: { id: { in: conferred }, restricted: true }, select: { id: true } })).map((c) => c.id),
   );
-  const bad = disallowedRestrictedGrants(scope, conferred, restricted);
+  if (restrictedIds.size === 0) return null; // nothing restricted is being conferred
+  // Rule 1: restricted-granting is a global-admin-and-up capability.
+  if (actorRole !== "super_admin" && actorRole !== "global_admin") {
+    return "only a global admin can grant access to a restricted client";
+  }
+  // Rule 2: you can only grant the restricted access you hold (super admin's null scope holds all).
+  const scope = await currentClientScope(db);
+  const bad = disallowedRestrictedGrants(scope, conferred, restrictedIds);
   if (bad.length === 0) return null;
   const names = (await db.client.findMany({ where: { id: { in: bad } }, select: { name: true } })).map((c) => c.name);
   return `you don't have access to these restricted clients, so you can't grant access to them: ${names.join(", ")}`;
@@ -133,7 +141,7 @@ export async function setUserClientAccess(
     // The ids that AUTHORIZE the target's visibility: only-mode scope IS the allowlist (a listed
     // restricted client is granted); all/exclude confer restricted access via grants (exclude scope is
     // a deny list, never a grant). A scoped operator can't confer restricted access they lack.
-    const guardErr = await restrictedGrantGuard(input.mode === "only" ? scopeIds : grantIds);
+    const guardErr = await restrictedGrantGuard(me.role, input.mode === "only" ? scopeIds : grantIds);
     if (guardErr) return { ok: false, error: guardErr };
 
     await db.$transaction([
@@ -177,7 +185,7 @@ export async function approveAccessRequest(id: string, input: { role: string; mo
     const scopeIds = wantScope.filter((x) => real.has(x));
     // Only-mode scope authorizes visibility (a listed restricted client is granted); a scoped approver
     // can't confer restricted access they lack. Exclude/all set no grants here, so nothing to guard.
-    const guardErr = await restrictedGrantGuard(input.mode === "only" ? scopeIds : []);
+    const guardErr = await restrictedGrantGuard(me.role, input.mode === "only" ? scopeIds : []);
     if (guardErr) return { ok: false, error: guardErr };
     // All three writes are one transaction: a mid-way failure must not leave a user with mode "only" and
     // no scope rows (they'd see zero clients) while the request stays pending with a misleading re-try path.
