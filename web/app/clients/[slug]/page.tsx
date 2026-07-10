@@ -124,7 +124,6 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const parentInfo = client.systems.length === 0
     ? (await db.client.findUnique({ where: { id: client.id }, select: { parent: { select: { slug: true, name: true, _count: { select: { systems: true } } } } } }))?.parent ?? null
     : null;
-  const hasRules = Boolean((v21?.personas && Object.keys(v21.personas).length) || (v21?.globals && Object.keys(v21.globals).length));
 
   const runbook = await db.runbookSection.findMany({
     where: { clientId: client.id },
@@ -337,15 +336,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         <h2 style={{ margin: 0 }}>Roles &amp; rules</h2>
         <EditRulesButton slug={client.slug} />
       </div>
-      {hasRules ? (
-        <RolesRulesView
-          personas={v21?.personas as never}
-          globals={v21?.globals as never}
-          locations={v21?.locations as never}
-        />
-      ) : (
-        <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>
-      )}
+      <RolesRulesView
+        personas={v21?.personas as never}
+        globals={v21?.globals as never}
+        locations={v21?.locations as never}
+        slug={client.slug}
+      />
 
       {readiness && readiness.tier !== "no_systems" && (
         <>

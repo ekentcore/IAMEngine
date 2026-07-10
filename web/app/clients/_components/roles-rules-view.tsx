@@ -6,6 +6,7 @@
 // and the locations table conditions resolve against. This is the rule SOURCE; the case Playbook
 // shows the RESOLVED output for a specific person.
 import { useState } from "react";
+import { RefreshLocationsButton } from "./refresh-locations-button";
 
 type GroupEntry = string | { groups?: string[]; when?: string };
 type OuEntry = string | Array<{ path?: string; when?: string }>;
@@ -66,7 +67,8 @@ function FragmentView({ frag }: { frag: Fragment }) {
   );
 }
 
-export function RolesRulesView({ personas, globals, locations }: {
+export function RolesRulesView({ personas, globals, locations, slug }: {
+  slug?: string;
   personas: Record<string, Persona> | null;
   globals: Record<string, Fragment> | null;
   locations: Record<string, Record<string, unknown>> | null;
@@ -76,10 +78,13 @@ export function RolesRulesView({ personas, globals, locations }: {
   const personaNames = personas ? Object.keys(personas).sort() : [];
   const globalSystems = globals ? Object.keys(globals) : [];
   const locNames = locations ? Object.keys(locations) : [];
+  const noRules = personaNames.length === 0 && globalSystems.length === 0;
 
   return (
     <div>
       <p className="note">The rules that resolve a new hire&rsquo;s OU, groups and attributes. <code style={{ fontSize: 11, color: "#7b3fa0" }}>when …</code> entries apply only when the condition holds (department/title/location/employment). The case Playbook shows the resolved result for a specific person.</p>
+
+      {noRules && <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>}
 
       {globalSystems.length > 0 && (
         <>
@@ -117,9 +122,15 @@ export function RolesRulesView({ personas, globals, locations }: {
         </>
       )}
 
-      {locNames.length > 0 && (
+      {(slug || locNames.length > 0) && (
         <>
-          <h3 style={{ margin: "0.8rem 0 2px" }}>Locations ({locNames.length})</h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0.8rem 0 2px", flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0 }}>Locations ({locNames.length})</h3>
+            {slug && <RefreshLocationsButton slug={slug} />}
+          </div>
+          {locNames.length === 0 ? (
+            <p className="note">No locations synced yet — <b>Refresh locations</b> pulls them from ServiceNow (cmn_location).</p>
+          ) : (
           <table style={{ fontSize: 12 }}>
             <thead><tr><th style={{ textAlign: "left" }}>Name</th><th style={{ textAlign: "left" }}>Address</th><th style={{ textAlign: "left" }}>City</th><th style={{ textAlign: "left" }}>State</th><th style={{ textAlign: "left" }}>Zip</th><th style={{ textAlign: "left" }}>Timezone</th><th style={{ textAlign: "left" }}>Country</th></tr></thead>
             <tbody>
@@ -129,6 +140,7 @@ export function RolesRulesView({ personas, globals, locations }: {
               })}
             </tbody>
           </table>
+          )}
         </>
       )}
     </div>

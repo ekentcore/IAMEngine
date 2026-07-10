@@ -9,6 +9,7 @@ import { currentClientScope } from "@/lib/auth/client-scope";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
 import { refreshClientName } from "@/lib/clients/refresh-name";
+import { refreshClientLocations } from "@/lib/clients/refresh-locations";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { parseClientOverride } from "@/lib/notifications/types";
 
@@ -52,6 +53,17 @@ export async function PATCH(req: Request, { params }: Ctx) {
     try {
       const r = await refreshClientName(db, params.slug, _g.user.email || "ui");
       if (!r.ok) return NextResponse.json({ error: r.reason ?? "couldn't refresh the name" }, { status: 422 });
+      return NextResponse.json(r);
+    } catch (e) {
+      if (e instanceof SnGatewayError) return NextResponse.json({ error: `ServiceNow: ${e.message}` }, { status: 502 });
+      return NextResponse.json({ error: "internal error" }, { status: 500 });
+    }
+  }
+
+  if (body.action === "refresh-locations") {
+    try {
+      const r = await refreshClientLocations(db, params.slug, _g.user.email || "ui");
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: 422 });
       return NextResponse.json(r);
     } catch (e) {
       if (e instanceof SnGatewayError) return NextResponse.json({ error: `ServiceNow: ${e.message}` }, { status: 502 });
