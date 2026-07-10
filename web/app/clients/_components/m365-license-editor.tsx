@@ -20,10 +20,11 @@ const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 // Single-group pick with discovered-group suggestions — the license editor's counterpart of the
 // rules editor's TagList, but exactly one group and each suggestion labeled with its source.
-function GroupPicker({ value, source, options, onChange }: {
+function GroupPicker({ value, source, options, allowAd, onChange }: {
   value: string;
   source: "entra" | "ad";
   options: GroupOption[];
+  allowAd: boolean;
   onChange: (group: string, source: "entra" | "ad") => void;
 }) {
   const [focus, setFocus] = useState(false);
@@ -43,7 +44,8 @@ function GroupPicker({ value, source, options, onChange }: {
       <select value={source} style={{ fontSize: 12, width: "auto" }} title="Where the group lives: Entra (cloud) or on-prem AD"
         onChange={(e) => onChange(value, e.target.value === "ad" ? "ad" : "entra")}>
         <option value="entra">Entra</option>
-        <option value="ad">AD</option>
+        {/* No AD system on this client = no lane to add an on-prem group (the save route rejects it too). */}
+        {allowAd && <option value="ad">AD</option>}
       </select>
       {focus && matches.length > 0 && (
         <ul style={{ position: "absolute", top: "100%", left: 0, zIndex: 10, margin: 0, padding: "2px 0", listStyle: "none", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, minWidth: 260, maxHeight: 180, overflowY: "auto" }}>
@@ -86,12 +88,16 @@ export function M365LicenseEditor({ slug, current, groupOptions = [], hasAdSyste
   const toggle = (name: string) =>
     setSel((s) => (s.some((e) => licenseEntryName(e) === name) ? s.filter((e) => licenseEntryName(e) !== name) : [...s, name]));
   const setMode = (name: string, groupBased: boolean) =>
-    setSel((s) => s.map((e) => (licenseEntryName(e) !== name ? e : groupBased ? { name, assignVia: "group" as const, group: "", groupSource: "entra" as const } : name)));
+    setSel((s) => s.map((e) => {
+      if (licenseEntryName(e) !== name) return e;
+      if (groupBased) return isGroupBased(e) ? e : { name, assignVia: "group" as const, group: "", groupSource: "entra" as const };
+      return isGroupBased(e) ? name : e; // back to direct; a legacy { name, skuId } entry stays untouched
+    }));
   const setGroup = (name: string, group: string, groupSource: "entra" | "ad") =>
     setSel((s) => s.map((e) => (licenseEntryName(e) === name && isGroupBased(e) ? { ...e, group, groupSource } : e)));
   const addCustom = () => { const t = custom.trim(); if (t && !sel.some((e) => licenseEntryName(e) === t)) { setSel([...sel, t]); } setCustom(""); };
 
-  const describe = (e: LicenseEntry) => (isGroupBased(e) ? `${e.name} (via ${e.groupSource === "ad" ? "AD" : "Entra"} group '${e.group}')` : e);
+  const describe = (e: LicenseEntry) => (isGroupBased(e) ? `${e.name} (via ${e.groupSource === "ad" ? "AD" : "Entra"} group '${e.group}')` : licenseEntryName(e));
   const incomplete = sel.filter((e) => isGroupBased(e) && !e.group.trim());
 
   if (!open) {
@@ -129,7 +135,7 @@ export function M365LicenseEditor({ slug, current, groupOptions = [], hasAdSyste
               </label>
               {grouped && (
                 <div style={{ margin: "3px 0 4px 24px" }}>
-                  <GroupPicker value={entry.group} source={entry.groupSource} options={pickerOptions}
+                  <GroupPicker value={entry.group} source={entry.groupSource} options={pickerOptions} allowAd={hasAdSystem}
                     onChange={(g, src) => setGroup(name, g, src)} />
                   {pickerOptions.length === 0 && (
                     <p className="note" style={{ fontSize: 11, margin: "3px 0 0" }}>

@@ -22,21 +22,36 @@ test("mixed direct + group-based entries survive together", () => {
   assert.equal(licenseEntryName(r.licenses[1]), "E5");
 });
 
+test("legacy { name, skuId } direct objects round-trip unharmed (no collapse to bare name)", () => {
+  const r = parseLicenseEntries([{ name: "E3", skuId: "abc-123" }, { name: "Visio" }]);
+  assert.ok(r.ok);
+  assert.deepEqual(r.licenses, [{ name: "E3", skuId: "abc-123" }, { name: "Visio" }]);
+});
+
+test("a mixed legacy + group-based array parses (neither entry lost)", () => {
+  const r = parseLicenseEntries([{ name: "E3", skuId: "abc" }, { name: "E5", assignVia: "group", group: "G" }]);
+  assert.ok(r.ok);
+  assert.equal(r.licenses.length, 2);
+  assert.ok(isGroupBased(r.licenses[1]));
+});
+
 test("rejects: non-array, wrong assignVia, missing name/group, bad groupSource, junk entries", () => {
   assert.equal(parseLicenseEntries("nope").ok, false);
-  assert.equal(parseLicenseEntries([{ name: "E5", skuId: "abc" }]).ok, false); // legacy object shape isn't accepted from the editor
+  assert.equal(parseLicenseEntries([{ skuId: "" }]).ok, false); // object with neither name nor skuId
   assert.equal(parseLicenseEntries([{ assignVia: "group", group: "G" }]).ok, false);
   assert.equal(parseLicenseEntries([{ name: "E5", assignVia: "group" }]).ok, false);
   assert.equal(parseLicenseEntries([{ name: "E5", assignVia: "group", group: "G", groupSource: "azure" }]).ok, false);
+  assert.equal(parseLicenseEntries([{ name: "E5", assignVia: "direct" }]).ok, false);
   assert.equal(parseLicenseEntries([42]).ok, false);
 });
 
-test("duplicate group-based entries dedupe; same name with different groups both kept", () => {
+test("one entry per license name, first wins — across kinds too (a license is assigned one way)", () => {
   const r = parseLicenseEntries([
+    "Microsoft 365 E5",
+    { name: "microsoft 365 e5", assignVia: "group", group: "G1" }, // same name, different kind — dropped
     { name: "E5", assignVia: "group", group: "G1" },
-    { name: "e5", assignVia: "group", group: "g1" },
-    { name: "E5", assignVia: "group", group: "G2" },
+    { name: "e5", assignVia: "group", group: "G2" },               // same name, different group — dropped
   ]);
   assert.ok(r.ok);
-  assert.equal(r.licenses.length, 2);
+  assert.deepEqual(r.licenses, ["Microsoft 365 E5", { name: "E5", assignVia: "group", group: "G1", groupSource: "entra" }]);
 });

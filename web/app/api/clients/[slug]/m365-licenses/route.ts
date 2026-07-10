@@ -8,7 +8,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
-import { parseLicenseEntries } from "@/lib/m365/license-config";
+import { parseLicenseEntries, isGroupBased } from "@/lib/m365/license-config";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +23,16 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
 
   const sys = await db.clientSystem.findFirst({ where: { client: { slug: params.slug }, systemKey: "m365" }, select: { id: true, config: true, clientId: true } });
   if (!sys) return NextResponse.json({ error: "this client has no m365 system" }, { status: 404 });
+
+  // Server-side gate (the UI hides the option, but that's not the boundary): an ad-source license
+  // group is executed by the client's active-directory job — without one it would be silently
+  // dropped at plan time and the user onboarded unlicensed while everything reads green.
+  if (licenses.some((l) => isGroupBased(l) && l.groupSource === "ad")) {
+    const hasAd = await db.clientSystem.count({ where: { clientId: sys.clientId, systemKey: "active-directory" } });
+    if (hasAd === 0) {
+      return NextResponse.json({ error: "an AD-source license group needs an active-directory system on this client — use an Entra group, or add the AD system first" }, { status: 422 });
+    }
+  }
 
   const config = { ...((sys.config ?? {}) as Record<string, unknown>) };
   config.onboard = { ...((config.onboard ?? {}) as Record<string, unknown>), licenses };

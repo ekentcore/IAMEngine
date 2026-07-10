@@ -53,18 +53,25 @@ function Write-CtgM365Step([string]$Message) {
     if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
 }
 
+function Test-CtgGraphNotFoundMessage([string]$Message) {
+    $Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b'
+}
+
 function Add-CtgGroupMember {
-    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3)
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId, [int]$Retries = 3, [switch]$GroupVerified)
     # Distinguish a missing GROUP (a stale/wrong configured id — a config error, no point retrying)
     # from the user not yet being replicated in Entra. The Graph "Resource ... does not exist" message
     # is the same for both, so check the group up front. Only a genuine 404 is a config error — a
     # transient failure falls through to the add attempt (which retries), not a false "not found".
-    try { $null = Get-MgGroup -GroupId $GroupId -ErrorAction Stop }
-    catch {
-        if ($_.Exception.Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b') {
-            return "group '$GroupId' not found in Entra — the configured group id is wrong or the group was deleted"
+    # -GroupVerified skips the pre-check when the caller just resolved/verified the id (no double GET).
+    if (-not $GroupVerified) {
+        try { $null = Get-MgGroup -GroupId $GroupId -ErrorAction Stop }
+        catch {
+            if (Test-CtgGraphNotFoundMessage $_.Exception.Message) {
+                return "group '$GroupId' not found in Entra — the configured group id is wrong or the group was deleted"
+            }
+            # transient (throttle/network) — proceed; New-MgGroupMember below has its own retry.
         }
-        # transient (throttle/network) — proceed; New-MgGroupMember below has its own retry.
     }
     $last = $null
     for ($i = 0; $i -lt $Retries; $i++) {
@@ -89,22 +96,41 @@ function Add-CtgGroupMember {
 function Resolve-CtgEntraGroupId {
     param([Parameter(Mandatory)][string]$NameOrId)
     # Uniform shape — BOTH keys always present: the module runs StrictMode, where reading an
-    # absent hashtable key throws.
+    # absent hashtable key throws. An Error here is a CONFIG problem (WARN, don't retry); a
+    # transient Graph error THROWS so the job fails and retries instead of reading as config.
     $guid = [guid]::Empty
     if ([guid]::TryParse($NameOrId, [ref]$guid)) {
         try { $null = Get-MgGroup -GroupId $NameOrId -ErrorAction Stop; return @{ Id = $NameOrId; Error = $null } }
         catch {
-            if ($_.Exception.Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b') {
+            if (Test-CtgGraphNotFoundMessage $_.Exception.Message) {
                 return @{ Id = $null; Error = "group id '$NameOrId' not found in Entra — the configured id is wrong or the group was deleted (configure the group NAME instead; it survives re-creation)" }
             }
             return @{ Id = $NameOrId; Error = $null }  # transient — let the add attempt retry with its own diagnostics
         }
     }
+    # Same identifier set the rest of the module resolves groups by (name, alias, mail) — an
+    # alias-configured group must behave like it does in the plain groups list.
     $esc = $NameOrId -replace "'", "''"
-    $hits = @(Get-MgGroup -Filter "displayName eq '$esc'" -Property 'id,displayName' -ErrorAction SilentlyContinue)
+    try {
+        $hits = @(Get-MgGroup -Filter "mail eq '$esc' or mailNickname eq '$esc' or displayName eq '$esc'" -Property 'id,displayName' -ErrorAction Stop)
+    } catch {
+        throw "resolving group '$NameOrId': $($_.Exception.Message)"  # transient — fail the job, retry
+    }
     if (@($hits).Count -eq 1) { return @{ Id = [string]$hits[0].Id; Error = $null } }
-    if (@($hits).Count -gt 1) { return @{ Id = $null; Error = "$(@($hits).Count) Entra groups are named '$NameOrId' — rename them apart, or configure the group id" } }
+    if (@($hits).Count -gt 1) { return @{ Id = $null; Error = "$(@($hits).Count) Entra groups match '$NameOrId' — rename them apart, or configure the group id" } }
     return @{ Id = $null; Error = "no Entra group named '$NameOrId' — check the name, or re-run cloud-group discovery to refresh the pick list" }
+}
+
+# One shared split so the assign path and the verify path can never classify a license entry
+# differently: group-based ({ assignVia: 'group' }) vs direct (strings and legacy objects).
+function Split-CtgLicenseSpecs($Specs) {
+    $groupBased = [System.Collections.Generic.List[object]]::new()
+    $direct = [System.Collections.Generic.List[object]]::new()
+    foreach ($s in @($Specs)) {
+        if ($null -eq $s) { continue }
+        if ($s -isnot [string] -and ([string](Get-CtgProp $s 'assignVia')) -eq 'group') { $groupBased.Add($s) } else { $direct.Add($s) }
+    }
+    @{ GroupBased = $groupBased.ToArray(); Direct = $direct.ToArray() }
 }
 
 # Resolve a reference user in Entra by UPN, then displayName as a fallback.
@@ -320,7 +346,7 @@ function Set-CtgSeatAwareLicense {
         if ($g -and $PSCmdlet.ShouldProcess($UserId, "Add to E5 group $g")) {
             # Accept a group NAME or a GUID — names resolve live, so a stale pasted id fails clearly.
             $res = Resolve-CtgEntraGroupId ([string]$g)
-            $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId }
+            $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId -GroupVerified }
             if ($err) { $actions.Add("WARN could not add to E5 Entra group: $err") }
             else { $actions.Add("E5 seat available ($available) — added to E5 Entra group") }
         }
@@ -331,7 +357,7 @@ function Set-CtgSeatAwareLicense {
         if ($eg) {
             if ($PSCmdlet.ShouldProcess($UserId, "Add to E3 group $eg")) {
                 $res = Resolve-CtgEntraGroupId ([string]$eg)
-                $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId }
+                $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId -GroupVerified }
                 if ($err) { $actions.Add("WARN could not add to E3 Entra group: $err") }
                 else { $actions.Add("no E5 seat — added to E3 Entra group") }
             }
@@ -686,8 +712,9 @@ function Invoke-CtgM365Onboarding {
     # A { assignVia: 'group' } entry licenses via GROUP MEMBERSHIP, not Set-MgUserLicense: entra-source
     # groups are added here (Graph); ad-source groups were appended to the AD job's groups at PLAN time
     # (the AD lane owns on-prem groups and runs before this lane) — here they only get a note.
-    $groupBasedSpecs = @($allLicenseSpecs | Where-Object { $_ -isnot [string] -and ([string](Get-CtgProp $_ 'assignVia')) -eq 'group' })
-    $licenseSpecs = @($allLicenseSpecs | Where-Object { $_ -is [string] -or ([string](Get-CtgProp $_ 'assignVia')) -ne 'group' })
+    $licenseSplit = Split-CtgLicenseSpecs $allLicenseSpecs
+    $groupBasedSpecs = $licenseSplit.GroupBased
+    $licenseSpecs = $licenseSplit.Direct
     # Licensing REQUIRES a usageLocation on the user, else Graph rejects "License assignment cannot be
     # done for user with invalid usage location". A synced/adopted user (hybrid clients — the account is
     # AD-mastered) often has none: New-MgUser sets it only when WE create the user, and the AD lane
@@ -714,11 +741,15 @@ function Invoke-CtgM365Onboarding {
             continue
         }
         if ($PSCmdlet.ShouldProcess($upn, "Add to license group $gbGroup")) {
+            # A resolve Error is a CONFIG problem → WARN and continue (the direct path's analog is
+            # "WARN license not in tenant"). A failed ADD is unexpected → THROW so the job fails and
+            # retries, matching the direct path's Set-MgUserLicense invariant — otherwise the case
+            # reads ok with an unlicensed user behind a buried WARN.
             $res = Resolve-CtgEntraGroupId $gbGroup
             if ($res.Error) { $actions.Add("WARN license '$gbName': $($res.Error)"); Write-CtgM365Step "✗ license group '$gbGroup': not resolvable"; continue }
-            $err = Add-CtgGroupMember -GroupId $res.Id -UserId $userId
-            if ($err) { $actions.Add("WARN license '$gbName': could not add to Entra group '$gbGroup': $err"); Write-CtgM365Step "✗ license group: $gbGroup" }
-            else { $actions.Add("license '$gbName': member of Entra group '$gbGroup' (group-based licensing)"); Write-CtgM365Step "✓ license group: $gbGroup" }
+            $err = Add-CtgGroupMember -GroupId $res.Id -UserId $userId -GroupVerified
+            if ($err) { Write-CtgM365Step "✗ license group: $gbGroup"; throw "license '$gbName': could not add to Entra group '$gbGroup': $err" }
+            $actions.Add("license '$gbName': member of Entra group '$gbGroup' (group-based licensing)"); Write-CtgM365Step "✓ license group: $gbGroup"
         }
     }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
@@ -1167,8 +1198,9 @@ function Confirm-CtgM365 {
             $allLicenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
             # Group-based entries verify MEMBERSHIP (below, once memberships are indexed) — the sku
             # itself propagates from the group with a lag, so checking it here would false-miss.
-            $groupBasedSpecs = @($allLicenseSpecs | Where-Object { $_ -isnot [string] -and ([string](Get-CtgProp $_ 'assignVia')) -eq 'group' })
-            $licenseSpecs = @($allLicenseSpecs | Where-Object { $_ -is [string] -or ([string](Get-CtgProp $_ 'assignVia')) -ne 'group' })
+            $licenseSplit = Split-CtgLicenseSpecs $allLicenseSpecs
+            $groupBasedSpecs = $licenseSplit.GroupBased
+            $licenseSpecs = $licenseSplit.Direct
             foreach ($lic in $licenseSpecs) {
                 $name = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
                 $skuId = Resolve-CtgSkuId $lic
@@ -1203,18 +1235,28 @@ function Confirm-CtgM365 {
                 foreach ($id in $ids) { $k = & $norm $id; if ($k -and -not $memberIndex.ContainsKey($k)) { $memberIndex[$k] = $type } }
             }
             # Group-based license entries: the license is granted by group MEMBERSHIP, so that's the
-            # check. ad-source groups are added (and verified) by the active-directory lane — report
-            # them informationally here rather than false-missing on directory-sync timing.
+            # check. A GUID-configured group can't match the name index — check the membership IDs.
+            $memberIds = @($myMemberships | ForEach-Object { [string](Get-CtgProp $_ 'Id') } | Where-Object { $_ })
             foreach ($gb in $groupBasedSpecs) {
                 $gbName = [string]((Get-CtgProp $gb 'name') ?? 'license')
                 $gbGroup = [string](Get-CtgProp $gb 'group')
                 if (-not $gbGroup) { & $add "license: $gbName (group-based, no group configured)" $true $false; continue }
-                if (([string](Get-CtgProp $gb 'groupSource')) -eq 'ad') {
-                    & $add "license: $gbName (via AD group '$gbGroup' — the active-directory step verifies it)" $true $true
+                $gbGuid = [guid]::Empty
+                $present = if ([guid]::TryParse($gbGroup, [ref]$gbGuid)) { $memberIds -contains $gbGroup } else { $memberIndex.ContainsKey((& $norm $gbGroup)) }
+                if (([string](Get-CtgProp $gb 'groupSource')) -ne 'ad') {
+                    & $add "license: $gbName (via Entra group '$gbGroup')" $true $present
                     continue
                 }
-                $present = $memberIndex.ContainsKey((& $norm $gbGroup))
-                & $add "license: $gbName (via Entra group '$gbGroup')" $true $present
+                # ad-source: the AD lane does the add and directory sync surfaces the membership in
+                # Entra. Member -> pass. Not a member: if the group IS visible in Entra (synced), the
+                # add genuinely hasn't landed -> MISS; if Graph can't see the group at all, membership
+                # is unverifiable from this lane -> report that fact as a pass rather than a false MISS
+                # (the active-directory lane's own validator checks the on-prem add).
+                if ($present) { & $add "license: $gbName (via AD group '$gbGroup', synced to Entra)" $true $true; continue }
+                $gesc = $gbGroup -replace "'", "''"
+                $grp = Get-MgGroup -Filter "mail eq '$gesc' or mailNickname eq '$gesc' or displayName eq '$gesc'" -Top 1 -Property 'id' -ErrorAction SilentlyContinue
+                if ($grp) { & $add "license: $gbName (via AD group '$gbGroup' — group is synced to Entra, user is NOT a member)" $true $false }
+                else { & $add "license: $gbName (via AD group '$gbGroup' — not visible in Entra; the active-directory step verifies the add)" $true $true }
             }
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
                 # A group spec can be a plain name, an object { name, type }, or an email. Verify by

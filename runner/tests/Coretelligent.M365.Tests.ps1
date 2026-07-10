@@ -612,7 +612,21 @@ Describe 'Resolve-CtgEntraGroupId' {
     It 'errors on an ambiguous name instead of picking one' {
         Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'a' }, [pscustomobject]@{ Id = 'b' }) }
         $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'Dup Name' }
-        $r.Error | Should -Match '2 Entra groups are named'
+        $r.Error | Should -Match '2 Entra groups match'
+    }
+
+    It 'resolves by mail alias too (same identifier set as the rest of the module)' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith {
+            param($GroupId, $Filter)
+            if ("$Filter" -match "mail eq 'e5-lic@x\.com'") { @([pscustomobject]@{ Id = 'grp-alias' }) } else { @() }
+        }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'e5-lic@x.com' }
+        $r.Id | Should -Be 'grp-alias'
+    }
+
+    It 'THROWS on a transient Graph error during name lookup (retry, not a fake config error)' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { throw 'TooManyRequests: throttled' }
+        { & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'E5 License Users' } } | Should -Throw -ExpectedMessage '*throttled*'
     }
 }
 
@@ -653,12 +667,19 @@ Describe 'group-based license assignment' {
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 0 -Exactly
     }
 
-    It 'WARNs (does not fail) when the license group is not in Entra' {
+    It 'WARNs (does not fail) when the license group is not in Entra — a config error, no point retrying' {
         Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
         $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='Ghost Group' }) }
         $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
         $r.Status | Should -Be 'ok'
         ($r.Actions -join '|') | Should -Match "WARN license 'E5': no Entra group named 'Ghost Group'"
+    }
+
+    It 'THROWS (fails the job) when the group add itself fails — same invariant as direct Set-MgUserLicense' {
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { throw 'Insufficient privileges to complete the operation' }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='E5 License Users' }) }
+        { Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage "*could not add to Entra group 'E5 License Users'*"
     }
 
     It 'mixes group-based and direct entries — direct still uses Set-MgUserLicense' {
@@ -689,13 +710,41 @@ Describe 'group-based license assignment' {
         ($r.checks | Where-Object { $_.name -like "license: E5 (via Entra group*" }).pass | Should -BeFalse
     }
 
-    It 'validator: ad-source entry reports informational pass (AD lane owns it)' {
+    It 'validator: a GUID-configured entra group verifies by membership ID (not the name index)' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
-        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99'; AdditionalProperties = @{ displayName = 'E5 License Users' } }) }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'validator: ad-source entry passes once the synced membership is visible in Entra' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'g1'; AdditionalProperties = @{ displayName = 'M365 E3 Users Group' } }) }
         $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
         $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
         $r.ok | Should -BeTrue
         ($r.checks | Where-Object { $_.name -like "license: E3 (via AD group*" }).pass | Should -BeTrue
+    }
+
+    It 'validator: ad-source entry MISSES when the group is synced to Entra but the user is not a member' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        # BeforeEach's Get-MgGroup mock returns a group -> the group IS visible in Entra.
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -like "license: E3 (via AD group*" }).pass | Should -BeFalse
+    }
+
+    It 'validator: ad-source entry reports an unverifiable-from-here pass when the group is not visible in Entra' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { $null }  # not synced / on-prem only
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -like "*not visible in Entra*" }).pass | Should -BeTrue
     }
 }
 
