@@ -49,7 +49,7 @@ test("onPremExclusions: legacy withholds nothing; a report withholds every unlis
   assert.deepEqual(onPremExclusions([]).sort(), [...ALWAYS_ON_PREM_SYSTEMS].sort()); // capable of none -> withhold all
   // The reported bug's shape: an agent that can do directory-sync but NOT active-directory. It also
   // can't do the AD email write-back (that rides the ActiveDirectory module).
-  assert.deepEqual(onPremExclusions(["directory-sync"]), ["active-directory", "ad-email-writeback", "ad-consistency-check", "ad-hard-match"]);
+  assert.deepEqual(onPremExclusions(["directory-sync"]), ["active-directory", "ad-email-writeback", "ad-consistency-check", "ad-hard-match", "ad-password-reset"]);
 });
 
 test("ad-email-writeback rides the active-directory capability (no separate cap to report)", () => {
@@ -63,4 +63,12 @@ test("ad-email-writeback rides the active-directory capability (no separate cap 
 
 test("sanity: active-directory is in the on-prem set (guards the gate against a rename)", () => {
   assert.ok(ALWAYS_ON_PREM_SYSTEMS.includes("active-directory"));
+});
+
+test("ad-password-reset rides the active-directory capability and is on-prem", () => {
+  assert.ok(ALWAYS_ON_PREM_SYSTEMS.includes("ad-password-reset"));
+  assert.equal(agentCanRun("ad-password-reset", ["active-directory"]), true);
+  assert.equal(agentCanRun("ad-password-reset", ["directory-sync"]), false);
+  assert.equal(agentCanRun("ad-password-reset", null), true); // legacy — don't strand
+  assert.equal(onPremExclusions(["active-directory"]).includes("ad-password-reset"), false);
 });

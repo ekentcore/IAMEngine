@@ -314,6 +314,7 @@ model Job {
   assignedAgentId  String?
   request          Json? // resolved instructions for the runner
   singleRun        Boolean           @default(false) // operator "run this step only": claimable even while the case is paused, runs in isolation (no cascade), cleared on result
+  oneTimePassword  String? // ad-hoc password-reset jobs only: the generated value, injected into the runner config at claim, revealed to the operator ONCE then wiped (also wiped on failure) — never in result/audit
   result           Json?
   evidence         Json? // screenshots / membership snapshots refs
   validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
