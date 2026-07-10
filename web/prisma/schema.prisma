@@ -289,6 +289,10 @@ model CaseRequest {
   // can run — the case is auto-held on import and released once the fields are provided).
   pausedReason         String?
   createdAt            DateTime   @default(now())
+  // ONE-TIME initial password for a "generate"-mode onboard: the app generates it at dispatch (so it
+  // knows the value), injects it as the runner's initial password, and stores it here to reveal to the
+  // operator EXACTLY ONCE (the reveal wipes it). Never logged / never in Job.result or audit.
+  initialPassword      String?
   // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
   // purged. Excluded from the active list and from runner claims while trashed.
   deletedAt            DateTime?

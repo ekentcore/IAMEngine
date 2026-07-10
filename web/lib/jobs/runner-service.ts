@@ -9,6 +9,7 @@ import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "..
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
+import { generateInitialPassword } from "../auth/password";
 import { sweepProcurementWatches } from "./procurement-watch";
 import { sweepServiceNowIntake } from "./intake-sweep";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
@@ -484,8 +485,31 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // Generated INITIAL password (revealed once): for a "generate"-mode m365/entra onboard, generate
+      // the password app-side so we can show it to the operator, store it on the case (revealed once,
+      // then wiped), and inject it as the runner's initial password. Only when the runner WOULD generate
+      // one anyway (no initialPasswordSecret, no literal, no brokered default-password) — never overrides
+      // a wired/fixed password. Idempotent: reuse the stored value across re-claims.
+      const pwByCase = new Map<string, string>();
+      for (const j of claimed) {
+        if (j.case.action !== "onboard" || (j.systemKey !== "m365" && j.systemKey !== "entra")) continue;
+        if (pwByCase.has(j.caseRequestId)) continue;
+        const rr = req(j);
+        const cfg = (rr.config ?? {}) as { initialPasswordSecret?: unknown; initialPassword?: unknown };
+        const generateMode = !cfg.initialPasswordSecret && !cfg.initialPassword && !((rr.secretNames ?? []).includes("default-password"));
+        if (!generateMode) continue;
+        let pw = (j.case as { initialPassword?: string | null }).initialPassword ?? null;
+        if (!pw) {
+          pw = generateInitialPassword();
+          await db.caseRequest.update({ where: { id: j.caseRequestId }, data: { initialPassword: pw } });
+        }
+        pwByCase.set(j.caseRequestId, pw);
+      }
+
       return claimed.map((j) => {
         const r = req(j);
+        const injectedPw = (j.systemKey === "m365" || j.systemKey === "entra") ? pwByCase.get(j.caseRequestId) : undefined;
+        const config = injectedPw ? { ...((r.config as Record<string, unknown> | null) ?? {}), initialPassword: injectedPw } : (r.config ?? null);
         const payload =
           j.systemKey === "ad-email-writeback"
             ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
@@ -499,7 +523,7 @@ export function makeRunnerService(db: PrismaClient) {
           systemKey: j.systemKey,
           mode: j.mode,
           client: { slug: j.case.client.slug, primaryDomain: j.case.client.primaryDomain, backbone: j.case.client.backbone },
-          config: r.config ?? null,
+          config,
           secretNames: r.secretNames ?? [],
           payload,
           requiresApproval: Boolean(r.requiresApproval),

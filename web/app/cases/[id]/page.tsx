@@ -14,6 +14,7 @@ import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { RescanButton } from "../_components/rescan-button";
+import { RevealPasswordButton } from "../_components/reveal-password-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
 import { PauseButton } from "../_components/pause-button";
 import { IntakePanel } from "../_components/intake-panel";
@@ -72,7 +73,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
   // incrementally (kept steps survive, new/changed systems get fresh jobs).
   const started = hasStartedJobs(c.jobs);
-  const paused = Boolean((await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true } }))?.pausedAt);
+  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true } });
+  const paused = Boolean(caseMeta?.pausedAt);
+  const hasInitialPassword = Boolean(caseMeta?.initialPassword);
 
   return (
     <main>
@@ -88,7 +91,8 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {hasInitialPassword && <RevealPasswordButton caseId={c.id} />}
           <PauseButton caseId={c.id} paused={paused} />
           <ReplanButton caseId={c.id} canReplan={true} started={started} />
         </div>
