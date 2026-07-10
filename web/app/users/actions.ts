@@ -151,13 +151,17 @@ export async function approveAccessRequest(id: string, input: { role: string; mo
     const wantScope = input.mode === "all" ? [] : uniq(input.scopeClientIds);
     const real = wantScope.length ? new Set((await db.client.findMany({ where: { id: { in: wantScope } }, select: { id: true } })).map((c) => c.id)) : new Set<string>();
     const scopeIds = wantScope.filter((x) => real.has(x));
-    const user = await db.user.create({
-      data: { email, name: reqRow.name?.trim() || null, role: input.role as Role, authType: "sso", clientAccessMode: input.mode as ClientAccessMode },
+    // All three writes are one transaction: a mid-way failure must not leave a user with mode "only" and
+    // no scope rows (they'd see zero clients) while the request stays pending with a misleading re-try path.
+    await db.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: { email, name: reqRow.name?.trim() || null, role: input.role as Role, authType: "sso", clientAccessMode: input.mode as ClientAccessMode },
+      });
+      if (scopeIds.length) {
+        await tx.userClientAccess.createMany({ data: scopeIds.map((clientId) => ({ userId: user.id, clientId, kind: "scope" as const })) });
+      }
+      await tx.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
     });
-    if (scopeIds.length) {
-      await db.userClientAccess.createMany({ data: scopeIds.map((clientId) => ({ userId: user.id, clientId, kind: "scope" as const })) });
-    }
-    await db.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
     await recordAudit("access_request.approve", { user: me, detail: { email, role: input.role, mode: input.mode, scope: scopeIds.length } });
     revalidatePath("/users");
     return { ok: true };
@@ -187,16 +191,20 @@ function uniq(xs?: string[]): string[] {
 export async function resetUserPassword(userId: string, password?: string): Promise<Result<{ generatedPassword?: string }>> {
   try {
     const me = await requirePermission("user.manage");
-    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
+    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true, authType: true } });
     if (!target) return { ok: false, error: "user not found" };
+    // An SSO-only user has no local password — resetting one would flip authType to "local" and open a
+    // password login path (account takeover of a Microsoft-only account). Block it; use impersonation instead.
+    if (target.authType === "sso") return { ok: false, error: "this user signs in with Microsoft 365 — there is no local password to reset" };
     // Seniority rule: a super resets anyone; a global resets global-or-lower; only a super resets a super.
     if (!canResetPassword(me.role, target.role)) {
       return { ok: false, error: target.role === "super_admin" ? "only a super admin can reset a super admin's password" : "you can't reset the password of a user more senior than you" };
     }
     const pw = password?.trim() || generatePassword();
-    // A password reset also revokes existing sessions (forces re-login).
+    // A password reset also revokes existing sessions (forces re-login). Preserve "both" (SSO+local) rather
+    // than clobbering to "local" so a dual-auth user keeps their Microsoft sign-in.
     await db.$transaction([
-      db.user.update({ where: { id: userId }, data: { passwordHash: hashPassword(pw), authType: "local" } }),
+      db.user.update({ where: { id: userId }, data: { passwordHash: hashPassword(pw), authType: target.authType === "both" ? "both" : "local" } }),
       db.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
     ]);
     await recordAudit("user.reset_password", { user: me, detail: { email: target.email } });

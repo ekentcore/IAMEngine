@@ -688,8 +688,11 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
       if (!agent || !agent.enabled) throw new HttpError(403, "unknown or disabled agent");
+      // Only the central (cloud) runner discovers cloud groups — mirror claimCloudGroupDiscovery. A
+      // client-network agent must not be able to write another client's group picker (cross-client write).
+      if (agent.clientId) throw new HttpError(403, "only the central runner reports cloud groups");
       const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       // Normalize + cap (a big tenant can have thousands) so the picker payload stays sane.
