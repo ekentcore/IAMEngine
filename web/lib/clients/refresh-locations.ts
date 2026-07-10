@@ -33,3 +33,18 @@ export async function refreshClientLocations(db: PrismaClient, slug: string, act
   await db.auditLog.create({ data: { actor, action: "client.locations.refresh", clientId: client.id, detail: { count: names.length, names } } });
   return { ok: true, count: names.length, names };
 }
+
+// Refresh every active, ServiceNow-linked client, SEQUENTIALLY (gentle on the SN API). Returns a
+// per-client summary. Non-destructive per client (a 0-match client keeps its existing locations).
+export async function refreshAllClientLocations(db: PrismaClient, actor = "ui:bulk"): Promise<{ slug: string; result: RefreshLocationsResult }[]> {
+  const clients = await db.client.findMany({
+    where: { status: "active", serviceNowSysId: { not: null } },
+    select: { slug: true },
+    orderBy: { slug: "asc" },
+  });
+  const out: { slug: string; result: RefreshLocationsResult }[] = [];
+  for (const c of clients) {
+    out.push({ slug: c.slug, result: await refreshClientLocations(db, c.slug, actor) });
+  }
+  return out;
+}
