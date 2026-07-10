@@ -214,6 +214,11 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       </table>
 
       <h2>Systems</h2>
+      {sysByKey.has("active-directory") && (sysByKey.has("m365") || sysByKey.has("entra") || sysByKey.has("exchange")) && !sysByKey.has("directory-sync") && (
+        <p className="note" style={{ color: "var(--warn-fg)", border: "1px solid var(--warn-fg)", background: "var(--warn-bg)", borderRadius: 8, padding: "0.5rem 0.7rem", margin: "0 0 0.75rem" }}>
+          ⚠ Hybrid client with on-prem Active Directory <b>and</b> cloud systems, but <b>no directory-sync step</b>. New AD accounts won&rsquo;t be pushed to Entra before the cloud steps run — they can race or fail. Add <b>directory-sync</b> (depends on <code>active-directory</code>) in <b>Edit systems</b>.
+        </p>
+      )}
       {sysByKey.has("m365") && (
         <M365LicenseEditor
           slug={client.slug}
