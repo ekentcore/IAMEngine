@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Fragment, Persona, GroupEntry, AttrValue } from "@/lib/clients/rules";
-import { ConditionBuilder, TagList, AD_ATTRIBUTES } from "./condition-builder";
+import { ConditionBuilder, TagList, AD_ATTRIBUTES, VARS } from "./condition-builder";
 import { OuTreePicker } from "./ad-pickers";
 import { NlRuleBox, type AppliedRule, type AppliedPersona } from "./nl-rule-box";
 
@@ -373,6 +373,39 @@ function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, syste
   );
 }
 
+// An attribute's value is either a Variable (a field from the ServiceNow intake, stored as `{token}`)
+// or Static text the operator types. A bare "{token}" reads back as Variable with that field selected;
+// anything else is Static — which also covers templates like "{first}.{last}" (edit them as free text).
+function AttrValueInput({ value, onChange, width = 200 }: { value: string; onChange: (v: string) => void; width?: number }) {
+  const bareToken = (s: string) => { const m = /^\{([^}]+)\}$/.exec(s.trim()); return m ? m[1] : null; };
+  const [mode, setMode] = useState<"variable" | "static">(bareToken(value) ? "variable" : "static");
+  const token = bareToken(value) ?? "";
+  // Keep an unknown token (one not in the suggested list) selectable so it isn't silently dropped.
+  const opts = token && !VARS.includes(token) ? [token, ...VARS] : VARS;
+  return (
+    <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      <select className="inline" style={{ width: 88 }} value={mode}
+        title="Variable = a field from the ServiceNow intake (inserted as {token}); Static = a fixed value you type"
+        onChange={(e) => {
+          const m = e.target.value as "variable" | "static";
+          setMode(m);
+          // Seed a default field when switching to Variable from non-token text (so the dropdown has a value).
+          if (m === "variable" && !bareToken(value)) onChange(`{${VARS[0]}}`);
+        }}>
+        <option value="variable">Variable</option>
+        <option value="static">Static</option>
+      </select>
+      {mode === "variable" ? (
+        <select className="inline" style={{ width }} value={token} onChange={(e) => onChange(`{${e.target.value}}`)}>
+          {opts.map((o) => <option key={o} value={o}>{`{${o}}`}</option>)}
+        </select>
+      ) : (
+        <input className="inline" style={{ width }} value={value} placeholder="type a value" onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+      )}
+    </span>
+  );
+}
+
 function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue>; onChange: (next: Record<string, AttrValue>) => void }) {
   const rename = (oldK: string, newK: string): boolean => {
     const nk = newK.trim();
@@ -396,7 +429,7 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
               <input list="ad-attrs" className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => { if (!rename(k, e.target.value)) e.target.value = k; }} placeholder="attribute" spellCheck={false} />
               <span className="note">=</span>
               {!isCond && (
-                <input className="inline" style={{ width: 240 }} value={String(v ?? "")} onChange={(e) => setVal(k, e.target.value)} placeholder="value or {token}" spellCheck={false} />
+                <AttrValueInput value={String(v ?? "")} onChange={(nv) => setVal(k, nv)} />
               )}
               <span className="grow" />
               {!isCond && <button className="note" onClick={() => setVal(k, [{ value: String(v ?? ""), when: "" }])}>make conditional</button>}
@@ -407,8 +440,8 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
                 {(v as Array<{ value: string | number | boolean; when?: string }>).map((entry, i, arr) => (
                   <div key={i} style={{ borderTop: i ? "1px dashed #eee" : undefined, paddingTop: i ? 6 : 0, marginTop: i ? 6 : 0 }}>
                     <div className="toolbar" style={{ gap: 4 }}>
-                      <input className="inline" style={{ width: 240 }} value={String(entry.value ?? "")} placeholder="value or {token}"
-                        onChange={(e) => setVal(k, arr.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} spellCheck={false} />
+                      <AttrValueInput value={String(entry.value ?? "")}
+                        onChange={(nv) => setVal(k, arr.map((x, j) => (j === i ? { ...x, value: nv } : x)))} />
                       <span className="grow" />
                       <button onClick={() => { const left = arr.filter((_, j) => j !== i); if (left.length) setVal(k, left); else remove(k); }} style={{ color: "#b3261e" }} title="remove this value">×</button>
                     </div>
