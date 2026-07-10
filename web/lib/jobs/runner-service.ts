@@ -282,7 +282,7 @@ export function makeRunnerService(db: PrismaClient) {
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
           const who = `${w.case?.serviceNowCaseNumber ?? w.caseRequestId}${w.case?.client?.name ? ` (${w.case.client.name})` : ""}`;
-          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, override: parseClientOverride(w.case?.client?.notifyOverride), systemKey: w.systemKey, detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
+          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, override: parseClientOverride(w.case?.client?.notifyOverride), systemKey: w.systemKey, at: new Date().toISOString(), detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
         } else {
           await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.reclaim", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims: reclaims + 1 } } });
@@ -873,13 +873,22 @@ export function makeRunnerService(db: PrismaClient) {
         const override = parseClientOverride(job.case.client?.notifyOverride);
         const url = process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${job.caseRequestId}` : null;
         const who = `${caseNumber ?? job.caseRequestId}${clientName ? ` (${clientName})` : ""}`;
+        // Who kicked off the run that led here — the most recent operator "run" action on this case
+        // (resume/re-run/verify/import). Null when auth is off or the case ran unattended.
+        const runAudit = await db.auditLog.findFirst({
+          where: { caseRequestId: job.caseRequestId, action: { in: ["case.plan", "job.rerun", "case.verify", "case.resume", "case.dry_run.set"] }, actor: { startsWith: "user:" } },
+          orderBy: { at: "desc" },
+          select: { actor: true },
+        });
+        const actor = runAudit?.actor ? runAudit.actor.replace(/^user:/, "") : null;
+        const at = new Date().toISOString();
         if (status === "failed") {
-          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
         }
         if (caseStatus === "failed") {
-          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
         } else if (caseStatus === "needs_approval") {
-          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, detail: "A destructive offboard step is waiting for approval.", url });
+          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, actor, at, detail: "A destructive offboard step is waiting for approval.", url });
         }
       }
 

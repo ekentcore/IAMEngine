@@ -26,6 +26,13 @@ test("messageText includes title, client, case, system, detail, url", () => {
   for (const s of ["Case failed", "Acme", "UM0028740", "m365", "boom", "https://app/cases/x"]) assert.match(t, new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("messageText adds 'Ran by' + a readable UTC 'At' when actor/timestamp are present", () => {
+  const t = messageText({ ...ev, actor: "Jane Doe", at: "2026-07-10T14:32:09.000Z" });
+  assert.match(t, /Ran by: Jane Doe/);
+  assert.match(t, /At: 2026-07-10 14:32 UTC/); // formatted, not a raw ISO string
+  assert.doesNotMatch(messageText(ev), /Ran by:/); // omitted when absent
+});
+
 test("normalizeSettings migrates the OLD flat shape (zoom + zoomRestricted -> zoom.default/restricted)", () => {
   const s = normalizeSettings({
     enabled: true,
@@ -88,16 +95,22 @@ test("sendWebhook posts { text }", async () => {
   } finally { globalThis.fetch = orig; }
 });
 
-test("sendZoom sends Authorization token, ?format=message, and a RAW JSON-string body", async () => {
+test("sendZoom sends Authorization token, ?format=full, and the structured card (one body segment per line)", async () => {
   const cap: { got?: { url: string; headers: Record<string, string>; body: string } } = {};
   const orig = globalThis.fetch;
   globalThis.fetch = (async (url: string, init?: RequestInit) => { cap.got = { url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body: String(init?.body) }; return { ok: true, status: 200 } as Response; }) as unknown as typeof fetch;
   try {
-    assert.equal((await sendZoom("https://z/abc", "VTOKEN", ev)).ok, true);
-    assert.match(cap.got!.url, /[?&]format=message/);
+    assert.equal((await sendZoom("https://z/abc", "VTOKEN", { ...ev, actor: "Jane Doe" })).ok, true);
+    assert.match(cap.got!.url, /[?&]format=full/);
     assert.equal(cap.got!.headers.Authorization, "VTOKEN");
-    assert.equal(cap.got!.body, JSON.stringify(messageText(ev)));
-    assert.doesNotMatch(cap.got!.body, /"text"/);
+    const payload = JSON.parse(cap.got!.body) as { content: { head: { text: string }; body: { type: string; text: string }[] } };
+    assert.equal(payload.content.head.text, ev.title); // title becomes the card header
+    const texts = payload.content.body.map((s) => s.text);
+    assert.ok(texts.includes("Case: UM0028740")); // each fact is its OWN segment → real line break
+    assert.ok(texts.includes("Ran by: Jane Doe"));
+    assert.ok(texts.includes("boom"));
+    assert.ok(payload.content.body.every((s) => s.type === "message"));
+    assert.doesNotMatch(cap.got!.body, /\\n/); // no literal "\n" — lines are separate segments
   } finally { globalThis.fetch = orig; }
 });
 
@@ -109,7 +122,7 @@ test("sendTest routes to the right transport per channel", async () => {
     await sendTest("teams", { webhookUrl: "https://teams" }, ev);
     await sendTest("zoom", { webhookUrl: "https://zoom", token: "t" }, ev);
     assert.match(hits[0], /teams/);
-    assert.match(hits[1], /zoom.*format=message/);
+    assert.match(hits[1], /zoom.*format=full/);
     const email = await sendTest("email", { recipients: ["x@y.com"] }, ev); // no NOTIFY_GRAPH env
     assert.equal(email.ok, false); // email not configured -> clean failure, not a throw
   } finally { globalThis.fetch = orig; }

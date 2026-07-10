@@ -67,6 +67,8 @@ export type NotificationEvent = {
   clientName?: string | null;
   systemKey?: string | null;
   detail?: string | null;
+  actor?: string | null; // the operator who kicked off the run that failed
+  at?: string | null; // ISO timestamp of the failure (rendered readable in the message)
   url?: string | null;
   restricted?: boolean; // client is restricted -> route to the "restricted" destination of each channel
   override?: ClientNotifyOverride | null; // this client's per-channel overrides (from the client page)

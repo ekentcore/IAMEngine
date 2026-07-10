@@ -21,12 +21,20 @@ export type ChannelResult = { channel: NotifChannel; ok: boolean; error?: string
 // 8s cap so an awaited notification (fired inline from the job-result path) can never hang the runner.
 const TIMEOUT_MS = 8000;
 
-// One plain-text body shared across channels.
+// A readable UTC timestamp, e.g. "2026-07-10 14:32 UTC" — locale-free so it's deterministic.
+function fmtAt(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+// One plain-text body shared across channels (line-per-fact; Zoom splits it into card segments).
 export function messageText(e: NotificationEvent): string {
   const parts = [e.title];
   if (e.clientName) parts.push(`Client: ${e.clientName}`);
   if (e.caseNumber) parts.push(`Case: ${e.caseNumber}`);
   if (e.systemKey) parts.push(`System: ${e.systemKey}`);
+  if (e.actor) parts.push(`Ran by: ${e.actor}`);
+  if (e.at) parts.push(`At: ${fmtAt(e.at)}`);
   if (e.detail) parts.push(e.detail);
   if (e.url) parts.push(e.url);
   return parts.join("\n");
@@ -44,15 +52,25 @@ async function postJson(url: string, body: unknown): Promise<SendResult> {
 // Teams + Slack incoming webhooks accept a simple { text } payload.
 export const sendWebhook = (webhookUrl: string, e: NotificationEvent): Promise<SendResult> => postJson(webhookUrl, { text: messageText(e) });
 
-// Zoom Team Chat's incoming webhook needs an `Authorization: <verificationToken>` header, a
-// `?format=message` URL param, and a RAW JSON-string body (not { text }). Missing token -> HTTP 400.
+// Zoom Team Chat's incoming webhook needs an `Authorization: <verificationToken>` header. It renders
+// REAL line breaks only via the structured card format (`content.head` + a `body` array with one
+// `{ type: "message", text }` segment per line); a plain string shows a literal "\n". `?format=full`
+// is the format that accepts this structure (see Zoom "send messages via incoming webhooks"). Missing
+// token -> HTTP 400/401.
+export function zoomBody(e: NotificationEvent): { content: { head: { text: string }; body: { type: "message"; text: string }[] } } {
+  const lines = messageText(e).split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
+  const head = lines.shift() ?? e.title;
+  return { content: { head: { text: head }, body: lines.map((text) => ({ type: "message", text })) } };
+}
+
 export async function sendZoom(webhookUrl: string, token: string, e: NotificationEvent): Promise<SendResult> {
   try {
-    const url = /[?&]format=/.test(webhookUrl) ? webhookUrl : webhookUrl + (webhookUrl.includes("?") ? "&" : "?") + "format=message";
+    let url = webhookUrl;
+    try { const u = new URL(webhookUrl); u.searchParams.set("format", "full"); url = u.toString(); } catch { /* leave as-is if not a full URL */ }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },
-      body: JSON.stringify(messageText(e)),
+      body: JSON.stringify(zoomBody(e)),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}${token ? "" : " — set the Zoom verification token"}` };
