@@ -670,6 +670,12 @@ $DISPATCH = @{
         Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
         Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action -AdConnection (New-CtgAdConnection $creds) }
     }
+    # Write the cloud-assigned email back into AD's `mail` attribute (onboard only). Runs on the client
+    # agent via the ActiveDirectory module; the app injects `writebackEmail` into the payload at dispatch.
+    'ad-email-writeback' = @{
+        Onboard  = { param($job, $creds) Invoke-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Validate = { param($job, $creds) Confirm-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in

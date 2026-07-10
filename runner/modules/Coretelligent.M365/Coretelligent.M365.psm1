@@ -843,11 +843,18 @@ function Invoke-CtgM365Onboarding {
 
     $warned = @($actions | Where-Object { $_ -like 'WARN*' }).Count
     Write-CtgM365Step "$(if ($warned) { "⚠ m365 onboard finished with $warned warning(s)" } else { '✓ m365 onboard complete' }) — $($actions -join '; ')"
+    # The mailbox's ASSIGNED primary SMTP — consumed by the ad-email-writeback step to set AD's `mail`.
+    # Read from Graph; fall back to the UPN (== primary SMTP for these tenants) so the write-back always
+    # has an address even if Graph hasn't surfaced `mail` yet (sync lag on a fresh hybrid account).
+    $primarySmtp = $null
+    try { $primarySmtp = [string]((Get-MgUser -UserId $userId -Property Mail -ErrorAction SilentlyContinue).Mail) } catch { $primarySmtp = $null }
+    if ([string]::IsNullOrWhiteSpace($primarySmtp)) { $primarySmtp = $upn }
     [pscustomobject]@{
         System  = 'm365'
         Status  = 'ok'
         UserId  = $userId
         Upn     = $upn
+        PrimarySmtpAddress = $primarySmtp
         LicenseFallbackAdGroup = $licenseFallbackAdGroup  # AD group the runner must add (E3 fallback), or $null
         # Distribution / mail-enabled groups Graph couldn't write — the runner finishes these over
         # Exchange Online using the SAME m365-admin app, so no separate Exchange system is needed.

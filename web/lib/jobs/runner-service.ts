@@ -451,7 +451,9 @@ export function makeRunnerService(db: PrismaClient) {
           select: { caseRequestId: true, systemKey: true, result: true },
         });
         for (const s of siblings) {
-          const addr = (s.result as { primarySmtpAddress?: unknown } | null)?.primarySmtpAddress;
+          // The runner emits PascalCase result keys (PrimarySmtpAddress); tolerate lowercase too.
+          const res = s.result as { PrimarySmtpAddress?: unknown; primarySmtpAddress?: unknown } | null;
+          const addr = res?.PrimarySmtpAddress ?? res?.primarySmtpAddress;
           if (typeof addr === "string" && addr.includes("@")) {
             const cur = emailByCase.get(s.caseRequestId);
             if (!cur || s.systemKey === "exchange") emailByCase.set(s.caseRequestId, addr); // exchange wins over m365

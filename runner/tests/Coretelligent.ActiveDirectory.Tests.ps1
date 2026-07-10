@@ -11,7 +11,7 @@ BeforeAll {
     # All stubs accept $Server/$Credential — the module splats @AdConnection (brokered ad-dc auth) onto every cmdlet.
     function global:Get-ADUser { [CmdletBinding()] param($Filter, $Identity, $Properties, $Server, $Credential) }
     function global:New-ADUser { [CmdletBinding()] param($Name, $SamAccountName, $UserPrincipalName, $GivenName, $Surname, $DisplayName, $Path, $Enabled, $OtherAttributes, $AccountPassword, $Server, $Credential) }
-    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $Server, $Credential) }
+    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $EmailAddress, $Server, $Credential) }
     function global:Add-ADGroupMember { [CmdletBinding()] param($Identity, $Members, $Server, $Credential) }
     function global:Remove-ADGroupMember { [CmdletBinding(SupportsShouldProcess)] param($Identity, $Members, $Server, $Credential) }
     function global:Get-ADPrincipalGroupMembership { [CmdletBinding()] param($Identity, $Server, $Credential) }
@@ -429,5 +429,42 @@ Describe 'Set-CtgADAttributes' {
         $r = Invoke-CtgADOnboarding -User $user -Config $config
         ($r.Actions -join '|') | Should -Match 'set attribute: title=Engineer'
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.department -eq 'Field Services' } -Times 1
+    }
+}
+
+Describe 'Invoke-CtgADEmailWriteback' {
+    BeforeEach {
+        # An existing user whose mail is currently unset.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail=$null } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+    }
+
+    It 'writes AD mail from the app-injected writebackEmail' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; UserPrincipalName='jdoe@corp.example.com'; DisplayName='Jane Doe'; workEmail='jdoe@corp.example.com'; writebackEmail='jane.doe@example.com' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        $r.Mail | Should -Be 'jane.doe@example.com'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $EmailAddress -eq 'jane.doe@example.com' }
+    }
+
+    It 'falls back to workEmail when the app injected no writebackEmail' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; UserPrincipalName='jdoe@example.com'; workEmail='jdoe@example.com'; writebackEmail=$null }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $EmailAddress -eq 'jdoe@example.com' }
+    }
+
+    It 'is idempotent — no write when mail already matches' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail='jdoe@example.com' } }
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; writebackEmail='jdoe@example.com' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        ($r.Actions -join '|') | Should -Match 'already'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'does nothing when there is no email anywhere on the case' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
     }
 }

@@ -651,4 +651,88 @@ function Confirm-CtgAD {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+# ── AD email write-back ─────────────────────────────────────────────────────────────────────────
+# After the cloud mailbox exists, record the user's email in AD's `mail` attribute. Runs on the
+# client-network agent (rides the ActiveDirectory capability — no cloud creds). The app injects
+# `writebackEmail` (the mailbox's ASSIGNED primary SMTP, resolved from the m365/exchange result) into
+# the payload at dispatch; we fall back to the deterministic work email / UPN when it isn't present
+# (older runner / no result) — the same value AD's proxyAddresses was already set to at create time.
+# Idempotent: only writes when `mail` differs. Onboard-only.
+function Resolve-CtgWritebackEmail($User) {
+    foreach ($k in 'writebackEmail', 'workEmail', 'userPrincipalName') {
+        $v = [string](Get-CtgProp $User $k)
+        if (-not [string]::IsNullOrWhiteSpace($v) -and ($v -match '@')) { return $v }
+    }
+    return $null
+}
+
+function Invoke-CtgADEmailWriteback {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $email = Resolve-CtgWritebackEmail $User
+    if (-not $email) {
+        return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @('no email to write back (no writebackEmail/workEmail/UPN on the case) — nothing done') }
+    }
+
+    # Resolve the just-created user: SamAccountName, else UPN, else DisplayName (exactly one).
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
+    $upn = [string](Get-CtgProp $User 'UserPrincipalName')
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    $existing = $null
+    if (-not [string]::IsNullOrWhiteSpace($sam)) {
+        $existing = Get-ADUser -Identity $sam -Properties mail -ErrorAction SilentlyContinue @AdConnection
+    }
+    if (-not $existing -and $upn) {
+        $upnEsc = $upn -replace "'", "''"
+        $existing = @(Get-ADUser -Filter "UserPrincipalName -eq '$upnEsc'" -Properties mail -ErrorAction SilentlyContinue @AdConnection)[0]
+        if ($existing) { $sam = [string](Get-CtgProp $existing 'SamAccountName') }
+    }
+    if (-not $existing -and $displayName) {
+        $dnEsc = $displayName -replace "'", "''"
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties mail -ErrorAction SilentlyContinue @AdConnection)
+        if ($byName.Count -eq 1) { $existing = $byName[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName') }
+        elseif ($byName.Count -gt 1) {
+            return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @("WARN $($byName.Count) AD users match display name '$displayName' — can't pick one; nothing written") }
+        }
+    }
+    if (-not $existing) {
+        return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @("user not found ($(if ($sam) { $sam } elseif ($upn) { $upn } else { $displayName })) — nothing written") }
+    }
+
+    # Idempotent: only write when the mail attribute differs from the target.
+    $current = [string](Get-CtgProp $existing 'mail')
+    if ($current -ieq $email) {
+        $actions.Add("AD mail already '$email' — no change")
+    }
+    elseif ($PSCmdlet.ShouldProcess($sam, "Set AD mail = $email")) {
+        try {
+            Set-ADUser -Identity $sam -EmailAddress $email -ErrorAction Stop @AdConnection
+            $actions.Add("set AD mail: '$(if ($current) { $current } else { '(unset)' })' -> '$email'")
+        } catch {
+            throw "setting AD mail for '$sam' to '$email': $($_.Exception.Message)"
+        }
+    }
+
+    [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Sam = $sam; Mail = $email; Actions = $actions.ToArray() }
+}
+
+function Confirm-CtgADEmailWriteback {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $email = Resolve-CtgWritebackEmail $User
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
+    $u = if ($sam) { Get-ADUser -Identity $sam -Properties mail -ErrorAction SilentlyContinue @AdConnection } else { $null }
+    $actual = [string](Get-CtgProp $u 'mail')
+    $pass = [bool]($email -and $actual -and ($actual -ieq $email))
+    [pscustomobject]@{ ok = $pass; checks = @(@{ name = "AD mail = $email"; expected = $email; actual = $actual; pass = $pass }) }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
