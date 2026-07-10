@@ -23,28 +23,43 @@ function Get-CtgProp {
 # Returns $true if Get-ADSyncScheduler is callable afterward. Throws a clear, host-pointed error at
 # the call sites when it can't be loaded (i.e. Azure AD Connect isn't installed on this host).
 function Initialize-CtgADSync {
-    if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
-    # Only attempt a LOCAL load when ADSync is actually installed on this host. Critically, do NOT run
-    # the WinPS-compat load (`-UseWindowsPowerShell`) speculatively: it spins up a loopback-WinRM compat
-    # session, and on pwsh 7 (.NET Core) WinRM init throws "Could not load type 'System.Web...'" (System.Web
-    # isn't in .NET Core) — an error that ESCAPES here and surfaces as the step failure BEFORE the remote
-    # sync's 5.1 fallback can run. On a DC whose Entra Connect lives on a REMOTE host, ADSync isn't
-    # installed locally, so we return $false immediately and take the remote path (which the fallback covers).
-    $adSyncPsd1 = "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1"
-    $localAdSync = [bool](Get-Module -ListAvailable -Name ADSync -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $adSyncPsd1 -ErrorAction SilentlyContinue)
-    if (-not $localAdSync) { return $false }
-    # Installed locally — load it (native first, then the explicit path, then WinPS-compat as a last resort
-    # since that's the one that can drag in the WinRM/System.Web path).
-    $attempts = @(
-        { Import-Module ADSync -ErrorAction Stop },
-        { Import-Module $adSyncPsd1 -ErrorAction Stop },
-        { Import-Module ADSync -UseWindowsPowerShell -ErrorAction Stop }
-    )
-    foreach ($a in $attempts) {
-        try { & $a } catch { }
-        if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
-    }
+    # DETECTION ONLY — is Azure AD Connect (ADSync) installed on THIS host? Never LOAD it here. Loading
+    # the ADSync module in pwsh 7 forces a Windows-PowerShell-compat session (the module is Desktop-only),
+    # whose loopback WinRM init throws "Could not load type 'System.Web...'" on .NET Core — and that error
+    # escapes and surfaces as the step failure. The actual load+run happens in Invoke-CtgAdSyncLocal, in
+    # Windows PowerShell 5.1 (.NET Framework), where ADSync loads natively. Returns $true when ADSync is
+    # local (already loaded, on the module path, or at the standard install path); $false -> remote host.
+    if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }   # already loaded (or a test stub)
+    if (Get-Module -ListAvailable -Name ADSync -ErrorAction SilentlyContinue) { return $true }
+    if (Test-Path -LiteralPath "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1" -ErrorAction SilentlyContinue) { return $true }
     return $false
+}
+
+# Run a LOCAL ADSync scriptblock (the sync trigger, or the scheduler read) on THIS host — the Entra
+# Connect server. Try in-process first (works in tests, and where pwsh 7 can load ADSync); on the .NET
+# Core gap — pwsh 7 can't load the Desktop-only ADSync module without a WinPS-compat session, whose
+# loopback WinRM throws "Could not load type 'System.Web...'" — retry the SAME scriptblock in Windows
+# PowerShell 5.1 (.NET Framework), which loads ADSync natively. Local counterpart of Invoke-CtgAdSyncRemote.
+function Invoke-CtgAdSyncLocal {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    try { return & $ScriptBlock }
+    catch {
+        $err = $_
+        $full = "$err"; $e = $err.Exception; while ($e) { if ($e.Message) { $full += " | $($e.Message)" }; $e = $e.InnerException }
+        $winPS = $null
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows) {
+            $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (Test-Path $candidate) { $winPS = $candidate }
+        }
+        if (-not $winPS) { throw "directory-sync local ADSync run failed and no Windows PowerShell 5.1 fallback is available (edition=$($PSVersionTable.PSEdition), windows=$IsWindows): $full" }
+        $inner = "`$ErrorActionPreference='Stop'; `$r = & { $($ScriptBlock.ToString()) }; `$r | ConvertTo-Json -Compress -Depth 6"
+        $out = & $winPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $inner 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "directory-sync ran ADSync locally under Windows PowerShell 5.1 (pwsh 7 can't load the Desktop-only ADSync module: $full) and 5.1 ALSO failed: $out" }
+        $line = (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Last 1)
+        if (-not $line) { return $null }
+        try { return (ConvertFrom-Json $line) } catch { return $line }
+    }
 }
 
 # Auto-discover the Entra Connect server from AD — no hard-coding. Azure AD Connect creates a sync
@@ -177,8 +192,7 @@ function Invoke-CtgDirectorySync {
     }
     $outcome =
         if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
-        elseif ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
-        else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
+        else { Invoke-CtgAdSyncLocal -ScriptBlock $remoteScript }  # Entra Connect on THIS host — in-proc, else 5.1
 
     if ($outcome -eq 'in-progress') {
         $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
@@ -209,7 +223,7 @@ function Confirm-CtgDirectorySync {
         $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
         $state =
             if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
-            else { $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
+            else { Invoke-CtgAdSyncLocal -ScriptBlock $remoteScript }  # Entra Connect on THIS host — in-proc, else 5.1
     } catch {
         return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
     }

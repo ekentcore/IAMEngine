@@ -12,6 +12,7 @@ BeforeAll {
 }
 
 Describe 'Invoke-CtgDirectorySync' {
+    BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }  # local path loads ADSync in-proc
     It 'starts a delta sync when none is in progress' {
         Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
         Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
@@ -75,6 +76,7 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
 }
 
 Describe 'Confirm-CtgDirectorySync' {
+    BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }  # local path loads ADSync in-proc
     It 'passes when the scheduler is enabled and a cycle is settled' {
         Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $true; SyncCycleInProgress = $false } }
         $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'onboard'
