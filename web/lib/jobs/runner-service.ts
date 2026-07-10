@@ -386,10 +386,16 @@ export function makeRunnerService(db: PrismaClient) {
           ? !(lj.requiresApproval && !lj.approved)
           : isClaimable(lj, byCase.get(c.caseRequestId) ?? [], c.case.status);
         if (!claimable) continue;
-        // Host affinity: the central runner can't run an on-prem step (only exchange reaches here, and
-        // only for a hybrid case). A client agent (agent.clientId set) runs everything for its client.
-        if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
+        // Host affinity — the on-prem / cloud split:
+        //  - the CENTRAL runner can't run an on-prem step (only a hybrid case's exchange reaches here);
+        //  - a CLIENT-network agent (on-prem box, e.g. a DC) can't run a CLOUD step — it doesn't have the
+        //    Microsoft.Graph / EXO modules — so cloud steps go to the central runner, which does.
+        // A client that pins cloud to its own agent (runCloudOnOwnAgent) is the exception on both sides.
+        // Without this, an on-prem client agent grabs an M365 job it can't run ("Get-MgSubscribedSku not recognized").
         const meta = caseMetaById.get(c.caseRequestId);
+        const onPrem = systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId));
+        if (!agent.clientId && onPrem) continue;                                             // central: skip on-prem
+        if (agent.clientId && !onPrem && !meta?.client?.runCloudOnOwnAgent) continue;        // client agent: skip cloud -> central
         // Own-agent affinity: central runner leaves a pinned client's cloud jobs for that client's agent.
         if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId)) continue;
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
