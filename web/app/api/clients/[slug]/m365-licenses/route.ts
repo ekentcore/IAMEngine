@@ -1,11 +1,14 @@
-// POST /api/clients/:slug/m365-licenses { licenses: string[] } — set the M365 onboarding license(s)
-// for a client (config.onboard.licenses). The executor reads this, NOT the runbook doc — so this is
-// how you actually change which license new users get. Re-plan open cases to apply to existing ones.
+// POST /api/clients/:slug/m365-licenses { licenses: LicenseEntry[] } — set the M365 onboarding
+// license(s) for a client (config.onboard.licenses). An entry is a name string (direct assignment)
+// or { name, assignVia: 'group', group, groupSource } (licensed via group membership — see
+// lib/m365/license-config). The executor reads this, NOT the runbook doc — so this is how you
+// actually change which license new users get. Re-plan open cases to apply to existing ones.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
+import { parseLicenseEntries } from "@/lib/m365/license-config";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +17,9 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
 
   let body: { licenses?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
-  if (!Array.isArray(body.licenses)) return NextResponse.json({ error: "licenses must be an array of names" }, { status: 422 });
-  const licenses = [...new Set(body.licenses.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()))];
+  const parsed = parseLicenseEntries(body.licenses);
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 422 });
+  const licenses = parsed.licenses;
 
   const sys = await db.clientSystem.findFirst({ where: { client: { slug: params.slug }, systemKey: "m365" }, select: { id: true, config: true, clientId: true } });
   if (!sys) return NextResponse.json({ error: "this client has no m365 system" }, { status: 404 });

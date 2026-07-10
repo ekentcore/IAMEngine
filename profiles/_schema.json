@@ -334,7 +334,7 @@
       "additionalProperties": true,
       "description": "m365 onboard config. Known keys validated; extras allowed.",
       "properties": {
-        "licenses":        { "type": "array", "items": {} },
+        "licenses":        { "type": "array", "items": {}, "$comment": "Entry: a license name string (direct Set-MgUserLicense) OR { name, assignVia: 'group', group, groupSource: 'entra'|'ad' } — licensed via membership of the named group (resolved live by the runner; ad-source groups are appended to the AD job's groups at plan time)." },
         "defaultLicenses": { "type": "array", "items": {} },
         "groups":          { "$ref": "#/$defs/groupList" },
         "defaultGroups":   { "type": "array", "items": { "type": "string" } },

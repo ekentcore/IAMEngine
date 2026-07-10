@@ -127,12 +127,40 @@ export function resolvePlannedConfigs(
         return { ...j, config: { ...cfg, licenses: base } };
       });
 
+  // A group-based license entry with groupSource 'ad' is carried by an ON-PREM group the m365
+  // (Graph) lane can't write. Append those groups to the active-directory job's groups here, at
+  // PLAN time — the AD lane adds groups idempotently and runs before m365. (Deliberately not a
+  // runtime handoff: seat-aware's LicenseFallbackAdGroup result field is consumed by nothing —
+  // plan-time keeps the add visible in the plan preview and impossible to drop.)
+  const adLicenseGroups: string[] = [];
+  for (const j of withLicenses) {
+    if (j.systemKey !== "m365" && j.systemKey !== "entra") continue;
+    const cfg = j.config as { licenses?: unknown; defaultLicenses?: unknown } | null;
+    for (const lics of [cfg?.licenses, cfg?.defaultLicenses]) {
+      if (!Array.isArray(lics)) continue;
+      for (const l of lics) {
+        const o = l as { assignVia?: unknown; groupSource?: unknown; group?: unknown } | null;
+        if (o && typeof o === "object" && o.assignVia === "group" && o.groupSource === "ad" && typeof o.group === "string" && o.group.trim()) {
+          adLicenseGroups.push(o.group.trim());
+        }
+      }
+    }
+  }
+  const withAdLicenseGroups = adLicenseGroups.length === 0 ? withLicenses : withLicenses.map((j) => {
+    if (j.systemKey !== "active-directory") return j;
+    const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
+    const base = Array.isArray(cfg.groups) ? [...(cfg.groups as unknown[])] : [];
+    const seen = new Set(base.map((g) => String(g).toLowerCase()));
+    for (const g of adLicenseGroups) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
+    return { ...j, config: { ...cfg, groups: base } };
+  });
+
   // m365 and entra are the SAME Graph module ($DISPATCH['entra'] = $DISPATCH['m365']). When a client
   // models BOTH, the entra job would re-run the entire M365 onboard the m365 job already did — incl.
   // the expensive shared-mailbox/DL EXO mirror (hundreds of mailboxes). De-dupe: the entra lane skips
   // the EXO finish + group mirror (the m365 lane owns them). A client with ONLY entra is untouched.
-  const hasM365 = withLicenses.some((j) => j.systemKey === "m365");
-  const deduped = !hasM365 ? withLicenses : withLicenses.map((j) => {
+  const hasM365 = withAdLicenseGroups.some((j) => j.systemKey === "m365");
+  const deduped = !hasM365 ? withAdLicenseGroups : withAdLicenseGroups.map((j) => {
     if (j.systemKey !== "entra") return j;
     const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
     delete cfg.mirrorFromUser; // the m365 lane does the Graph group-mirror + EXO mirror

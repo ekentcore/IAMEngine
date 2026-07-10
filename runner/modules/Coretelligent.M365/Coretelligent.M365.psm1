@@ -82,6 +82,31 @@ function Add-CtgGroupMember {
     return $last
 }
 
+# Resolve a configured group (display NAME, or a GUID pasted from Entra) to the group's object id.
+# Names resolve LIVE at execution so a renamed/deleted group fails with an actionable error instead
+# of a silently stale id (the INC0858242 failure mode: a hand-pasted GUID that Graph 404s). Returns
+# @{ Id = <id> } on success, @{ Error = <actionable message> } on a config problem.
+function Resolve-CtgEntraGroupId {
+    param([Parameter(Mandatory)][string]$NameOrId)
+    # Uniform shape — BOTH keys always present: the module runs StrictMode, where reading an
+    # absent hashtable key throws.
+    $guid = [guid]::Empty
+    if ([guid]::TryParse($NameOrId, [ref]$guid)) {
+        try { $null = Get-MgGroup -GroupId $NameOrId -ErrorAction Stop; return @{ Id = $NameOrId; Error = $null } }
+        catch {
+            if ($_.Exception.Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b') {
+                return @{ Id = $null; Error = "group id '$NameOrId' not found in Entra — the configured id is wrong or the group was deleted (configure the group NAME instead; it survives re-creation)" }
+            }
+            return @{ Id = $NameOrId; Error = $null }  # transient — let the add attempt retry with its own diagnostics
+        }
+    }
+    $esc = $NameOrId -replace "'", "''"
+    $hits = @(Get-MgGroup -Filter "displayName eq '$esc'" -Property 'id,displayName' -ErrorAction SilentlyContinue)
+    if (@($hits).Count -eq 1) { return @{ Id = [string]$hits[0].Id; Error = $null } }
+    if (@($hits).Count -gt 1) { return @{ Id = $null; Error = "$(@($hits).Count) Entra groups are named '$NameOrId' — rename them apart, or configure the group id" } }
+    return @{ Id = $null; Error = "no Entra group named '$NameOrId' — check the name, or re-run cloud-group discovery to refresh the pick list" }
+}
+
 # Resolve a reference user in Entra by UPN, then displayName as a fallback.
 function Resolve-CtgEntraUser {
     # Find a reference user (mirror / manager) from whatever the intake carries. Prefer an EMAIL/UPN —
@@ -293,7 +318,9 @@ function Set-CtgSeatAwareLicense {
         $tier = 'E5'
         $g = Get-CtgProp $Config 'entraGroupWhenAvailable'
         if ($g -and $PSCmdlet.ShouldProcess($UserId, "Add to E5 group $g")) {
-            $err = Add-CtgGroupMember -GroupId $g -UserId $UserId
+            # Accept a group NAME or a GUID — names resolve live, so a stale pasted id fails clearly.
+            $res = Resolve-CtgEntraGroupId ([string]$g)
+            $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId }
             if ($err) { $actions.Add("WARN could not add to E5 Entra group: $err") }
             else { $actions.Add("E5 seat available ($available) — added to E5 Entra group") }
         }
@@ -303,7 +330,8 @@ function Set-CtgSeatAwareLicense {
         $eg = Get-CtgProp $Config 'entraGroupFallback'
         if ($eg) {
             if ($PSCmdlet.ShouldProcess($UserId, "Add to E3 group $eg")) {
-                $err = Add-CtgGroupMember -GroupId $eg -UserId $UserId
+                $res = Resolve-CtgEntraGroupId ([string]$eg)
+                $err = if ($res.Error) { $res.Error } else { Add-CtgGroupMember -GroupId $res.Id -UserId $UserId }
                 if ($err) { $actions.Add("WARN could not add to E3 Entra group: $err") }
                 else { $actions.Add("no E5 seat — added to E3 Entra group") }
             }
@@ -654,14 +682,19 @@ function Invoke-CtgM365Onboarding {
     # Canonical config uses `licenses` (name strings or {name,skuId}); fall back to the older
     # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
     $seatShortage = $false  # set when an assignment fails for no seats -> return the SKU inventory so the operator can pick another
-    $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+    $allLicenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+    # A { assignVia: 'group' } entry licenses via GROUP MEMBERSHIP, not Set-MgUserLicense: entra-source
+    # groups are added here (Graph); ad-source groups were appended to the AD job's groups at PLAN time
+    # (the AD lane owns on-prem groups and runs before this lane) — here they only get a note.
+    $groupBasedSpecs = @($allLicenseSpecs | Where-Object { $_ -isnot [string] -and ([string](Get-CtgProp $_ 'assignVia')) -eq 'group' })
+    $licenseSpecs = @($allLicenseSpecs | Where-Object { $_ -is [string] -or ([string](Get-CtgProp $_ 'assignVia')) -ne 'group' })
     # Licensing REQUIRES a usageLocation on the user, else Graph rejects "License assignment cannot be
     # done for user with invalid usage location". A synced/adopted user (hybrid clients — the account is
     # AD-mastered) often has none: New-MgUser sets it only when WE create the user, and the AD lane
     # doesn't. Set it in its OWN call (not bundled with the profile attrs above — several of those are
     # on-prem-mastered and can fail for a synced user, which would take usageLocation down with them).
     # usageLocation is a CLOUD attribute, writable via Graph even on a synced user.
-    if (@($licenseSpecs).Count -gt 0) {
+    if (@($allLicenseSpecs).Count -gt 0) {
         $wantLoc = [string]((Get-CtgProp $User 'UsageLocation') ?? 'US')
         if ($wantLoc -and $PSCmdlet.ShouldProcess($upn, "Set usageLocation $wantLoc")) {
             try {
@@ -670,6 +703,22 @@ function Invoke-CtgM365Onboarding {
             } catch {
                 $actions.Add("WARN could not set usageLocation '$wantLoc': $($_.Exception.Message)")
             }
+        }
+    }
+    foreach ($gb in $groupBasedSpecs) {
+        $gbName = [string]((Get-CtgProp $gb 'name') ?? 'license')
+        $gbGroup = [string](Get-CtgProp $gb 'group')
+        if (-not $gbGroup) { $actions.Add("WARN group-based license '$gbName' has no group configured — skipped"); continue }
+        if (([string](Get-CtgProp $gb 'groupSource')) -eq 'ad') {
+            $actions.Add("license '$gbName': group-based via AD group '$gbGroup' — the active-directory step adds it")
+            continue
+        }
+        if ($PSCmdlet.ShouldProcess($upn, "Add to license group $gbGroup")) {
+            $res = Resolve-CtgEntraGroupId $gbGroup
+            if ($res.Error) { $actions.Add("WARN license '$gbName': $($res.Error)"); Write-CtgM365Step "✗ license group '$gbGroup': not resolvable"; continue }
+            $err = Add-CtgGroupMember -GroupId $res.Id -UserId $userId
+            if ($err) { $actions.Add("WARN license '$gbName': could not add to Entra group '$gbGroup': $err"); Write-CtgM365Step "✗ license group: $gbGroup" }
+            else { $actions.Add("license '$gbName': member of Entra group '$gbGroup' (group-based licensing)"); Write-CtgM365Step "✓ license group: $gbGroup" }
         }
     }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
@@ -1115,7 +1164,11 @@ function Confirm-CtgM365 {
         & $add 'AccountEnabled' $true ([bool]($exists -and (Get-CtgProp $u 'AccountEnabled') -eq $true))
         if ($exists) {
             $assigned = @(Get-MgUserLicenseDetail -UserId $u.Id -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
-            $licenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+            $allLicenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
+            # Group-based entries verify MEMBERSHIP (below, once memberships are indexed) — the sku
+            # itself propagates from the group with a lag, so checking it here would false-miss.
+            $groupBasedSpecs = @($allLicenseSpecs | Where-Object { $_ -isnot [string] -and ([string](Get-CtgProp $_ 'assignVia')) -eq 'group' })
+            $licenseSpecs = @($allLicenseSpecs | Where-Object { $_ -is [string] -or ([string](Get-CtgProp $_ 'assignVia')) -ne 'group' })
             foreach ($lic in $licenseSpecs) {
                 $name = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
                 $skuId = Resolve-CtgSkuId $lic
@@ -1148,6 +1201,20 @@ function Confirm-CtgM365 {
                 $mailAddr = [string](Get-CtgProp $ap 'mail')
                 if ($mailAddr) { $ids += $mailAddr; $ids += ($mailAddr -split '@')[0] }
                 foreach ($id in $ids) { $k = & $norm $id; if ($k -and -not $memberIndex.ContainsKey($k)) { $memberIndex[$k] = $type } }
+            }
+            # Group-based license entries: the license is granted by group MEMBERSHIP, so that's the
+            # check. ad-source groups are added (and verified) by the active-directory lane — report
+            # them informationally here rather than false-missing on directory-sync timing.
+            foreach ($gb in $groupBasedSpecs) {
+                $gbName = [string]((Get-CtgProp $gb 'name') ?? 'license')
+                $gbGroup = [string](Get-CtgProp $gb 'group')
+                if (-not $gbGroup) { & $add "license: $gbName (group-based, no group configured)" $true $false; continue }
+                if (([string](Get-CtgProp $gb 'groupSource')) -eq 'ad') {
+                    & $add "license: $gbName (via AD group '$gbGroup' — the active-directory step verifies it)" $true $true
+                    continue
+                }
+                $present = $memberIndex.ContainsKey((& $norm $gbGroup))
+                & $add "license: $gbName (via Entra group '$gbGroup')" $true $present
             }
             foreach ($g in (@(Get-CtgProp $Config 'groups') + @(Get-CtgProp $Config 'defaultGroups') | Where-Object { $_ })) {
                 # A group spec can be a plain name, an object { name, type }, or an email. Verify by

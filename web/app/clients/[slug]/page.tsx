@@ -18,6 +18,7 @@ import { GenerateRunbookButton } from "../_components/generate-runbook-button";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
 import { M365LicenseRulesEditor } from "../_components/m365-license-rules-editor";
 import { normalizeLicenseRules } from "@/lib/m365/license-rules";
+import { parseLicenseEntries } from "@/lib/m365/license-config";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
@@ -225,8 +226,17 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           current={(() => {
             const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenses?: unknown; defaultLicenses?: unknown } };
             const lic = cfg.onboard?.licenses ?? cfg.onboard?.defaultLicenses ?? [];
-            return Array.isArray(lic) ? lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean) : [];
+            if (!Array.isArray(lic)) return [];
+            // Preserve group-based entries; older { name, skuId } objects collapse to their name (direct).
+            const parsed = parseLicenseEntries(lic);
+            if (parsed.ok) return parsed.licenses;
+            return lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean);
           })()}
+          groupOptions={[
+            ...cloudGroupList.map((g) => ({ name: g.name, source: "entra" as const })),
+            ...adGroupNames.map((name) => ({ name, source: "ad" as const })),
+          ]}
+          hasAdSystem={sysByKey.has("active-directory")}
         />
       )}
       {sysByKey.has("m365") && (
