@@ -4,6 +4,7 @@
 import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
+import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
@@ -509,7 +510,13 @@ export function makeRunnerService(db: PrismaClient) {
       return claimed.map((j) => {
         const r = req(j);
         const injectedPw = (j.systemKey === "m365" || j.systemKey === "entra") ? pwByCase.get(j.caseRequestId) : undefined;
-        const config = injectedPw ? { ...((r.config as Record<string, unknown> | null) ?? {}), initialPassword: injectedPw } : (r.config ?? null);
+        let config = injectedPw ? { ...((r.config as Record<string, unknown> | null) ?? {}), initialPassword: injectedPw } : (r.config ?? null);
+        // Ad-hoc password reset: hand the app-generated value (Job.oneTimePassword — revealed once to
+        // the operator, then wiped) to the runner as config.newPassword. Kept on the row across
+        // re-claims (lease reclaim) until the reveal/failure wipes it; never persisted into request.
+        if (PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey) && j.oneTimePassword) {
+          config = { ...((config as Record<string, unknown> | null) ?? {}), newPassword: j.oneTimePassword };
+        }
         const payload =
           j.systemKey === "ad-email-writeback"
             ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
@@ -842,7 +849,12 @@ export function makeRunnerService(db: PrismaClient) {
 
       await db.job.update({
         where: { id: jobId },
-        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false },
+        data: {
+          status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false,
+          // A password reset that didn't land never shows its value — wipe it so a plaintext that was
+          // never set on the account can't linger (a succeeded reset keeps it until the one-time reveal).
+          ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && status !== "succeeded" ? { oneTimePassword: null } : {}),
+        },
       });
 
       // "Run this step only" records the outcome but does NOT cascade — no auto-retry reschedule, no
@@ -895,7 +907,7 @@ export function makeRunnerService(db: PrismaClient) {
             await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { verifiedAt: new Date() } });
           } else {
             // Re-validate every succeeded automated step that has a validator (skip servicenow/case-resolution).
-            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution"].includes(j.systemKey));
+            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution", ...PASSWORD_RESET_SYSTEM_KEYS].includes(j.systemKey));
             if (sweep.length) {
               await db.$transaction(sweep.map((j) =>
                 db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: { ...((j.request ?? {}) as object), validateOnly: true } as Prisma.InputJsonValue } })
