@@ -13,7 +13,8 @@ import { MODULES } from "@/lib/modules/catalog";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
 import { SystemsEditor } from "./systems-editor";
-import { type ClientVM, BACKBONE_LABEL, READINESS, effective } from "./client-vm";
+import { type ClientVM, BACKBONE_LABEL, READINESS, effective, haystack, compareClients, tallyCounts } from "./client-vm";
+import { patchClient, hardRefreshClients } from "./client-actions";
 import { ReadinessBadge } from "./readiness-badge";
 import { ClientFlagBadges } from "./client-flag-badges";
 import { EmailFormatEditor, UsernamePatternDatalist } from "./email-format-editor";
@@ -40,33 +41,6 @@ function EmailFormat({ pattern }: { pattern: string }) {
 
 type SortKey = "name" | "coreId" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
 type SortDir = "asc" | "desc";
-
-// Everything a row exposes, flattened for search — matches what you can SEE (incl. the Backbone,
-// Systems, and Ready columns) and the slug. Same haystack as v1.
-function haystack(c: ClientVM): string {
-  return [
-    c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus,
-    c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
-    c.systemKeys.join(" "),
-    c.readiness ? READINESS[c.readiness.tier]?.label : "",
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-}
-
-// null/empty sorts last regardless of direction.
-function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
-  const av = a[key];
-  const bv = b[key];
-  const aEmpty = av === null || av === "";
-  const bEmpty = bv === null || bv === "";
-  if (aEmpty && bEmpty) return 0;
-  if (aEmpty) return 1;
-  if (bEmpty) return -1;
-  if (typeof av === "number" && typeof bv === "number") return av - bv;
-  return String(av).localeCompare(String(bv));
-}
 
 export function ClientsExplorer({ clients, canRestrict = false }: { clients: ClientVM[]; canRestrict?: boolean }) {
   const router = useRouter();
@@ -109,17 +83,10 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
     if (!t) return;
     setHrBusy(true);
     try {
-      if (t.slugs.length === 1) {
-        await fetch(`/api/clients/${t.slugs[0]}`, {
-          method: "PATCH", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "hard-refresh" }),
-        });
-      } else {
-        await fetch(`/api/clients/hard-refresh`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ slugs: t.slugs }),
-        });
-      }
+      const r = await hardRefreshClients(t.slugs);
+      // On failure keep the dialog + selection so the operator can retry — closing silently
+      // would read as success.
+      if (!r.ok) { alert(`Hard refresh failed: ${r.error}`); return; }
       hrRef.current?.close();
       setHrTarget(null);
       setSelected(new Set());
@@ -132,12 +99,8 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
   async function saveCell(slug: string, action: string, payload: Record<string, unknown>) {
     setSavingCell(true);
     try {
-      const res = await fetch(`/api/clients/${slug}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...payload }),
-      });
-      if (!res.ok) alert(`Failed: ${(await res.json()).error ?? res.statusText}`);
+      const r = await patchClient(slug, action, payload);
+      if (!r.ok) alert(`Failed: ${r.error}`);
       else {
         setCell(null);
         router.refresh();
@@ -154,12 +117,8 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
   async function patch(c: ClientVM, action: "archive" | "restore") {
     setBusy(c.slug);
     try {
-      const res = await fetch(`/api/clients/${c.slug}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      if (!res.ok) alert(`Failed: ${(await res.json()).error ?? res.statusText}`);
+      const r = await patchClient(c.slug, action);
+      if (!r.ok) alert(`Failed: ${r.error}`);
       else router.refresh();
     } finally {
       setBusy(null);
@@ -184,15 +143,22 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
   const toggleModule = (k: string) =>
     setModuleSel((s) => { const x = new Set(s); x.has(k) ? x.delete(k) : x.add(k); return x; });
 
-  // Via-parent resolution (shared with v1 — see client-vm.ts).
-  const byId = useMemo(() => new Map(clients.map((c) => [c.id, c])), [clients]);
-  const eff = (c: ClientVM) => effective(c, byId);
+  // Via-parent resolution (shared with v1 — see client-vm.ts), computed once per roster: the
+  // filter pass, counts, desktop rows, and mobile cards all read the same cached view.
+  const effById = useMemo(() => {
+    const byId = new Map(clients.map((c) => [c.id, c]));
+    return new Map(clients.map((c) => [c.id, effective(c, byId)]));
+  }, [clients]);
+  const eff = (c: ClientVM) => effById.get(c.id)!;
+
+  // Search haystacks don't depend on any filter — build them once per roster, not per keystroke.
+  const hayById = useMemo(() => new Map(clients.map((c) => [c.id, haystack(c, effById.get(c.id)!)])), [clients, effById]);
 
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
   const matchesSearch = (c: ClientVM) => {
     if (terms.length === 0) return true;
-    const hay = haystack(c);
+    const hay = hayById.get(c.id)!;
     return terms.every((t) => hay.includes(t));
   };
 
@@ -212,7 +178,7 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
 
   const visible = useMemo(() => {
     const filtered = clients.filter((c) => (statusFilter === "all" || c.status === statusFilter) && matchesNonStatus(c));
-    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    const sorted = [...filtered].sort((a, b) => compareClients(a, b, sortKey));
     if (sortDir === "desc") sorted.reverse();
     return sorted;
     // matchesNonStatus closes over the filter states, which are the real dependencies.
@@ -228,16 +194,11 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
   }, [clients, terms, statusFilter, backboneFilter, coverageFilter, modeledFilter, readyFilter, moduleSel, match]);
 
   // modeled/readiness counted within the current status filter so the numbers match what's on screen.
-  const counts = useMemo(() => {
-    const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
-    const modeled = inStatus.filter((c) => c.modeled).length;
-    const byTier = (t: string) => inStatus.filter((c) => (eff(c).readiness?.tier ?? "no_systems") === t).length;
-    return {
-      total: inStatus.length, modeled, unmodeled: inStatus.length - modeled,
-      ready: byTier("ready"), partial: byTier("partial"), not_set_up: byTier("not_set_up"), no_systems: byTier("no_systems"),
-    };
+  const counts = useMemo(
+    () => tallyCounts(clients.filter((c) => statusFilter === "all" || c.status === statusFilter), eff),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients, statusFilter]);
+    [clients, statusFilter, effById]
+  );
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -400,7 +361,9 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
                     disabled={savingCell}
                     style={{ width: 150, padding: "2px 6px" }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") saveCell(c.slug, "set-domain", { domain: (e.target as HTMLInputElement).value });
+                      // Same guard as blur: never submit an emptied value (it would wipe the domain).
+                      const v = (e.target as HTMLInputElement).value;
+                      if (e.key === "Enter") { if (v.trim() && v !== c.primaryDomain) saveCell(c.slug, "set-domain", { domain: v }); else setCell(null); }
                       else if (e.key === "Escape") setCell(null);
                     }}
                     onBlur={(e) => {

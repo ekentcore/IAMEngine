@@ -62,6 +62,48 @@ export function effective(
   return { readiness: c.readiness, systemCount: c.systemCount, systemKeys: c.systemKeys, viaParent: null };
 }
 
+export type EffectiveView = ReturnType<typeof effective>;
+
+// Everything a row exposes, flattened for search — matches what you can SEE (incl. the Backbone,
+// Systems, and Ready columns, resolved via-parent) and the slug. Shared by both tables so the
+// same query can't return different rows on /clients vs /clients/v2.
+export function haystack(c: ClientVM, e: EffectiveView): string {
+  return [
+    c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus, c.usernamePattern,
+    c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
+    e.systemKeys.join(" "),
+    e.readiness ? READINESS[e.readiness.tier]?.label : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+// null/empty sorts last regardless of direction. Shared sort semantics for both tables.
+export function compareClients(a: ClientVM, b: ClientVM, key: keyof ClientVM): number {
+  const av = a[key] as string | number | null;
+  const bv = b[key] as string | number | null;
+  const aEmpty = av === null || av === "";
+  const bEmpty = bv === null || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  if (typeof av === "number" && typeof bv === "number") return av - bv;
+  return String(av).localeCompare(String(bv));
+}
+
+// modeled/readiness tallies for the filter dropdowns, in ONE pass over the rows (the dropdowns
+// only need five integers — no reason to filter the roster five times).
+export function tallyCounts(rows: ClientVM[], eff: (c: ClientVM) => EffectiveView) {
+  const counts = { total: rows.length, modeled: 0, unmodeled: 0, ready: 0, partial: 0, not_set_up: 0, no_systems: 0 };
+  for (const c of rows) {
+    if (c.modeled) counts.modeled++; else counts.unmodeled++;
+    const tier = (eff(c).readiness?.tier ?? "no_systems") as "ready" | "partial" | "not_set_up" | "no_systems";
+    counts[tier]++;
+  }
+  return counts;
+}
+
 // Live preview of an email/UPN name format using a fixed sample person, "John Jason Doe"
 // (first John, middle Jason, last Doe). Mirrors the runner's applyUsernamePattern tokens.
 export function formatPreview(localPattern: string, domain: string | null): string {
