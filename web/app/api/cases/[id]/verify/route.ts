@@ -9,7 +9,7 @@ import { caseInScope } from "@/lib/auth/client-scope";
 import { recordAudit } from "@/lib/auth/audit";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
+import { ADHOC_SYSTEM_KEYS } from "@/lib/jobs/adhoc";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   // Only automated (api) steps have a validator. Re-validate the terminal ones; leave in-flight jobs
   // and manual checklist items alone. Ad-hoc password resets are excluded: they have no validator,
   // so the sweep's no-validator pass would flip even a FAILED reset to a fresh "succeeded".
-  const targets = c.jobs.filter((j) => j.mode === "api" && ["succeeded", "failed", "skipped"].includes(j.status) && !PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey));
+  const targets = c.jobs.filter((j) => j.mode === "api" && ["succeeded", "failed", "skipped"].includes(j.status) && !ADHOC_SYSTEM_KEYS.includes(j.systemKey));
   if (targets.length === 0) {
     return NextResponse.json({ ok: true, verifying: 0, note: "no automated steps to verify" });
   }

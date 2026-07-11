@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCapabilities, agentCanRun, onPremExclusions } from "./capabilities";
+import { parseCapabilities, agentCanRun, onPremExclusions, browserExclusions, BROWSER_SYSTEMS } from "./capabilities";
 import { ALWAYS_ON_PREM_SYSTEMS } from "../cases/case-secrets";
 
 // The whole point of the feature hinges on parseCapabilities distinguishing "not reported" (null,
@@ -71,4 +71,19 @@ test("ad-password-reset rides the active-directory capability and is on-prem", (
   assert.equal(agentCanRun("ad-password-reset", ["directory-sync"]), false);
   assert.equal(agentCanRun("ad-password-reset", null), true); // legacy — don't strand
   assert.equal(onPremExclusions(["active-directory"]).includes("ad-password-reset"), false);
+});
+
+test("browser gate: spanning-force-sync withheld unless the agent reports 'browser'", () => {
+  assert.deepEqual(browserExclusions(["browser"]), []); // reports it -> nothing withheld
+  assert.deepEqual(browserExclusions(["active-directory", "browser"]), []); // alongside on-prem caps
+  assert.deepEqual(browserExclusions(["active-directory"]), BROWSER_SYSTEMS); // no browser cap -> withhold
+  assert.deepEqual(browserExclusions([]), BROWSER_SYSTEMS); // reports none -> withhold
+  assert.deepEqual(browserExclusions(null), BROWSER_SYSTEMS); // legacy/non-reporting -> withhold too
+  assert.ok(BROWSER_SYSTEMS.includes("spanning-force-sync"));
+});
+
+test("browser systems are NOT on-prem (so the on-prem gate leaves them to the browser gate)", () => {
+  // spanning-force-sync must not accidentally be treated as on-prem — otherwise the central runner,
+  // which reports 'browser', could never claim it.
+  assert.equal(ALWAYS_ON_PREM_SYSTEMS.includes("spanning-force-sync"), false);
 });

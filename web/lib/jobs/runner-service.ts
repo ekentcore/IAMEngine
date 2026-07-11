@@ -5,10 +5,11 @@ import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
+import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
-import { parseCapabilities, onPremExclusions } from "../runner/capabilities";
+import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
 import { generateInitialPassword } from "../auth/password";
 import { sweepProcurementWatches } from "./procurement-watch";
@@ -312,12 +313,16 @@ export function makeRunnerService(db: PrismaClient) {
       // hard-fail ("Invoke-CtgADOnboarding not recognized"); it stays pending with a clear reason. A
       // legacy (pre-1.31) agent reports nothing (caps null) → withholds nothing → old behavior preserved.
       const scope = agent.clientId ? { clientId: agent.clientId } : {};
-      const onPremExclude = agent.clientId ? onPremExclusions(parseCapabilities(agent.capabilities)) : ALWAYS_ON_PREM_SYSTEMS;
+      const caps = parseCapabilities(agent.capabilities);
+      const onPremExclude = agent.clientId ? onPremExclusions(caps) : ALWAYS_ON_PREM_SYSTEMS;
+      // Browser-automation gate (both central AND client agents): withhold browser-only systems (e.g.
+      // spanning-force-sync) unless the agent reports the 'browser' capability (Node+Playwright installed).
+      const excluded = [...new Set([...onPremExclude, ...browserExclusions(caps)])];
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
           mode: "api",
-          ...(onPremExclude.length ? { systemKey: { notIn: onPremExclude } } : {}),
+          ...(excluded.length ? { systemKey: { notIn: excluded } } : {}),
           OR: [
             // Normal flow. Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand
             // an unrelated pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are
@@ -859,18 +864,14 @@ export function makeRunnerService(db: PrismaClient) {
         },
       });
 
-      // "Run this step only" records the outcome but does NOT cascade — no auto-retry reschedule, no
-      // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
-      // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
-      let caseStatus: string;
-      if (job.singleRun) {
-        const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
-        caseStatus = cs?.status ?? "unknown";
-      } else {
+      const isAdhoc = ADHOC_SYSTEM_KEYS.includes(job.systemKey);
       // AUTO-RETRY: a succeeded result carrying RetryAfterMinutes (e.g. Spanning/Mimecast "user not
       // discovered yet") schedules its own re-run; sweepAutoRetries re-queues it when due. A result
-      // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time.
-      if (status === "succeeded" && !req(job).validateOnly) {
+      // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time. This
+      // runs for the normal cascade AND for an ad-hoc singleRun action whose result says "queued, not
+      // done" (the force-sync's promised re-poll) — but NOT for a plain "run this step only" of a
+      // normal step, which intentionally doesn't reschedule.
+      if (status === "succeeded" && !req(job).validateOnly && (!job.singleRun || isAdhoc)) {
         const marker = (input.result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
         const mins = Number(marker.RetryAfterMinutes ?? marker.retryAfterMinutes ?? 0);
         const reqJson = { ...(job.request as Record<string, unknown> ?? {}) };
@@ -887,7 +888,14 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
-
+      // "Run this step only" (and ad-hoc actions) record the outcome but do NOT cascade the CASE — no
+      // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
+      // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
+      let caseStatus: string;
+      if (job.singleRun) {
+        const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
+        caseStatus = cs?.status ?? "unknown";
+      } else {
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
       caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
@@ -909,7 +917,7 @@ export function makeRunnerService(db: PrismaClient) {
             await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { verifiedAt: new Date() } });
           } else {
             // Re-validate every succeeded automated step that has a validator (skip servicenow/case-resolution).
-            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution", ...PASSWORD_RESET_SYSTEM_KEYS].includes(j.systemKey));
+            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution", ...ADHOC_SYSTEM_KEYS].includes(j.systemKey));
             if (sweep.length) {
               await db.$transaction(sweep.map((j) =>
                 db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: { ...((j.request ?? {}) as object), validateOnly: true } as Prisma.InputJsonValue } })

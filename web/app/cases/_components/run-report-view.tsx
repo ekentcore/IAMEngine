@@ -6,7 +6,9 @@ import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
 import { ResolutionModal } from "./resolution-modal";
 import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-password-button";
+import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
+import { ADHOC_SYSTEM_KEYS } from "@/lib/jobs/adhoc";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -738,7 +740,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
               {/* Any finished automated step can be re-run — incl. "verified" (e.g. re-run exchange to
                   finish regional/calendar deferred when the mailbox hadn't synced yet). */}
-              {["verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
+              {["verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !ADHOC_SYSTEM_KEYS.includes(step.systemKey) && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
                   disabled={busy === `rerun-${step.seq}`}
@@ -749,7 +751,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
               {/* Run ONLY this step (no cascade): the case is paused so the rest of the run is held.
                   For testing or fixing a single step. Hidden while it's in flight / awaiting approval. */}
-              {["pending", "verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
+              {["pending", "verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !ADHOC_SYSTEM_KEYS.includes(step.systemKey) && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
                   disabled={busy === `single-${step.seq}`}
@@ -767,6 +769,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {/* On the reset line itself: the one-time reveal, for a popup closed before it showed. */}
               {step.verdict === "verified" && step.jobId && PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
                 <RevealResetPasswordButton jobId={step.jobId} systemName={step.systemName} />
+              )}
+              {/* Force Spanning sync (browser automation) — offered on the Spanning line once it's run,
+                  to make Spanning discover a just-created user now instead of on its own schedule. */}
+              {["verified", "warning"].includes(step.verdict) && step.jobId && step.systemKey === "spanning" && (
+                <ForceSpanningSyncButton jobId={step.jobId} refresh={refresh} />
               )}
               {/* Ignore an intentional warning/failure ("mark as complete") — or un-ignore it. */}
               {(step.verdict === "warning" || step.verdict === "failed") && step.fingerprint && (

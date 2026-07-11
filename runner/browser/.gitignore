@@ -1,0 +1,2 @@
+node_modules/
+# Playwright browser binaries live outside the repo (~/.cache/ms-playwright); nothing to ignore here.

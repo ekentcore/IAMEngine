@@ -137,3 +137,14 @@ test("ad-hoc password-reset jobs never gate other steps (legacy sequence rule in
   const reset = j({ id: "ad-password-reset", sequence: 1, status: "pending" });
   assert.equal(dependencyGateOpen(late, [reset, late]), true);
 });
+
+test("ad-hoc spanning-force-sync is treated like other ad-hoc actions (no effect on case status/gate)", () => {
+  const done = [j({ id: "m365", sequence: 0, status: "succeeded" }), j({ id: "spanning", sequence: 1, status: "succeeded" })];
+  // a FAILED/pending force-sync must not flip or hold a completed case
+  assert.equal(deriveCaseStatus([...done, j({ id: "spanning-force-sync", sequence: 9, status: "failed" })]), "completed");
+  assert.equal(deriveCaseStatus([...done, j({ id: "spanning-force-sync", sequence: 9, status: "pending" })]), "completed");
+  // and it never gates a real step
+  const late = j({ id: "mimecast", sequence: 5 });
+  const sync = j({ id: "spanning-force-sync", sequence: 1, status: "pending" });
+  assert.equal(dependencyGateOpen(late, [sync, late]), true);
+});

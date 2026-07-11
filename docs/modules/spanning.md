@@ -32,3 +32,12 @@ exclusion.
 
 ### Manual fallback
 Spanning portal sync + license swap.
+
+### Force sync (browser automation)
+Spanning discovers M365 users on its own schedule — the API has **no** sync endpoint, so onboarding
+returns `RetryAfterMinutes` and waits. To make Spanning scan **now**, an ad-hoc `spanning-force-sync`
+job drives the Spanning admin portal via the Playwright sidecar (`Invoke-CtgSpanningForceSync` →
+`Invoke-CtgBrowserFlow -Flow 'spanning-force-sync'`). Dispatched from the Spanning step in the run
+report (`↻ force Spanning sync`), gated on the runner's `browser` capability. See
+[docs/BROWSER_AUTOMATION.md](../BROWSER_AUTOMATION.md) — the portal URL + selectors still need
+verification against a real login.

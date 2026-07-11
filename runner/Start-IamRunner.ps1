@@ -70,6 +70,10 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.XMatters/Coretelligent.XMatte
 Import-Module "$PSScriptRoot/modules/Coretelligent.LogicMonitor/Coretelligent.LogicMonitor.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Notify/Coretelligent.Notify.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proofpoint.psd1" -Force
+# Browser-automation bridge (shells out to the Node/Playwright sidecar in runner/browser). Loads
+# unconditionally — Test-CtgBrowserAvailable reports whether Node+Playwright are actually installed,
+# and the app's claim gate withholds browser jobs (e.g. spanning-force-sync) from agents that can't run them.
+Import-Module "$PSScriptRoot/modules/Coretelligent.Browser/Coretelligent.Browser.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
@@ -934,6 +938,16 @@ $DISPATCH['google-password-reset'] = @{
 }
 foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-reset') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
 
+# Ad-hoc "force Spanning sync" (browser automation): dispatched on demand from a case's Spanning step
+# to make Spanning discover a just-created M365 user NOW (the Spanning API has no sync endpoint). Rides
+# the Spanning line's brokered secret; no Connect lane (the browser flow does its own portal login).
+# One executor serves both lanes (a force-sync can ride an onboard or an offboard case). Withheld from
+# agents that don't report the 'browser' capability (see $script:RunnerCapabilities below).
+$DISPATCH['spanning-force-sync'] = @{
+    Onboard = { param($job, $creds) Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] }
+}
+$DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
+
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
 $DISPATCH['tap'] = @{
@@ -1645,6 +1659,11 @@ $script:OnPremCapabilityProbe = [ordered]@{
 $script:RunnerCapabilities = @(
     $script:OnPremCapabilityProbe.Keys | Where-Object { Get-Command $script:OnPremCapabilityProbe[$_] -ErrorAction SilentlyContinue }
 )
+# Browser automation is a CROSS-CUTTING capability (not an on-prem system): report 'browser' when the
+# Node/Playwright sidecar is installed on this host, so the app's claim gate hands browser jobs (e.g.
+# spanning-force-sync) only to agents that can actually run them. The server ignores 'browser' in the
+# on-prem exclusion (it's not in ALWAYS_ON_PREM_SYSTEMS) and keys the separate browser gate off it.
+if (Test-CtgBrowserAvailable) { $script:RunnerCapabilities += 'browser' }
 # Serialize as a JSON-array STRING so 0- and 1-element lists stay arrays over the wire — a bare
 # @('active-directory') would ConvertTo-Json to a scalar and @() would pipe nothing (empty output),
 # making the server unable to tell "reported, none" (withhold all on-prem) from "legacy runner, not

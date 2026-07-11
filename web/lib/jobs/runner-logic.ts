@@ -1,11 +1,12 @@
 // Pure runner-coordination logic (no I/O) — unit-tested in runner-logic.test.ts.
 import type { CaseStatus, JobStatus, Mode } from "@prisma/client";
-import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
+import { isAdhocSystemKey } from "./adhoc";
 
-// Ad-hoc operator actions riding the job table (password resets). They are NOT case work: a failed
-// reset must not fail the case, a pending one must not read as "still running", and one must never
-// gate a real step. Filtered out of every case-level derivation below.
-const adhoc = (j: { systemKey: string }) => PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey);
+// Ad-hoc operator actions riding the job table (password resets, force-Spanning-sync). They are NOT
+// case work: a failed one must not fail the case, a pending one must not read as "still running", and
+// one must never gate a real step. Filtered out of every case-level derivation below. The set is
+// generalized in ./adhoc so a new ad-hoc action is excluded everywhere at once.
+const adhoc = (j: { systemKey: string }) => isAdhocSystemKey(j.systemKey);
 
 export type JobLite = {
   id: string;

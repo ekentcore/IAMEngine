@@ -386,4 +386,87 @@ function Confirm-CtgSpanning {
     [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
 }
 
-Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning
+function Get-CtgSpanningSecretField {
+    # Field-synonym picker over a brokered secret's Fields hashtable (the $pick pattern used across
+    # the modules). Returns the first non-empty value among $Names, else $null. StrictMode-safe.
+    param($Secret, [Parameter(Mandatory)][string[]]$Names)
+    if (-not $Secret) { return $null }
+    $fields = Get-CtgProp $Secret 'Fields'
+    foreach ($n in $Names) {
+        if ($fields -and ($fields -is [System.Collections.IDictionary]) -and $fields.ContainsKey($n) -and $fields[$n]) { return $fields[$n] }
+    }
+    return $null
+}
+
+function Invoke-CtgSpanningForceSync {
+    <#
+    .SYNOPSIS
+        On-demand "force Spanning sync": drive the Spanning admin portal (headless browser, via the
+        Coretelligent.Browser sidecar) to trigger a directory/user scan so a just-created M365 user is
+        discovered NOW instead of on Spanning's own schedule. The Spanning API has no sync endpoint —
+        this is the last-resort browser executor. Ad-hoc (dispatched on demand from the Spanning step),
+        never part of a plan; idempotent (triggering a scan twice is harmless).
+    .DESCRIPTION
+        Builds the portal login from the brokered Spanning secret (Username/Password via the field
+        synonyms) + the target email, runs the 'spanning-force-sync' browser flow, and maps the result
+        to the runner's result contract:
+          success            -> Status ok, a "triggered" action line (verified);
+          queued/async       -> RetryAfterMinutes so the app re-checks the Spanning license shortly (retrying);
+          browser missing /
+          portal failure /
+          MFA required        -> a WARN action line (warning) — never a hard throw, since a convenience
+                                  sync shouldn't fail the case; the operator can sync manually.
+        NOTE: the browser portal login may require a DIFFERENT credential than the API (the API secret
+        stores clientId/clientSecret). VERIFY which credential the real admin console accepts.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        $Secret
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $email   = $User.UserPrincipalName
+
+    # Portal-login fields first, then fall back to the SAME API-credential synonyms Use-CtgSpanningSecret
+    # accepts (incl. the spaced variants "Client ID" / "Access Token" / "API Key") so a secret that
+    # authenticates the API lane also resolves here — the two pickers must not diverge.
+    $username = Get-CtgSpanningSecretField $Secret @('PortalUsername', 'AdminUser', 'Username', 'User', 'Email', 'ClientID', 'ClientId', 'Client ID', 'Domain', 'AccountID', 'AccountId', 'Account', 'Tenant')
+    $password = Get-CtgSpanningSecretField $Secret @('PortalPassword', 'AdminPassword', 'Password', 'Secret', 'ClientSecret', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key')
+    # Fall back to the pscredential the broker resolved (Username/Password slots) if the fields above
+    # weren't populated by name.
+    if ((-not $username -or -not $password)) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) {
+            if (-not $username) { $username = $cred.UserName }
+            if (-not $password) { try { $password = $cred.GetNetworkCredential().Password } catch { } }
+        }
+    }
+    if (-not $username -or -not $password) {
+        $actions.Add("WARN could not force a Spanning sync for $email — no portal username/password brokered on the Spanning secret. Trigger the sync manually in the Spanning admin console.")
+        return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+    }
+
+    $flowInput = @{ username = $username; password = $password; params = @{ email = $email } }
+    $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput
+
+    if ($res.ok) {
+        $msg = if ($res.message) { $res.message } else { "triggered a Spanning directory sync for $email" }
+        $actions.Add($msg)
+        $out = [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+        if ($null -ne $res.retryAfterMinutes -and $res.retryAfterMinutes -gt 0) {
+            $actions.Add("sync is asynchronous — re-checking whether Spanning has discovered $email in $($res.retryAfterMinutes) minutes")
+            # RetryAfterMinutes: the app re-queues this job automatically (capped) — see sweepAutoRetries.
+            $out = [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray(); RetryAfterMinutes = $res.retryAfterMinutes }
+        }
+        return $out
+    }
+
+    # Not ok — surface as a WARN (warning verdict), including any screenshot evidence path.
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    $actions.Add("WARN Spanning force-sync could not complete for $email — $err$ev")
+    [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning, Get-CtgSpanningSecretField, Invoke-CtgSpanningForceSync

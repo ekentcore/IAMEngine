@@ -57,3 +57,17 @@ export function onPremExclusions(caps: string[] | null): string[] {
   if (caps === null) return [];
   return ALWAYS_ON_PREM_SYSTEMS.filter((k) => !caps.includes(capabilityKey(k)));
 }
+
+// Browser-automation is a CROSS-CUTTING capability (not an on-prem system): a runner reports the
+// "browser" capability only when the Node/Playwright sidecar is installed (Test-CtgBrowserAvailable).
+// These systemKeys need a real headless browser, so they're withheld from any agent — central OR
+// client — that doesn't report it. Unlike the on-prem gate, a legacy/non-reporting agent (caps null)
+// is ALSO withheld: it definitionally lacks the (newer) browser harness, and these keys are new, so
+// no rollout is stranded. Extend this set when a new browser flow is added.
+export const BROWSER_SYSTEMS = ["spanning-force-sync"];
+
+// The browser system keys to WITHHOLD from an agent's claim query: none if it reports "browser", else all.
+export function browserExclusions(caps: string[] | null): string[] {
+  if (caps && caps.includes("browser")) return [];
+  return BROWSER_SYSTEMS;
+}
