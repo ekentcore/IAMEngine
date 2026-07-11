@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 
 const overlayStyle: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "grid", placeItems: "center", zIndex: 80 };
 const cardStyle: React.CSSProperties = { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.3rem", width: "min(460px, calc(100vw - 2rem))", boxShadow: "var(--shadow-2, 0 10px 40px rgba(0,0,0,.3))" };
@@ -70,7 +71,7 @@ export function FeatureRequestButton() {
           {sent ? (
             <>
               <h2 style={{ margin: "0 0 0.25rem" }}>Thanks!</h2>
-              <p className="note" style={{ marginTop: 0 }}>Your request is in. It shows up on the Settings page for triage.</p>
+              <p className="note" style={{ marginTop: 0 }}>Your request is in. Track its status (New → Being scripted → Implemented) on the <Link href="/feature-requests" onClick={close}>feature requests</Link> board.</p>
               <div className="toolbar" style={{ justifyContent: "flex-end" }}>
                 <button className="primary" onClick={close}>Close</button>
               </div>
@@ -78,7 +79,7 @@ export function FeatureRequestButton() {
           ) : (
             <>
               <h2 style={{ margin: "0 0 0.25rem" }}>Request a feature</h2>
-              <p className="note" style={{ marginTop: 0 }}>What should this app do that it doesn&rsquo;t? Filed from <code>{pathname ?? "/"}</code>.</p>
+              <p className="note" style={{ marginTop: 0 }}>What should this app do that it doesn&rsquo;t? Filed from <code>{pathname ?? "/"}</code>. See the <Link href="/feature-requests" onClick={close}>requests board</Link> for status.</p>
               <label style={{ display: "block", marginBottom: "0.6rem" }}>
                 <span className="note">Title</span>
                 <input

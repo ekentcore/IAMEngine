@@ -36,7 +36,8 @@ export default async function SettingsPage() {
       <h2 style={{ marginTop: "2.5rem" }}>Feature requests</h2>
       <p className="note" style={{ marginBottom: "1rem" }}>
         Filed by operators via the 💡 button in the header. Set a status (and, when it lands or is
-        declined, a note) to keep the queue honest.
+        declined, a note) to keep the queue honest — everyone can watch progress on the{" "}
+        <a href="/feature-requests">requests board</a>.
       </p>
       <FeatureRequestsAdmin initial={featureRequests} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />

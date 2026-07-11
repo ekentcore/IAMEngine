@@ -4,6 +4,8 @@
 // it, from which page, and when. The status select PATCHes immediately; the resolution note saves
 // on blur (only when changed).
 import { useState } from "react";
+import { FR_STATUSES, FR_STATUS_META } from "@/lib/feature-requests/status";
+import { FeatureStatusBadge } from "../../feature-requests/_components/status-badge";
 
 export type FeatureRequestRow = {
   id: string;
@@ -15,8 +17,6 @@ export type FeatureRequestRow = {
   authorEmail: string | null;
   createdAt: string; // ISO — serialized by the page loader
 };
-
-const STATUSES = ["new", "planned", "building", "done", "declined"];
 
 function Row({ initial }: { initial: FeatureRequestRow }) {
   const [req, setReq] = useState(initial);
@@ -43,6 +43,7 @@ function Row({ initial }: { initial: FeatureRequestRow }) {
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "0.7rem 0.9rem", marginBottom: "0.6rem" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <FeatureStatusBadge status={req.status} />
         <strong>{req.title}</strong>
         <span className="note">
           {req.authorEmail ?? "unknown"} · {req.page || "/"} · {new Date(req.createdAt).toLocaleString()}
@@ -55,7 +56,7 @@ function Row({ initial }: { initial: FeatureRequestRow }) {
           disabled={busy}
           onChange={(e) => void patch({ status: e.target.value })}
         >
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          {FR_STATUSES.map((s) => <option key={s} value={s}>{FR_STATUS_META[s].label}</option>)}
         </select>
         <input
           value={note}
