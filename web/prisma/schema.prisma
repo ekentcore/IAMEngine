@@ -256,6 +256,18 @@ model ConnectionTest {
   // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
   accessOk        Boolean?
   accessDetail    String?
+  // App-side preflight stage, stamped at REQUEST time (before any runner claims it): the app itself
+  // resolved each secret from Delinea and shape-checked its field names. Null = preflight not run
+  // (Delinea unconfigured on the app, or an older row).
+  fieldsOk        Boolean?
+  fieldsDetail    String?
+  // Per-operation rights results from the runner's probe: [{ op, ok, detail }] where ok=null means
+  // "cannot verify automatically — check manually". Null = older runner or no rights-aware probe.
+  rights          Json?
+  // Nearest expiry of the credential itself when the probe can read it (e.g. the Graph app secret's
+  // passwordCredentials endDateTime). Null = unknown/unreadable.
+  credExpiresAt   DateTime?
+  source          String    @default("manual") // manual (operator button) | sweep (scheduled fleet run)
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
   secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
   config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri

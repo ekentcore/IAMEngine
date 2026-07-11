@@ -7,7 +7,9 @@ import { deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./ru
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
-import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
+import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "../secrets/delinea";
+import { checkFieldShape } from "../secrets/field-requirements";
+import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
@@ -52,6 +54,64 @@ async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<vo
   const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
   if (!agent) throw new HttpError(404, "unknown agent");
   if (!agent.enabled) throw new HttpError(403, "agent disabled");
+}
+
+// App-side connection-test preflight (the "Fields" stage): resolve each queued row's secrets from
+// Delinea and shape-check the FIELD NAMES against the provider requirements, persisting the verdict
+// on the just-created rows. Secret values never leave this function — details carry names and
+// missing-requirement labels only. Best-effort by design: callers swallow errors so the runner's
+// access/API stages always still run.
+async function preflightConnTestFields(
+  db: PrismaClient,
+  clientId: string,
+  primaryDomain: string | null,
+  specs: { systemKey: string; secretNames: string[] }[]
+): Promise<void> {
+  const cfg = delineaConfigFromEnv();
+  if (!delineaConfigured(cfg)) {
+    await db.connectionTest.updateMany({
+      where: { clientId, systemKey: { in: specs.map((s) => s.systemKey) }, status: "pending" },
+      data: { fieldsDetail: "Delinea not configured on the app — set DELINEA_* to enable the field preflight" },
+    });
+    return;
+  }
+  const names = [...new Set(specs.flatMap((s) => s.secretNames))];
+  const secrets = await db.secret.findMany({ where: { clientId, name: { in: names } }, select: { name: true, externalId: true } });
+  const byName = new Map(secrets.map((s) => [s.name, s.externalId] as const));
+  const hasTenantHint = Boolean(primaryDomain && primaryDomain.trim());
+  // One token for the whole batch — not one password-grant per secret.
+  let token: string | undefined;
+  let tokenError: string | null = null;
+  try {
+    token = await getDelineaToken(cfg);
+  } catch (e) {
+    tokenError = e instanceof Error ? e.message : "token grant failed";
+  }
+  // Resolve each distinct secret once, then stamp the verdict per system.
+  const checks = new Map<string, { ok: boolean; note: string }>();
+  for (const name of names) {
+    if (tokenError) { checks.set(name, { ok: false, note: `${name}: Delinea unreachable (${tokenError})` }); continue; }
+    const { externalId, source } = effectiveExternalId(name, null, byName.get(name) ?? null);
+    if (source === "not_needed") { checks.set(name, { ok: true, note: `${name}: not needed` }); continue; }
+    if (!externalId) { checks.set(name, { ok: false, note: `${name}: no reference set` }); continue; }
+    const resolved = await resolveSecretFields(cfg, externalId, undefined, token);
+    if (!resolved.ok) { checks.set(name, { ok: false, note: `${name}: ${resolved.error ?? "not resolvable"}` }); continue; }
+    const shape = checkFieldShape(name, Object.keys(resolved.fields ?? {}), { clientHasTenantHint: hasTenantHint });
+    checks.set(
+      name,
+      shape.missing.length === 0
+        ? { ok: true, note: `${name}: fields ok` }
+        : { ok: false, note: `${name}: missing ${shape.missing.join(", ")}` }
+    );
+  }
+  for (const spec of specs) {
+    const rows = spec.secretNames.map((n) => checks.get(n)).filter((r): r is { ok: boolean; note: string } => Boolean(r));
+    if (rows.length === 0) continue;
+    await db.connectionTest.updateMany({
+      where: { clientId, systemKey: spec.systemKey, status: "pending" },
+      data: { fieldsOk: rows.every((r) => r.ok), fieldsDetail: rows.map((r) => r.note).join("; ").slice(0, 500) || null },
+    });
+  }
 }
 
 export function makeRunnerService(db: PrismaClient) {
@@ -605,19 +665,29 @@ export function makeRunnerService(db: PrismaClient) {
     // Routed like a job (cloud -> central runner, on-prem -> client agent) via the onPrem flag.
 
     // Queue a fresh set of tests for a client (replaces any prior run). One row per api system that
-    // actually connects to something (has a required secret).
-    async requestConnectionTests(clientSlug: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+    // actually connects to something (has a required secret). With a systemKey, retests ONLY that
+    // system — its row is replaced and every other system's latest result survives.
+    async requestConnectionTests(clientSlug: string, systemKey?: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
-        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
+        select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
       });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
-      const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
-      await db.connectionTest.deleteMany({ where: { clientId: client.id } });
-      if (testable.length === 0) return { tests: [] };
-      const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+      if (systemKey) {
+        const target = client.systems.find((s) => s.systemKey === systemKey);
+        if (!target) throw new HttpError(404, `client has no system '${systemKey}'`);
+        if (target.mode !== "api" || (target.secretNames?.length ?? 0) === 0)
+          throw new HttpError(422, `system '${systemKey}' has no connection to test (needs mode=api and at least one secret)`);
+      }
+      const specs = testableSystems(client.systems, hasAd, systemKey);
+      await db.connectionTest.deleteMany({ where: { clientId: client.id, ...(systemKey ? { systemKey } : {}) } });
+      if (specs.length === 0) return { tests: [] };
+      const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
       await db.connectionTest.createMany({ data: rows });
+      // Stage 1 ("Fields"): the app's own Delinea resolve + field-shape check, persisted on the
+      // rows. Best-effort — a preflight problem must never stop the runner stages from running.
+      await preflightConnTestFields(db, client.id, client.primaryDomain, specs).catch(() => {});
       return { tests: rows.map((r) => ({ systemKey: r.systemKey, onPrem: r.onPrem })) };
     },
 
@@ -634,10 +704,10 @@ export function makeRunnerService(db: PrismaClient) {
       let total = 0, onPrem = 0, withTests = 0;
       for (const client of clients) {
         const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
-        const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
+        const specs = testableSystems(client.systems, hasAd);
         await db.connectionTest.deleteMany({ where: { clientId: client.id } });
-        if (testable.length === 0) continue;
-        const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+        if (specs.length === 0) continue;
+        const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
         await db.connectionTest.createMany({ data: rows });
         withTests++; total += rows.length; onPrem += rows.filter((r) => r.onPrem).length;
       }
@@ -648,7 +718,7 @@ export function makeRunnerService(db: PrismaClient) {
     async listAllConnectionTests() {
       const tests = await db.connectionTest.findMany({
         orderBy: [{ status: "asc" }, { clientId: "asc" }, { systemKey: "asc" }],
-        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true, claimedAt: true, client: { select: { name: true, slug: true } } },
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, fieldsOk: true, fieldsDetail: true, rights: true, credExpiresAt: true, source: true, onPrem: true, finishedAt: true, claimedAt: true, client: { select: { name: true, slug: true } } },
       });
       return tests;
     },
@@ -659,7 +729,7 @@ export function makeRunnerService(db: PrismaClient) {
       const tests = await db.connectionTest.findMany({
         where: { clientId: client.id },
         orderBy: { systemKey: "asc" },
-        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true },
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, fieldsOk: true, fieldsDetail: true, rights: true, credExpiresAt: true, onPrem: true, finishedAt: true },
       });
       return { tests };
     },
@@ -706,7 +776,16 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
-    async reportConnectionTest(testId: string, agentId: string, ok: boolean, detail: string, accessOk: boolean | null = null, accessDetail: string | null = null): Promise<{ ok: true }> {
+    async reportConnectionTest(
+      testId: string,
+      agentId: string,
+      ok: boolean,
+      detail: string,
+      accessOk: boolean | null = null,
+      accessDetail: string | null = null,
+      rights: RightsRow[] | null = null,
+      credExpiresAt: Date | null = null
+    ): Promise<{ ok: true }> {
       const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
@@ -719,10 +798,14 @@ export function makeRunnerService(db: PrismaClient) {
           detail: (detail ?? "").slice(0, 500),
           accessOk,
           accessDetail: accessDetail === null ? null : accessDetail.slice(0, 500),
+          // Optional extras from newer runners: per-operation rights rows + the credential's own
+          // expiry when the probe could read it. Null-tolerant so older runners keep working.
+          ...(rights ? { rights: rights as unknown as Prisma.InputJsonValue } : {}),
+          ...(credExpiresAt ? { credExpiresAt } : {}),
           finishedAt: new Date(),
         },
       });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok, rightsMissing: rights ? rights.filter((r) => r.ok === false).length : undefined } } });
       return { ok: true };
     },
 

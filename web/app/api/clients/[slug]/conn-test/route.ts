@@ -10,10 +10,14 @@ import { HttpError } from "@/lib/jobs/types";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request, { params }: { params: { slug: string } }) {
+export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
+  // Optional body: { systemKey } retests ONE system (its row is replaced, the rest survive).
+  // The existing "Test connections" button sends no body — whole-client semantics unchanged.
+  const body = await req.json().catch(() => ({} as Record<string, unknown>));
+  const systemKey = typeof body?.systemKey === "string" && body.systemKey.trim() ? body.systemKey.trim() : undefined;
   try {
-    const out = await makeRunnerService(db).requestConnectionTests(params.slug);
+    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

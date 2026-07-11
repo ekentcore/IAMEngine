@@ -81,7 +81,7 @@ export function SecretsPanel({
     }
   }
 
-  async function save() {
+  async function save(): Promise<boolean> {
     setSaving(true);
     setSaveMsg(null);
     try {
@@ -91,16 +91,35 @@ export function SecretsPanel({
         body: JSON.stringify({ secrets: rows.map((r) => ({ name: r.name, externalId: r.externalId, label: r.label })) }),
       });
       const data = await res.json();
-      if (!res.ok) setSaveMsg(data.error ?? res.statusText);
-      else {
-        setDirty(false);
-        router.refresh();
-      }
+      if (!res.ok) { setSaveMsg(data.error ?? res.statusText); return false; }
+      setDirty(false);
+      router.refresh();
+      return true;
     } catch (e) {
       setSaveMsg((e as Error).message);
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  // Save, then queue a live connection test for JUST the systems whose secret reference changed —
+  // each affected system's row is replaced, everything else's latest result survives. The
+  // connection-test panel listens for the event and starts polling.
+  async function saveAndTest() {
+    const before = new Map(initialRows.map((r) => [r.name, r.externalId] as const));
+    const changed = rows.filter((r) => r.externalId !== (before.get(r.name) ?? "") && r.externalId !== NOT_NEEDED && r.externalId.trim());
+    if (!(await save())) return;
+    const systems = [...new Set(changed.flatMap((r) => r.referencedBy))];
+    for (const systemKey of systems) {
+      await fetch(`/api/clients/${slug}/conn-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systemKey }),
+      }).catch(() => {});
+    }
+    if (systems.length > 0) window.dispatchEvent(new CustomEvent("iam:conn-test-queued"));
+    setSaveMsg(systems.length > 0 ? `Saved — queued live tests for ${systems.join(", ")} (results in Connection tests below)` : "Saved — no wired reference changed, so no live test was queued");
   }
 
   async function test(names: string[]) {
@@ -264,8 +283,15 @@ export function SecretsPanel({
       </table>
       <div className="dialog-actions" style={{ justifyContent: "flex-start", marginTop: "0.75rem" }}>
         <button className="primary" onClick={save} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
+        <button
+          onClick={saveAndTest}
+          disabled={!dirty || saving}
+          title="Save, then queue a live connection test for just the systems whose reference changed"
+        >
+          Save & test
+        </button>
         <button onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED).map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
-        {saveMsg && <span className="note danger">{saveMsg}</span>}
+        {saveMsg && <span className={saveMsg.startsWith("Saved") ? "note muted" : "note danger"}>{saveMsg}</span>}
         {dirty && !saveMsg && <span className="note muted">Unsaved changes</span>}
       </div>
     </div>
