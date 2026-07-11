@@ -447,7 +447,13 @@ function Invoke-CtgSpanningForceSync {
         return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
 
-    $flowInput = @{ username = $username; password = $password; params = @{ email = $email } }
+    # Optional authenticator seed: when the console enforces app/TOTP MFA, the flow generates the code
+    # from this base32 seed to complete the login headless. Absent → the flow bails clearly on any MFA.
+    $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+
+    $params = @{ email = $email }
+    if ($totpSeed) { $params['totpSeed'] = $totpSeed }
+    $flowInput = @{ username = $username; password = $password; params = $params }
     $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput
 
     if ($res.ok) {

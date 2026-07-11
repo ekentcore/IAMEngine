@@ -103,4 +103,25 @@ Describe 'Invoke-CtgSpanningForceSync' {
         ($r.Actions -join ' ') | Should -Match 'WARN'
         Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0
     }
+
+    It 'passes a TOTP seed through to the flow when the secret carries one' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            [pscustomobject]@{ ok = $true; message = 'ok'; error = $null; evidence = $null; retryAfterMinutes = $null }
+        }
+        $withSeed = [pscustomobject]@{ Fields = @{ Username = 'admin@medipost.com'; Password = 'secret'; TOTPSeed = 'GEZDGNBVGY3TQOJQ' } }
+        $r = Invoke-CtgSpanningForceSync -User $user -Config $cfg -Secret $withSeed
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 1 -ParameterFilter {
+            $InputObject.params.totpSeed -eq 'GEZDGNBVGY3TQOJQ'
+        }
+    }
+
+    It 'omits totpSeed from the flow input when the secret has no seed' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            [pscustomobject]@{ ok = $true; message = 'ok'; error = $null; evidence = $null; retryAfterMinutes = $null }
+        }
+        $r = Invoke-CtgSpanningForceSync -User $user -Config $cfg -Secret $secret
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 1 -ParameterFilter {
+            -not $InputObject.params.ContainsKey('totpSeed')
+        }
+    }
 }

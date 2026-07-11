@@ -49,8 +49,13 @@ secret + config, `singleRun` so it can run on a completed/paused case.
 - The password is written only to the child process's **stdin** — never a log, a command-line arg, or
   a temp file. `run-flow.mjs` echoes back only booleans / messages / evidence-screenshot paths.
 - A flow failure returns a structured `{ ok:false, error, evidence:<screenshot> }`; the executor maps
-  that to a **warning** (a convenience sync must not hard-fail the case). A detected MFA/2FA challenge
-  returns a clear "portal requires MFA — browser automation can't complete" so the operator syncs by hand.
+  that to a **warning** (a convenience sync must not hard-fail the case).
+- **Second factor (MFA):** an **app/TOTP** factor is completed automatically — store the authenticator
+  **seed** (the base32 string, e.g. a `TOTP`/`OTP Seed` field) on the Spanning secret and the flow
+  generates the current code (`runner/browser/lib/totp.mjs`, RFC 6238, dependency-free). **Push /
+  number-matching / SMS / phone** factors can't be automated headless — the flow hard-stops with a
+  clear message so the operator syncs by hand (or switches the automation account to app/TOTP MFA).
+  The seed and the generated code are never logged.
 
 ## ⚠ Needs verification against a real portal
 
@@ -65,6 +70,9 @@ screenshot, never a false success). To finalize, on a live Spanning admin consol
    `RETRY_AFTER_MINUTES`).
 4. Confirm which **credential** the portal accepts — the API secret stores clientId/clientSecret; the
    admin console login may need a different (O365 admin) credential on the Spanning secret.
+5. Confirm the **second-factor type**. If it's app/TOTP, add the authenticator **seed** to the Spanning
+   secret (`TOTP` / `OTP Seed` field) and the flow clears it automatically. If it's push/number-match/
+   SMS, unattended automation isn't possible — use a TOTP-based automation account or sync manually.
 
 ## Adding a new flow
 
