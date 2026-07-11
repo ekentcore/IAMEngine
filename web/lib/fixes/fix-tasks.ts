@@ -16,11 +16,17 @@ import { getDefaultProvider } from "./providers";
 export const AUTO_FIX_SETTING_KEY = "autoFix";
 export type AutoFixSetting = { enabled: boolean };
 
-export const UNFINISHED_STATUSES = ["queued", "running", "applying"];
-// A task the worker hasn't finished within this window is presumed dead (the worker's own hard cap
-// is 10 min analyze / ~15 min apply) — reclaimed to "failed" so a rebooted/OOM-killed worker can't
-// wedge the fingerprint behind the one-per-fingerprint guard forever.
-const STALE_MS = 20 * 60_000;
+// Statuses that BLOCK a new task for the same fingerprint (one-per-fingerprint guard + the partial
+// unique index). "proposed" is included: a proposal awaiting review must not be able to spawn a
+// second analyze that races it to a second PR (CLAUDE.md: gate server-side, not in the UI).
+export const BLOCKING_STATUSES = ["queued", "running", "proposed", "applying"];
+// A worker that hasn't finished within its window is presumed dead — reclaimed to "failed" so a
+// rebooted/OOM-killed worker can't wedge the fingerprint forever. The clock is per-phase: analyze
+// keys on createdAt (its worker started then), apply keys on appliedAt (a proposal may sit in
+// review for hours first, so createdAt would false-positive). "proposed" is deliberately NOT
+// reclaimed — it's waiting on a human, not on a worker.
+const ANALYZE_STALE_MS = 20 * 60_000; // analyze worker hard cap is 10 min
+const APPLY_STALE_MS = 20 * 60_000; // apply worker runs tsc + tests, so allow longer
 
 // The structured fix proposal the analyze session stores for on-screen review.
 export type FixEdit = { file: string; startLine: number; endLine: number; oldText: string; newText: string; note?: string };
@@ -56,15 +62,22 @@ export async function createFixTask(db: PrismaClient, input: CreateFixTaskInput)
     return { ok: false, status: 422, error: "no LLM provider configured — add one under Settings → LLM providers" };
   }
 
-  // Reclaim any task that's been unfinished past the worker's lifetime — a dead worker must not
-  // block this fingerprint permanently.
+  // Reclaim any worker-owned task that's overrun its window — a dead worker must not block this
+  // fingerprint permanently. Per-phase clock (see the constants): analyze on createdAt, apply on
+  // appliedAt; "proposed" is left alone (it waits on a human, not a worker).
+  const now = Date.now();
   await db.fixTask.updateMany({
-    where: { status: { in: UNFINISHED_STATUSES }, createdAt: { lt: new Date(Date.now() - STALE_MS) } },
-    data: { status: "failed", finishedAt: new Date(), log: "abandoned: the worker made no update within 20 minutes (likely crashed or was killed)" },
+    where: {
+      OR: [
+        { status: { in: ["queued", "running"] }, createdAt: { lt: new Date(now - ANALYZE_STALE_MS) } },
+        { status: "applying", appliedAt: { lt: new Date(now - APPLY_STALE_MS) } },
+      ],
+    },
+    data: { status: "failed", finishedAt: new Date(), log: "abandoned: the worker made no update within its expected window (likely crashed or was killed)" },
   });
 
   const existing = await db.fixTask.findFirst({
-    where: { fingerprint: input.fingerprint, status: { in: UNFINISHED_STATUSES } },
+    where: { fingerprint: input.fingerprint, status: { in: BLOCKING_STATUSES } },
     select: { id: true, status: true },
   });
   if (existing) return { ok: false, status: 409, error: `a fix task for this line is already ${existing.status}` };
@@ -77,8 +90,8 @@ export async function createFixTask(db: PrismaClient, input: CreateFixTaskInput)
     });
   } catch (e) {
     // Two concurrent callers (two operators, or the sweep racing a click) both passed the findFirst
-    // check — the partial-unique index on (fingerprint) WHERE status in (queued,running,applying)
-    // rejects the loser with P2002. Treat it as the same "already in flight" 409, not a 500.
+    // check — the partial-unique index on (fingerprint) WHERE status in (queued,running,proposed,
+    // applying) rejects the loser with P2002. Treat it as "already in flight" 409, not a 500.
     if ((e as { code?: string }).code === "P2002") return { ok: false, status: 409, error: "a fix task for this line is already queued" };
     throw e;
   }

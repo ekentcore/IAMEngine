@@ -8,6 +8,7 @@ import {
   moduleFromTitle,
   checkEdit,
   applyEdit,
+  applyFileEdits,
   validateProposalShape,
   readPathProblem,
   maskKey,
@@ -65,6 +66,35 @@ test("checkEdit: exactly-once matching", () => {
 
 test("applyEdit: replaces the single occurrence, leaves the rest", () => {
   assert.equal(applyEdit("const x = 1;\nconst y = 2;", { oldText: "const y = 2;", newText: "const y = 3;" }), "const x = 1;\nconst y = 3;");
+});
+
+test("applyEdit: inserts newText verbatim even with $-substitution patterns", () => {
+  // A plain-string replacement would collapse $$→$ and expand $& to the match; the function
+  // replacer must keep newText byte-for-byte identical to what the operator reviewed.
+  assert.equal(applyEdit("a b c", { oldText: "b", newText: "$$x" }), "a $$x c");
+  assert.equal(applyEdit("a b c", { oldText: "b", newText: "$& $` $'" }), "a $& $` $' c");
+  assert.equal(applyEdit("cost = amount", { oldText: "amount", newText: "$total" }), "cost = $total");
+});
+
+test("applyFileEdits: sequential same-file edits apply against the running buffer", () => {
+  const src = "const a = 1;\nconst b = 2;\nconst c = 3;";
+  const ok = applyFileEdits(src, [
+    { oldText: "const a = 1;", newText: "const a = 10;" },
+    { oldText: "const c = 3;", newText: "const c = 30;" },
+  ]);
+  assert.equal(ok.error, undefined);
+  assert.equal(ok.text, "const a = 10;\nconst b = 2;\nconst c = 30;");
+});
+
+test("applyFileEdits: refuses when an earlier edit destroys a later edit's oldText", () => {
+  // Both edits target overlapping text; after edit 1 rewrites the block, edit 2's oldText no longer
+  // matches exactly once — must error, not silently drop it.
+  const res = applyFileEdits("const x = 1;", [
+    { oldText: "const x = 1;", newText: "const x = 2;" },
+    { oldText: "const x = 1;", newText: "const x = 3;" },
+  ]);
+  assert.ok(res.error);
+  assert.equal(res.text, undefined);
 });
 
 test("validateProposalShape: catches missing pieces, passes a sane proposal", () => {

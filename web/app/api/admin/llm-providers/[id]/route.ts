@@ -34,6 +34,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const apiKey = typeof body.apiKey === "string" && body.apiKey.trim() ? body.apiKey.trim() : null;
   if (apiKey && apiKey.length > 500) return NextResponse.json({ error: "apiKey too long" }, { status: 422 });
 
+  // The stored key is write-only (the UI never sees it). If the endpoint the key is sent to changes
+  // — baseUrl or adapter — require re-entering the key: otherwise repointing baseUrl to an
+  // attacker host and hitting /test would exfiltrate the existing key. Changing where a secret is
+  // sent must be proven by whoever holds the secret.
+  const endpointChanged = (merged.baseUrl as string).trim() !== existing.baseUrl || merged.adapter !== existing.adapter;
+  if (endpointChanged && !apiKey) {
+    return NextResponse.json({ error: "re-enter the API key to change the base URL or adapter" }, { status: 422 });
+  }
+
   const updated = await db.llmProvider.update({
     where: { id: existing.id },
     data: {
@@ -49,7 +58,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     updated.isDefault = body.isDefault;
   }
 
-  await recordAudit("settings.llmprovider.update", { user: g.user, detail: { id: updated.id, name: updated.name, adapter: updated.adapter, model: updated.model, keyRotated: !!apiKey } });
+  await recordAudit("settings.llmprovider.update", { user: g.user, detail: { id: updated.id, name: updated.name, adapter: updated.adapter, model: updated.model, baseUrl: updated.baseUrl, keyRotated: !!apiKey } });
   return NextResponse.json({ provider: toMasked(updated) });
 }
 

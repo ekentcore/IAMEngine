@@ -16,11 +16,15 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const task = await db.fixTask.findUnique({ where: { id: params.id }, select: { id: true, status: true, title: true, fingerprint: true } });
   if (!task) return NextResponse.json({ error: "not found" }, { status: 404 });
-  if (!DISMISSIBLE.includes(task.status)) {
-    return NextResponse.json({ error: `a ${task.status} task can't be dismissed` }, { status: 409 });
-  }
 
-  await db.fixTask.update({ where: { id: task.id }, data: { status: "dismissed", finishedAt: new Date() } });
+  // Conditional claim (like apply's): the status must still be dismissible at write time. A plain
+  // update() after the findUnique check would let a concurrent Apply (proposed→applying) be
+  // overwritten by this dismiss, silencing the chip while the apply worker still opens a PR.
+  const claimed = await db.fixTask.updateMany({
+    where: { id: task.id, status: { in: DISMISSIBLE } },
+    data: { status: "dismissed", finishedAt: new Date() },
+  });
+  if (claimed.count === 0) return NextResponse.json({ error: "this task can no longer be dismissed (it may have just been applied)" }, { status: 409 });
   await recordAudit("fixtask.dismiss", { user: g.user, detail: { id: task.id, fingerprint: task.fingerprint, title: task.title, priorStatus: task.status } });
   return NextResponse.json({ ok: true, status: "dismissed" });
 }

@@ -248,7 +248,25 @@ export function checkEdit(fileText, oldText) {
 
 /** @param {string} fileText @param {{ oldText: string; newText: string }} edit */
 export function applyEdit(fileText, edit) {
-  return fileText.replace(edit.oldText, edit.newText);
+  // Replacer function, NOT a string: a plain-string replacement interprets $$, $&, $', $` as
+  // substitution patterns, so newText containing those (PowerShell $$, regex-building code) would
+  // land differently than what the operator reviewed. A function replacer inserts newText verbatim.
+  return fileText.replace(edit.oldText, () => edit.newText);
+}
+
+// Apply every edit for ONE file against a single running buffer, re-checking exactly-once match
+// before each write. Sequential same-file edits share context lines, so a naive "validate all
+// against the pristine file then write each" can silently drop or misplace a later edit once an
+// earlier one changes the text. Returns { text } on success or { error } on drift.
+/** @param {string} fileText @param {Array<{ oldText: string; newText: string }>} edits */
+export function applyFileEdits(fileText, edits) {
+  let text = fileText;
+  for (const e of edits) {
+    const check = checkEdit(text, e.oldText);
+    if (!check.ok) return { error: `oldText matches ${check.count} times after prior edits (must be exactly 1) — the edits for this file overlap or conflict` };
+    text = applyEdit(text, e);
+  }
+  return { text };
 }
 
 // Structural validation of a propose_fix payload (content/drift is checked separately per file).
@@ -287,9 +305,17 @@ const cap = (s, n = TOOL_OUTPUT_CAP) => (s && s.length > n ? `${s.slice(0, n)}\n
 
 // ── plumbing ─────────────────────────────────────────────────────────────────────────────────────
 
+// A default timeout guards against a hung child (a network git/gh call with no terminal) blocking
+// the detached worker forever — SIGKILL after CMD_TIMEOUT_MS surfaces as a non-zero code.
+const CMD_TIMEOUT_MS = 5 * 60_000;
+
 function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
-  if (r.error) throw r.error;
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: CMD_TIMEOUT_MS, killSignal: "SIGKILL", ...opts });
+  if (r.error) {
+    // A timeout kill sets r.error (ETIMEDOUT) rather than a normal exit — report it as a failure
+    // code so callers (must()) turn it into a task failure instead of throwing an unhandled error.
+    return { code: r.status ?? -1, stdout: (r.stdout ?? "").trim(), stderr: `${cmd} ${args.join(" ")}: ${r.error.message}` };
+  }
   return { code: r.status ?? -1, stdout: (r.stdout ?? "").trim(), stderr: (r.stderr ?? "").trim() };
 }
 
@@ -319,10 +345,30 @@ function loadPrisma(mainRoot) {
 
 // ── analyze mode: the read-only tool loop ────────────────────────────────────────────────────────
 
-function execSearchRepo(mainRoot, args) {
+// Fetch and resolve the branch the fix lane operates on: origin/<default>. BOTH analyze and apply
+// use this exact ref — analyze reads/greps/validates against its blobs, apply branches from it —
+// so a proposal validated at analyze time still applies (no local-vs-origin drift livelock), and
+// the model only ever sees COMMITTED, tracked files (gitignored local secrets — web/.env,
+// .claude/settings.local.json, browser-auth dumps — simply don't exist at the ref).
+function resolveBase(mainRoot) {
+  run("git", ["-C", mainRoot, "fetch", "origin", "--quiet"]);
+  const defaultBranch =
+    run("git", ["-C", mainRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).stdout.replace(/^origin\//, "") || "main";
+  return { defaultBranch, base: `origin/${defaultBranch}` };
+}
+
+// Read a tracked file's contents at a git ref (never the working tree) — `git show <ref>:<path>`.
+// Returns the string, or null when the path doesn't exist at the ref.
+function showFileAtRef(mainRoot, ref, relPath) {
+  const r = run("git", ["-C", mainRoot, "show", `${ref}:${relPath}`]);
+  return r.code === 0 ? r.stdout : null;
+}
+
+function execSearchRepo(mainRoot, base, args) {
   const pattern = typeof args?.pattern === "string" ? args.pattern : "";
   if (!pattern.trim()) return "search_repo needs a pattern";
-  const gitArgs = ["-C", mainRoot, "grep", "-nI", "--extended-regexp", "-e", pattern, "--"];
+  // Grep the tree at `base`, not the working directory — only tracked blobs at the ref.
+  const gitArgs = ["-C", mainRoot, "grep", "-nI", "--extended-regexp", "-e", pattern, base, "--"];
   if (typeof args.pathGlob === "string" && args.pathGlob.trim()) gitArgs.push(args.pathGlob.trim());
   const r = run("git", gitArgs);
   if (r.code === 1 && !r.stdout) return "no matches";
@@ -330,29 +376,28 @@ function execSearchRepo(mainRoot, args) {
   return cap(r.stdout);
 }
 
-function execReadFile(mainRoot, args) {
+function execReadFile(mainRoot, base, args) {
   const problem = readPathProblem(args?.path);
   if (problem) return problem;
-  const abs = path.join(mainRoot, args.path);
-  if (!existsSync(abs)) return `no such file: ${args.path}`;
-  let text;
-  try { text = readFileSync(abs, "utf8"); } catch (e) { return `read failed: ${e.message}`; }
+  const text = showFileAtRef(mainRoot, base, args.path);
+  if (text === null) return `no such file at ${base}: ${args.path}`;
   const lines = text.split("\n");
   const start = Number.isInteger(args.startLine) && args.startLine > 0 ? args.startLine : 1;
   const end = Number.isInteger(args.endLine) && args.endLine >= start ? Math.min(args.endLine, lines.length) : Math.min(start + 399, lines.length);
   return cap(lines.slice(start - 1, end).map((l, i) => `${start + i}\t${l}`).join("\n"));
 }
 
-// Validate a proposal against the CURRENT files (existence + oldText uniqueness). Returns the
-// per-edit problems to hand back to the model, or null when everything applies cleanly.
-function proposalProblems(mainRoot, edits) {
+// Validate a proposal against the files AT THE BASE REF (existence + oldText uniqueness) — the same
+// ref apply will branch from. Returns the per-edit problems to hand back to the model, or null when
+// everything applies cleanly.
+function proposalProblems(mainRoot, base, edits) {
   const problems = [];
   for (const e of edits) {
     const pathProblem = readPathProblem(e.file);
     if (pathProblem) { problems.push(`${e.file}: ${pathProblem}`); continue; }
-    const abs = path.join(mainRoot, e.file);
-    if (!existsSync(abs)) { problems.push(`${e.file}: no such file`); continue; }
-    const check = checkEdit(readFileSync(abs, "utf8"), e.oldText);
+    const text = showFileAtRef(mainRoot, base, e.file);
+    if (text === null) { problems.push(`${e.file}: no such file at ${base}`); continue; }
+    const check = checkEdit(text, e.oldText);
     if (!check.ok) problems.push(`${e.file}: oldText matches ${check.count} times (must be exactly 1) — copy it verbatim from read_file output, without line-number prefixes, with enough context to be unique`);
   }
   return problems.length ? problems.join("\n") : null;
@@ -381,6 +426,10 @@ async function analyze(db, task, mainRoot) {
 
   const adapter = adapterFor(provider);
   await db.fixTask.update({ where: { id: task.id }, data: { status: "running", provider: `${provider.name} (${provider.model})` } });
+
+  // Operate against origin/<default> — the SAME ref apply will branch from — so the proposal we
+  // validate here still applies later, and the model only sees committed, tracked files.
+  const { base } = resolveBase(mainRoot);
 
   const { system, user } = buildFixPrompt(task);
   const convo = [{ role: "user", text: user }];
@@ -411,7 +460,7 @@ async function analyze(db, task, mainRoot) {
       }
       if (call.name === "propose_fix") {
         const shapeProblem = validateProposalShape(call.args);
-        const driftProblem = shapeProblem ? null : proposalProblems(mainRoot, call.args.edits);
+        const driftProblem = shapeProblem ? null : proposalProblems(mainRoot, base, call.args.edits);
         if (!shapeProblem && !driftProblem) {
           await finish("proposed", {
             log: tail(call.args.diagnosis),
@@ -426,8 +475,8 @@ async function analyze(db, task, mainRoot) {
         results.push({ id: call.id, name: call.name, output: `proposal rejected:\n${shapeProblem ?? driftProblem}\nFix the edits and call propose_fix again (or no_fix).` });
         continue;
       }
-      if (call.name === "search_repo") { results.push({ id: call.id, name: call.name, output: execSearchRepo(mainRoot, call.args) }); continue; }
-      if (call.name === "read_file") { results.push({ id: call.id, name: call.name, output: execReadFile(mainRoot, call.args) }); continue; }
+      if (call.name === "search_repo") { results.push({ id: call.id, name: call.name, output: execSearchRepo(mainRoot, base, call.args) }); continue; }
+      if (call.name === "read_file") { results.push({ id: call.id, name: call.name, output: execReadFile(mainRoot, base, call.args) }); continue; }
       results.push({ id: call.id, name: call.name, output: `unknown tool ${call.name}` });
     }
     if (done) return;
@@ -454,28 +503,29 @@ async function apply(db, task, mainRoot) {
   let worktreeAdded = false;
 
   try {
-    // Branch from the up-to-date default branch, NOT the primary checkout's local HEAD (which may
-    // sit on a stale commit or an unrelated feature branch). The PR diff is then just the fix.
-    run("git", ["-C", mainRoot, "fetch", "origin", "--quiet"]);
-    const defaultBranch =
-      run("git", ["-C", mainRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).stdout.replace(/^origin\//, "") || "main";
-    const base = `origin/${defaultBranch}`;
+    // Branch from the SAME ref analyze operated on (origin/<default>) so a proposal validated at
+    // analyze time still applies — not the primary checkout's local HEAD, which may sit on a stale
+    // commit or an unrelated feature branch. The PR diff is then just the fix.
+    const { defaultBranch, base } = resolveBase(mainRoot);
 
     must("git", ["-C", mainRoot, "worktree", "add", wt, "-b", branch, base]);
     worktreeAdded = true;
     await db.fixTask.update({ where: { id: task.id }, data: { branch } });
 
-    // Re-validate EVERY edit against the worktree before touching anything: the proposal was made
-    // against the code as of analyze time; if the file drifted, refuse rather than mis-apply.
+    // Group edits by file, then apply each file's edits against a single running buffer with an
+    // exactly-once re-check before each write (applyFileEdits): overlapping same-file edits can't
+    // silently drop or mis-place a later edit, and any drift from the proposal refuses the apply.
+    const byFile = new Map();
     for (const e of proposal.edits) {
-      const abs = path.join(wt, e.file);
-      if (!existsSync(abs)) { await finish("failed", { log: `drifted: ${e.file} no longer exists on ${base} — re-run the analysis` }); return; }
-      const check = checkEdit(readFileSync(abs, "utf8"), e.oldText);
-      if (!check.ok) { await finish("failed", { log: `drifted: ${e.file} no longer matches the proposal (oldText found ${check.count}×) — re-run the analysis` }); return; }
+      if (!byFile.has(e.file)) byFile.set(e.file, []);
+      byFile.get(e.file).push(e);
     }
-    for (const e of proposal.edits) {
-      const abs = path.join(wt, e.file);
-      writeFileSync(abs, applyEdit(readFileSync(abs, "utf8"), e));
+    for (const [file, edits] of byFile) {
+      const abs = path.join(wt, file);
+      if (!existsSync(abs)) { await finish("failed", { log: `drifted: ${file} no longer exists on ${base} — re-run the analysis` }); return; }
+      const res = applyFileEdits(readFileSync(abs, "utf8"), edits);
+      if (res.error) { await finish("failed", { log: `drifted: ${file} — ${res.error}. Re-run the analysis.` }); return; }
+      writeFileSync(abs, res.text);
     }
 
     const module = moduleFromTitle(task.title);
