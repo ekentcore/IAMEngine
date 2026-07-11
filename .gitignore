@@ -77,3 +77,7 @@ exo.pfx
 # tooling/runtime artifacts that must never ship in the runner bundle
 runner/.claude/
 runner/.remember/
+
+# spanning login-test scratch (screenshots, network capture, browser profile)
+runner/browser/scripts/.spanning-test-run/
+runner/browser/scripts/.spanning-profile/

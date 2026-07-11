@@ -19,10 +19,12 @@
 // structured { ok:false, error, evidence:<screenshot> } instead of throwing or claiming success.
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-// The Spanning admin console login. The API base is o365-api-{region}.spanningbackup.com (NOT a
-// browser login). The admin portal is reached from https://spanningbackup.com; for Spanning Backup
-// for Microsoft 365 the admin console is typically the O365 app console. VERIFY the exact URL.
-const SPANNING_PORTAL_URL = process.env.SPANNING_PORTAL_URL || "https://o365.spanningbackup.com/";
+// The Spanning Backup for Microsoft 365 admin console (verified from spanning.com/login → the "Log In
+// with Microsoft 365" destination). It lands on a provider chooser (Microsoft / KaseyaOne); clicking
+// "Log In with Microsoft" hands off to Microsoft 365 SSO. The API base (o365-api-{region}…) is a
+// SEPARATE credential and not used here. (Google console is spanningbackup.com/app/, Salesforce
+// sf.spanningbackup.com — not handled by this M365 flow.)
+const SPANNING_PORTAL_URL = process.env.SPANNING_PORTAL_URL || "https://o365.spanningbackup.com/login.html";
 
 // If the portal reports the sync as "queued / started" rather than "finished", we ask the app to
 // re-check the user shortly (the Spanning onboarding step re-runs and confirms the license). VERIFY
@@ -32,13 +34,15 @@ const RETRY_AFTER_MINUTES = 10;
 
 import { totp } from "../lib/totp.mjs";
 
-// VERIFY every selector below against the real portal DOM.
+// VERIFY the post-login (sync-control) selectors against the real console DOM; the login path below
+// is confirmed against o365.spanningbackup.com/login.html → Microsoft 365 SSO.
 const SELECTORS = {
-  // Basic login form (username/password). Microsoft-federated tenants land on login.microsoftonline.com
-  // instead — see the MFA handling in run().
-  username: 'input[type="email"], input[name="username"], input#username, input#email',
-  password: 'input[type="password"], input[name="password"], input#password',
-  submit: 'button[type="submit"], input[type="submit"], button:has-text("Sign in"), button:has-text("Log in")',
+  // The console's provider chooser: pick Microsoft 365 (vs KaseyaOne), which redirects to MS SSO.
+  microsoftLogin: 'a:has-text("Log In with Microsoft"), a:has-text("Sign in with Microsoft"), button:has-text("Log In with Microsoft"), a:has-text("Microsoft 365")',
+  // Microsoft 365 sign-in fields (loginfmt/passwd are the stable MS field names).
+  username: 'input[type="email"], input[name="loginfmt"], input[name="username"], input#i0116, input#email',
+  password: 'input[type="password"], input[name="passwd"], input[name="password"], input#i0118, input#password',
+  submit: '#idSIButton9, input[type="submit"], button[type="submit"], button:has-text("Sign in"), button:has-text("Next"), button:has-text("Log in")',
   // The directory-sync / "scan for new users" trigger, and a confirmation the sync started.
   syncButton: 'button:has-text("Sync"), button:has-text("Scan for new users"), a:has-text("Sync now"), [data-action="sync-users"]',
   syncConfirmation: 'text=/sync (started|queued|initiated|in progress|complete)/i',
@@ -99,12 +103,19 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     return { ok: false, error: "no Spanning portal credentials brokered (username/password) — set them on the client's Spanning secret" };
   }
 
-  // 1. Navigate to the portal.
+  // 1. Navigate to the console, then pick "Log In with Microsoft" to hand off to Microsoft 365 SSO.
   try {
-    log(`navigating to the Spanning admin portal (${SPANNING_PORTAL_URL})`);
+    log(`navigating to the Spanning admin console (${SPANNING_PORTAL_URL})`);
     await page.goto(SPANNING_PORTAL_URL, { waitUntil: "domcontentloaded" });
+    const msBtn = page.locator(SELECTORS.microsoftLogin).first();
+    if (await msBtn.isVisible().catch(() => false)) {
+      log('selecting "Log In with Microsoft"');
+      await msBtn.click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForTimeout(2000);
+    }
   } catch (e) {
-    return { ok: false, error: `could not reach the Spanning portal (${SPANNING_PORTAL_URL}) — VERIFY the URL: ${e?.message ?? e}`, evidence: await shot("nav") };
+    return { ok: false, error: `could not reach the Spanning console (${SPANNING_PORTAL_URL}) — VERIFY the URL: ${e?.message ?? e}`, evidence: await shot("nav") };
   }
 
   // 2. Login (username + password), then clear a second factor if present. A TOTP/app code is
