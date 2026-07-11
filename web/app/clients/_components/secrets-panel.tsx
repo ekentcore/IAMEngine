@@ -20,6 +20,20 @@ export type SecretRowVM = {
 
 type TestState = { status: "idle" | "testing" | "ok" | "fail"; label?: string; error?: string; missingFields?: string[] };
 
+// The Delinea self-check (token / secret read / folder write), tri-state per leg.
+type SelfCheckLeg = { state: "ok" | "fail" | "unknown"; detail: string };
+type SelfCheck = { token: SelfCheckLeg; read: SelfCheckLeg; write: SelfCheckLeg; folderId: string | null };
+
+function legBadge(label: string, leg: SelfCheckLeg) {
+  const color = leg.state === "ok" ? "#15803d" : leg.state === "fail" ? "#b91c1c" : "#92400e";
+  const mark = leg.state === "ok" ? "✓" : leg.state === "fail" ? "✗" : "?";
+  return (
+    <span className="badge" style={{ color }} title={leg.detail}>
+      {mark} {label}
+    </span>
+  );
+}
+
 // Per-client secret wiring: map each secretName the systems reference to a Delinea secret id, and
 // preflight each one ("test connection") so a tenant is verified before a real run. The app stores
 // and shows only references (ids) — never the secret value.
@@ -42,6 +56,20 @@ export function SecretsPanel({
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   // Which row's inline "Create in Delinea" form is open (by secret name).
   const [creating, setCreating] = useState<string | null>(null);
+  const [selfCheck, setSelfCheck] = useState<SelfCheck | "checking" | null>(null);
+
+  // The Delinea self-check: token grant, one wired-secret read, folder-write introspection.
+  async function runSelfCheck() {
+    setSelfCheck("checking");
+    try {
+      const r = await fetch(`/api/clients/${slug}/secrets/delinea-status`, { method: "POST" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d) { setSelfCheck({ token: { state: "fail", detail: d?.error ?? `failed (${r.status})` }, read: { state: "unknown", detail: "—" }, write: { state: "unknown", detail: "—" }, folderId: null }); return; }
+      setSelfCheck(d as SelfCheck);
+    } catch (e) {
+      setSelfCheck({ token: { state: "fail", detail: (e as Error).message }, read: { state: "unknown", detail: "—" }, write: { state: "unknown", detail: "—" }, folderId: null });
+    }
+  }
 
   // Called when a secret is created in Delinea: its id is already wired server-side, so reflect it
   // locally and refresh so readiness/tests recompute from the saved reference.
@@ -291,6 +319,20 @@ export function SecretsPanel({
           Save & test
         </button>
         <button onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED).map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
+        <button
+          onClick={runSelfCheck}
+          disabled={selfCheck === "checking"}
+          title="Verify the app's own Delinea access for this client: token grant, reading a wired secret, and whether the write account could create secrets in the client's folder"
+        >
+          {selfCheck === "checking" ? "Checking…" : "Check Delinea access"}
+        </button>
+        {selfCheck && selfCheck !== "checking" && (
+          <span style={{ display: "inline-flex", gap: 8 }}>
+            {legBadge("auth", selfCheck.token)}
+            {legBadge("read", selfCheck.read)}
+            {legBadge(`write${selfCheck.folderId ? ` (folder ${selfCheck.folderId})` : ""}`, selfCheck.write)}
+          </span>
+        )}
         {saveMsg && <span className={saveMsg.startsWith("Saved") ? "note muted" : "note danger"}>{saveMsg}</span>}
         {dirty && !saveMsg && <span className="note muted">Unsaved changes</span>}
       </div>

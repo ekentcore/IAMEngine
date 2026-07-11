@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
+import { recordAudit } from "@/lib/auth/audit";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
@@ -18,6 +19,8 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   const systemKey = typeof body?.systemKey === "string" && body.systemKey.trim() ? body.systemKey.trim() : undefined;
   try {
     const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey);
+    const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
+    await recordAudit("conntest.request", { user: g.user, clientId: client?.id ?? null, detail: { systemKey: systemKey ?? "*", queued: out.tests.length } });
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

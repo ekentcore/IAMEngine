@@ -173,6 +173,70 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
   }
 }
 
+// --- Folder access introspection (the Delinea self-check) ---------------------------------------
+// Proves the app's account can READ (and, for the write path, CREATE IN) a client's folder without
+// ever touching a secret value. Secret Server's folder-permission surface varies by version, so the
+// write check is TRI-STATE: "unknown" (couldn't introspect) must never be treated as a failure.
+
+export type FolderRead = { ok: boolean; name?: string; error?: string };
+export async function checkFolderRead(cfg: DelineaConfig, folderId: string, fetcher: Fetcher = defaultFetcher, token?: string): Promise<FolderRead> {
+  if (!folderId) return { ok: false, error: "no folder id" };
+  if (!delineaConfigured(cfg)) return { ok: false, error: "Delinea not configured (set DELINEA_* on the app)" };
+  try {
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/folders/${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 404) return { ok: false, error: `folder ${folderId} not found (or hidden from this account)` };
+    if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied — grant the account View on the folder" };
+    if (!res.ok) return { ok: false, error: `Delinea ${res.status}` };
+    const d = (await res.json().catch(() => null)) as { folderName?: string; name?: string } | null;
+    return { ok: true, name: String(d?.folderName ?? d?.name ?? folderId) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export type FolderWrite = { write: "ok" | "fail" | "unknown"; detail: string };
+export async function checkFolderWrite(cfg: DelineaConfig, folderId: string, fetcher: Fetcher = defaultFetcher, token?: string): Promise<FolderWrite> {
+  if (!folderId) return { write: "unknown", detail: "no folder id stored for this client" };
+  if (!delineaConfigured(cfg)) return { write: "unknown", detail: "Delinea not configured" };
+  try {
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
+    // Primary: folder-details returns UI capability flags on most Secret Server versions.
+    const det = await fetcher(`${cfg.baseUrl}/api/v1/folder-details/${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (det.ok) {
+      const d = (await det.json().catch(() => null)) as { actions?: unknown; allowedTemplates?: unknown } | null;
+      const actions = Array.isArray(d?.actions) ? (d?.actions as unknown[]).map((a) => String(a).toLowerCase()) : null;
+      if (actions) {
+        return actions.some((a) => a.includes("createsecret") || a === "addsecret")
+          ? { write: "ok", detail: "the account can create secrets in this folder" }
+          : { write: "fail", detail: "the account cannot create secrets here — grant it Add Secret/Edit on the folder" };
+      }
+    }
+    if (det.status === 401 || det.status === 403) return { write: "fail", detail: "access denied on the folder — grant the account Add Secret/Edit" };
+    // Fallback: the permissions list (needs Owner on some versions — expect "unknown" often).
+    const per = await fetcher(`${cfg.baseUrl}/api/v1/folder-permissions?filter.folderId=${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (per.ok) {
+      const d = (await per.json().catch(() => null)) as { records?: { userName?: string; folderAccessRoleName?: string; secretAccessRoleName?: string }[] } | null;
+      const mine = (d?.records ?? []).filter((r) => String(r.userName ?? "").toLowerCase() === cfg.username.toLowerCase());
+      if (mine.length > 0) {
+        const roles = mine.map((r) => `${r.folderAccessRoleName ?? ""}/${r.secretAccessRoleName ?? ""}`.toLowerCase());
+        return roles.some((r) => r.includes("owner") || r.includes("edit") || r.includes("add"))
+          ? { write: "ok", detail: `folder roles: ${roles.join(", ")}` }
+          : { write: "fail", detail: `folder roles (${roles.join(", ")}) don't allow creating secrets — grant Add Secret/Edit` };
+      }
+    }
+    return { write: "unknown", detail: "couldn't introspect folder permissions on this Secret Server version — verify Add Secret manually" };
+  } catch (e) {
+    return { write: "unknown", detail: (e as Error).message };
+  }
+}
+
 // Resolve a reference to its FIELD VALUES (Username/Password/Server/...). This DOES pull the value
 // into the app — intentionally — so the broker can push it down to the runner. Caller must treat
 // the result as sensitive: never log it, never persist it, hand it straight back over TLS.

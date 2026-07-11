@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -184,4 +184,70 @@ test("createSecret refuses (no POST) when a supplied field has no matching templ
   assert.equal(res.ok, false);
   assert.match(res.error ?? "", /no field matching.*bogusfield/i);
   assert.equal(posted, false); // did not create a blank/partial secret
+});
+
+// --- Folder access introspection ---------------------------------------------------------------
+
+// Routes by URL: /folders/{id} (read), /folder-details/{id} (capability flags), /folder-permissions.
+function folderFetcher(opts: {
+  folderStatus?: number; folderBody?: unknown;
+  detailsStatus?: number; detailsBody?: unknown;
+  permsStatus?: number; permsBody?: unknown;
+}): Fetcher {
+  const mk = (status: number, body: unknown): FetchResponse => ({ ok: status >= 200 && status < 300, status, json: async () => body ?? {} });
+  return async (url) => {
+    if (url.includes("/oauth2/token")) return mk(200, { access_token: "tok-123" });
+    if (url.includes("/folder-details/")) return mk(opts.detailsStatus ?? 404, opts.detailsBody);
+    if (url.includes("/folder-permissions")) return mk(opts.permsStatus ?? 404, opts.permsBody);
+    if (url.includes("/folders/")) return mk(opts.folderStatus ?? 200, opts.folderBody ?? { folderName: "Clients/Acme" });
+    return mk(404, {});
+  };
+}
+
+test("checkFolderRead: ok with folder name, denied, and missing", async () => {
+  const okRes = await checkFolderRead(cfg, "142", folderFetcher({}));
+  assert.deepEqual(okRes, { ok: true, name: "Clients/Acme" });
+
+  const denied = await checkFolderRead(cfg, "142", folderFetcher({ folderStatus: 403 }));
+  assert.equal(denied.ok, false);
+  assert.match(denied.error ?? "", /denied/i);
+
+  const missing = await checkFolderRead(cfg, "9", folderFetcher({ folderStatus: 404 }));
+  assert.equal(missing.ok, false);
+  assert.match(missing.error ?? "", /not found/i);
+});
+
+test("checkFolderWrite: capability flags decide ok vs fail", async () => {
+  const can = await checkFolderWrite(cfg, "142", folderFetcher({ detailsStatus: 200, detailsBody: { actions: ["CreateSecret", "Edit"] } }));
+  assert.equal(can.write, "ok");
+
+  const cant = await checkFolderWrite(cfg, "142", folderFetcher({ detailsStatus: 200, detailsBody: { actions: ["View"] } }));
+  assert.equal(cant.write, "fail");
+  assert.match(cant.detail, /Add Secret/i);
+});
+
+test("checkFolderWrite: falls back to the permissions list, else degrades to unknown (never false-fails)", async () => {
+  const viaPerms = await checkFolderWrite(cfg, "142", folderFetcher({
+    permsStatus: 200,
+    permsBody: { records: [{ userName: "svc", folderAccessRoleName: "Owner", secretAccessRoleName: "Owner" }] },
+  }));
+  assert.equal(viaPerms.write, "ok");
+
+  const roleTooLow = await checkFolderWrite(cfg, "142", folderFetcher({
+    permsStatus: 200,
+    permsBody: { records: [{ userName: "svc", folderAccessRoleName: "View", secretAccessRoleName: "List" }] },
+  }));
+  assert.equal(roleTooLow.write, "fail");
+
+  // Neither endpoint answers usefully -> unknown, not fail.
+  const opaque = await checkFolderWrite(cfg, "142", folderFetcher({ detailsStatus: 500, permsStatus: 500 }));
+  assert.equal(opaque.write, "unknown");
+
+  const noFolder = await checkFolderWrite(cfg, "", folderFetcher({}));
+  assert.equal(noFolder.write, "unknown");
+});
+
+test("checkFolderWrite: 403 on folder-details is a definite fail", async () => {
+  const denied = await checkFolderWrite(cfg, "142", folderFetcher({ detailsStatus: 403 }));
+  assert.equal(denied.write, "fail");
 });

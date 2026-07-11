@@ -10,7 +10,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import net from "node:net";
 import { db } from "@/lib/db";
-import { delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
+import { delineaConfigFromEnv, delineaConfigured, getDelineaToken, checkSecret, checkFolderWrite } from "@/lib/secrets/delinea";
+import { delineaWriteConfigFromEnv, writeAccountConfigured } from "@/lib/secrets/delinea-templates";
+import { secretIsSet } from "@/lib/secrets/wiring";
+import { NOT_NEEDED } from "@/lib/cases/case-secrets";
 import { azureConfigFromEnv, azureConfigured, azureChatJson } from "@/lib/generator/llm";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
 import { snGet } from "@/lib/servicenow/http";
@@ -109,6 +112,54 @@ async function checkDelinea(): Promise<HealthResult> {
   }
 }
 
+// ---- Delinea rights (deeper than the token check: canary READ + folder WRITE introspection) ----
+// Proves the service account can actually resolve a secret (grant a token ≠ read anything) and,
+// where a client folder id is stored, whether the WRITE account could create secrets in it. The
+// write leg is tri-state — "unknown" (Secret Server wouldn't say) never fails the check.
+async function checkDelineaAccess(): Promise<HealthResult> {
+  const name = "Delinea rights";
+  const cfg = delineaConfigFromEnv();
+  if (!delineaConfigured(cfg)) return unconfigured(name, "set DELINEA_* first (see the Delinea check)");
+  const start = Date.now();
+  const parts: string[] = [];
+  try {
+    const token = await getDelineaToken(cfg);
+    // Canary read: an explicit env id wins; else the first wired reference in the DB.
+    let canary = (process.env.DELINEA_CANARY_SECRET_ID ?? "").trim();
+    if (!canary) {
+      const s = await db.secret.findFirst({
+        where: { externalId: { notIn: ["", "REPLACE_ME", NOT_NEEDED] } },
+        orderBy: { id: "asc" },
+        select: { externalId: true },
+      });
+      canary = s && secretIsSet(s.externalId) ? s.externalId : "";
+    }
+    if (!canary) parts.push("read: no wired secret to canary-read yet");
+    else {
+      const read = await checkSecret(cfg, canary, undefined, token);
+      if (!read.ok) return fail(name, `canary read of secret ${canary} failed: ${read.error}`, start);
+      parts.push(`read ok (via '${read.label ?? canary}')`);
+    }
+    // Write introspection on the first client with a stored folder id (best effort).
+    const writeCfg = delineaWriteConfigFromEnv();
+    if (!writeAccountConfigured(writeCfg)) parts.push("write: no write account configured");
+    else {
+      const c = await db.client.findFirst({ where: { delineaFolderId: { not: null } }, select: { slug: true, delineaFolderId: true } });
+      if (!c?.delineaFolderId) parts.push("write: unknown (no client has a Delinea folder id yet)");
+      else {
+        const writeToken = await getDelineaToken(writeCfg).catch(() => null);
+        if (!writeToken) return fail(name, "the WRITE account's token grant failed — check DELINEA_WRITE_USER/PASSWORD", start);
+        const w = await checkFolderWrite(writeCfg, c.delineaFolderId, undefined, writeToken);
+        if (w.write === "fail") return fail(name, `folder write (${c.slug}): ${w.detail}`, start);
+        parts.push(`write ${w.write === "ok" ? "ok" : "unknown"} (${c.slug}: ${w.detail})`);
+      }
+    }
+    return ok(name, `authenticated · ${parts.join(" · ")}`, start);
+  } catch (e) {
+    return fail(name, (e as Error).message, start);
+  }
+}
+
 // ---- ServiceNow (cheap authenticated read) -------------------------------
 async function checkServiceNow(): Promise<HealthResult> {
   const name = "ServiceNow";
@@ -135,7 +186,7 @@ async function checkAzureAi(): Promise<HealthResult> {
 }
 
 // Registry — add a check here and it shows up on the page automatically.
-const CHECKS: Array<() => Promise<HealthResult>> = [checkPostgres, checkRedis, checkDelinea, checkServiceNow, checkAzureAi];
+const CHECKS: Array<() => Promise<HealthResult>> = [checkPostgres, checkRedis, checkDelinea, checkDelineaAccess, checkServiceNow, checkAzureAi];
 
 export async function runHealthChecks(): Promise<HealthResult[]> {
   loadRootEnv();
