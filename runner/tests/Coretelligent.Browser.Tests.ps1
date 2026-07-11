@@ -20,6 +20,25 @@ Describe 'Test-CtgBrowserAvailable' {
     }
 }
 
+Describe 'Install-CtgBrowser' {
+    It 'returns $false (and never throws) when node is not on PATH — nothing to install against' {
+        Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        Install-CtgBrowser | Should -BeFalse
+    }
+    It 'returns $false when npm is not on PATH' {
+        Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { [pscustomobject]@{ Source = '/usr/bin/node' } } -ParameterFilter { $Name -eq 'node' }
+        Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'npm' }
+        Install-CtgBrowser | Should -BeFalse
+    }
+    It 'returns $false when the sidecar directory is missing (never runs an installer)' {
+        Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { [pscustomobject]@{ Source = 'x' } } -ParameterFilter { $Name -in @('node','npm') }
+        Mock Get-CtgBrowserRoot -ModuleName Coretelligent.Browser -MockWith { Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-nope-" + [guid]::NewGuid()) }
+        Mock Invoke-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { throw 'should not install' }
+        Install-CtgBrowser | Should -BeFalse
+        Should -Invoke Invoke-CtgNodeTool -ModuleName Coretelligent.Browser -Times 0
+    }
+}
+
 Describe 'Invoke-CtgBrowserFlow' {
     It 'returns a graceful ok=$false (never throws) when the sidecar is unavailable' {
         Mock Test-CtgBrowserAvailable -ModuleName Coretelligent.Browser -MockWith { $false }

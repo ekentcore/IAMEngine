@@ -1659,6 +1659,16 @@ $script:OnPremCapabilityProbe = [ordered]@{
 $script:RunnerCapabilities = @(
     $script:OnPremCapabilityProbe.Keys | Where-Object { Get-Command $script:OnPremCapabilityProbe[$_] -ErrorAction SilentlyContinue }
 )
+# Self-heal the browser sidecar ONCE at startup (mirrors the RSAT block above). Capabilities are
+# computed here, once per process, and the claim gate WITHHOLDS browser jobs from agents not reporting
+# 'browser' — so a lazy first-use install could never happen (the agent would never receive the job).
+# Installing here, before the probe below, lets the agent advertise 'browser' from its first heartbeat.
+# Gated on node being present (can't install Playwright without it) and the sidecar not already ready;
+# opt out with IAM_RUNNER_NO_BROWSER_INSTALL=1. Best-effort — a failure just withholds browser jobs.
+if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -ne '1' -and -not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium (one-time)…" -ForegroundColor Yellow
+    try { [void](Install-CtgBrowser) } catch { Write-Warning "browser sidecar install failed: $($_.Exception.Message) — force-sync jobs will be withheld until it's installed" }
+}
 # Browser automation is a CROSS-CUTTING capability (not an on-prem system): report 'browser' when the
 # Node/Playwright sidecar is installed on this host, so the app's claim gate hands browser jobs (e.g.
 # spanning-force-sync) only to agents that can actually run them. The server ignores 'browser' in the

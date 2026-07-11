@@ -55,6 +55,99 @@ function Test-CtgBrowserAvailable {
     }
 }
 
+# Run an external command (npm/npx/node) with a bounded timeout, draining stdout+stderr async so a
+# chatty installer can't deadlock the pipe. Returns { Code; Tail }. Never throws.
+function Invoke-CtgToolProcess {
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory, [int]$TimeoutSeconds = 900)
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $FilePath
+    foreach ($a in $Arguments) { $psi.ArgumentList.Add($a) }
+    if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute        = $false
+    $proc = $null
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill($true) } catch { }
+            return [pscustomobject]@{ Code = -1; Tail = "timed out after ${TimeoutSeconds}s" }
+        }
+        $combined = ((($outTask.GetAwaiter().GetResult()), ($errTask.GetAwaiter().GetResult())) -join "`n").Trim()
+        $tail = if ($combined.Length -gt 600) { $combined.Substring($combined.Length - 600) } else { $combined }
+        return [pscustomobject]@{ Code = $proc.ExitCode; Tail = $tail }
+    } catch {
+        return [pscustomobject]@{ Code = -1; Tail = $_.Exception.Message }
+    } finally {
+        if ($proc) { $proc.Dispose() }
+    }
+}
+
+# Run a Node CLI tool (npm/npx) cross-platform: on Windows npm/npx are .cmd shims that Process.Start
+# can't exec directly, so go through cmd.exe /c; elsewhere run the resolved binary directly.
+function Invoke-CtgNodeTool {
+    param([Parameter(Mandatory)][string]$Tool, [string[]]$Arguments = @(), [string]$WorkingDirectory, [int]$TimeoutSeconds = 900)
+    if ($IsWindows) {
+        return Invoke-CtgToolProcess -FilePath $env:ComSpec -Arguments (@('/c', $Tool) + $Arguments) -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
+    }
+    $cmd = Get-Command $Tool -ErrorAction SilentlyContinue
+    if (-not $cmd) { return [pscustomobject]@{ Code = -1; Tail = "$Tool not found on PATH" } }
+    return Invoke-CtgToolProcess -FilePath $cmd.Source -Arguments $Arguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
+}
+
+function Install-CtgBrowser {
+    <#
+    .SYNOPSIS
+        One-time self-heal for the browser sidecar: when `node` is present but the Playwright harness
+        (runner/browser/node_modules) or the Chromium binary is missing, install them — `npm install`
+        in runner/browser, then `npx playwright install chromium`. Best-effort, bounded (each step has
+        a timeout), logs progress. Returns $true only if Test-CtgBrowserAvailable is true afterwards.
+        Never throws — a failed install just leaves the agent without the 'browser' capability.
+    #>
+    [CmdletBinding()]
+    param([int]$TimeoutSeconds = 900) # npm install + a cold Chromium download can take minutes
+    try {
+        if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Write-Warning "browser sidecar: 'node' is not on PATH — install Node 18+ to enable browser automation."
+            return $false
+        }
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Warning "browser sidecar: 'npm' is not on PATH (it ships with Node)."
+            return $false
+        }
+        $root = Get-CtgBrowserRoot
+        if (-not (Test-Path -LiteralPath (Join-Path $root 'package.json'))) {
+            Write-Warning "browser sidecar directory not found ($root) — is runner/browser deployed to this host?"
+            return $false
+        }
+
+        # 1. Dependencies (node_modules/@playwright) — skip if already present.
+        if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules/@playwright'))) {
+            Write-Host "browser sidecar: installing npm dependencies in $root …" -ForegroundColor Yellow
+            $r = Invoke-CtgNodeTool -Tool 'npm' -Arguments @('install', '--no-audit', '--no-fund') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
+            if ($r.Code -ne 0) { Write-Warning "browser sidecar: npm install failed ($($r.Code)): $($r.Tail)"; return $false }
+        }
+
+        # 2. Chromium binary (separate download, cached in ms-playwright) — skip if already present.
+        if (-not (Test-CtgChromiumInstalled)) {
+            Write-Host "browser sidecar: downloading Chromium (playwright install chromium) …" -ForegroundColor Yellow
+            $r = if (Get-Command npx -ErrorAction SilentlyContinue) {
+                Invoke-CtgNodeTool -Tool 'npx' -Arguments @('playwright', 'install', 'chromium') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
+            } else {
+                Invoke-CtgNodeTool -Tool 'npm' -Arguments @('run', 'install-browser') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
+            }
+            if ($r.Code -ne 0) { Write-Warning "browser sidecar: Chromium install failed ($($r.Code)): $($r.Tail)"; return $false }
+        }
+
+        return (Test-CtgBrowserAvailable)
+    } catch {
+        Write-Warning "browser sidecar install error: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Invoke-CtgBrowserFlow {
     <#
     .SYNOPSIS
@@ -146,4 +239,4 @@ function Invoke-CtgBrowserFlow {
     }
 }
 
-Export-ModuleMember -Function Test-CtgBrowserAvailable, Invoke-CtgBrowserFlow
+Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow
