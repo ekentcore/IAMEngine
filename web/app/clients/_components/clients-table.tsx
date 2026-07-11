@@ -3,54 +3,15 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
-import type { Backbone, ClientStatus } from "@prisma/client";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
 import { SystemsEditor } from "./systems-editor";
-import type { ClientReadiness } from "@/lib/clients/readiness";
+import { type ClientVM, BACKBONE_LABEL, READINESS, effective } from "./client-vm";
+import { ReadinessBadge } from "./readiness-badge";
+import { ClientFlagBadges } from "./client-flag-badges";
+import { EmailFormatEditor, UsernamePatternDatalist } from "./email-format-editor";
 
-export type ClientVM = {
-  id: string;
-  slug: string;
-  name: string;
-  primaryDomain: string;
-  backbone: Backbone | null;
-  status: ClientStatus;
-  intakeSource: string;
-  restricted: boolean;
-  coreId: string | null;
-  region: string | null;
-  supportStatus: string | null;
-  onboardingRating: number | null;
-  offboardingRating: number | null;
-  snLastSyncedAt: string | null;
-  editedFields: string[];
-  emailDomain: string | null;
-  usernamePattern: string;
-  systemKeys: string[];
-  systemCount: number;
-  modeled: boolean;
-  readiness: ClientReadiness;
-  parentId: string | null;
-  parentName: string | null;
-  parentSystemKeys: string[];
-  coverage: "own" | "parent" | "none";
-};
-
-const BACKBONE_LABEL: Record<string, string> = {
-  entra: "Entra",
-  google: "Google",
-  ad_synced: "AD synced",
-  ad_standalone: "AD standalone",
-};
-
-// Run-readiness badge styling per tier (computed from wired secrets + connection-test results).
-const READINESS: Record<string, { label: string; mark: string; color: string; bg: string }> = {
-  ready: { label: "ready", mark: "✓", color: "var(--ok-fg)", bg: "var(--ok-bg)" },
-  partial: { label: "partial", mark: "◑", color: "var(--warn-fg)", bg: "var(--warn-bg)" },
-  not_set_up: { label: "not set up", mark: "✗", color: "var(--err-fg)", bg: "var(--err-bg)" },
-  no_systems: { label: "—", mark: "", color: "var(--muted)", bg: "transparent" },
-};
+export type { ClientVM } from "./client-vm";
 
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
 type SortDir = "asc" | "desc";
@@ -67,19 +28,6 @@ function haystack(c: ClientVM): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-}
-
-// Live preview of an email/UPN name format using a fixed sample person, "John Jason Doe"
-// (first John, middle Jason, last Doe). Mirrors the runner's applyUsernamePattern tokens.
-function formatPreview(localPattern: string, domain: string | null): string {
-  const v: Record<string, string> = {
-    first: "john", last: "doe", mi: "j", f: "j", l: "d", firstinitial: "j", lastinitial: "d",
-  };
-  const local = localPattern.replace(/\{[a-zA-Z]+\}/g, (tok) => {
-    const k = tok.slice(1, -1).toLowerCase();
-    return k in v ? v[k] : tok;
-  });
-  return `${local}@${domain || "domain.com"}`;
 }
 
 // null/empty sorts last regardless of direction.
@@ -109,8 +57,6 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
   // inline cell editing (double-click)
   const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
   const [savingCell, setSavingCell] = useState(false);
-  const [draft, setDraft] = useState(""); // live PRIMARY value while editing the email-format cell
-  const [draftBackup, setDraftBackup] = useState(""); // live BACKUP (conflict fallback) value
 
   // archive confirmation
   const confirmRef = useRef<HTMLDialogElement>(null);
@@ -172,26 +118,9 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
     }
   }
 
-  // Commit the email-format edit: combine Primary + optional Backup into "primary | backup" (the
-  // route splits on "|"; the backup is used when the primary UPN is already taken by someone else).
-  function commitUsername(slug: string, currentPattern: string) {
-    const combined = draft.trim() + (draftBackup.trim() ? ` | ${draftBackup.trim()}` : "");
-    if (draft.trim() && combined !== currentPattern) saveCell(slug, "set-username-pattern", { pattern: combined });
-    else setCell(null);
-  }
-
-  // A client modeled via its parent (SN account hierarchy) is planned from the PARENT's systems, so
-  // the list shows the parent's systems + readiness (the parent's own row already has them computed),
-  // marked "via <parent>". Falls back to the parent's system keys if the parent row isn't in view.
+  // Via-parent resolution (shared with the v2 explorer — see client-vm.ts).
   const byId = useMemo(() => new Map(clients.map((c) => [c.id, c])), [clients]);
-  const eff = (c: ClientVM): { readiness: ClientReadiness; systemCount: number; systemKeys: string[]; viaParent: string | null } => {
-    if (c.coverage === "parent") {
-      const p = c.parentId ? byId.get(c.parentId) : undefined;
-      if (p) return { readiness: p.readiness, systemCount: p.systemCount, systemKeys: p.systemKeys, viaParent: c.parentName ?? p.name };
-      return { readiness: c.readiness, systemCount: c.parentSystemKeys.length, systemKeys: c.parentSystemKeys, viaParent: c.parentName };
-    }
-    return { readiness: c.readiness, systemCount: c.systemCount, systemKeys: c.systemKeys, viaParent: null };
-  };
+  const eff = (c: ClientVM) => effective(c, byId);
 
   // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
@@ -343,15 +272,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
         </p>
       )}
 
-      <datalist id="username-patterns">
-        <option value="{first}.{last}">first.last</option>
-        <option value="{f}{last}">flast</option>
-        <option value="{first}{l}">firstl</option>
-        <option value="{first}_{last}">first_last</option>
-        <option value="{first}-{last}">first-last</option>
-        <option value="{last}.{first}">last.first</option>
-        <option value="{first}">first</option>
-      </datalist>
+      <UsernamePatternDatalist />
 
       <div className="table-scroll desk-only">
       <table className="data-table clients-table">
@@ -394,47 +315,13 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
               <td>
                 <Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link>
                 {" "}
-                <span
-                  className="badge"
-                  role="button"
-                  tabIndex={0}
-                  title="Intake source — internal scans onboarding incidents, external scans UM cases. Click to toggle."
-                  onClick={() => saveCell(c.slug, "set-intake-source", { intakeSource: c.intakeSource === "incident" ? "um" : "incident" })}
-                  style={{ cursor: "pointer", ...(c.intakeSource === "incident"
-                    ? { color: "var(--info-fg)", borderColor: "var(--info-bg)", background: "var(--info-bg)" }
-                    : { color: "var(--muted)", opacity: 0.65 }) }}
-                >
-                  {c.intakeSource === "incident" ? "internal" : "external"}
-                </span>
-                {/* Restricted (internal-only) flag — SUPER ADMIN ONLY (the option is hidden from
-                    everyone else). Restricting hides the client from every operator not granted it. */}
-                {canRestrict && (
-                  <>
-                    {" "}
-                    <span
-                      className="badge"
-                      role="button"
-                      tabIndex={0}
-                      title={
-                        c.restricted
-                          ? "Restricted (internal-only): hidden from operators not granted it. Click to unrestrict."
-                          : "Click to restrict: hide this client from operators who haven't been granted it (grant per-user on the Users page)."
-                      }
-                      onClick={() => {
-                        if (!c.restricted && !confirm(`Restrict ${c.name}? It will be hidden from every operator (except super admins and those you grant it to on the Users page).`)) return;
-                        saveCell(c.slug, "set-restricted", { restricted: !c.restricted });
-                      }}
-                      style={{
-                        cursor: "pointer",
-                        ...(c.restricted
-                          ? { color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }
-                          : { color: "var(--muted)", opacity: 0.5 }),
-                      }}
-                    >
-                      {c.restricted ? "🔒 restricted" : "🔓 restrict"}
-                    </span>
-                  </>
-                )}
+                <ClientFlagBadges
+                  intakeSource={c.intakeSource}
+                  restricted={c.restricted}
+                  name={c.name}
+                  canRestrict={canRestrict}
+                  onPatch={(action, payload) => saveCell(c.slug, action, payload)}
+                />
               </td>
               <td className="muted mono">{c.coreId ?? "—"}</td>
               <td
@@ -498,12 +385,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 className="mono editable"
                 style={{ position: "relative" }}
                 title="Double-click to edit the email name format"
-                onDoubleClick={() => {
-                  const parts = c.usernamePattern.split("|").map((s) => s.trim());
-                  setCell({ slug: c.slug, field: "username" });
-                  setDraft(parts[0] ?? "");
-                  setDraftBackup(parts.slice(1).join(" | "));
-                }}
+                onDoubleClick={() => setCell({ slug: c.slug, field: "username" })}
               >
                 {/* Value stays in the cell so the row never resizes; the editor floats over it. */}
                 {c.usernamePattern}
@@ -511,47 +393,13 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                   <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
                 )}
                 {cell?.slug === c.slug && cell.field === "username" && (
-                  <div
-                    // Save when focus leaves the whole editor — NOT when moving between Primary/Backup.
-                    onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commitUsername(c.slug, c.usernamePattern); }}
-                    style={{
-                      position: "absolute", top: "100%", left: 0, zIndex: 40, marginTop: 2,
-                      background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6,
-                      padding: "8px 10px", boxShadow: "0 6px 18px rgba(0,0,0,0.18)", width: 200, textAlign: "left",
-                    }}
-                  >
-                    <label className="muted" style={{ display: "block", fontSize: 10 }}>Primary</label>
-                    <input
-                      autoFocus
-                      list="username-patterns"
-                      value={draft}
-                      disabled={savingCell}
-                      placeholder="{first}.{last}"
-                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
-                        else if (e.key === "Escape") setCell(null);
-                      }}
-                    />
-                    <label className="muted" style={{ display: "block", fontSize: 10, marginTop: 6 }}>Backup (if primary is taken)</label>
-                    <input
-                      list="username-patterns"
-                      value={draftBackup}
-                      disabled={savingCell}
-                      placeholder="{first}.{mi} (optional)"
-                      style={{ width: "100%", padding: "2px 6px", boxSizing: "border-box" }}
-                      onChange={(e) => setDraftBackup(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitUsername(c.slug, c.usernamePattern);
-                        else if (e.key === "Escape") setCell(null);
-                      }}
-                    />
-                    <div className="note" style={{ marginTop: 4 }}>
-                      John Jason Doe → {formatPreview(draft, c.emailDomain ?? c.primaryDomain)}
-                      {draftBackup.trim() && <><br />backup → {formatPreview(draftBackup, c.emailDomain ?? c.primaryDomain)}</>}
-                    </div>
-                  </div>
+                  <EmailFormatEditor
+                    currentPattern={c.usernamePattern}
+                    domain={c.emailDomain ?? c.primaryDomain}
+                    saving={savingCell}
+                    onSave={(pattern) => saveCell(c.slug, "set-username-pattern", { pattern })}
+                    onClose={() => setCell(null)}
+                  />
                 )}
               </td>
               <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
@@ -566,18 +414,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 )}
               </td>
               <td>
-                {e.readiness && e.readiness.tier !== "no_systems" ? (
-                  <span className="tip" tabIndex={0} style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                    <span className="badge"
-                      style={{ color: READINESS[e.readiness.tier].color, background: READINESS[e.readiness.tier].bg, borderColor: "transparent" }}>
-                      {READINESS[e.readiness.tier].mark} {READINESS[e.readiness.tier].label}
-                    </span>
-                    {e.viaParent && <span className="note" style={{ fontSize: 10 }}>via {e.viaParent}</span>}
-                    <span className="tip-pop">{e.readiness.summary}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
-                  </span>
-                ) : (
-                  <span className="muted">—</span>
-                )}
+                <ReadinessBadge readiness={e.readiness} viaParent={e.viaParent} />
               </td>
               <td>
                 {c.status === "archived" ? (

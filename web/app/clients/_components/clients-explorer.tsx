@@ -1,30 +1,27 @@
 "use client";
 
-// Clients explorer (v2, test page): the clients table + a module multiselect filter. Pick one or
-// more modules; "all" (default) shows clients that have EVERY selected module, "any" shows clients
-// with at least one. Plus free-text search, status filter, and sortable columns. Native React — no
-// DataTables/jQuery dependency.
+// Clients explorer (v2): the full clients table in the denser v2 shape — identity folded into one
+// cell (name + flags, CORE id/region beneath), plus the module multiselect and coverage filters
+// that only exist here. Functionality parity with ClientsTable (v1) is a requirement: search,
+// modeled/readiness/status filters with counts, bulk hard-refresh, inline domain/backbone/email-
+// format editing, intake + restricted flags, readiness column, and the mobile card list all work
+// the same — the row vocabulary is shared via client-vm.ts.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Backbone, ClientStatus } from "@prisma/client";
 import { MODULES } from "@/lib/modules/catalog";
 import { SyncButton } from "./sync-button";
 import { AddClientDialog } from "./add-client-dialog";
 import { SystemsEditor } from "./systems-editor";
+import { type ClientVM, BACKBONE_LABEL, READINESS, effective } from "./client-vm";
+import { ReadinessBadge } from "./readiness-badge";
+import { ClientFlagBadges } from "./client-flag-badges";
+import { EmailFormatEditor, UsernamePatternDatalist } from "./email-format-editor";
 
-export type ClientVM = {
-  id: string; slug: string; name: string; primaryDomain: string;
-  backbone: Backbone | null; status: ClientStatus; coreId: string | null;
-  region: string | null; usernamePattern: string; systemKeys: string[]; systemCount: number; modeled: boolean;
-  coverage: "own" | "parent" | "none"; parentName: string | null; parentSystemKeys: string[];
-};
+export type { ClientVM } from "./client-vm";
 
 const NAME: Record<string, string> = Object.fromEntries(MODULES.map((m) => [m.key, m.name]));
-const BACKBONE_LABEL: Record<string, string> = { entra: "Entra", google: "Google", ad_synced: "AD synced", ad_standalone: "AD standalone" };
 
-// Hover text for the systems cell: own systems inline, or — for a via-parent client — a header
-// line then the parent's full system list.
 // Render the email/UPN format as chips: a filled "primary" chip + dim "fallback" chips (the parts
 // after each "|", used when the primary username is already taken).
 function EmailFormat({ pattern }: { pattern: string }) {
@@ -41,61 +38,139 @@ function EmailFormat({ pattern }: { pattern: string }) {
   );
 }
 
-function systemsTitle(c: ClientVM): string {
-  if (c.coverage === "parent") {
-    return `Inherited from ${c.parentName ?? "parent"}:\n\n${c.parentSystemKeys.join(", ") || "(parent has no systems)"}`;
-  }
-  return c.systemKeys.length ? c.systemKeys.join(", ") : "no systems (not modeled)";
+type SortKey = "name" | "coreId" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
+type SortDir = "asc" | "desc";
+
+// Everything a row exposes, flattened for search — matches what you can SEE (incl. the Backbone,
+// Systems, and Ready columns) and the slug. Same haystack as v1.
+function haystack(c: ClientVM): string {
+  return [
+    c.name, c.slug, c.coreId, c.region, c.primaryDomain, c.supportStatus,
+    c.backbone ? BACKBONE_LABEL[c.backbone] ?? c.backbone : "",
+    c.systemKeys.join(" "),
+    c.readiness ? READINESS[c.readiness.tier]?.label : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
-type SortKey = "name" | "coreId" | "primaryDomain" | "systemCount";
+// null/empty sorts last regardless of direction.
+function compare(a: ClientVM, b: ClientVM, key: SortKey): number {
+  const av = a[key];
+  const bv = b[key];
+  const aEmpty = av === null || av === "";
+  const bEmpty = bv === null || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  if (typeof av === "number" && typeof bv === "number") return av - bv;
+  return String(av).localeCompare(String(bv));
+}
 
-export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
+export function ClientsExplorer({ clients, canRestrict = false }: { clients: ClientVM[]; canRestrict?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"active" | "archived" | "all">("active");
   const [backboneFilter, setBackboneFilter] = useState<string>(""); // "" = any
   const [coverageFilter, setCoverageFilter] = useState<"all" | "own" | "parent" | "none">("all");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [editDomain, setEditDomain] = useState<string | null>(null); // slug being edited
-  const [editSlug, setEditSlug] = useState<string | null>(null); // systems editor target
-  const [busy, setBusy] = useState(false);
-
-  // Per-row Archive / Restore / Hard-refresh — confirm, PATCH /api/clients/:slug, refresh.
-  async function rowAction(c: ClientVM, action: "archive" | "restore" | "hard-refresh") {
-    const prompts: Record<string, string> = {
-      archive: `Archive ${c.name}? It’s marked archived and removed from the active list. You can restore it.`,
-      "hard-refresh": `Hard refresh ${c.name} from ServiceNow? This overwrites its SN-owned fields and discards manual edits.`,
-      restore: "",
-    };
-    if (prompts[action] && !confirm(prompts[action])) return;
-    setBusy(true);
-    try {
-      const r = await fetch(`/api/clients/${c.slug}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
-      });
-      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? `could not ${action}`);
-      else router.refresh();
-    } finally { setBusy(false); }
-  }
-
-  async function saveDomain(slug: string, value: string) {
-    setEditDomain(null);
-    const v = value.trim();
-    if (!v) return;
-    setBusy(true);
-    try {
-      const r = await fetch(`/api/clients/${slug}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set-domain", domain: v }),
-      });
-      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not set domain");
-      else router.refresh();
-    } finally { setBusy(false); }
-  }
+  const [modeledFilter, setModeledFilter] = useState<"all" | "modeled" | "unmodeled">("all");
+  const [readyFilter, setReadyFilter] = useState<"all" | "ready" | "partial" | "not_set_up" | "no_systems">("all");
+  const [moduleSel, setModuleSel] = useState<Set<string>>(new Set());
   const [match, setMatch] = useState<"all" | "any">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [editSlug, setEditSlug] = useState<string | null>(null); // systems editor target
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // inline cell editing (double-click), same vocabulary as v1
+  const [cell, setCell] = useState<{ slug: string; field: "domain" | "backbone" | "username" } | null>(null);
+  const [savingCell, setSavingCell] = useState(false);
+
+  // archive confirmation
+  const confirmRef = useRef<HTMLDialogElement>(null);
+  const [pending, setPending] = useState<ClientVM | null>(null);
+
+  // multi-select + hard refresh
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const hrRef = useRef<HTMLDialogElement>(null);
+  const [hrTarget, setHrTarget] = useState<{ slugs: string[]; label: string } | null>(null);
+  const [hrBusy, setHrBusy] = useState(false);
+
+  function toggleSelect(slug: string) {
+    setSelected((s) => { const n = new Set(s); n.has(slug) ? n.delete(slug) : n.add(slug); return n; });
+  }
+  function askHardRefresh(target: { slugs: string[]; label: string }) {
+    setHrTarget(target);
+    hrRef.current?.showModal();
+  }
+  async function confirmHardRefresh() {
+    const t = hrTarget;
+    if (!t) return;
+    setHrBusy(true);
+    try {
+      if (t.slugs.length === 1) {
+        await fetch(`/api/clients/${t.slugs[0]}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "hard-refresh" }),
+        });
+      } else {
+        await fetch(`/api/clients/hard-refresh`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slugs: t.slugs }),
+        });
+      }
+      hrRef.current?.close();
+      setHrTarget(null);
+      setSelected(new Set());
+      router.refresh();
+    } finally {
+      setHrBusy(false);
+    }
+  }
+
+  async function saveCell(slug: string, action: string, payload: Record<string, unknown>) {
+    setSavingCell(true);
+    try {
+      const res = await fetch(`/api/clients/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      if (!res.ok) alert(`Failed: ${(await res.json()).error ?? res.statusText}`);
+      else {
+        setCell(null);
+        router.refresh();
+      }
+    } finally {
+      setSavingCell(false);
+    }
+  }
+
+  function askArchive(c: ClientVM) {
+    setPending(c);
+    confirmRef.current?.showModal();
+  }
+  async function patch(c: ClientVM, action: "archive" | "restore") {
+    setBusy(c.slug);
+    try {
+      const res = await fetch(`/api/clients/${c.slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) alert(`Failed: ${(await res.json()).error ?? res.statusText}`);
+      else router.refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function confirmArchive() {
+    const c = pending;
+    confirmRef.current?.close();
+    setPending(null);
+    if (c) await patch(c, "archive");
+  }
 
   // module options: every system in use, with a usage count, most-used first
   const moduleOptions = useMemo(() => {
@@ -107,49 +182,106 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
   }, [clients]);
 
   const toggleModule = (k: string) =>
-    setSelected((s) => { const x = new Set(s); x.has(k) ? x.delete(k) : x.add(k); return x; });
+    setModuleSel((s) => { const x = new Set(s); x.has(k) ? x.delete(k) : x.add(k); return x; });
+
+  // Via-parent resolution (shared with v1 — see client-vm.ts).
+  const byId = useMemo(() => new Map(clients.map((c) => [c.id, c])), [clients]);
+  const eff = (c: ClientVM) => effective(c, byId);
+
+  // Multi-term AND search ("entra finance" narrows to both); matches the visible columns.
+  const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
+  const matchesSearch = (c: ClientVM) => {
+    if (terms.length === 0) return true;
+    const hay = haystack(c);
+    return terms.every((t) => hay.includes(t));
+  };
+
+  const matchesNonStatus = (c: ClientVM) => {
+    if (backboneFilter && c.backbone !== backboneFilter) return false;
+    if (coverageFilter !== "all" && c.coverage !== coverageFilter) return false;
+    if (modeledFilter === "modeled" && !c.modeled) return false;
+    if (modeledFilter === "unmodeled" && c.modeled) return false;
+    if (readyFilter !== "all" && (eff(c).readiness?.tier ?? "no_systems") !== readyFilter) return false;
+    if (moduleSel.size) {
+      const sel = [...moduleSel];
+      const have = sel.filter((k) => c.systemKeys.includes(k)).length;
+      if (match === "all" ? have !== sel.length : have === 0) return false;
+    }
+    return matchesSearch(c);
+  };
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const sel = [...selected];
-    const rows = clients.filter((c) => {
-      if (statusFilter !== "all" && c.status !== statusFilter) return false;
-      if (backboneFilter && c.backbone !== backboneFilter) return false;
-      if (coverageFilter !== "all" && c.coverage !== coverageFilter) return false;
-      if (q && ![c.name, c.coreId, c.primaryDomain, c.region, c.usernamePattern].some((v) => v?.toLowerCase().includes(q))) return false;
-      if (sel.length) {
-        const have = sel.filter((k) => c.systemKeys.includes(k)).length;
-        if (match === "all" ? have !== sel.length : have === 0) return false;
-      }
-      return true;
-    });
-    const cmp = (a: ClientVM, b: ClientVM) => {
-      const av = a[sortKey] as string | number | null, bv = b[sortKey] as string | number | null;
-      if (av == null || av === "") return 1;
-      if (bv == null || bv === "") return -1;
-      if (typeof av === "number" && typeof bv === "number") return av - bv;
-      return String(av).localeCompare(String(bv));
-    };
-    rows.sort(cmp);
-    if (sortDir === "desc") rows.reverse();
-    return rows;
-  }, [clients, query, statusFilter, backboneFilter, coverageFilter, selected, match, sortKey, sortDir]);
+    const filtered = clients.filter((c) => (statusFilter === "all" || c.status === statusFilter) && matchesNonStatus(c));
+    const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
+    if (sortDir === "desc") sorted.reverse();
+    return sorted;
+    // matchesNonStatus closes over the filter states, which are the real dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, terms, statusFilter, backboneFilter, coverageFilter, modeledFilter, readyFilter, moduleSel, match, sortKey, sortDir]);
 
-  const toggleSort = (k: SortKey) => k === sortKey ? setSortDir((d) => (d === "asc" ? "desc" : "asc")) : (setSortKey(k), setSortDir("asc"));
-  const SortHead = ({ k, label }: { k: SortKey; label: string }) => (
-    <th className="sortable" onClick={() => toggleSort(k)}>{label}{sortKey === k && <span className="arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}</th>
-  );
+  // When a search has results that the STATUS filter is hiding, offer a one-click widen — this is
+  // the usual "search looks broken" cause (you searched an archived client while viewing active).
+  const hiddenByStatus = useMemo(() => {
+    if (terms.length === 0 || statusFilter === "all") return 0;
+    return clients.filter((c) => c.status !== statusFilter && matchesNonStatus(c)).length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, terms, statusFilter, backboneFilter, coverageFilter, modeledFilter, readyFilter, moduleSel, match]);
+
+  // modeled/readiness counted within the current status filter so the numbers match what's on screen.
+  const counts = useMemo(() => {
+    const inStatus = clients.filter((c) => statusFilter === "all" || c.status === statusFilter);
+    const modeled = inStatus.filter((c) => c.modeled).length;
+    const byTier = (t: string) => inStatus.filter((c) => (eff(c).readiness?.tier ?? "no_systems") === t).length;
+    return {
+      total: inStatus.length, modeled, unmodeled: inStatus.length - modeled,
+      ready: byTier("ready"), partial: byTier("partial"), not_set_up: byTier("not_set_up"), no_systems: byTier("no_systems"),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, statusFilter]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("asc"); }
+  }
+  function SortHead({ k, label, num }: { k: SortKey; label: string; num?: boolean }) {
+    return (
+      <th className={`sortable${num ? " num" : ""}${sortKey === k ? " sorted" : ""}`} onClick={() => toggleSort(k)}>
+        {label}
+        <span className="arrow">{sortKey === k ? (sortDir === "asc" ? "▲" : "▼") : ""}</span>
+      </th>
+    );
+  }
 
   return (
     <>
       <div className="toolbar" style={{ marginTop: "1rem" }}>
         <SyncButton />
         <AddClientDialog />
+        {selected.size > 0 && (
+          <button
+            className="btn-danger"
+            onClick={() => askHardRefresh({ slugs: [...selected], label: `${selected.size} selected client${selected.size > 1 ? "s" : ""}` })}
+          >
+            ↻ Hard refresh {selected.size} selected
+          </button>
+        )}
       </div>
 
       <div className="filters">
-        <input className="search" placeholder="Search name, CORE id, domain, region…" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <ModulePicker options={moduleOptions} selected={selected} onToggle={toggleModule} onClear={() => setSelected(new Set())} match={match} onMatch={setMatch} />
+        <div className="search-field">
+          <span className="search-icon" aria-hidden>⌕</span>
+          <input
+            className="search"
+            placeholder="Search name, CORE id, domain, backbone, system…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            spellCheck={false}
+          />
+          {query && (
+            <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
+          )}
+        </div>
+        <ModulePicker options={moduleOptions} selected={moduleSel} onToggle={toggleModule} onClear={() => setModuleSel(new Set())} match={match} onMatch={setMatch} />
         <select className="inline" value={backboneFilter} onChange={(e) => setBackboneFilter(e.target.value)} title="Filter by identity backbone">
           <option value="">Any backbone</option>
           <option value="entra">Entra</option>
@@ -158,71 +290,289 @@ export function ClientsExplorer({ clients }: { clients: ClientVM[] }) {
           <option value="ad_standalone">AD standalone</option>
         </select>
         <select className="inline" value={coverageFilter} onChange={(e) => setCoverageFilter(e.target.value as never)} title="Modeled directly, inherited from a parent account, or not modeled at all">
-          <option value="all">All</option>
-          <option value="own">Modeled</option>
-          <option value="parent">Modeled via parent</option>
+          <option value="all">Any coverage</option>
+          <option value="own">Modeled directly</option>
+          <option value="parent">Via parent</option>
           <option value="none">Not modeled</option>
         </select>
+        <select className="inline" value={modeledFilter} onChange={(e) => setModeledFilter(e.target.value as never)}>
+          <option value="all">All ({counts.total})</option>
+          <option value="modeled">Modeled — can do ({counts.modeled})</option>
+          <option value="unmodeled">Not modeled ({counts.unmodeled})</option>
+        </select>
+        <select className="inline" value={readyFilter} onChange={(e) => setReadyFilter(e.target.value as never)} title="Filter by run-readiness">
+          <option value="all">Any readiness</option>
+          <option value="ready">Ready ({counts.ready})</option>
+          <option value="partial">Partial ({counts.partial})</option>
+          <option value="not_set_up">Not set up ({counts.not_set_up})</option>
+          <option value="no_systems">No systems ({counts.no_systems})</option>
+        </select>
         <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as never)}>
-          <option value="active">Active</option><option value="archived">Archived</option><option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+          <option value="all">All statuses</option>
         </select>
         <span className="grow" />
-        <span className="note">{visible.length} of {clients.length}</span>
+        <span className="note result-count">
+          {visible.length === clients.length ? `${clients.length} clients` : `${visible.length} of ${clients.length}`}
+        </span>
       </div>
+      <p className="note" style={{ margin: "0.35rem 0 0" }}>Double-click a domain, backbone, or email-format cell to edit it.</p>
 
-      {selected.size > 0 && (
+      {moduleSel.size > 0 && (
         <p className="note" style={{ marginTop: ".4rem" }}>
           Showing clients with <strong>{match === "all" ? "all" : "any"}</strong> of:{" "}
-          {[...selected].map((k) => <span key={k} className="badge" style={{ marginRight: 4 }}>{NAME[k] ?? k}</span>)}
+          {[...moduleSel].map((k) => <span key={k} className="badge" style={{ marginRight: 4 }}>{NAME[k] ?? k}</span>)}
         </p>
       )}
 
-      <table>
+      {hiddenByStatus > 0 && (
+        <p className="note filter-hint">
+          {hiddenByStatus} more match{hiddenByStatus === 1 ? "es" : ""} outside the {statusFilter} filter ·{" "}
+          <button type="button" className="linklike" onClick={() => setStatusFilter("all")}>show all statuses</button>
+        </p>
+      )}
+
+      <UsernamePatternDatalist />
+
+      <div className="table-scroll desk-only">
+      <table className="data-table clients-table">
         <thead>
           <tr>
-            <SortHead k="name" label="Name" /><SortHead k="coreId" label="CORE id" />
-            <th title="Email/UPN name format (a | separates the conflict fallback)">Email format</th>
-            <SortHead k="primaryDomain" label="Domain" /><th>Backbone</th><SortHead k="systemCount" label="Systems" /><th>Status</th><th></th>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                aria-label="Select all visible"
+                style={{ width: "auto" }}
+                checked={visible.length > 0 && visible.every((c) => selected.has(c.slug))}
+                ref={(el) => { if (el) el.indeterminate = visible.some((c) => selected.has(c.slug)) && !visible.every((c) => selected.has(c.slug)); }}
+                onChange={(e) => setSelected(e.target.checked ? new Set(visible.map((c) => c.slug)) : new Set())}
+              />
+            </th>
+            <SortHead k="name" label="Client" />
+            <SortHead k="primaryDomain" label="Domain" />
+            <th className="help" title="Email/UPN name format. Add a conflict fallback after a | — e.g. {first}.{last} | {first}.{mi} (used when the primary username is already taken).">Email format</th>
+            <th>Backbone</th>
+            <SortHead k="onboardingRating" label="On / Off" num />
+            <SortHead k="systemCount" label="Systems" num />
+            <th className="help" title="Run-readiness, computed from wired credentials + connection-test results. ready = all systems wired and tested; partial = core wired but some missing/untested/failing; not set up = nothing wired.">Ready</th>
+            <SortHead k="status" label="Status" />
+            <th aria-label="Actions"></th>
           </tr>
         </thead>
         <tbody>
-          {visible.map((c) => (
-            <tr key={c.id}>
-              <td><Link href={`/clients/${c.slug}`}>{c.name}</Link></td>
-              <td className="muted">{c.coreId ?? "—"}</td>
-              <td><EmailFormat pattern={c.usernamePattern} /></td>
-              <td className="muted" title="Double-click to edit the domain" onDoubleClick={() => setEditDomain(c.slug)} style={{ cursor: "text" }}>
-                {editDomain === c.slug ? (
+          {visible.map((c) => { const e = eff(c); return (
+            <tr key={c.id} className={selected.has(c.slug) ? "row-selected" : undefined}>
+              <td>
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${c.name}`}
+                  style={{ width: "auto" }}
+                  checked={selected.has(c.slug)}
+                  onChange={() => toggleSelect(c.slug)}
+                />
+              </td>
+              {/* Identity cell: name + flag badges, CORE id / region tucked beneath — the v2
+                  merged-identity pattern (frees the CORE id column the v1 table spends). */}
+              <td>
+                <Link className="client-name" href={`/clients/${c.slug}`}>{c.name}</Link>
+                {" "}
+                <ClientFlagBadges
+                  intakeSource={c.intakeSource}
+                  restricted={c.restricted}
+                  name={c.name}
+                  canRestrict={canRestrict}
+                  onPatch={(action, payload) => saveCell(c.slug, action, payload)}
+                />
+                <div className="note mono" style={{ fontSize: 10.5, marginTop: 1 }}>
+                  {c.coreId ?? "—"}{c.region ? ` · ${c.region}` : ""}
+                </div>
+              </td>
+              <td
+                className="muted mono editable"
+                title="Double-click to edit the domain"
+                onDoubleClick={() => setCell({ slug: c.slug, field: "domain" })}
+              >
+                {cell?.slug === c.slug && cell.field === "domain" ? (
                   <input
-                    autoFocus defaultValue={c.primaryDomain ?? ""} placeholder="example.com" disabled={busy}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveDomain(c.slug, (e.target as HTMLInputElement).value); if (e.key === "Escape") setEditDomain(null); }}
-                    onBlur={(e) => saveDomain(c.slug, e.target.value)} style={{ width: 150 }}
+                    autoFocus
+                    defaultValue={c.primaryDomain}
+                    disabled={savingCell}
+                    style={{ width: 150, padding: "2px 6px" }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveCell(c.slug, "set-domain", { domain: (e.target as HTMLInputElement).value });
+                      else if (e.key === "Escape") setCell(null);
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value.trim() && e.target.value !== c.primaryDomain) saveCell(c.slug, "set-domain", { domain: e.target.value });
+                      else setCell(null);
+                    }}
                   />
-                ) : (c.primaryDomain || "—")}
+                ) : (
+                  <>
+                    {c.primaryDomain || "—"}
+                    {c.editedFields.includes("primaryDomain") && (
+                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                    )}
+                  </>
+                )}
+              </td>
+              <td
+                className="editable"
+                style={{ position: "relative" }}
+                title="Double-click to edit the email name format"
+                onDoubleClick={() => setCell({ slug: c.slug, field: "username" })}
+              >
+                <EmailFormat pattern={c.usernamePattern} />
+                {c.editedFields.includes("usernamePattern") && (
+                  <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                )}
+                {cell?.slug === c.slug && cell.field === "username" && (
+                  <EmailFormatEditor
+                    currentPattern={c.usernamePattern}
+                    domain={c.emailDomain ?? c.primaryDomain}
+                    saving={savingCell}
+                    onSave={(pattern) => saveCell(c.slug, "set-username-pattern", { pattern })}
+                    onClose={() => setCell(null)}
+                  />
+                )}
+              </td>
+              <td className="editable" title="Double-click to edit the backbone" onDoubleClick={() => setCell({ slug: c.slug, field: "backbone" })}>
+                {cell?.slug === c.slug && cell.field === "backbone" ? (
+                  <select
+                    autoFocus
+                    defaultValue={c.backbone ?? ""}
+                    disabled={savingCell}
+                    onChange={(e) => saveCell(c.slug, "set-backbone", { backbone: e.target.value || null })}
+                    onBlur={() => setCell(null)}
+                  >
+                    <option value="">not modeled</option>
+                    <option value="entra">Entra</option>
+                    <option value="google">Google</option>
+                    <option value="ad_synced">AD synced</option>
+                    <option value="ad_standalone">AD standalone</option>
+                  </select>
+                ) : (
+                  <>
+                    {c.backbone ? (
+                      <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
+                    ) : c.coverage === "parent" ? (
+                      <span className="badge" title={`inherits from ${c.parentName ?? "parent"}`}>↳ via parent</span>
+                    ) : (
+                      <span className="badge unmodeled">not modeled</span>
+                    )}
+                    {c.editedFields.includes("backbone") && (
+                      <span className="edited-dot" title="Edited — routine sync won't overwrite. Hard refresh to reset.">●</span>
+                    )}
+                  </>
+                )}
+              </td>
+              <td className="muted num tnum">{(c.onboardingRating ?? "—") + " / " + (c.offboardingRating ?? "—")}</td>
+              <td className={`num tnum ${e.systemCount ? "" : "muted"}`}>
+                {e.systemCount ? (
+                  <span className="tip" tabIndex={0}>
+                    {e.systemCount}{e.viaParent ? <sup style={{ fontSize: 9, color: "var(--muted)", marginLeft: 1 }}>P</sup> : null}
+                    <span className="tip-pop">{e.systemKeys.join(", ")}{e.viaParent ? ` — inherited from ${e.viaParent}` : ""}</span>
+                  </span>
+                ) : (
+                  "—"
+                )}
               </td>
               <td>
-                {c.backbone ? <span className="badge modeled">{BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>
-                  : c.coverage === "parent" ? <span className="badge" title={`inherits from ${c.parentName ?? "parent"}`}>↳ via parent</span>
-                  : <span className="badge unmodeled">not modeled</span>}
+                <ReadinessBadge readiness={e.readiness} viaParent={e.viaParent} />
               </td>
-              <td className="muted" style={{ cursor: c.systemCount || c.coverage === "parent" ? "help" : "default" }} title={systemsTitle(c)}>
-                {c.coverage === "parent" && c.systemCount === 0 ? <span className="note">↳ {c.parentName}</span> : c.systemCount}
-              </td>
-              <td>{c.status === "archived" ? <span className="badge archived">archived</span> : <span className="badge">active</span>}</td>
               <td>
-                <span className="icon-stack">
-                  <button className="icon-btn" title="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
-                  <button className="icon-btn" title="Hard refresh from ServiceNow (discards manual edits)" disabled={busy} onClick={() => rowAction(c, "hard-refresh")}>↻</button>
-                  {c.status === "archived"
-                    ? <button className="icon-btn" title="Restore (unarchive)" disabled={busy} onClick={() => rowAction(c, "restore")}>↩</button>
-                    : <button className="icon-btn" title="Archive (offboard the client)" disabled={busy} onClick={() => rowAction(c, "archive")}>🗄</button>}
+                {c.status === "archived" ? (
+                  <span className="badge archived">archived</span>
+                ) : (
+                  <span className="badge active">active</span>
+                )}
+              </td>
+              <td className="row-actions">
+                <span className="icon-stack" style={{ flexDirection: "row" }}>
+                  <button className="icon-btn" title="Edit systems" aria-label="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
+                  <button className="icon-btn" title="Re-pull this client from ServiceNow, discarding manual edits" aria-label="Hard refresh"
+                    onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}>↻</button>
+                  {c.status === "archived" ? (
+                    <button className="icon-btn" title="Restore (unarchive)" aria-label="Restore" disabled={busy === c.slug} onClick={() => patch(c, "restore")}>↩</button>
+                  ) : (
+                    <button className="icon-btn" title="Archive" aria-label="Archive" disabled={busy === c.slug} onClick={() => askArchive(c)}>🗄</button>
+                  )}
                 </span>
               </td>
             </tr>
-          ))}
-          {visible.length === 0 && <tr><td colSpan={8} className="muted" style={{ textAlign: "center", padding: "2rem" }}>No matches.</td></tr>}
+          ); })}
+          {visible.length === 0 && (
+            <tr>
+              <td colSpan={10}>
+                <div className="empty-state">
+                  {clients.length === 0 ? (
+                    <>No clients yet. Click <strong>Refresh from ServiceNow</strong>.</>
+                  ) : terms.length > 0 ? (
+                    <>No clients match “{query.trim()}”. <button type="button" className="linklike" onClick={() => setQuery("")}>Clear search</button></>
+                  ) : (
+                    "No clients match the current filters."
+                  )}
+                </div>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
+      </div>
+
+      {/* Mobile: a tappable card per client (same filtered `visible` list) — the dense table is hidden. */}
+      <div className="mob-only m-list">
+        {visible.map((c) => {
+          const e = eff(c);
+          const rd = e.readiness && e.readiness.tier !== "no_systems" ? READINESS[e.readiness.tier] : null;
+          return (
+            <Link key={c.slug} href={`/clients/${c.slug}`} className="m-card">
+              <div className="m-card-top">
+                <span className="m-card-title">{c.name}</span>
+                <span className={`badge ${c.status === "archived" ? "archived" : "active"}`}>{c.status}</span>
+              </div>
+              <div className="m-card-sub">{c.coreId ?? "—"}{c.primaryDomain ? ` · ${c.primaryDomain}` : ""}</div>
+              <div className="m-card-meta">
+                {c.backbone && <span><span className="k">backbone</span> {BACKBONE_LABEL[c.backbone] ?? c.backbone}</span>}
+                <span><span className="k">systems</span> {e.systemCount || "—"}{e.viaParent ? " (via parent)" : ""}</span>
+                <span>
+                  <span className="k">ready</span>{" "}
+                  {rd ? <span className="badge" style={{ color: rd.color, background: rd.bg }}>{rd.mark} {rd.label}</span> : "—"}
+                </span>
+              </div>
+            </Link>
+          );
+        })}
+        {visible.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>No clients match.</div>}
+      </div>
+
+      <dialog ref={confirmRef}>
+        <h2>Archive client</h2>
+        <p>
+          Archive <strong>{pending?.name}</strong>? This offboards the client — it’s removed from
+          the active list and marked archived. You can restore it afterwards.
+        </p>
+        <div className="dialog-actions">
+          <button onClick={() => { confirmRef.current?.close(); setPending(null); }}>Cancel</button>
+          <button className="btn-danger" onClick={confirmArchive}>Archive</button>
+        </div>
+      </dialog>
+
+      <dialog ref={hrRef}>
+        <h2>Hard refresh from ServiceNow</h2>
+        <p>
+          Overwrite <strong>{hrTarget?.label}</strong> with the latest ServiceNow data — including
+          the website domain — and <strong>discard any manual edits</strong> (the ● fields). This
+          can&apos;t be undone.
+        </p>
+        <div className="dialog-actions">
+          <button onClick={() => { hrRef.current?.close(); setHrTarget(null); }} disabled={hrBusy}>Cancel</button>
+          <button className="btn-danger" onClick={confirmHardRefresh} disabled={hrBusy}>
+            {hrBusy ? "Refreshing…" : `Hard refresh${hrTarget && hrTarget.slugs.length > 1 ? ` ${hrTarget.slugs.length}` : ""}`}
+          </button>
+        </div>
+      </dialog>
 
       <SystemsEditor slug={editSlug} open={!!editSlug} onClose={() => setEditSlug(null)} />
     </>
