@@ -3,7 +3,11 @@
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite, type SetupGatePolicy } from "./runner-logic";
+import { getAppSetting } from "../settings";
+
+// AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
+export const SETUP_GATE_KEY = "setup_gate";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
@@ -454,6 +458,27 @@ export function makeRunnerService(db: PrismaClient) {
         m.set(s.name, s.externalId);
         secretsByClient.set(s.clientId, m);
       }
+      // Setup-state gate (opt-in, AppSetting "setup_gate"): only when enforcing does the claim path
+      // pay for the extra lookups — default mode adds zero queries here.
+      const gate: SetupGatePolicy = { enforceTested: false, ...((await getAppSetting<Partial<SetupGatePolicy>>(db, SETUP_GATE_KEY)) ?? {}) };
+      const latestTestByKey = new Map<string, "ok" | "fail" | "untested">();
+      const attestedKeys = new Set<string>();
+      if (gate.enforceTested) {
+        const gateClientIds = [...new Set(caseMeta.map((c) => c.clientId))];
+        const [gateTests, gateStates] = await Promise.all([
+          db.connectionTest.findMany({
+            where: { clientId: { in: gateClientIds } },
+            select: { clientId: true, systemKey: true, status: true, finishedAt: true },
+            orderBy: { finishedAt: "desc" },
+          }),
+          db.systemSetupState.findMany({ where: { clientId: { in: gateClientIds }, attestedAt: { not: null } }, select: { clientId: true, systemKey: true } }),
+        ]);
+        for (const t of gateTests) {
+          const k = `${t.clientId}:${t.systemKey}`;
+          if (!latestTestByKey.has(k)) latestTestByKey.set(k, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+        }
+        for (const s of gateStates) attestedKeys.add(`${s.clientId}:${s.systemKey}`);
+      }
 
       const eligible: string[] = [];
       for (const c of candidates) {
@@ -480,6 +505,13 @@ export function makeRunnerService(db: PrismaClient) {
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
         const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
+        // Setup-state gate (enforce mode only): withhold a job whose system's latest conn-test
+        // failed, unless attested. singleRun bypasses (an explicit operator-confirmed run).
+        if (gate.enforceTested && !c.singleRun && meta) {
+          const k = `${meta.clientId}:${c.systemKey}`;
+          const verdict = setupGateBlocks({ test: latestTestByKey.get(k) ?? "unknown", attested: attestedKeys.has(k) }, gate);
+          if (verdict.block) continue;
+        }
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }

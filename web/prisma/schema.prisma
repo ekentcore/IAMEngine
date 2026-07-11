@@ -151,6 +151,7 @@ model Client {
   cases           CaseRequest[]
   runbook         RunbookSection[]
   connectionTests ConnectionTest[]
+  setupStates     SystemSetupState[]
   userAccess      UserClientAccess[]
 }
 
@@ -239,6 +240,25 @@ model Agent {
   jobs               Job[]
 
   @@index([deletedAt])
+}
+
+// Operator-entered setup state for one (client, system) pair — the bits of the setup checklist
+// that can't be DERIVED from live state: "setup started" and "I verified rights manually" (the
+// attestation that also overrides the dispatch gate). Deliberately keyed by systemKey with NO FK
+// to ClientSystem: replaceSystems deletes+recreates system rows wholesale, and attestation must
+// survive an edit to the system set. Cascades only with the client itself.
+model SystemSetupState {
+  id         String    @id @default(cuid())
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId   String
+  systemKey  String
+  startedAt  DateTime? // operator opened/acknowledged the setup instructions
+  startedBy  String?
+  attestedAt DateTime? // operator attests the credential's RIGHTS were verified manually
+  attestedBy String?
+  attestNote String?
+
+  @@unique([clientId, systemKey])
 }
 
 // A one-off "does the credential actually connect, with the right permissions?" probe. ISOLATED
