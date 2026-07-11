@@ -76,6 +76,11 @@ export function planConnNotifications(
 const BATCH_CLIENTS = 25;
 const EXPIRY_RENOTIFY_MS = 7 * 24 * 3_600_000; // renotify a still-expiring credential weekly
 
+// Heartbeats arrive every ~5s from every runner; self-throttle so this only touches the DB about
+// once a minute (the sibling sweeps do the same). Delays a failure/expiry alert by <1 min at worst.
+let lastTickAt = 0;
+const TICK_EVERY_MS = 45_000;
+
 // The heartbeat-driven entry point. Never throws (chained fire-and-forget off procurement-watch).
 export async function sweepConnTests(
   db: PrismaClient,
@@ -86,6 +91,9 @@ export async function sweepConnTests(
   }
 ): Promise<void> {
   const now = deps.now ?? (() => new Date());
+  const tick = now().getTime();
+  if (tick - lastTickAt < TICK_EVERY_MS) return; // in-process throttle, before any DB work
+  lastTickAt = tick;
   const raw = await getAppSetting<unknown>(db, CONN_SWEEP_KEY);
   const s = normalizeConnSweep(raw);
   if (!s.enabled) return;
@@ -147,7 +155,11 @@ async function claimSetting(db: PrismaClient, expected: unknown, next: ConnSweep
   try {
     return await db.$transaction(async (tx) => {
       const row = await tx.appSetting.findUnique({ where: { key: CONN_SWEEP_KEY }, select: { value: true } });
-      const current = row?.value ?? null;
+      // AppSetting.value is JSON-as-TEXT (see lib/settings.ts). Parse it before comparing, or we'd
+      // stringify a raw string on one side and an object on the other — they'd never match and the
+      // claim would always fail (the sweep would never run).
+      let current: unknown = null;
+      if (row) { try { current = JSON.parse(row.value); } catch { current = null; } }
       if (JSON.stringify(current) !== JSON.stringify(expected ?? null)) return false; // someone else moved it
       await tx.appSetting.upsert({
         where: { key: CONN_SWEEP_KEY },

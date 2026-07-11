@@ -213,12 +213,16 @@ export function makeRunnerService(db: PrismaClient) {
       // click. A short cooldown via updateDeliveredAt keeps it from re-issuing every ~5s heartbeat
       // while the agent is mid-pull; a failed update naturally retries after the cooldown.
       if (!update && agent.enabled) {
-        const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
         const reported = version ?? agent.version;
         const cooldownOver = !agent.updateDeliveredAt || Date.now() - agent.updateDeliveredAt.getTime() > 90_000;
-        if (autoUpdate && cooldownOver && !agentBuildIsCurrent(reported, runnerBuildId())) {
-          update = true;
-          await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date() } }).catch(() => {});
+        // Only pay for the settings read when this agent is actually on a stale build — an up-to-date
+        // agent (the common case) short-circuits before the DB round-trip.
+        if (cooldownOver && !agentBuildIsCurrent(reported, runnerBuildId())) {
+          const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
+          if (autoUpdate) {
+            update = true;
+            await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date() } }).catch(() => {});
+          }
         }
       }
       // Same atomic-consume for a plain RESTART request (no file pull). An update already restarts, so
