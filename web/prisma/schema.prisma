@@ -527,6 +527,24 @@ model Session {
   @@index([expiresAt])
 }
 
+// In-app feature-request box: any operator files one from the 💡 header button; settings.manage
+// triages via /settings. authorUserId is a plain id (no FK) — like Session.impersonatingUserId —
+// so a deleted author never blocks or cascades a request.
+model FeatureRequest {
+  id             String   @id @default(cuid())
+  title          String
+  body           String
+  page           String // pathname the request was filed from
+  status         String   @default("new") // new | planned | building | done | declined
+  resolutionNote String?
+  authorUserId   String?
+  authorEmail    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([createdAt])
+}
+
 // App-level singleton key/value state (no per-client owner). Holds the ServiceNow intake poller's
 // enabled flag + high-water mark, and is the home for future app settings. Value is JSON-as-text.
 model AppSetting {

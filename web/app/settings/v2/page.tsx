@@ -8,6 +8,9 @@ import { can } from "@/lib/auth/permissions";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
 import { NotificationForm } from "../_components/notification-form";
+import { FeatureRequestsAdmin } from "../_components/feature-requests-admin";
+import { RestartServerButton } from "../_components/restart-server-button";
+import { loadFeatureRequests } from "../_lib/loader";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings (v2)" };
@@ -18,6 +21,7 @@ export default async function SettingsV2Page() {
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
+  const featureRequests = await loadFeatureRequests();
   return (
     <main>
       <div className="row-between" style={{ marginBottom: "1.5rem" }}>
@@ -32,6 +36,13 @@ export default async function SettingsV2Page() {
         <Link href="/settings" className="note" style={{ alignSelf: "flex-start" }}>← back to Settings</Link>
       </div>
       <NotificationForm initial={settings} />
+      <h2 style={{ marginTop: "2.5rem" }}>Feature requests</h2>
+      <p className="note" style={{ marginBottom: "1rem" }}>
+        Filed by operators via the 💡 button in the header. Set a status (and, when it lands or is
+        declined, a note) to keep the queue honest.
+      </p>
+      <FeatureRequestsAdmin initial={featureRequests} />
+      <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );
 }

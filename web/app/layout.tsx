@@ -8,6 +8,7 @@ import { ThemeToggle } from "./_components/theme-toggle";
 import { MobileNav } from "./_components/mobile-nav";
 import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
+import { FeatureRequestButton } from "./_components/feature-request-button";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { ImpersonationBanner } from "./_components/impersonation-banner";
 import { authEnabled, getActingContext } from "@/lib/auth/current-user";
@@ -66,6 +67,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
                 showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
               />
+              {(!authEnabled() || !!user) && <FeatureRequestButton />}
               <ThemeToggle dark={theme === "dark"} />
               <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
               {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
