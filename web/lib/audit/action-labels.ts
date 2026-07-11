@@ -64,6 +64,7 @@ const EXPLICIT: Record<string, string> = {
   "conntest.result": "Connection Test Result",
   "conntest.request": "Connection Test Requested",
   "conntest.schedule": "Connection Sweep Schedule",
+  "agent.auto_update.toggle": "Agent Auto-Update Toggle",
   "client.delinea.selfcheck": "Delinea Self-Check",
   "system.setup.start": "System Setup Started",
   "system.setup.attest": "System Rights Attested",

@@ -28,6 +28,7 @@ import { fireNotification } from "../notifications/sender";
 import { parseClientOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
+import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -191,7 +192,7 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -205,6 +206,20 @@ export function makeRunnerService(db: PrismaClient) {
         // its next heartbeat pushes lastSeenAt past this timestamp ("updated ✓").
         const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false, updateDeliveredAt: new Date() } });
         update = consumed.count > 0;
+      }
+      // Auto-update stale agents (default ON): if this agent is enabled, not already updating, and the
+      // build it just reported differs from the build the app now serves, tell it to self-update. This
+      // is what makes a server restart (new bundle) roll the fleet forward on its own — no per-agent
+      // click. A short cooldown via updateDeliveredAt keeps it from re-issuing every ~5s heartbeat
+      // while the agent is mid-pull; a failed update naturally retries after the cooldown.
+      if (!update && agent.enabled) {
+        const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
+        const reported = version ?? agent.version;
+        const cooldownOver = !agent.updateDeliveredAt || Date.now() - agent.updateDeliveredAt.getTime() > 90_000;
+        if (autoUpdate && cooldownOver && !agentBuildIsCurrent(reported, runnerBuildId())) {
+          update = true;
+          await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date() } }).catch(() => {});
+        }
       }
       // Same atomic-consume for a plain RESTART request (no file pull). An update already restarts, so
       // if both are pending the update wins and this just clears the redundant flag.
