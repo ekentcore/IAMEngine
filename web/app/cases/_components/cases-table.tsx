@@ -219,6 +219,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkSummary, setBulkSummary] = useState<string | null>(null); // "12 dispatched, 2 skipped" after a bulk run
   const [hoveredId, setHoveredId] = useState<string | null>(null); // row under the cursor — reveals its trash ×
 
   const toggleSel = (id: string) => setSelected((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
@@ -252,6 +253,39 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
     const label = c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8);
     if (!confirm(`Move case "${label}" to the trash? It leaves the list and is restorable for 30 days.`)) return;
     call(c.id, { method: "DELETE" });
+  }
+
+  // Apply one run-control action across the selected cases via the bulk endpoint. Mirrors bulkTrash,
+  // but one request (the server skips cases the action can't validly apply to). Confirm before a
+  // destructive-ish cancel and before a large dispatch.
+  async function bulkAction(action: "dispatch" | "pause" | "cancel" | "verify") {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    const n = ids.length;
+    if (action === "cancel" && !confirm(`Cancel the run for ${n} case${n > 1 ? "s" : ""}? In-flight steps are stopped and each case is paused (not deleted).`)) return;
+    if (action === "dispatch" && n > 10 && !confirm(`Dispatch ${n} cases? Each paused case resumes and its steps start running.`)) return;
+    setBusyId("bulk");
+    setError(null);
+    setBulkSummary(null);
+    try {
+      const res = await fetch("/api/cases/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, action }) });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { setError(data?.error ?? `Bulk action failed (${res.status})`); return; }
+      const results: { skipped?: string; error?: string }[] = data?.results ?? [];
+      const verb = { dispatch: "dispatched", pause: "paused", cancel: "cancelled", verify: "verifying" }[action];
+      const skipped = results.filter((r) => r.skipped).length;
+      const errored = results.filter((r) => r.error).length;
+      const parts = [`${data?.ok ?? 0} ${verb}`];
+      if (skipped) parts.push(`${skipped} skipped`);
+      if (errored) parts.push(`${errored} failed`);
+      setBulkSummary(parts.join(", "));
+      setSelected(new Set());
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function bulkTrash(ids: string[]) {
@@ -365,12 +399,19 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
       {selected.size > 0 && (
         <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
           <b>{selected.size} selected</b>
+          {/* Bulk run controls — the server skips cases each action can't apply to (e.g. dispatch only
+              resumes paused, non-terminal cases). Dispatch only unpauses, so approval gates still hold. */}
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("dispatch")} title="Resume paused cases so their steps start running">▶ Dispatch</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("pause")} title="Pause active cases">⏸ Pause</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("cancel")} title="Stop in-flight steps and pause active cases">⏹ Cancel</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("verify")} title="Re-run the read-only validator on cases with finished automated steps">✓ Verify</button>
           <button className="danger" disabled={busyId === "bulk"} onClick={() => bulkTrash([...selected])}>
-            {busyId === "bulk" ? "moving…" : "🗑 Send to trash"}
+            {busyId === "bulk" ? "working…" : "🗑 Send to trash"}
           </button>
           <button onClick={() => setSelected(new Set())}>Clear selection</button>
         </div>
       )}
+      {bulkSummary && <p className="note">{bulkSummary}</p>}
       {error && <p className="note danger">{error}</p>}
 
       <table className="desk-only">

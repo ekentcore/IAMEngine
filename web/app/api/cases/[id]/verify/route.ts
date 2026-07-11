@@ -6,46 +6,17 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
-import { recordAudit } from "@/lib/auth/audit";
-import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { ADHOC_SYSTEM_KEYS } from "@/lib/jobs/adhoc";
+import { verifyCase } from "@/lib/cases/actions";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
-  const c = await db.caseRequest.findUnique({
-    where: { id: params.id },
-    select: { id: true, jobs: { select: { id: true, systemKey: true, mode: true, status: true, request: true, error: true } } },
-  });
-  if (!c) return NextResponse.json({ error: "unknown case" }, { status: 404 });
-
-  // Only automated (api) steps have a validator. Re-validate the terminal ones; leave in-flight jobs
-  // and manual checklist items alone. Ad-hoc password resets are excluded: they have no validator,
-  // so the sweep's no-validator pass would flip even a FAILED reset to a fresh "succeeded".
-  const targets = c.jobs.filter((j) => j.mode === "api" && ["succeeded", "failed", "skipped"].includes(j.status) && !ADHOC_SYSTEM_KEYS.includes(j.systemKey));
-  if (targets.length === 0) {
-    return NextResponse.json({ ok: true, verifying: 0, note: "no automated steps to verify" });
-  }
-
-  await db.$transaction(
-    targets.map((j) => {
-      const req = { ...((j.request ?? {}) as Record<string, unknown>), validateOnly: true };
-      return db.job.update({
-        where: { id: j.id },
-        data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: req as Prisma.InputJsonValue },
-      });
-    })
-  );
-  // Reopen the case so the claim loop dispatches the verify jobs; clear verifiedAt so the UI shows
-  // "verifying" (not a stale "Account verified" from a prior sweep) until this one finishes.
-  await db.caseRequest.update({ where: { id: c.id }, data: { status: "queued", verifiedAt: null } });
-  // Preserve what we cleared (prior errors on failed steps) so a verify pass doesn't erase the
-  // forensic trail of why a step originally failed.
-  const cleared = targets.filter((j) => j.status === "failed").map((j) => ({ jobId: j.id, error: j.error }));
-  await recordAudit("case.verify", { user: _g.user, caseRequestId: c.id, detail: { steps: targets.length, clearedFailed: cleared } });
-
-  return NextResponse.json({ ok: true, verifying: targets.length });
+  // The target selection (terminal, non-ad-hoc api steps), the validate-only reset, the reopen, and
+  // the audit all live in verifyCase (shared with the bulk route).
+  const r = await verifyCase(db, params.id, _g.user);
+  if (!r.ok) return NextResponse.json({ error: "unknown case" }, { status: 404 });
+  return NextResponse.json({ ok: true, ...r.result });
 }
