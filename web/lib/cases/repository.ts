@@ -387,9 +387,9 @@ export function makeCaseRepository(db: PrismaClient) {
         orderBy: { createdAt: "desc" },
         take: limit,
         select: {
-          id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
+          id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true, scheduledFor: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
-          client: { select: { name: true, slug: true } },
+          client: { select: { name: true, slug: true, parentId: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, startedAt: true, finishedAt: true } },
         },
       });
@@ -467,9 +467,14 @@ export function makeCaseRepository(db: PrismaClient) {
       const clientHasRunner = new Set(onlineAgents.map((a) => a.clientId).filter(Boolean) as string[]);
 
       // Required-secret preflight per case: which named secrets aren't set (so the runner won't claim).
+      // Include PARENT client secrets: a child account (e.g. CORE218x) inherits its parent's runbook and
+      // resolves credentials from the parent — claim() does the same, so readiness must too, else every
+      // child case reads as "blocked".
       const clientIds = [...new Set(rows.map((r) => r.clientId))];
-      const clientSecretRows = clientIds.length
-        ? await db.secret.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, name: true, externalId: true } })
+      const parentIds = [...new Set(rows.map((r) => r.client.parentId).filter((id): id is string => Boolean(id)))];
+      const secretClientIds = [...new Set([...clientIds, ...parentIds])];
+      const clientSecretRows = secretClientIds.length
+        ? await db.secret.findMany({ where: { clientId: { in: secretClientIds } }, select: { clientId: true, name: true, externalId: true } })
         : [];
       const secretsByClient = new Map<string, Map<string, string | null>>();
       for (const s of clientSecretRows) {
@@ -507,7 +512,19 @@ export function makeCaseRepository(db: PrismaClient) {
           (j) => j.status === "pending" && apiJobs.every((o) => o.sequence >= j.sequence || o.status === "succeeded" || o.status === "skipped")
         );
         const neededSecrets = [...new Set(claimableNow.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
-        const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map());
+        // Child accounts resolve secrets from the parent, exactly as claim() does — pass the parent's map.
+        const parentSecretMap = r.client.parentId ? secretsByClient.get(r.client.parentId) : undefined;
+        const missingSecrets = missingRequiredSecrets(neededSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map(), parentSecretMap);
+        // Per-case READINESS — across the WHOLE plan (every api job, not just what's claimable now): of
+        // the systems this case needs credentials for, how many are set. ready=all set, partial=some,
+        // blocked=none, none=no credential-gated systems. Reuses the same secret-resolution as the gate.
+        const planSecrets = [...new Set(apiJobs.flatMap((j) => (((j.request ?? {}) as { secretNames?: string[] }).secretNames ?? [])))];
+        const planMissing = missingRequiredSecrets(planSecrets, r.secretOverrides, secretsByClient.get(r.clientId) ?? new Map(), parentSecretMap);
+        const readiness: "ready" | "partial" | "blocked" | "none" =
+          planSecrets.length === 0 ? "none"
+          : planMissing.length === 0 ? "ready"
+          : planMissing.length >= planSecrets.length ? "blocked"
+          : "partial";
         // "Paused": the case looks running/queued but nothing is actually executing and a required
         // credential is missing, so the runner won't claim it — surface that as paused, not running.
         const activeNow = r.jobs.some((j) => j.status === "dispatched" || j.status === "running");
@@ -526,14 +543,18 @@ export function makeCaseRepository(db: PrismaClient) {
           pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : review ? ("review" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
+          scheduledFor: r.scheduledFor,
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
           lastActionLabel: lastActionByCase.get(r.id)?.label ?? null,
           lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
+          readiness, readinessMissing: planMissing,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: needsInfo
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."
             : scheduled
-            ? "Scheduled — an offboard is held on import (it may be future-dated). Resume on the case page when the offboard date arrives."
+            ? r.scheduledFor
+              ? "Scheduled — the case resumes automatically at the scheduled time (or resume it on the case page sooner)."
+              : "Scheduled — an offboard is held on import (it may be future-dated). Resume on the case page when the offboard date arrives."
             : review
             ? "Held on import — review the planned steps on the case page and resume to run it."
             : operatorPaused

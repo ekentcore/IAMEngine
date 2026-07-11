@@ -136,3 +136,58 @@ test("a manual destructive step never requires approval (the human doing it IS t
   assert.equal(j.requiresApproval, false);
   assert.equal(j.captureEvidence, true); // evidence still captured
 });
+
+// ── AD email write-back (mail attribute) ─────────────────────────────────────────────────────────
+test("AD onboard injects ad-email-writeback after the cloud steps", () => {
+  const systems = [
+    sys({ systemKey: "active-directory", dependsOn: [] }),
+    sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] }),
+    sys({ systemKey: "m365", dependsOn: ["directory-sync"] }),
+    sys({ systemKey: "exchange", dependsOn: ["m365"] }),
+  ];
+  const jobs = planCase(systems, "onboard", {});
+  const wb = jobs.find((j) => j.systemKey === "ad-email-writeback");
+  assert.ok(wb, "write-back step is injected");
+  assert.equal(wb!.mode, "api");
+  assert.deepEqual(wb!.secretNames, ["ad-dc"]);
+  assert.equal(wb!.requiresApproval, false);
+  const seq = (k: string) => jobs.find((j) => j.systemKey === k)!.sequence;
+  assert.ok(seq("ad-email-writeback") > seq("m365"), "after m365");
+  assert.ok(seq("ad-email-writeback") > seq("exchange"), "after exchange");
+});
+
+test("write-back is onboard-only and AD-only", () => {
+  const ad = [sys({ systemKey: "active-directory" }), sys({ systemKey: "m365", dependsOn: ["active-directory"] })];
+  assert.equal(planCase(ad, "offboard", {}).some((j) => j.systemKey === "ad-email-writeback"), false); // offboard: none
+  const cloud = [sys({ systemKey: "m365" }), sys({ systemKey: "exchange", dependsOn: ["m365"] })];
+  assert.equal(planCase(cloud, "onboard", {}).some((j) => j.systemKey === "ad-email-writeback"), false); // no AD: none
+  const adOnly = [sys({ systemKey: "active-directory" }), sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] })];
+  assert.equal(planCase(adOnly, "onboard", {}).some((j) => j.systemKey === "ad-email-writeback"), false); // no cloud consumer: none
+});
+
+// ── Hybrid identity-link check (ad-consistency-check) ────────────────────────────────────────────
+test("AD onboard injects ad-consistency-check after the cloud step", () => {
+  const systems = [
+    sys({ systemKey: "active-directory" }),
+    sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] }),
+    sys({ systemKey: "m365", dependsOn: ["directory-sync"] }),
+  ];
+  const jobs = planCase(systems, "onboard", {});
+  const chk = jobs.find((j) => j.systemKey === "ad-consistency-check");
+  assert.ok(chk, "check step injected for a hybrid onboard");
+  assert.equal(chk!.requiresApproval, false); // detect-only, never gates
+  assert.deepEqual(chk!.secretNames, ["ad-dc"]);
+  const seq = (k: string) => jobs.find((j) => j.systemKey === k)!.sequence;
+  assert.ok(seq("ad-consistency-check") > seq("m365"), "runs after m365");
+  // runs after the write-back too (both touch AD post-sync)
+  assert.ok(seq("ad-consistency-check") > seq("ad-email-writeback"));
+});
+
+test("ad-consistency-check is onboard-only and needs AD + cloud", () => {
+  const ad = [sys({ systemKey: "active-directory" }), sys({ systemKey: "m365", dependsOn: ["active-directory"] })];
+  assert.equal(planCase(ad, "offboard", {}).some((j) => j.systemKey === "ad-consistency-check"), false);
+  const cloud = [sys({ systemKey: "m365" })];
+  assert.equal(planCase(cloud, "onboard", {}).some((j) => j.systemKey === "ad-consistency-check"), false);
+  const adOnly = [sys({ systemKey: "active-directory" }), sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] })];
+  assert.equal(planCase(adOnly, "onboard", {}).some((j) => j.systemKey === "ad-consistency-check"), false);
+});

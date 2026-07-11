@@ -4,13 +4,15 @@ import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Role } from "@prisma/client";
 import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS, canResetPassword, canAssignRole } from "@/lib/auth/permissions";
-import { createUser, setUserRole, setUserStatus, resetUserPassword } from "../actions";
+import { createUser, setUserRole, setUserStatus, resetUserPassword, approveAccessRequest, denyAccessRequest } from "../actions";
 import { ClientAccessEditor, accessSummary, type ClientLite, type AccessUser } from "./client-access-editor";
 
 type UserVM = {
   id: string; email: string; name: string | null; role: Role; status: string;
   isBreakGlass: boolean; authType: string; lastLoginAt: string | null;
 } & AccessUser;
+
+export type AccessRequestVM = { id: string; email: string; name: string | null; requestCount: number; firstRequestedAtIso: string; lastRequestedAtIso: string };
 
 const ALL_ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
 
@@ -20,10 +22,11 @@ function lastSeen(iso: string | null) {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function UsersView({ users, meRole, clients, meId, v2 = false }: { users: UserVM[]; meRole: Role; clients: ClientLite[]; meId?: string; v2?: boolean }) {
+export function UsersView({ users, meRole, clients, meId, accessRequests = [], v2 = false }: { users: UserVM[]; meRole: Role; clients: ClientLite[]; meId?: string; accessRequests?: AccessRequestVM[]; v2?: boolean }) {
   const router = useRouter();
   const totalRestricted = clients.filter((c) => c.restricted).length;
   const [accessFor, setAccessFor] = useState<string | null>(null); // user id whose access editor is open
+  const [approving, setApproving] = useState<AccessRequestVM | null>(null); // access request being approved
   // super_admin only appears in the pickers for a super admin (others can't grant it). The guide +
   // create form use this; per-row selects also keep a target's own (super) role visible.
   const ROLES: Role[] = meRole === "super_admin" ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "super_admin");
@@ -69,6 +72,32 @@ export function UsersView({ users, meRole, clients, meId, v2 = false }: { users:
           </p>
         </div>
       </details>
+
+      {/* Requested access: verified SSO sign-ins from unprovisioned people, held for approval. */}
+      {accessRequests.length > 0 && (
+        <div style={{ border: "1px solid var(--warn-fg)", borderRadius: 10, padding: "0.8rem 1rem", marginTop: "1rem", background: "var(--warn-bg)" }}>
+          <b style={{ fontSize: 14 }}>Requested access ({accessRequests.length})</b>
+          <p className="note" style={{ margin: "2px 0 8px" }}>People who signed in with Microsoft 365 but aren&apos;t provisioned yet. Approve to create their account (deny-by-default until then).</p>
+          <table>
+            <thead><tr><th>Email</th><th>Name</th><th className="num">Requests</th><th>Last requested</th><th></th></tr></thead>
+            <tbody>
+              {accessRequests.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.email}</td>
+                  <td className="muted">{r.name ?? "—"}</td>
+                  <td className="num">{r.requestCount}</td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{lastSeen(r.lastRequestedAtIso)}</td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button className="primary" onClick={() => setApproving(r)}>Approve…</button>
+                    <button style={{ marginLeft: 6 }} disabled={busy === `deny-${r.id}`} onClick={() => run(`deny-${r.id}`, () => denyAccessRequest(r.id))}>{busy === `deny-${r.id}` ? "…" : "Deny"}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {approving && <ApproveDialog req={approving} clients={clients} roles={ROLES} onClose={() => setApproving(null)} onDone={() => { setApproving(null); router.refresh(); }} />}
 
       {/* add user */}
       <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "0.9rem 1rem", marginTop: "1rem", background: "var(--bg-soft)" }}>
@@ -200,6 +229,69 @@ export function UsersView({ users, meRole, clients, meId, v2 = false }: { users:
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Approve an access request → create the user with a chosen role + client scope. Defaults are least-
+// privilege: role auditor, mode "only" with NO clients selected (so approval never grants broad access
+// by accident) — both changeable here before approving.
+function ApproveDialog({ req, clients, roles, onClose, onDone }: {
+  req: AccessRequestVM; clients: ClientLite[]; roles: Role[]; onClose: () => void; onDone: () => void;
+}) {
+  const [role, setRole] = useState<Role>("auditor");
+  const [mode, setMode] = useState<"all" | "only" | "exclude">("only");
+  const [scope, setScope] = useState<Set<string>>(new Set());
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const filtered = clients.filter((c) => c.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const toggle = (id: string) => setScope((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
+  async function submit() {
+    setBusy(true); setError(null);
+    const r = await approveAccessRequest(req.id, { role, mode, scopeClientIds: [...scope] });
+    setBusy(false);
+    if (!r.ok) { setError(r.error ?? "failed"); return; }
+    onDone();
+  }
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 1rem", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: "1rem 1.2rem", width: 540, maxWidth: "100%", boxShadow: "var(--shadow-1)" }}>
+        <div className="row-between"><h2 style={{ margin: 0 }}>Approve access</h2><button onClick={onClose} aria-label="Close">×</button></div>
+        <p className="note">Create an account for <b>{req.email}</b>{req.name ? ` (${req.name})` : ""}. They sign in with Microsoft 365 (SSO).</p>
+
+        <label htmlFor="ar-role">Role</label>
+        <select id="ar-role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+          {roles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>)}
+        </select>
+
+        <label htmlFor="ar-mode" style={{ marginTop: 10, display: "block" }}>Client access</label>
+        <select id="ar-mode" value={mode} onChange={(e) => setMode(e.target.value as "all" | "only" | "exclude")}>
+          <option value="only">Only selected clients (default — none until you pick)</option>
+          <option value="all">All clients (except restricted)</option>
+          <option value="exclude">All clients except selected</option>
+        </select>
+        {mode !== "all" && (
+          <div style={{ marginTop: 8 }}>
+            <input placeholder="search clients…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%" }} spellCheck={false} />
+            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, marginTop: 6, padding: 6 }}>
+              {filtered.map((c) => (
+                <label key={c.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 4px", whiteSpace: "nowrap" }}>
+                  <input type="checkbox" checked={scope.has(c.id)} onChange={() => toggle(c.id)} style={{ width: "auto" }} />
+                  {c.name}{c.restricted && <span className="note" style={{ color: "var(--warn-fg)" }}>· restricted</span>}
+                </label>
+              ))}
+              {filtered.length === 0 && <div className="note" style={{ padding: 4 }}>no clients match</div>}
+            </div>
+            <p className="note" style={{ marginTop: 4 }}>{scope.size} selected — default is <b>none</b> so approval doesn&apos;t grant access too broadly. You can change this later on the user row.</p>
+          </div>
+        )}
+        {error && <p className="note danger">{error}</p>}
+        <div className="dialog-actions" style={{ marginTop: 12 }}>
+          <button onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="primary" onClick={submit} disabled={busy}>{busy ? "Approving…" : "Approve & create user"}</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -7,12 +7,30 @@
 //                          runner never needs Delinea creds of its own. The value is held only for
 //                          the response — never logged, never persisted.
 import { secretIsSet } from "./wiring";
+import { defaultSlug } from "./delinea-templates";
 
 export type DelineaConfig = { baseUrl: string; username: string; password: string };
-export type SecretCheck = { ok: boolean; label?: string; error?: string };
+export type SecretCheck = { ok: boolean; label?: string; error?: string; expiresAt?: string };
+
+// Secret Server exposes secret expiry under different keys across versions — parse defensively from
+// a summary/detail body. Accepts an explicit expiration date, or "days until expiration" relative to
+// now. Returns an ISO string or undefined (never throws). `now` is injectable for tests.
+export function parseDelineaExpiry(body: unknown, now: Date = new Date()): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const o = body as Record<string, unknown>;
+  for (const k of ["expirationDate", "secretExpirationDate", "expiration", "expiresOn", "expires"]) {
+    const v = o[k];
+    if (typeof v === "string" && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  }
+  for (const k of ["daysUntilExpiration", "daysUntilExpiry", "expirationDays"]) {
+    const v = o[k];
+    if (typeof v === "number" && Number.isFinite(v)) return new Date(now.getTime() + v * 86_400_000).toISOString();
+  }
+  return undefined;
+}
 // resolveSecretFields returns the secret VALUE (flattened fields) — unlike SecretCheck, which is
 // metadata-only. Used by the broker to push the credential down to the runner.
-export type SecretFields = { ok: boolean; fields?: Record<string, string>; label?: string; error?: string };
+export type SecretFields = { ok: boolean; fields?: Record<string, string>; label?: string; error?: string; expiresAt?: string };
 
 // Minimal response shape so the same code works with global fetch and an injected fake in tests.
 export type FetchResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -74,9 +92,166 @@ export async function checkSecret(cfg: DelineaConfig, externalId: string, fetche
     }
     const body = (await res.json()) as { name?: string };
     // Only the secret's name is surfaced — a human label. The value/items are intentionally dropped.
-    return { ok: true, label: typeof body?.name === "string" ? body.name : undefined };
+    // Expiry (when Secret Server includes it in the summary) is captured opportunistically.
+    return { ok: true, label: typeof body?.name === "string" ? body.name : undefined, expiresAt: parseDelineaExpiry(body) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
+  }
+}
+
+// ---- WRITE path: create a secret in Secret Server -----------------------------------------------
+// Authoring credentials in-app. Strictly opt-in and separate from the read paths above; the caller
+// (the /secrets/create route) gates on delineaWriteConfigured() before ever reaching here. The
+// values are POSTed once and never persisted/logged by the app — only the returned secret id is.
+
+// A Secret Server template stub item — the shape the create endpoint expects each field in. We fetch
+// the stub for the template, drop our values into the matching items by slug, and POST it back so the
+// item ids/field ids are always exactly what the template defines (no guessing at fieldId).
+type StubItem = { fieldId?: number; slug?: string; fieldName?: string; itemValue?: unknown; [k: string]: unknown };
+export type CreateSecretInput = { name: string; folderId: string; templateId: number; fields: Record<string, string> };
+export type CreateResult = { ok: boolean; id?: string; error?: string };
+
+// Fill a template stub's items from our slug→value map, preserving every other property Secret Server
+// put on each item (fieldId, isFile, ...). Matches on slug, falling back to the slugified field name.
+// Returns which of OUR keys never matched a stub item — a non-empty `unmatched` means the template's
+// real slugs differ from what we sent, so the values would silently drop; the caller must refuse
+// rather than create a secret with blank fields.
+export function shapeStubItems(stub: StubItem[], fields: Record<string, string>): { items: StubItem[]; unmatched: string[] } {
+  const used = new Set<string>();
+  const items = stub.map((it) => {
+    const key = it.slug ?? (it.fieldName ? defaultSlug(it.fieldName) : "");
+    if (Object.prototype.hasOwnProperty.call(fields, key)) { used.add(key); return { ...it, itemValue: fields[key] }; }
+    return it;
+  });
+  const unmatched = Object.keys(fields).filter((k) => !used.has(k));
+  return { items, unmatched };
+}
+
+// Best-effort search for an existing secret of this exact name in the folder — the dedup key for
+// idempotency (Secret Server has no unique constraint on name). Returns its id, or null (incl. when
+// the search itself fails, so a search outage falls through to a normal create rather than blocking).
+async function findSecretIdByName(cfg: DelineaConfig, folderId: string | number, name: string, token: string, fetcher: Fetcher): Promise<string | null> {
+  try {
+    const url = `${cfg.baseUrl}/api/v1/secrets?filter.folderId=${encodeURIComponent(String(folderId))}&filter.includeSubFolders=false&filter.searchText=${encodeURIComponent(name)}&take=50`;
+    const res = await fetcher(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => null)) as { records?: { id?: number | string; name?: string }[] } | null;
+    const hit = (d?.records ?? []).find((r) => String(r.name ?? "").trim().toLowerCase() === name.trim().toLowerCase());
+    return hit?.id != null ? String(hit.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+// POST a new secret. `token` is a write-account access token (getDelineaToken with the write config).
+// Never throws to the caller — returns a readable error. Does NOT log the values it sends.
+// Idempotent: if a secret of the same name already exists in the folder, its id is returned instead of
+// creating a duplicate — so a retry after a lost response can't leave a stray credential in the vault.
+export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput, token: string, fetcher: Fetcher = defaultFetcher): Promise<CreateResult> {
+  try {
+    // 0. Dedup: reuse an existing same-named secret in this folder rather than creating another.
+    const existing = await findSecretIdByName(cfg, input.folderId, input.name, token, fetcher);
+    if (existing) return { ok: true, id: existing };
+
+    // 1. Pull the template stub to learn the exact item shape (field ids/slugs) for this template.
+    const stubRes = await fetcher(`${cfg.baseUrl}/api/v1/secrets/stub?filterSecretTemplateId=${encodeURIComponent(String(input.templateId))}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (stubRes.status === 401 || stubRes.status === 403) return { ok: false, error: "access denied — the write account needs Create + template access in Delinea" };
+    if (!stubRes.ok) {
+      const d = (await stubRes.json().catch(() => null)) as { message?: string } | null;
+      return { ok: false, error: `Delinea stub ${stubRes.status}${d?.message ? ` — ${d.message}` : ""}` };
+    }
+    const stub = (await stubRes.json()) as { items?: StubItem[] };
+    const { items, unmatched } = shapeStubItems(stub.items ?? [], input.fields);
+    // Refuse rather than POST a secret whose values silently dropped because the template's field slugs
+    // differ from ours — the operator needs to set a fieldMap, not end up with a blank credential.
+    if (unmatched.length > 0) {
+      return { ok: false, error: `template ${input.templateId} has no field matching: ${unmatched.join(", ")} — set a fieldMap in DELINEA_TEMPLATE_MAP so these land in the right Secret Server fields` };
+    }
+
+    // 2. POST the populated stub. folderId is numeric in Secret Server; coerce when it's a numeric string.
+    const folderId = Number.isFinite(Number(input.folderId)) ? Number(input.folderId) : input.folderId;
+    const body = { name: input.name, folderId, secretTemplateId: input.templateId, items };
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied — the write account needs Create on this folder/template in Delinea" };
+    if (!res.ok) {
+      const d = (await res.json().catch(() => null)) as { message?: string; errorCode?: string } | null;
+      return { ok: false, error: `Delinea ${res.status}${d?.message ? ` — ${d.message}` : ""}` };
+    }
+    const created = (await res.json()) as { id?: number | string };
+    if (created?.id == null) return { ok: false, error: "Delinea create returned no id" };
+    return { ok: true, id: String(created.id) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+// --- Folder access introspection (the Delinea self-check) ---------------------------------------
+// Proves the app's account can READ (and, for the write path, CREATE IN) a client's folder without
+// ever touching a secret value. Secret Server's folder-permission surface varies by version, so the
+// write check is TRI-STATE: "unknown" (couldn't introspect) must never be treated as a failure.
+
+export type FolderRead = { ok: boolean; name?: string; error?: string };
+export async function checkFolderRead(cfg: DelineaConfig, folderId: string, fetcher: Fetcher = defaultFetcher, token?: string): Promise<FolderRead> {
+  if (!folderId) return { ok: false, error: "no folder id" };
+  if (!delineaConfigured(cfg)) return { ok: false, error: "Delinea not configured (set DELINEA_* on the app)" };
+  try {
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/folders/${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 404) return { ok: false, error: `folder ${folderId} not found (or hidden from this account)` };
+    if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied — grant the account View on the folder" };
+    if (!res.ok) return { ok: false, error: `Delinea ${res.status}` };
+    const d = (await res.json().catch(() => null)) as { folderName?: string; name?: string } | null;
+    return { ok: true, name: String(d?.folderName ?? d?.name ?? folderId) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export type FolderWrite = { write: "ok" | "fail" | "unknown"; detail: string };
+export async function checkFolderWrite(cfg: DelineaConfig, folderId: string, fetcher: Fetcher = defaultFetcher, token?: string): Promise<FolderWrite> {
+  if (!folderId) return { write: "unknown", detail: "no folder id stored for this client" };
+  if (!delineaConfigured(cfg)) return { write: "unknown", detail: "Delinea not configured" };
+  try {
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
+    // Primary: folder-details returns UI capability flags on most Secret Server versions.
+    const det = await fetcher(`${cfg.baseUrl}/api/v1/folder-details/${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (det.ok) {
+      const d = (await det.json().catch(() => null)) as { actions?: unknown; allowedTemplates?: unknown } | null;
+      const actions = Array.isArray(d?.actions) ? (d?.actions as unknown[]).map((a) => String(a).toLowerCase()) : null;
+      if (actions) {
+        return actions.some((a) => a.includes("createsecret") || a === "addsecret")
+          ? { write: "ok", detail: "the account can create secrets in this folder" }
+          : { write: "fail", detail: "the account cannot create secrets here — grant it Add Secret/Edit on the folder" };
+      }
+    }
+    if (det.status === 401 || det.status === 403) return { write: "fail", detail: "access denied on the folder — grant the account Add Secret/Edit" };
+    // Fallback: the permissions list (needs Owner on some versions — expect "unknown" often).
+    const per = await fetcher(`${cfg.baseUrl}/api/v1/folder-permissions?filter.folderId=${encodeURIComponent(folderId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (per.ok) {
+      const d = (await per.json().catch(() => null)) as { records?: { userName?: string; folderAccessRoleName?: string; secretAccessRoleName?: string }[] } | null;
+      const mine = (d?.records ?? []).filter((r) => String(r.userName ?? "").toLowerCase() === cfg.username.toLowerCase());
+      if (mine.length > 0) {
+        const roles = mine.map((r) => `${r.folderAccessRoleName ?? ""}/${r.secretAccessRoleName ?? ""}`.toLowerCase());
+        return roles.some((r) => r.includes("owner") || r.includes("edit") || r.includes("add"))
+          ? { write: "ok", detail: `folder roles: ${roles.join(", ")}` }
+          : { write: "fail", detail: `folder roles (${roles.join(", ")}) don't allow creating secrets — grant Add Secret/Edit` };
+      }
+    }
+    return { write: "unknown", detail: "couldn't introspect folder permissions on this Secret Server version — verify Add Secret manually" };
+  } catch (e) {
+    return { write: "unknown", detail: (e as Error).message };
   }
 }
 
@@ -112,7 +287,7 @@ export async function resolveSecretFields(cfg: DelineaConfig, externalId: string
       // Skip only null/undefined (a genuinely blank field) so the key's absence is meaningful.
       if (typeof it.fieldName === "string" && it.itemValue != null) fields[it.fieldName] = String(it.itemValue);
     }
-    return { ok: true, fields, label: typeof body.name === "string" ? body.name : undefined };
+    return { ok: true, fields, label: typeof body.name === "string" ? body.name : undefined, expiresAt: parseDelineaExpiry(body) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

@@ -59,3 +59,40 @@ resolved OU/group/attribute values.
 ### Installing the on-prem agent
 This system only runs on a client-network agent (DC / management host). Full setup:
 see [docs/runner-dc-setup.md](../runner-dc-setup.md).
+
+### Troubleshooting (the "Six One Commodities" class of issues)
+The runner (1.31.x) now auto-recovers most of these; the manual steps are the just-in-case if
+you hit them on a new/odd host. Symptoms are the step error on the case's run log.
+
+- **"the Coretelligent module providing 'Invoke-CtgADOnboarding' isn't loaded on this host"** — the
+  `ActiveDirectory` (RSAT) module isn't installed/visible.
+  - Runner: self-heals (tries `Add-WindowsCapability`/`Install-WindowsFeature RSAT-AD-PowerShell`) and
+    reports capabilities so an incapable agent doesn't claim AD jobs.
+  - Manual: on the DC, elevated — `Install-WindowsFeature RSAT-AD-PowerShell` (or
+    `Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0` on a member
+    server), then restart the runner (module import is startup-only). Verify in the SAME shell the
+    runner uses (pwsh 7): `Get-Module -ListAvailable ActiveDirectory`.
+
+- **"Could not load type 'System.Web…'"** — pwsh 7 (.NET Core) can't load the Desktop-only AD module
+  natively; it needs the Windows-PowerShell compat shim.
+  - Runner: loads AD via `Import-Module ActiveDirectory -UseWindowsPowerShell` when `-ListAvailable` is
+    blank in pwsh 7.
+  - Manual test: `pwsh -NoProfile -Command "Import-Module ActiveDirectory -UseWindowsPowerShell; (Get-ADDomain).DNSRoot"`.
+
+- **"The server is unwilling to process the request" on New-ADUser** — almost always a **wrong DN**,
+  not a permissions/RID issue.
+  - **Domain mismatch:** the OU DN was built from the user's EMAIL domain, not the AD domain (AD
+    `corp.example.com` vs mail `example.com`). Runner now builds DNs from `Get-ADDomain`. Manual check:
+    `(Get-ADDomain).DNSRoot` — if it's a subdomain of the mail domain, the OU must use it.
+  - **OU name off by spacing:** the profile said `Six One Users` but the real OU is `SixOneUsers`. The
+    error now names the resolved DN. Fix the `ou` in the rules editor (the group/OU tags flag unknown
+    values). Confirm the OU exists: `Get-ADOrganizationalUnit -Filter { Name -eq '<ou>' } | Select DistinguishedName`.
+
+- **Group not found ("Perimeter81 Users" vs real "Perimeter 81 Users")** — runner fuzzy-resolves a
+  space/punctuation-insensitive match and retries. Manual: correct the group name in the rules editor
+  (it now flags a group that isn't one of the discovered AD/cloud groups and suggests the close match).
+
+- **Onboarding executed but validation shows all checks failed** on an EXO-only tenant — the read-back
+  requested an Exchange-schema attribute (`msExchHideFromAddressLists`) the on-prem AD doesn't have,
+  which failed the whole `Get-ADUser`. Runner now requests only schema-guaranteed properties. No manual
+  step needed; if seen on an old build, update the runner.

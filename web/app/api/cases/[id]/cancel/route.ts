@@ -5,9 +5,8 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
-import { recordAudit, actorLabel } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
-import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { cancelCase } from "@/lib/cases/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -15,18 +14,9 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { id: true, clientId: true } });
-  if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
-
-  // Stop every in-flight step (marks it failed; a late runner result is then rejected).
-  const inflight = await db.job.findMany({ where: { caseRequestId: params.id, status: { in: ["dispatched", "running"] } }, select: { id: true } });
-  const svc = makeRunnerService(db);
-  let stopped = 0;
-  for (const j of inflight) {
-    try { await svc.stopJob(j.id, actorLabel(_g.user, "ui:cancel")); stopped++; } catch { /* already terminal / lost the race — ignore */ }
-  }
-  // Pause so the remaining pending steps aren't claimed (claim filters pausedAt: null).
-  await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: new Date(), pausedReason: "operator" } });
-  await recordAudit("case.cancel", { user: _g.user, caseRequestId: params.id, clientId: c.clientId, detail: { stopped } });
-  return NextResponse.json({ ok: true, stopped });
+  // Stopping the in-flight steps + pausing + clearing any schedule lives in cancelCase (shared with
+  // the bulk route).
+  const r = await cancelCase(db, params.id, _g.user);
+  if (!r.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json({ ok: true, ...r.result });
 }

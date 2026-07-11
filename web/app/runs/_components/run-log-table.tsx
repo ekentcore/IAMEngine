@@ -5,9 +5,11 @@
 import Link from "next/link";
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { ActionsMenu, type ActionsMenuItem } from "../../_components/actions-menu";
 import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
-import { resolveManyOutcomes } from "../actions";
+import { ClaudeFixButton, ClaudeFixChip, useClaudeFixes } from "./claude-fix";
+import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
 
 export type RunLogRow = {
   id: string;
@@ -44,7 +46,10 @@ function Badge({ verdict }: { verdict: string }) {
 // Only OPEN errors/warnings can be Fixed — those are the selectable rows.
 const isFixable = (r: RunLogRow) => !r.done && (r.verdict === "warning" || r.verdict === "failed") && !!r.fingerprint;
 
-export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText: string }) {
+// v2 presentation: per-row Copy/Fixed collapse into the shared "Actions ▾" menu, and fixed lines
+// come OFF the main table into their own <details> below (mirrors the cases v2 completed-split).
+// Non-v2 rendering is unchanged.
+export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]; emptyText: string; v2?: boolean }) {
   const router = useRouter();
   const [sel, setSel] = useState<Set<string>>(new Set()); // selected fingerprints
   const [pending, start] = useTransition();
@@ -65,6 +70,41 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
     });
   }
 
+  // v2: mark one line Fixed / reopen it (same fingerprint semantics as FixButton).
+  function fixOne(r: RunLogRow) {
+    setErr(null);
+    start(async () => {
+      const res = r.done ? await reopenOutcomes(r.fingerprint) : await resolveOutcomes(r.fingerprint);
+      if (!res.ok) { setErr(res.error); return; }
+      router.refresh();
+    });
+  }
+
+  // "Fix with Claude" (self-healing lane): per-fingerprint task state + 5s polling live in the hook.
+  const { tasks: fixTasks, start: startClaudeFix } = useClaudeFixes();
+
+  const rowMenu = (r: RunLogRow): ActionsMenuItem[] => {
+    const t = fixTasks[r.fingerprint];
+    return [
+      { label: "⧉ Copy", title: "Copy this line's message + error", onClick: () => { navigator.clipboard?.writeText(r.copyText); } },
+      r.done
+        ? { label: "↺ Reopen", title: "Reopen this line", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) }
+        : { label: "✓ Fixed", title: r.count > 1 ? `Mark Fixed — clears all ${r.count} occurrences of this line for this case` : "Mark this line Fixed", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) },
+      ...(isFixable(r)
+        ? [{
+            label: "🤖 Fix with Claude",
+            title: "Hand this failure to Claude Code: it diagnoses and fixes the code in an isolated worktree and opens a draft PR — a human merges",
+            disabled: !!t && (t.status === "queued" || t.status === "running"),
+            onClick: () => startClaudeFix(r),
+          }]
+        : []),
+    ];
+  };
+
+  // v2 splits the resolved lines out of the working table; non-v2 keeps them inline (dimmed).
+  const mainRows = v2 ? rows.filter((r) => !r.done) : rows;
+  const fixedRows = v2 ? rows.filter((r) => r.done) : [];
+
   return (
     <>
       {sel.size > 0 && (
@@ -77,6 +117,8 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
           {err && <span className="note danger">{err}</span>}
         </div>
       )}
+      {/* v2 per-row actions live in a menu with no inline error slot — surface failures here. */}
+      {v2 && err && sel.size === 0 && <p className="note danger" style={{ margin: "0.4rem 0" }}>{err}</p>}
 
       {/* Fixed layout + explicit column widths so a long, unbreakable message (URLs, snake_case tokens)
           wraps inside the Message column instead of widening the table and pushing the actions off-card. */}
@@ -96,7 +138,7 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {mainRows.map((r) => {
             const fixable = isFixable(r);
             return (
               <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top", opacity: r.done ? 0.5 : 1, background: sel.has(r.fingerprint) ? "#eff6ff" : undefined }}>
@@ -118,9 +160,19 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
                   {/* Actions float top-right INSIDE the message cell: pinned to the row's right edge while
                       the message text fills the full width and wraps under them — no sparse actions column. */}
                   {(r.verdict === "warning" || r.verdict === "failed") && (
-                    <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap" }}>
-                      <CopyButton text={r.copyText} />
-                      <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
+                    <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap", alignItems: "center" }}>
+                      {v2 ? (
+                        <>
+                          <ClaudeFixChip task={fixTasks[r.fingerprint]} />
+                          <ActionsMenu items={rowMenu(r)} />
+                        </>
+                      ) : (
+                        <>
+                          <CopyButton text={r.copyText} />
+                          <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
+                          {isFixable(r) && <ClaudeFixButton row={r} task={fixTasks[r.fingerprint]} onStart={startClaudeFix} />}
+                        </>
+                      )}
                     </span>
                   )}
                   {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
@@ -129,7 +181,7 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
               </tr>
             );
           })}
-          {rows.length === 0 && (
+          {mainRows.length === 0 && (
             <tr><td colSpan={7} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>{emptyText}</td></tr>
           )}
         </tbody>
@@ -137,7 +189,7 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
 
       {/* Mobile: message-focused card per line, with the case/client/module + copy/Fixed actions. */}
       <div className="mob-only m-list">
-        {rows.map((r) => (
+        {mainRows.map((r) => (
           <div key={r.id} className="m-card" style={{ opacity: r.done ? 0.55 : 1 }}>
             <div className="m-card-top">
               <span className="m-card-title" style={{ fontSize: 13 }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</span>
@@ -157,8 +209,57 @@ export function RunLogTable({ rows, emptyText }: { rows: RunLogRow[]; emptyText:
             </div>
           </div>
         ))}
-        {rows.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>{emptyText}</div>}
+        {mainRows.length === 0 && <div className="note" style={{ padding: "1rem 0" }}>{emptyText}</div>}
       </div>
+
+      {/* v2: resolved lines live off the working table, kept for reference (mirrors cases v2's
+          completed-split). Only populated when the "fixed" filter loads them. */}
+      {v2 && (
+        <details style={{ marginTop: "1.25rem" }}>
+          <summary style={{ cursor: "pointer" }}>
+            <b>Fixed lines</b> <span className="note">({fixedRows.length}) — resolved; off the working list, kept here for reference</span>
+          </summary>
+          <table style={{ marginTop: "0.5rem", width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line, #e5e7eb)" }}>
+                <th style={{ padding: "4px 8px", width: 120 }}>When</th>
+                <th style={{ padding: "4px 8px", width: 100 }}>Case</th>
+                <th style={{ padding: "4px 8px", width: 150 }}>Client</th>
+                <th style={{ padding: "4px 8px", width: 116 }}>Module</th>
+                <th style={{ padding: "4px 8px", width: 78 }}>Result</th>
+                <th style={{ padding: "4px 8px" }}>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fixedRows.map((r) => (
+                <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top", opacity: 0.6 }}>
+                  <td style={{ padding: "4px 8px", color: "var(--muted, #6b7280)" }}>
+                    <span style={{ whiteSpace: "nowrap" }}>{r.atLabel}</span>
+                    {r.count > 1 && <span className="note" style={{ display: "block" }}>×{r.count}</span>}
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    <Link href={`/cases/${r.caseRequestId}`} style={{ whiteSpace: "nowrap" }}>{r.caseNumber}</Link>
+                    <span className="note" style={{ display: "block", fontSize: 11 }}>{r.action}</span>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
+                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
+                  <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
+                  <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: "var(--muted)" }}>
+                    <span style={{ float: "right", marginLeft: 10, whiteSpace: "nowrap" }}>
+                      <ActionsMenu items={rowMenu(r)} />
+                    </span>
+                    {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : "—"}
+                    <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>
+                  </td>
+                </tr>
+              ))}
+              {fixedRows.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No fixed lines loaded — tick “show fixed” in the filter to include them.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </details>
+      )}
     </>
   );
 }

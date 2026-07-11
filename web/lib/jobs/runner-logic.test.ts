@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyGateOpen, deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
+import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite } from "./runner-logic";
 
 function j(over: Partial<JobLite>): JobLite {
   return { id: "j", systemKey: over.id ?? "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
@@ -55,6 +55,14 @@ test("isClaimable: completed case blocks; a FAILED case still runs its independe
   assert.equal(isClaimable(dep, [j({ id: "m365", sequence: 0, status: "failed" }), dep], "failed"), false);
 });
 
+test("isClaimable: a dependency FAILED but ACCEPTED (operator ignored) no longer blocks the dependent", () => {
+  // Six One: directory-sync fails, operator marks it accepted -> m365 must stop waiting on it.
+  const m365 = j({ id: "m365", sequence: 1, dependsOn: ["directory-sync"] });
+  const failedDep = j({ id: "directory-sync", sequence: 0, status: "failed" });
+  assert.equal(isClaimable(m365, [failedDep, m365], "running"), false); // failed -> blocks
+  assert.equal(isClaimable(m365, [{ ...failedDep, accepted: true }, m365], "running"), true); // accepted -> proceeds
+});
+
 test("isClaimable: approval-gated job not claimable unless approved", () => {
   const gated = j({ id: "x", sequence: 0, requiresApproval: true });
   assert.equal(isClaimable(gated, [gated], "needs_approval"), false);
@@ -100,4 +108,57 @@ test("legacy gate (no persisted dependsOn) keeps strict sequence order", () => {
   const early = j({ id: "egnyte", sequence: 1, status: "pending" });
   const late = j({ id: "mimecast", sequence: 2 }); // dependsOn undefined -> legacy rule
   assert.equal(dependencyGateOpen(late, [early, late]), false);
+});
+
+test("shouldStandBy: a strictly higher-priority peer online -> stand by; else claim", () => {
+  // primary=1, this=2 -> stand by while primary (1) is online
+  assert.equal(shouldStandBy(2, [1]), true);
+  // primary offline (not in the online list) -> this backup takes over
+  assert.equal(shouldStandBy(2, []), false);
+  assert.equal(shouldStandBy(2, [2, 3]), false); // only equal/lower-precedence peers online -> claim
+  // equal priority peers load-balance (no stand-by) — preserves pre-failover behavior
+  assert.equal(shouldStandBy(100, [100, 100]), false);
+  // this IS the primary (lowest) -> never stands by
+  assert.equal(shouldStandBy(1, [2, 3, 100]), false);
+});
+
+test("ad-hoc password-reset jobs never affect the case status (failed reset can't fail the case)", () => {
+  const done = [j({ id: "m365", sequence: 0, status: "succeeded" }), j({ id: "ad", sequence: 1, status: "succeeded" })];
+  // a FAILED ad-hoc reset must not flip a completed case to failed
+  assert.equal(deriveCaseStatus([...done, j({ id: "m365-password-reset", sequence: 9, status: "failed" })]), "completed");
+  // a PENDING/RUNNING ad-hoc reset must not read as "the case is still running"
+  assert.equal(deriveCaseStatus([...done, j({ id: "ad-password-reset", sequence: 9, status: "pending" })]), "completed");
+  assert.equal(deriveCaseStatus([...done, j({ id: "google-password-reset", sequence: 9, status: "running" })]), "completed");
+});
+
+test("ad-hoc password-reset jobs never gate other steps (legacy sequence rule included)", () => {
+  // legacy rule (no dependsOn): every earlier api job gates — except an ad-hoc reset.
+  const late = j({ id: "mimecast", sequence: 5 });
+  const reset = j({ id: "ad-password-reset", sequence: 1, status: "pending" });
+  assert.equal(dependencyGateOpen(late, [reset, late]), true);
+});
+
+test("ad-hoc spanning-force-sync is treated like other ad-hoc actions (no effect on case status/gate)", () => {
+  const done = [j({ id: "m365", sequence: 0, status: "succeeded" }), j({ id: "spanning", sequence: 1, status: "succeeded" })];
+  // a FAILED/pending force-sync must not flip or hold a completed case
+  assert.equal(deriveCaseStatus([...done, j({ id: "spanning-force-sync", sequence: 9, status: "failed" })]), "completed");
+  assert.equal(deriveCaseStatus([...done, j({ id: "spanning-force-sync", sequence: 9, status: "pending" })]), "completed");
+  // and it never gates a real step
+  const late = j({ id: "mimecast", sequence: 5 });
+  const sync = j({ id: "spanning-force-sync", sequence: 1, status: "pending" });
+  assert.equal(dependencyGateOpen(late, [sync, late]), true);
+});
+
+test("setupGateBlocks: default policy never blocks; enforce blocks only failing-unattested", () => {
+  const off = { enforceTested: false };
+  const on = { enforceTested: true };
+  for (const test of ["ok", "fail", "untested", "not_needed", "unknown"] as const) {
+    assert.equal(setupGateBlocks({ test, attested: false }, off).block, false);
+  }
+  assert.equal(setupGateBlocks({ test: "fail", attested: false }, on).block, true);
+  assert.match(setupGateBlocks({ test: "fail", attested: false }, on).reason ?? "", /attest/i);
+  assert.equal(setupGateBlocks({ test: "fail", attested: true }, on).block, false); // attestation overrides
+  assert.equal(setupGateBlocks({ test: "untested", attested: false }, on).block, false); // never strand legacy clients
+  assert.equal(setupGateBlocks({ test: "unknown", attested: false }, on).block, false);
+  assert.equal(setupGateBlocks({ test: "ok", attested: false }, on).block, false);
 });

@@ -1,9 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { SecretHelpLink } from "@/app/_components/secret-help-link";
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
+import { SECRET_FIELD_REQUIREMENTS } from "@/lib/secrets/field-requirements";
+import { CreateInDelineaForm, createDisabledReason } from "./create-in-delinea";
+import type { DelineaWriteSummary } from "@/lib/secrets/delinea-templates";
 
 export type SecretRowVM = {
   name: string;
@@ -16,6 +20,20 @@ export type SecretRowVM = {
 
 type TestState = { status: "idle" | "testing" | "ok" | "fail"; label?: string; error?: string; missingFields?: string[] };
 
+// The Delinea self-check (token / secret read / folder write), tri-state per leg.
+type SelfCheckLeg = { state: "ok" | "fail" | "unknown"; detail: string };
+type SelfCheck = { token: SelfCheckLeg; read: SelfCheckLeg; write: SelfCheckLeg; folderId: string | null };
+
+function legBadge(label: string, leg: SelfCheckLeg) {
+  const color = leg.state === "ok" ? "#15803d" : leg.state === "fail" ? "#b91c1c" : "#92400e";
+  const mark = leg.state === "ok" ? "✓" : leg.state === "fail" ? "✗" : "?";
+  return (
+    <span className="badge" style={{ color }} title={leg.detail}>
+      {mark} {label}
+    </span>
+  );
+}
+
 // Per-client secret wiring: map each secretName the systems reference to a Delinea secret id, and
 // preflight each one ("test connection") so a tenant is verified before a real run. The app stores
 // and shows only references (ids) — never the secret value.
@@ -23,10 +41,12 @@ export function SecretsPanel({
   slug,
   initialRows,
   delineaConfigured,
+  write,
 }: {
   slug: string;
   initialRows: SecretRowVM[];
   delineaConfigured: boolean;
+  write?: DelineaWriteSummary;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
@@ -34,6 +54,31 @@ export function SecretsPanel({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  // Which row's inline "Create in Delinea" form is open (by secret name).
+  const [creating, setCreating] = useState<string | null>(null);
+  const [selfCheck, setSelfCheck] = useState<SelfCheck | "checking" | null>(null);
+
+  // The Delinea self-check: token grant, one wired-secret read, folder-write introspection.
+  async function runSelfCheck() {
+    setSelfCheck("checking");
+    try {
+      const r = await fetch(`/api/clients/${slug}/secrets/delinea-status`, { method: "POST" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d) { setSelfCheck({ token: { state: "fail", detail: d?.error ?? `failed (${r.status})` }, read: { state: "unknown", detail: "—" }, write: { state: "unknown", detail: "—" }, folderId: null }); return; }
+      setSelfCheck(d as SelfCheck);
+    } catch (e) {
+      setSelfCheck({ token: { state: "fail", detail: (e as Error).message }, read: { state: "unknown", detail: "—" }, write: { state: "unknown", detail: "—" }, folderId: null });
+    }
+  }
+
+  // Called when a secret is created in Delinea: its id is already wired server-side, so reflect it
+  // locally and refresh so readiness/tests recompute from the saved reference.
+  function onCreated(name: string, externalId: string) {
+    setRows((rs) => rs.map((r) => (r.name === name ? { ...r, externalId, isSet: true } : r)));
+    setCreating(null);
+    setTests((t) => { const next = { ...t }; delete next[name]; return next; });
+    router.refresh();
+  }
 
   // Mark a secret "not needed" (its module is handled as a manual step) so a missing credential
   // doesn't block the case. Stored as the sentinel id NOT_NEEDED; toggling off clears it.
@@ -64,7 +109,7 @@ export function SecretsPanel({
     }
   }
 
-  async function save() {
+  async function save(): Promise<boolean> {
     setSaving(true);
     setSaveMsg(null);
     try {
@@ -74,16 +119,35 @@ export function SecretsPanel({
         body: JSON.stringify({ secrets: rows.map((r) => ({ name: r.name, externalId: r.externalId, label: r.label })) }),
       });
       const data = await res.json();
-      if (!res.ok) setSaveMsg(data.error ?? res.statusText);
-      else {
-        setDirty(false);
-        router.refresh();
-      }
+      if (!res.ok) { setSaveMsg(data.error ?? res.statusText); return false; }
+      setDirty(false);
+      router.refresh();
+      return true;
     } catch (e) {
       setSaveMsg((e as Error).message);
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  // Save, then queue a live connection test for JUST the systems whose secret reference changed —
+  // each affected system's row is replaced, everything else's latest result survives. The
+  // connection-test panel listens for the event and starts polling.
+  async function saveAndTest() {
+    const before = new Map(initialRows.map((r) => [r.name, r.externalId] as const));
+    const changed = rows.filter((r) => r.externalId !== (before.get(r.name) ?? "") && r.externalId !== NOT_NEEDED && r.externalId.trim());
+    if (!(await save())) return;
+    const systems = [...new Set(changed.flatMap((r) => r.referencedBy))];
+    for (const systemKey of systems) {
+      await fetch(`/api/clients/${slug}/conn-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systemKey }),
+      }).catch(() => {});
+    }
+    if (systems.length > 0) window.dispatchEvent(new CustomEvent("iam:conn-test-queued"));
+    setSaveMsg(systems.length > 0 ? `Saved — queued live tests for ${systems.join(", ")} (results in Connection tests below)` : "Saved — no wired reference changed, so no live test was queued");
   }
 
   async function test(names: string[]) {
@@ -141,6 +205,10 @@ export function SecretsPanel({
         the value stays in Delinea and is fetched by the runner at run time. Credentials that need more
         than a username + password have a setup guide next to their name.
         {!delineaConfigured && <> · <span className="danger">Test is disabled until DELINEA_* is set on the app.</span></>}
+        {" · "}
+        <Link href={`/clients/${slug}/setup`}>Guided setup →</Link>
+        {" · "}
+        <a href="/help/delinea-write" target="_blank" rel="noreferrer">Create secrets in Delinea</a>
       </p>
       <table>
         <thead>
@@ -156,8 +224,14 @@ export function SecretsPanel({
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
             const notNeeded = r.externalId === NOT_NEEDED;
+            // "Create in Delinea" capability for this row: instance write account + a template for this
+            // secret. Folder can be collected inline, so it doesn't gate the button.
+            const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[r.name] ?? false, folderId: write.folderId } : null;
+            const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
+            const disabledReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
             return (
-              <tr key={r.name}>
+              <Fragment key={r.name}>
+              <tr>
                 <td>
                   <code>{r.name}</code>
                   <SecretHelpLink name={r.name} systems={r.referencedBy} />
@@ -169,12 +243,22 @@ export function SecretsPanel({
                   {notNeeded ? (
                     <span className="badge" title="This module is handled as a manual step — no credential required, won't block the case">manual step — no credential</span>
                   ) : (
-                    <input
-                      value={r.externalId}
-                      onChange={(e) => edit(r.name, "externalId", e.target.value)}
-                      placeholder="REPLACE_ME"
-                      style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
-                    />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <input
+                        value={r.externalId}
+                        onChange={(e) => edit(r.name, "externalId", e.target.value)}
+                        placeholder="REPLACE_ME"
+                        style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
+                      />
+                      <button
+                        onClick={() => setCreating((c) => (c === r.name ? null : r.name))}
+                        disabled={!canCreate}
+                        title={canCreate ? "Create this secret in Delinea and wire its id" : disabledReason ?? undefined}
+                        style={{ fontSize: 12, alignSelf: "flex-start" }}
+                      >
+                        {creating === r.name ? "Close" : "Create in Delinea…"}
+                      </button>
+                    </div>
                   )}
                 </td>
                 <td>
@@ -206,14 +290,50 @@ export function SecretsPanel({
                   </button>
                 </td>
               </tr>
+              {creating === r.name && cap && !notNeeded && (
+                <tr>
+                  <td colSpan={5} style={{ background: "var(--bg-soft)" }}>
+                    <CreateInDelineaForm
+                      slug={slug}
+                      secretName={r.name}
+                      fieldRequirements={SECRET_FIELD_REQUIREMENTS[r.name] ?? []}
+                      capability={cap}
+                      onCreated={(id) => onCreated(r.name, id)}
+                      onCancel={() => setCreating(null)}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>
       </table>
       <div className="dialog-actions" style={{ justifyContent: "flex-start", marginTop: "0.75rem" }}>
         <button className="primary" onClick={save} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
+        <button
+          onClick={saveAndTest}
+          disabled={!dirty || saving}
+          title="Save, then queue a live connection test for just the systems whose reference changed"
+        >
+          Save & test
+        </button>
         <button onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED).map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
-        {saveMsg && <span className="note danger">{saveMsg}</span>}
+        <button
+          onClick={runSelfCheck}
+          disabled={selfCheck === "checking"}
+          title="Verify the app's own Delinea access for this client: token grant, reading a wired secret, and whether the write account could create secrets in the client's folder"
+        >
+          {selfCheck === "checking" ? "Checking…" : "Check Delinea access"}
+        </button>
+        {selfCheck && selfCheck !== "checking" && (
+          <span style={{ display: "inline-flex", gap: 8 }}>
+            {legBadge("auth", selfCheck.token)}
+            {legBadge("read", selfCheck.read)}
+            {legBadge(`write${selfCheck.folderId ? ` (folder ${selfCheck.folderId})` : ""}`, selfCheck.write)}
+          </span>
+        )}
+        {saveMsg && <span className={saveMsg.startsWith("Saved") ? "note muted" : "note danger"}>{saveMsg}</span>}
         {dirty && !saveMsg && <span className="note muted">Unsaved changes</span>}
       </div>
     </div>

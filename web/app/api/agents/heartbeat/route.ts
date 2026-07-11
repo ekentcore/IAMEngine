@@ -1,12 +1,14 @@
-// POST /api/agents/heartbeat — { agentId, version?, semver? }. Updates lastSeenAt + version (the
-// content-hash build id) + semver (the human release version).
+// POST /api/agents/heartbeat — { agentId, version?, semver?, startedAt?, capabilities? }. Updates
+// lastSeenAt + version (the content-hash build id) + semver (the human release version) + the reported
+// on-prem capabilities (a JSON-array string, e.g. '["active-directory"]', from runner 1.31+).
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { parseCapabilities } from "@/lib/runner/capabilities";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
-  let body: { agentId?: unknown; version?: unknown; semver?: unknown; startedAt?: unknown };
+  let body: { agentId?: unknown; version?: unknown; semver?: unknown; startedAt?: unknown; capabilities?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -16,9 +18,10 @@ export async function POST(request: Request) {
   const version = typeof body.version === "string" ? body.version : null;
   const semver = typeof body.semver === "string" ? body.semver : null;
   const startedAt = typeof body.startedAt === "string" ? body.startedAt : null;
+  const capabilities = parseCapabilities(body.capabilities); // null = not reported (legacy runner)
 
   try {
-    const out = await makeRunnerService(db).heartbeat(body.agentId, version, semver, startedAt);
+    const out = await makeRunnerService(db).heartbeat(body.agentId, version, semver, startedAt, capabilities);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

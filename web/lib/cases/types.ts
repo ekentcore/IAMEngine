@@ -40,6 +40,8 @@ export type CaseListItem = {
   effectiveDate: string | null;
   // Offboard with no future date — the subject says "Immediate" (process now). Shown instead of a date.
   immediate: boolean;
+  // Scheduled auto-resume time (the heartbeat sweep releases the hold then). null when not scheduled.
+  scheduledFor: Date | null;
   // When the case last executed (most recent job start/finish), and which operator last ran it
   // (import/plan, re-run, resume, verify — "user:<email>" stripped to the email). null = never / no auth.
   lastRunAt: Date | null;
@@ -49,6 +51,12 @@ export type CaseListItem = {
   // the actor wasn't a signed-in user (auth off).
   lastActionLabel: string | null;
   lastActionBy: string | null;
+  // Per-case run readiness — can this case's systems actually run? Based on whether the required
+  // Delinea credentials are set for the systems in its plan: "ready" (all set), "partial" (some set),
+  // "blocked" (none set), "none" (no credential-gated systems — e.g. all-manual). readinessMissing
+  // lists the unset secret names for the tooltip.
+  readiness: "ready" | "partial" | "blocked" | "none";
+  readinessMissing: string[];
 };
 
 export type TrashedCaseItem = {

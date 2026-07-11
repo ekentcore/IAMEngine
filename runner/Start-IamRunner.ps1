@@ -70,13 +70,56 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.XMatters/Coretelligent.XMatte
 Import-Module "$PSScriptRoot/modules/Coretelligent.LogicMonitor/Coretelligent.LogicMonitor.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Notify/Coretelligent.Notify.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proofpoint.psd1" -Force
+# Browser-automation bridge (shells out to the Node/Playwright sidecar in runner/browser). Loads
+# unconditionally — Test-CtgBrowserAvailable reports whether Node+Playwright are actually installed,
+# and the app's claim gate withholds browser jobs (e.g. spanning-force-sync) from agents that can't run them.
+Import-Module "$PSScriptRoot/modules/Coretelligent.Browser/Coretelligent.Browser.psd1" -Force
 # (Coretelligent.Secrets is no longer imported: the app now resolves the secret value and pushes it
 # down in the credential response — the runner no longer talks to Delinea itself.)
 # These modules depend on host-specific cmdlets: the AD module needs the on-prem ActiveDirectory
 # module (client-network agent only); Exchange needs ExchangeOnlineManagement. Load each only
 # where its dependency is present so the central cloud runner doesn't fail to import.
-if (Get-Module -ListAvailable ActiveDirectory) {
+#
+# Loading ActiveDirectory on a DC is subtle. It's a Windows PowerShell module, and pwsh 7 (what the
+# runner runs) frequently CANNOT see it via Get-Module -ListAvailable — RSAT installs it off pwsh 7's
+# PSModulePath, so only Windows PowerShell 5.1 enumerates it (verified on 61C-DC01: -ListAvailable blank
+# in pwsh 7, but 5.1 has it and Import-Module ActiveDirectory -UseWindowsPowerShell works). pwsh 7 loads
+# it through the Windows-compat proxy: a background 5.1 session that proxies the AD cmdlets. So try native
+# in-proc first (fastest, when pwsh 7 can see it), then the compat proxy, and only self-heal-install RSAT
+# when it's genuinely absent from BOTH. Whatever loads it, Coretelligent.ActiveDirectory's RequiredModules
+# is then satisfied by the already-loaded 'ActiveDirectory' module (name match — no native re-resolve).
+function Import-CtgActiveDirectory {
+    if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) { return $true }  # already loaded this process
+    if (Get-Module -ListAvailable ActiveDirectory) {
+        try { Import-Module ActiveDirectory -Force -ErrorAction Stop; return $true } catch { }
+    }
+    if ($IsWindows) {
+        # Windows-compat proxy — the path that works on a DC where RSAT is visible only to WinPS 5.1.
+        try { Import-Module ActiveDirectory -UseWindowsPowerShell -WarningAction SilentlyContinue -ErrorAction Stop; return $true } catch { }
+    }
+    return $false
+}
+$adReady = Import-CtgActiveDirectory
+if (-not $adReady -and $IsWindows) {
+    # Not loadable natively OR via the compat proxy -> RSAT is genuinely absent. Self-heal: add it ONCE
+    # (best-effort; needs elevation + Windows Update), then retry the load. Quiet where it doesn't apply.
+    try {
+        $adCap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($adCap -and $adCap.State -ne 'Installed') {
+            Write-Host "ActiveDirectory module missing — installing RSAT capability ($($adCap.Name))…" -ForegroundColor Yellow
+            Add-WindowsCapability -Online -Name $adCap.Name -ErrorAction Stop | Out-Null
+        } elseif (-not $adCap -and (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue)) {
+            # A server with the ServerManager module (e.g. a DC) exposes RSAT-AD-PowerShell as a feature.
+            Write-Host "ActiveDirectory module missing — installing RSAT-AD-PowerShell feature…" -ForegroundColor Yellow
+            Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null
+        }
+        $adReady = Import-CtgActiveDirectory
+    } catch { Write-Warning "could not auto-install the ActiveDirectory RSAT module (install RSAT-AD-PowerShell manually + restart the runner): $($_.Exception.Message)" }
+}
+if ($adReady) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.ActiveDirectory/Coretelligent.ActiveDirectory.psd1" -Force
+} else {
+    Write-Warning "ActiveDirectory module could not be loaded on this host — AD jobs will be withheld (this agent reports no 'active-directory' capability)."
 }
 $exoAvail = Get-Module -ListAvailable ExchangeOnlineManagement
 if ($exoAvail) {
@@ -631,6 +674,22 @@ $DISPATCH = @{
         Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
         Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action -AdConnection (New-CtgAdConnection $creds) }
     }
+    # Write the cloud-assigned email back into AD's `mail` attribute (onboard only). Runs on the client
+    # agent via the ActiveDirectory module; the app injects `writebackEmail` into the payload at dispatch.
+    'ad-email-writeback' = @{
+        Onboard  = { param($job, $creds) Invoke-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Validate = { param($job, $creds) Confirm-CtgADEmailWriteback -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
+    # Hybrid identity-link check (onboard only, DETECT-ONLY): does the on-prem object's source anchor
+    # match the Entra immutableId, or would it duplicate? The app injects the Entra object's anchor data.
+    'ad-consistency-check' = @{
+        Onboard = { param($job, $creds) Invoke-CtgADConsistencyCheck -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
+    # Operator-confirmed hard-match: write mS-DS-ConsistencyGuid = the Entra immutableId (app-injected)
+    # so AAD Connect links the objects. Dispatched on demand by the "Link" action, not part of a plan.
+    'ad-hard-match' = @{
+        Onboard = { param($job, $creds) Invoke-CtgADHardMatch -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+    }
     'mimecast' = @{
         # Mimecast API 2.0: OAuth2 client-credentials. Template-tolerant — the client id can live in
         # Username OR a ClientID-style field ("Automation - API" template), the client secret in
@@ -860,6 +919,34 @@ $DISPATCH = @{
 # entra is the Entra-ID slice of the M365 module — same executor + read-backs (catalog
 # moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
 $DISPATCH['entra'] = $DISPATCH['m365']
+
+# Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
+# never planned. The app generates the value, injects it as config.newPassword at claim, and reveals
+# it once operator-side — the executors never return it. One executor per system serves both lanes
+# (the wire `action` is the CASE's, and a reset can ride either kind of case); Connect lanes are
+# aliased from the owning system so a connection fix reaches the reset automatically.
+$DISPATCH['ad-password-reset'] = @{
+    Onboard = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+}
+$DISPATCH['m365-password-reset'] = @{
+    Connect = $DISPATCH['m365'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
+}
+$DISPATCH['google-password-reset'] = @{
+    Connect = $DISPATCH['google-workspace'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
+}
+foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-reset') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
+
+# Ad-hoc "force Spanning sync" (browser automation): dispatched on demand from a case's Spanning step
+# to make Spanning discover a just-created M365 user NOW (the Spanning API has no sync endpoint). Rides
+# the Spanning line's brokered secret; no Connect lane (the browser flow does its own portal login).
+# One executor serves both lanes (a force-sync can ride an onboard or an offboard case). Withheld from
+# agents that don't report the 'browser' capability (see $script:RunnerCapabilities below).
+$DISPATCH['spanning-force-sync'] = @{
+    Onboard = { param($job, $creds) Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] }
+}
+$DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
 
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
@@ -1173,8 +1260,13 @@ function Protect-CtgSecretsInText {
     # app — Job.error is persisted and shown in the run report + ServiceNow work note + audit, and a
     # failing API call can echo a key/token/password in its exception. Only values of secret-named
     # fields are scrubbed, so usernames/servers stay visible for diagnosis.
-    param([string]$Text, [hashtable]$Creds)
+    # -ExtraValues: additional plaintexts to scrub that aren't brokered fields — e.g. the app-injected
+    # config.newPassword/initialPassword of a password-reset/onboard job echoed by a provider error.
+    param([string]$Text, [hashtable]$Creds, [string[]]$ExtraValues = @())
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    foreach ($v in $ExtraValues) {
+        if ($v -and $v.Length -ge 4 -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+    }
     if ($Creds) {
         foreach ($c in $Creds.Values) {
             if (-not $c -or -not $c.Fields) { continue }
@@ -1296,20 +1388,34 @@ function Get-ConnTestCredential {
 # Which Graph permissions the M365 onboarder actually exercises, each satisfied by ANY of the listed
 # scopes. Compared against the connection's GRANTED scopes (Get-MgContext) so the test can name the
 # exact permission someone forgot to grant + admin-consent, instead of a bare "Insufficient privileges".
+# One declaration, two consumers: the human gap strings AND the structured rights rows the probe posts.
+$script:GRAPH_REQUIRED_CAPS = @(
+    @{ need = 'create / update users + assign licenses'; anyOf = @('User.ReadWrite.All', 'Directory.ReadWrite.All') }
+    @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
+    @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
+)
 function Get-CtgGraphScopeGaps {
     param([string[]]$Granted)
-    $req = @(
-        @{ need = 'create / update users + assign licenses'; anyOf = @('User.ReadWrite.All', 'Directory.ReadWrite.All') }
-        @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
-        @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
-    )
     $gaps = @()
-    foreach ($r in $req) {
+    foreach ($r in $script:GRAPH_REQUIRED_CAPS) {
         $have = $false
         foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $have = $true; break } }
         if (-not $have) { $gaps += "$($r.need) — grant one of: $($r.anyOf -join ', ')" }
     }
     $gaps
+}
+# The same requirement map as structured per-operation rows for the conn-test result:
+# @{ op; ok ($true/$false/$null = unverifiable); detail }.
+function Get-CtgGraphRightsRows {
+    param([string[]]$Granted)
+    $rows = @()
+    foreach ($r in $script:GRAPH_REQUIRED_CAPS) {
+        $match = $null
+        foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $match = $s; break } }
+        $rows += if ($match) { @{ op = [string]$r.need; ok = $true; detail = "granted via $match" } }
+                 else        { @{ op = [string]$r.need; ok = $false; detail = "grant one of: $($r.anyOf -join ', ')" } }
+    }
+    $rows
 }
 
 # The app-only blind spot: Get-MgContext.Scopes is EMPTY for client-credentials auth (app perms ride
@@ -1375,8 +1481,12 @@ $CONNTEST_PROBE = @{
             if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes); $how = 'delegated scopes' }
         }
         if ($granted.Count -eq 0 -and -not $real.ok) {
+            $script:ConnTestRights = @(@{ op = 'verify Graph permissions'; ok = $null; detail = [string]$real.reason })
             return "$base · connected, but couldn't verify permissions: $($real.reason)"
         }
+        $script:ConnTestRights = @(Get-CtgGraphRightsRows $granted)
+        # Warn before the app's own secret/cert expires (best-effort; needs Application.Read.All).
+        try { $exp = Get-CtgAppCredentialExpiry; if ($exp -and $exp.expiresAt) { $script:ConnTestCredExpiresAt = [string]$exp.expiresAt } } catch { }
         $gaps = Get-CtgGraphScopeGaps $granted
         if ($gaps.Count) {
             throw "$base · consented ${how}: [$(@($granted) -join ', ')] — but MISSING: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent IN THIS TENANT, then re-test."
@@ -1387,16 +1497,20 @@ $CONNTEST_PROBE = @{
     'mimecast'         = { param($job, $creds)
         # Probe the actual operations onboarding needs and report which the API 2.0 app is permitted
         # to do — so "Test connections" shows the app's real permission map (Mimecast has no API to
-        # list an app's granted permissions; this infers them from what works).
-        $report = @()
+        # list an app's granted permissions; this infers them from what works). Each op is also
+        # posted as a structured rights row.
+        $ops = [System.Collections.Generic.List[hashtable]]::new()
         $try = {
             param($label, $path)
-            try { Invoke-CtgMimecastApi -Path $path | Out-Null; "$($label): allowed" }
-            catch { if ([string]$_.Exception.Message -match 'forbidden|not .{0,6}permitted|denied|unauthoriz|\b403\b') { "$($label): FORBIDDEN" } else { "$($label): error" } }
+            try { Invoke-CtgMimecastApi -Path $path | Out-Null; @{ op = $label; ok = $true; detail = 'allowed' } }
+            catch {
+                if ([string]$_.Exception.Message -match 'forbidden|not .{0,6}permitted|denied|unauthoriz|\b403\b') { @{ op = $label; ok = $false; detail = 'FORBIDDEN — grant it on the API 2.0 app' } }
+                else { @{ op = $label; ok = $null; detail = "error: $(([string]$_.Exception.Message).Substring(0, [Math]::Min(120, ([string]$_.Exception.Message).Length)))" } }
+            }
         }
-        $report += & $try 'account read'           '/api/account/get-account'
-        $report += & $try 'directory/domains read' '/api/domain/get-internal-domain'
-        $report += & $try 'directory-sync read'    '/api/directory/get-connection'
+        $ops.Add((& $try 'account read'           '/api/account/get-account'))
+        $ops.Add((& $try 'directory/domains read' '/api/domain/get-internal-domain'))
+        $ops.Add((& $try 'directory-sync read'    '/api/directory/get-connection'))
         # USER read is what onboarding actually needs (get-profile). Probe a benign address in an
         # internal domain: FORBIDDEN = the missing permission; not-found = the permission IS granted.
         $dom = $null
@@ -1405,24 +1519,103 @@ $CONNTEST_PROBE = @{
             try {
                 $resp = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = "postmaster@$dom" } -AllowFail
                 $codes = @(@(Get-CtgProp $resp 'fail') | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { [string](Get-CtgProp $_ 'code') } })
-                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $report += 'user read (get-profile): FORBIDDEN — THIS is the onboarding gap' }
-                else { $report += 'user read (get-profile): allowed' }
-            } catch { $report += 'user read (get-profile): error' }
+                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $ops.Add(@{ op = 'user read (get-profile)'; ok = $false; detail = 'FORBIDDEN — THIS is the onboarding gap' }) }
+                else { $ops.Add(@{ op = 'user read (get-profile)'; ok = $true; detail = 'allowed' }) }
+            } catch { $ops.Add(@{ op = 'user read (get-profile)'; ok = $null; detail = 'error probing' }) }
         }
+        $script:ConnTestRights = @($ops)
+        $report = @($ops | ForEach-Object { "$($_.op): $(if ($_.ok -eq $true) { 'allowed' } elseif ($_.ok -eq $false) { 'FORBIDDEN' } else { 'error' })" })
         $detail = "app permissions -> $($report -join ' | ')"
         # Fail the test (visibly red) when a permission onboarding needs is missing.
-        if (($report -join ' ') -match 'FORBIDDEN') { throw $detail }
+        if (@($ops | Where-Object { $_.ok -eq $false }).Count) { throw $detail }
         $detail
     }
-    'active-directory' = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "domain: $($d.DNSRoot)" }
+    'active-directory' = { param($job, $creds)
+        $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop
+        # Rights: can the service account CREATE USERS in the OUs this client's config targets?
+        # Evaluated from the OU ACLs (read-only) via the pure helper in Coretelligent.ActiveDirectory;
+        # anything unreadable degrades to "verify manually", never a false failure.
+        $ous = @()
+        foreach ($pair in @(@('onboard', 'ou'), @('offboard', 'moveToOu'), @('offboard', 'disabledUsersOu'))) {
+            $lane = Get-CtgProp $job.config $pair[0]
+            $v = if ($lane) { [string](Get-CtgProp $lane $pair[1]) } else { $null }
+            if ($v -and $v -match '(?i)dc=') { $ous += $v }
+        }
+        $ous = @($ous | Select-Object -Unique)
+        if ($ous.Count) {
+            $sids = Get-CtgAdAccountSids -AdConnection $c -Creds $creds
+            $rows = @()
+            foreach ($ou in $ous) {
+                $rows += Test-CtgAdOuCreateUserRight -AdConnection $c -OuDn $ou -Sids $sids
+            }
+            $script:ConnTestRights = @($rows)
+            $denied = @($rows | Where-Object { $_.ok -eq $false })
+            if ($denied.Count) { throw "domain: $($d.DNSRoot) — the account cannot create users in: $(@($denied | ForEach-Object { $_.op }) -join '; ')" }
+        }
+        else {
+            $script:ConnTestRights = @(@{ op = 'create users in target OU'; ok = $null; detail = 'no OU DN in this client''s config — set onboard.ou to verify the ACL' })
+        }
+        "domain: $($d.DNSRoot)"
+    }
     'directory-sync'   = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
 $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's Entra slice — same Graph perms
 # Cloud REST systems: after Connect (above), do one read so the test validates the credential +
 # read scope against the live API (not just that Connect assembled an auth header).
-$CONNTEST_PROBE['zoom']        = { param($job, $creds) Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null; 'zoom: users readable' }
-$CONNTEST_PROBE['sentinelone'] = { param($job, $creds) Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null; 'sentinelone: agents readable' }
-$CONNTEST_PROBE['xmatters']    = { param($job, $creds) Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null; 'xmatters: people readable' }
+$CONNTEST_PROBE['zoom']        = { param($job, $creds)
+    Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null
+    # The S2S token response names the app's granted scopes (Connect captures them) — compare
+    # against what the on/offboarders actually call: user reads, user writes (create/update/
+    # deactivate), and — only when the client's config assigns phone — phone writes.
+    $scopes = @(Get-CtgZoomGrantedScopes)
+    if ($scopes.Count -eq 0) {
+        $script:ConnTestRights = @(@{ op = 'verify Zoom scopes'; ok = $null; detail = 'token response carried no scope list — verify the S2S app scopes in the Zoom marketplace' })
+        return 'zoom: users readable'
+    }
+    $capOf = { param($label, $pattern, $hint)
+        if (@($scopes | Where-Object { $_ -match $pattern }).Count) { @{ op = $label; ok = $true; detail = "granted ($(@($scopes | Where-Object { $_ -match $pattern }) -join ', '))" } }
+        else { @{ op = $label; ok = $false; detail = $hint } }
+    }
+    $rows = @(
+        (& $capOf 'read users'                  '^user:read'   'grant user:read:admin (or the granular read scopes) on the S2S app')
+        (& $capOf 'create / update / deactivate users' '^user:write' 'grant user:write:admin (or the granular write scopes) on the S2S app')
+    )
+    $wantsPhone = $false
+    foreach ($lane in @('onboard', 'offboard')) { $c = Get-CtgProp $job.config $lane; if ($c -and (Get-CtgProp $c 'phone')) { $wantsPhone = $true } }
+    if ($wantsPhone) { $rows += (& $capOf 'assign phone' '^phone:write' 'grant phone:write:admin — this client''s config assigns Zoom Phone') }
+    $script:ConnTestRights = @($rows)
+    $missing = @($rows | Where-Object { $_.ok -eq $false })
+    if ($missing.Count) { throw "zoom: users readable, but the S2S app is missing scopes -> $(@($missing | ForEach-Object { $_.op }) -join ', '). $(@($missing | ForEach-Object { $_.detail }) -join ' | ')" }
+    "zoom: users readable — scopes cover $(@($rows | ForEach-Object { $_.op }) -join ', ')"
+}
+$CONNTEST_PROBE['sentinelone'] = { param($job, $creds)
+    Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null
+    # Offboarding needs more than a read: try to name the API token's role. S1 has no clean
+    # "what can I do" endpoint, so an unreadable role is reported as unverifiable, not a failure.
+    $role = $null
+    try { $me = Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/user'; $role = [string](Get-CtgProp (Get-CtgProp $me 'data') 'scopeRoles') } catch { }
+    $roleDetail = if ($role) { "API user roles: $role — confirm they allow agent actions" } else { 'no role introspection API — verify the token''s role allows agent actions' }
+    $script:ConnTestRights = @(@{ op = 'agent actions (offboard disconnect/shutdown)'; ok = $null; detail = $roleDetail })
+    'sentinelone: agents readable'
+}
+$CONNTEST_PROBE['xmatters']    = { param($job, $creds)
+    Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null
+    $script:ConnTestRights = @(@{ op = 'create / delete people'; ok = $null; detail = 'xMatters has no permission introspection — verify the API user has the "REST Web Service User" role' })
+    'xmatters: people readable'
+}
+# Google Workspace: domain-wide-delegation token minting is all-or-nothing — the exchange itself
+# fails (unauthorized_client) if ANY requested scope isn't authorized for the service account's
+# client ID. So a successful Connect PROVES every requested scope; one live read then proves the
+# impersonated admin works. That turns the token grant into a real per-scope rights check.
+$CONNTEST_PROBE['google-workspace'] = { param($job, $creds)
+    $resp = Invoke-CtgGoogleApi -Method GET -Path "/users?customer=$script:GoogleCustomer&maxResults=1"
+    $scopes = @(Get-CtgGoogleSessionScopes)
+    $script:ConnTestRights = @($scopes | ForEach-Object {
+        @{ op = "scope $((($_ -split '/')[-1]))"; ok = $true; detail = 'authorized via domain-wide delegation (token minted with this scope)' }
+    })
+    if ($scopes.Count -eq 0) { $script:ConnTestRights = @(@{ op = 'verify delegation scopes'; ok = $null; detail = 'session did not record its scopes (token passed directly?)' }) }
+    "google: users readable (delegation scopes verified: $($scopes.Count))"
+}
 # Spanning has NO Connect in $DISPATCH (Connect-CtgSpanning is a pure local assignment), so the probe
 # reads the brokered secret itself (Use-CtgSpanningSecret) then does one live LIST read. The /users
 # LIST route is the VERIFIED one (the /users/{email} route 400s on some tenants), so listing a single
@@ -1431,6 +1624,20 @@ $CONNTEST_PROBE['spanning']    = { param($job, $creds)
     Use-CtgSpanningSecret $job $creds
     $resp  = Invoke-CtgSpanningApi -Method GET -Path '/users?size=1'
     $users = Get-CtgProp $resp 'users'; if ($null -eq $users) { $users = Get-CtgProp $resp 'items' }; if ($null -eq $users) { $users = $resp }
+    # Rights: license assign/unassign is the only WRITE onboarding does. Probe authz without
+    # touching a user — an EMPTY userPrincipalNames list either 400s (validation ran => the request
+    # passed authn/authz) or no-ops; a 401/403 means the token can't assign. NEVER send a real UPN.
+    $assign = try {
+        Invoke-CtgSpanningApi -Method POST -Path '/users/assign' -Body @{ userPrincipalNames = @(); licenseType = 'STANDARD' } | Out-Null
+        @{ op = 'license assign/unassign'; ok = $true; detail = 'authorized (empty-list probe accepted)' }
+    } catch {
+        $m = [string]$_.Exception.Message
+        if ($m -match 'HTTP 400')            { @{ op = 'license assign/unassign'; ok = $true;  detail = 'authorized (empty-list probe reached validation)' } }
+        elseif ($m -match 'HTTP 40[13]')     { @{ op = 'license assign/unassign'; ok = $false; detail = 'token cannot assign licenses (401/403) — generate the API token as a Spanning admin' } }
+        else                                 { @{ op = 'license assign/unassign'; ok = $null;  detail = 'cannot verify without licensing a user — verify manually' } }
+    }
+    $script:ConnTestRights = @(@{ op = 'read users'; ok = $true; detail = 'list read works' }, $assign)
+    if ($assign.ok -eq $false) { throw "spanning: users readable, but $($assign.detail)" }
     "spanning: users readable (sample returned $(@($users).Count))"
 }
 # Proofpoint Essentials: read the org's Azure sync settings (also proves the X-User/X-Password admin
@@ -1441,6 +1648,7 @@ $CONNTEST_PROBE['proofpoint']  = { param($job, $creds)
     $az = Get-CtgProofpointAzureSync
     if ($null -eq $az) { return 'proofpoint: connected (admin auth OK) — but Azure/Entra sync is not configured for this org' }
     $freq = Get-CtgProp $az 'sync_frequency'; $last = Get-CtgProp $az 'last_successful_sync'
+    $script:ConnTestRights = @(@{ op = 'user create / deactivate'; ok = $null; detail = 'Proofpoint has no permission introspection — verify the API account''s admin role allows user management' })
     "proofpoint: connected — Azure sync $(if ($freq -and "$freq" -ne '0') { "on (every ${freq}h)" } else { 'OFF' })$(if ($last) { ", last sync $last" })"
 }
 # 1Password: only the api method has a credential to test — prove the admin `op` sign-in works + can
@@ -1451,6 +1659,7 @@ $CONNTEST_PROBE['1password']   = { param($job, $creds)
     Use-Ctg1PasswordSecret -Job $job -Creds $creds
     $who = Invoke-Ctg1PasswordCli -OpArgs @('whoami') -AllowFail
     Invoke-Ctg1PasswordCli -OpArgs @('user', 'list') -AllowFail | Out-Null
+    $script:ConnTestRights = @(@{ op = 'provision / suspend users'; ok = $null; detail = '1Password has no permission introspection — verify the account is in the Provision Managers group (or is an owner/admin)' })
     "1password: signed in + users readable$(if ($who) { " (as $([string](Get-CtgProp $who 'email')))" })"
 }
 
@@ -1468,6 +1677,10 @@ function Invoke-CtgConnectionTests {
         $accessOk = $true; $accessDetail = ''
         $apiOk = $true; $apiDetail = ''
         $creds = @{}
+        # Probes may fill this with per-operation rights rows (@{ op; ok; detail }); it survives a
+        # probe THROW so a definite permission gap still reports which ops passed/failed.
+        $script:ConnTestRights = $null
+        $script:ConnTestCredExpiresAt = $null   # a probe may set the credential's own expiry (ISO)
         # Pass the system's config so a Connect that reads it (e.g. exchange's onPremExchangeUri) works
         # in the test. It's the whole ClientSystem.config (onboard/offboard sub-objects), not a lane.
         $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
@@ -1498,7 +1711,17 @@ function Invoke-CtgConnectionTests {
                 if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
             }
         }
-        try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" } } catch { }
+        $body = @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" }
+        if ($script:ConnTestRights) {
+            # Scrub each row's detail like the top-level details — never a secret in a rights row.
+            $body.rights = @($script:ConnTestRights | ForEach-Object {
+                @{ op = [string]$_.op; ok = $_.ok; detail = Protect-CtgSecretsInText ([string]$_.detail) $creds }
+            })
+        }
+        if ($script:ConnTestCredExpiresAt) { $body.credExpiresAt = [string]$script:ConnTestCredExpiresAt }
+        $script:ConnTestRights = $null
+        $script:ConnTestCredExpiresAt = $null
+        try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" $body } catch { }
     }
 }
 
@@ -1554,6 +1777,41 @@ $script:RunnerSemver = try { (Get-Content -LiteralPath (Join-Path $PSScriptRoot 
 # UPTIME (now - bootAt). Re-exec on update/restart is a new process, so uptime correctly resets then.
 $script:RunnerStartedAt = (Get-Date).ToUniversalTime().ToString("o")
 
+# On-prem CAPABILITY probe: which ALWAYS_ON_PREM system keys THIS host can actually execute — i.e. the
+# host-specific Coretelligent entry function is loaded (its dependency module imported above). Reported
+# each heartbeat so the app WITHHOLDS on-prem jobs from agents that can't run them (they stay pending
+# with a clear reason) instead of dispatching a step that hard-fails with "module not loaded". Extend
+# this map when a new ALWAYS_ON_PREM system is added. (directory-sync's module loads unconditionally and
+# remotes to the sync host, so it's ~always capable; active-directory needs the ActiveDirectory module.)
+$script:OnPremCapabilityProbe = [ordered]@{
+    'active-directory' = 'Invoke-CtgADOnboarding'
+    'directory-sync'   = 'Invoke-CtgDirectorySync'
+}
+$script:RunnerCapabilities = @(
+    $script:OnPremCapabilityProbe.Keys | Where-Object { Get-Command $script:OnPremCapabilityProbe[$_] -ErrorAction SilentlyContinue }
+)
+# Self-heal the browser sidecar ONCE at startup (mirrors the RSAT block above). Capabilities are
+# computed here, once per process, and the claim gate WITHHOLDS browser jobs from agents not reporting
+# 'browser' — so a lazy first-use install could never happen (the agent would never receive the job).
+# Installing here, before the probe below, lets the agent advertise 'browser' from its first heartbeat.
+# Gated on node being present (can't install Playwright without it) and the sidecar not already ready;
+# opt out with IAM_RUNNER_NO_BROWSER_INSTALL=1. Best-effort — a failure just withholds browser jobs.
+if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -ne '1' -and -not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium (one-time)…" -ForegroundColor Yellow
+    try { [void](Install-CtgBrowser) } catch { Write-Warning "browser sidecar install failed: $($_.Exception.Message) — force-sync jobs will be withheld until it's installed" }
+}
+# Browser automation is a CROSS-CUTTING capability (not an on-prem system): report 'browser' when the
+# Node/Playwright sidecar is installed on this host, so the app's claim gate hands browser jobs (e.g.
+# spanning-force-sync) only to agents that can actually run them. The server ignores 'browser' in the
+# on-prem exclusion (it's not in ALWAYS_ON_PREM_SYSTEMS) and keys the separate browser gate off it.
+if (Test-CtgBrowserAvailable) { $script:RunnerCapabilities += 'browser' }
+# Serialize as a JSON-array STRING so 0- and 1-element lists stay arrays over the wire — a bare
+# @('active-directory') would ConvertTo-Json to a scalar and @() would pipe nothing (empty output),
+# making the server unable to tell "reported, none" (withhold all on-prem) from "legacy runner, not
+# reported" (allow, old behavior). Empty is forced to the literal '[]' (an empty pipe emits nothing).
+$script:RunnerCapabilitiesJson = if ($script:RunnerCapabilities.Count -eq 0) { '[]' } else { ($script:RunnerCapabilities | ConvertTo-Json -Compress -AsArray) }
+Write-Host "on-prem capabilities: $script:RunnerCapabilitiesJson" -ForegroundColor DarkGray
+
 # Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
 # at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
 # PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
@@ -1598,7 +1856,7 @@ while ($true) {
         }
     } catch { }
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
@@ -1688,10 +1946,16 @@ while ($true) {
                     try { $outcome = Invoke-JobWithValidation -Job $job -Handler $handler -Fn $fn -Creds $creds -DryRun $dryRun; break }
                     catch {
                         $missing = Get-CtgMissingCommandName $_
-                        # A missing '*-Ctg*' function is one of OUR bundled module functions — it means
-                        # the Coretelligent.* module didn't load on this host (a missing host dependency),
-                        # NOT a gallery module to install. Surface a clear, actionable error instead.
+                        # A missing '*-Ctg*' function is one of OUR bundled module functions, NOT a
+                        # gallery module to install. Two causes, distinguished so the operator isn't
+                        # sent chasing RSAT on a host where the module loaded fine (INC0858516):
+                        # loaded-but-unexported = the module's .psd1 FunctionsToExport filters out
+                        # whatever Export-ModuleMember says; not loaded = missing host dependency.
                         if ($missing -like '*-Ctg*') {
+                            $owner = Get-Module Coretelligent.* | Where-Object { $_.ExportedFunctions.Keys -notcontains $missing -and (Get-Content -Raw "$($_.ModuleBase)/$($_.Name).psm1" -ErrorAction SilentlyContinue) -match "function\s+$([regex]::Escape($missing))\b" } | Select-Object -First 1
+                            if ($owner) {
+                                throw "'$missing' exists in the $($owner.Name) module (loaded on this host) but is NOT exported — its .psd1 FunctionsToExport is missing it (manifest drift). Fix the manifest and update the runner; nothing needs installing on this host."
+                            }
                             throw "the Coretelligent module providing '$missing' isn't loaded on this host — it needs a host-specific dependency (the ActiveDirectory/RSAT module for AD, ExchangeOnlineManagement for Exchange, the ADSync module for directory-sync). This step must run on the client-network agent that has it, not the central/cloud runner."
                         }
                         if ($try -eq 0 -and $missing) {
@@ -1742,7 +2006,8 @@ while ($true) {
                 # outer like "Authentication failed, see inner exception" usually wraps the actual
                 # logon/LDAP error (e.g. "The user name or password is incorrect", "account locked").
                 $chain = [System.Collections.Generic.List[string]]::new()
-                $ex = $_.Exception
+                $exObj = $_.Exception  # keep the top exception object for provider-specific enrichment below
+                $ex = $exObj
                 while ($ex) { if ($ex.Message) { [void]$chain.Add($ex.Message) }; $ex = $ex.InnerException }
                 $msg = (($chain | Select-Object -Unique) -join ' <- ')
                 if (-not $msg) { $msg = $_.Exception.GetType().Name }
@@ -1780,11 +2045,45 @@ while ($true) {
                     } catch { }
                     $msg += " — $hint"
                 }
+                # An AD failure ("unwilling to process the request" = LDAP 53, "access is denied", a
+                # referral, a constraint violation) names no DC and no reason. Append the ACTIONABLE
+                # context so the operator sees the cause without hand-running DC tests: which DC the
+                # connection targeted, whether that DC is WRITABLE (a read-only DC / RODC refuses EVERY
+                # write — it returns exactly this error), the identity used, and any richer server-side AD
+                # error message. Best-effort + read-only; never let the enrichment mask the real failure.
+                if (($job.systemKey -in @('active-directory', 'directory-sync')) -and
+                    ($msg -match 'unwilling to process|will not perform|[Aa]ccess is denied|referral was returned|constraint violation|not a valid')) {
+                    try {
+                        $bits = [System.Collections.Generic.List[string]]::new()
+                        $adc = New-CtgAdConnection $creds
+                        $srv = if ($adc.Server) { [string]$adc.Server } else { $env:COMPUTERNAME }
+                        [void]$bits.Add("target DC: $srv")
+                        $dc = Get-ADDomainController -Identity $srv -ErrorAction SilentlyContinue
+                        if ($dc) {
+                            [void]$bits.Add("writable: $(-not [bool]$dc.IsReadOnly)")
+                            if ($dc.IsReadOnly) { [void]$bits.Add("*** READ-ONLY DC (RODC) — it refuses ALL writes; point the ad-dc secret's Server/DomainController at a WRITABLE DC ***") }
+                        }
+                        [void]$bits.Add("as: $(if ($adc.Credential) { $adc.Credential.UserName } else { "$env:USERDOMAIN\$env:USERNAME (agent SYSTEM identity)" })")
+                        # ADException carries a richer server reason than .Message (survives remoting as a note property).
+                        $adEx = $exObj
+                        while ($adEx) {
+                            foreach ($p in 'ServerErrorMessage', 'ExtendedErrorMessage') {
+                                $pv = $adEx.PSObject.Properties[$p]
+                                if ($pv -and $pv.Value) { [void]$bits.Add("${p}: $($pv.Value)") }
+                            }
+                            $adEx = $adEx.InnerException
+                        }
+                        if ($msg -match 'unwilling to process|will not perform') {
+                            [void]$bits.Add("LDAP 53 usually = read-only/RODC target, RID pool exhausted, or the account can't create the object in the target OU — verify the target DC is writable and the ad-dc account can create in that OU")
+                        }
+                        $msg += " — [$($bits -join ' | ')]"
+                    } catch { }
+                }
                 # Name the phase that failed ("while connecting to on-prem Exchange (…): Unauthorized")
                 # so the operator sees WHAT broke, not just the bare provider message.
                 $where = if ($script:Phase) { " while $($script:Phase)" } else { "" }
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
-                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
+                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds -ExtraValues @([string](Get-CtgProp $job.config 'newPassword'), [string](Get-CtgProp $job.config 'initialPassword'))
                 Write-Warning "job $($job.id) failed: $err"
                 Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
                 $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }

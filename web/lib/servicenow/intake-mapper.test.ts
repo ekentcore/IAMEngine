@@ -176,3 +176,26 @@ test("deriveIdentity yields no fallbacks when only one pattern is set", () => {
   );
   assert.deepEqual(p.userPrincipalNameFallbacks, []);
 });
+
+test("offboard forwardEmailTo: readable label + sys_id in parens (not a bare sys_id)", () => {
+  const id = "65230413c30c4f50f8ee242bb0013104";
+  // email resolved from customer_contact -> "email (sys_id)"
+  const withEmail = normalizeIntake(rec({
+    number: "UM0029643", subcategory: "30100",
+    u_forward_email_to: [id, "Andrew Cohen"],
+    "__email:u_forward_email_to": "acohen@x.com",
+  })).payload as Record<string, unknown>;
+  assert.equal(withEmail.forwardEmailTo, `acohen@x.com (${id})`);
+
+  // no email resolved but a real display name -> "name (sys_id)"
+  const withName = normalizeIntake(rec({
+    number: "UM2", subcategory: "30100", u_forward_email_to: ["sysid123", "Andrew Cohen"],
+  })).payload as Record<string, unknown>;
+  assert.equal(withName.forwardEmailTo, "Andrew Cohen (sysid123)");
+
+  // display_value IS the sys_id (unresolved reference), no email -> the bare sys_id, no "(id)" dupe
+  const bare = normalizeIntake(rec({
+    number: "UM3", subcategory: "30100", u_forward_email_to: "sysidonly",
+  })).payload as Record<string, unknown>;
+  assert.equal(bare.forwardEmailTo, "sysidonly");
+});

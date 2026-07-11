@@ -23,17 +23,43 @@ function Get-CtgProp {
 # Returns $true if Get-ADSyncScheduler is callable afterward. Throws a clear, host-pointed error at
 # the call sites when it can't be loaded (i.e. Azure AD Connect isn't installed on this host).
 function Initialize-CtgADSync {
-    if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
-    $attempts = @(
-        { Import-Module ADSync -ErrorAction Stop },
-        { Import-Module ADSync -UseWindowsPowerShell -ErrorAction Stop },
-        { Import-Module "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1" -ErrorAction Stop }
-    )
-    foreach ($a in $attempts) {
-        try { & $a } catch { }
-        if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }
-    }
+    # DETECTION ONLY — is Azure AD Connect (ADSync) installed on THIS host? Never LOAD it here. Loading
+    # the ADSync module in pwsh 7 forces a Windows-PowerShell-compat session (the module is Desktop-only),
+    # whose loopback WinRM init throws "Could not load type 'System.Web...'" on .NET Core — and that error
+    # escapes and surfaces as the step failure. The actual load+run happens in Invoke-CtgAdSyncLocal, in
+    # Windows PowerShell 5.1 (.NET Framework), where ADSync loads natively. Returns $true when ADSync is
+    # local (already loaded, on the module path, or at the standard install path); $false -> remote host.
+    if (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue) { return $true }   # already loaded (or a test stub)
+    if (Get-Module -ListAvailable -Name ADSync -ErrorAction SilentlyContinue) { return $true }
+    if (Test-Path -LiteralPath "$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1" -ErrorAction SilentlyContinue) { return $true }
     return $false
+}
+
+# Run a LOCAL ADSync scriptblock (the sync trigger, or the scheduler read) on THIS host — the Entra
+# Connect server. Try in-process first (works in tests, and where pwsh 7 can load ADSync); on the .NET
+# Core gap — pwsh 7 can't load the Desktop-only ADSync module without a WinPS-compat session, whose
+# loopback WinRM throws "Could not load type 'System.Web...'" — retry the SAME scriptblock in Windows
+# PowerShell 5.1 (.NET Framework), which loads ADSync natively. Local counterpart of Invoke-CtgAdSyncRemote.
+function Invoke-CtgAdSyncLocal {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    try { return & $ScriptBlock }
+    catch {
+        $err = $_
+        $full = "$err"; $e = $err.Exception; while ($e) { if ($e.Message) { $full += " | $($e.Message)" }; $e = $e.InnerException }
+        $winPS = $null
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows) {
+            $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (Test-Path $candidate) { $winPS = $candidate }
+        }
+        if (-not $winPS) { throw "directory-sync local ADSync run failed and no Windows PowerShell 5.1 fallback is available (edition=$($PSVersionTable.PSEdition), windows=$IsWindows): $full" }
+        $inner = "`$ErrorActionPreference='Stop'; `$r = & { $($ScriptBlock.ToString()) }; `$r | ConvertTo-Json -Compress -Depth 6"
+        $out = & $winPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $inner 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "directory-sync ran ADSync locally under Windows PowerShell 5.1 (pwsh 7 can't load the Desktop-only ADSync module: $full) and 5.1 ALSO failed: $out" }
+        $line = (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Last 1)
+        if (-not $line) { return $null }
+        try { return (ConvertFrom-Json $line) } catch { return $line }
+    }
 }
 
 # Auto-discover the Entra Connect server from AD — no hard-coding. Azure AD Connect creates a sync
@@ -81,6 +107,58 @@ function Resolve-CtgADSyncTarget {
     return @{ Remote = $true; Host = $h; Discovered = $discovered }
 }
 
+# WinRM remoting with an explicit credential FAILS under pwsh 7 (.NET Core): the NTLM/Negotiate auth
+# path reaches for 'System.Web.Util.Utf16StringValidator', and System.Web isn't in .NET Core -> "Could
+# not load type ... System.Web". Windows PowerShell 5.1 (.NET Framework) HAS that assembly. So: try
+# in-process first (works under 5.1, or under pwsh 7 where Kerberos/config avoids that path), and on
+# THAT specific assembly-load failure retry the SAME Invoke-Command under Windows PowerShell 5.1. The
+# credential is handed to the 5.1 child via a DPAPI-protected CLIXML file — encrypted for the current
+# account (the runner's SYSTEM), which is the same account the child runs as on the same box, so it
+# decrypts there and never touches disk in cleartext. Only the failing call drops to 5.1; the runner
+# stays on pwsh 7. A non-assembly error (real auth/connectivity) is re-thrown unchanged, not masked.
+function Invoke-CtgAdSyncRemote {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName, [Parameter(Mandatory)][pscredential]$Credential, [Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    try {
+        return Invoke-Command -ComputerName $ComputerName -Credential $Credential -ScriptBlock $ScriptBlock -ErrorAction Stop
+    } catch {
+        $err = $_
+        # Full text (whole inner chain) for diagnostics.
+        $full = "$err"
+        $e = $err.Exception
+        while ($e) { if ($e.Message) { $full += " | $($e.Message)" }; $e = $e.InnerException }
+        # BROADENED: retry ANY pwsh-7-on-Windows remote failure under Windows PowerShell 5.1, not just a
+        # matched 'System.Web' string. pwsh 7 (.NET Core) can't WinRM-with-a-credential (the NTLM/Negotiate
+        # path needs System.Web, which .NET Core lacks); 5.1 (.NET Framework) can. If the real problem is
+        # auth/connectivity (not the assembly gap), 5.1 just re-fails and we surface THAT — never the opaque
+        # System.Web load error. Only skip the retry where 5.1 can't exist (non-Windows / non-Core).
+        $winPS = $null
+        if (($PSVersionTable.PSEdition -eq 'Core') -and $IsWindows) {
+            $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (Test-Path $candidate) { $winPS = $candidate }
+        }
+        if (-not $winPS) { throw "directory-sync remote failed and no Windows PowerShell 5.1 fallback is available here (edition=$($PSVersionTable.PSEdition), windows=$IsWindows): $full" }
+        $credFile = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-adsync-" + [guid]::NewGuid().ToString('N') + ".xml")
+        try {
+            $Credential | Export-Clixml -Path $credFile
+            # The remote ScriptBlock is our own fixed ADSync script (no $-vars), embedded as text; the
+            # child's OWN vars are backtick-escaped so the outer pwsh doesn't expand them. The child emits
+            # its result as compact JSON so a structured return (the validator's @{Enabled;InProgress})
+            # survives the process boundary; a bare string ('started') round-trips as "started".
+            $inner = "`$ErrorActionPreference='Stop'; `$c = Import-Clixml -LiteralPath '$credFile'; " +
+                     "`$r = Invoke-Command -ComputerName '$ComputerName' -Credential `$c -ScriptBlock { $($ScriptBlock.ToString()) }; " +
+                     "`$r | ConvertTo-Json -Compress -Depth 6"
+            $out = & $winPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $inner 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "directory-sync retried under Windows PowerShell 5.1 (pwsh 7 remote failed: $full) and 5.1 ALSO failed on '$ComputerName': $out" }
+            $line = (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Last 1)
+            if (-not $line) { return $null }
+            try { return (ConvertFrom-Json $line) } catch { return $line }
+        } finally {
+            Remove-Item -LiteralPath $credFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-CtgDirectorySync {
     <#
     .SYNOPSIS
@@ -108,14 +186,19 @@ function Invoke-CtgDirectorySync {
     # Self-contained for remoting (the target imports ADSync itself); local path calls the cmdlets
     # directly so unit-test mocks of Get-ADSyncScheduler/Start-ADSyncSyncCycle still apply.
     $remoteScript = {
-        Import-Module ADSync -ErrorAction Stop
+        # ADSync isn't on the default module path (it lives under Program Files\Microsoft Azure AD*),
+        # so `Import-Module ADSync` by NAME fails ("Start-ADSyncSyncCycle is not recognized"). Import it
+        # by its full .psd1 path; only if the cmdlets aren't already available.
+        if (-not (Get-Command Start-ADSyncSyncCycle -ErrorAction SilentlyContinue)) {
+            $adm = Get-ChildItem "$env:ProgramFiles\Microsoft Azure AD*" -Recurse -Filter ADSync.psd1 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($adm) { Import-Module $adm.FullName -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+        }
         if ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
         else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
     }
     $outcome =
-        if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
-        elseif ((Get-ADSyncScheduler).SyncCycleInProgress) { 'in-progress' }
-        else { Start-ADSyncSyncCycle -PolicyType Delta | Out-Null; 'started' }
+        if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
+        else { Invoke-CtgAdSyncLocal -ScriptBlock $remoteScript }  # Entra Connect on THIS host — in-proc, else 5.1
 
     if ($outcome -eq 'in-progress') {
         $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
@@ -141,12 +224,18 @@ function Confirm-CtgDirectorySync {
     $syncHost = Get-CtgProp $Config 'host'
     # Return scheduler health, not just in-progress. Enabled = the sync mechanism is working; a cycle
     # in progress right after we triggered one is the expected, healthy state.
-    $remoteScript = { Import-Module ADSync -ErrorAction Stop; $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
+    $remoteScript = {
+        if (-not (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue)) {
+            $adm = Get-ChildItem "$env:ProgramFiles\Microsoft Azure AD*" -Recurse -Filter ADSync.psd1 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($adm) { Import-Module $adm.FullName -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+        }
+        $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress }
+    }
     try {
         $target = Resolve-CtgADSyncTarget -SyncHost $syncHost -Credential $Credential
         $state =
-            if ($target.Remote) { Invoke-Command -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript -ErrorAction Stop }
-            else { $s = Get-ADSyncScheduler; @{ Enabled = [bool]$s.SyncCycleEnabled; InProgress = [bool]$s.SyncCycleInProgress } }
+            if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
+            else { Invoke-CtgAdSyncLocal -ScriptBlock $remoteScript }  # Entra Connect on THIS host — in-proc, else 5.1
     } catch {
         return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
     }

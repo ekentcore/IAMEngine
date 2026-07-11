@@ -341,7 +341,8 @@ td.module-cell {
 .notif-form h2 { font-size: 14px; margin: 0 0 0.15rem; }
 /* checkbox rows: keep the box its natural size (the base input rule forces width:100%) */
 .notif-form input[type="checkbox"] { width: auto; margin: 0; flex: none; }
-.notif-check { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 500; color: var(--fg); cursor: pointer; margin: 0; }
+/* flex-wrap: the "— hint" span is long; on a phone the row must wrap instead of pushing the card wide */
+.notif-check { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-weight: 500; color: var(--fg); cursor: pointer; margin: 0; }
 .notif-master { font-weight: 600; font-size: 14px; }
 .notif-channel { border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.95rem; }
 .notif-channel + .notif-channel { margin-top: 0.55rem; }
@@ -452,12 +453,20 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .m-card-msg { margin-top: 0.5rem; font-size: 12.5px; overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
+  /* Final guard against sub-10px layout slivers wiggling the page sideways — every wide table
+     already scrolls inside its own container, so nothing legitimate is clipped. */
+  html, body { overflow-x: hidden; }
   .desk-only { display: none !important; }
   .mob-only { display: block; }
   .mob-only.m-list { display: flex; } /* two classes -> beats .mob-only; the card list is a flex column */
   .app-header { gap: 0.5rem; padding: 0.55rem 0.9rem; }
   .app-header > nav { display: none !important; } /* desktop inline nav (has inline display:flex) -> the drawer. .mobile-drawer nav is unaffected (not a direct child). */
   .mobile-nav { display: inline-flex; }
+  /* Header right-cluster diet: at phone width the identity chip + impersonate picker + the
+     "Version 2" label pushed the header to ~560px and the whole page scrolled sideways. Keep
+     hamburger, theme, the bare v2 track and Sign out; Account/Impersonate live on desktop. */
+  .v2-switch .v2-switch-text { display: none; }
+  .user-menu .user-wide { display: none; }
   main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.9rem; }
   h1 { font-size: 1.3rem; }
   /* any remaining desktop tables (detail pages: systems matrix, secret wiring, run-report steps, …)
@@ -480,3 +489,22 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; }
 .mobile-drawer a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-press); }
 .mobile-drawer a:active { background: var(--bg-soft); }
+
+/* Agents v2 (only affects /agents/v2 — additive): top-aligned dense rows. */
+.agents-v2 th, .agents-v2 td { vertical-align: top; }
+
+/* Shared per-row "Actions ▾" popover (app/_components/actions-menu.tsx) — a compact trigger whose
+   menu overlays instead of a permanent button row. */
+.actions-trigger { font-size: 12px; padding: 3px 9px; }
+.actions-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 168px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: var(--shadow-2, 0 6px 20px rgba(0,0,0,0.14)); padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.actions-menu button {
+  display: block; width: 100%; text-align: left; background: transparent; border: none;
+  box-shadow: none; padding: 6px 10px; font-size: 13px; border-radius: 6px; white-space: nowrap;
+}
+.actions-menu button:hover:not(:disabled) { background: var(--bg-soft); border-color: transparent; }
+.actions-menu button.danger { color: var(--err-fg); }

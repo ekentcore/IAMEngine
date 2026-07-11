@@ -48,6 +48,17 @@ export async function GET(req: Request) {
     (await db.user.findUnique({ where: { email: identity.email } }));
   if (!user || user.status !== "active") {
     await recordAudit("auth.sso.denied", { actor: "auth", detail: { email: identity.email } });
+    // Capture a verified but UNKNOWN identity as an access request so an admin can approve them in
+    // /users — deny-by-default is preserved (nothing is granted here). A disabled EXISTING user is left
+    // alone (re-enabling them is a separate admin decision, not a new access request).
+    if (!user && identity.email) {
+      await db.accessRequest.upsert({
+        where: { email: identity.email },
+        create: { email: identity.email, name: identity.name ?? null },
+        update: { name: identity.name ?? undefined, lastRequestedAt: new Date(), requestCount: { increment: 1 } },
+      });
+      return back(req, "sso_access_requested");
+    }
     return back(req, "sso_not_provisioned");
   }
 

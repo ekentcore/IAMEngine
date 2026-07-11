@@ -27,6 +27,7 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
   const [status, setStatus] = useState("");
   const [tests, setTests] = useState<Record<TestKey, TestState>>({});
   const [busy, setBusy] = useState(false);
+  const [expiryTest, setExpiryTest] = useState<TestState | null>(null);
 
   const edit = (fn: (d: NotificationSettings) => void) => setS((prev) => { const n = structuredClone(prev); fn(n); return n; });
 
@@ -50,6 +51,17 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
       const j = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: { error?: string } };
       setTests((t) => ({ ...t, [key]: { ok: Boolean(j.ok), error: j.result?.error } }));
     } catch { setTests((t) => ({ ...t, [key]: { ok: false, error: "request failed" } })); }
+  }
+
+  // Send a sample credential-expiry alert through the real configured routing (save first — it uses
+  // the SAVED settings). Works even when the credExpiring event toggle is off.
+  async function testExpiry() {
+    setExpiryTest("…");
+    try {
+      const res = await fetch("/api/admin/notifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test_expiry" }) });
+      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; note?: string; results?: { channel: string; ok: boolean }[] };
+      setExpiryTest({ ok: Boolean(j.ok), error: j.note ?? (j.results && j.results.length ? j.results.filter((r) => !r.ok).map((r) => r.channel).join(", ") + " failed" : "no channels enabled") });
+    } catch { setExpiryTest({ ok: false, error: "request failed" }); }
   }
 
   function TestButton({ channel, variant }: { channel: NotifChannel; variant: NotifVariant }) {
@@ -121,6 +133,24 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
             </label>
           ))}
         </div>
+        {/* Credential-expiry knobs: the days-ahead threshold + a real end-to-end test send. */}
+        <div style={{ marginTop: "0.9rem", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          <label className="note" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Warn about expiring credentials
+            <input type="number" min={1} max={365} value={s.credExpiryDays ?? 30}
+              onChange={(e) => edit((d) => { d.credExpiryDays = Math.max(1, Math.min(365, Number(e.target.value) || 30)); })}
+              style={{ width: 64 }} />
+            days ahead
+          </label>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <button type="button" onClick={testExpiry} disabled={expiryTest === "…"}>Send sample expiry alert</button>
+            {expiryTest && expiryTest !== "…" && <span className="note">{expiryTest.ok ? "✓ sent" : `✗ ${expiryTest.error ?? "failed"}`}</span>}
+          </span>
+        </div>
+        <p className="note" style={{ marginTop: "0.4rem" }}>
+          The scheduled sweep (Health → Connection tests → “scheduled”) fires connection-failure and
+          credential-expiry alerts. “Send sample expiry alert” uses your <b>saved</b> settings — save first.
+        </p>
       </section>
 
       <div className="notif-actions">

@@ -41,6 +41,10 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["notify", "Offboard notification", 3, "Coretelligent.Notify"],
   ["hardware", "Hardware", 3], ["workstation", "Workstation", 3], ["welcome-letter", "Welcome letter", 3],
   ["first-day-call", "First-day call", 3], ["case-resolution", "Case resolution", 1],
+  // Ad-hoc operator actions (dispatched on demand from a case line, never planned):
+  ["ad-password-reset", "Password reset (AD)", 2, "Coretelligent.ActiveDirectory"],
+  ["m365-password-reset", "Password reset (M365)", 1, "Coretelligent.M365"],
+  ["google-password-reset", "Password reset (Google)", 2, "Coretelligent.GoogleWorkspace"],
   // long-tail keys the Phase-6 generator can emit; needed so a promoted draft seeds without a FK error
   ["data-transfer", "Data transfer", 2], ["archive", "Archive", 3],
   ["egnyte-sync-server", "Egnyte Sync Server", 3], ["address-book", "Printer address book", 3],
@@ -152,21 +156,29 @@ async function main() {
     });
   }
 
+  // Optional single-client target: `tsx prisma/seed.ts <profile-slug>` re-seeds JUST that authored
+  // profile (e.g. after correcting one client's OU/groups) and SKIPS the generated pass — so it can't
+  // revert other clients' in-app config edits. No arg = full seed (all profiles + generated).
+  const only = (process.argv[2] ?? "").replace(/\.json$/i, "").toLowerCase();
+  if (only) console.log(`single-client seed: ${only} (generated pass skipped)`);
+
   // Pass 1: hand-authored profiles (authoritative). Collect their client ids to protect them
   // (by id, not name) from the generated pass.
   const curatedIds = new Set<string>();
   for (const file of readdirSync(PROFILES).filter((f) => f.endsWith(".json") && !f.startsWith("_"))) {
+    if (only && file.replace(/\.json$/i, "").toLowerCase() !== only) continue;
     const p = JSON.parse(readFileSync(join(PROFILES, file), "utf8"));
     const id = await applyAuthored(p);
     if (id) { curatedIds.add(id); console.log(`authored: ${p.client.name} (${p.systems.length} systems)`); }
     else console.warn(`skip ${file}: not schema 2.0`);
   }
+  if (only && curatedIds.size === 0) console.warn(`no profile matched "${only}" — nothing seeded`);
 
   // Pass 2: generated drafts, matched to a client by NAME (then domain), since roster slugs
   // are CORE ids and won't equal a name-slugged generated profile. A curated client keeps its
   // authored systems but STILL gets its KB runbook (the steps are informational).
   let enriched = 0, curatedRb = 0, nonV2 = 0, unmatched = 0, runbook = 0;
-  if (existsSync(GENERATED)) {
+  if (!only && existsSync(GENERATED)) {
     const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true, editedFields: true } });
     const editedById = new Map(clients.map((c) => [c.id, c.editedFields]));
     const byName = new Map<string, string>();

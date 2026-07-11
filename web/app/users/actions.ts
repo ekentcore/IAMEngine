@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import type { Role, ClientAccessMode } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
+import { currentClientScope, disallowedRestrictedGrants } from "@/lib/auth/client-scope";
 import { hashPassword, generatePassword } from "@/lib/auth/password";
 import { recordAudit } from "@/lib/auth/audit";
 import { canResetPassword, canAssignRole } from "@/lib/auth/permissions";
@@ -19,6 +20,31 @@ const isAccessMode = (m: unknown): m is ClientAccessMode => typeof m === "string
 
 function fail(e: unknown): { ok: false; error: string } {
   return { ok: false, error: e instanceof AuthError ? e.message : e instanceof Error ? e.message : "failed" };
+}
+
+// Restricted-boundary guard for CONFERRING client access. Two rules, both server-enforced:
+//   1. Only a global admin (or super admin) may grant access to a restricted client at all — no other
+//      role can, even if it somehow held user.manage. ("No one else should be able to.")
+//   2. A global admin may only pass on the restricted access they THEMSELVES hold — no self- or
+//      lateral-escalation to a restricted client outside their own scope. super admin holds all.
+// `conferred` = the client ids that AUTHORIZE the target's visibility (only-mode scope, or all/exclude
+// grants). Returns an error to fail with, or null when allowed.
+async function restrictedGrantGuard(actorRole: Role, conferred: string[]): Promise<string | null> {
+  if (conferred.length === 0) return null;
+  const restrictedIds = new Set(
+    (await db.client.findMany({ where: { id: { in: conferred }, restricted: true }, select: { id: true } })).map((c) => c.id),
+  );
+  if (restrictedIds.size === 0) return null; // nothing restricted is being conferred
+  // Rule 1: restricted-granting is a global-admin-and-up capability.
+  if (actorRole !== "super_admin" && actorRole !== "global_admin") {
+    return "only a global admin can grant access to a restricted client";
+  }
+  // Rule 2: you can only grant the restricted access you hold (super admin's null scope holds all).
+  const scope = await currentClientScope(db);
+  const bad = disallowedRestrictedGrants(scope, conferred, restrictedIds);
+  if (bad.length === 0) return null;
+  const names = (await db.client.findMany({ where: { id: { in: bad } }, select: { name: true } })).map((c) => c.name);
+  return `you don't have access to these restricted clients, so you can't grant access to them: ${names.join(", ")}`;
 }
 
 export async function createUser(input: { email: string; name?: string; role: string; authType?: string; password?: string }): Promise<Result<{ generatedPassword?: string }>> {
@@ -112,6 +138,12 @@ export async function setUserClientAccess(
     const scopeIds = wantScope.filter((id) => real.has(id));
     const grantIds = wantGrant.filter((id) => real.has(id));
 
+    // The ids that AUTHORIZE the target's visibility: only-mode scope IS the allowlist (a listed
+    // restricted client is granted); all/exclude confer restricted access via grants (exclude scope is
+    // a deny list, never a grant). A scoped operator can't confer restricted access they lack.
+    const guardErr = await restrictedGrantGuard(me.role, input.mode === "only" ? scopeIds : grantIds);
+    if (guardErr) return { ok: false, error: guardErr };
+
     await db.$transaction([
       db.user.update({ where: { id: userId }, data: { clientAccessMode: input.mode } }),
       db.userClientAccess.deleteMany({ where: { userId } }),
@@ -132,6 +164,62 @@ export async function setUserClientAccess(
   }
 }
 
+// Approve a pending access request: create the (SSO) user with the chosen role + client scope, then
+// mark the request approved. Deny-by-default is preserved — nothing was granted until this call.
+export async function approveAccessRequest(id: string, input: { role: string; mode: string; scopeClientIds?: string[] }): Promise<Result> {
+  try {
+    const me = await requirePermission("user.manage");
+    if (!isRole(input.role)) return { ok: false, error: "invalid role" };
+    if (!isAccessMode(input.mode)) return { ok: false, error: "invalid access mode" };
+    if (input.role === "super_admin" && me.role !== "super_admin") return { ok: false, error: "only a super admin can grant the super admin role" };
+    const reqRow = await db.accessRequest.findUnique({ where: { id } });
+    if (!reqRow) return { ok: false, error: "request not found" };
+    const email = reqRow.email.trim().toLowerCase();
+    if (await db.user.findUnique({ where: { email } })) {
+      await db.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
+      return { ok: false, error: "a user with that email already exists — the request was marked approved" };
+    }
+    // Only/exclude modes carry a scope allowlist; "all" ignores it. Keep only real client ids.
+    const wantScope = input.mode === "all" ? [] : uniq(input.scopeClientIds);
+    const real = wantScope.length ? new Set((await db.client.findMany({ where: { id: { in: wantScope } }, select: { id: true } })).map((c) => c.id)) : new Set<string>();
+    const scopeIds = wantScope.filter((x) => real.has(x));
+    // Only-mode scope authorizes visibility (a listed restricted client is granted); a scoped approver
+    // can't confer restricted access they lack. Exclude/all set no grants here, so nothing to guard.
+    const guardErr = await restrictedGrantGuard(me.role, input.mode === "only" ? scopeIds : []);
+    if (guardErr) return { ok: false, error: guardErr };
+    // All three writes are one transaction: a mid-way failure must not leave a user with mode "only" and
+    // no scope rows (they'd see zero clients) while the request stays pending with a misleading re-try path.
+    await db.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: { email, name: reqRow.name?.trim() || null, role: input.role as Role, authType: "sso", clientAccessMode: input.mode as ClientAccessMode },
+      });
+      if (scopeIds.length) {
+        await tx.userClientAccess.createMany({ data: scopeIds.map((clientId) => ({ userId: user.id, clientId, kind: "scope" as const })) });
+      }
+      await tx.accessRequest.update({ where: { id }, data: { status: "approved", reviewedBy: me.email, reviewedAt: new Date() } });
+    });
+    await recordAudit("access_request.approve", { user: me, detail: { email, role: input.role, mode: input.mode, scope: scopeIds.length } });
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function denyAccessRequest(id: string): Promise<Result> {
+  try {
+    const me = await requirePermission("user.manage");
+    const reqRow = await db.accessRequest.findUnique({ where: { id }, select: { email: true } });
+    if (!reqRow) return { ok: false, error: "request not found" };
+    await db.accessRequest.update({ where: { id }, data: { status: "denied", reviewedBy: me.email, reviewedAt: new Date() } });
+    await recordAudit("access_request.deny", { user: me, detail: { email: reqRow.email } });
+    revalidatePath("/users");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 function uniq(xs?: string[]): string[] {
   return Array.isArray(xs) ? [...new Set(xs.filter((x) => typeof x === "string" && x))] : [];
 }
@@ -139,16 +227,20 @@ function uniq(xs?: string[]): string[] {
 export async function resetUserPassword(userId: string, password?: string): Promise<Result<{ generatedPassword?: string }>> {
   try {
     const me = await requirePermission("user.manage");
-    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
+    const target = await db.user.findUnique({ where: { id: userId }, select: { email: true, role: true, authType: true } });
     if (!target) return { ok: false, error: "user not found" };
+    // An SSO-only user has no local password — resetting one would flip authType to "local" and open a
+    // password login path (account takeover of a Microsoft-only account). Block it; use impersonation instead.
+    if (target.authType === "sso") return { ok: false, error: "this user signs in with Microsoft 365 — there is no local password to reset" };
     // Seniority rule: a super resets anyone; a global resets global-or-lower; only a super resets a super.
     if (!canResetPassword(me.role, target.role)) {
       return { ok: false, error: target.role === "super_admin" ? "only a super admin can reset a super admin's password" : "you can't reset the password of a user more senior than you" };
     }
     const pw = password?.trim() || generatePassword();
-    // A password reset also revokes existing sessions (forces re-login).
+    // A password reset also revokes existing sessions (forces re-login). Preserve "both" (SSO+local) rather
+    // than clobbering to "local" so a dual-auth user keeps their Microsoft sign-in.
     await db.$transaction([
-      db.user.update({ where: { id: userId }, data: { passwordHash: hashPassword(pw), authType: "local" } }),
+      db.user.update({ where: { id: userId }, data: { passwordHash: hashPassword(pw), authType: target.authType === "both" ? "both" : "local" } }),
       db.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
     ]);
     await recordAudit("user.reset_password", { user: me, detail: { email: target.email } });

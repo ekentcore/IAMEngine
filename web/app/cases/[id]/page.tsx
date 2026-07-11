@@ -5,6 +5,8 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
+import { authEnabled, getActingContext } from "@/lib/auth/current-user";
+import { can } from "@/lib/auth/permissions";
 import { intakeLabel } from "@/lib/cases/intake-labels";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
@@ -14,8 +16,13 @@ import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
 import { RescanButton } from "../_components/rescan-button";
+import { RevealPasswordButton } from "../_components/reveal-password-button";
+import { HardMatchButton } from "../_components/hard-match-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
 import { PauseButton } from "../_components/pause-button";
+import { ScheduleButton } from "../_components/schedule-button";
+import { LocalDateTime } from "../../_components/local-datetime";
+import { caseEffectiveDate } from "@/lib/cases/schedule";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
@@ -27,6 +34,35 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   // Don't leak an out-of-scope case's subject in the tab title (the page itself 404s).
   if (c && !scopeAllows(await currentClientScope(db), c.clientId)) return { title: "Case" };
   return { title: c?.serviceNowCaseNumber ?? c?.subject ?? "Case" };
+}
+
+// One intake value cell. Scalars render inline; arrays comma-join; a NESTED OBJECT (e.g. the derived
+// `templateFields` email-template map, or an array of objects) is rendered as readable "key: value"
+// lines instead of the old `String(v)` fallback that produced a literal "[object Object]".
+function fmtScalar(x: unknown): string {
+  if (x === null || x === undefined || x === "") return "—";
+  if (typeof x === "boolean") return x ? "yes" : "no";
+  return String(x);
+}
+function IntakeValue({ v }: { v: unknown }) {
+  if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return <span className="muted">—</span>;
+  if (typeof v === "boolean") return <>{v ? "yes" : "no"}</>;
+  if (Array.isArray(v)) {
+    if (v.some((x) => x && typeof x === "object")) {
+      return <>{v.map((x, i) => <div key={i}>{x && typeof x === "object" ? Object.entries(x).map(([k, vv]) => `${k}: ${fmtScalar(vv)}`).join(" · ") : String(x)}</div>)}</>;
+    }
+    return <>{v.map(String).join(", ")}</>;
+  }
+  if (typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>);
+    if (entries.length === 0) return <span className="muted">—</span>;
+    return (
+      <div style={{ display: "grid", gap: 2 }}>
+        {entries.map(([k, vv]) => <div key={k}><span className="muted">{k}:</span> {fmtScalar(vv)}</div>)}
+      </div>
+    );
+  }
+  return <>{String(v)}</>;
 }
 
 export default async function CaseDetailPage({ params }: { params: { id: string } }) {
@@ -43,7 +79,22 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
   // incrementally (kept steps survive, new/changed systems get fresh jobs).
   const started = hasStartedJobs(c.jobs);
-  const paused = Boolean((await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true } }))?.pausedAt);
+  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true, scheduledFor: true } });
+  const paused = Boolean(caseMeta?.pausedAt);
+  // Mirror the reveal route's guard (case.dispatch, no impersonation) so read-only roles don't see
+  // a button the server will 403 — the route stays the real boundary.
+  const acting = authEnabled() ? await getActingContext() : { user: null, realUser: null, impersonating: false };
+  const canRevealPassword = !authEnabled() || (!!acting.user && !acting.impersonating && can(acting.user.role, "case.dispatch"));
+  const hasInitialPassword = Boolean(caseMeta?.initialPassword) && canRevealPassword;
+  const scheduledForIso = caseMeta?.scheduledFor?.toISOString() ?? null;
+  // The case's effective date string — the ScheduleButton computes its suggested time from this in
+  // the BROWSER (so "08:00" / "+5 min" land in the operator's timezone, not the server's).
+  const effectiveDate = caseEffectiveDate(c.action, c.payload, c.subject);
+  // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
+  // has been dispatched yet → offer the operator-confirmed "Link" action.
+  const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
+  const showHardMatch = dJobs.some((j) => j.systemKey === "ad-consistency-check" && Boolean((j.result as { Flagged?: unknown } | null)?.Flagged))
+    && !dJobs.some((j) => j.systemKey === "ad-hard-match");
 
   return (
     <main>
@@ -59,7 +110,13 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {showHardMatch && <HardMatchButton caseId={c.id} />}
+          {hasInitialPassword && <RevealPasswordButton caseId={c.id} />}
+          {/* A completed/failed case can't be scheduled (the API refuses it too). */}
+          {!["completed", "failed"].includes(c.status) && (
+            <ScheduleButton caseId={c.id} action={c.action} scheduledForIso={scheduledForIso} effectiveDate={effectiveDate} />
+          )}
           <PauseButton caseId={c.id} paused={paused} />
           <ReplanButton caseId={c.id} canReplan={true} started={started} />
         </div>
@@ -67,6 +124,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
       {paused && (
         <p className="note" style={{ color: "#8a6d00" }}>
           ⏸ This case is paused — runners won&rsquo;t claim its steps until you resume (a step already running finishes normally).
+          {scheduledForIso && <> It resumes automatically at <LocalDateTime iso={scheduledForIso} />.</>}
         </p>
       )}
 
@@ -150,11 +208,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             <tr key={k}>
               <th style={{ width: 240 }}>{intakeLabel(k)}</th>
               <td>
-                {v === null || v === "" || (Array.isArray(v) && v.length === 0)
-                  ? <span className="muted">—</span>
-                  : typeof v === "boolean" ? (v ? "yes" : "no")
-                  : Array.isArray(v) ? v.map(String).join(", ")
-                  : String(v)}
+                <IntakeValue v={v} />
               </td>
             </tr>
           ))}

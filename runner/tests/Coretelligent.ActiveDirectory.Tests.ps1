@@ -11,15 +11,16 @@ BeforeAll {
     # All stubs accept $Server/$Credential — the module splats @AdConnection (brokered ad-dc auth) onto every cmdlet.
     function global:Get-ADUser { [CmdletBinding()] param($Filter, $Identity, $Properties, $Server, $Credential) }
     function global:New-ADUser { [CmdletBinding()] param($Name, $SamAccountName, $UserPrincipalName, $GivenName, $Surname, $DisplayName, $Path, $Enabled, $OtherAttributes, $AccountPassword, $Server, $Credential) }
-    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $Server, $Credential) }
+    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $EmailAddress, $ChangePasswordAtLogon, $Server, $Credential) }
     function global:Add-ADGroupMember { [CmdletBinding()] param($Identity, $Members, $Server, $Credential) }
     function global:Remove-ADGroupMember { [CmdletBinding(SupportsShouldProcess)] param($Identity, $Members, $Server, $Credential) }
     function global:Get-ADPrincipalGroupMembership { [CmdletBinding()] param($Identity, $Server, $Credential) }
     function global:Disable-ADAccount { [CmdletBinding()] param($Identity, $Server, $Credential) }
     function global:Move-ADObject { [CmdletBinding()] param($Identity, $TargetPath, $Server, $Credential) }
     function global:Set-ADAccountPassword { [CmdletBinding()] param($Identity, [switch]$Reset, $NewPassword, $Server, $Credential) }
-    function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Properties, $Server, $Credential) }
+    function global:Get-ADGroup { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
     function global:Get-ADComputer { [CmdletBinding()] param($Identity, $Filter, $Properties, $Server, $Credential) }
+    function global:Get-ADDomain { [CmdletBinding()] param($Server, $Credential) }  # Resolve-CtgAdDomain queries this for the real AD domain
 
     Import-Module $ModulePath -Force
 }
@@ -38,6 +39,26 @@ Describe 'Invoke-CtgADOnboarding' {
         $r = Invoke-CtgADOnboarding -User $user -Config $config
         $r.Status | Should -Be 'ok'
         Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Path -match 'Six One Users' }
+    }
+
+    It 'builds the OU DN from the ACTUAL AD domain, not the user email/UPN domain (Six One: AD corp.61commodities.com vs mail 61commodities.com)' {
+        # Regression for UM0029655: the DN was built from PrimaryDomain (61commodities.com) so New-ADUser
+        # targeted OU=...,DC=61commodities,DC=com — a naming context the DC (corp.61commodities.com) doesn't
+        # own -> "The server is unwilling to process the request". The real AD domain must win.
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DNSRoot='corp.61commodities.com' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' })
+        $r.Status | Should -Be 'ok'
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Path -eq 'OU=Six One Users,DC=corp,DC=61commodities,DC=com'
+        }
+    }
+
+    It 'falls back to the email domain when the DC domain cannot be queried' {
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { throw 'no ADWS' }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' })
+        Should -Invoke New-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Path -eq 'OU=Six One Users,DC=61commodities,DC=com'
+        }
     }
 
     It 'adopts an existing account whose NAME matches (same person, re-run) without creating' {
@@ -59,6 +80,16 @@ Describe 'Invoke-CtgADOnboarding' {
     It 'PAUSES for a decision when the only username is taken by a different person' {
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; GivenName='John'; Surname='Doe'; DisplayName='John Doe' } }
         { Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='Six One Users' }) } | Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+    }
+
+    It 'resolves a group name that is off only by spacing (Perimeter81 Users -> Perimeter 81 Users)' {
+        # UM0029655: the profile said "Perimeter81 Users" but the real AD group is "Perimeter 81 Users".
+        # Exact add fails -> resolve by a space-insensitive match against AD and retry by DN.
+        Mock Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Identity" -eq 'Perimeter81 Users' } -MockWith { throw 'Cannot find an object with identity: Perimeter81 Users' }
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity } -MockWith { $null }                 # exact miss
+        Mock Get-ADGroup -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter } -MockWith { [pscustomobject]@{ Name='Perimeter 81 Users'; DistinguishedName='CN=Perimeter 81 Users,OU=Groups,DC=x' } }
+        $r = Invoke-CtgADOnboarding -User $user -Config ([pscustomobject]@{ ou='SixOneUsers'; groups=@('Perimeter81 Users') })
+        ($r.Actions -join ' ') | Should -Match "added to group: Perimeter 81 Users \(matched config 'Perimeter81 Users'\)"
     }
 
     It 'adds base groups and conditional groups only when their condition holds' {
@@ -310,6 +341,22 @@ Describe 'Confirm-CtgAD' {
         ($r.checks | Where-Object { $_.name -eq 'home drive mapped' }).pass | Should -BeTrue
     }
 
+    It 'onboard: still validates on an AD WITHOUT the Exchange schema (msExch property errors the call)' {
+        # Regression (Six One): the shared read-back requested msExchHideFromAddressLists. On an EXO-only
+        # tenant (no on-prem Exchange schema) that fails the WHOLE Get-ADUser call, so a fully-onboarded
+        # user validated as ABSENT (all 4 checks failed). The core read-back must not request that attr.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Laura Munder,OU=SixOneUsers,DC=corp,DC=61commodities,DC=com'; Enabled=$true; HomeDirectory='\\61c-fs01\Users\lauramunder' } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith { throw 'Get-ADUser : One or more properties are invalid.' }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Back Office Users' }) }
+        Mock Get-ADDomain -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DNSRoot='corp.61commodities.com' } }
+        $user = [pscustomobject]@{ SamAccountName='lauramunder'; PrimaryDomain='61commodities.com' }
+        $config = [pscustomobject]@{ ou='SixOneUsers'; groups=@('Back Office Users'); homeDrive=[pscustomobject]@{ unc='\\61c-fs01\Users\<username>'; letter='H' } }
+        $r = Confirm-CtgAD -User $user -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'user exists' }).pass | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -match 'in OU' }).pass | Should -BeTrue
+    }
+
     It 'offboard: passes when disabled, groups gone, hidden, and NOT moved (guardrail)' {
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$false; msExchHideFromAddressLists=$true } }
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @([pscustomobject]@{ Name='Domain Users' }) }
@@ -382,5 +429,226 @@ Describe 'Set-CtgADAttributes' {
         $r = Invoke-CtgADOnboarding -User $user -Config $config
         ($r.Actions -join '|') | Should -Match 'set attribute: title=Engineer'
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.department -eq 'Field Services' } -Times 1
+    }
+}
+
+Describe 'Invoke-CtgADEmailWriteback' {
+    BeforeEach {
+        # An existing user whose mail is currently unset.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail=$null } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+    }
+
+    It 'writes AD mail from the app-injected writebackEmail' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; UserPrincipalName='jdoe@corp.example.com'; DisplayName='Jane Doe'; workEmail='jdoe@corp.example.com'; writebackEmail='jane.doe@example.com' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        $r.Mail | Should -Be 'jane.doe@example.com'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $EmailAddress -eq 'jane.doe@example.com' }
+    }
+
+    It 'falls back to workEmail when the app injected no writebackEmail' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; UserPrincipalName='jdoe@example.com'; workEmail='jdoe@example.com'; writebackEmail=$null }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $EmailAddress -eq 'jdoe@example.com' }
+    }
+
+    It 'is idempotent — no write when mail already matches' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail='jdoe@example.com' } }
+        $user = [pscustomobject]@{ SamAccountName='jdoe'; writebackEmail='jdoe@example.com' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        ($r.Actions -join '|') | Should -Match 'already'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'does nothing when there is no email anywhere on the case' {
+        $user = [pscustomobject]@{ SamAccountName='jdoe' }
+        $r = Invoke-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+}
+
+Describe 'Confirm-CtgADEmailWriteback' {
+    It 'passes via the UPN fallback when the case has no SamAccountName (INC0858516)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='mgallant'; mail='mgallant@core.tech' } }
+        $user = [pscustomobject]@{ UserPrincipalName='mgallant@core.tech'; DisplayName='M Gallant'; workEmail='mgallant@core.tech' }
+        $v = Confirm-CtgADEmailWriteback -User $user -Config ([pscustomobject]@{})
+        $v.ok | Should -BeTrue
+        $v.checks[0].actual | Should -Be 'mgallant@core.tech'
+    }
+
+    It 'passes when there is no email on the case — the executor deliberately wrote nothing' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        $v = Confirm-CtgADEmailWriteback -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config ([pscustomobject]@{})
+        $v.ok | Should -BeTrue
+        Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'misses when the AD mail differs from the target' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName='jdoe'; mail='old@example.com' } }
+        $v = Confirm-CtgADEmailWriteback -User ([pscustomobject]@{ SamAccountName='jdoe'; writebackEmail='new@example.com' }) -Config ([pscustomobject]@{})
+        $v.ok | Should -BeFalse
+        $v.checks[0].actual | Should -Be 'old@example.com'
+    }
+}
+
+Describe 'Invoke-CtgADConsistencyCheck' {
+    BeforeEach {
+        $script:guid = [guid]'00112233-4455-6677-8899-aabbccddeeff'
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            [pscustomobject]@{ SamAccountName = 'jdoe'; objectGUID = $script:guid; 'mS-DS-ConsistencyGuid' = $null }
+        }
+    }
+
+    It 'passes (linked) when the Entra immutableId matches the objectGUID source anchor' {
+        $b64 = [Convert]::ToBase64String($script:guid.ToByteArray())
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $b64; syncEnabled = $true; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeFalse
+        ($r.Actions -join '|') | Should -Match 'linked'
+    }
+
+    It 'flags a CLOUD-ONLY Entra object (syncEnabled false) as a duplicate risk' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $false; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeTrue
+        ($r.Actions -join '|') | Should -Match 'CLOUD-ONLY'
+    }
+
+    It 'flags a mismatched immutableId (possible duplicate / unlinked)' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = 'AAAAAAAAAAAAAAAAAAAAAA=='; syncEnabled = $true; userId = 'c1' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeTrue
+        ($r.Actions -join '|') | Should -Match 'does NOT match'
+    }
+
+    It 'is clean when no Entra object was reported (fresh sync)' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $null; userId = $null } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        $r.Flagged | Should -BeFalse
+    }
+}
+
+Describe 'Invoke-CtgADHardMatch' {
+    BeforeEach {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe'; 'mS-DS-ConsistencyGuid' = $null } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+    }
+    It 'writes mS-DS-ConsistencyGuid = the injected immutableId (16-byte base64)' {
+        $b64 = [Convert]::ToBase64String(([guid]::NewGuid()).ToByteArray())
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = $b64 })
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Replace['mS-DS-ConsistencyGuid'].Length -eq 16 }
+    }
+    It 'REFUSES a non-16-byte base64 value (never writes garbage into the anchor)' {
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = 'bm90LWEtZ3VpZA==' })
+        $r.Status | Should -Be 'error'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+    It 'is idempotent — no write when the anchor already matches' {
+        $g = [guid]::NewGuid(); $b64 = [Convert]::ToBase64String($g.ToByteArray())
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe'; 'mS-DS-ConsistencyGuid' = $g.ToByteArray() } }
+        $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = $b64 })
+        ($r.Actions -join '|') | Should -Match 'already'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+}
+
+Describe 'Invoke-CtgADPasswordReset' {
+    # Ad-hoc "Generate random password" (INC0855142): the app generates the value, injects it as
+    # config.newPassword at claim, and reveals it once to the operator. The executor only sets it —
+    # and must never echo it into the result.
+    BeforeEach {
+        Mock Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        $user = [pscustomobject]@{ SamAccountName = 'jdoe'; UserPrincipalName = 'jdoe@x.com'; DisplayName = 'Jane Doe' }
+        $config = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v' }
+    }
+
+    It 'resets the password and requires a change at next logon' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Reset -and $Identity -eq 'jdoe' -and $NewPassword -is [securestring]
+        }
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Identity -eq 'jdoe' -and $ChangePasswordAtLogon -eq $true
+        }
+    }
+
+    It 'never echoes the password into the result' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    It 'throws when the app did not inject newPassword (a wiped value is never re-usable)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        { Invoke-CtgADPasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'throws when the user is not found — a reset must never silently no-op' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        { Invoke-CtgADPasswordReset -User $user -Config $config } | Should -Throw '*not found*'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'falls back to the UPN lookup when the case has no SamAccountName' {
+        $noSam = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            param($Filter, $Identity, $Properties, $Server, $Credential)
+            if ($Filter -like "*UserPrincipalName*") { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        }
+        $r = Invoke-CtgADPasswordReset -User $noSam -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'jdoe' }
+    }
+
+    It 'a change-at-logon failure is a WARN action, not a failed reset (the password DID change)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { throw 'policy forbids' }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join '|') | Should -Match 'WARN'
+    }
+}
+
+Describe 'Test-CtgAdCreateUserAce' {
+    BeforeAll {
+        $script:userGuid = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+        $script:me = 'S-1-5-21-1-1-1-1111'
+        $script:myGroup = 'S-1-5-21-1-1-1-2222'
+    }
+
+    It 'allows via CreateChild scoped to the user class' {
+        $rules = @(@{ Type = 'Allow'; Sid = $myGroup; Rights = 'CreateChild'; ObjectType = $userGuid })
+        Test-CtgAdCreateUserAce -Rules $rules -Sids @($me, $myGroup) | Should -BeTrue
+    }
+
+    It 'allows via unscoped CreateChild (all child classes) and GenericAll' {
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'CreateChild'; ObjectType = '' }) -Sids @($me) | Should -BeTrue
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'GenericAll'; ObjectType = '' }) -Sids @($me) | Should -BeTrue
+    }
+
+    It 'ignores ACEs for other SIDs and CreateChild scoped to a different class' {
+        $other = 'S-1-5-21-9-9-9-9999'
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $other; Rights = 'GenericAll'; ObjectType = '' }) -Sids @($me) | Should -BeFalse
+        $groupGuid = 'bf967a9c-0de6-11d0-a285-00aa003049e2' # group class — not user
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'CreateChild'; ObjectType = $groupGuid }) -Sids @($me) | Should -BeFalse
+    }
+
+    It 'an explicit deny wins over an allow' {
+        $rules = @(
+            @{ Type = 'Allow'; Sid = $myGroup; Rights = 'GenericAll'; ObjectType = '' }
+            @{ Type = 'Deny';  Sid = $me;      Rights = 'CreateChild'; ObjectType = $userGuid }
+        )
+        Test-CtgAdCreateUserAce -Rules $rules -Sids @($me, $myGroup) | Should -BeFalse
+    }
+
+    It 'ReadProperty-only rules never grant create' {
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'ReadProperty, ListChildren'; ObjectType = '' }) -Sids @($me) | Should -BeFalse
     }
 }

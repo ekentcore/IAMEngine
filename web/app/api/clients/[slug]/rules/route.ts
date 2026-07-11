@@ -52,7 +52,7 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
     moveToOu: typeof f?.ou === "string" ? f.ou : undefined,
   }));
   await repo.writeAudit({
-    actor: "ui",
+    actor: _g.user.email || "ui", // the signed-in operator who edited the rules (was hardcoded "ui")
     action: "client.rules.edit",
     clientId: client.id,
     detail: {

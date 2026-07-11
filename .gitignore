@@ -9,7 +9,9 @@ web/.env.local
 
 # --- dependencies ---
 node_modules/
-web/node_modules/
+# no trailing slash: also matches the node_modules SYMLINK a worktree uses (a
+# trailing-slash pattern only matches real directories, so the link slips into commits)
+web/node_modules
 
 # --- build output ---
 .next/
@@ -25,6 +27,10 @@ web/node_modules/.prisma/
 # --- os / editor ---
 .DS_Store
 *.log
+
+# --- playwright MCP scratch (screenshots/console logs from in-session browser checks) ---
+.playwright-mcp/
+*.png
 
 # --- archives ---
 *.zip
@@ -71,3 +77,7 @@ exo.pfx
 # tooling/runtime artifacts that must never ship in the runner bundle
 runner/.claude/
 runner/.remember/
+
+# spanning login-test scratch (screenshots, network capture, browser profile)
+runner/browser/scripts/.spanning-test-run/
+runner/browser/scripts/.spanning-profile/

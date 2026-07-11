@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hashPassword, verifyPassword, generatePassword } from "./password";
+import { hashPassword, verifyPassword, generatePassword, generateInitialPassword } from "./password";
 
 test("hash then verify round-trips; wrong password fails", () => {
   const h = hashPassword("correct horse battery staple");
@@ -23,4 +23,13 @@ test("verify is safe against null / malformed stored values", () => {
 test("generatePassword returns a non-trivial string", () => {
   assert.ok(generatePassword().length >= 16);
   assert.notEqual(generatePassword(), generatePassword());
+});
+
+test("generateInitialPassword satisfies M365 complexity (upper+lower+digit+symbol), 16 chars, no ambiguous", () => {
+  for (let i = 0; i < 200; i++) {
+    const p = generateInitialPassword();
+    assert.equal(p.length, 16);
+    assert.match(p, /[A-Z]/); assert.match(p, /[a-z]/); assert.match(p, /[0-9]/); assert.match(p, /[!@#$%^&*\-_+=]/);
+    assert.doesNotMatch(p, /[0O1lI]/); // ambiguous chars excluded
+  }
 });

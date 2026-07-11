@@ -6,7 +6,7 @@
 export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
-export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval";
+export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring";
 export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
@@ -14,6 +14,8 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "stepFailed", label: "Step failed" },
   { key: "autoStopped", label: "Auto-stopped (wedged)" },
   { key: "needsApproval", label: "Needs approval" },
+  { key: "connTestFailed", label: "Connection test failed (scheduled sweep)" },
+  { key: "credExpiring", label: "Credential expiring" },
 ];
 
 // kind drives the sender + the form fields (webhook URL vs Zoom URL+token vs email recipients).
@@ -37,6 +39,8 @@ export type NotificationSettings = {
     email: ChannelPair<EmailDest>;
   };
   events: Record<NotifEvent, boolean>;
+  // Days-before-expiry threshold for credExpiring alerts (the conn sweep reads it). Default 30.
+  credExpiryDays?: number;
   updatedAt?: string;
   updatedBy?: string;
 };
@@ -56,7 +60,8 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
     zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
     email: { default: emptyEmail(), restricted: emptyEmail() },
   },
-  events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true },
+  events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true },
+  credExpiryDays: 30,
 };
 
 // The payload a trigger site passes to fireNotification.
@@ -67,6 +72,8 @@ export type NotificationEvent = {
   clientName?: string | null;
   systemKey?: string | null;
   detail?: string | null;
+  actor?: string | null; // the operator who kicked off the run that failed
+  at?: string | null; // ISO timestamp of the failure (rendered readable in the message)
   url?: string | null;
   restricted?: boolean; // client is restricted -> route to the "restricted" destination of each channel
   override?: ClientNotifyOverride | null; // this client's per-channel overrides (from the client page)
@@ -102,6 +109,7 @@ export function normalizeSettings(raw: unknown): NotificationSettings {
       email: normPair(c.email, undefined, normEmail),
     },
     events: { ...DEFAULT_NOTIFICATIONS.events, ...(r.events ?? {}) },
+    credExpiryDays: typeof r.credExpiryDays === "number" && r.credExpiryDays > 0 ? Math.floor(r.credExpiryDays) : DEFAULT_NOTIFICATIONS.credExpiryDays,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   };

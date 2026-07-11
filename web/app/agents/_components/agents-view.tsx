@@ -3,7 +3,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever } from "../actions";
+import { ActionsMenu } from "../../_components/actions-menu";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -13,6 +14,7 @@ export type AgentVM = {
   clientName: string | null;
   version: string | null; // content-hash build id
   semver: string | null; // human release version (runner/VERSION), display only
+  priority: number; // failover rank (lower = higher precedence); a backup stands by while a higher peer is online
   enabled: boolean;
   lastSeenAt: string | null;
   bootAt: string | null;
@@ -60,6 +62,14 @@ function installCommand(a: AgentVM, origin: string): string {
     `& "$Dir/Start-IamRunner.ps1" -AppUrl "$App" -AgentId "${a.id}"`,
   );
   return lines.join("\n");
+}
+
+// One-liner that pulls + runs the per-agent troubleshoot script (served by /api/runner/
+// troubleshoot.ps1) — for a runner that enrolled but never comes online: it checks pwsh 7, the
+// runner files, the Scheduled Task, RUNNER_API_TOKEN, reachability and auth, then offers a
+// foreground run. -Headers skips ngrok-free's browser-warning interstitial (harmless elsewhere).
+function troubleshootCommand(a: AgentVM, origin: string): string {
+  return `irm -Headers @{'ngrok-skip-browser-warning'='1'} "${origin}/api/runner/troubleshoot.ps1?agent=${a.id}" | iex`;
 }
 
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
@@ -123,7 +133,62 @@ function uptime(iso: string | null, now: number): string {
   return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
 }
 
-export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number }) {
+// Failover priority editor (LOWER = higher precedence). A backup runner stands by while a higher-priority
+// peer of the same scope is online, and takes over when it goes silent; equal priority load-balances.
+function PriorityControl({ a }: { a: AgentVM }) {
+  const router = useRouter();
+  const [val, setVal] = useState(String(a.priority));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setVal(String(a.priority)); }, [a.priority]);
+  async function save(v: string) {
+    const n = Math.max(1, Math.min(999, Math.round(Number(v) || 100)));
+    if (n === a.priority) { setVal(String(a.priority)); return; }
+    setBusy(true);
+    const r = await setAgentPriority(a.id, n);
+    setBusy(false);
+    if (r.ok) { setVal(String(r.priority)); router.refresh(); } else setVal(String(a.priority));
+  }
+  return (
+    <label className="note" style={{ display: "inline-flex", gap: 4, alignItems: "center", fontSize: 11, whiteSpace: "nowrap" }}
+      title="Failover priority — LOWER = higher precedence. A backup runner stands by while a higher-priority peer of the same scope (this client's agents, or the central runners) is online, and takes over when it goes silent. Equal priority = load-balance.">
+      priority
+      <input type="number" min={1} max={999} value={val} disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={(e) => save(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        style={{ width: 50 }} />
+    </label>
+  );
+}
+
+// Version display (semver line + build hash + up-to-date/needs-update note). Shared so the v2 table
+// reads the same as the classic one without inlining the branch twice.
+function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentBuild: string; currentVersion: string | null }) {
+  const v = a.version;
+  const isBuild = !!v && /^[0-9a-f]{6,}$/.test(v); // a build hash vs legacy "0.1.0"/"unknown"
+  const semverLine = a.semver
+    ? <div style={{ fontWeight: 600, color: currentVersion && a.semver !== currentVersion ? "var(--warn-fg)" : undefined }}>v{a.semver}</div>
+    : null;
+  if (isBuild) {
+    return (
+      <>
+        {semverLine}
+        <code className="muted" style={{ fontSize: 11 }}>build {v!.slice(0, 7)}</code>
+        {v === currentBuild
+          ? <div className="note" style={{ color: "var(--ok-fg)" }}>✓ up to date</div>
+          : <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ update available</div>}
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="muted">{v ?? "—"}</span>
+      {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
+    </>
+  );
+}
+
+export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now, v2 = false }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number; v2?: boolean }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -144,6 +209,13 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [installAgent, setInstallAgent] = useState<AgentVM | null>(null);
   const installRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (installAgent) installRef.current?.showModal(); else installRef.current?.close(); }, [installAgent]);
+
+  const [troubleshootAgent, setTroubleshootAgent] = useState<AgentVM | null>(null);
+  const troubleshootRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (troubleshootAgent) troubleshootRef.current?.showModal(); else troubleshootRef.current?.close(); }, [troubleshootAgent]);
+  const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
+  const localRestartRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -308,6 +380,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
         </div>
       </details>
 
+      {!v2 && (
       <table className="desk-only">
         <thead>
           <tr>
@@ -367,7 +440,9 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     return (
                       <>
                         <span className="muted">{v ?? "—"}</span>
-                        {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build</div>}
+                        {/* An update only lands if the runner heartbeats; if this never clears, the
+                            runner isn't reaching the app at all — point at Troubleshoot, not Update. */}
+                        {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
                       </>
                     );
                   })()}
@@ -391,6 +466,8 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
                     <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
                     <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
+                    <button onClick={() => setTroubleshootAgent(a)} title="Get a diagnostic command for a runner that never comes online (pre-build / update stuck on queued)">Troubleshoot</button>
+                    <button onClick={() => setLocalRestartAgent(a)} title="Get the command to restart this runner ON the device itself — when you can't use the app's Restart">Local Restart</button>
                     {a.enabled && !upToDate && (
                       <button onClick={() => run(a.id, requestAgentUpdate)} disabled={toggling === a.id || a.updateRequested} title="Pull the latest runner code and restart on the next heartbeat (~poll interval)">
                         {toggling === a.id ? "Requesting…" : a.updateRequested ? "Queued…" : "Update"}
@@ -405,6 +482,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       <button onClick={() => run(a.id, trashAgent)} disabled={toggling === a.id} title="Move to trash (restorable for 30 days)">Trash</button>
                     )}
                   </div>
+                  <div style={{ marginTop: 4 }}><PriorityControl a={a} /></div>
                 </td>
               </tr>
             );
@@ -414,6 +492,94 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
           )}
         </tbody>
       </table>
+      )}
+
+      {/* v2: fewer, denser columns. Identity (name · scope · client · id · priority) in one cell,
+          version, activity (last seen · uptime · status), and every action behind one Actions ▾ menu. */}
+      {v2 && (
+      <table className="desk-only agents-v2">
+        <thead>
+          <tr>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                title="Select all runners that can take an update"
+                checked={updatableAgents.length > 0 && selectedUpdatable.length === updatableAgents.length}
+                disabled={updatableAgents.length === 0}
+                onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
+              />
+            </th>
+            <th>Runner</th><th>Version</th><th>Activity</th><th style={{ textAlign: "right" }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {agents.map((a) => {
+            const ls = lastSeen(a.lastSeenAt, nowMs);
+            const upToDate = isUpToDate(a);
+            const u = updateStatus(a);
+            const stuck = stuckLabel(a, ls.online, nowMs);
+            return (
+              <tr key={a.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(a.id)}
+                    disabled={!updatable(a)}
+                    title={updatable(a) ? "Select for bulk update" : !a.enabled ? "Disabled — enable it first" : a.updateRequested ? "Update already queued" : "Already up to date"}
+                    onChange={() => toggleSelect(a.id)}
+                  />
+                </td>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{a.name}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
+                    <span className="badge">{a.scope === "central" ? "central" : "client-network"}</span>
+                    {a.clientName
+                      ? <span className="muted" style={{ fontSize: 12 }}>{a.clientName}</span>
+                      : <span className="muted" style={{ fontSize: 12 }}>— all —</span>}
+                  </div>
+                  <code className="muted" style={{ fontSize: 11, display: "block", marginTop: 2 }}>{a.id}</code>
+                  <div style={{ marginTop: 4 }}><PriorityControl a={a} /></div>
+                </td>
+                <td><VersionCell a={a} currentBuild={currentBuild} currentVersion={currentVersion} /></td>
+                <td>
+                  <div>
+                    <span style={{ color: ls.online ? "var(--ok-fg)" : undefined }}>{ls.online ? "● " : ""}{ls.text}</span>
+                    {a.enabled ? null : <span className="muted"> · disabled</span>}
+                  </div>
+                  {a.enabled && ls.online && (
+                    <div className="note muted" title={a.bootAt ? `up since ${a.bootAt}` : "uptime unknown"}>up {uptime(a.bootAt, nowMs)}</div>
+                  )}
+                  {stuck && <div className="note" style={{ color: "var(--err-fg)" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{stuck}</div>}
+                  {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
+                      shows every button inline). */}
+                  <ActionsMenu items={[
+                    { label: "Install", onClick: () => setInstallAgent(a) },
+                    { label: a.enabled ? "Disable" : "Enable", disabled: toggling === a.id, onClick: () => toggle(a.id, !a.enabled) },
+                    { label: "Troubleshoot", onClick: () => setTroubleshootAgent(a) },
+                    { label: "Local restart", onClick: () => setLocalRestartAgent(a) },
+                    ...(a.enabled && !upToDate
+                      ? [{ label: a.updateRequested ? "Queued…" : "Update", disabled: toggling === a.id || a.updateRequested, onClick: () => run(a.id, requestAgentUpdate) }]
+                      : []),
+                    ...(a.enabled
+                      ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
+                      : []),
+                    ...(!a.enabled
+                      ? [{ label: "Trash", danger: true, onClick: () => run(a.id, trashAgent) }]
+                      : []),
+                  ]} />
+                </td>
+              </tr>
+            );
+          })}
+          {agents.length === 0 && (
+            <tr><td colSpan={5} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
+          )}
+        </tbody>
+      </table>
+      )}
 
       {/* Mobile: status-focused card per agent (online/version/last-seen/uptime). Enroll + per-agent
           actions stay on desktop. */}
@@ -432,6 +598,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 <span><span className="k">build</span> <code style={{ fontSize: 11 }}>{a.version ? a.version.slice(0, 8) : "—"}</code></span>
                 <span><span className="k">last seen</span> {ls.text}</span>
                 <span><span className="k">uptime</span> {uptime(a.bootAt, nowMs)}</span>
+                {v2 && <span><span className="k">priority</span> {a.priority}</span>}
               </div>
             </div>
           );
@@ -582,6 +749,82 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
             </div>
           </div>
         )}
+      </dialog>
+
+      {/* Per-agent troubleshoot: diagnose a runner that enrolled but never heartbeats (the "pre-build
+          runner" that stays that way, an update stuck on "queued…"). The served script checks each
+          layer on the host and ends with a verdict + an optional foreground run. */}
+      <dialog ref={troubleshootRef} onClose={() => setTroubleshootAgent(null)} style={{ maxWidth: 680 }}>
+        {troubleshootAgent && (
+          <div>
+            <div className="row-between">
+              <h2>Troubleshoot runner: {troubleshootAgent.name}</h2>
+              <button onClick={() => setTroubleshootAgent(null)} aria-label="Close">×</button>
+            </div>
+            <p className="note">
+              For a runner that <b>never comes online</b> — it shows &ldquo;pre-build runner&rdquo; forever, or an update
+              sits on &ldquo;queued — waiting for the runner to poll&rdquo;. Run this in <b>PowerShell on the runner host</b>{" "}
+              (elevated, so it can read the machine-level token). It checks PowerShell 7, the runner files, the
+              Scheduled Task, <code>RUNNER_API_TOKEN</code>, connectivity and auth, then prints a verdict and offers to
+              run the runner in the foreground so you can watch it live.
+            </p>
+            <textarea readOnly rows={2} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
+              value={troubleshootCommand(troubleshootAgent, origin)} onFocus={(e) => e.currentTarget.select()} />
+            <p className="note" style={{ color: "var(--muted)" }}>
+              Diagnostics are read-only and never touch this agent&apos;s status here (the auth check uses a probe id, so
+              it can&apos;t consume a queued update or fake &ldquo;last seen&rdquo;). Common outcome: everything passes but the
+              service started before the token landed — the fix is a <b>reboot</b> of the runner host.
+            </p>
+            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+              <button onClick={() => navigator.clipboard?.writeText(troubleshootCommand(troubleshootAgent, origin))}>Copy command</button>
+              <span className="grow" />
+              <button className="primary" onClick={() => setTroubleshootAgent(null)}>Done</button>
+            </div>
+          </div>
+        )}
+      </dialog>
+
+      {/* Per-agent LOCAL restart: the command to restart the runner process ON the device itself — for
+          when the app's Restart (delivered via heartbeat) can't be used because the agent isn't
+          heartbeating. How it's supervised varies by OS, so show each and run the matching block. */}
+      <dialog ref={localRestartRef} onClose={() => setLocalRestartAgent(null)} style={{ maxWidth: 680 }}>
+        {localRestartAgent && (() => {
+          const win = "Stop-ScheduledTask -TaskName iam-runner; Start-ScheduledTask -TaskName iam-runner";
+          const mac = "launchctl kickstart -k gui/$(id -u)/com.coretelligent.iamrunner";
+          const linux = "sudo systemctl restart iam-runner";
+          const pre = { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 6, padding: "0.4rem 0.6rem", whiteSpace: "pre-wrap" as const, fontSize: 12, margin: 0 };
+          const hdr = { margin: "0.6rem 0 0.15rem" };
+          const central = localRestartAgent.scope === "central";
+          return (
+            <div>
+              <div className="row-between">
+                <h2>Local restart: {localRestartAgent.name}</h2>
+                <button onClick={() => setLocalRestartAgent(null)} aria-label="Close">×</button>
+              </div>
+              <p className="note">
+                Restart the runner <b>on the device itself</b> — use this when the app&apos;s <b>Restart</b> can&apos;t reach it
+                (it isn&apos;t heartbeating). Run the block that matches how the host supervises the runner, in an
+                <b> elevated</b> shell on the runner host.{" "}
+                {central ? "This is a central runner — usually macOS (launchd) or Linux (systemd)." : "This is a client-network runner — usually Windows (Scheduled Task)."}
+              </p>
+              <p className="note" style={hdr}><b>Windows</b> (Scheduled Task):</p>
+              <pre style={pre}>{win}</pre>
+              <p className="note" style={hdr}><b>macOS</b> (launchd — adjust the label if different: <code>launchctl list | grep -i iam</code>):</p>
+              <pre style={pre}>{mac}</pre>
+              <p className="note" style={hdr}><b>Linux</b> (systemd):</p>
+              <pre style={pre}>{linux}</pre>
+              <p className="note" style={{ color: "var(--muted)", marginTop: "0.5rem" }}>
+                Last resort on any OS: kill the runner process (<code>pwsh</code> running <code>Start-IamRunner</code>) and
+                its supervisor relaunches it. A local restart re-runs the code already on disk — to get new code, use <b>Update</b>.
+              </p>
+              <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+                <button onClick={() => navigator.clipboard?.writeText(central ? mac : win)}>Copy {central ? "macOS" : "Windows"} command</button>
+                <span className="grow" />
+                <button className="primary" onClick={() => setLocalRestartAgent(null)}>Done</button>
+              </div>
+            </div>
+          );
+        })()}
       </dialog>
     </>
   );

@@ -239,3 +239,25 @@ Describe 'Confirm-CtgZoom' {
         $r.ok | Should -BeFalse
     }
 }
+
+Describe 'Connect-CtgZoom scope capture' {
+    It 'records the token response scopes for the conn-test rights check' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Zoom -MockWith {
+            [pscustomobject]@{ access_token = 'tok'; scope = 'user:read:admin user:write:admin phone:write:admin' }
+        }
+        $cred = [pscredential]::new('cid', (ConvertTo-SecureString 'csecret' -AsPlainText -Force))
+        Connect-CtgZoom -Credential $cred -AccountId 'acct1'
+        $scopes = Get-CtgZoomGrantedScopes
+        $scopes | Should -HaveCount 3
+        $scopes | Should -Contain 'user:write:admin'
+    }
+
+    It 'returns an empty list when Zoom omits the scope field' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Zoom -MockWith {
+            [pscustomobject]@{ access_token = 'tok' }
+        }
+        $cred = [pscredential]::new('cid', (ConvertTo-SecureString 'csecret' -AsPlainText -Force))
+        Connect-CtgZoom -Credential $cred -AccountId 'acct1'
+        @(Get-CtgZoomGrantedScopes) | Should -HaveCount 0
+    }
+}

@@ -6,6 +6,8 @@
 // and the locations table conditions resolve against. This is the rule SOURCE; the case Playbook
 // shows the RESOLVED output for a specific person.
 import { useState } from "react";
+import { RefreshLocationsButton } from "./refresh-locations-button";
+import { LocationTargetsEditor } from "./location-targets-editor";
 
 type GroupEntry = string | { groups?: string[]; when?: string };
 type OuEntry = string | Array<{ path?: string; when?: string }>;
@@ -66,20 +68,25 @@ function FragmentView({ frag }: { frag: Fragment }) {
   );
 }
 
-export function RolesRulesView({ personas, globals, locations }: {
+export function RolesRulesView({ personas, globals, locations, slug, groupOptions = [] }: {
+  slug?: string;
   personas: Record<string, Persona> | null;
   globals: Record<string, Fragment> | null;
   locations: Record<string, Record<string, unknown>> | null;
+  groupOptions?: string[];
 }) {
   const [openP, setOpenP] = useState<Set<string>>(new Set());
   const toggle = (n: string) => setOpenP((s) => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x; });
   const personaNames = personas ? Object.keys(personas).sort() : [];
   const globalSystems = globals ? Object.keys(globals) : [];
   const locNames = locations ? Object.keys(locations) : [];
+  const noRules = personaNames.length === 0 && globalSystems.length === 0;
 
   return (
     <div>
       <p className="note">The rules that resolve a new hire&rsquo;s OU, groups and attributes. <code style={{ fontSize: 11, color: "#7b3fa0" }}>when …</code> entries apply only when the condition holds (department/title/location/employment). The case Playbook shows the resolved result for a specific person.</p>
+
+      {noRules && <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>}
 
       {globalSystems.length > 0 && (
         <>
@@ -117,18 +124,28 @@ export function RolesRulesView({ personas, globals, locations }: {
         </>
       )}
 
-      {locNames.length > 0 && (
+      {(slug || locNames.length > 0) && (
         <>
-          <h3 style={{ margin: "0.8rem 0 2px" }}>Locations ({locNames.length})</h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0.8rem 0 2px", flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0 }}>Locations ({locNames.length})</h3>
+            {slug && <RefreshLocationsButton slug={slug} />}
+          </div>
+          {locNames.length === 0 ? (
+            <p className="note">No locations synced yet — <b>Refresh locations</b> pulls them from ServiceNow (cmn_location).</p>
+          ) : (
           <table style={{ fontSize: 12 }}>
-            <thead><tr><th style={{ textAlign: "left" }}>Name</th><th style={{ textAlign: "left" }}>City</th><th style={{ textAlign: "left" }}>State</th><th style={{ textAlign: "left" }}>Timezone</th><th style={{ textAlign: "left" }}>Country</th></tr></thead>
+            <thead><tr><th style={{ textAlign: "left" }}>Name</th><th style={{ textAlign: "left" }}>Address</th><th style={{ textAlign: "left" }}>City</th><th style={{ textAlign: "left" }}>State</th><th style={{ textAlign: "left" }}>Zip</th><th style={{ textAlign: "left" }}>Timezone</th><th style={{ textAlign: "left" }}>Country</th><th style={{ textAlign: "left" }} title="AD/Entra groups a hire at this location gets (e.g. FalconBOS + a floor-printer group). Suggestions come from the client's discovered groups.">Groups (AD/Entra)</th></tr></thead>
             <tbody>
               {locNames.map((n) => {
-                const l = locations![n] as { city?: string; state?: string; timezone?: string; country?: { short?: string; name?: string } };
-                return <tr key={n}><td><b>{n}</b></td><td>{l.city ?? "—"}</td><td>{l.state ?? "—"}</td><td>{l.timezone ?? "—"}</td><td>{l.country?.short ?? l.country?.name ?? "—"}</td></tr>;
+                const l = locations![n] as { address?: string; city?: string; state?: string; zip?: string; timezone?: string; country?: { short?: string; name?: string }; groups?: string[] };
+                return <tr key={n}><td><b>{n}</b></td><td>{l.address ?? "—"}</td><td>{l.city ?? "—"}</td><td>{l.state ?? "—"}</td><td>{l.zip ?? "—"}</td><td>{l.timezone ?? "—"}</td><td>{l.country?.short ?? l.country?.name ?? "—"}</td>
+                  <td>{slug
+                    ? <LocationTargetsEditor slug={slug} name={n} groups={Array.isArray(l.groups) ? l.groups : []} groupOptions={groupOptions} />
+                    : (Array.isArray(l.groups) && l.groups.length ? l.groups.join(", ") : "—")}</td></tr>;
               })}
             </tbody>
           </table>
+          )}
         </>
       )}
     </div>

@@ -10,14 +10,14 @@ BeforeAll {
 
     # Global stubs so Pester can Mock these in the module scope (real cmdlets come from Microsoft.Graph).
     function global:Get-MgSubscribedSku { param($SubscribedSkuId, [switch]$All) }
-    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel) }
+    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel, $Property) }
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
     function global:Set-MgUserLicense { param($UserId, $AddLicenses, $RemoveLicenses) }
-    function global:Get-MgGroup {}
+    function global:Get-MgGroup { param($GroupId, $Filter, $Property, $Top, [switch]$All) }
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
-    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses) }
+    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation, $PasswordProfile) }
     function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef { param($GroupId, $DirectoryObjectId) }
@@ -60,6 +60,7 @@ Describe 'Invoke-CtgM365Onboarding' {
         Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:Skus }
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }   # user does not exist yet
         Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1' } }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }       # profile attrs + usageLocation
         Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ SkuId = 'sku-e3' }) } # E3 already present
         Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
         Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'grp-1' } }
@@ -147,6 +148,32 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
         ($r.Actions -join ' ') | Should -Match 'assigned license: Microsoft Entra ID P2'
         ($r.Actions -join ' ') | Should -Match 'license present'
+        # usageLocation must be set before licensing (else Graph: "invalid usage location") — regression
+        # for UM0029655, where a synced user had no usageLocation and the E3 assignment was rejected.
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UsageLocation -eq 'US' } -Times 1
+    }
+
+    It 'defaults usageLocation to US before licensing when the intake omits it (synced user)' {
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone='' }  # no UsageLocation
+        $config = [pscustomobject]@{ licenses = @('Microsoft Entra ID P2') }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UsageLocation -eq 'US' } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'set usageLocation: US'
+    }
+
+    It 'assigns MULTIPLE missing licenses in ONE call (interdependent service plans)' {
+        # UM0029655: Defender for O365 P2's plan depends on Exchange Online (in E3); assigned one-by-one
+        # Graph rejects it ("service plan ... depends on ..."). Batch all new licenses into a single
+        # Set-MgUserLicense so co-dependent plans enable together.
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }  # none assigned yet
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $config = [pscustomobject]@{ licenses = @('Microsoft 365 E3', 'Microsoft Entra ID P2') }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'
+        # ONE call carrying BOTH SkuIds — not two separate per-license calls.
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { @($AddLicenses).Count -eq 2 }
     }
 
     It 'adds the user to Config.groups when not already a member' {
@@ -555,6 +582,172 @@ Describe 'Invoke-CtgM365CloudMirror' {
     }
 }
 
+Describe 'Resolve-CtgEntraGroupId' {
+    It 'resolves a display name to the group id' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'grp-42'; DisplayName = 'E5 License Users' }) }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'E5 License Users' }
+        $r.Id | Should -Be 'grp-42'
+    }
+
+    It 'passes a verified GUID through unchanged' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' } }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' }
+        $r.Id | Should -Be '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99'
+        Should -Invoke Get-MgGroup -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' } -Times 1
+    }
+
+    It 'errors actionably on a stale GUID (Graph 404)' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { throw 'Request_ResourceNotFound: does not exist' }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' }
+        $r.Error | Should -Match 'not found in Entra'
+        $r.Error | Should -Match 'configure the group NAME'
+    }
+
+    It 'errors on an unknown name with a discovery hint' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'No Such Group' }
+        $r.Error | Should -Match "no Entra group named 'No Such Group'"
+    }
+
+    It 'errors on an ambiguous name instead of picking one' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'a' }, [pscustomobject]@{ Id = 'b' }) }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'Dup Name' }
+        $r.Error | Should -Match '2 Entra groups match'
+    }
+
+    It 'resolves by mail alias too (same identifier set as the rest of the module)' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith {
+            param($GroupId, $Filter)
+            if ("$Filter" -match "mail eq 'e5-lic@x\.com'") { @([pscustomobject]@{ Id = 'grp-alias' }) } else { @() }
+        }
+        $r = & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'e5-lic@x.com' }
+        $r.Id | Should -Be 'grp-alias'
+    }
+
+    It 'THROWS on a transient Graph error during name lookup (retry, not a fake config error)' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { throw 'TooManyRequests: throttled' }
+        { & (Get-Module Coretelligent.M365) { Resolve-CtgEntraGroupId 'E5 License Users' } } | Should -Throw -ExpectedMessage '*throttled*'
+    }
+}
+
+Describe 'group-based license assignment' {
+    BeforeEach {
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:Skus }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }
+        Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1' } }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'lic-grp-1' }) }
+        Mock Get-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { }
+        $script:user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $script:pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+    }
+
+    It 'licenses via Entra group membership, never Set-MgUserLicense' {
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='Microsoft 365 E5'; assignVia='group'; group='E5 License Users'; groupSource='entra' }) }
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join '|') | Should -Match "license 'Microsoft 365 E5': member of Entra group 'E5 License Users'"
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'lic-grp-1' } -Times 1
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'still sets usageLocation for a group-based-only license list (group licensing requires it)' {
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='E5 License Users' }) }
+        $null = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UsageLocation -eq 'US' } -Times 1
+    }
+
+    It 'notes an ad-source entry for the AD lane and touches no Graph group' {
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        ($r.Actions -join '|') | Should -Match "the active-directory step adds it"
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'WARNs (does not fail) when the license group is not in Entra — a config error, no point retrying' {
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='Ghost Group' }) }
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join '|') | Should -Match "WARN license 'E5': no Entra group named 'Ghost Group'"
+    }
+
+    It 'THROWS (fails the job) when the group add itself fails — same invariant as direct Set-MgUserLicense' {
+        Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { throw 'Insufficient privileges to complete the operation' }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='E5 License Users' }) }
+        { Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage "*could not add to Entra group 'E5 License Users'*"
+    }
+
+    It 'mixes group-based and direct entries — direct still uses Set-MgUserLicense' {
+        $config = [pscustomobject]@{ licenses = @(
+            'SPE_E3',
+            [pscustomobject]@{ name='Microsoft 365 E5'; assignVia='group'; group='E5 License Users' }
+        ) }
+        $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword $pwd
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'lic-grp-1' } -Times 1
+    }
+
+    It 'validator: entra group-based entry passes on membership, without any sku' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ AdditionalProperties = @{ displayName = 'E5 License Users' } }) }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='Microsoft 365 E5'; assignVia='group'; group='E5 License Users' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -like "license: Microsoft 365 E5 (via Entra group*" }).pass | Should -BeTrue
+    }
+
+    It 'validator: entra group-based entry misses when not a member' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='E5 License Users' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -like "license: E5 (via Entra group*" }).pass | Should -BeFalse
+    }
+
+    It 'validator: a GUID-configured entra group verifies by membership ID (not the name index)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = '7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99'; AdditionalProperties = @{ displayName = 'E5 License Users' } }) }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E5'; assignVia='group'; group='7a3d4bce-dbdb-4f13-83ff-6ed2440b6c99' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+    }
+
+    It 'validator: ad-source entry passes once the synced membership is visible in Entra' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @([pscustomobject]@{ Id = 'g1'; AdditionalProperties = @{ displayName = 'M365 E3 Users Group' } }) }
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -like "license: E3 (via AD group*" }).pass | Should -BeTrue
+    }
+
+    It 'validator: ad-source entry MISSES when the group is synced to Entra but the user is not a member' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        # BeforeEach's Get-MgGroup mock returns a group -> the group IS visible in Entra.
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -like "license: E3 (via AD group*" }).pass | Should -BeFalse
+    }
+
+    It 'validator: ad-source entry reports an unverifiable-from-here pass when the group is not visible in Entra' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { $null }  # not synced / on-prem only
+        $config = [pscustomobject]@{ licenses = @([pscustomobject]@{ name='E3'; assignVia='group'; group='M365 E3 Users Group'; groupSource='ad' }) }
+        $r = Confirm-CtgM365 -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -Action 'onboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -like "*not visible in Entra*" }).pass | Should -BeTrue
+    }
+}
+
 Describe 'Set-CtgSeatAwareLicense' {
     BeforeEach {
         $script:cfg = [pscustomobject]@{ skuId='sku-e5'; entraGroupWhenAvailable='e5-group'; adGroupFallback='M365 E3 Users Group' }
@@ -567,7 +760,8 @@ Describe 'Set-CtgSeatAwareLicense' {
         Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
         $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg
         $r.Tier | Should -Be 'E5'
-        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'e5-group' } -Times 1
+        # 'e5-group' is a NAME — it resolves to the mocked group's id ('g') before the add.
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g' } -Times 1
     }
 
     It 'falls back to the E3 AD group when no E5 seat is free' {
@@ -585,6 +779,44 @@ Describe 'Set-CtgSeatAwareLicense' {
         Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith {}
         $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg2
         $r.Tier | Should -Be 'E3'
-        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'e3-group' } -Times 1
+        Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g' } -Times 1
+    }
+}
+
+Describe 'Invoke-CtgM365PasswordReset' {
+    # Ad-hoc "Generate random password" (INC0855142): app-generated value arrives as
+    # config.newPassword; the executor sets a PasswordProfile with force-change and never
+    # echoes the value into the result.
+    BeforeEach {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v' }
+    }
+
+    It 'sets a PasswordProfile with force-change on the resolved user' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        $r = Invoke-CtgM365PasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter {
+            $UserId -eq 'u1' -and $PasswordProfile.Password -eq 'Xy7#kQ9pLm2$Wn4v' -and $PasswordProfile.ForceChangePasswordNextSignIn -eq $true
+        }
+        ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    It 'refuses an AD-synced user and points the operator at Active Directory' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $true } }
+        { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*AD-synced*'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'throws when the user is not found — never silently no-ops' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { throw 'Request_ResourceNotFound' }
+        { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*not found*'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'throws when the app did not inject newPassword (a wiped value is never re-usable)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        { Invoke-CtgM365PasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
     }
 }

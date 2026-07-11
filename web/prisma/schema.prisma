@@ -125,6 +125,11 @@ model Client {
   // { webhookUrl, token, mode: "also" | "only" } — "also" = client channel PLUS the default/restricted
   // base, "only" = client channel alone. Null = use the global routing (default vs restricted).
   notifyOverride         Json?
+  // Delinea (Secret Server) folder id this client's secrets are CREATED in when an operator authors a
+  // credential in-app (the write path — see lib/secrets/delinea-templates.ts). Read-only brokering
+  // never needs it. Falls back to DELINEA_FOLDER_MAP[slug] when null; null + no env entry = the
+  // in-app "Create in Delinea" affordance is disabled for this client.
+  delineaFolderId        String?
   createdAt              DateTime     @default(now())
   archivedAt             DateTime?
 
@@ -146,6 +151,8 @@ model Client {
   cases           CaseRequest[]
   runbook         RunbookSection[]
   connectionTests ConnectionTest[]
+  setupStates     SystemSetupState[]
+  connHealth      ConnHealthState[]
   userAccess      UserClientAccess[]
 }
 
@@ -186,8 +193,37 @@ model Secret {
   provider   String  @default("delinea")
   externalId String // Delinea secret id — NEVER a value
   label      String?
+  // Credential expiry, captured OPPORTUNISTICALLY from Delinea metadata whenever the secret is
+  // checked or brokered (never from the value). Null = Delinea doesn't expose one for this secret.
+  expiresAt         DateTime?
+  expiryCheckedAt   DateTime?
+  expiryNotifiedAt  DateTime? // last credExpiring alert for this secret (renotify window)
 
   @@unique([clientId, name])
+}
+
+// Durable per-(client, system) connection-health snapshot. ConnectionTest rows are DELETED and
+// recreated on every run, so new-failure detection and notification suppression live here: written
+// by reportConnectionTest on every result, never deleted by a re-run. Sweep-sourced NEW failures
+// set pendingNotifyAt and are flushed (individually or as one digest) by the conn sweep;
+// failNotifiedAt stops repeats until the system recovers.
+model ConnHealthState {
+  id               String    @id @default(cuid())
+  client           Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId         String
+  systemKey        String
+  lastStatus       String // ok | fail
+  lastDetail       String?
+  lastOkAt         DateTime?
+  lastFailAt       DateTime?
+  credExpiresAt    DateTime? // nearest credential expiry the probe reported (e.g. Graph app secret)
+  pendingNotifyAt  DateTime? // a sweep-sourced NEW failure awaiting the digest flush
+  failNotifiedAt   DateTime? // cleared on recovery — re-arms future alerts
+  expiryNotifiedAt DateTime?
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([clientId, systemKey])
+  @@index([pendingNotifyAt])
 }
 
 model Agent {
@@ -198,6 +234,17 @@ model Agent {
   scope              AgentScope
   version            String? // the content-hash build id (canonical "on current code?" check)
   semver             String? // the human-readable release version from runner/VERSION (display only)
+  // Which ALWAYS_ON_PREM system keys this host can actually execute (its host-specific Coretelligent
+  // module loaded) — reported each heartbeat as a JSON string[]. The claim gate withholds an on-prem
+  // job from an agent that doesn't list it (e.g. a DC missing RSAT), so it stays pending with a clear
+  // reason instead of being dispatched and hard-failing. NULL = a legacy runner that doesn't report
+  // (treated as capable, preserving pre-capability behavior); [] = reports it can run no on-prem system.
+  capabilities       Json?
+  // Failover priority among peer runners of the SAME scope (a client's agents, or all central runners).
+  // LOWER = higher priority. A runner stands by (claims nothing) while a STRICTLY-higher-priority peer of
+  // its scope is online, and takes over when that peer goes silent — so a backup DC / second central
+  // runner only runs when the primary is down. Equal priority = load-balance (the pre-failover behavior).
+  priority           Int        @default(100)
   lastSeenAt         DateTime?
   // The runner process's start time (reported each heartbeat) — drives the Agents "uptime" display.
   // Resets on a restart/self-update (that's a new process), so uptime is "up since this launch".
@@ -225,6 +272,25 @@ model Agent {
   @@index([deletedAt])
 }
 
+// Operator-entered setup state for one (client, system) pair — the bits of the setup checklist
+// that can't be DERIVED from live state: "setup started" and "I verified rights manually" (the
+// attestation that also overrides the dispatch gate). Deliberately keyed by systemKey with NO FK
+// to ClientSystem: replaceSystems deletes+recreates system rows wholesale, and attestation must
+// survive an edit to the system set. Cascades only with the client itself.
+model SystemSetupState {
+  id         String    @id @default(cuid())
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId   String
+  systemKey  String
+  startedAt  DateTime? // operator opened/acknowledged the setup instructions
+  startedBy  String?
+  attestedAt DateTime? // operator attests the credential's RIGHTS were verified manually
+  attestedBy String?
+  attestNote String?
+
+  @@unique([clientId, systemKey])
+}
+
 // A one-off "does the credential actually connect, with the right permissions?" probe. ISOLATED
 // from the Job/CaseRequest pipeline so a probe can never affect a real onboarding: its own table,
 // its own claim, its own runner loop. Routed like a job — cloud systems to the central runner, on-
@@ -240,6 +306,18 @@ model ConnectionTest {
   // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
   accessOk        Boolean?
   accessDetail    String?
+  // App-side preflight stage, stamped at REQUEST time (before any runner claims it): the app itself
+  // resolved each secret from Delinea and shape-checked its field names. Null = preflight not run
+  // (Delinea unconfigured on the app, or an older row).
+  fieldsOk        Boolean?
+  fieldsDetail    String?
+  // Per-operation rights results from the runner's probe: [{ op, ok, detail }] where ok=null means
+  // "cannot verify automatically — check manually". Null = older runner or no rights-aware probe.
+  rights          Json?
+  // Nearest expiry of the credential itself when the probe can read it (e.g. the Graph app secret's
+  // passwordCredentials endDateTime). Null = unknown/unreadable.
+  credExpiresAt   DateTime?
+  source          String    @default("manual") // manual (operator button) | sweep (scheduled fleet run)
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
   secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
   config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri
@@ -277,7 +355,15 @@ model CaseRequest {
   // Why it's held: "operator" (manual pause) or "needs_info" (intake had unknowns to fill before it
   // can run — the case is auto-held on import and released once the fields are provided).
   pausedReason         String?
+  // Scheduled auto-resume: at this time the heartbeat sweep releases the hold and runners start
+  // claiming. scheduledBy is a plain snapshot of the operator's email who set it.
+  scheduledFor         DateTime?
+  scheduledBy          String?
   createdAt            DateTime   @default(now())
+  // ONE-TIME initial password for a "generate"-mode onboard: the app generates it at dispatch (so it
+  // knows the value), injects it as the runner's initial password, and stores it here to reveal to the
+  // operator EXACTLY ONCE (the reveal wipes it). Never logged / never in Job.result or audit.
+  initialPassword      String?
   // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
   // purged. Excluded from the active list and from runner claims while trashed.
   deletedAt            DateTime?
@@ -285,6 +371,7 @@ model CaseRequest {
 
   @@index([deletedAt])
   @@index([clientId]) // client-network agents claim by case.clientId; client pages filter by it
+  @@index([scheduledFor]) // the every-~minute sweepScheduledCases due-case query
 }
 
 model Job {
@@ -299,6 +386,7 @@ model Job {
   assignedAgentId  String?
   request          Json? // resolved instructions for the runner
   singleRun        Boolean           @default(false) // operator "run this step only": claimable even while the case is paused, runs in isolation (no cascade), cleared on result
+  oneTimePassword  String? // ad-hoc password-reset jobs only: the generated value, injected into the runner config at claim, revealed to the operator ONCE then wiped (also wiped on failure) — never in result/audit
   result           Json?
   evidence         Json? // screenshots / membership snapshots refs
   validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
@@ -403,6 +491,28 @@ model RunOutcome {
   @@index([resolvedAt])
 }
 
+// A "self-healing" fix task: one headless Claude Code run against an isolated git worktree,
+// triggered from a failing run-log line (operator button or the opt-in auto-fix sweep). The fixer
+// (scripts/claude-fix.mjs) diagnoses + patches the code and opens a DRAFT PR — a human always
+// merges. One unfinished task per fingerprint — enforced by the API AND by a partial unique index
+// (added in the migration: UNIQUE(fingerprint) WHERE status IN ('queued','running')) so a race
+// can't fan the same failure out into parallel fixers.
+model FixTask {
+  id          String    @id @default(cuid())
+  fingerprint String // the RunOutcome fingerprint that triggered it
+  title       String // short description shown in UI (e.g. "m365: license assignment failed")
+  context     String // the error text handed to Claude (the run-log line's copy text)
+  status      String    @default("queued") // queued | running | opened_pr | failed | no_change
+  branch      String? // claude-fixes/<id>
+  prUrl       String? // the draft PR, when one was opened
+  log         String? // tail of the fixer output (diagnosis + cost, or the error)
+  requestedBy String? // operator email or "system:auto-fix"
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([fingerprint])
+}
+
 // ── Auth: operators, their roles, and live sessions ──────────────────────────
 // Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
 // authorization is permission-based and roles stay easy to re-compose.
@@ -462,6 +572,23 @@ model User {
   clientAccess     UserClientAccess[]
 }
 
+// A verified SSO sign-in from someone who ISN'T a provisioned user — captured (instead of a silent
+// deny) so an admin can approve them from /users. Deny-by-default stays intact: nothing is granted
+// until an admin approves, choosing the role (default auditor) and client scope (default: none).
+model AccessRequest {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String? // display name from the SSO identity
+  status           String    @default("pending") // pending | approved | denied
+  requestCount     Int       @default(1) // how many times they've tried to sign in
+  firstRequestedAt DateTime  @default(now())
+  lastRequestedAt  DateTime  @default(now())
+  reviewedBy       String? // operator email who approved/denied
+  reviewedAt       DateTime?
+
+  @@index([status, lastRequestedAt])
+}
+
 // Per-user client visibility. `scope` rows are the only/exclude list; `grant` rows unlock a
 // restricted client for this user. Enforced server-side at every read path via lib/auth/client-scope.
 model UserClientAccess {
@@ -492,6 +619,24 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+// In-app feature-request box: any operator files one from the 💡 header button; settings.manage
+// triages via /settings. authorUserId is a plain id (no FK) — like Session.impersonatingUserId —
+// so a deleted author never blocks or cascades a request.
+model FeatureRequest {
+  id             String   @id @default(cuid())
+  title          String
+  body           String
+  page           String // pathname the request was filed from
+  status         String   @default("new") // new | planned | building | done | declined
+  resolutionNote String?
+  authorUserId   String?
+  authorEmail    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([createdAt])
 }
 
 // App-level singleton key/value state (no per-client owner). Holds the ServiceNow intake poller's

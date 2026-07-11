@@ -42,6 +42,18 @@ export function computeVisibleClientIds(input: ScopeInput): string[] {
 // visible client IDs. The empty array means "sees nothing" (a signed-out/over-scoped user).
 export type ClientScope = string[] | null;
 
+// Anti-escalation across the restricted boundary: a scoped operator must not CONFER access to a
+// restricted client they can't see themselves — to anyone, including themselves, regardless of role.
+// Given the operator's own resolved scope, the ids they're about to grant, and which of those are
+// restricted, return the restricted ids they're NOT allowed to grant (outside their own scope). A null
+// scope (super admin / auth-off) may grant anything → []. Non-restricted clients are never barred here
+// (any operator can already see them under "all" mode). Pure + total; the actions enforce it server-side.
+export function disallowedRestrictedGrants(actingScope: ClientScope, conferred: Iterable<string>, restricted: Set<string>): string[] {
+  if (actingScope === null) return [];
+  const scope = new Set(actingScope);
+  return [...new Set(conferred)].filter((id) => restricted.has(id) && !scope.has(id));
+}
+
 // Resolve the CURRENT request's operator scope. Call from a request context (server component, route
 // handler, or server action). null = no restriction.
 export async function currentClientScope(db: PrismaClient): Promise<ClientScope> {

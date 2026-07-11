@@ -3,7 +3,7 @@
 // No-code condition builder: edits a condition STRING (e.g. "country.short == IN && employmentType
 // == Full-Time") as OR-groups of AND-rows, or as raw text for advanced cases. Emits a grammar the
 // planner's evalCondition accepts (see lib/profiles/condition-builder.ts for the parse/serialize).
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parseCondition, serializeCondition, validateCondition, type ConditionModel, type Term, type TermOp } from "@/lib/profiles/condition-builder";
 
 // Suggested fields to branch ON (the plan context vars; see lib/profiles/context.ts buildPlanContext).
@@ -145,15 +145,34 @@ export function TagList({ items, onChange, placeholder, options }: { items: stri
     ? options.filter((o) => !items.includes(o) && o.toLowerCase().includes(draft.trim().toLowerCase())).slice(0, 14)
     : [];
   const showDrop = focused && !!options && matches.length > 0;
+  // Validation: when a picker list is provided AND populated (discovery has run), flag a tag that isn't
+  // one of the discovered options. Space/punctuation-insensitive so "Perimeter81 Users" can suggest the
+  // real "Perimeter 81 Users" (click to fix) — the same normalization the AD runner uses to auto-recover.
+  const norm = (s: string) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const optByNorm = useMemo(() => new Map((options ?? []).map((o) => [norm(o), o])), [options]);
+  const canValidate = !!options && options.length > 0;
   return (
     <div style={{ position: "relative" }}>
       <div className="toolbar" style={{ gap: 4, flexWrap: "wrap" }}>
-        {items.map((it) => (
-          <span key={it} className="badge" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-            {it}
-            <button type="button" onClick={() => onChange(items.filter((x) => x !== it))} title="remove" style={{ color: "#b3261e", padding: 0, lineHeight: 1 }}>×</button>
-          </span>
-        ))}
+        {items.map((it) => {
+          const known = !canValidate || options!.includes(it);
+          const suggestion = !known ? optByNorm.get(norm(it)) : undefined;
+          const title = known ? undefined
+            : suggestion ? `Not an exact match for a discovered group — did you mean “${suggestion}”? Click to use it.`
+            : "Not found in the discovered groups — verify the name (Refresh AD / cloud groups above).";
+          return (
+            <span key={it} className="badge" style={{ display: "inline-flex", gap: 4, alignItems: "center", ...(known ? null : { color: "var(--warn-fg)", background: "var(--warn-bg)" }) }}>
+              <span
+                title={title}
+                onClick={suggestion ? () => onChange(items.map((x) => (x === it ? suggestion : x))) : undefined}
+                style={{ cursor: suggestion ? "pointer" : known ? undefined : "help" }}
+              >
+                {!known && "⚠ "}{it}
+              </span>
+              <button type="button" onClick={() => onChange(items.filter((x) => x !== it))} title="remove" style={{ color: "#b3261e", padding: 0, lineHeight: 1 }}>×</button>
+            </span>
+          );
+        })}
         <input
           className="inline"
           style={{ width: 180 }}

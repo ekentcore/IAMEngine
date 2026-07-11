@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 
 $script:GoogleApiUrl = 'https://admin.googleapis.com/admin/directory/v1'
 $script:GoogleToken  = $null
+$script:GoogleScopes = @()
 
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
@@ -61,6 +62,7 @@ function Connect-CtgGoogle {
     $script:GoogleCustomer = $CustomerId
     if ($PSCmdlet.ParameterSetName -eq 'Token') {
         $script:GoogleToken = $AccessToken
+        $script:GoogleScopes = @()   # unknown — the caller minted the token
         Write-Verbose "Google Workspace session established (token provided)."
         return
     }
@@ -93,7 +95,19 @@ function Connect-CtgGoogle {
     $token = Get-CtgProp $resp 'access_token'
     if (-not $token) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
     $script:GoogleToken = $token
+    # Domain-wide delegation is all-or-nothing per request: the exchange FAILS if any requested
+    # scope isn't authorized for the service account's client ID. A minted token therefore proves
+    # every scope in $Scopes — record them so the connection test can report them as verified.
+    $script:GoogleScopes = @($Scopes)
     Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
+}
+
+function Get-CtgGoogleSessionScopes {
+    # The scopes the current session's token was minted with (empty when a raw token was passed —
+    # then the delegation proof doesn't apply).
+    [CmdletBinding()]
+    param()
+    if ($script:GoogleScopes) { @($script:GoogleScopes) } else { @() }
 }
 
 function Invoke-CtgGoogleApi {
@@ -321,4 +335,33 @@ function Confirm-CtgGoogle {
     [pscustomobject]@{ ok = [bool]$ok; checks = @($checks) }
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle
+# ── Ad-hoc password reset (INC0855142) ───────────────────────────────────────────────────────────
+# Operator-dispatched "Generate random password" from a case's Google Workspace line. The APP
+# generates the value (revealed once to the operator, then wiped) and injects it as
+# config.newPassword at claim; this executor only sets it — the plaintext must NEVER appear in the
+# result, actions, or an error.
+function Invoke-CtgGooglePasswordReset {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config
+    )
+    $newPassword = [string](Get-CtgProp $Config 'newPassword')
+    if ([string]::IsNullOrWhiteSpace($newPassword)) {
+        throw "no newPassword in the job config — the app injects it at claim and wipes it after its one-time reveal; dispatch a fresh reset from the account line instead of re-running this job"
+    }
+    $email = [string](Get-CtgProp $User 'UserPrincipalName')
+    if ([string]::IsNullOrWhiteSpace($email)) { throw "no resolvable user (no UserPrincipalName on the case) — password not reset" }
+    $u = Get-CtgGoogleUser -Email $email
+    if (-not $u) { throw "Google user '$email' not found — password not reset" }
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ($PSCmdlet.ShouldProcess($email, "Reset password")) {
+        try {
+            $null = Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ password = $newPassword; changePasswordAtNextLogin = $true }
+        } catch { throw "resetting the password for '$email': $($_.Exception.Message)" }
+        $actions.Add("reset password for $email (must change at next login; shown once to the operator, never stored)")
+    }
+    [pscustomobject]@{ System = 'google-password-reset'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset

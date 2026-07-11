@@ -7,7 +7,7 @@
     Description       = 'xMatters offboarding: deactivate (default) or delete the departed person via the xMatters REST API (HTTP Basic). Onboarding is out of band (directory sync).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgXMatters', 'Invoke-CtgXMattersApi', 'Find-CtgXMattersPerson', 'Invoke-CtgXMattersOnboarding', 'Invoke-CtgXMattersOffboarding', 'Confirm-CtgXMatters')
+    FunctionsToExport = @('Connect-CtgXMatters', 'Invoke-CtgXMattersApi', 'Resolve-CtgXMattersEmail', 'ConvertTo-CtgXMattersTargetName', 'Get-CtgXMattersPerson', 'Find-CtgXMattersByName', 'Resolve-CtgXMattersTarget', 'Invoke-CtgXMattersOnboarding', 'Invoke-CtgXMattersOffboarding', 'Confirm-CtgXMatters')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

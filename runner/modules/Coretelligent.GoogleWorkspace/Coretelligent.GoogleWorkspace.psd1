@@ -7,7 +7,7 @@
     Description       = 'Idempotent Google Workspace user lifecycle via the Admin SDK Directory API. Offboard suspends (never deletes) and captures evidence. No external module dependencies.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgGoogle', 'Invoke-CtgGoogleApi', 'Get-CtgGoogleUser', 'Get-CtgGoogleUserGroups', 'Invoke-CtgGoogleOnboarding', 'Invoke-CtgGoogleOffboarding', 'Confirm-CtgGoogle')
+    FunctionsToExport = @('Connect-CtgGoogle', 'Get-CtgGoogleSessionScopes', 'Invoke-CtgGoogleApi', 'Get-CtgGoogleUser', 'Get-CtgGoogleUserGroups', 'Invoke-CtgGoogleOnboarding', 'Invoke-CtgGoogleOffboarding', 'Confirm-CtgGoogle', 'Invoke-CtgGooglePasswordReset')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

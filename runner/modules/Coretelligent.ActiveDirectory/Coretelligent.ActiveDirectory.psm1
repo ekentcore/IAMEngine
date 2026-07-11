@@ -48,6 +48,42 @@ function Resolve-CtgOuPath {
     "OU=$Ou,$(ConvertTo-CtgDomainDn $Domain)"
 }
 
+# The base for AD DNs must be the ACTUAL AD domain (from the connected DC), NOT the user's email/UPN
+# PrimaryDomain. They differ whenever the AD domain is a subdomain of the mail domain (AD
+# corp.example.com vs mail example.com) — and building a DN from the mail domain targets a naming
+# context the DC isn't authoritative for, so New-ADUser fails "The server is unwilling to process the
+# request". Query the connected domain (honouring the -Server/-Credential splat); fall back to the
+# supplied email domain only if the query fails, so read-only/offline callers still get *a* value.
+function Resolve-CtgAdDomain {
+    param([hashtable]$AdConnection = @{}, [string]$Fallback)
+    try {
+        $root = (Get-ADDomain @AdConnection -ErrorAction Stop).DNSRoot
+        if ($root) { return [string]$root }
+    } catch { }
+    return $Fallback
+}
+
+# Space/punctuation-insensitive AD group lookup. A profile often has a group name that's off only by
+# spacing ("Perimeter81 Users" vs the real "Perimeter 81 Users") or punctuation. Try the exact identity
+# first; if that misses, search a small candidate set (by the first alphabetic token) and match on a
+# NORMALIZED name (letters+digits only, lowercased). Returns the AD group object on a SINGLE confident
+# match, else $null (0 or ambiguous -> caller keeps the original name + warns). Read-only.
+function Resolve-CtgAdGroup {
+    param([Parameter(Mandatory)][string]$Name, [hashtable]$AdConnection = @{})
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    $exact = Get-ADGroup -Identity $Name -ErrorAction SilentlyContinue @AdConnection
+    if ($exact) { return $exact }
+    $norm = { param($s) ([string]$s -replace '[^A-Za-z0-9]', '').ToLowerInvariant() }
+    $target = & $norm $Name
+    if (-not $target) { return $null }
+    $token = ([regex]::Match($Name, '[A-Za-z]{3,}')).Value   # keep the AD query narrow
+    if (-not $token) { return $null }
+    $cands = @(Get-ADGroup -Filter "Name -like '*$token*'" -ErrorAction SilentlyContinue @AdConnection)
+    $hits = @($cands | Where-Object { (& $norm $_.Name) -eq $target })
+    if (@($hits).Count -eq 1) { return $hits[0] }
+    return $null
+}
+
 # Evaluate a conditional-group rule like "avd == true" against the user object.
 function Test-CtgCondition {
     param([string]$When, $User)
@@ -133,7 +169,7 @@ function Invoke-CtgADOnboarding {
     $actions = [System.Collections.Generic.List[string]]::new()
     $primarySam = Get-CtgProp $User 'SamAccountName'   # StrictMode-safe
     $primaryUpn = [string]$User.UserPrincipalName
-    $domain = Get-CtgProp $User 'PrimaryDomain'
+    $domain = Resolve-CtgAdDomain -AdConnection $AdConnection -Fallback (Get-CtgProp $User 'PrimaryDomain')
     $ouPath = Resolve-CtgOuPath (Get-CtgProp $Config 'ou') $domain
 
     # 1. Decide WHICH account to use before creating one: check existence, confirm it's the same
@@ -185,10 +221,16 @@ function Invoke-CtgADOnboarding {
         # A DC won't enable an account without an initial password. Caller may override later /
         # set the same upstream password for mirror clients; this is a compliant placeholder.
         $initial = ConvertTo-SecureString ([System.Guid]::NewGuid().ToString() + '!Aa9') -AsPlainText -Force
-        New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $chosenUpn `
-            -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
-            -Path $ouPath -Enabled $true -AccountPassword $initial `
-            -OtherAttributes @{ proxyAddresses = "SMTP:$chosenUpn" } @AdConnection
+        # Wrap so a create failure names the resolved target DN — a bare "unwilling to process the
+        # request" hides WHERE it tried to write (the #1 cause is a wrong/nonexistent OU DN).
+        try {
+            New-ADUser -Name $User.DisplayName -SamAccountName $sam -UserPrincipalName $chosenUpn `
+                -GivenName $User.FirstName -Surname $User.LastName -DisplayName $User.DisplayName `
+                -Path $ouPath -Enabled $true -AccountPassword $initial `
+                -OtherAttributes @{ proxyAddresses = "SMTP:$chosenUpn" } @AdConnection
+        } catch {
+            throw "creating user '$sam' at '$ouPath' (domain $domain): $($_.Exception.Message)"
+        }
         $actions.Add("created user $sam in $ouPath")
     }
 
@@ -244,6 +286,23 @@ function Invoke-CtgADOnboarding {
                 if ($msg -match 'already a member') {
                     $actions.Add("already in group: $group")
                     Write-CtgADStep "✓ already in group: $group"
+                } elseif ($msg -match '[Cc]annot find|does not exist|No such object|not.*found|identity') {
+                    # Group name is likely off by spacing/punctuation ("Perimeter81 Users" vs the real
+                    # "Perimeter 81 Users"). Resolve it to a real AD group by a normalized match and retry.
+                    $resolved = Resolve-CtgAdGroup -Name $group -AdConnection $AdConnection
+                    if ($resolved) {
+                        try {
+                            Add-ADGroupMember -Identity $resolved.DistinguishedName -Members $sam -ErrorAction Stop @AdConnection
+                            $actions.Add("added to group: $($resolved.Name) (matched config '$group')")
+                            Write-CtgADStep "✓ group: $($resolved.Name) — matched '$group'"
+                        } catch {
+                            if ($_.Exception.Message -match 'already a member') { $actions.Add("already in group: $($resolved.Name) (matched '$group')") }
+                            else { $actions.Add("WARN could not add to group '$($resolved.Name)' (matched '$group'): $($_.Exception.Message)") ; Write-CtgADStep "✗ group: $($resolved.Name) — $($_.Exception.Message)" }
+                        }
+                    } else {
+                        $actions.Add("WARN group not found in AD: '$group' (no unique space/punctuation match — check the name in the rules editor)")
+                        Write-CtgADStep "✗ group not found: $group"
+                    }
                 } else {
                     $actions.Add("WARN could not add to group ${group}: $msg")
                     Write-CtgADStep "✗ group: $group — $msg"
@@ -517,7 +576,7 @@ function Confirm-CtgAD {
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
     $sam = [string](Get-CtgProp $User 'SamAccountName')   # StrictMode-safe (payload may lack the property)
-    $domain = Get-CtgProp $User 'PrimaryDomain'
+    $domain = Resolve-CtgAdDomain -AdConnection $AdConnection -Fallback (Get-CtgProp $User 'PrimaryDomain')
 
     # Resolve the SAME way the executor does — by display name when the case has no SamAccountName —
     # so the read-back doesn't pass an empty -Identity (a hard bind error) and doesn't check the wrong
@@ -534,7 +593,12 @@ function Confirm-CtgAD {
         }
     }
 
-    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory, msExchHideFromAddressLists -ErrorAction SilentlyContinue @AdConnection
+    # Request ONLY schema-guaranteed properties here. msExchHideFromAddressLists exists only where the
+    # on-prem Exchange schema is installed — an AD without it (M365/EXO-only tenants like Six One) makes
+    # Get-ADUser -Properties <that> throw for the WHOLE call, so -EA SilentlyContinue would null $u and a
+    # fully-onboarded user would look absent → every check "fails". The Exchange attr is fetched
+    # best-effort below, only for the offboard hide-from-GAL check that actually needs it.
+    $u = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Enabled, HomeDirectory -ErrorAction SilentlyContinue @AdConnection
     $exists = [bool]$u
     $memberObjs = if ($exists) { @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection) } else { @() }
     $groupNames = @($memberObjs | ForEach-Object { $_.Name })
@@ -570,7 +634,11 @@ function Confirm-CtgAD {
         }
         $hide = Get-CtgProp $Config 'hideFromGal'
         if ($exists -and $hide -and (Get-CtgProp $hide 'attribute')) {
-            & $add 'hidden from GAL' $true ([bool]((Get-CtgProp $u 'msExchHideFromAddressLists')))
+            # Fetch the Exchange attr best-effort (see the read-back note) so a missing schema can't fail
+            # the whole validation — if it isn't queryable, treat "hidden" as not-yet-confirmed (false).
+            $hidden = $false
+            try { $hidden = [bool]((Get-ADUser -Identity $sam -Properties msExchHideFromAddressLists -ErrorAction Stop @AdConnection).msExchHideFromAddressLists) } catch { }
+            & $add 'hidden from GAL' $true $hidden
         }
         # do-not-move-ou guardrail: the DN must NOT sit under the Disabled Users OU.
         $disabledOu = Get-CtgProp $Config 'disabledUsersOu'
@@ -583,4 +651,358 @@ function Confirm-CtgAD {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+# ── AD email write-back ─────────────────────────────────────────────────────────────────────────
+# After the cloud mailbox exists, record the user's email in AD's `mail` attribute. Runs on the
+# client-network agent (rides the ActiveDirectory capability — no cloud creds). The app injects
+# `writebackEmail` (the mailbox's ASSIGNED primary SMTP, resolved from the m365/exchange result) into
+# the payload at dispatch; we fall back to the deterministic work email / UPN when it isn't present
+# (older runner / no result) — the same value AD's proxyAddresses was already set to at create time.
+# Idempotent: only writes when `mail` differs. Onboard-only.
+function Resolve-CtgWritebackEmail($User) {
+    foreach ($k in 'writebackEmail', 'workEmail', 'userPrincipalName') {
+        $v = [string](Get-CtgProp $User $k)
+        if (-not [string]::IsNullOrWhiteSpace($v) -and ($v -match '@')) { return $v }
+    }
+    return $null
+}
+
+function Invoke-CtgADEmailWriteback {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $email = Resolve-CtgWritebackEmail $User
+    if (-not $email) {
+        return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @('no email to write back (no writebackEmail/workEmail/UPN on the case) — nothing done') }
+    }
+
+    # Resolve the just-created user: SamAccountName, else UPN, else DisplayName (exactly one).
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
+    $upn = [string](Get-CtgProp $User 'UserPrincipalName')
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    $existing = $null
+    if (-not [string]::IsNullOrWhiteSpace($sam)) {
+        $existing = Get-ADUser -Identity $sam -Properties mail -ErrorAction SilentlyContinue @AdConnection
+    }
+    if (-not $existing -and $upn) {
+        $upnEsc = $upn -replace "'", "''"
+        $existing = @(Get-ADUser -Filter "UserPrincipalName -eq '$upnEsc'" -Properties mail -ErrorAction SilentlyContinue @AdConnection)[0]
+        if ($existing) { $sam = [string](Get-CtgProp $existing 'SamAccountName') }
+    }
+    if (-not $existing -and $displayName) {
+        $dnEsc = $displayName -replace "'", "''"
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties mail -ErrorAction SilentlyContinue @AdConnection)
+        if ($byName.Count -eq 1) { $existing = $byName[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName') }
+        elseif ($byName.Count -gt 1) {
+            return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @("WARN $($byName.Count) AD users match display name '$displayName' — can't pick one; nothing written") }
+        }
+    }
+    if (-not $existing) {
+        return [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Actions = @("user not found ($(if ($sam) { $sam } elseif ($upn) { $upn } else { $displayName })) — nothing written") }
+    }
+
+    # Idempotent: only write when the mail attribute differs from the target.
+    $current = [string](Get-CtgProp $existing 'mail')
+    if ($current -ieq $email) {
+        $actions.Add("AD mail already '$email' — no change")
+    }
+    elseif ($PSCmdlet.ShouldProcess($sam, "Set AD mail = $email")) {
+        try {
+            Set-ADUser -Identity $sam -EmailAddress $email -ErrorAction Stop @AdConnection
+            $actions.Add("set AD mail: '$(if ($current) { $current } else { '(unset)' })' -> '$email'")
+        } catch {
+            throw "setting AD mail for '$sam' to '$email': $($_.Exception.Message)"
+        }
+    }
+
+    [pscustomobject]@{ System = 'ad-email-writeback'; Status = 'ok'; Sam = $sam; Mail = $email; Actions = $actions.ToArray() }
+}
+
+function Confirm-CtgADEmailWriteback {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $email = Resolve-CtgWritebackEmail $User
+    if (-not $email) {
+        # No email on the case = the executor deliberately wrote nothing; that's a pass, not a miss.
+        return [pscustomobject]@{ ok = $true; checks = @(@{ name = 'no email to write back (no writebackEmail/workEmail/UPN on the case) — nothing to verify'; expected = $true; actual = $true; pass = $true }) }
+    }
+    # Same lookup fallback as the executor (sam -> UPN -> unique DisplayName): a case without a
+    # SamAccountName otherwise validates against nobody and misses even though the mail is correct.
+    $u = Get-CtgAdCaseUser -User $User -Properties @('mail') -AdConnection $AdConnection
+    $actual = [string](Get-CtgProp $u 'mail')
+    $pass = [bool]($actual -and ($actual -ieq $email))
+    [pscustomobject]@{ ok = $pass; checks = @(@{ name = "AD mail = $email"; expected = $email; actual = $actual; pass = $pass }) }
+}
+
+# ── Hybrid identity-link CHECK (Design D, DETECT-ONLY) ────────────────────────────────────────────
+# Verify that the on-prem AD object will LINK to its Entra object rather than spawn a duplicate: the
+# Entra source anchor (immutableId) must equal base64(objectGUID) OR base64(mS-DS-ConsistencyGuid).
+# The app injects the Entra object's { immutableId, syncEnabled, userId } (from the m365 result) into
+# the payload as `cloudObject`. We only READ + FLAG here — no write (that's a later level). Onboard-only.
+function Get-CtgAdCaseUser {
+    param([pscustomobject]$User, [string[]]$Properties, [hashtable]$AdConnection = @{})
+    $sam = [string](Get-CtgProp $User 'SamAccountName')
+    $upn = [string](Get-CtgProp $User 'UserPrincipalName')
+    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    $u = $null
+    if (-not [string]::IsNullOrWhiteSpace($sam)) { $u = Get-ADUser -Identity $sam -Properties $Properties -ErrorAction SilentlyContinue @AdConnection }
+    if (-not $u -and $upn) { $u = @(Get-ADUser -Filter "UserPrincipalName -eq '$($upn -replace "'", "''")'" -Properties $Properties -ErrorAction SilentlyContinue @AdConnection)[0] }
+    if (-not $u -and $displayName) {
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$($displayName -replace "'", "''")'" -Properties $Properties -ErrorAction SilentlyContinue @AdConnection)
+        if ($byName.Count -eq 1) { $u = $byName[0] }
+    }
+    return $u
+}
+
+function Invoke-CtgADConsistencyCheck {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $u = Get-CtgAdCaseUser -User $User -Properties @('objectGUID', 'mS-DS-ConsistencyGuid') -AdConnection $AdConnection
+    if (-not $u) {
+        return [pscustomobject]@{ System = 'ad-consistency-check'; Status = 'ok'; Actions = @('on-prem user not found — nothing to check') }
+    }
+    # Both possible source anchors, as the base64 immutableId form AAD Connect uses.
+    $anchors = [System.Collections.Generic.List[string]]::new()
+    $og = Get-CtgProp $u 'objectGUID'
+    if ($og) { try { $anchors.Add([System.Convert]::ToBase64String(([guid]$og).ToByteArray())) } catch {} }
+    $cg = Get-CtgProp $u 'mS-DS-ConsistencyGuid'
+    if ($cg) { try { $anchors.Add([System.Convert]::ToBase64String([byte[]]$cg)) } catch {} }
+
+    $cloud = Get-CtgProp $User 'cloudObject'
+    $immutableId = [string](Get-CtgProp $cloud 'immutableId')
+    $syncEnabled = Get-CtgProp $cloud 'syncEnabled'
+    $userId = [string](Get-CtgProp $cloud 'userId')
+
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($userId)) {
+        $actions.Add('no matching Entra object reported — a fresh sync will create + anchor it (ok)')
+    }
+    elseif ($syncEnabled -eq $false) {
+        # A cloud-ONLY object exists (not synced from AD) — the on-prem user will NOT hard-match it and
+        # AAD Connect will create a second object. This is the duplicate risk the operator must resolve.
+        $actions.Add("WARN a CLOUD-ONLY Entra object exists for this user (id $userId) — the on-prem account won't link to it; AAD Connect will create a DUPLICATE. Hard-match it (set mS-DS-ConsistencyGuid to the cloud immutableId) or soft-match by primary SMTP before syncing.")
+    }
+    elseif ([string]::IsNullOrWhiteSpace($immutableId)) {
+        $actions.Add("Entra object $userId is sync-enabled but reported no immutableId — can't confirm the anchor from here; treat as linked")
+    }
+    elseif ($anchors -contains $immutableId) {
+        $actions.Add("linked: Entra immutableId matches the on-prem source anchor (objectGUID / mS-DS-ConsistencyGuid)")
+    }
+    else {
+        $actions.Add("WARN Entra immutableId ($immutableId) does NOT match the on-prem source anchor ($($anchors -join ' / ')) — the objects may be UNLINKED (possible duplicate). Verify the AAD Connect source anchor.")
+    }
+
+    $warned = @($actions | Where-Object { $_ -like 'WARN*' }).Count
+    [pscustomobject]@{ System = 'ad-consistency-check'; Status = 'ok'; Sam = [string](Get-CtgProp $u 'SamAccountName'); Flagged = ($warned -gt 0); Actions = $actions.ToArray() }
+}
+
+# ── Hard-match (operator-confirmed link) ──────────────────────────────────────────────────────────
+# Set the on-prem mS-DS-ConsistencyGuid to the existing Entra object's immutableId so AAD Connect
+# HARD-MATCHES them (links instead of duplicating). Triggered by a human clicking "Link" after the
+# consistency check flagged a mismatch — the app injects the target `immutableId` (from the m365
+# result). Heavily guarded: refuses anything that isn't a 16-byte base64 GUID; idempotent.
+function Invoke-CtgADHardMatch {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $immutableId = [string](Get-CtgProp $Config 'immutableId')
+    if ([string]::IsNullOrWhiteSpace($immutableId)) { $immutableId = [string](Get-CtgProp $User 'immutableId') }
+    if ([string]::IsNullOrWhiteSpace($immutableId)) {
+        return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @('no immutableId provided to hard-match to — nothing done') }
+    }
+    $bytes = $null
+    try { $bytes = [Convert]::FromBase64String($immutableId) } catch { $bytes = $null }
+    if (-not $bytes -or $bytes.Length -ne 16) {
+        return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @("immutableId '$immutableId' is not a 16-byte base64 GUID — refusing to write the anchor") }
+    }
+    $u = Get-CtgAdCaseUser -User $User -Properties @('mS-DS-ConsistencyGuid') -AdConnection $AdConnection
+    if (-not $u) { return [pscustomobject]@{ System = 'ad-hard-match'; Status = 'error'; Actions = @('on-prem user not found — nothing done') } }
+    $sam = [string](Get-CtgProp $u 'SamAccountName')
+    $current = Get-CtgProp $u 'mS-DS-ConsistencyGuid'
+    $currentB64 = if ($current) { [Convert]::ToBase64String([byte[]]$current) } else { $null }
+    if ($currentB64 -eq $immutableId) {
+        $actions.Add("mS-DS-ConsistencyGuid already = $immutableId — already hard-matched (no change)")
+    }
+    elseif ($PSCmdlet.ShouldProcess($sam, "Set mS-DS-ConsistencyGuid = $immutableId (hard-match)")) {
+        try {
+            Set-ADUser -Identity $sam -Replace @{ 'mS-DS-ConsistencyGuid' = $bytes } -ErrorAction Stop @AdConnection
+            $actions.Add("set mS-DS-ConsistencyGuid = $immutableId — run a directory-sync so AAD Connect links the on-prem + cloud objects")
+        } catch { throw "setting mS-DS-ConsistencyGuid for '$sam': $($_.Exception.Message)" }
+    }
+    [pscustomobject]@{ System = 'ad-hard-match'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
+}
+
+# ── Ad-hoc password reset (INC0855142) ───────────────────────────────────────────────────────────
+# Operator-dispatched "Generate random password" from a case's Active Directory line. The APP
+# generates the value (revealed once to the operator, then wiped) and injects it as config.newPassword
+# at claim; this executor only sets it — the plaintext must NEVER appear in the result, actions, or an
+# error message. For AD-synced tenants, password hash sync carries the change to Entra on its own.
+function Invoke-CtgADPasswordReset {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        [hashtable]$AdConnection = @{}
+    )
+    $newPassword = [string](Get-CtgProp $Config 'newPassword')
+    if ([string]::IsNullOrWhiteSpace($newPassword)) {
+        throw "no newPassword in the job config — the app injects it at claim and wipes it after its one-time reveal; dispatch a fresh reset from the account line instead of re-running this job"
+    }
+    # Same lookup fallback as the write-back/hard-match (sam -> UPN -> unique DisplayName).
+    $u = Get-CtgAdCaseUser -User $User -Properties @('SamAccountName') -AdConnection $AdConnection
+    if (-not $u) {
+        $who = @((Get-CtgProp $User 'SamAccountName'), (Get-CtgProp $User 'UserPrincipalName'), (Get-CtgProp $User 'DisplayName')) | Where-Object { $_ } | Select-Object -First 1
+        throw "AD user not found ($who) — password not reset"
+    }
+    $sam = [string](Get-CtgProp $u 'SamAccountName')
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ($PSCmdlet.ShouldProcess($sam, "Reset password")) {
+        $secure = ConvertTo-SecureString $newPassword -AsPlainText -Force
+        try { Set-ADAccountPassword -Identity $sam -Reset -NewPassword $secure -ErrorAction Stop @AdConnection }
+        catch { throw "resetting the password for '$sam': $($_.Exception.Message)" }
+        $actions.Add("reset password for $sam (shown once to the operator, never stored)")
+        try {
+            Set-ADUser -Identity $sam -ChangePasswordAtLogon $true -ErrorAction Stop @AdConnection
+            $actions.Add("must change password at next logon")
+        } catch {
+            # The reset DID land — a policy that forbids the flag (e.g. password-never-expires) is a warning, not a failure.
+            $actions.Add("WARN could not require change-at-next-logon: $($_.Exception.Message)")
+        }
+    }
+    [pscustomobject]@{ System = 'ad-password-reset'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
+}
+
+
+# --- Connection-test rights helpers -------------------------------------------------------------
+# Can this account CREATE USER objects in a given OU? Evaluated from the OU's ACL (read-only).
+# The evaluator is PURE (rule POCOs in, verdict out) so it's unit-testable on any platform; the
+# two wrappers below do the directory reads and degrade to "verify manually" on anything odd.
+
+# The AD schema class GUID for `user` objects — an ACE granting CreateChild scoped to this GUID
+# (or unscoped, or GenericAll) is what "can create users here" means.
+$script:AD_USER_CLASS_GUID = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+
+function Test-CtgAdCreateUserAce {
+    <#
+    .SYNOPSIS
+        Pure ACE evaluation: do these SIDs get create-user on an object with these access rules?
+    .PARAMETER Rules
+        Rule POCOs: @{ Type = 'Allow'|'Deny'; Sid = 'S-1-…'; Rights = 'CreateChild, GenericRead…'
+        (the ActiveDirectoryRights string); ObjectType = '<guid>' or '' (empty = all child classes) }.
+    .OUTPUTS
+        $true (an allow matches, no overriding deny), $false (denied / nothing allows), following
+        the simplified model: any matching deny wins over allows.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rules,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Sids
+    )
+    $applies = {
+        param($rule)
+        $sid = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['Sid'] } else { $rule.Sid })
+        if ($Sids -notcontains $sid) { return $false }
+        $rights = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['Rights'] } else { $rule.Rights })
+        $objType = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['ObjectType'] } else { $rule.ObjectType })
+        $isCreate = ($rights -match 'GenericAll') -or (
+            ($rights -match 'CreateChild') -and (
+                -not $objType -or $objType -eq '00000000-0000-0000-0000-000000000000' -or $objType -ieq $script:AD_USER_CLASS_GUID
+            )
+        )
+        return $isCreate
+    }
+    foreach ($r in $Rules) {
+        $type = [string]$(if ($r -is [System.Collections.IDictionary]) { $r['Type'] } else { $r.Type })
+        if ($type -ieq 'Deny' -and (& $applies $r)) { return $false }
+    }
+    foreach ($r in $Rules) {
+        $type = [string]$(if ($r -is [System.Collections.IDictionary]) { $r['Type'] } else { $r.Type })
+        if ($type -ieq 'Allow' -and (& $applies $r)) { return $true }
+    }
+    return $false
+}
+
+function Get-CtgAdAccountSids {
+    <#
+    .SYNOPSIS
+        The service account's SID plus its group SIDs (tokenGroups when readable — nested and
+        well-known groups included — else direct memberships), for ACL evaluation. Returns @()
+        when nothing could be resolved (callers then report "verify manually").
+    #>
+    [CmdletBinding()]
+    param([hashtable]$AdConnection = @{}, $Creds)
+    $sam = $null
+    try {
+        $s = if ($Creds -is [System.Collections.IDictionary]) { $Creds['ad-dc'] } else { $null }
+        if ($s -and $s.Username) { $sam = ([string]$s.Username -split '[\\@]')[0]; if ([string]$s.Username -match '\\') { $sam = ([string]$s.Username -split '\\')[-1] } }
+    } catch { }
+    if (-not $sam) { return @() }
+    $sids = [System.Collections.Generic.List[string]]::new()
+    try {
+        $u = Get-ADUser -Identity $sam @AdConnection -ErrorAction Stop
+        $sids.Add([string]$u.SID)
+        # tokenGroups = the full transitive group set (what an access check actually uses).
+        try {
+            $obj = Get-ADUser -Identity $sam -Properties tokenGroups @AdConnection -ErrorAction Stop
+            foreach ($g in @($obj.tokenGroups)) { $sids.Add([string]$g) }
+        } catch {
+            foreach ($g in @(Get-ADPrincipalGroupMembership -Identity $sam @AdConnection -ErrorAction SilentlyContinue)) { $sids.Add([string]$g.SID) }
+        }
+        # Everyone / Authenticated Users ACEs apply to any bound account.
+        $sids.Add('S-1-1-0'); $sids.Add('S-1-5-11')
+    } catch { return @() }
+    @($sids | Select-Object -Unique)
+}
+
+function Test-CtgAdOuCreateUserRight {
+    <#
+    .SYNOPSIS
+        One rights row (@{ op; ok; detail }) for "create users in $OuDn": reads the OU's security
+        descriptor and evaluates it against the account's SIDs. Read-only; anything unreadable
+        degrades to ok=$null ("verify manually"), never a false failure.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$AdConnection = @{},
+        [Parameter(Mandatory)][string]$OuDn,
+        [AllowEmptyCollection()][string[]]$Sids = @()
+    )
+    $op = "create users in $OuDn"
+    if (-not $Sids -or $Sids.Count -eq 0) {
+        return @{ op = $op; ok = $null; detail = 'could not resolve the service account''s SIDs — check the OU ACL manually' }
+    }
+    try {
+        $ou = Get-ADOrganizationalUnit -Identity $OuDn -Properties ntSecurityDescriptor @AdConnection -ErrorAction Stop
+        $acl = $ou.ntSecurityDescriptor
+        $rules = @()
+        foreach ($ace in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+            $rules += @{
+                Type       = [string]$ace.AccessControlType
+                Sid        = [string]$ace.IdentityReference
+                Rights     = [string]$ace.ActiveDirectoryRights
+                ObjectType = [string]$ace.ObjectType
+            }
+        }
+        $can = Test-CtgAdCreateUserAce -Rules $rules -Sids $Sids
+        if ($can) { return @{ op = $op; ok = $true; detail = 'the account (or one of its groups) can create user objects here' } }
+        return @{ op = $op; ok = $false; detail = 'no ACE grants this account CreateChild(user)/GenericAll on the OU — delegate "Create user objects" to it' }
+    }
+    catch {
+        return @{ op = $op; ok = $null; detail = "could not read the OU ACL ($(([string]$_.Exception.Message).Trim())) — check it manually" }
+    }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD, Test-CtgAdCreateUserAce, Get-CtgAdAccountSids, Test-CtgAdOuCreateUserRight

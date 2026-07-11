@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateOnly, formatDateTime } from "@/lib/dates";
 
 export type CaseRowVM = {
@@ -20,10 +20,13 @@ export type CaseRowVM = {
   statusHint: string;
   effectiveDate: string | null;
   immediate?: boolean; // offboard with no scheduled date (subject says "Immediate")
+  scheduledForIso?: string | null; // scheduled auto-resume time — shown on the "⏸ scheduled" badge
   lastRunIso?: string | null; // when the case last executed (most recent job start/finish)
   ranBy?: string | null; // operator who last ran it (email), or null
   lastActionLabel?: string | null; // most recent tracked action — "Imported"/"Unpaused"/"Paused"/"Verified"/…
   lastActionBy?: string | null; // who took that action (email), or null when not a signed-in user
+  readiness?: "ready" | "partial" | "blocked" | "none"; // can this case's systems run? (are the creds set)
+  readinessMissing?: string[]; // the unset secret names, for the tooltip
   createdAtIso: string;
 };
 
@@ -71,10 +74,55 @@ function haystack(c: CaseRowVM): string {
 // report's warning color) and the hover lists the warning lines. The count is warning STEPS
 // (distinct systems, the lines are "System: …"-prefixed) so it matches the run report's summary
 // — one step with two WARN actions is still one warning.
+// Per-case run readiness: a small traffic-light dot — can this case actually run (are its systems'
+// credentials set)? Distinct from status (lifecycle). Hidden when there's nothing to gate on, or once
+// the case is terminal (readiness is moot then). The tooltip names the missing credentials.
+const READINESS: Record<string, { color: string; label: string }> = {
+  ready: { color: "var(--ok-fg)", label: "Ready to run — all required credentials are set" },
+  partial: { color: "var(--warn-fg)", label: "Partially set up — some required credentials are missing" },
+  blocked: { color: "var(--err-fg)", label: "Not set up — required credentials are missing" },
+};
+function ReadinessDot({ c }: { c: CaseRowVM }) {
+  const r = c.readiness;
+  if (!r || r === "none" || c.status === "completed" || c.status === "failed") return null;
+  const m = READINESS[r];
+  const miss = c.readinessMissing?.length ? ` — missing: ${c.readinessMissing.join(", ")}` : "";
+  return (
+    <span
+      title={m.label + miss}
+      aria-label={m.label}
+      style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: m.color, marginRight: 6, verticalAlign: "middle", cursor: "help", flexShrink: 0 }}
+    />
+  );
+}
+
+// Compact "runs 7/20 8:00 AM" for the scheduled badge's second line (it's tiny — no month names).
+function fmtRunsAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.toLocaleDateString([], { month: "numeric", day: "numeric" })} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
 function StatusBadge({ c }: { c: CaseRowVM }) {
   const warns = c.status === "completed" ? (c.warnings ?? []) : [];
   const steps = new Set(warns.map((w) => w.split(":")[0])).size;
   const title = warns.length ? warns.join("\n") : c.statusHint || undefined;
+  // Split a long "… — resume to run" into a main label + a second line so the Status column stays
+  // narrow (a wide single line was forcing the whole table wide).
+  let main: string;
+  let sub: string | null = null;
+  if (c.imported) main = "✦ imported";
+  else if (c.paused) {
+    if (c.pausedBy === "needs_info") main = "ℹ︎ needs information";
+    else if (c.pausedBy === "scheduled") { main = "⏸ scheduled"; sub = "resume to run"; }
+    else if (c.pausedBy === "review") { if (c.lastRunIso) { main = "⏸ held"; sub = "resume to run"; } else main = "▶︎ Press Play to Start"; }
+    else if (c.pausedBy === "operator") main = "⏸ paused";
+    else main = "paused — needs creds";
+    // A scheduled auto-resume overrides the generic sub-line whatever the hold reason — the sweep
+    // releases ANY hold when the time arrives, so "runs <when>" is the truthful second line.
+    if (c.scheduledForIso) sub = `runs ${fmtRunsAt(c.scheduledForIso)}`;
+  } else if (warns.length) main = `completed — ${steps} warning${steps > 1 ? "s" : ""}`;
+  else main = STATUS_LABEL[c.status] ?? c.status;
   return (
     <span
       className="badge"
@@ -84,15 +132,16 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
         cursor: title ? "help" : undefined,
         textDecoration: title ? "underline dotted" : undefined,
         textUnderlineOffset: 3,
+        whiteSpace: "nowrap",
+        // .badge is display:inline-flex (a ROW) — a plain block child still sits on the same line, so for
+        // the 2-line status we stack the flex direction to column (and square the pill a touch).
+        ...(sub
+          ? { flexDirection: "column" as const, alignItems: "center", gap: 0, borderRadius: 10, lineHeight: 1.15 }
+          : { lineHeight: 1.25 }),
       }}
     >
-      {c.imported
-        ? "✦ imported"
-        : c.paused
-        ? (c.pausedBy === "needs_info" ? "ℹ︎ needs information" : c.pausedBy === "scheduled" ? "⏸ scheduled — resume to run" : c.pausedBy === "review" ? (c.lastRunIso ? "⏸ held — resume to run" : "▶︎ Press Play to Start") : c.pausedBy === "operator" ? "⏸ paused" : "paused — needs creds")
-        : warns.length
-          ? `completed — ${steps} warning${steps > 1 ? "s" : ""}`
-          : (STATUS_LABEL[c.status] ?? c.status)}
+      <span>{main}</span>
+      {sub && <span style={{ fontSize: 9.5, fontWeight: 600, opacity: 0.8, marginTop: 1 }}>{sub}</span>}
     </span>
   );
 }
@@ -119,6 +168,44 @@ function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
   }
 }
 
+// Multi-select status filter: a compact dropdown of checkboxes (empty selection = all statuses).
+function StatusFilterMenu({ options, selected, onToggle, onClear }: {
+  options: { value: string; label: string }[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+  const label = selected.size === 0 ? "All statuses" : `${selected.size} selected`;
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" className="inline" onClick={() => setOpen((o) => !o)} style={{ minWidth: 128, textAlign: "left", display: "inline-flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span>{label}</span><span aria-hidden style={{ opacity: 0.6 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", zIndex: 30, marginTop: 4, background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "var(--shadow-1)", padding: 6, minWidth: 190 }}>
+          {options.map((o) => (
+            <label key={o.value} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer", borderRadius: 6, whiteSpace: "nowrap" }}>
+              <input type="checkbox" checked={selected.has(o.value)} onChange={() => onToggle(o.value)} style={{ width: "auto" }} />
+              {o.label}
+            </label>
+          ))}
+          {selected.size > 0 && (
+            <button type="button" onClick={onClear} style={{ marginTop: 4, width: "100%", fontSize: 12 }}>Clear</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: CaseRowVM[]; trashed: TrashedCaseRowVM[]; splitCompleted?: boolean }) {
   const router = useRouter();
   // When splitCompleted is on (the /cases/v2 view), completed cases come OFF the working list into
@@ -126,12 +213,13 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
   // unchanged (working === cases).
   const working = useMemo(() => (splitCompleted ? cases.filter((c) => c.status !== "completed") : cases), [cases, splitCompleted]);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set()); // empty = all statuses (multi-select)
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkSummary, setBulkSummary] = useState<string | null>(null); // "12 dispatched, 2 skipped" after a bulk run
   const [hoveredId, setHoveredId] = useState<string | null>(null); // row under the cursor — reveals its trash ×
 
   const toggleSel = (id: string) => setSelected((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
@@ -167,6 +255,39 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
     call(c.id, { method: "DELETE" });
   }
 
+  // Apply one run-control action across the selected cases via the bulk endpoint. Mirrors bulkTrash,
+  // but one request (the server skips cases the action can't validly apply to). Confirm before a
+  // destructive-ish cancel and before a large dispatch.
+  async function bulkAction(action: "dispatch" | "pause" | "cancel" | "verify") {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    const n = ids.length;
+    if (action === "cancel" && !confirm(`Cancel the run for ${n} case${n > 1 ? "s" : ""}? In-flight steps are stopped and each case is paused (not deleted).`)) return;
+    if (action === "dispatch" && n > 10 && !confirm(`Dispatch ${n} cases? Each paused case resumes and its steps start running.`)) return;
+    setBusyId("bulk");
+    setError(null);
+    setBulkSummary(null);
+    try {
+      const res = await fetch("/api/cases/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, action }) });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { setError(data?.error ?? `Bulk action failed (${res.status})`); return; }
+      const results: { skipped?: string; error?: string }[] = data?.results ?? [];
+      const verb = { dispatch: "dispatched", pause: "paused", cancel: "cancelled", verify: "verifying" }[action];
+      const skipped = results.filter((r) => r.skipped).length;
+      const errored = results.filter((r) => r.error).length;
+      const parts = [`${data?.ok ?? 0} ${verb}`];
+      if (skipped) parts.push(`${skipped} skipped`);
+      if (errored) parts.push(`${errored} failed`);
+      setBulkSummary(parts.join(", "));
+      setSelected(new Set());
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function bulkTrash(ids: string[]) {
     if (ids.length === 0) return;
     if (!confirm(`Move ${ids.length} case${ids.length > 1 ? "s" : ""} to the trash? They leave the list and are restorable for 30 days.`)) return;
@@ -188,8 +309,10 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
 
   const visible = useMemo(() => {
     const filtered = working.filter((c) => {
-      if (statusFilter === "imported") { if (!c.imported) return false; }
-      else if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (statusFilter.size > 0) {
+        const key = c.imported ? "imported" : c.status; // a case matches its own status, or "imported" while held after import
+        if (!statusFilter.has(key)) return false;
+      }
       if (terms.length === 0) return true;
       const hay = haystack(c);
       return terms.every((t) => hay.includes(t));
@@ -252,26 +375,43 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
             <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>
           )}
         </div>
-        <select className="inline" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All statuses</option>
-          <option value="imported">imported (just imported)</option>
-          {Object.entries(STATUS_LABEL)
-            .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
-            .map(([k, label]) => (
-              <option key={k} value={k}>{label}</option>
-            ))}
-        </select>
-        <span className="note" style={{ marginLeft: "auto" }}>{visible.length} of {working.length}</span>
+        <StatusFilterMenu
+          options={[
+            { value: "imported", label: "imported (just imported)" },
+            ...Object.entries(STATUS_LABEL)
+              .filter(([k]) => !(splitCompleted && k === "completed")) // completed lives in its own table here
+              .map(([k, label]) => ({ value: k, label })),
+          ]}
+          selected={statusFilter}
+          onToggle={(v) => setStatusFilter((s) => { const x = new Set(s); x.has(v) ? x.delete(v) : x.add(v); return x; })}
+          onClear={() => setStatusFilter(new Set())}
+        />
+        {/* Readiness legend: the leading dot on each case = can it run (are its systems' creds set). */}
+        <span className="note" style={{ marginLeft: "auto", display: "inline-flex", gap: 12, alignItems: "center", fontSize: 11 }} title="The dot next to each case shows whether its systems' credentials are set">
+          {(["ready", "partial", "blocked"] as const).map((k) => (
+            <span key={k} style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: READINESS[k].color }} />{k}
+            </span>
+          ))}
+        </span>
+        <span className="note">{visible.length} of {working.length}</span>
       </div>
       {selected.size > 0 && (
         <div className="filters" style={{ marginTop: "0.4rem", alignItems: "center", gap: 8 }}>
           <b>{selected.size} selected</b>
+          {/* Bulk run controls — the server skips cases each action can't apply to (e.g. dispatch only
+              resumes paused, non-terminal cases). Dispatch only unpauses, so approval gates still hold. */}
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("dispatch")} title="Resume paused cases so their steps start running">▶ Dispatch</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("pause")} title="Pause active cases">⏸ Pause</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("cancel")} title="Stop in-flight steps and pause active cases">⏹ Cancel</button>
+          <button disabled={busyId === "bulk"} onClick={() => bulkAction("verify")} title="Re-run the read-only validator on cases with finished automated steps">✓ Verify</button>
           <button className="danger" disabled={busyId === "bulk"} onClick={() => bulkTrash([...selected])}>
-            {busyId === "bulk" ? "moving…" : "🗑 Send to trash"}
+            {busyId === "bulk" ? "working…" : "🗑 Send to trash"}
           </button>
           <button onClick={() => setSelected(new Set())}>Clear selection</button>
         </div>
       )}
+      {bulkSummary && <p className="note">{bulkSummary}</p>}
       {error && <p className="note danger">{error}</p>}
 
       <table className="desk-only">
@@ -303,7 +443,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               style={selected.has(c.id) ? { background: "var(--accent-soft)" } : undefined}
             >
               <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
-              <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+              <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
               <td className="muted">{c.clientName}</td>
               <td><span className="badge">{c.action}</span></td>
               <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
@@ -311,14 +451,27 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               <td>
                 <StatusBadge c={c} />
                 {c.lastActionLabel && (
-                  <div className="note" style={{ fontSize: 11, marginTop: 2, whiteSpace: "nowrap" }} title="Most recent action taken on this case">
-                    {c.lastActionLabel}{c.lastActionBy ? `: ${c.lastActionBy}` : ""}
+                  <div className="note" style={{ fontSize: 11, marginTop: 2 }} title="Most recent action taken on this case">
+                    {/* email on its OWN line — "Paused: long.email@core.tech" on one line was forcing the column wide */}
+                    <div style={{ whiteSpace: "nowrap" }}>{c.lastActionLabel}{c.lastActionBy ? ":" : ""}</div>
+                    {c.lastActionBy && <div style={{ opacity: 0.85 }}>{c.lastActionBy}</div>}
                   </div>
                 )}
               </td>
-              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date/time" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
                 {c.effectiveDate
-                  ? formatDateOnly(c.effectiveDate)
+                  ? (() => {
+                      const d = new Date(c.effectiveDate!);
+                      // Offboards are scheduled for a specific time — show it below the date. Onboards are
+                      // date-only (start date). Skip a meaningless midnight (date-only value).
+                      const showTime = c.action === "offboard" && (d.getHours() !== 0 || d.getMinutes() !== 0);
+                      return (
+                        <>
+                          <div>{formatDateOnly(c.effectiveDate!)}</div>
+                          {showTime && <div className="note" style={{ fontSize: 11 }}>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>}
+                        </>
+                      );
+                    })()
                   : c.immediate
                     ? <span className="badge" style={{ color: "var(--warn-fg)", borderColor: "var(--warn-bg)", background: "var(--warn-bg)" }}>Immediate</span>
                     : "—"}
@@ -396,7 +549,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
         {visible.map((c) => (
           <Link key={c.id} href={`/cases/${c.id}`} className="m-card">
             <div className="m-card-top">
-              <span className="m-card-title">{c.subject ?? c.id.slice(0, 8)}</span>
+              <span className="m-card-title"><ReadinessDot c={c} />{c.subject ?? c.id.slice(0, 8)}</span>
               <StatusBadge c={c} />
             </div>
             <div className="m-card-sub">{c.clientName}</div>
@@ -412,7 +565,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
       </div>
 
       {splitCompleted && (
-        <details style={{ marginTop: "1.25rem" }} open>
+        <details style={{ marginTop: "1.25rem" }}>
           <summary style={{ cursor: "pointer" }}>
             <b>Completed cases</b> <span className="note">({completed.length}) — off the working list, kept here for reference</span>
           </summary>
@@ -431,7 +584,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   onMouseEnter={() => setHoveredId(c.id)}
                   onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
                 >
-                  <td><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
+                  <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
                   <td className="muted">{c.clientName}</td>
                   <td><span className="badge">{c.action}</span></td>
                   <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>

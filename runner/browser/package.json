@@ -1,0 +1,19 @@
+{
+  "name": "@coretelligent/runner-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-automation (Playwright) sidecar for the IAM runner. The PowerShell runner shells out to run-flow.mjs for the few systems with no API (last-resort executors).",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "run-flow": "./run-flow.mjs"
+  },
+  "scripts": {
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

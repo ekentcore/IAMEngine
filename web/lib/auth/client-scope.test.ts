@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeVisibleClientIds, isClientVisible, scopeAllows, clientIdWhere } from "./client-scope";
+import { computeVisibleClientIds, isClientVisible, scopeAllows, clientIdWhere, disallowedRestrictedGrants } from "./client-scope";
 
 // Roster used across cases: A and B are normal; R and S are restricted (internal-only).
 const ROSTER = [
@@ -73,4 +73,21 @@ test("scopeAllows: null scope (super/auth-off) allows anything; array scope chec
 test("clientIdWhere: null scope yields no filter; array yields an `in` clause", () => {
   assert.equal(clientIdWhere(null), undefined);
   assert.deepEqual(clientIdWhere(["A", "B"]), { in: ["A", "B"] });
+});
+
+// ── No self- or lateral-escalation across the restricted boundary ────────────────────────────────
+test("disallowedRestrictedGrants: a scoped operator can't confer a restricted client they can't see", () => {
+  const restricted = new Set(["R", "S"]);
+  // Operator sees A, B, and restricted R (granted) — NOT S.
+  const scope = ["A", "B", "R"];
+  // Granting R (they have it) + A (non-restricted) is fine.
+  assert.deepEqual(disallowedRestrictedGrants(scope, ["A", "R"], restricted), []);
+  // Granting S (restricted, they lack it) is barred.
+  assert.deepEqual(disallowedRestrictedGrants(scope, ["A", "R", "S"], restricted), ["S"]);
+  // A non-restricted client outside scope is NOT barred (anyone sees non-restricted under "all").
+  assert.deepEqual(disallowedRestrictedGrants(["R"], ["A", "B"], restricted), []);
+});
+
+test("disallowedRestrictedGrants: super admin / auth-off (null scope) may grant anything", () => {
+  assert.deepEqual(disallowedRestrictedGrants(null, ["R", "S"], new Set(["R", "S"])), []);
 });

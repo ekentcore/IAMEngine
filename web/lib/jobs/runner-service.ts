@@ -3,11 +3,22 @@
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { deriveCaseStatus, isClaimable, type JobLite } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite, type SetupGatePolicy } from "./runner-logic";
+import { getAppSetting } from "../settings";
+
+// AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
+export const SETUP_GATE_KEY = "setup_gate";
+import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
+import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
-import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "../secrets/delinea";
+import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "../secrets/delinea";
+import { checkFieldShape } from "../secrets/field-requirements";
+import { testableSystems, type RightsRow } from "./conn-test-logic";
+import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
+import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
+import { generateInitialPassword } from "../auth/password";
 import { sweepProcurementWatches } from "./procurement-watch";
 import { sweepServiceNowIntake } from "./intake-sweep";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
@@ -17,6 +28,7 @@ import { fireNotification } from "../notifications/sender";
 import { parseClientOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
+import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -48,6 +60,69 @@ async function assertAgentEnabled(db: PrismaClient, agentId: string): Promise<vo
   const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
   if (!agent) throw new HttpError(404, "unknown agent");
   if (!agent.enabled) throw new HttpError(403, "agent disabled");
+}
+
+// App-side connection-test preflight (the "Fields" stage): resolve each queued row's secrets from
+// Delinea and shape-check the FIELD NAMES against the provider requirements, persisting the verdict
+// on the just-created rows. Secret values never leave this function — details carry names and
+// missing-requirement labels only. Best-effort by design: callers swallow errors so the runner's
+// access/API stages always still run.
+async function preflightConnTestFields(
+  db: PrismaClient,
+  clientId: string,
+  primaryDomain: string | null,
+  specs: { systemKey: string; secretNames: string[] }[]
+): Promise<void> {
+  const cfg = delineaConfigFromEnv();
+  if (!delineaConfigured(cfg)) {
+    await db.connectionTest.updateMany({
+      where: { clientId, systemKey: { in: specs.map((s) => s.systemKey) }, status: "pending" },
+      data: { fieldsDetail: "Delinea not configured on the app — set DELINEA_* to enable the field preflight" },
+    });
+    return;
+  }
+  const names = [...new Set(specs.flatMap((s) => s.secretNames))];
+  const secrets = await db.secret.findMany({ where: { clientId, name: { in: names } }, select: { name: true, externalId: true } });
+  const byName = new Map(secrets.map((s) => [s.name, s.externalId] as const));
+  const hasTenantHint = Boolean(primaryDomain && primaryDomain.trim());
+  // One token for the whole batch — not one password-grant per secret.
+  let token: string | undefined;
+  let tokenError: string | null = null;
+  try {
+    token = await getDelineaToken(cfg);
+  } catch (e) {
+    tokenError = e instanceof Error ? e.message : "token grant failed";
+  }
+  // Resolve each distinct secret once, then stamp the verdict per system.
+  const checks = new Map<string, { ok: boolean; note: string }>();
+  for (const name of names) {
+    if (tokenError) { checks.set(name, { ok: false, note: `${name}: Delinea unreachable (${tokenError})` }); continue; }
+    const { externalId, source } = effectiveExternalId(name, null, byName.get(name) ?? null);
+    if (source === "not_needed") { checks.set(name, { ok: true, note: `${name}: not needed` }); continue; }
+    if (!externalId) { checks.set(name, { ok: false, note: `${name}: no reference set` }); continue; }
+    const resolved = await resolveSecretFields(cfg, externalId, undefined, token);
+    if (!resolved.ok) { checks.set(name, { ok: false, note: `${name}: ${resolved.error ?? "not resolvable"}` }); continue; }
+    // Opportunistic expiry capture — never fails the preflight.
+    if (resolved.expiresAt) {
+      const at = new Date(resolved.expiresAt);
+      if (!Number.isNaN(at.getTime())) await db.secret.updateMany({ where: { clientId, name }, data: { expiresAt: at, expiryCheckedAt: new Date() } }).catch(() => {});
+    }
+    const shape = checkFieldShape(name, Object.keys(resolved.fields ?? {}), { clientHasTenantHint: hasTenantHint });
+    checks.set(
+      name,
+      shape.missing.length === 0
+        ? { ok: true, note: `${name}: fields ok` }
+        : { ok: false, note: `${name}: missing ${shape.missing.join(", ")}` }
+    );
+  }
+  for (const spec of specs) {
+    const rows = spec.secretNames.map((n) => checks.get(n)).filter((r): r is { ok: boolean; note: string } => Boolean(r));
+    if (rows.length === 0) continue;
+    await db.connectionTest.updateMany({
+      where: { clientId, systemKey: spec.systemKey, status: "pending" },
+      data: { fieldsOk: rows.every((r) => r.ok), fieldsDetail: rows.map((r) => r.note).join("; ").slice(0, 500) || null },
+    });
+  }
 }
 
 export function makeRunnerService(db: PrismaClient) {
@@ -116,8 +191,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -131,6 +206,24 @@ export function makeRunnerService(db: PrismaClient) {
         // its next heartbeat pushes lastSeenAt past this timestamp ("updated ✓").
         const consumed = await db.agent.updateMany({ where: { id: agentId, updateRequested: true }, data: { updateRequested: false, updateDeliveredAt: new Date() } });
         update = consumed.count > 0;
+      }
+      // Auto-update stale agents (default ON): if this agent is enabled, not already updating, and the
+      // build it just reported differs from the build the app now serves, tell it to self-update. This
+      // is what makes a server restart (new bundle) roll the fleet forward on its own — no per-agent
+      // click. A short cooldown via updateDeliveredAt keeps it from re-issuing every ~5s heartbeat
+      // while the agent is mid-pull; a failed update naturally retries after the cooldown.
+      if (!update && agent.enabled) {
+        const reported = version ?? agent.version;
+        const cooldownOver = !agent.updateDeliveredAt || Date.now() - agent.updateDeliveredAt.getTime() > 90_000;
+        // Only pay for the settings read when this agent is actually on a stale build — an up-to-date
+        // agent (the common case) short-circuits before the DB round-trip.
+        if (cooldownOver && !agentBuildIsCurrent(reported, runnerBuildId())) {
+          const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
+          if (autoUpdate) {
+            update = true;
+            await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date() } }).catch(() => {});
+          }
+        }
       }
       // Same atomic-consume for a plain RESTART request (no file pull). An update already restarts, so
       // if both are pending the update wins and this just clears the redundant flag.
@@ -151,13 +244,20 @@ export function makeRunnerService(db: PrismaClient) {
       // set it when a valid value is sent (older runners don't report it — keep whatever's stored).
       const boot = startedAt ? new Date(startedAt) : null;
       const bootAt = boot && !Number.isNaN(boot.getTime()) ? boot : undefined;
-      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}) } });
+      // Persist reported on-prem capabilities only when the runner sent them (1.31+). A legacy runner
+      // passes null → keep whatever's stored (stays null → treated as capable). An empty array IS a
+      // report ("can run no on-prem system") and is persisted as [].
+      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}), ...(capabilities != null ? { capabilities: capabilities as Prisma.InputJsonValue } : {}) } });
       // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.
       void sweepProcurementWatches(db).catch(() => {});
       // Same pulse: auto-import new ServiceNow intake tickets (off unless enabled; self-throttles to ~15 min).
       void sweepServiceNowIntake(db).catch(() => {});
+      // Same pulse: the scheduled credential-health sweep + expiry alerts (off unless enabled;
+      // durable AppSetting throttle, one client batch per tick). Reuses the operator enqueue path.
+      const svc = this;
+      void sweepConnTests(db, { enqueueClient: (slug) => svc.requestConnectionTests(slug) }).catch(() => {});
       return { ok: true, enabled: agent.enabled, update, restart, discover };
     },
 
@@ -219,9 +319,21 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
     async claim(agentId: string, batchSize: number, version?: string | null): Promise<RunnerJob[]> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true, priority: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
+
+      // Priority failover: stand by (claim nothing) while a STRICTLY higher-priority peer of the same
+      // scope is online — a client's other agents for a client runner, the other central runners for the
+      // central one. Equal priority load-balances (unchanged). When the primary stops heartbeating
+      // (> ONLINE_MS), this backup starts claiming; the stale-lease reclaim below then re-queues the
+      // primary's in-flight jobs so the backup can pick them up.
+      const ONLINE_MS = 90_000;
+      const onlinePeers = await db.agent.findMany({
+        where: { enabled: true, deletedAt: null, id: { not: agent.id }, clientId: agent.clientId, lastSeenAt: { gt: new Date(Date.now() - ONLINE_MS) } },
+        select: { priority: true },
+      });
+      if (shouldStandBy(agent.priority, onlinePeers.map((p) => p.priority))) return [];
 
       // Reclaim stale leases: a job dispatched long ago whose assigned agent is gone/stale/
       // disabled goes back to pending. Scoped to dead agents so a peer can't reset a live
@@ -262,11 +374,11 @@ export function makeRunnerService(db: PrismaClient) {
           // Auto-stop: mark it failed but TAG it (request.autoStopped) so the run report shows a distinct
           // "⏱ auto-stopped — no progress" warning rather than a generic failure. refreshCaseStatus then
           // advances the case (a failed step doesn't block independent siblings) — "move on + warn".
-          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date() } });
+          await db.job.update({ where: { id: w.id }, data: { status: "failed", error: "auto-stopped: this step made no progress for 20 minutes after a re-run — treated as wedged (e.g. a hung vendor call). The case continued; re-run this step to retry.", request: { ...(req(w) as object), autoStopped: true } as Prisma.InputJsonValue, finishedAt: new Date(), oneTimePassword: null } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.failed", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims, autoStopped: true } } });
           await refreshCaseStatus(db, w.caseRequestId);
           const who = `${w.case?.serviceNowCaseNumber ?? w.caseRequestId}${w.case?.client?.name ? ` (${w.case.client.name})` : ""}`;
-          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, override: parseClientOverride(w.case?.client?.notifyOverride), systemKey: w.systemKey, detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
+          await fireNotification({ event: "autoStopped", title: `Auto-stopped (wedged): ${w.systemKey} — ${who}`, caseNumber: w.case?.serviceNowCaseNumber ?? null, clientName: w.case?.client?.name ?? null, restricted: w.case?.client?.restricted ?? false, override: parseClientOverride(w.case?.client?.notifyOverride), systemKey: w.systemKey, at: new Date().toISOString(), detail: "No progress for 20 minutes after a re-run — treated as wedged. The case continued; re-run to retry.", url: process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${w.caseRequestId}` : null });
         } else {
           await db.job.update({ where: { id: w.id }, data: { status: "pending", assignedAgentId: null, request: { ...(req(w) as object), progressReclaims: reclaims + 1 } as Prisma.InputJsonValue } });
           await db.auditLog.create({ data: { actor: "system", action: "job.progress.reclaim", jobId: w.id, caseRequestId: w.caseRequestId, detail: { reclaims: reclaims + 1 } } });
@@ -287,16 +399,23 @@ export function makeRunnerService(db: PrismaClient) {
 
       // central runner (clientId null) sees all clients' api jobs; a client agent sees only
       // its own. Jobs on a failed/completed case are excluded so a dead case can't run more.
-      // Host affinity: the central (cloud) runner must NOT claim systems that require on-prem
-      // execution (the ActiveDirectory/RSAT module, the EXO cert + on-prem Exchange session, the
-      // ADSync module) — those only work on the client-network agent. Otherwise it grabs an AD job it
-      // can't run ("Invoke-CtgADOnboarding not recognized"). Client agents still claim everything.
+      // Host affinity + capability gate: the central (cloud) runner must NEVER claim on-prem systems
+      // (the ActiveDirectory/RSAT module, ADSync) — those only work on a client-network agent. A client
+      // agent claims its client's jobs, but an on-prem system is withheld unless the agent REPORTS it can
+      // run it (its Coretelligent module loaded) — so a DC missing RSAT doesn't grab an AD job it would
+      // hard-fail ("Invoke-CtgADOnboarding not recognized"); it stays pending with a clear reason. A
+      // legacy (pre-1.31) agent reports nothing (caps null) → withholds nothing → old behavior preserved.
       const scope = agent.clientId ? { clientId: agent.clientId } : {};
+      const caps = parseCapabilities(agent.capabilities);
+      const onPremExclude = agent.clientId ? onPremExclusions(caps) : ALWAYS_ON_PREM_SYSTEMS;
+      // Browser-automation gate (both central AND client agents): withhold browser-only systems (e.g.
+      // spanning-force-sync) unless the agent reports the 'browser' capability (Node+Playwright installed).
+      const excluded = [...new Set([...onPremExclude, ...browserExclusions(caps)])];
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
           mode: "api",
-          ...(agent.clientId ? {} : { systemKey: { notIn: ALWAYS_ON_PREM_SYSTEMS } }),
+          ...(excluded.length ? { systemKey: { notIn: excluded } } : {}),
           OR: [
             // Normal flow. Don't exclude a "failed" case: a failed step (e.g. egnyte) must NOT strand
             // an unrelated pending step (e.g. m365) whose own deps succeeded. Only "pending" jobs are
@@ -319,10 +438,19 @@ export function makeRunnerService(db: PrismaClient) {
         where: { caseRequestId: { in: caseIds } },
         select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
       });
-      const lite = (j: { id: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
+      // A FAILED step the operator ACCEPTED ("ignore warning — mark complete") resolves its run-log
+      // outcome. Treat that step as satisfied for the dependency gate so its dependents proceed (e.g.
+      // an accepted directory-sync failure stops blocking m365). Keyed by case+systemKey.
+      const acceptedOutcomes = await db.runOutcome.findMany({
+        where: { caseRequestId: { in: caseIds }, status: "failed", resolvedAt: { not: null } },
+        select: { caseRequestId: true, systemKey: true },
+      });
+      const acceptedSet = new Set(acceptedOutcomes.map((o) => `${o.caseRequestId}|${o.systemKey}`));
+      const lite = (j: { id: string; caseRequestId: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
         const r = req(j) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown };
         const deps = Array.isArray(r.dependsOn) ? (r.dependsOn as unknown[]).filter((d): d is string => typeof d === "string") : null;
-        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps };
+        const accepted = j.status === "failed" && acceptedSet.has(`${j.caseRequestId}|${j.systemKey}`);
+        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps, accepted };
       };
       const byCase = new Map<string, JobLite[]>();
       for (const j of allJobs) {
@@ -359,6 +487,27 @@ export function makeRunnerService(db: PrismaClient) {
         m.set(s.name, s.externalId);
         secretsByClient.set(s.clientId, m);
       }
+      // Setup-state gate (opt-in, AppSetting "setup_gate"): only when enforcing does the claim path
+      // pay for the extra lookups — default mode adds zero queries here.
+      const gate: SetupGatePolicy = { enforceTested: false, ...((await getAppSetting<Partial<SetupGatePolicy>>(db, SETUP_GATE_KEY)) ?? {}) };
+      const latestTestByKey = new Map<string, "ok" | "fail" | "untested">();
+      const attestedKeys = new Set<string>();
+      if (gate.enforceTested) {
+        const gateClientIds = [...new Set(caseMeta.map((c) => c.clientId))];
+        const [gateTests, gateStates] = await Promise.all([
+          db.connectionTest.findMany({
+            where: { clientId: { in: gateClientIds } },
+            select: { clientId: true, systemKey: true, status: true, finishedAt: true },
+            orderBy: { finishedAt: "desc" },
+          }),
+          db.systemSetupState.findMany({ where: { clientId: { in: gateClientIds }, attestedAt: { not: null } }, select: { clientId: true, systemKey: true } }),
+        ]);
+        for (const t of gateTests) {
+          const k = `${t.clientId}:${t.systemKey}`;
+          if (!latestTestByKey.has(k)) latestTestByKey.set(k, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+        }
+        for (const s of gateStates) attestedKeys.add(`${s.clientId}:${s.systemKey}`);
+      }
 
       const eligible: string[] = [];
       for (const c of candidates) {
@@ -370,15 +519,28 @@ export function makeRunnerService(db: PrismaClient) {
           ? !(lj.requiresApproval && !lj.approved)
           : isClaimable(lj, byCase.get(c.caseRequestId) ?? [], c.case.status);
         if (!claimable) continue;
-        // Host affinity: the central runner can't run an on-prem step (only exchange reaches here, and
-        // only for a hybrid case). A client agent (agent.clientId set) runs everything for its client.
-        if (!agent.clientId && systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId))) continue;
+        // Host affinity — the on-prem / cloud split:
+        //  - the CENTRAL runner can't run an on-prem step (only a hybrid case's exchange reaches here);
+        //  - a CLIENT-network agent (on-prem box, e.g. a DC) can't run a CLOUD step — it doesn't have the
+        //    Microsoft.Graph / EXO modules — so cloud steps go to the central runner, which does.
+        // A client that pins cloud to its own agent (runCloudOnOwnAgent) is the exception on both sides.
+        // Without this, an on-prem client agent grabs an M365 job it can't run ("Get-MgSubscribedSku not recognized").
         const meta = caseMetaById.get(c.caseRequestId);
+        const onPrem = systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId));
+        if (!agent.clientId && onPrem) continue;                                             // central: skip on-prem
+        if (agent.clientId && !onPrem && !meta?.client?.runCloudOnOwnAgent) continue;        // client agent: skip cloud -> central
         // Own-agent affinity: central runner leaves a pinned client's cloud jobs for that client's agent.
         if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId)) continue;
         const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
         const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
+        // Setup-state gate (enforce mode only): withhold a job whose system's latest conn-test
+        // failed, unless attested. singleRun bypasses (an explicit operator-confirmed run).
+        if (gate.enforceTested && !c.singleRun && meta) {
+          const k = `${meta.clientId}:${c.systemKey}`;
+          const verdict = setupGateBlocks({ test: latestTestByKey.get(k) ?? "unknown", attested: attestedKeys.has(k) }, gate);
+          if (verdict.block) continue;
+        }
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }
@@ -404,8 +566,89 @@ export function makeRunnerService(db: PrismaClient) {
       const runningCaseIds = [...new Set(claimed.map((c) => c.caseRequestId))];
       await db.caseRequest.updateMany({ where: { id: { in: runningCaseIds }, status: { in: ["queued", "planning"] } }, data: { status: "running" } });
 
+      // AD email write-back (B1): for any ad-email-writeback job being handed out, resolve the
+      // mailbox's ASSIGNED primary SMTP from the sibling cloud job's result (exchange preferred, then
+      // m365) and inject it into the payload as `writebackEmail`, so the on-prem agent just writes AD
+      // `mail` = that address without needing cloud creds. The executor falls back to the deterministic
+      // workEmail/UPN when no result carries an address (e.g. an older runner that didn't return it).
+      const writebackCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-email-writeback").map((j) => j.caseRequestId))];
+      const emailByCase = new Map<string, string>();
+      if (writebackCaseIds.length > 0) {
+        const siblings = await db.job.findMany({
+          where: { caseRequestId: { in: writebackCaseIds }, systemKey: { in: ["exchange", "m365"] }, status: "succeeded" },
+          select: { caseRequestId: true, systemKey: true, result: true },
+        });
+        for (const s of siblings) {
+          // The runner emits PascalCase result keys (PrimarySmtpAddress); tolerate lowercase too.
+          const res = s.result as { PrimarySmtpAddress?: unknown; primarySmtpAddress?: unknown } | null;
+          const addr = res?.PrimarySmtpAddress ?? res?.primarySmtpAddress;
+          if (typeof addr === "string" && addr.includes("@")) {
+            const cur = emailByCase.get(s.caseRequestId);
+            if (!cur || s.systemKey === "exchange") emailByCase.set(s.caseRequestId, addr); // exchange wins over m365
+          }
+        }
+      }
+
+      // AD consistency check (Design D, detect-only): inject the Entra object's anchor data (from the
+      // m365 result) so the on-prem agent can compare it to the AD source anchor without cloud creds.
+      const checkCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-consistency-check").map((j) => j.caseRequestId))];
+      const cloudByCase = new Map<string, { immutableId: string | null; syncEnabled: boolean | null; userId: string | null }>();
+      if (checkCaseIds.length > 0) {
+        const m365s = await db.job.findMany({
+          where: { caseRequestId: { in: checkCaseIds }, systemKey: { in: ["m365", "entra"] }, status: "succeeded" },
+          select: { caseRequestId: true, result: true },
+        });
+        for (const s of m365s) {
+          const res = (s.result ?? {}) as Record<string, unknown>;
+          const pick = (a: string, b: string) => res[a] ?? res[b];
+          const immutableId = pick("OnPremImmutableId", "onPremImmutableId");
+          const syncEnabled = pick("OnPremSyncEnabled", "onPremSyncEnabled");
+          const userId = pick("UserId", "userId");
+          cloudByCase.set(s.caseRequestId, {
+            immutableId: typeof immutableId === "string" ? immutableId : null,
+            syncEnabled: typeof syncEnabled === "boolean" ? syncEnabled : null,
+            userId: typeof userId === "string" ? userId : null,
+          });
+        }
+      }
+
+      // Generated INITIAL password (revealed once): for a "generate"-mode m365/entra onboard, generate
+      // the password app-side so we can show it to the operator, store it on the case (revealed once,
+      // then wiped), and inject it as the runner's initial password. Only when the runner WOULD generate
+      // one anyway (no initialPasswordSecret, no literal, no brokered default-password) — never overrides
+      // a wired/fixed password. Idempotent: reuse the stored value across re-claims.
+      const pwByCase = new Map<string, string>();
+      for (const j of claimed) {
+        if (j.case.action !== "onboard" || (j.systemKey !== "m365" && j.systemKey !== "entra")) continue;
+        if (pwByCase.has(j.caseRequestId)) continue;
+        const rr = req(j);
+        const cfg = (rr.config ?? {}) as { initialPasswordSecret?: unknown; initialPassword?: unknown };
+        const generateMode = !cfg.initialPasswordSecret && !cfg.initialPassword && !((rr.secretNames ?? []).includes("default-password"));
+        if (!generateMode) continue;
+        let pw = (j.case as { initialPassword?: string | null }).initialPassword ?? null;
+        if (!pw) {
+          pw = generateInitialPassword();
+          await db.caseRequest.update({ where: { id: j.caseRequestId }, data: { initialPassword: pw } });
+        }
+        pwByCase.set(j.caseRequestId, pw);
+      }
+
       return claimed.map((j) => {
         const r = req(j);
+        const injectedPw = (j.systemKey === "m365" || j.systemKey === "entra") ? pwByCase.get(j.caseRequestId) : undefined;
+        let config = injectedPw ? { ...((r.config as Record<string, unknown> | null) ?? {}), initialPassword: injectedPw } : (r.config ?? null);
+        // Ad-hoc password reset: hand the app-generated value (Job.oneTimePassword — revealed once to
+        // the operator, then wiped) to the runner as config.newPassword. Kept on the row across
+        // re-claims (lease reclaim) until the reveal/failure wipes it; never persisted into request.
+        if (PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey) && j.oneTimePassword) {
+          config = { ...((config as Record<string, unknown> | null) ?? {}), newPassword: j.oneTimePassword };
+        }
+        const payload =
+          j.systemKey === "ad-email-writeback"
+            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
+            : j.systemKey === "ad-consistency-check"
+            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), cloudObject: cloudByCase.get(j.caseRequestId) ?? { immutableId: null, syncEnabled: null, userId: null } }
+            : j.case.payload;
         return {
           id: j.id,
           caseNumber: j.case.serviceNowCaseNumber ?? null,
@@ -413,9 +656,9 @@ export function makeRunnerService(db: PrismaClient) {
           systemKey: j.systemKey,
           mode: j.mode,
           client: { slug: j.case.client.slug, primaryDomain: j.case.client.primaryDomain, backbone: j.case.client.backbone },
-          config: r.config ?? null,
+          config,
           secretNames: r.secretNames ?? [],
-          payload: j.case.payload,
+          payload,
           requiresApproval: Boolean(r.requiresApproval),
           captureEvidence: Boolean(r.captureEvidence),
           // case.dryRun is AUTHORITATIVE at claim time (the per-job request.dryRun stamp is only a
@@ -483,19 +726,29 @@ export function makeRunnerService(db: PrismaClient) {
     // Routed like a job (cloud -> central runner, on-prem -> client agent) via the onPrem flag.
 
     // Queue a fresh set of tests for a client (replaces any prior run). One row per api system that
-    // actually connects to something (has a required secret).
-    async requestConnectionTests(clientSlug: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+    // actually connects to something (has a required secret). With a systemKey, retests ONLY that
+    // system — its row is replaced and every other system's latest result survives.
+    async requestConnectionTests(clientSlug: string, systemKey?: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
-        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
+        select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
       });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
-      const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
-      await db.connectionTest.deleteMany({ where: { clientId: client.id } });
-      if (testable.length === 0) return { tests: [] };
-      const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+      if (systemKey) {
+        const target = client.systems.find((s) => s.systemKey === systemKey);
+        if (!target) throw new HttpError(404, `client has no system '${systemKey}'`);
+        if (target.mode !== "api" || (target.secretNames?.length ?? 0) === 0)
+          throw new HttpError(422, `system '${systemKey}' has no connection to test (needs mode=api and at least one secret)`);
+      }
+      const specs = testableSystems(client.systems, hasAd, systemKey);
+      await db.connectionTest.deleteMany({ where: { clientId: client.id, ...(systemKey ? { systemKey } : {}) } });
+      if (specs.length === 0) return { tests: [] };
+      const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
       await db.connectionTest.createMany({ data: rows });
+      // Stage 1 ("Fields"): the app's own Delinea resolve + field-shape check, persisted on the
+      // rows. Best-effort — a preflight problem must never stop the runner stages from running.
+      await preflightConnTestFields(db, client.id, client.primaryDomain, specs).catch(() => {});
       return { tests: rows.map((r) => ({ systemKey: r.systemKey, onPrem: r.onPrem })) };
     },
 
@@ -512,10 +765,10 @@ export function makeRunnerService(db: PrismaClient) {
       let total = 0, onPrem = 0, withTests = 0;
       for (const client of clients) {
         const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
-        const testable = client.systems.filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0);
+        const specs = testableSystems(client.systems, hasAd);
         await db.connectionTest.deleteMany({ where: { clientId: client.id } });
-        if (testable.length === 0) continue;
-        const rows = testable.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames ?? [], config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: systemIsOnPrem(s.systemKey, hasAd) }));
+        if (specs.length === 0) continue;
+        const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
         await db.connectionTest.createMany({ data: rows });
         withTests++; total += rows.length; onPrem += rows.filter((r) => r.onPrem).length;
       }
@@ -526,7 +779,7 @@ export function makeRunnerService(db: PrismaClient) {
     async listAllConnectionTests() {
       const tests = await db.connectionTest.findMany({
         orderBy: [{ status: "asc" }, { clientId: "asc" }, { systemKey: "asc" }],
-        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true, claimedAt: true, client: { select: { name: true, slug: true } } },
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, fieldsOk: true, fieldsDetail: true, rights: true, credExpiresAt: true, source: true, onPrem: true, finishedAt: true, claimedAt: true, client: { select: { name: true, slug: true } } },
       });
       return tests;
     },
@@ -537,7 +790,7 @@ export function makeRunnerService(db: PrismaClient) {
       const tests = await db.connectionTest.findMany({
         where: { clientId: client.id },
         orderBy: { systemKey: "asc" },
-        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, onPrem: true, finishedAt: true },
+        select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, fieldsOk: true, fieldsDetail: true, rights: true, credExpiresAt: true, onPrem: true, finishedAt: true },
       });
       return { tests };
     },
@@ -584,23 +837,57 @@ export function makeRunnerService(db: PrismaClient) {
       return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
     },
 
-    async reportConnectionTest(testId: string, agentId: string, ok: boolean, detail: string, accessOk: boolean | null = null, accessDetail: string | null = null): Promise<{ ok: true }> {
-      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true } });
+    async reportConnectionTest(
+      testId: string,
+      agentId: string,
+      ok: boolean,
+      detail: string,
+      accessOk: boolean | null = null,
+      accessDetail: string | null = null,
+      rights: RightsRow[] | null = null,
+      credExpiresAt: Date | null = null
+    ): Promise<{ ok: true }> {
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true, source: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
       // Overall status is a fail if EITHER stage failed (access couldn't resolve, or the API read failed).
       const passed = accessOk !== false && ok;
+      const finishedAt = new Date();
+      const trimmedDetail = (detail ?? "").slice(0, 500);
       await db.connectionTest.update({
         where: { id: testId },
         data: {
           status: passed ? "ok" : "fail",
-          detail: (detail ?? "").slice(0, 500),
+          detail: trimmedDetail,
           accessOk,
           accessDetail: accessDetail === null ? null : accessDetail.slice(0, 500),
-          finishedAt: new Date(),
+          // Optional extras from newer runners: per-operation rights rows + the credential's own
+          // expiry when the probe could read it. Null-tolerant so older runners keep working.
+          ...(rights ? { rights: rights as unknown as Prisma.InputJsonValue } : {}),
+          ...(credExpiresAt ? { credExpiresAt } : {}),
+          finishedAt,
         },
       });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok } } });
+      // Durable per-(client, system) health snapshot — ConnectionTest rows are deleted per run, so
+      // new-failure detection and notification suppression live here. Only SWEEP-sourced new
+      // failures queue a notification (the operator watches manual runs in the panel).
+      try {
+        const key = { clientId: t.clientId, systemKey: t.systemKey };
+        const prev = await db.connHealthState.findUnique({ where: { clientId_systemKey: key }, select: { lastStatus: true } });
+        const outcome = diffConnOutcome(prev, { passed });
+        const common = {
+          lastStatus: passed ? "ok" : "fail",
+          lastDetail: trimmedDetail || null,
+          ...(passed ? { lastOkAt: finishedAt } : { lastFailAt: finishedAt }),
+          ...(credExpiresAt ? { credExpiresAt } : {}),
+          ...(outcome === "new_failure" && t.source === "sweep" ? { pendingNotifyAt: finishedAt } : {}),
+          ...(outcome === "recovered" ? { failNotifiedAt: null, pendingNotifyAt: null } : {}),
+        };
+        await db.connHealthState.upsert({ where: { clientId_systemKey: key }, update: common, create: { ...key, ...common } });
+      } catch {
+        // the snapshot is best-effort — never fail the result post over it
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok, rightsMissing: rights ? rights.filter((r) => r.ok === false).length : undefined } } });
       return { ok: true };
     },
 
@@ -654,8 +941,11 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
       if (!agent || !agent.enabled) throw new HttpError(403, "unknown or disabled agent");
+      // Only the central (cloud) runner discovers cloud groups — mirror claimCloudGroupDiscovery. A
+      // client-network agent must not be able to write another client's group picker (cross-client write).
+      if (agent.clientId) throw new HttpError(403, "only the central runner reports cloud groups");
       const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       // Normalize + cap (a big tenant can have thousands) so the picker payload stays sane.
@@ -703,7 +993,9 @@ export function makeRunnerService(db: PrismaClient) {
         throw new HttpError(409, `job is ${job.status} — only an in-flight or queued step can be stopped`);
       }
       const who = actor.startsWith("user:") ? actor.slice(5) : "an operator";
-      await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date() } });
+      // oneTimePassword: a stopped password reset may or may not have landed — the value is unverified,
+      // so wipe it (same as a failed result); null is a no-op for every other job type.
+      await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date(), oneTimePassword: null } });
       const caseStatus = await refreshCaseStatus(db, job.caseRequestId);
       await db.auditLog.create({ data: { actor, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
       return { jobId, status: "failed", caseStatus };
@@ -729,21 +1021,22 @@ export function makeRunnerService(db: PrismaClient) {
 
       await db.job.update({
         where: { id: jobId },
-        data: { status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false },
+        data: {
+          status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false,
+          // A password reset that didn't land never shows its value — wipe it so a plaintext that was
+          // never set on the account can't linger (a succeeded reset keeps it until the one-time reveal).
+          ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && status !== "succeeded" ? { oneTimePassword: null } : {}),
+        },
       });
 
-      // "Run this step only" records the outcome but does NOT cascade — no auto-retry reschedule, no
-      // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
-      // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
-      let caseStatus: string;
-      if (job.singleRun) {
-        const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
-        caseStatus = cs?.status ?? "unknown";
-      } else {
+      const isAdhoc = ADHOC_SYSTEM_KEYS.includes(job.systemKey);
       // AUTO-RETRY: a succeeded result carrying RetryAfterMinutes (e.g. Spanning/Mimecast "user not
       // discovered yet") schedules its own re-run; sweepAutoRetries re-queues it when due. A result
-      // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time.
-      if (status === "succeeded" && !req(job).validateOnly) {
+      // WITHOUT the marker clears any schedule (the wait is over) and audits the elapsed time. This
+      // runs for the normal cascade AND for an ad-hoc singleRun action whose result says "queued, not
+      // done" (the force-sync's promised re-poll) — but NOT for a plain "run this step only" of a
+      // normal step, which intentionally doesn't reschedule.
+      if (status === "succeeded" && !req(job).validateOnly && (!job.singleRun || isAdhoc)) {
         const marker = (input.result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
         const mins = Number(marker.RetryAfterMinutes ?? marker.retryAfterMinutes ?? 0);
         const reqJson = { ...(job.request as Record<string, unknown> ?? {}) };
@@ -760,7 +1053,14 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
-
+      // "Run this step only" (and ad-hoc actions) record the outcome but do NOT cascade the CASE — no
+      // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
+      // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
+      let caseStatus: string;
+      if (job.singleRun) {
+        const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
+        caseStatus = cs?.status ?? "unknown";
+      } else {
       const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
       caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
@@ -782,7 +1082,7 @@ export function makeRunnerService(db: PrismaClient) {
             await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { verifiedAt: new Date() } });
           } else {
             // Re-validate every succeeded automated step that has a validator (skip servicenow/case-resolution).
-            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution"].includes(j.systemKey));
+            const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution", ...ADHOC_SYSTEM_KEYS].includes(j.systemKey));
             if (sweep.length) {
               await db.$transaction(sweep.map((j) =>
                 db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: { ...((j.request ?? {}) as object), validateOnly: true } as Prisma.InputJsonValue } })
@@ -809,13 +1109,22 @@ export function makeRunnerService(db: PrismaClient) {
         const override = parseClientOverride(job.case.client?.notifyOverride);
         const url = process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL}/cases/${job.caseRequestId}` : null;
         const who = `${caseNumber ?? job.caseRequestId}${clientName ? ` (${clientName})` : ""}`;
+        // Who kicked off the run that led here — the most recent operator "run" action on this case
+        // (resume/re-run/verify/import). Null when auth is off or the case ran unattended.
+        const runAudit = await db.auditLog.findFirst({
+          where: { caseRequestId: job.caseRequestId, action: { in: ["case.plan", "job.rerun", "case.verify", "case.resume", "case.dry_run.set"] }, actor: { startsWith: "user:" } },
+          orderBy: { at: "desc" },
+          select: { actor: true },
+        });
+        const actor = runAudit?.actor ? runAudit.actor.replace(/^user:/, "") : null;
+        const at = new Date().toISOString();
         if (status === "failed") {
-          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
         }
         if (caseStatus === "failed") {
-          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, detail: input.error ?? null, url });
+          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
         } else if (caseStatus === "needs_approval") {
-          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, detail: "A destructive offboard step is waiting for approval.", url });
+          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, actor, at, detail: "A destructive offboard step is waiting for approval.", url });
         }
       }
 

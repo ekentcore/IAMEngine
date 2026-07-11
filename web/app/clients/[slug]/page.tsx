@@ -11,6 +11,7 @@ import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
+import { SetupStageChips } from "../_components/setup-stage-chips";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
@@ -18,6 +19,7 @@ import { GenerateRunbookButton } from "../_components/generate-runbook-button";
 import { M365LicenseEditor } from "../_components/m365-license-editor";
 import { M365LicenseRulesEditor } from "../_components/m365-license-rules-editor";
 import { normalizeLicenseRules } from "@/lib/m365/license-rules";
+import { parseLicenseEntries } from "@/lib/m365/license-config";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
@@ -29,6 +31,7 @@ import { ClientNotifyOverride } from "../_components/client-notify-override";
 import { parseClientOverride } from "@/lib/notifications/types";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
+import { delineaWriteSummary } from "@/lib/secrets/delinea-templates";
 
 export const dynamic = "force-dynamic";
 
@@ -124,7 +127,6 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const parentInfo = client.systems.length === 0
     ? (await db.client.findUnique({ where: { id: client.id }, select: { parent: { select: { slug: true, name: true, _count: { select: { systems: true } } } } } }))?.parent ?? null
     : null;
-  const hasRules = Boolean((v21?.personas && Object.keys(v21.personas).length) || (v21?.globals && Object.keys(v21.globals).length));
 
   const runbook = await db.runbookSection.findMany({
     where: { clientId: client.id },
@@ -193,6 +195,9 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
           <EditSystemsButton slug={client.slug} />
+          {readiness && readiness.tier !== "no_systems" && (
+            <Link href={`/clients/${client.slug}/setup`}><button>Guided setup</button></Link>
+          )}
         </div>
       </div>
 
@@ -215,14 +220,28 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       </table>
 
       <h2>Systems</h2>
+      {sysByKey.has("active-directory") && (sysByKey.has("m365") || sysByKey.has("entra") || sysByKey.has("exchange")) && !sysByKey.has("directory-sync") && (
+        <p className="note" style={{ color: "var(--warn-fg)", border: "1px solid var(--warn-fg)", background: "var(--warn-bg)", borderRadius: 8, padding: "0.5rem 0.7rem", margin: "0 0 0.75rem" }}>
+          ⚠ Hybrid client with on-prem Active Directory <b>and</b> cloud systems, but <b>no directory-sync step</b>. New AD accounts won&rsquo;t be pushed to Entra before the cloud steps run — they can race or fail. Add <b>directory-sync</b> (depends on <code>active-directory</code>) in <b>Edit systems</b>.
+        </p>
+      )}
       {sysByKey.has("m365") && (
         <M365LicenseEditor
           slug={client.slug}
           current={(() => {
             const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { licenses?: unknown; defaultLicenses?: unknown } };
             const lic = cfg.onboard?.licenses ?? cfg.onboard?.defaultLicenses ?? [];
-            return Array.isArray(lic) ? lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean) : [];
+            if (!Array.isArray(lic)) return [];
+            // Preserve group-based entries; older { name, skuId } objects collapse to their name (direct).
+            const parsed = parseLicenseEntries(lic);
+            if (parsed.ok) return parsed.licenses;
+            return lic.map((l) => (typeof l === "string" ? l : String((l as { name?: unknown })?.name ?? ""))).filter(Boolean);
           })()}
+          groupOptions={[
+            ...cloudGroupList.map((g) => ({ name: g.name, source: "entra" as const })),
+            ...adGroupNames.map((name) => ({ name, source: "ad" as const })),
+          ]}
+          hasAdSystem={sysByKey.has("active-directory")}
         />
       )}
       {sysByKey.has("m365") && (
@@ -337,15 +356,13 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         <h2 style={{ margin: 0 }}>Roles &amp; rules</h2>
         <EditRulesButton slug={client.slug} />
       </div>
-      {hasRules ? (
-        <RolesRulesView
-          personas={v21?.personas as never}
-          globals={v21?.globals as never}
-          locations={v21?.locations as never}
-        />
-      ) : (
-        <p className="note">No personas or rules yet. Use <b>Edit rules</b> to add an if-then rule (e.g. “if country.short == IN → add Podshore-ALL”).</p>
-      )}
+      <RolesRulesView
+        personas={v21?.personas as never}
+        globals={v21?.globals as never}
+        locations={v21?.locations as never}
+        slug={client.slug}
+        groupOptions={[...new Set(knownGroups.map((g) => g.name))]}
+      />
 
       {readiness && readiness.tier !== "no_systems" && (
         <>
@@ -364,28 +381,40 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             );
           })()}
           <table>
-            <thead><tr><th style={{ width: 180 }}>System</th><th>Credentials</th><th>Connection test</th></tr></thead>
+            <thead><tr><th style={{ width: 180 }}>System</th><th>Credentials</th><th>Connection test</th><th>Setup</th></tr></thead>
             <tbody>
               {readiness.systems.map((s) => (
                 <tr key={s.systemKey}>
                   <td>{s.systemKey}</td>
-                  <td>{s.wired
+                  <td>{s.notNeeded
+                    ? <span className="muted">not needed</span>
+                    : s.wired
                     ? <span style={{ color: "#2e7d32" }}>✓ wired</span>
                     : <span style={{ color: "#b3261e" }}>✗ missing: {s.missingSecrets.join(", ")}</span>}</td>
                   <td>{s.test === "ok"
                     ? <span style={{ color: "#2e7d32" }}>✓ passed</span>
                     : s.test === "fail" ? <span style={{ color: "#b3261e" }}>✗ failed</span>
+                    : s.test === "not_needed" ? <span className="muted" title="Manual step — no credential to test">— not needed</span>
                     : <span className="muted">— untested</span>}</td>
+                  <td><SetupStageChips slug={client.slug} systemKey={s.systemKey} vector={s.setup} attested={s.setup.rights === "attested"} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="note">Computed from wired Delinea references + the latest connection-test results below. Run <b>Test</b> on the secrets to fill in the connection column.</p>
+          <p className="note">Computed from wired Delinea references + the latest connection-test results below. Run <b>Test</b> on the secrets to fill in the connection column. Setup chips: ✓* = attested manually, ? = not yet verifiable (older runner or no probe), — = manual step.</p>
         </>
       )}
 
-      <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>
-      <SecretsPanel slug={client.slug} initialRows={secretRows} delineaConfigured={delineaConfigured(delineaConfigFromEnv())} />
+      <div className="row-between" style={{ marginTop: "1.5rem", alignItems: "baseline" }}>
+        <h2 style={{ margin: 0 }}>Secret wiring (Delinea)</h2>
+        {secretRows.length > 0 && <Link href={`/clients/${client.slug}/setup`} className="note">Guided setup →</Link>}
+      </div>
+      <SecretsPanel
+        slug={client.slug}
+        initialRows={secretRows}
+        delineaConfigured={delineaConfigured(delineaConfigFromEnv())}
+        write={delineaWriteSummary({ slug: client.slug, clientFolderId: client.delineaFolderId, secretNames: secretRows.map((r) => r.name) })}
+      />
 
       <h2 style={{ marginTop: "1.5rem" }}>Connection tests</h2>
       <ConnectionTestPanel slug={client.slug} systemNames={Object.fromEntries(client.systems.map((s) => [s.systemKey, s.system.name]))} />

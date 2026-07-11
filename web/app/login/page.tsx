@@ -12,6 +12,7 @@ const ERRORS: Record<string, string> = {
   sso_state: "The sign-in session expired — please try again.",
   sso_exchange: "Couldn't complete sign-in with Microsoft. Try again.",
   sso_not_provisioned: "Your Microsoft account isn't authorized for iam-engine yet — ask an admin to add you.",
+  sso_access_requested: "Access requested — your sign-in was recorded and an admin will review it. You'll be able to sign in once approved.",
 };
 
 export default function LoginPage({ searchParams }: { searchParams: { error?: string } }) {

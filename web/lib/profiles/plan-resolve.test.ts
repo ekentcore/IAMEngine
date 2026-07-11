@@ -147,3 +147,59 @@ test("entra-only client still runs its own EXO mirror (no m365 to defer to)", ()
   assert.equal(entra.mirrorFromUser, "Rodrigo Rapussi");
   assert.equal(entra.skipExoFinish, undefined);
 });
+
+test("a matched location contributes its groups/OU/attributes to the directory jobs (B)", () => {
+  const locClient = {
+    personas: null, globals: null,
+    locations: {
+      FalconBOS: { city: "Boston", groups: ["FalconBOS", "FIA-Boston-LM"], ou: "OU=Boston,DC=x", attributes: { physicalDeliveryOfficeName: "Boston" } },
+      FalconNYC: { city: "New York", groups: ["FalconNYC"] },
+    },
+  };
+  const p = { firstName: "A", lastName: "B", officeLocation: "FalconBOS", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const planned = [job("active-directory", {}), job("m365", {}), job("servicenow", {})];
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", planned);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  const m365 = resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>;
+  const sn = resolved.find((j) => j.systemKey === "servicenow")!.config as Record<string, unknown>;
+  // Boston hire → FalconBOS + the printer group, unioned into every directory system.
+  assert.deepEqual(ad.groups, ["FalconBOS", "FIA-Boston-LM"]);
+  assert.deepEqual(m365.groups, ["FalconBOS", "FIA-Boston-LM"]);
+  assert.equal(ad.ou, "OU=Boston,DC=x"); // OU only on AD
+  assert.equal((ad.attributes as Record<string, string>).physicalDeliveryOfficeName, "Boston");
+  assert.ok(!("groups" in sn)); // non-directory system untouched
+  // a different office resolves to its own groups
+  const nyc = resolvePlannedConfigs(locClient, { ...p, officeLocation: "FalconNYC" }, "onboard", planned);
+  assert.deepEqual((nyc.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["FalconNYC"]);
+});
+
+test("an ad-source group-based license is appended to the AD job's groups at plan time", () => {
+  const noP = { personas: null, globals: null, locations: null };
+  const planned = [
+    job("active-directory", { groups: ["Existing Group"] }),
+    job("m365", { licenses: [
+      "Defender for Office 365",
+      { name: "Microsoft 365 E3", assignVia: "group", group: "M365 E3 Users Group", groupSource: "ad" },
+      { name: "Microsoft 365 E5", assignVia: "group", group: "E5 License Users", groupSource: "entra" },
+    ] }),
+  ];
+  const p = { firstName: "A", lastName: "B", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const resolved = resolvePlannedConfigs(noP, p, "onboard", planned);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  // ad-source group appended (deduped, existing first); the entra-source one stays with m365.
+  assert.deepEqual(ad.groups, ["Existing Group", "M365 E3 Users Group"]);
+  const m365 = resolved.find((j) => j.systemKey === "m365")!.config as { licenses: unknown[] };
+  assert.equal(m365.licenses.length, 3); // m365 config untouched — the runner notes ad-source entries
+});
+
+test("ad-source license group already in the AD groups is not duplicated", () => {
+  const noP = { personas: null, globals: null, locations: null };
+  const planned = [
+    job("active-directory", { groups: ["m365 e3 users group"] }), // case-insensitive dup
+    job("m365", { licenses: [{ name: "E3", assignVia: "group", group: "M365 E3 Users Group", groupSource: "ad" }] }),
+  ];
+  const p = { firstName: "A", lastName: "B", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const resolved = resolvePlannedConfigs(noP, p, "onboard", planned);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["m365 e3 users group"]);
+});

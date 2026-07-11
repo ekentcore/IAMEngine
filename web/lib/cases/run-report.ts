@@ -7,6 +7,7 @@
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
+import { parseCapabilities, agentCanRun } from "../runner/capabilities";
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 
@@ -117,6 +118,9 @@ export type BuildRunReportInput = {
   payload: Record<string, unknown>;
   jobs: JobRow[];
   names: Map<string, string>;
+  // systemKeys whose FAILED outcome the operator accepted ("ignore warning") — they no longer block
+  // dependents, so a step waiting on an accepted failure reads "ready", matching the claim gate.
+  acceptedSystemKeys?: Set<string>;
 };
 
 // Pull the human-readable action lines out of a module result envelope ({ Actions: [...] } —
@@ -285,7 +289,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     let pendingReason: string | null = null;
     if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
       const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
-      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped";
+      const accepted = input.acceptedSystemKeys ?? new Set<string>();
+      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped" && !accepted.has(o.systemKey);
       const blockers = Array.isArray(deps)
         ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
         : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
@@ -464,6 +469,12 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const catalog = await db.systemCatalog.findMany({ where: { key: { in: keys } }, select: { key: true, name: true } });
   const names = new Map(catalog.map((sc) => [sc.key, sc.name]));
 
+  // systemKeys whose FAILED run was accepted ("ignore warning") — they no longer block dependents,
+  // matching the claim gate, so a step waiting only on an accepted failure reads "ready".
+  const acceptedSystemKeys = new Set(
+    (await db.runOutcome.findMany({ where: { caseRequestId: c.id, status: "failed", resolvedAt: { not: null } }, select: { systemKey: true } })).map((o) => o.systemKey)
+  );
+
   const report = buildRunReport({
     caseId: c.id,
     caseNumber: c.serviceNowCaseNumber,
@@ -476,6 +487,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     payload: (c.payload ?? {}) as Record<string, unknown>,
     jobs: c.jobs,
     names,
+    acceptedSystemKeys,
   });
 
   // "Ignore warning" — a step whose run-log fingerprint the operator resolved is ACCEPTED: it no
@@ -514,7 +526,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   if (ready.length > 0) {
     const onlineAgents = await db.agent.findMany({
       where: { enabled: true, deletedAt: null, lastSeenAt: { gt: new Date(Date.now() - 90_000) } },
-      select: { clientId: true, name: true, lastSeenAt: true, version: true },
+      select: { clientId: true, name: true, lastSeenAt: true, version: true, capabilities: true },
     });
     const build = runnerBuildId();
     const upToDate = (v: string | null) => !!v && /^[0-9a-f]{6,}$/.test(v) && v === build;
@@ -548,12 +560,30 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
           : "ready, but no runner is online to claim it — check the Agents page";
         continue;
       }
+      // Capability gate — mirrors the claim filter: an on-prem system is only claimable by an agent that
+      // REPORTS it can run it. If the client's agent is online but doesn't advertise this system (e.g. a DC
+      // whose ActiveDirectory/RSAT module didn't load), the app withholds the job — say so, instead of
+      // showing "about to start" for a step that will never be claimed. A legacy agent reports nothing →
+      // treated as capable, so this only fires for an agent actually reporting it can't run the system.
+      const runnable = ALWAYS_ON_PREM_SYSTEMS.includes(st.systemKey)
+        ? eligible.filter((a) => agentCanRun(st.systemKey, parseCapabilities(a.capabilities)))
+        : eligible;
+      if (runnable.length === 0) {
+        const names = [...new Set(eligible.map((a) => a.name))].join(", ");
+        // AD is the common case with specific remediation (RSAT); keep the advice keyed to the system so
+        // it's never wrong if this ever fires for another on-prem system (e.g. a future addition).
+        const fix = st.systemKey === "active-directory"
+          ? "the ActiveDirectory (RSAT) module isn't loaded there — install RSAT-AD-PowerShell (or use the runner's Troubleshoot) and restart it"
+          : `the module for ${st.systemKey} isn't loaded there — install its host dependency and restart the runner`;
+        st.pendingReason = `ready, but ${names} on ${c.client.name}'s network can't run ${st.systemKey} — ${fix}; it claims this step once it reports the capability.`;
+        continue;
+      }
       // The agent is online but on an OUTDATED build — the app won't dispatch jobs to it (it would run
       // stale code), so the step sits. Tell the operator exactly that instead of "about to start".
-      const current = eligible.filter((a) => upToDate(a.version));
+      const current = runnable.filter((a) => upToDate(a.version));
       if (current.length === 0) {
-        const names = [...new Set(eligible.map((a) => a.name))].join(", ");
-        st.pendingReason = `ready, but ${names} ${eligible.length > 1 ? "are" : "is"} on an OUTDATED build — the app won't dispatch jobs to it until you update it on the Agents page`;
+        const names = [...new Set(runnable.map((a) => a.name))].join(", ");
+        st.pendingReason = `ready, but ${names} ${runnable.length > 1 ? "are" : "is"} on an OUTDATED build — the app won't dispatch jobs to it until you update it on the Agents page`;
         continue;
       }
       // Pull model: the runner claims on its next poll (~15s). Name it + show how fresh it is, so

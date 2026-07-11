@@ -148,3 +148,43 @@ Describe 'Confirm-CtgGoogle' {
         $r.ok | Should -BeFalse
     }
 }
+
+Describe 'Invoke-CtgGooglePasswordReset' {
+    # Ad-hoc "Generate random password": app-generated value arrives as config.newPassword; the
+    # executor PUTs it with changePasswordAtNextLogin and never echoes it into the result.
+    BeforeEach {
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }
+        $config = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v' }
+    }
+
+    It 'PUTs the new password with change-at-next-login' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com' } }
+            return $null
+        }
+        $r = Invoke-CtgGooglePasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -Times 1 -Exactly -ParameterFilter {
+            $Method -eq 'PUT' -and $Path -eq '/users/jdoe@brightonpark.com' -and $Body.password -eq 'Xy7#kQ9pLm2$Wn4v' -and $Body.changePasswordAtNextLogin -eq $true
+        }
+        ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    It 'throws when the user is not found — never silently no-ops' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { $null }
+        { Invoke-CtgGooglePasswordReset -User $user -Config $config } | Should -Throw '*not found*'
+    }
+
+    It 'throws when the app did not inject newPassword' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com' } }
+        { Invoke-CtgGooglePasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
+    }
+}
+
+Describe 'Connect-CtgGoogle session scopes' {
+    It 'records the minted scopes (delegation proved them) and clears them for raw tokens' {
+        Connect-CtgGoogle -AccessToken 'tok-direct'
+        @(Get-CtgGoogleSessionScopes) | Should -HaveCount 0
+    }
+}
