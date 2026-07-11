@@ -11,6 +11,13 @@ export const V2_ROUTES: Record<string, string> = {
   "/audit": "/audit/v2",
   "/users": "/users/v2",
   "/agents": "/agents/v2",
+  "/runs": "/runs/v2",
+  "/modules": "/modules/v2",
+  "/health": "/health/v2",
+  // Sub-path needs its own entry — the redirect is exact-match, so "/health" doesn't cover it.
+  "/health/connections": "/health/connections/v2",
+  "/settings": "/settings/v2",
+  "/account": "/account/v2",
 };
 
 // reverse: v2 route -> canonical base.

@@ -18,7 +18,7 @@ function phase(r: Row): { label: string; color: string } {
   return { label: r.onPrem ? "pending (needs the client agent)" : "pending", color: "#8a6d00" };
 }
 
-export function ConnectionsView({ rows }: { rows: Row[] }) {
+export function ConnectionsView({ rows, v2 = false }: { rows: Row[]; v2?: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -56,7 +56,8 @@ export function ConnectionsView({ rows }: { rows: Row[] }) {
     <>
       <div className="filters" style={{ marginTop: "1rem", alignItems: "center", gap: 8 }}>
         <button className="primary" disabled={busy} onClick={sweep}>{busy ? "Queuing…" : "▶ Run fleet sweep"}</button>
-        <span className="note">✓ {counts.ok} · ✗ {counts.fail} · running {counts.running} · pending {counts.pending}</span>
+        {/* v2 shows the counts in the page header instead. */}
+        {!v2 && <span className="note">✓ {counts.ok} · ✗ {counts.fail} · running {counts.running} · pending {counts.pending}</span>}
         <span className="grow" />
         <label className="note" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
           <input type="checkbox" checked={redsOnly} onChange={(e) => setRedsOnly(e.target.checked)} style={{ width: "auto" }} /> failures only
@@ -68,8 +69,15 @@ export function ConnectionsView({ rows }: { rows: Row[] }) {
       <table style={{ width: "100%", tableLayout: "fixed", fontSize: 13 }}>
         <thead>
           <tr style={{ textAlign: "left" }}>
-            <th style={{ width: 220, padding: "4px 8px" }}>Client</th>
-            <th style={{ width: 130, padding: "4px 8px" }}>System</th>
+            {/* v2: client + system share one identity cell. */}
+            {v2 ? (
+              <th style={{ width: 320, padding: "4px 8px" }}>Client / system</th>
+            ) : (
+              <>
+                <th style={{ width: 220, padding: "4px 8px" }}>Client</th>
+                <th style={{ width: 130, padding: "4px 8px" }}>System</th>
+              </>
+            )}
             <th style={{ width: 60, padding: "4px 8px" }}>Creds</th>
             <th style={{ width: 180, padding: "4px 8px" }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Detail</th>
@@ -80,15 +88,25 @@ export function ConnectionsView({ rows }: { rows: Row[] }) {
             const p = phase(r);
             return (
               <tr key={i} style={{ borderTop: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top" }}>
-                <td style={{ padding: "4px 8px" }}><a href={`/clients/${r.slug}`}>{r.client}</a></td>
-                <td style={{ padding: "4px 8px" }}><b>{r.systemKey}</b>{r.onPrem && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>on-prem</span>}</td>
+                {v2 ? (
+                  <td style={{ padding: "4px 8px" }}>
+                    <a href={`/clients/${r.slug}`}>{r.client}</a>{" "}
+                    <b style={{ marginLeft: 4 }}>{r.systemKey}</b>
+                    {r.onPrem && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>on-prem</span>}
+                  </td>
+                ) : (
+                  <>
+                    <td style={{ padding: "4px 8px" }}><a href={`/clients/${r.slug}`}>{r.client}</a></td>
+                    <td style={{ padding: "4px 8px" }}><b>{r.systemKey}</b>{r.onPrem && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>on-prem</span>}</td>
+                  </>
+                )}
                 <td style={{ padding: "4px 8px" }} title="Whether the runner could resolve the secret from Delinea">{r.accessOk === true ? "✓" : r.accessOk === false ? "✗" : "—"}</td>
                 <td style={{ padding: "4px 8px", color: p.color, whiteSpace: "nowrap" }}>{p.label}</td>
                 <td style={{ padding: "4px 8px", overflowWrap: "anywhere", color: r.status === "fail" ? "#b91c1c" : "var(--muted, #6b7280)" }}>{r.detail ?? ""}</td>
               </tr>
             );
           })}
-          {visible.length === 0 && <tr><td colSpan={5} style={{ padding: "1.5rem", textAlign: "center", color: "var(--muted)" }}>{rows.length === 0 ? "No connection tests yet — run a fleet sweep." : "No rows match."}</td></tr>}
+          {visible.length === 0 && <tr><td colSpan={v2 ? 4 : 5} style={{ padding: "1.5rem", textAlign: "center", color: "var(--muted)" }}>{rows.length === 0 ? "No connection tests yet — run a fleet sweep." : "No rows match."}</td></tr>}
         </tbody>
       </table>
     </>

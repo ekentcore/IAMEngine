@@ -481,19 +481,21 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 .mobile-drawer a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-press); }
 .mobile-drawer a:active { background: var(--bg-soft); }
 
-/* Agents v2 (only affects /agents/v2 — additive): top-aligned dense rows + a compact per-agent
-   "Actions ▾" menu that overlays instead of a permanent button grid. */
+/* Agents v2 (only affects /agents/v2 — additive): top-aligned dense rows. */
 .agents-v2 th, .agents-v2 td { vertical-align: top; }
-.agent-actions-trigger { font-size: 12px; padding: 3px 9px; }
-.agent-actions-menu {
+
+/* Shared per-row "Actions ▾" popover (app/_components/actions-menu.tsx) — a compact trigger whose
+   menu overlays instead of a permanent button row. */
+.actions-trigger { font-size: 12px; padding: 3px 9px; }
+.actions-menu {
   position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 168px;
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: var(--shadow-2, 0 6px 20px rgba(0,0,0,0.14)); padding: 4px;
   display: flex; flex-direction: column; gap: 1px;
 }
-.agent-actions-menu button {
+.actions-menu button {
   display: block; width: 100%; text-align: left; background: transparent; border: none;
   box-shadow: none; padding: 6px 10px; font-size: 13px; border-radius: 6px; white-space: nowrap;
 }
-.agent-actions-menu button:hover:not(:disabled) { background: var(--bg-soft); border-color: transparent; }
-.agent-actions-menu button.danger { color: var(--err-fg); }
+.actions-menu button:hover:not(:disabled) { background: var(--bg-soft); border-color: transparent; }
+.actions-menu button.danger { color: var(--err-fg); }
