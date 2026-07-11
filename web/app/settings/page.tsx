@@ -11,6 +11,8 @@ import { NotificationForm } from "./_components/notification-form";
 import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
 import { RestartServerButton } from "./_components/restart-server-button";
 import { AutoFixToggle } from "./_components/auto-fix-toggle";
+import { AgentAutoUpdateToggle } from "./_components/agent-auto-update-toggle";
+import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
 import { loadFeatureRequests } from "./_lib/loader";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +26,7 @@ export default async function SettingsPage() {
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
   const featureRequests = await loadFeatureRequests();
   const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
+  const autoUpdate = await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY);
   return (
     <main>
       <h1>Notifications</h1>
@@ -41,6 +44,7 @@ export default async function SettingsPage() {
       </p>
       <FeatureRequestsAdmin initial={featureRequests} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
+      <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );
