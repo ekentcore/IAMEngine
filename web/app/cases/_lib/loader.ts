@@ -42,6 +42,7 @@ export async function loadCasesPage() {
     statusHint: c.statusHint,
     effectiveDate: c.effectiveDate,
     immediate: c.immediate,
+    scheduledForIso: c.scheduledFor ? c.scheduledFor.toISOString() : null,
     lastRunIso: c.lastRunAt ? c.lastRunAt.toISOString() : null,
     ranBy: c.ranBy,
     lastActionLabel: c.lastActionLabel,

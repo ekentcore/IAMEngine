@@ -288,6 +288,10 @@ model CaseRequest {
   // Why it's held: "operator" (manual pause) or "needs_info" (intake had unknowns to fill before it
   // can run — the case is auto-held on import and released once the fields are provided).
   pausedReason         String?
+  // Scheduled auto-resume: at this time the heartbeat sweep releases the hold and runners start
+  // claiming. scheduledBy is a plain snapshot of the operator's email who set it.
+  scheduledFor         DateTime?
+  scheduledBy          String?
   createdAt            DateTime   @default(now())
   // ONE-TIME initial password for a "generate"-mode onboard: the app generates it at dispatch (so it
   // knows the value), injects it as the runner's initial password, and stores it here to reveal to the
@@ -417,6 +421,27 @@ model RunOutcome {
   @@index([at])
   @@index([fingerprint])
   @@index([resolvedAt])
+}
+
+// A "self-healing" fix task: one headless Claude Code run against an isolated git worktree,
+// triggered from a failing run-log line (operator button or the opt-in auto-fix sweep). The fixer
+// (scripts/claude-fix.mjs) diagnoses + patches the code and opens a DRAFT PR — a human always
+// merges. One unfinished task per fingerprint (enforced by the API), so the same failure can't
+// fan out into parallel fixers.
+model FixTask {
+  id          String    @id @default(cuid())
+  fingerprint String // the RunOutcome fingerprint that triggered it
+  title       String // short description shown in UI (e.g. "m365: license assignment failed")
+  context     String // the error text handed to Claude (the run-log line's copy text)
+  status      String    @default("queued") // queued | running | opened_pr | failed | no_change
+  branch      String? // claude-fixes/<id>
+  prUrl       String? // the draft PR, when one was opened
+  log         String? // tail of the fixer output (diagnosis + cost, or the error)
+  requestedBy String? // operator email or "system:auto-fix"
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([fingerprint])
 }
 
 // ── Auth: operators, their roles, and live sessions ──────────────────────────

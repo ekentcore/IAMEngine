@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { ActionsMenu, type ActionsMenuItem } from "../../_components/actions-menu";
 import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
+import { ClaudeFixButton, ClaudeFixChip, useClaudeFixes } from "./claude-fix";
 import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
 
 export type RunLogRow = {
@@ -79,12 +80,26 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
     });
   }
 
-  const rowMenu = (r: RunLogRow): ActionsMenuItem[] => [
-    { label: "⧉ Copy", title: "Copy this line's message + error", onClick: () => { navigator.clipboard?.writeText(r.copyText); } },
-    r.done
-      ? { label: "↺ Reopen", title: "Reopen this line", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) }
-      : { label: "✓ Fixed", title: r.count > 1 ? `Mark Fixed — clears all ${r.count} occurrences of this line for this case` : "Mark this line Fixed", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) },
-  ];
+  // "Fix with Claude" (self-healing lane): per-fingerprint task state + 5s polling live in the hook.
+  const { tasks: fixTasks, start: startClaudeFix } = useClaudeFixes();
+
+  const rowMenu = (r: RunLogRow): ActionsMenuItem[] => {
+    const t = fixTasks[r.fingerprint];
+    return [
+      { label: "⧉ Copy", title: "Copy this line's message + error", onClick: () => { navigator.clipboard?.writeText(r.copyText); } },
+      r.done
+        ? { label: "↺ Reopen", title: "Reopen this line", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) }
+        : { label: "✓ Fixed", title: r.count > 1 ? `Mark Fixed — clears all ${r.count} occurrences of this line for this case` : "Mark this line Fixed", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) },
+      ...(isFixable(r)
+        ? [{
+            label: "🤖 Fix with Claude",
+            title: "Hand this failure to Claude Code: it diagnoses and fixes the code in an isolated worktree and opens a draft PR — a human merges",
+            disabled: !!t && (t.status === "queued" || t.status === "running"),
+            onClick: () => startClaudeFix(r),
+          }]
+        : []),
+    ];
+  };
 
   // v2 splits the resolved lines out of the working table; non-v2 keeps them inline (dimmed).
   const mainRows = v2 ? rows.filter((r) => !r.done) : rows;
@@ -145,13 +160,17 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
                   {/* Actions float top-right INSIDE the message cell: pinned to the row's right edge while
                       the message text fills the full width and wraps under them — no sparse actions column. */}
                   {(r.verdict === "warning" || r.verdict === "failed") && (
-                    <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap" }}>
+                    <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap", alignItems: "center" }}>
                       {v2 ? (
-                        <ActionsMenu items={rowMenu(r)} />
+                        <>
+                          <ClaudeFixChip task={fixTasks[r.fingerprint]} />
+                          <ActionsMenu items={rowMenu(r)} />
+                        </>
                       ) : (
                         <>
                           <CopyButton text={r.copyText} />
                           <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
+                          {isFixable(r) && <ClaudeFixButton row={r} task={fixTasks[r.fingerprint]} onStart={startClaudeFix} />}
                         </>
                       )}
                     </span>
