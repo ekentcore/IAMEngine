@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { SecretHelpLink } from "@/app/_components/secret-help-link";
@@ -141,6 +142,8 @@ export function SecretsPanel({
         the value stays in Delinea and is fetched by the runner at run time. Credentials that need more
         than a username + password have a setup guide next to their name.
         {!delineaConfigured && <> · <span className="danger">Test is disabled until DELINEA_* is set on the app.</span></>}
+        {" · "}
+        <Link href={`/clients/${slug}/setup`}>Guided setup →</Link>
       </p>
       <table>
         <thead>

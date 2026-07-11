@@ -28,6 +28,10 @@ web/node_modules/.prisma/
 .DS_Store
 *.log
 
+# --- playwright MCP scratch (screenshots/console logs from in-session browser checks) ---
+.playwright-mcp/
+*.png
+
 # --- archives ---
 *.zip
 

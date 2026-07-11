@@ -193,6 +193,9 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
           <EditSystemsButton slug={client.slug} />
+          {readiness && readiness.tier !== "no_systems" && (
+            <Link href={`/clients/${client.slug}/setup`}><button>Guided setup</button></Link>
+          )}
         </div>
       </div>
 
@@ -399,7 +402,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </>
       )}
 
-      <h2 style={{ marginTop: "1.5rem" }}>Secret wiring (Delinea)</h2>
+      <div className="row-between" style={{ marginTop: "1.5rem", alignItems: "baseline" }}>
+        <h2 style={{ margin: 0 }}>Secret wiring (Delinea)</h2>
+        {secretRows.length > 0 && <Link href={`/clients/${client.slug}/setup`} className="note">Guided setup →</Link>}
+      </div>
       <SecretsPanel slug={client.slug} initialRows={secretRows} delineaConfigured={delineaConfigured(delineaConfigFromEnv())} />
 
       <h2 style={{ marginTop: "1.5rem" }}>Connection tests</h2>
