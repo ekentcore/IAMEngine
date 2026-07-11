@@ -181,3 +181,10 @@ Describe 'Invoke-CtgGooglePasswordReset' {
         { Invoke-CtgGooglePasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
     }
 }
+
+Describe 'Connect-CtgGoogle session scopes' {
+    It 'records the minted scopes (delegation proved them) and clears them for raw tokens' {
+        Connect-CtgGoogle -AccessToken 'tok-direct'
+        @(Get-CtgGoogleSessionScopes) | Should -HaveCount 0
+    }
+}

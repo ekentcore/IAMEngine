@@ -4,13 +4,13 @@
 // Data assembly lives in _lib/loader.ts, shared with the denser /health/connections/v2 variant.
 import Link from "next/link";
 import { ConnectionsView } from "./_components/connections-view";
-import { loadConnectionsPage } from "./_lib/loader";
+import { loadConnectionsPage, loadSweepSchedule } from "./_lib/loader";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Connection tests" };
 
 export default async function ConnectionsPage() {
-  const rows = await loadConnectionsPage();
+  const [rows, schedule] = await Promise.all([loadConnectionsPage(), loadSweepSchedule()]);
 
   return (
     <main>
@@ -20,7 +20,7 @@ export default async function ConnectionsPage() {
           <p className="note">Per-client/system preflight — proves each credential actually connects + reads, not just that the Delinea reference resolves. <Link href="/health" className="note">← Health</Link></p>
         </div>
       </div>
-      <ConnectionsView rows={rows} />
+      <ConnectionsView rows={rows} schedule={schedule} />
     </main>
   );
 }

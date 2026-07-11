@@ -1424,4 +1424,37 @@ function Invoke-CtgM365PasswordReset {
     [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset
+# The nearest expiry of THIS app registration's own secret/cert, so the connection test can warn
+# before onboarding starts failing with an expired credential. Needs Application.Read.All (the app
+# already needs it to read its granted roles); returns $null + a note when it can't read it, never
+# throws. Returns @{ expiresAt = <ISO string or $null>; note = <string> }.
+function Get-CtgAppCredentialExpiry {
+    [CmdletBinding()]
+    param()
+    $ctx = Get-MgContext
+    if (-not $ctx -or -not $ctx.ClientId) { return @{ expiresAt = $null; note = 'no Graph context' } }
+    $appId = [string]$ctx.ClientId
+    try {
+        $resp = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+            -Uri "https://graph.microsoft.com/v1.0/applications(appId='$appId')?`$select=passwordCredentials,keyCredentials"
+    }
+    catch {
+        return @{ expiresAt = $null; note = "couldn't read app credential expiry — grant Application.Read.All to enable the expiry warning ($([string]$_.Exception.Message))" }
+    }
+    $ends = @()
+    foreach ($set in @($resp.passwordCredentials), @($resp.keyCredentials)) {
+        foreach ($c in @($set)) {
+            $e = $null
+            try { $e = [datetimeoffset]::Parse([string]$c.endDateTime) } catch { }
+            if ($e) { $ends += $e }
+        }
+    }
+    if ($ends.Count -eq 0) { return @{ expiresAt = $null; note = 'no password/cert credentials on the app registration' } }
+    $now = [datetimeoffset]::UtcNow
+    # Prefer the nearest FUTURE expiry; if all are past, the most recent past one (already expired).
+    $future = @($ends | Where-Object { $_ -gt $now } | Sort-Object)
+    $pick = if ($future.Count) { $future[0] } else { @($ends | Sort-Object)[-1] }
+    @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry

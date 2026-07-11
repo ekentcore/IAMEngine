@@ -11,6 +11,7 @@ import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
+import { SetupStageChips } from "../_components/setup-stage-chips";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
@@ -380,7 +381,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             );
           })()}
           <table>
-            <thead><tr><th style={{ width: 180 }}>System</th><th>Credentials</th><th>Connection test</th></tr></thead>
+            <thead><tr><th style={{ width: 180 }}>System</th><th>Credentials</th><th>Connection test</th><th>Setup</th></tr></thead>
             <tbody>
               {readiness.systems.map((s) => (
                 <tr key={s.systemKey}>
@@ -395,11 +396,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
                     : s.test === "fail" ? <span style={{ color: "#b3261e" }}>✗ failed</span>
                     : s.test === "not_needed" ? <span className="muted" title="Manual step — no credential to test">— not needed</span>
                     : <span className="muted">— untested</span>}</td>
+                  <td><SetupStageChips slug={client.slug} systemKey={s.systemKey} vector={s.setup} attested={s.setup.rights === "attested"} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="note">Computed from wired Delinea references + the latest connection-test results below. Run <b>Test</b> on the secrets to fill in the connection column.</p>
+          <p className="note">Computed from wired Delinea references + the latest connection-test results below. Run <b>Test</b> on the secrets to fill in the connection column. Setup chips: ✓* = attested manually, ? = not yet verifiable (older runner or no probe), — = manual step.</p>
         </>
       )}
 

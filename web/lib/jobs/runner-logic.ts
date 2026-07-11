@@ -80,3 +80,22 @@ export function deriveCaseStatus(all: JobLite[]): CaseStatus {
   if (jobs.some((j) => j.status === "manual")) return "needs_manual";
   return "completed";
 }
+
+// --- Setup-state dispatch gate -------------------------------------------------------------------
+// Opt-in (AppSetting "setup_gate", default OFF): when enforcing, a job whose system's latest
+// connection test FAILED is withheld from claim unless an operator attested the credential's
+// rights manually. Deliberately narrow: "untested" and "unknown" never block (that would strand
+// every legacy client), unwired secrets are already blocked by the credential preflight, and the
+// attestation is the single override mechanism — no second flag to disagree with it.
+export type SetupGatePolicy = { enforceTested: boolean };
+export type SetupGateInput = {
+  test: "ok" | "fail" | "untested" | "not_needed" | "unknown";
+  attested: boolean;
+};
+export function setupGateBlocks(input: SetupGateInput, policy: SetupGatePolicy): { block: boolean; reason?: string } {
+  if (!policy.enforceTested) return { block: false };
+  if (input.test === "fail" && !input.attested) {
+    return { block: true, reason: "latest connection test failed and rights are not attested — fix the credential or attest it on the client page" };
+  }
+  return { block: false };
+}

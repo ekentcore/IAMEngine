@@ -151,6 +151,8 @@ model Client {
   cases           CaseRequest[]
   runbook         RunbookSection[]
   connectionTests ConnectionTest[]
+  setupStates     SystemSetupState[]
+  connHealth      ConnHealthState[]
   userAccess      UserClientAccess[]
 }
 
@@ -191,8 +193,37 @@ model Secret {
   provider   String  @default("delinea")
   externalId String // Delinea secret id — NEVER a value
   label      String?
+  // Credential expiry, captured OPPORTUNISTICALLY from Delinea metadata whenever the secret is
+  // checked or brokered (never from the value). Null = Delinea doesn't expose one for this secret.
+  expiresAt         DateTime?
+  expiryCheckedAt   DateTime?
+  expiryNotifiedAt  DateTime? // last credExpiring alert for this secret (renotify window)
 
   @@unique([clientId, name])
+}
+
+// Durable per-(client, system) connection-health snapshot. ConnectionTest rows are DELETED and
+// recreated on every run, so new-failure detection and notification suppression live here: written
+// by reportConnectionTest on every result, never deleted by a re-run. Sweep-sourced NEW failures
+// set pendingNotifyAt and are flushed (individually or as one digest) by the conn sweep;
+// failNotifiedAt stops repeats until the system recovers.
+model ConnHealthState {
+  id               String    @id @default(cuid())
+  client           Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId         String
+  systemKey        String
+  lastStatus       String // ok | fail
+  lastDetail       String?
+  lastOkAt         DateTime?
+  lastFailAt       DateTime?
+  credExpiresAt    DateTime? // nearest credential expiry the probe reported (e.g. Graph app secret)
+  pendingNotifyAt  DateTime? // a sweep-sourced NEW failure awaiting the digest flush
+  failNotifiedAt   DateTime? // cleared on recovery — re-arms future alerts
+  expiryNotifiedAt DateTime?
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([clientId, systemKey])
+  @@index([pendingNotifyAt])
 }
 
 model Agent {
@@ -241,6 +272,25 @@ model Agent {
   @@index([deletedAt])
 }
 
+// Operator-entered setup state for one (client, system) pair — the bits of the setup checklist
+// that can't be DERIVED from live state: "setup started" and "I verified rights manually" (the
+// attestation that also overrides the dispatch gate). Deliberately keyed by systemKey with NO FK
+// to ClientSystem: replaceSystems deletes+recreates system rows wholesale, and attestation must
+// survive an edit to the system set. Cascades only with the client itself.
+model SystemSetupState {
+  id         String    @id @default(cuid())
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId   String
+  systemKey  String
+  startedAt  DateTime? // operator opened/acknowledged the setup instructions
+  startedBy  String?
+  attestedAt DateTime? // operator attests the credential's RIGHTS were verified manually
+  attestedBy String?
+  attestNote String?
+
+  @@unique([clientId, systemKey])
+}
+
 // A one-off "does the credential actually connect, with the right permissions?" probe. ISOLATED
 // from the Job/CaseRequest pipeline so a probe can never affect a real onboarding: its own table,
 // its own claim, its own runner loop. Routed like a job — cloud systems to the central runner, on-
@@ -256,6 +306,18 @@ model ConnectionTest {
   // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
   accessOk        Boolean?
   accessDetail    String?
+  // App-side preflight stage, stamped at REQUEST time (before any runner claims it): the app itself
+  // resolved each secret from Delinea and shape-checked its field names. Null = preflight not run
+  // (Delinea unconfigured on the app, or an older row).
+  fieldsOk        Boolean?
+  fieldsDetail    String?
+  // Per-operation rights results from the runner's probe: [{ op, ok, detail }] where ok=null means
+  // "cannot verify automatically — check manually". Null = older runner or no rights-aware probe.
+  rights          Json?
+  // Nearest expiry of the credential itself when the probe can read it (e.g. the Graph app secret's
+  // passwordCredentials endDateTime). Null = unknown/unreadable.
+  credExpiresAt   DateTime?
+  source          String    @default("manual") // manual (operator button) | sweep (scheduled fleet run)
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
   secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
   config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri

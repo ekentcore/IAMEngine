@@ -7,7 +7,7 @@
     Description       = 'Idempotent Zoom user lifecycle via the Zoom REST API v2 (server-to-server OAuth). No external module dependencies.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgZoom', 'Invoke-CtgZoomApi', 'Get-CtgZoomUser', 'Resolve-CtgZoomEmail', 'Find-CtgZoomUserByName', 'Resolve-CtgZoomTarget', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding', 'Confirm-CtgZoom')
+    FunctionsToExport = @('Connect-CtgZoom', 'Get-CtgZoomGrantedScopes', 'Invoke-CtgZoomApi', 'Get-CtgZoomUser', 'Resolve-CtgZoomEmail', 'Find-CtgZoomUserByName', 'Resolve-CtgZoomTarget', 'Invoke-CtgZoomOnboarding', 'Invoke-CtgZoomOffboarding', 'Confirm-CtgZoom')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

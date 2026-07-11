@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, type JobLite } from "./runner-logic";
+import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite } from "./runner-logic";
 
 function j(over: Partial<JobLite>): JobLite {
   return { id: "j", systemKey: over.id ?? "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
@@ -147,4 +147,18 @@ test("ad-hoc spanning-force-sync is treated like other ad-hoc actions (no effect
   const late = j({ id: "mimecast", sequence: 5 });
   const sync = j({ id: "spanning-force-sync", sequence: 1, status: "pending" });
   assert.equal(dependencyGateOpen(late, [sync, late]), true);
+});
+
+test("setupGateBlocks: default policy never blocks; enforce blocks only failing-unattested", () => {
+  const off = { enforceTested: false };
+  const on = { enforceTested: true };
+  for (const test of ["ok", "fail", "untested", "not_needed", "unknown"] as const) {
+    assert.equal(setupGateBlocks({ test, attested: false }, off).block, false);
+  }
+  assert.equal(setupGateBlocks({ test: "fail", attested: false }, on).block, true);
+  assert.match(setupGateBlocks({ test: "fail", attested: false }, on).reason ?? "", /attest/i);
+  assert.equal(setupGateBlocks({ test: "fail", attested: true }, on).block, false); // attestation overrides
+  assert.equal(setupGateBlocks({ test: "untested", attested: false }, on).block, false); // never strand legacy clients
+  assert.equal(setupGateBlocks({ test: "unknown", attested: false }, on).block, false);
+  assert.equal(setupGateBlocks({ test: "ok", attested: false }, on).block, false);
 });

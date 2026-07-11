@@ -5,7 +5,14 @@ import { Prisma } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
-import { computeClientReadiness, type ConnTestState, type ClientReadiness } from "./readiness";
+import { computeClientReadiness, type ConnTestState, type ClientReadiness, type RightsState } from "./readiness";
+import { parseRights, summarizeRights } from "../jobs/conn-test-logic";
+
+// Roll a stored ConnectionTest.rights JSON up to the RightsState the readiness vector consumes.
+function rightsStateOf(raw: unknown): RightsState {
+  const s = summarizeRights(parseRights(raw));
+  return s.state === "verified" ? "verified" : s.state === "missing" ? "missing" : s.state === "unverified" ? "unverified" : "unknown";
+}
 
 // Order systemKeys by the runbook's documented run sequence (onboard first — the primary process,
 // and where "resolving case" lands last — then offboard-only systems by their seq; any system with
@@ -92,26 +99,40 @@ export function makeClientRepository(db: PrismaClient) {
       // Readiness inputs, batched across all listed clients (no per-row queries): the client's wired
       // secret references + the latest connection-test outcome per system.
       const ids = rows.map((r) => r.id);
-      const [secretRows, testRows] = ids.length
+      const [secretRows, testRows, setupRows] = ids.length
         ? await Promise.all([
             db.secret.findMany({ where: { clientId: { in: ids } }, select: { clientId: true, name: true, externalId: true } }),
             db.connectionTest.findMany({
               where: { clientId: { in: ids } },
-              select: { clientId: true, systemKey: true, status: true, finishedAt: true },
+              select: { clientId: true, systemKey: true, status: true, fieldsOk: true, rights: true, finishedAt: true },
               orderBy: { finishedAt: "desc" }, // newest first -> first seen per (client, system) is latest
             }),
+            db.systemSetupState.findMany({ where: { clientId: { in: ids } }, select: { clientId: true, systemKey: true, startedAt: true, attestedAt: true } }),
           ])
-        : [[], []];
+        : [[], [], []];
       const secretsByClient = new Map<string, Map<string, string | null>>();
       for (const s of secretRows) {
         const m = secretsByClient.get(s.clientId) ?? new Map<string, string | null>();
         m.set(s.name, s.externalId); secretsByClient.set(s.clientId, m);
       }
       const testsByClient = new Map<string, Map<string, ConnTestState>>();
+      const preflightByClient = new Map<string, Map<string, boolean | null>>();
+      const rightsByClient = new Map<string, Map<string, RightsState>>();
       for (const t of testRows) {
         const m = testsByClient.get(t.clientId) ?? new Map<string, ConnTestState>();
-        if (!m.has(t.systemKey)) m.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+        if (!m.has(t.systemKey)) {
+          m.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+          const pf = preflightByClient.get(t.clientId) ?? new Map<string, boolean | null>();
+          pf.set(t.systemKey, t.fieldsOk); preflightByClient.set(t.clientId, pf);
+          const rs = rightsByClient.get(t.clientId) ?? new Map<string, RightsState>();
+          rs.set(t.systemKey, rightsStateOf(t.rights)); rightsByClient.set(t.clientId, rs);
+        }
         testsByClient.set(t.clientId, m);
+      }
+      const setupByClient = new Map<string, Map<string, { startedAt: Date | null; attestedAt: Date | null }>>();
+      for (const s of setupRows) {
+        const m = setupByClient.get(s.clientId) ?? new Map<string, { startedAt: Date | null; attestedAt: Date | null }>();
+        m.set(s.systemKey, { startedAt: s.startedAt, attestedAt: s.attestedAt }); setupByClient.set(s.clientId, m);
       }
 
       return rows.map((r) => ({
@@ -152,6 +173,9 @@ export function makeClientRepository(db: PrismaClient) {
             .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
           secretExternalIds: secretsByClient.get(r.id) ?? new Map(),
           testBySystem: testsByClient.get(r.id) ?? new Map(),
+          setupBySystem: setupByClient.get(r.id),
+          preflightBySystem: preflightByClient.get(r.id),
+          rightsBySystem: rightsByClient.get(r.id),
         }),
       }));
     },
@@ -168,17 +192,30 @@ export function makeClientRepository(db: PrismaClient) {
         },
       });
       if (!c) return null;
-      const tests = await db.connectionTest.findMany({
-        where: { clientId: c.id }, select: { systemKey: true, status: true, finishedAt: true }, orderBy: { finishedAt: "desc" },
-      });
+      const [tests, setupRows] = await Promise.all([
+        db.connectionTest.findMany({
+          where: { clientId: c.id }, select: { systemKey: true, status: true, fieldsOk: true, rights: true, finishedAt: true }, orderBy: { finishedAt: "desc" },
+        }),
+        db.systemSetupState.findMany({ where: { clientId: c.id }, select: { systemKey: true, startedAt: true, attestedAt: true } }),
+      ]);
       const testBySystem = new Map<string, ConnTestState>();
-      for (const t of tests) if (!testBySystem.has(t.systemKey)) testBySystem.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+      const preflightBySystem = new Map<string, boolean | null>();
+      const rightsBySystem = new Map<string, RightsState>();
+      for (const t of tests) {
+        if (testBySystem.has(t.systemKey)) continue;
+        testBySystem.set(t.systemKey, t.status === "ok" ? "ok" : t.status === "fail" ? "fail" : "untested");
+        preflightBySystem.set(t.systemKey, t.fieldsOk);
+        rightsBySystem.set(t.systemKey, rightsStateOf(t.rights));
+      }
       return computeClientReadiness({
         systems: c.systems
           .filter((s) => s.mode === "api" && s.secretNames.length > 0 && (s.onboardWhen !== "never" || s.offboardWhen !== "never"))
           .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
         secretExternalIds: new Map(c.secrets.map((s) => [s.name, s.externalId])),
         testBySystem,
+        setupBySystem: new Map(setupRows.map((s) => [s.systemKey, { startedAt: s.startedAt, attestedAt: s.attestedAt }])),
+        preflightBySystem,
+        rightsBySystem,
       });
     },
 
@@ -385,6 +422,13 @@ export function makeClientRepository(db: PrismaClient) {
         if (backbone !== undefined) {
           await tx.client.update({ where: { id: client.id }, data: { backbone } });
         }
+        // A rights attestation describes a system's CURRENT secrets — clear it when the system's
+        // secretNames change (SystemSetupState itself survives edits; it has no FK to these rows).
+        const current = await tx.clientSystem.findMany({ where: { clientId: client.id }, select: { systemKey: true, secretNames: true } });
+        const currentByKey = new Map(current.map((c) => [c.systemKey, [...c.secretNames].sort().join(",")]));
+        const rewired = systems
+          .filter((s) => currentByKey.has(s.systemKey) && currentByKey.get(s.systemKey) !== [...(s.secretNames ?? [])].sort().join(","))
+          .map((s) => s.systemKey);
         for (const s of systems) {
           const data = {
             mode: s.mode,
@@ -405,6 +449,14 @@ export function makeClientRepository(db: PrismaClient) {
         const del = await tx.clientSystem.deleteMany({
           where: { clientId: client.id, systemKey: { notIn: [...keep] } },
         });
+        // Removed systems take their setup state with them; rewired ones lose only the attestation.
+        await tx.systemSetupState.deleteMany({ where: { clientId: client.id, systemKey: { notIn: [...keep] } } });
+        if (rewired.length) {
+          await tx.systemSetupState.updateMany({
+            where: { clientId: client.id, systemKey: { in: rewired }, attestedAt: { not: null } },
+            data: { attestedAt: null, attestedBy: null, attestNote: null },
+          });
+        }
         return del.count;
       });
 
@@ -449,15 +501,36 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Upsert the client's Delinea references (name -> id + label). Stores only references.
     async upsertSecrets(clientId: string, entries: { name: string; externalId: string; label?: string | null }[]): Promise<void> {
-      await db.$transaction(
-        entries.map((e) =>
+      // Which references actually CHANGE? A rights attestation describes a specific credential —
+      // rewiring a secret invalidates it, so clear the attestation on every system that brokers a
+      // changed name (the operator re-attests or the probe re-verifies against the new secret).
+      const [before, systems] = await Promise.all([
+        db.secret.findMany({ where: { clientId, name: { in: entries.map((e) => e.name) } }, select: { name: true, externalId: true } }),
+        db.clientSystem.findMany({ where: { clientId }, select: { systemKey: true, secretNames: true } }),
+      ]);
+      const prior = new Map(before.map((s) => [s.name, s.externalId]));
+      const changed = new Set(entries.filter((e) => (prior.get(e.name) ?? "") !== e.externalId).map((e) => e.name));
+      const staleSystems = systems.filter((s) => s.secretNames.some((n) => changed.has(n))).map((s) => s.systemKey);
+      await db.$transaction([
+        ...entries.map((e) =>
           db.secret.upsert({
             where: { clientId_name: { clientId, name: e.name } },
             update: { externalId: e.externalId, label: e.label ?? null },
             create: { clientId, name: e.name, provider: "delinea", externalId: e.externalId, label: e.label ?? null },
           })
-        )
-      );
+        ),
+        ...(staleSystems.length
+          ? [db.systemSetupState.updateMany({
+              where: { clientId, systemKey: { in: staleSystems }, attestedAt: { not: null } },
+              data: { attestedAt: null, attestedBy: null, attestNote: null },
+            })]
+          : []),
+      ]);
+      if (staleSystems.length) {
+        await db.auditLog.create({
+          data: { actor: "system", action: "system.setup.attest.cleared", clientId, detail: { systems: staleSystems, reason: "secret reference changed" } },
+        }).catch(() => {});
+      }
     },
 
     async writeAudit(entry: AuditEntry): Promise<void> {

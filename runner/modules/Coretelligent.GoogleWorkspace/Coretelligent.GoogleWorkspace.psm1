@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 
 $script:GoogleApiUrl = 'https://admin.googleapis.com/admin/directory/v1'
 $script:GoogleToken  = $null
+$script:GoogleScopes = @()
 
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
@@ -61,6 +62,7 @@ function Connect-CtgGoogle {
     $script:GoogleCustomer = $CustomerId
     if ($PSCmdlet.ParameterSetName -eq 'Token') {
         $script:GoogleToken = $AccessToken
+        $script:GoogleScopes = @()   # unknown — the caller minted the token
         Write-Verbose "Google Workspace session established (token provided)."
         return
     }
@@ -93,7 +95,19 @@ function Connect-CtgGoogle {
     $token = Get-CtgProp $resp 'access_token'
     if (-not $token) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
     $script:GoogleToken = $token
+    # Domain-wide delegation is all-or-nothing per request: the exchange FAILS if any requested
+    # scope isn't authorized for the service account's client ID. A minted token therefore proves
+    # every scope in $Scopes — record them so the connection test can report them as verified.
+    $script:GoogleScopes = @($Scopes)
     Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
+}
+
+function Get-CtgGoogleSessionScopes {
+    # The scopes the current session's token was minted with (empty when a raw token was passed —
+    # then the delegation proof doesn't apply).
+    [CmdletBinding()]
+    param()
+    if ($script:GoogleScopes) { @($script:GoogleScopes) } else { @() }
 }
 
 function Invoke-CtgGoogleApi {
@@ -350,4 +364,4 @@ function Invoke-CtgGooglePasswordReset {
     [pscustomobject]@{ System = 'google-password-reset'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset

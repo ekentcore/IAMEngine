@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 type Row = {
   client: string; slug: string; systemKey: string;
   status: string; detail: string | null; accessOk: boolean | null;
+  rightsMissing: number; rightsUnverified: number; credExpiresAt: string | null;
   onPrem: boolean; finishedAt: string | null; claimedAt: string | null;
 };
 
@@ -18,12 +19,22 @@ function phase(r: Row): { label: string; color: string } {
   return { label: r.onPrem ? "pending (needs the client agent)" : "pending", color: "#8a6d00" };
 }
 
-export function ConnectionsView({ rows, v2 = false }: { rows: Row[]; v2?: boolean }) {
+export function ConnectionsView({ rows, v2 = false, schedule }: { rows: Row[]; v2?: boolean; schedule?: { enabled: boolean; intervalHours?: number; lastFinishedAt?: string } }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [redsOnly, setRedsOnly] = useState(false);
+  const [sched, setSched] = useState(schedule ?? { enabled: false, intervalHours: 24 });
+
+  async function saveSchedule(next: { enabled: boolean; intervalHours?: number }) {
+    setSched(next);
+    await fetch("/api/admin/conn-test/schedule", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    }).catch(() => {});
+  }
 
   const counts = useMemo(() => {
     const c = { ok: 0, fail: 0, pending: 0, running: 0 };
@@ -56,6 +67,17 @@ export function ConnectionsView({ rows, v2 = false }: { rows: Row[]; v2?: boolea
     <>
       <div className="filters" style={{ marginTop: "1rem", alignItems: "center", gap: 8 }}>
         <button className="primary" disabled={busy} onClick={sweep}>{busy ? "Queuing…" : "▶ Run fleet sweep"}</button>
+        <label className="note" style={{ display: "inline-flex", gap: 4, alignItems: "center" }} title="Automatically re-run the fleet sweep on a schedule (off the runner heartbeat) and alert on new failures / expiring credentials">
+          <input type="checkbox" checked={sched.enabled} onChange={(e) => saveSchedule({ ...sched, enabled: e.target.checked })} />
+          scheduled
+        </label>
+        {sched.enabled && (
+          <label className="note" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+            every
+            <input type="number" min={1} value={sched.intervalHours ?? 24} onChange={(e) => saveSchedule({ ...sched, intervalHours: Math.max(1, Number(e.target.value) || 24) })} style={{ width: 52 }} />
+            h
+          </label>
+        )}
         {/* v2 shows the counts in the page header instead. */}
         {!v2 && <span className="note">✓ {counts.ok} · ✗ {counts.fail} · running {counts.running} · pending {counts.pending}</span>}
         <span className="grow" />
@@ -79,6 +101,8 @@ export function ConnectionsView({ rows, v2 = false }: { rows: Row[]; v2?: boolea
               </>
             )}
             <th style={{ width: 60, padding: "4px 8px" }}>Creds</th>
+            <th style={{ width: 90, padding: "4px 8px" }}>Rights</th>
+            <th style={{ width: 90, padding: "4px 8px" }}>Expires</th>
             <th style={{ width: 180, padding: "4px 8px" }}>Result</th>
             <th style={{ padding: "4px 8px" }}>Detail</th>
           </tr>
@@ -101,12 +125,25 @@ export function ConnectionsView({ rows, v2 = false }: { rows: Row[]; v2?: boolea
                   </>
                 )}
                 <td style={{ padding: "4px 8px" }} title="Whether the runner could resolve the secret from Delinea">{r.accessOk === true ? "✓" : r.accessOk === false ? "✗" : "—"}</td>
+                <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }} title="Per-operation rights probe results">
+                  {r.rightsMissing > 0 ? <span style={{ color: "#b91c1c" }}>✗ {r.rightsMissing}</span>
+                    : r.rightsUnverified > 0 ? <span style={{ color: "#92400e" }}>? {r.rightsUnverified}</span>
+                    : <span className="note">—</span>}
+                </td>
+                <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }} title="Nearest credential expiry the probe could read">
+                  {(() => {
+                    if (!r.credExpiresAt) return <span className="note">—</span>;
+                    const days = Math.round((new Date(r.credExpiresAt).getTime() - Date.now()) / 86_400_000);
+                    const color = days < 7 ? "#b91c1c" : days < 30 ? "#92400e" : "var(--muted)";
+                    return <span style={{ color }}>{days}d</span>;
+                  })()}
+                </td>
                 <td style={{ padding: "4px 8px", color: p.color, whiteSpace: "nowrap" }}>{p.label}</td>
                 <td style={{ padding: "4px 8px", overflowWrap: "anywhere", color: r.status === "fail" ? "#b91c1c" : "var(--muted, #6b7280)" }}>{r.detail ?? ""}</td>
               </tr>
             );
           })}
-          {visible.length === 0 && <tr><td colSpan={v2 ? 4 : 5} style={{ padding: "1.5rem", textAlign: "center", color: "var(--muted)" }}>{rows.length === 0 ? "No connection tests yet — run a fleet sweep." : "No rows match."}</td></tr>}
+          {visible.length === 0 && <tr><td colSpan={v2 ? 6 : 7} style={{ padding: "1.5rem", textAlign: "center", color: "var(--muted)" }}>{rows.length === 0 ? "No connection tests yet — run a fleet sweep." : "No rows match."}</td></tr>}
         </tbody>
       </table>
     </>

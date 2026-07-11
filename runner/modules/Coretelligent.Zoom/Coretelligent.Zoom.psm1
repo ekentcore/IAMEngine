@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 
 $script:ZoomApiUrl = 'https://api.zoom.us/v2'
 $script:ZoomToken  = $null
+$script:ZoomScopes = @()
 
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
@@ -77,7 +78,18 @@ function Connect-CtgZoom {
     }
     if (-not $resp.access_token) { throw "Zoom token request returned no access_token (response: $($resp | ConvertTo-Json -Depth 4 -Compress))." }
     $script:ZoomToken = $resp.access_token
+    # The token response names the S2S app's granted scopes (space-delimited) — keep them so the
+    # connection test can diff them against what the on/offboarders actually call.
+    $script:ZoomScopes = @()
+    try { if ($resp.scope) { $script:ZoomScopes = @(([string]$resp.scope) -split '\s+' | Where-Object { $_ }) } } catch { }
     Write-Verbose "Zoom session established."
+}
+
+function Get-CtgZoomGrantedScopes {
+    # The scopes the current session's token was granted (empty when Zoom omitted the scope field).
+    [CmdletBinding()]
+    param()
+    if ($script:ZoomScopes) { @($script:ZoomScopes) } else { @() }
 }
 
 function Invoke-CtgZoomApi {
@@ -330,4 +342,4 @@ function Confirm-CtgZoom {
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }
 
-Export-ModuleMember -Function Connect-CtgZoom, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom
+Export-ModuleMember -Function Connect-CtgZoom, Get-CtgZoomGrantedScopes, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom

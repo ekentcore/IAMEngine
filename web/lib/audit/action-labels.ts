@@ -62,6 +62,13 @@ const EXPLICIT: Record<string, string> = {
   "cloudgroups.result": "Cloud Groups Result",
   "conntest.credential": "Connection Test Credential",
   "conntest.result": "Connection Test Result",
+  "conntest.request": "Connection Test Requested",
+  "conntest.schedule": "Connection Sweep Schedule",
+  "client.delinea.selfcheck": "Delinea Self-Check",
+  "system.setup.start": "System Setup Started",
+  "system.setup.attest": "System Rights Attested",
+  "system.setup.clear_attest": "System Rights Attestation Cleared",
+  "system.setup.attest.cleared": "System Rights Attestation Auto-Cleared",
 
   "procurement.watch.set": "Procurement Watch Set",
   "procurement.watch.clear": "Procurement Watch Cleared",
