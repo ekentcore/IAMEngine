@@ -5,10 +5,14 @@ import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { parseRights, summarizeRights } from "@/lib/jobs/conn-test-logic";
+import { getAppSetting } from "@/lib/settings";
+import { CONN_SWEEP_KEY, normalizeConnSweep } from "@/lib/jobs/conn-sweep";
 
 export type ConnectionRow = {
   client: string; slug: string; systemKey: string;
   status: string; detail: string | null; accessOk: boolean | null;
+  rightsMissing: number; rightsUnverified: number; credExpiresAt: string | null;
   onPrem: boolean; finishedAt: string | null; claimedAt: string | null;
 };
 
@@ -18,15 +22,26 @@ export async function loadConnectionsPage(): Promise<ConnectionRow[]> {
     if (!me || !can(me.role, "audit.view")) redirect("/clients");
   }
   const tests = await makeRunnerService(db).listAllConnectionTests();
-  return tests.map((t) => ({
-    client: t.client.name,
-    slug: t.client.slug,
-    systemKey: t.systemKey,
-    status: t.status,
-    detail: t.detail ?? t.accessDetail ?? null,
-    accessOk: t.accessOk,
-    onPrem: t.onPrem,
-    finishedAt: t.finishedAt ? t.finishedAt.toISOString() : null,
-    claimedAt: t.claimedAt ? t.claimedAt.toISOString() : null,
-  }));
+  return tests.map((t) => {
+    const rights = summarizeRights(parseRights(t.rights));
+    return {
+      client: t.client.name,
+      slug: t.client.slug,
+      systemKey: t.systemKey,
+      status: t.status,
+      detail: t.detail ?? t.accessDetail ?? null,
+      accessOk: t.accessOk,
+      rightsMissing: rights.state === "missing" ? rights.missing : 0,
+      rightsUnverified: rights.state === "unverified" ? rights.unverified : 0,
+      credExpiresAt: t.credExpiresAt ? t.credExpiresAt.toISOString() : null,
+      onPrem: t.onPrem,
+      finishedAt: t.finishedAt ? t.finishedAt.toISOString() : null,
+      claimedAt: t.claimedAt ? t.claimedAt.toISOString() : null,
+    };
+  });
+}
+
+export async function loadSweepSchedule(): Promise<{ enabled: boolean; intervalHours?: number; lastFinishedAt?: string }> {
+  const s = normalizeConnSweep(await getAppSetting(db, CONN_SWEEP_KEY));
+  return { enabled: s.enabled, intervalHours: s.intervalHours, lastFinishedAt: s.lastFinishedAt };
 }

@@ -14,6 +14,7 @@ import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } 
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "../secrets/delinea";
 import { checkFieldShape } from "../secrets/field-requirements";
 import { testableSystems, type RightsRow } from "./conn-test-logic";
+import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
@@ -100,6 +101,11 @@ async function preflightConnTestFields(
     if (!externalId) { checks.set(name, { ok: false, note: `${name}: no reference set` }); continue; }
     const resolved = await resolveSecretFields(cfg, externalId, undefined, token);
     if (!resolved.ok) { checks.set(name, { ok: false, note: `${name}: ${resolved.error ?? "not resolvable"}` }); continue; }
+    // Opportunistic expiry capture — never fails the preflight.
+    if (resolved.expiresAt) {
+      const at = new Date(resolved.expiresAt);
+      if (!Number.isNaN(at.getTime())) await db.secret.updateMany({ where: { clientId, name }, data: { expiresAt: at, expiryCheckedAt: new Date() } }).catch(() => {});
+    }
     const shape = checkFieldShape(name, Object.keys(resolved.fields ?? {}), { clientHasTenantHint: hasTenantHint });
     checks.set(
       name,
@@ -229,6 +235,10 @@ export function makeRunnerService(db: PrismaClient) {
       void sweepProcurementWatches(db).catch(() => {});
       // Same pulse: auto-import new ServiceNow intake tickets (off unless enabled; self-throttles to ~15 min).
       void sweepServiceNowIntake(db).catch(() => {});
+      // Same pulse: the scheduled credential-health sweep + expiry alerts (off unless enabled;
+      // durable AppSetting throttle, one client batch per tick). Reuses the operator enqueue path.
+      const svc = this;
+      void sweepConnTests(db, { enqueueClient: (slug) => svc.requestConnectionTests(slug) }).catch(() => {});
       return { ok: true, enabled: agent.enabled, update, restart, discover };
     },
 
@@ -818,25 +828,46 @@ export function makeRunnerService(db: PrismaClient) {
       rights: RightsRow[] | null = null,
       credExpiresAt: Date | null = null
     ): Promise<{ ok: true }> {
-      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true } });
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true, source: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
       // Overall status is a fail if EITHER stage failed (access couldn't resolve, or the API read failed).
       const passed = accessOk !== false && ok;
+      const finishedAt = new Date();
+      const trimmedDetail = (detail ?? "").slice(0, 500);
       await db.connectionTest.update({
         where: { id: testId },
         data: {
           status: passed ? "ok" : "fail",
-          detail: (detail ?? "").slice(0, 500),
+          detail: trimmedDetail,
           accessOk,
           accessDetail: accessDetail === null ? null : accessDetail.slice(0, 500),
           // Optional extras from newer runners: per-operation rights rows + the credential's own
           // expiry when the probe could read it. Null-tolerant so older runners keep working.
           ...(rights ? { rights: rights as unknown as Prisma.InputJsonValue } : {}),
           ...(credExpiresAt ? { credExpiresAt } : {}),
-          finishedAt: new Date(),
+          finishedAt,
         },
       });
+      // Durable per-(client, system) health snapshot — ConnectionTest rows are deleted per run, so
+      // new-failure detection and notification suppression live here. Only SWEEP-sourced new
+      // failures queue a notification (the operator watches manual runs in the panel).
+      try {
+        const key = { clientId: t.clientId, systemKey: t.systemKey };
+        const prev = await db.connHealthState.findUnique({ where: { clientId_systemKey: key }, select: { lastStatus: true } });
+        const outcome = diffConnOutcome(prev, { passed });
+        const common = {
+          lastStatus: passed ? "ok" : "fail",
+          lastDetail: trimmedDetail || null,
+          ...(passed ? { lastOkAt: finishedAt } : { lastFailAt: finishedAt }),
+          ...(credExpiresAt ? { credExpiresAt } : {}),
+          ...(outcome === "new_failure" && t.source === "sweep" ? { pendingNotifyAt: finishedAt } : {}),
+          ...(outcome === "recovered" ? { failNotifiedAt: null, pendingNotifyAt: null } : {}),
+        };
+        await db.connHealthState.upsert({ where: { clientId_systemKey: key }, update: common, create: { ...key, ...common } });
+      } catch {
+        // the snapshot is best-effort — never fail the result post over it
+      }
       await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok, rightsMissing: rights ? rights.filter((r) => r.ok === false).length : undefined } } });
       return { ok: true };
     },

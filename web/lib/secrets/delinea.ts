@@ -10,10 +10,27 @@ import { secretIsSet } from "./wiring";
 import { defaultSlug } from "./delinea-templates";
 
 export type DelineaConfig = { baseUrl: string; username: string; password: string };
-export type SecretCheck = { ok: boolean; label?: string; error?: string };
+export type SecretCheck = { ok: boolean; label?: string; error?: string; expiresAt?: string };
+
+// Secret Server exposes secret expiry under different keys across versions — parse defensively from
+// a summary/detail body. Accepts an explicit expiration date, or "days until expiration" relative to
+// now. Returns an ISO string or undefined (never throws). `now` is injectable for tests.
+export function parseDelineaExpiry(body: unknown, now: Date = new Date()): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const o = body as Record<string, unknown>;
+  for (const k of ["expirationDate", "secretExpirationDate", "expiration", "expiresOn", "expires"]) {
+    const v = o[k];
+    if (typeof v === "string" && !Number.isNaN(Date.parse(v))) return new Date(v).toISOString();
+  }
+  for (const k of ["daysUntilExpiration", "daysUntilExpiry", "expirationDays"]) {
+    const v = o[k];
+    if (typeof v === "number" && Number.isFinite(v)) return new Date(now.getTime() + v * 86_400_000).toISOString();
+  }
+  return undefined;
+}
 // resolveSecretFields returns the secret VALUE (flattened fields) — unlike SecretCheck, which is
 // metadata-only. Used by the broker to push the credential down to the runner.
-export type SecretFields = { ok: boolean; fields?: Record<string, string>; label?: string; error?: string };
+export type SecretFields = { ok: boolean; fields?: Record<string, string>; label?: string; error?: string; expiresAt?: string };
 
 // Minimal response shape so the same code works with global fetch and an injected fake in tests.
 export type FetchResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -75,7 +92,8 @@ export async function checkSecret(cfg: DelineaConfig, externalId: string, fetche
     }
     const body = (await res.json()) as { name?: string };
     // Only the secret's name is surfaced — a human label. The value/items are intentionally dropped.
-    return { ok: true, label: typeof body?.name === "string" ? body.name : undefined };
+    // Expiry (when Secret Server includes it in the summary) is captured opportunistically.
+    return { ok: true, label: typeof body?.name === "string" ? body.name : undefined, expiresAt: parseDelineaExpiry(body) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -269,7 +287,7 @@ export async function resolveSecretFields(cfg: DelineaConfig, externalId: string
       // Skip only null/undefined (a genuinely blank field) so the key's absence is meaningful.
       if (typeof it.fieldName === "string" && it.itemValue != null) fields[it.fieldName] = String(it.itemValue);
     }
-    return { ok: true, fields, label: typeof body.name === "string" ? body.name : undefined };
+    return { ok: true, fields, label: typeof body.name === "string" ? body.name : undefined, expiresAt: parseDelineaExpiry(body) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

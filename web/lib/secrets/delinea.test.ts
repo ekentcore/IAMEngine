@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -250,4 +250,13 @@ test("checkFolderWrite: falls back to the permissions list, else degrades to unk
 test("checkFolderWrite: 403 on folder-details is a definite fail", async () => {
   const denied = await checkFolderWrite(cfg, "142", folderFetcher({ detailsStatus: 403 }));
   assert.equal(denied.write, "fail");
+});
+
+test("parseDelineaExpiry: explicit date, days-until, and absent", () => {
+  const now = new Date("2026-07-11T00:00:00Z");
+  assert.equal(parseDelineaExpiry({ expirationDate: "2026-09-01T00:00:00Z" }, now), "2026-09-01T00:00:00.000Z");
+  assert.equal(parseDelineaExpiry({ secretExpirationDate: "2026-08-15" }, now)?.slice(0, 10), "2026-08-15");
+  assert.equal(parseDelineaExpiry({ daysUntilExpiration: 10 }, now), "2026-07-21T00:00:00.000Z");
+  assert.equal(parseDelineaExpiry({ name: "x" }, now), undefined);
+  assert.equal(parseDelineaExpiry(null, now), undefined);
 });

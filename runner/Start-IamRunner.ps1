@@ -1485,6 +1485,8 @@ $CONNTEST_PROBE = @{
             return "$base · connected, but couldn't verify permissions: $($real.reason)"
         }
         $script:ConnTestRights = @(Get-CtgGraphRightsRows $granted)
+        # Warn before the app's own secret/cert expires (best-effort; needs Application.Read.All).
+        try { $exp = Get-CtgAppCredentialExpiry; if ($exp -and $exp.expiresAt) { $script:ConnTestCredExpiresAt = [string]$exp.expiresAt } } catch { }
         $gaps = Get-CtgGraphScopeGaps $granted
         if ($gaps.Count) {
             throw "$base · consented ${how}: [$(@($granted) -join ', ')] — but MISSING: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent IN THIS TENANT, then re-test."
@@ -1678,6 +1680,7 @@ function Invoke-CtgConnectionTests {
         # Probes may fill this with per-operation rights rows (@{ op; ok; detail }); it survives a
         # probe THROW so a definite permission gap still reports which ops passed/failed.
         $script:ConnTestRights = $null
+        $script:ConnTestCredExpiresAt = $null   # a probe may set the credential's own expiry (ISO)
         # Pass the system's config so a Connect that reads it (e.g. exchange's onPremExchangeUri) works
         # in the test. It's the whole ClientSystem.config (onboard/offboard sub-objects), not a lane.
         $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
@@ -1715,7 +1718,9 @@ function Invoke-CtgConnectionTests {
                 @{ op = [string]$_.op; ok = $_.ok; detail = Protect-CtgSecretsInText ([string]$_.detail) $creds }
             })
         }
+        if ($script:ConnTestCredExpiresAt) { $body.credExpiresAt = [string]$script:ConnTestCredExpiresAt }
         $script:ConnTestRights = $null
+        $script:ConnTestCredExpiresAt = $null
         try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" $body } catch { }
     }
 }
