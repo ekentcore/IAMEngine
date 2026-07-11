@@ -7,10 +7,12 @@ import { can } from "@/lib/auth/permissions";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
 import { AUTO_FIX_SETTING_KEY, type AutoFixSetting } from "@/lib/fixes/fix-tasks";
+import { listProvidersMasked } from "@/lib/fixes/providers";
 import { NotificationForm } from "./_components/notification-form";
 import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
 import { RestartServerButton } from "./_components/restart-server-button";
 import { AutoFixToggle } from "./_components/auto-fix-toggle";
+import { LlmProviders } from "./_components/llm-providers";
 import { loadFeatureRequests } from "./_lib/loader";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +26,7 @@ export default async function SettingsPage() {
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
   const featureRequests = await loadFeatureRequests();
   const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
+  const llmProviders = await listProvidersMasked(db);
   return (
     <main>
       <h1>Notifications</h1>
@@ -40,6 +43,7 @@ export default async function SettingsPage() {
         <a href="/feature-requests">requests board</a>.
       </p>
       <FeatureRequestsAdmin initial={featureRequests} />
+      <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>

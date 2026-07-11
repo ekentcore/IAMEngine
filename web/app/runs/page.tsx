@@ -12,7 +12,7 @@ export const metadata = { title: "Run outcomes" };
 export default async function RunsPage({ searchParams }: { searchParams: RunsSearchParams }) {
   const data = await loadRunsPage(searchParams);
   if (!data) return null; // layout already redirects unauthenticated users to /login
-  const { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText } = data;
+  const { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText, initialFixTasks } = data;
 
   const linkFor = (sys: string) => `/runs?system=${encodeURIComponent(sys)}`;
 
@@ -66,7 +66,7 @@ export default async function RunsPage({ searchParams }: { searchParams: RunsSea
 
       <p className="note">{rows.length} distinct line{rows.length === 1 ? "" : "s"}{verdict || system || q ? " (filtered)" : !includeClean ? " — open errors & warnings" : ""}{includeResolved ? " · including fixed" : ""}. Identical repeats are collapsed; <b>✓ Fixed</b> clears every occurrence of a line (and future re-runs of it).</p>
 
-      <RunLogTable rows={rows} emptyText={emptyText} />
+      <RunLogTable rows={rows} emptyText={emptyText} initialFixTasks={initialFixTasks} />
     </main>
   );
 }

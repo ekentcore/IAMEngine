@@ -1,9 +1,10 @@
 // POST /api/fix-tasks — hand a failing run-log line to the self-healing fix lane: creates a
-//   FixTask and spawns the detached fixer worker (headless Claude Code in an isolated worktree →
-//   draft PR; a human always merges). Refuses (409) while an unfinished task exists for the same
-//   fingerprint.
+//   FixTask and spawns the detached analyze worker (tool-calling LLM session → stores a fix
+//   PROPOSAL for on-screen review; applying it later opens a draft PR — a human always merges).
+//   Refuses (409) while an unfinished task exists for the same fingerprint, (422) when no LLM
+//   provider is configured.
 // GET  /api/fix-tasks?fingerprint=… — latest task for that fingerprint (the row status chip polls
-//   this while queued/running).
+//   this while queued/running/applying; the review panel reads proposal + log from it).
 // Both guarded to case.dispatch — the same capability as running/re-running a step.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
@@ -47,10 +48,10 @@ export async function GET(req: Request) {
   const task = await db.fixTask.findFirst({
     where: { fingerprint },
     orderBy: { createdAt: "desc" },
-    select: { id: true, status: true, prUrl: true, log: true, createdAt: true, finishedAt: true, requestedBy: true },
+    select: { id: true, status: true, prUrl: true, log: true, proposal: true, provider: true, createdAt: true, finishedAt: true, requestedBy: true, appliedBy: true },
   });
   if (!task) return NextResponse.json({ task: null });
-  // The log can be long — the chip only needs the gist.
-  const logTail = task.log && task.log.length > 2000 ? task.log.slice(-2000) : task.log;
+  // The log can be long — the review panel only needs the gist.
+  const logTail = task.log && task.log.length > 4000 ? task.log.slice(-4000) : task.log;
   return NextResponse.json({ task: { ...task, log: logTail } });
 }
