@@ -16,6 +16,8 @@ import { secretIsSet } from "@/lib/secrets/wiring";
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
 import type { SetupStep } from "@/lib/clients/setup-steps";
 import type { ConnTestState } from "@/lib/clients/readiness";
+import type { DelineaWriteSummary } from "@/lib/secrets/delinea-templates";
+import { CreateInDelineaForm, createDisabledReason } from "@/app/clients/_components/create-in-delinea";
 
 type FieldTest = { status: "idle" | "testing" | "ok" | "fail"; label?: string; missingFields?: string[]; error?: string };
 type StepState = { externalId: string; notNeeded: boolean; saved: boolean; skipped: boolean; field: FieldTest; saveMsg?: string };
@@ -31,6 +33,7 @@ export function SetupWizard({
   systemKeys,
   initialConn,
   delineaConfigured,
+  write,
 }: {
   slug: string;
   clientName: string;
@@ -38,6 +41,7 @@ export function SetupWizard({
   systemKeys: string[]; // every credentialed api system, for live-test bookkeeping
   initialConn: Record<string, ConnTestState>; // latest live-test state per systemKey (seed)
   delineaConfigured: boolean;
+  write?: DelineaWriteSummary;
 }) {
   const [state, setState] = useState<Record<string, StepState>>(() =>
     Object.fromEntries(
@@ -148,14 +152,15 @@ export function SetupWizard({
     }
   }
 
-  async function test(s: SetupStep) {
-    const st = state[s.secretName];
+  async function test(s: SetupStep, externalIdOverride?: string) {
+    // Override lets a just-created reference be tested immediately, before its setState has flushed.
+    const externalId = (externalIdOverride ?? state[s.secretName].externalId).trim();
     patch(s.secretName, { field: { status: "testing" } });
     try {
       const res = await fetch(`/api/clients/${slug}/secrets/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secrets: [{ name: s.secretName, externalId: st.externalId.trim() }] }),
+        body: JSON.stringify({ secrets: [{ name: s.secretName, externalId }] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? res.statusText);
@@ -172,6 +177,16 @@ export function SetupWizard({
     const ok = await save(s);
     if (!ok) return;
     if (delineaConfigured && secretIsSet(state[s.secretName].externalId)) await test(s);
+  }
+
+  // A secret was created in Delinea (and wired server-side): reflect the returned id as saved + reads-ok
+  // so the step shows wired immediately. The operator can still run the live connection test.
+  async function onCreated(s: SetupStep, externalId: string) {
+    // The reference is created + wired; don't ASSUME it reads ok — run the real field-shape check so
+    // a mis-shaped secret shows ⚠/✗ instead of a false green. (The create route already refuses to
+    // POST a blank secret, but the read-back is the honest confirmation.)
+    patch(s.secretName, { externalId, saved: true, notNeeded: false, field: { status: "idle" }, saveMsg: undefined });
+    if (delineaConfigured) await test(s, externalId);
   }
 
   async function markNotNeeded(s: SetupStep) {
@@ -278,12 +293,14 @@ export function SetupWizard({
             {active && (
               <StepCard
                 key={active.secretName}
+                slug={slug}
                 step={active}
                 st={state[active.secretName]}
                 connStatus={connStatusFor(active)}
                 conn={conn}
                 wired={isWired(active)}
                 delineaConfigured={delineaConfigured}
+                write={write}
                 onEdit={(v) => edit(active, v)}
                 onSaveTest={() => saveAndTest(active)}
                 onTest={() => test(active)}
@@ -291,6 +308,7 @@ export function SetupWizard({
                 onUndoNotNeeded={() => undoNotNeeded(active)}
                 onSkip={() => skip(active, activeIdx)}
                 onNext={() => goNext(activeIdx)}
+                onCreated={(id) => onCreated(active, id)}
               />
             )}
           </section>
@@ -359,15 +377,17 @@ function Badge({ children, color, bg, title }: { children: React.ReactNode; colo
 }
 
 function StepCard({
-  step, st, connStatus, conn, wired, delineaConfigured,
-  onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext,
+  slug, step, st, connStatus, conn, wired, delineaConfigured, write,
+  onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated,
 }: {
+  slug: string;
   step: SetupStep;
   st: StepState;
   connStatus: "pending" | "running" | "ok" | "fail" | "not_needed" | "untested";
   conn: Record<string, ConnResult>;
   wired: boolean;
   delineaConfigured: boolean;
+  write?: DelineaWriteSummary;
   onEdit: (v: string) => void;
   onSaveTest: () => void;
   onTest: () => void;
@@ -375,8 +395,15 @@ function StepCard({
   onUndoNotNeeded: () => void;
   onSkip: () => void;
   onNext: () => void;
+  onCreated: (externalId: string) => void;
 }) {
+  const [creating, setCreating] = useState(false);
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
+  // "Create in Delinea" capability: instance write account + a template for this secret (folder is
+  // collected inline). Absent write summary → not available.
+  const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId } : null;
+  const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
+  const createReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.2rem" }}>
       <div className="row-between" style={{ alignItems: "baseline" }}>
@@ -450,9 +477,27 @@ function StepCard({
               <button onClick={onMarkNotNeeded} style={{ fontSize: 13 }} title="Its module is handled as a manual step — won't block a case">
                 Mark not needed
               </button>
+              <button
+                onClick={() => setCreating((c) => !c)}
+                disabled={!canCreate}
+                title={canCreate ? "Create this secret in Delinea and wire its id" : createReason ?? undefined}
+                style={{ fontSize: 13 }}
+              >
+                {creating ? "Close" : "Create in Delinea…"}
+              </button>
               {st.saved === false && <span className="note muted">unsaved</span>}
             </div>
             {st.saveMsg && <p className="note danger" style={{ marginTop: 6 }}>{st.saveMsg}</p>}
+            {creating && cap && (
+              <CreateInDelineaForm
+                slug={slug}
+                secretName={step.secretName}
+                fieldRequirements={step.fieldRequirements}
+                capability={cap}
+                onCreated={(id) => { setCreating(false); onCreated(id); }}
+                onCancel={() => setCreating(false)}
+              />
+            )}
           </div>
 
           {/* App-side field-shape result */}

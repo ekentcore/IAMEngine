@@ -11,6 +11,7 @@ import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
+import { delineaWriteSummary } from "@/lib/secrets/delinea-templates";
 import { buildSetupSteps } from "@/lib/clients/setup-steps";
 import type { ConnTestState } from "@/lib/clients/readiness";
 import { SetupWizard } from "./_components/setup-wizard";
@@ -60,6 +61,7 @@ export default async function ClientSetupPage({ params }: { params: { slug: stri
       systemKeys={systemKeys}
       initialConn={initialConn}
       delineaConfigured={delineaConfigured(delineaConfigFromEnv())}
+      write={delineaWriteSummary({ slug: client.slug, clientFolderId: client.delineaFolderId, secretNames: steps.map((s) => s.secretName) })}
     />
   );
 }

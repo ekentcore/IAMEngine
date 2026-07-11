@@ -2,9 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { SecretHelpLink } from "@/app/_components/secret-help-link";
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
+import { SECRET_FIELD_REQUIREMENTS } from "@/lib/secrets/field-requirements";
+import { CreateInDelineaForm, createDisabledReason } from "./create-in-delinea";
+import type { DelineaWriteSummary } from "@/lib/secrets/delinea-templates";
 
 export type SecretRowVM = {
   name: string;
@@ -24,10 +27,12 @@ export function SecretsPanel({
   slug,
   initialRows,
   delineaConfigured,
+  write,
 }: {
   slug: string;
   initialRows: SecretRowVM[];
   delineaConfigured: boolean;
+  write?: DelineaWriteSummary;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
@@ -35,6 +40,17 @@ export function SecretsPanel({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  // Which row's inline "Create in Delinea" form is open (by secret name).
+  const [creating, setCreating] = useState<string | null>(null);
+
+  // Called when a secret is created in Delinea: its id is already wired server-side, so reflect it
+  // locally and refresh so readiness/tests recompute from the saved reference.
+  function onCreated(name: string, externalId: string) {
+    setRows((rs) => rs.map((r) => (r.name === name ? { ...r, externalId, isSet: true } : r)));
+    setCreating(null);
+    setTests((t) => { const next = { ...t }; delete next[name]; return next; });
+    router.refresh();
+  }
 
   // Mark a secret "not needed" (its module is handled as a manual step) so a missing credential
   // doesn't block the case. Stored as the sentinel id NOT_NEEDED; toggling off clears it.
@@ -144,6 +160,8 @@ export function SecretsPanel({
         {!delineaConfigured && <> · <span className="danger">Test is disabled until DELINEA_* is set on the app.</span></>}
         {" · "}
         <Link href={`/clients/${slug}/setup`}>Guided setup →</Link>
+        {" · "}
+        <a href="/help/delinea-write" target="_blank" rel="noreferrer">Create secrets in Delinea</a>
       </p>
       <table>
         <thead>
@@ -159,8 +177,14 @@ export function SecretsPanel({
           {rows.map((r) => {
             const t = tests[r.name] ?? { status: "idle" as const };
             const notNeeded = r.externalId === NOT_NEEDED;
+            // "Create in Delinea" capability for this row: instance write account + a template for this
+            // secret. Folder can be collected inline, so it doesn't gate the button.
+            const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[r.name] ?? false, folderId: write.folderId } : null;
+            const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
+            const disabledReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
             return (
-              <tr key={r.name}>
+              <Fragment key={r.name}>
+              <tr>
                 <td>
                   <code>{r.name}</code>
                   <SecretHelpLink name={r.name} systems={r.referencedBy} />
@@ -172,12 +196,22 @@ export function SecretsPanel({
                   {notNeeded ? (
                     <span className="badge" title="This module is handled as a manual step — no credential required, won't block the case">manual step — no credential</span>
                   ) : (
-                    <input
-                      value={r.externalId}
-                      onChange={(e) => edit(r.name, "externalId", e.target.value)}
-                      placeholder="REPLACE_ME"
-                      style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
-                    />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <input
+                        value={r.externalId}
+                        onChange={(e) => edit(r.name, "externalId", e.target.value)}
+                        placeholder="REPLACE_ME"
+                        style={{ width: 140, fontFamily: "var(--mono, monospace)" }}
+                      />
+                      <button
+                        onClick={() => setCreating((c) => (c === r.name ? null : r.name))}
+                        disabled={!canCreate}
+                        title={canCreate ? "Create this secret in Delinea and wire its id" : disabledReason ?? undefined}
+                        style={{ fontSize: 12, alignSelf: "flex-start" }}
+                      >
+                        {creating === r.name ? "Close" : "Create in Delinea…"}
+                      </button>
+                    </div>
                   )}
                 </td>
                 <td>
@@ -209,6 +243,21 @@ export function SecretsPanel({
                   </button>
                 </td>
               </tr>
+              {creating === r.name && cap && !notNeeded && (
+                <tr>
+                  <td colSpan={5} style={{ background: "var(--bg-soft)" }}>
+                    <CreateInDelineaForm
+                      slug={slug}
+                      secretName={r.name}
+                      fieldRequirements={SECRET_FIELD_REQUIREMENTS[r.name] ?? []}
+                      capability={cap}
+                      onCreated={(id) => onCreated(r.name, id)}
+                      onCancel={() => setCreating(null)}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>

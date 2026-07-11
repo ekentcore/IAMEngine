@@ -30,6 +30,7 @@ import { ClientNotifyOverride } from "../_components/client-notify-override";
 import { parseClientOverride } from "@/lib/notifications/types";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
+import { delineaWriteSummary } from "@/lib/secrets/delinea-templates";
 
 export const dynamic = "force-dynamic";
 
@@ -406,7 +407,12 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         <h2 style={{ margin: 0 }}>Secret wiring (Delinea)</h2>
         {secretRows.length > 0 && <Link href={`/clients/${client.slug}/setup`} className="note">Guided setup →</Link>}
       </div>
-      <SecretsPanel slug={client.slug} initialRows={secretRows} delineaConfigured={delineaConfigured(delineaConfigFromEnv())} />
+      <SecretsPanel
+        slug={client.slug}
+        initialRows={secretRows}
+        delineaConfigured={delineaConfigured(delineaConfigFromEnv())}
+        write={delineaWriteSummary({ slug: client.slug, clientFolderId: client.delineaFolderId, secretNames: secretRows.map((r) => r.name) })}
+      />
 
       <h2 style={{ marginTop: "1.5rem" }}>Connection tests</h2>
       <ConnectionTestPanel slug={client.slug} systemNames={Object.fromEntries(client.systems.map((s) => [s.systemKey, s.system.name]))} />

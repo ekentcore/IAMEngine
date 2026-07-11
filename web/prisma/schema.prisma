@@ -125,6 +125,11 @@ model Client {
   // { webhookUrl, token, mode: "also" | "only" } — "also" = client channel PLUS the default/restricted
   // base, "only" = client channel alone. Null = use the global routing (default vs restricted).
   notifyOverride         Json?
+  // Delinea (Secret Server) folder id this client's secrets are CREATED in when an operator authors a
+  // credential in-app (the write path — see lib/secrets/delinea-templates.ts). Read-only brokering
+  // never needs it. Falls back to DELINEA_FOLDER_MAP[slug] when null; null + no env entry = the
+  // in-app "Create in Delinea" affordance is disabled for this client.
+  delineaFolderId        String?
   createdAt              DateTime     @default(now())
   archivedAt             DateTime?
 
