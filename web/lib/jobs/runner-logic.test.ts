@@ -121,3 +121,19 @@ test("shouldStandBy: a strictly higher-priority peer online -> stand by; else cl
   // this IS the primary (lowest) -> never stands by
   assert.equal(shouldStandBy(1, [2, 3, 100]), false);
 });
+
+test("ad-hoc password-reset jobs never affect the case status (failed reset can't fail the case)", () => {
+  const done = [j({ id: "m365", sequence: 0, status: "succeeded" }), j({ id: "ad", sequence: 1, status: "succeeded" })];
+  // a FAILED ad-hoc reset must not flip a completed case to failed
+  assert.equal(deriveCaseStatus([...done, j({ id: "m365-password-reset", sequence: 9, status: "failed" })]), "completed");
+  // a PENDING/RUNNING ad-hoc reset must not read as "the case is still running"
+  assert.equal(deriveCaseStatus([...done, j({ id: "ad-password-reset", sequence: 9, status: "pending" })]), "completed");
+  assert.equal(deriveCaseStatus([...done, j({ id: "google-password-reset", sequence: 9, status: "running" })]), "completed");
+});
+
+test("ad-hoc password-reset jobs never gate other steps (legacy sequence rule included)", () => {
+  // legacy rule (no dependsOn): every earlier api job gates — except an ad-hoc reset.
+  const late = j({ id: "mimecast", sequence: 5 });
+  const reset = j({ id: "ad-password-reset", sequence: 1, status: "pending" });
+  assert.equal(dependencyGateOpen(late, [reset, late]), true);
+});

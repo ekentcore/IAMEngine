@@ -17,7 +17,7 @@ BeforeAll {
     function global:Get-MgGroup { param($GroupId, $Filter, $Property, $Top, [switch]$All) }
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
-    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation) }
+    function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation, $PasswordProfile) }
     function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef { param($GroupId, $DirectoryObjectId) }
@@ -780,5 +780,43 @@ Describe 'Set-CtgSeatAwareLicense' {
         $r = Set-CtgSeatAwareLicense -UserId 'u1' -Config $cfg2
         $r.Tier | Should -Be 'E3'
         Should -Invoke New-MgGroupMember -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g' } -Times 1
+    }
+}
+
+Describe 'Invoke-CtgM365PasswordReset' {
+    # Ad-hoc "Generate random password" (INC0855142): app-generated value arrives as
+    # config.newPassword; the executor sets a PasswordProfile with force-change and never
+    # echoes the value into the result.
+    BeforeEach {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        $config = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v' }
+    }
+
+    It 'sets a PasswordProfile with force-change on the resolved user' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        $r = Invoke-CtgM365PasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter {
+            $UserId -eq 'u1' -and $PasswordProfile.Password -eq 'Xy7#kQ9pLm2$Wn4v' -and $PasswordProfile.ForceChangePasswordNextSignIn -eq $true
+        }
+        ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    It 'refuses an AD-synced user and points the operator at Active Directory' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $true } }
+        { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*AD-synced*'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'throws when the user is not found — never silently no-ops' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { throw 'Request_ResourceNotFound' }
+        { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*not found*'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'throws when the app did not inject newPassword (a wiped value is never re-usable)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        { Invoke-CtgM365PasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
     }
 }

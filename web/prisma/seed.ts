@@ -41,6 +41,10 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["notify", "Offboard notification", 3, "Coretelligent.Notify"],
   ["hardware", "Hardware", 3], ["workstation", "Workstation", 3], ["welcome-letter", "Welcome letter", 3],
   ["first-day-call", "First-day call", 3], ["case-resolution", "Case resolution", 1],
+  // Ad-hoc operator actions (dispatched on demand from a case line, never planned):
+  ["ad-password-reset", "Password reset (AD)", 2, "Coretelligent.ActiveDirectory"],
+  ["m365-password-reset", "Password reset (M365)", 1, "Coretelligent.M365"],
+  ["google-password-reset", "Password reset (Google)", 2, "Coretelligent.GoogleWorkspace"],
   // long-tail keys the Phase-6 generator can emit; needed so a promoted draft seeds without a FK error
   ["data-transfer", "Data transfer", 2], ["archive", "Archive", 3],
   ["egnyte-sync-server", "Egnyte Sync Server", 3], ["address-book", "Printer address book", 3],

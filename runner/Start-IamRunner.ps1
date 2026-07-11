@@ -916,6 +916,24 @@ $DISPATCH = @{
 # moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
 $DISPATCH['entra'] = $DISPATCH['m365']
 
+# Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
+# never planned. The app generates the value, injects it as config.newPassword at claim, and reveals
+# it once operator-side — the executors never return it. One executor per system serves both lanes
+# (the wire `action` is the CASE's, and a reset can ride either kind of case); Connect lanes are
+# aliased from the owning system so a connection fix reaches the reset automatically.
+$DISPATCH['ad-password-reset'] = @{
+    Onboard = { param($job, $creds) Invoke-CtgADPasswordReset -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+}
+$DISPATCH['m365-password-reset'] = @{
+    Connect = $DISPATCH['m365'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgM365PasswordReset -User $job.payload -Config $job.config }
+}
+$DISPATCH['google-password-reset'] = @{
+    Connect = $DISPATCH['google-workspace'].Connect
+    Onboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
+}
+foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-reset') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
+
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
 $DISPATCH['tap'] = @{
@@ -1228,8 +1246,13 @@ function Protect-CtgSecretsInText {
     # app — Job.error is persisted and shown in the run report + ServiceNow work note + audit, and a
     # failing API call can echo a key/token/password in its exception. Only values of secret-named
     # fields are scrubbed, so usernames/servers stay visible for diagnosis.
-    param([string]$Text, [hashtable]$Creds)
+    # -ExtraValues: additional plaintexts to scrub that aren't brokered fields — e.g. the app-injected
+    # config.newPassword/initialPassword of a password-reset/onboard job echoed by a provider error.
+    param([string]$Text, [hashtable]$Creds, [string[]]$ExtraValues = @())
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    foreach ($v in $ExtraValues) {
+        if ($v -and $v.Length -ge 4 -and $Text.Contains($v)) { $Text = $Text.Replace($v, '***') }
+    }
     if ($Creds) {
         foreach ($c in $Creds.Values) {
             if (-not $c -or -not $c.Fields) { continue }
@@ -1900,7 +1923,7 @@ while ($true) {
                 # so the operator sees WHAT broke, not just the bare provider message.
                 $where = if ($script:Phase) { " while $($script:Phase)" } else { "" }
                 # Scrub any brokered secret value the exception may have echoed before it's persisted.
-                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds
+                $err = Protect-CtgSecretsInText "[$($job.systemKey)]$($where): $msg" $creds -ExtraValues @([string](Get-CtgProp $job.config 'newPassword'), [string](Get-CtgProp $job.config 'initialPassword'))
                 Write-Warning "job $($job.id) failed: $err"
                 Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
                 $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }

@@ -11,7 +11,7 @@ BeforeAll {
     # All stubs accept $Server/$Credential — the module splats @AdConnection (brokered ad-dc auth) onto every cmdlet.
     function global:Get-ADUser { [CmdletBinding()] param($Filter, $Identity, $Properties, $Server, $Credential) }
     function global:New-ADUser { [CmdletBinding()] param($Name, $SamAccountName, $UserPrincipalName, $GivenName, $Surname, $DisplayName, $Path, $Enabled, $OtherAttributes, $AccountPassword, $Server, $Credential) }
-    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $EmailAddress, $Server, $Credential) }
+    function global:Set-ADUser { [CmdletBinding()] param($Identity, $HomeDrive, $HomeDirectory, $Replace, $Clear, $Add, $Remove, $Manager, $EmailAddress, $ChangePasswordAtLogon, $Server, $Credential) }
     function global:Add-ADGroupMember { [CmdletBinding()] param($Identity, $Members, $Server, $Credential) }
     function global:Remove-ADGroupMember { [CmdletBinding(SupportsShouldProcess)] param($Identity, $Members, $Server, $Credential) }
     function global:Get-ADPrincipalGroupMembership { [CmdletBinding()] param($Identity, $Server, $Credential) }
@@ -552,5 +552,66 @@ Describe 'Invoke-CtgADHardMatch' {
         $r = Invoke-CtgADHardMatch -User ([pscustomobject]@{ SamAccountName = 'jdoe' }) -Config ([pscustomobject]@{ immutableId = $b64 })
         ($r.Actions -join '|') | Should -Match 'already'
         Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+}
+
+Describe 'Invoke-CtgADPasswordReset' {
+    # Ad-hoc "Generate random password" (INC0855142): the app generates the value, injects it as
+    # config.newPassword at claim, and reveals it once to the operator. The executor only sets it —
+    # and must never echo it into the result.
+    BeforeEach {
+        Mock Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        $user = [pscustomobject]@{ SamAccountName = 'jdoe'; UserPrincipalName = 'jdoe@x.com'; DisplayName = 'Jane Doe' }
+        $config = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v' }
+    }
+
+    It 'resets the password and requires a change at next logon' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Reset -and $Identity -eq 'jdoe' -and $NewPassword -is [securestring]
+        }
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter {
+            $Identity -eq 'jdoe' -and $ChangePasswordAtLogon -eq $true
+        }
+    }
+
+    It 'never echoes the password into the result' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    It 'throws when the app did not inject newPassword (a wiped value is never re-usable)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        { Invoke-CtgADPasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'throws when the user is not found — a reset must never silently no-op' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        { Invoke-CtgADPasswordReset -User $user -Config $config } | Should -Throw '*not found*'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'falls back to the UPN lookup when the case has no SamAccountName' {
+        $noSam = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            param($Filter, $Identity, $Properties, $Server, $Credential)
+            if ($Filter -like "*UserPrincipalName*") { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        }
+        $r = Invoke-CtgADPasswordReset -User $noSam -Config $config
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $Identity -eq 'jdoe' }
+    }
+
+    It 'a change-at-logon failure is a WARN action, not a failed reset (the password DID change)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ SamAccountName = 'jdoe' } }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { throw 'policy forbids' }
+        $r = Invoke-CtgADPasswordReset -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join '|') | Should -Match 'WARN'
     }
 }

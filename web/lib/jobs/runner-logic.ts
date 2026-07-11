@@ -1,5 +1,11 @@
 // Pure runner-coordination logic (no I/O) — unit-tested in runner-logic.test.ts.
 import type { CaseStatus, JobStatus, Mode } from "@prisma/client";
+import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
+
+// Ad-hoc operator actions riding the job table (password resets). They are NOT case work: a failed
+// reset must not fail the case, a pending one must not read as "still running", and one must never
+// gate a real step. Filtered out of every case-level derivation below.
+const adhoc = (j: { systemKey: string }) => PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey);
 
 export type JobLite = {
   id: string;
@@ -41,7 +47,7 @@ export function isClaimable(job: JobLite, caseJobs: JobLite[], caseStatus: CaseS
 // checklist items never block either way.
 export function blockingJobs(job: JobLite, caseJobs: JobLite[]): JobLite[] {
   // succeeded/skipped satisfy a dependency; so does a failure the operator explicitly ACCEPTED.
-  const unmet = (j: JobLite) => j.mode === "api" && j.status !== "succeeded" && j.status !== "skipped" && !j.accepted;
+  const unmet = (j: JobLite) => j.mode === "api" && j.status !== "succeeded" && j.status !== "skipped" && !j.accepted && !adhoc(j);
   if (Array.isArray(job.dependsOn)) {
     return caseJobs.filter((j) => unmet(j) && job.dependsOn!.includes(j.systemKey));
   }
@@ -60,7 +66,8 @@ export function shouldStandBy(myPriority: number, onlinePeerPriorities: number[]
   return onlinePeerPriorities.some((p) => p < myPriority);
 }
 
-export function deriveCaseStatus(jobs: JobLite[]): CaseStatus {
+export function deriveCaseStatus(all: JobLite[]): CaseStatus {
+  const jobs = all.filter((j) => !adhoc(j));
   if (jobs.some((j) => j.status === "failed")) return "failed";
   const openApi = jobs.filter((j) => j.mode === "api" && OPEN.includes(j.status));
   if (openApi.length > 0) {

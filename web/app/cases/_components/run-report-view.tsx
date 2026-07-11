@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
 import { ResolutionModal } from "./resolution-modal";
+import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-password-button";
+import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -736,7 +738,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
               {/* Any finished automated step can be re-run — incl. "verified" (e.g. re-run exchange to
                   finish regional/calendar deferred when the mailbox hadn't synced yet). */}
-              {["verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && (
+              {["verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
                   disabled={busy === `rerun-${step.seq}`}
@@ -747,7 +749,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
               {/* Run ONLY this step (no cascade): the case is paused so the rest of the run is held.
                   For testing or fixing a single step. Hidden while it's in flight / awaiting approval. */}
-              {["pending", "verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && (
+              {["pending", "verified", "warning", "failed", "skipped"].includes(step.verdict) && step.jobId && !PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
                 <button
                   style={{ marginLeft: 8, fontSize: 11 }}
                   disabled={busy === `single-${step.seq}`}
@@ -756,6 +758,15 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 >
                   {busy === `single-${step.seq}` ? "running…" : "▶ run this step only"}
                 </button>
+              )}
+              {/* Generate a fresh random password on this account and show it once (INC0855142) —
+                  offered on the AD / M365 / Entra / Google Workspace lines once the account exists. */}
+              {["verified", "warning"].includes(step.verdict) && step.jobId && PASSWORD_RESET_KEY[step.systemKey] && (
+                <GeneratePasswordButton jobId={step.jobId} systemName={step.systemName} refresh={refresh} />
+              )}
+              {/* On the reset line itself: the one-time reveal, for a popup closed before it showed. */}
+              {step.verdict === "verified" && step.jobId && PASSWORD_RESET_SYSTEM_KEYS.includes(step.systemKey) && (
+                <RevealResetPasswordButton jobId={step.jobId} systemName={step.systemName} />
               )}
               {/* Ignore an intentional warning/failure ("mark as complete") — or un-ignore it. */}
               {(step.verdict === "warning" || step.verdict === "failed") && step.fingerprint && (
