@@ -9,7 +9,9 @@ web/.env.local
 
 # --- dependencies ---
 node_modules/
-web/node_modules/
+# no trailing slash: also matches the node_modules SYMLINK a worktree uses (a
+# trailing-slash pattern only matches real directories, so the link slips into commits)
+web/node_modules
 
 # --- build output ---
 .next/

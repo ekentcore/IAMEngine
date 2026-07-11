@@ -20,6 +20,7 @@ export type CaseRowVM = {
   statusHint: string;
   effectiveDate: string | null;
   immediate?: boolean; // offboard with no scheduled date (subject says "Immediate")
+  scheduledForIso?: string | null; // scheduled auto-resume time — shown on the "⏸ scheduled" badge
   lastRunIso?: string | null; // when the case last executed (most recent job start/finish)
   ranBy?: string | null; // operator who last ran it (email), or null
   lastActionLabel?: string | null; // most recent tracked action — "Imported"/"Unpaused"/"Paused"/"Verified"/…
@@ -95,6 +96,13 @@ function ReadinessDot({ c }: { c: CaseRowVM }) {
   );
 }
 
+// Compact "runs 7/20 8:00 AM" for the scheduled badge's second line (it's tiny — no month names).
+function fmtRunsAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.toLocaleDateString([], { month: "numeric", day: "numeric" })} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
 function StatusBadge({ c }: { c: CaseRowVM }) {
   const warns = c.status === "completed" ? (c.warnings ?? []) : [];
   const steps = new Set(warns.map((w) => w.split(":")[0])).size;
@@ -110,6 +118,9 @@ function StatusBadge({ c }: { c: CaseRowVM }) {
     else if (c.pausedBy === "review") { if (c.lastRunIso) { main = "⏸ held"; sub = "resume to run"; } else main = "▶︎ Press Play to Start"; }
     else if (c.pausedBy === "operator") main = "⏸ paused";
     else main = "paused — needs creds";
+    // A scheduled auto-resume overrides the generic sub-line whatever the hold reason — the sweep
+    // releases ANY hold when the time arrives, so "runs <when>" is the truthful second line.
+    if (c.scheduledForIso) sub = `runs ${fmtRunsAt(c.scheduledForIso)}`;
   } else if (warns.length) main = `completed — ${steps} warning${steps > 1 ? "s" : ""}`;
   else main = STATUS_LABEL[c.status] ?? c.status;
   return (

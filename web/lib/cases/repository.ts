@@ -387,7 +387,7 @@ export function makeCaseRepository(db: PrismaClient) {
         orderBy: { createdAt: "desc" },
         take: limit,
         select: {
-          id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true,
+          id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true, scheduledFor: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
           client: { select: { name: true, slug: true, parentId: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, startedAt: true, finishedAt: true } },
@@ -543,6 +543,7 @@ export function makeCaseRepository(db: PrismaClient) {
           pausedBy: needsInfo ? ("needs_info" as const) : scheduled ? ("scheduled" as const) : review ? ("review" as const) : operatorPaused ? ("operator" as const) : credsPaused ? ("creds" as const) : null,
           warnings: warningsByCase.get(r.id) ?? [],
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
+          scheduledFor: r.scheduledFor,
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
           lastActionLabel: lastActionByCase.get(r.id)?.label ?? null,
           lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
@@ -551,7 +552,9 @@ export function makeCaseRepository(db: PrismaClient) {
           statusHint: needsInfo
             ? "Needs information — the intake left fields blank. Fill them in on the case page to release it."
             : scheduled
-            ? "Scheduled — an offboard is held on import (it may be future-dated). Resume on the case page when the offboard date arrives."
+            ? r.scheduledFor
+              ? "Scheduled — the case resumes automatically at the scheduled time (or resume it on the case page sooner)."
+              : "Scheduled — an offboard is held on import (it may be future-dated). Resume on the case page when the offboard date arrives."
             : review
             ? "Held on import — review the planned steps on the case page and resume to run it."
             : operatorPaused

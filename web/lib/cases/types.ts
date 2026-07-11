@@ -40,6 +40,8 @@ export type CaseListItem = {
   effectiveDate: string | null;
   // Offboard with no future date — the subject says "Immediate" (process now). Shown instead of a date.
   immediate: boolean;
+  // Scheduled auto-resume time (the heartbeat sweep releases the hold then). null when not scheduled.
+  scheduledFor: Date | null;
   // When the case last executed (most recent job start/finish), and which operator last ran it
   // (import/plan, re-run, resume, verify — "user:<email>" stripped to the email). null = never / no auth.
   lastRunAt: Date | null;

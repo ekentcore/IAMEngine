@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
+import { ActionsMenu } from "../../_components/actions-menu";
 import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority } from "../actions";
 
 export type AgentVM = {
@@ -187,42 +188,6 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
   );
 }
 
-// v2 per-agent actions, collapsed into a single "Actions ▾" menu (the classic view shows every button
-// inline). Opening/closing is lifted to the parent (one menu open at a time + shared click-away).
-function ActionsMenu({
-  a, toggling, upToDate, open, onOpen,
-  onInstall, onToggleEnabled, onTroubleshoot, onLocalRestart, onUpdate, onRestart, onTrash,
-}: {
-  a: AgentVM; toggling: string | null; upToDate: boolean; open: boolean; onOpen: (id: string | null) => void;
-  onInstall: () => void; onToggleEnabled: () => void; onTroubleshoot: () => void; onLocalRestart: () => void;
-  onUpdate: () => void; onRestart: () => void; onTrash: () => void;
-}) {
-  const pick = (fn: () => void) => () => { onOpen(null); fn(); };
-  return (
-    <div className="agent-actions" style={{ position: "relative", display: "inline-block" }}>
-      <button className="agent-actions-trigger" aria-haspopup="menu" aria-expanded={open}
-        onClick={() => onOpen(open ? null : a.id)}>Actions&nbsp;▾</button>
-      {open && (
-        <div role="menu" className="agent-actions-menu">
-          <button onClick={pick(onInstall)}>Install</button>
-          <button disabled={toggling === a.id} onClick={pick(onToggleEnabled)}>{a.enabled ? "Disable" : "Enable"}</button>
-          <button onClick={pick(onTroubleshoot)}>Troubleshoot</button>
-          <button onClick={pick(onLocalRestart)}>Local restart</button>
-          {a.enabled && !upToDate && (
-            <button disabled={toggling === a.id || a.updateRequested} onClick={pick(onUpdate)}>{a.updateRequested ? "Queued…" : "Update"}</button>
-          )}
-          {a.enabled && (
-            <button disabled={toggling === a.id || a.restartRequested} onClick={pick(onRestart)}>{a.restartRequested ? "Restarting…" : "Restart"}</button>
-          )}
-          {!a.enabled && (
-            <button className="danger" onClick={pick(onTrash)}>Trash</button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now, v2 = false }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number; v2?: boolean }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
@@ -251,15 +216,6 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
   const localRestartRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
-
-  // v2 only: which agent's actions menu is open (one at a time). Close on any click outside a menu.
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
-  useEffect(() => {
-    if (!openMenu) return;
-    const h = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest(".agent-actions")) setOpenMenu(null); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [openMenu]);
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -597,16 +553,23 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
                 </td>
                 <td style={{ textAlign: "right" }}>
-                  <ActionsMenu
-                    a={a} toggling={toggling} upToDate={upToDate} open={openMenu === a.id} onOpen={setOpenMenu}
-                    onInstall={() => setInstallAgent(a)}
-                    onToggleEnabled={() => toggle(a.id, !a.enabled)}
-                    onTroubleshoot={() => setTroubleshootAgent(a)}
-                    onLocalRestart={() => setLocalRestartAgent(a)}
-                    onUpdate={() => run(a.id, requestAgentUpdate)}
-                    onRestart={() => run(a.id, requestAgentRestart)}
-                    onTrash={() => run(a.id, trashAgent)}
-                  />
+                  {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
+                      shows every button inline). */}
+                  <ActionsMenu items={[
+                    { label: "Install", onClick: () => setInstallAgent(a) },
+                    { label: a.enabled ? "Disable" : "Enable", disabled: toggling === a.id, onClick: () => toggle(a.id, !a.enabled) },
+                    { label: "Troubleshoot", onClick: () => setTroubleshootAgent(a) },
+                    { label: "Local restart", onClick: () => setLocalRestartAgent(a) },
+                    ...(a.enabled && !upToDate
+                      ? [{ label: a.updateRequested ? "Queued…" : "Update", disabled: toggling === a.id || a.updateRequested, onClick: () => run(a.id, requestAgentUpdate) }]
+                      : []),
+                    ...(a.enabled
+                      ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
+                      : []),
+                    ...(!a.enabled
+                      ? [{ label: "Trash", danger: true, onClick: () => run(a.id, trashAgent) }]
+                      : []),
+                  ]} />
                 </td>
               </tr>
             );

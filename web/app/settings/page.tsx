@@ -6,7 +6,12 @@ import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
+import { AUTO_FIX_SETTING_KEY, type AutoFixSetting } from "@/lib/fixes/fix-tasks";
 import { NotificationForm } from "./_components/notification-form";
+import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
+import { RestartServerButton } from "./_components/restart-server-button";
+import { AutoFixToggle } from "./_components/auto-fix-toggle";
+import { loadFeatureRequests } from "./_lib/loader";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings" };
@@ -17,6 +22,8 @@ export default async function SettingsPage() {
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
+  const featureRequests = await loadFeatureRequests();
+  const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
   return (
     <main>
       <h1>Notifications</h1>
@@ -26,6 +33,14 @@ export default async function SettingsPage() {
         you exactly where to find its link.
       </p>
       <NotificationForm initial={settings} />
+      <h2 style={{ marginTop: "2.5rem" }}>Feature requests</h2>
+      <p className="note" style={{ marginBottom: "1rem" }}>
+        Filed by operators via the 💡 button in the header. Set a status (and, when it lands or is
+        declined, a note) to keep the queue honest.
+      </p>
+      <FeatureRequestsAdmin initial={featureRequests} />
+      <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
+      <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );
 }

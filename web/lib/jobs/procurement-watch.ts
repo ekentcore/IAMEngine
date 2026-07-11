@@ -8,6 +8,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
 import { fetchTaskState, classifyTaskState } from "@/lib/servicenow/task-state";
+import { getAppSetting } from "@/lib/settings";
+import { AUTO_FIX_SETTING_KEY, type AutoFixSetting, createFixTask } from "@/lib/fixes/fix-tasks";
 import { requeueJob } from "./requeue";
 
 const CHECK_EVERY_MS = 5 * 60_000;
@@ -77,11 +79,92 @@ export async function sweepAutoRetries(db: PrismaClient): Promise<void> {
   }
 }
 
+// Release cases whose scheduled start (CaseRequest.scheduledFor) has arrived: clear the hold and
+// the schedule — runners then claim the pending jobs exactly as after a manual Resume (which also
+// does nothing beyond unpausing). The conditional updateMany doubles as the claim: two concurrent
+// sweeps can't both fire (the second one matches zero rows), and a case the operator resumed or
+// trashed in between is skipped.
+export async function sweepScheduledCases(db: PrismaClient): Promise<void> {
+  // ONLY auto-release holds whose reason is "scheduled". A case that's since been paused by an
+  // operator (reason "operator"), cancelled, or gated on missing intake ("needs_info") / credentials
+  // ("creds") must NOT be auto-run — the schedule route refuses to schedule those hard gates, and this
+  // reason filter is the safety net if a case regresses into one after it was scheduled.
+  const due = await db.caseRequest.findMany({
+    where: { scheduledFor: { lte: new Date() }, deletedAt: null, pausedReason: "scheduled", status: { notIn: ["failed", "completed"] } },
+    take: 10,
+    select: { id: true, clientId: true, scheduledFor: true },
+  });
+  for (const c of due) {
+    const claimed = await db.caseRequest.updateMany({
+      where: { id: c.id, scheduledFor: c.scheduledFor, pausedReason: "scheduled", deletedAt: null },
+      data: { pausedAt: null, pausedReason: null, scheduledFor: null, scheduledBy: null },
+    });
+    if (claimed.count === 0) continue;
+    await db.auditLog.create({
+      data: { actor: "system:schedule", action: "case.schedule.resumed", caseRequestId: c.id, clientId: c.clientId, detail: { scheduledFor: c.scheduledFor?.toISOString() } },
+    }).catch(() => {});
+  }
+}
+
+// Auto-trigger for the self-healing fix lane (OPT-IN via the "autoFix" app setting; default OFF).
+// A failure that keeps recurring — the SAME fingerprint, unresolved, ≥3 occurrences — is handed to
+// the fixer (headless Claude Code in an isolated worktree → DRAFT PR; a human always merges).
+// Rate-limited to ONE new task per sweep, and a fingerprint that EVER had a FixTask is never
+// re-queued automatically (no retry loops; an operator can still trigger it by hand from /runs).
+export async function sweepAutoFix(db: PrismaClient): Promise<void> {
+  const setting = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
+  if (!setting?.enabled) return;
+
+  // Recurring unresolved failures, worst first. Legacy rows without a fingerprint can't be tracked.
+  const groups = await db.runOutcome.groupBy({
+    by: ["fingerprint"],
+    where: { verdict: "failed", resolvedAt: null, fingerprint: { not: "" } },
+    _count: { _all: true },
+    having: { fingerprint: { _count: { gte: 3 } } },
+    orderBy: { _count: { fingerprint: "desc" } },
+    take: 20,
+  });
+  if (groups.length === 0) return;
+
+  const seen = await db.fixTask.findMany({
+    where: { fingerprint: { in: groups.map((g) => g.fingerprint) } },
+    select: { fingerprint: true },
+    distinct: ["fingerprint"],
+  });
+  const seenFps = new Set(seen.map((t) => t.fingerprint));
+  const candidate = groups.find((g) => !seenFps.has(g.fingerprint));
+  if (!candidate) return;
+
+  // Latest occurrence supplies the human-readable title + the error context handed to Claude.
+  const row = await db.runOutcome.findFirst({ where: { fingerprint: candidate.fingerprint }, orderBy: { at: "desc" } });
+  if (!row) return;
+  const firstLine = (row.messages[0] ?? row.error ?? "run failed").split("\n")[0];
+  const context = [`${row.systemKey} (${row.caseNumber})`, ...row.messages, ...(row.error && !row.messages.includes(row.error) ? [row.error] : [])].filter(Boolean).join("\n");
+
+  const out = await createFixTask(db, {
+    fingerprint: candidate.fingerprint,
+    title: `${row.systemKey}: ${firstLine}`.slice(0, 300),
+    context: context.slice(0, 20000),
+    requestedBy: "system:auto-fix",
+  });
+  await db.auditLog.create({
+    data: {
+      actor: "system:auto-fix",
+      action: out.ok ? "fixtask.create" : "fixtask.create.failed",
+      clientId: row.clientId,
+      caseRequestId: row.caseRequestId,
+      detail: { fingerprint: candidate.fingerprint, systemKey: row.systemKey, occurrences: candidate._count._all, ...(out.ok ? { id: out.task.id } : { error: out.error }) },
+    },
+  }).catch(() => {});
+}
+
 export async function sweepProcurementWatches(db: PrismaClient): Promise<void> {
   const now = Date.now();
   if (now - lastSweepAt < 60_000) return;
   lastSweepAt = now;
   await sweepAutoRetries(db).catch(() => {});
+  await sweepScheduledCases(db).catch(() => {});
+  await sweepAutoFix(db).catch(() => {});
 
   const due = await db.procurementWatch.findMany({
     where: {

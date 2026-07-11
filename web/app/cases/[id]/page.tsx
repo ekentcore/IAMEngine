@@ -20,6 +20,9 @@ import { RevealPasswordButton } from "../_components/reveal-password-button";
 import { HardMatchButton } from "../_components/hard-match-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
 import { PauseButton } from "../_components/pause-button";
+import { ScheduleButton } from "../_components/schedule-button";
+import { LocalDateTime } from "../../_components/local-datetime";
+import { caseEffectiveDate } from "@/lib/cases/schedule";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 
@@ -76,13 +79,17 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
   // incrementally (kept steps survive, new/changed systems get fresh jobs).
   const started = hasStartedJobs(c.jobs);
-  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true } });
+  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true, scheduledFor: true } });
   const paused = Boolean(caseMeta?.pausedAt);
   // Mirror the reveal route's guard (case.dispatch, no impersonation) so read-only roles don't see
   // a button the server will 403 — the route stays the real boundary.
   const acting = authEnabled() ? await getActingContext() : { user: null, realUser: null, impersonating: false };
   const canRevealPassword = !authEnabled() || (!!acting.user && !acting.impersonating && can(acting.user.role, "case.dispatch"));
   const hasInitialPassword = Boolean(caseMeta?.initialPassword) && canRevealPassword;
+  const scheduledForIso = caseMeta?.scheduledFor?.toISOString() ?? null;
+  // The case's effective date string — the ScheduleButton computes its suggested time from this in
+  // the BROWSER (so "08:00" / "+5 min" land in the operator's timezone, not the server's).
+  const effectiveDate = caseEffectiveDate(c.action, c.payload, c.subject);
   // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
   // has been dispatched yet → offer the operator-confirmed "Link" action.
   const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
@@ -106,6 +113,10 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {showHardMatch && <HardMatchButton caseId={c.id} />}
           {hasInitialPassword && <RevealPasswordButton caseId={c.id} />}
+          {/* A completed/failed case can't be scheduled (the API refuses it too). */}
+          {!["completed", "failed"].includes(c.status) && (
+            <ScheduleButton caseId={c.id} action={c.action} scheduledForIso={scheduledForIso} effectiveDate={effectiveDate} />
+          )}
           <PauseButton caseId={c.id} paused={paused} />
           <ReplanButton caseId={c.id} canReplan={true} started={started} />
         </div>
@@ -113,6 +124,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
       {paused && (
         <p className="note" style={{ color: "#8a6d00" }}>
           ⏸ This case is paused — runners won&rsquo;t claim its steps until you resume (a step already running finishes normally).
+          {scheduledForIso && <> It resumes automatically at <LocalDateTime iso={scheduledForIso} />.</>}
         </p>
       )}
 
