@@ -1388,20 +1388,34 @@ function Get-ConnTestCredential {
 # Which Graph permissions the M365 onboarder actually exercises, each satisfied by ANY of the listed
 # scopes. Compared against the connection's GRANTED scopes (Get-MgContext) so the test can name the
 # exact permission someone forgot to grant + admin-consent, instead of a bare "Insufficient privileges".
+# One declaration, two consumers: the human gap strings AND the structured rights rows the probe posts.
+$script:GRAPH_REQUIRED_CAPS = @(
+    @{ need = 'create / update users + assign licenses'; anyOf = @('User.ReadWrite.All', 'Directory.ReadWrite.All') }
+    @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
+    @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
+)
 function Get-CtgGraphScopeGaps {
     param([string[]]$Granted)
-    $req = @(
-        @{ need = 'create / update users + assign licenses'; anyOf = @('User.ReadWrite.All', 'Directory.ReadWrite.All') }
-        @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
-        @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
-    )
     $gaps = @()
-    foreach ($r in $req) {
+    foreach ($r in $script:GRAPH_REQUIRED_CAPS) {
         $have = $false
         foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $have = $true; break } }
         if (-not $have) { $gaps += "$($r.need) — grant one of: $($r.anyOf -join ', ')" }
     }
     $gaps
+}
+# The same requirement map as structured per-operation rows for the conn-test result:
+# @{ op; ok ($true/$false/$null = unverifiable); detail }.
+function Get-CtgGraphRightsRows {
+    param([string[]]$Granted)
+    $rows = @()
+    foreach ($r in $script:GRAPH_REQUIRED_CAPS) {
+        $match = $null
+        foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $match = $s; break } }
+        $rows += if ($match) { @{ op = [string]$r.need; ok = $true; detail = "granted via $match" } }
+                 else        { @{ op = [string]$r.need; ok = $false; detail = "grant one of: $($r.anyOf -join ', ')" } }
+    }
+    $rows
 }
 
 # The app-only blind spot: Get-MgContext.Scopes is EMPTY for client-credentials auth (app perms ride
@@ -1467,8 +1481,10 @@ $CONNTEST_PROBE = @{
             if ($ctx -and $ctx.Scopes) { $granted = @($ctx.Scopes); $how = 'delegated scopes' }
         }
         if ($granted.Count -eq 0 -and -not $real.ok) {
+            $script:ConnTestRights = @(@{ op = 'verify Graph permissions'; ok = $null; detail = [string]$real.reason })
             return "$base · connected, but couldn't verify permissions: $($real.reason)"
         }
+        $script:ConnTestRights = @(Get-CtgGraphRightsRows $granted)
         $gaps = Get-CtgGraphScopeGaps $granted
         if ($gaps.Count) {
             throw "$base · consented ${how}: [$(@($granted) -join ', ')] — but MISSING: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent IN THIS TENANT, then re-test."
@@ -1479,16 +1495,20 @@ $CONNTEST_PROBE = @{
     'mimecast'         = { param($job, $creds)
         # Probe the actual operations onboarding needs and report which the API 2.0 app is permitted
         # to do — so "Test connections" shows the app's real permission map (Mimecast has no API to
-        # list an app's granted permissions; this infers them from what works).
-        $report = @()
+        # list an app's granted permissions; this infers them from what works). Each op is also
+        # posted as a structured rights row.
+        $ops = [System.Collections.Generic.List[hashtable]]::new()
         $try = {
             param($label, $path)
-            try { Invoke-CtgMimecastApi -Path $path | Out-Null; "$($label): allowed" }
-            catch { if ([string]$_.Exception.Message -match 'forbidden|not .{0,6}permitted|denied|unauthoriz|\b403\b') { "$($label): FORBIDDEN" } else { "$($label): error" } }
+            try { Invoke-CtgMimecastApi -Path $path | Out-Null; @{ op = $label; ok = $true; detail = 'allowed' } }
+            catch {
+                if ([string]$_.Exception.Message -match 'forbidden|not .{0,6}permitted|denied|unauthoriz|\b403\b') { @{ op = $label; ok = $false; detail = 'FORBIDDEN — grant it on the API 2.0 app' } }
+                else { @{ op = $label; ok = $null; detail = "error: $(([string]$_.Exception.Message).Substring(0, [Math]::Min(120, ([string]$_.Exception.Message).Length)))" } }
+            }
         }
-        $report += & $try 'account read'           '/api/account/get-account'
-        $report += & $try 'directory/domains read' '/api/domain/get-internal-domain'
-        $report += & $try 'directory-sync read'    '/api/directory/get-connection'
+        $ops.Add((& $try 'account read'           '/api/account/get-account'))
+        $ops.Add((& $try 'directory/domains read' '/api/domain/get-internal-domain'))
+        $ops.Add((& $try 'directory-sync read'    '/api/directory/get-connection'))
         # USER read is what onboarding actually needs (get-profile). Probe a benign address in an
         # internal domain: FORBIDDEN = the missing permission; not-found = the permission IS granted.
         $dom = $null
@@ -1497,24 +1517,103 @@ $CONNTEST_PROBE = @{
             try {
                 $resp = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = "postmaster@$dom" } -AllowFail
                 $codes = @(@(Get-CtgProp $resp 'fail') | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { [string](Get-CtgProp $_ 'code') } })
-                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $report += 'user read (get-profile): FORBIDDEN — THIS is the onboarding gap' }
-                else { $report += 'user read (get-profile): allowed' }
-            } catch { $report += 'user read (get-profile): error' }
+                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $ops.Add(@{ op = 'user read (get-profile)'; ok = $false; detail = 'FORBIDDEN — THIS is the onboarding gap' }) }
+                else { $ops.Add(@{ op = 'user read (get-profile)'; ok = $true; detail = 'allowed' }) }
+            } catch { $ops.Add(@{ op = 'user read (get-profile)'; ok = $null; detail = 'error probing' }) }
         }
+        $script:ConnTestRights = @($ops)
+        $report = @($ops | ForEach-Object { "$($_.op): $(if ($_.ok -eq $true) { 'allowed' } elseif ($_.ok -eq $false) { 'FORBIDDEN' } else { 'error' })" })
         $detail = "app permissions -> $($report -join ' | ')"
         # Fail the test (visibly red) when a permission onboarding needs is missing.
-        if (($report -join ' ') -match 'FORBIDDEN') { throw $detail }
+        if (@($ops | Where-Object { $_.ok -eq $false }).Count) { throw $detail }
         $detail
     }
-    'active-directory' = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "domain: $($d.DNSRoot)" }
+    'active-directory' = { param($job, $creds)
+        $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop
+        # Rights: can the service account CREATE USERS in the OUs this client's config targets?
+        # Evaluated from the OU ACLs (read-only) via the pure helper in Coretelligent.ActiveDirectory;
+        # anything unreadable degrades to "verify manually", never a false failure.
+        $ous = @()
+        foreach ($pair in @(@('onboard', 'ou'), @('offboard', 'moveToOu'), @('offboard', 'disabledUsersOu'))) {
+            $lane = Get-CtgProp $job.config $pair[0]
+            $v = if ($lane) { [string](Get-CtgProp $lane $pair[1]) } else { $null }
+            if ($v -and $v -match '(?i)dc=') { $ous += $v }
+        }
+        $ous = @($ous | Select-Object -Unique)
+        if ($ous.Count) {
+            $sids = Get-CtgAdAccountSids -AdConnection $c -Creds $creds
+            $rows = @()
+            foreach ($ou in $ous) {
+                $rows += Test-CtgAdOuCreateUserRight -AdConnection $c -OuDn $ou -Sids $sids
+            }
+            $script:ConnTestRights = @($rows)
+            $denied = @($rows | Where-Object { $_.ok -eq $false })
+            if ($denied.Count) { throw "domain: $($d.DNSRoot) — the account cannot create users in: $(@($denied | ForEach-Object { $_.op }) -join '; ')" }
+        }
+        else {
+            $script:ConnTestRights = @(@{ op = 'create users in target OU'; ok = $null; detail = 'no OU DN in this client''s config — set onboard.ou to verify the ACL' })
+        }
+        "domain: $($d.DNSRoot)"
+    }
     'directory-sync'   = { param($job, $creds) $c = New-CtgAdConnection $creds; $d = Get-ADDomain @c -ErrorAction Stop; "AD reachable: $($d.DNSRoot)" }
 }
 $CONNTEST_PROBE['entra'] = $CONNTEST_PROBE['m365']  # entra is the M365 module's Entra slice — same Graph perms
 # Cloud REST systems: after Connect (above), do one read so the test validates the credential +
 # read scope against the live API (not just that Connect assembled an auth header).
-$CONNTEST_PROBE['zoom']        = { param($job, $creds) Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null; 'zoom: users readable' }
-$CONNTEST_PROBE['sentinelone'] = { param($job, $creds) Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null; 'sentinelone: agents readable' }
-$CONNTEST_PROBE['xmatters']    = { param($job, $creds) Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null; 'xmatters: people readable' }
+$CONNTEST_PROBE['zoom']        = { param($job, $creds)
+    Invoke-CtgZoomApi -Method GET -Path '/users?page_size=1' | Out-Null
+    # The S2S token response names the app's granted scopes (Connect captures them) — compare
+    # against what the on/offboarders actually call: user reads, user writes (create/update/
+    # deactivate), and — only when the client's config assigns phone — phone writes.
+    $scopes = @(Get-CtgZoomGrantedScopes)
+    if ($scopes.Count -eq 0) {
+        $script:ConnTestRights = @(@{ op = 'verify Zoom scopes'; ok = $null; detail = 'token response carried no scope list — verify the S2S app scopes in the Zoom marketplace' })
+        return 'zoom: users readable'
+    }
+    $capOf = { param($label, $pattern, $hint)
+        if (@($scopes | Where-Object { $_ -match $pattern }).Count) { @{ op = $label; ok = $true; detail = "granted ($(@($scopes | Where-Object { $_ -match $pattern }) -join ', '))" } }
+        else { @{ op = $label; ok = $false; detail = $hint } }
+    }
+    $rows = @(
+        (& $capOf 'read users'                  '^user:read'   'grant user:read:admin (or the granular read scopes) on the S2S app')
+        (& $capOf 'create / update / deactivate users' '^user:write' 'grant user:write:admin (or the granular write scopes) on the S2S app')
+    )
+    $wantsPhone = $false
+    foreach ($lane in @('onboard', 'offboard')) { $c = Get-CtgProp $job.config $lane; if ($c -and (Get-CtgProp $c 'phone')) { $wantsPhone = $true } }
+    if ($wantsPhone) { $rows += (& $capOf 'assign phone' '^phone:write' 'grant phone:write:admin — this client''s config assigns Zoom Phone') }
+    $script:ConnTestRights = @($rows)
+    $missing = @($rows | Where-Object { $_.ok -eq $false })
+    if ($missing.Count) { throw "zoom: users readable, but the S2S app is missing scopes -> $(@($missing | ForEach-Object { $_.op }) -join ', '). $(@($missing | ForEach-Object { $_.detail }) -join ' | ')" }
+    "zoom: users readable — scopes cover $(@($rows | ForEach-Object { $_.op }) -join ', ')"
+}
+$CONNTEST_PROBE['sentinelone'] = { param($job, $creds)
+    Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/agents?limit=1' | Out-Null
+    # Offboarding needs more than a read: try to name the API token's role. S1 has no clean
+    # "what can I do" endpoint, so an unreadable role is reported as unverifiable, not a failure.
+    $role = $null
+    try { $me = Invoke-CtgSentinelOneApi -Method GET -Path '/web/api/v2.1/user'; $role = [string](Get-CtgProp (Get-CtgProp $me 'data') 'scopeRoles') } catch { }
+    $roleDetail = if ($role) { "API user roles: $role — confirm they allow agent actions" } else { 'no role introspection API — verify the token''s role allows agent actions' }
+    $script:ConnTestRights = @(@{ op = 'agent actions (offboard disconnect/shutdown)'; ok = $null; detail = $roleDetail })
+    'sentinelone: agents readable'
+}
+$CONNTEST_PROBE['xmatters']    = { param($job, $creds)
+    Invoke-CtgXMattersApi -Method GET -Path '/people?limit=1' | Out-Null
+    $script:ConnTestRights = @(@{ op = 'create / delete people'; ok = $null; detail = 'xMatters has no permission introspection — verify the API user has the "REST Web Service User" role' })
+    'xmatters: people readable'
+}
+# Google Workspace: domain-wide-delegation token minting is all-or-nothing — the exchange itself
+# fails (unauthorized_client) if ANY requested scope isn't authorized for the service account's
+# client ID. So a successful Connect PROVES every requested scope; one live read then proves the
+# impersonated admin works. That turns the token grant into a real per-scope rights check.
+$CONNTEST_PROBE['google-workspace'] = { param($job, $creds)
+    $resp = Invoke-CtgGoogleApi -Method GET -Path "/users?customer=$script:GoogleCustomer&maxResults=1"
+    $scopes = @(Get-CtgGoogleSessionScopes)
+    $script:ConnTestRights = @($scopes | ForEach-Object {
+        @{ op = "scope $((($_ -split '/')[-1]))"; ok = $true; detail = 'authorized via domain-wide delegation (token minted with this scope)' }
+    })
+    if ($scopes.Count -eq 0) { $script:ConnTestRights = @(@{ op = 'verify delegation scopes'; ok = $null; detail = 'session did not record its scopes (token passed directly?)' }) }
+    "google: users readable (delegation scopes verified: $($scopes.Count))"
+}
 # Spanning has NO Connect in $DISPATCH (Connect-CtgSpanning is a pure local assignment), so the probe
 # reads the brokered secret itself (Use-CtgSpanningSecret) then does one live LIST read. The /users
 # LIST route is the VERIFIED one (the /users/{email} route 400s on some tenants), so listing a single
@@ -1523,6 +1622,20 @@ $CONNTEST_PROBE['spanning']    = { param($job, $creds)
     Use-CtgSpanningSecret $job $creds
     $resp  = Invoke-CtgSpanningApi -Method GET -Path '/users?size=1'
     $users = Get-CtgProp $resp 'users'; if ($null -eq $users) { $users = Get-CtgProp $resp 'items' }; if ($null -eq $users) { $users = $resp }
+    # Rights: license assign/unassign is the only WRITE onboarding does. Probe authz without
+    # touching a user — an EMPTY userPrincipalNames list either 400s (validation ran => the request
+    # passed authn/authz) or no-ops; a 401/403 means the token can't assign. NEVER send a real UPN.
+    $assign = try {
+        Invoke-CtgSpanningApi -Method POST -Path '/users/assign' -Body @{ userPrincipalNames = @(); licenseType = 'STANDARD' } | Out-Null
+        @{ op = 'license assign/unassign'; ok = $true; detail = 'authorized (empty-list probe accepted)' }
+    } catch {
+        $m = [string]$_.Exception.Message
+        if ($m -match 'HTTP 400')            { @{ op = 'license assign/unassign'; ok = $true;  detail = 'authorized (empty-list probe reached validation)' } }
+        elseif ($m -match 'HTTP 40[13]')     { @{ op = 'license assign/unassign'; ok = $false; detail = 'token cannot assign licenses (401/403) — generate the API token as a Spanning admin' } }
+        else                                 { @{ op = 'license assign/unassign'; ok = $null;  detail = 'cannot verify without licensing a user — verify manually' } }
+    }
+    $script:ConnTestRights = @(@{ op = 'read users'; ok = $true; detail = 'list read works' }, $assign)
+    if ($assign.ok -eq $false) { throw "spanning: users readable, but $($assign.detail)" }
     "spanning: users readable (sample returned $(@($users).Count))"
 }
 # Proofpoint Essentials: read the org's Azure sync settings (also proves the X-User/X-Password admin
@@ -1533,6 +1646,7 @@ $CONNTEST_PROBE['proofpoint']  = { param($job, $creds)
     $az = Get-CtgProofpointAzureSync
     if ($null -eq $az) { return 'proofpoint: connected (admin auth OK) — but Azure/Entra sync is not configured for this org' }
     $freq = Get-CtgProp $az 'sync_frequency'; $last = Get-CtgProp $az 'last_successful_sync'
+    $script:ConnTestRights = @(@{ op = 'user create / deactivate'; ok = $null; detail = 'Proofpoint has no permission introspection — verify the API account''s admin role allows user management' })
     "proofpoint: connected — Azure sync $(if ($freq -and "$freq" -ne '0') { "on (every ${freq}h)" } else { 'OFF' })$(if ($last) { ", last sync $last" })"
 }
 # 1Password: only the api method has a credential to test — prove the admin `op` sign-in works + can
@@ -1543,6 +1657,7 @@ $CONNTEST_PROBE['1password']   = { param($job, $creds)
     Use-Ctg1PasswordSecret -Job $job -Creds $creds
     $who = Invoke-Ctg1PasswordCli -OpArgs @('whoami') -AllowFail
     Invoke-Ctg1PasswordCli -OpArgs @('user', 'list') -AllowFail | Out-Null
+    $script:ConnTestRights = @(@{ op = 'provision / suspend users'; ok = $null; detail = '1Password has no permission introspection — verify the account is in the Provision Managers group (or is an owner/admin)' })
     "1password: signed in + users readable$(if ($who) { " (as $([string](Get-CtgProp $who 'email')))" })"
 }
 
@@ -1560,6 +1675,9 @@ function Invoke-CtgConnectionTests {
         $accessOk = $true; $accessDetail = ''
         $apiOk = $true; $apiDetail = ''
         $creds = @{}
+        # Probes may fill this with per-operation rights rows (@{ op; ok; detail }); it survives a
+        # probe THROW so a definite permission gap still reports which ops passed/failed.
+        $script:ConnTestRights = $null
         # Pass the system's config so a Connect that reads it (e.g. exchange's onPremExchangeUri) works
         # in the test. It's the whole ClientSystem.config (onboard/offboard sub-objects), not a lane.
         $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
@@ -1590,7 +1708,15 @@ function Invoke-CtgConnectionTests {
                 if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
             }
         }
-        try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" } } catch { }
+        $body = @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" }
+        if ($script:ConnTestRights) {
+            # Scrub each row's detail like the top-level details — never a secret in a rights row.
+            $body.rights = @($script:ConnTestRights | ForEach-Object {
+                @{ op = [string]$_.op; ok = $_.ok; detail = Protect-CtgSecretsInText ([string]$_.detail) $creds }
+            })
+        }
+        $script:ConnTestRights = $null
+        try { $null = Invoke-AppApi POST "/api/runner/conn-tests/$($t.id)/result" $body } catch { }
     }
 }
 
