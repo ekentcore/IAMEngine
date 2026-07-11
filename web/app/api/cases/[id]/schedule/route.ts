@@ -42,15 +42,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (at.getTime() <= now) return NextResponse.json({ error: "the scheduled time must be in the future" }, { status: 422 });
   if (at.getTime() > now + MAX_AHEAD_MS) return NextResponse.json({ error: "the scheduled time must be within a year" }, { status: 422 });
   if (["completed", "failed"].includes(c.status)) return NextResponse.json({ error: `a ${c.status} case can't be scheduled` }, { status: 409 });
+  // A case gated on missing intake data or credentials is NOT ready to run — refuse to schedule it
+  // (auto-running it later would provision with blank/"Unknown" values or fail on missing creds).
+  // Resolve the gate first, then schedule.
+  if (c.pausedReason === "needs_info") return NextResponse.json({ error: "fill in the required intake fields before scheduling this case" }, { status: 409 });
+  if (c.pausedReason === "creds") return NextResponse.json({ error: "wire the missing credentials before scheduling this case" }, { status: 409 });
 
   await db.caseRequest.update({
     where: { id: c.id },
     data: {
       scheduledFor: at,
       scheduledBy: _g.user && !_g.user.system ? _g.user.email : null,
-      // Hold the case so runners don't claim it before the schedule fires; an existing hold
-      // (review / needs_info / operator) is kept as-is — the sweep clears whatever hold is set.
-      ...(c.pausedReason === null ? { pausedAt: new Date(), pausedReason: "scheduled" } : {}),
+      // Hold the case as "scheduled" so runners don't claim it before the time fires. This CONVERTS a
+      // benign existing hold (review / operator / already-scheduled) to "scheduled" — the operator
+      // choosing a run time is the decision to run it — and the sweep only releases "scheduled" holds.
+      pausedAt: new Date(),
+      pausedReason: "scheduled",
     },
   });
   await recordAudit("case.schedule.set", { user: _g.user, caseRequestId: c.id, clientId: c.clientId, detail: { at: at.toISOString() } });

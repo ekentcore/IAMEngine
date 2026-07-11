@@ -22,7 +22,14 @@ export function useClaudeFixes() {
         fetch(`/api/fix-tasks?fingerprint=${encodeURIComponent(fp)}`, { cache: "no-store" })
           .then((r) => (r.ok ? r.json() : null))
           .then((d: { task?: { status: string; prUrl: string | null } | null } | null) => {
-            if (d?.task) setTasks((m) => ({ ...m, [fp]: { status: d.task!.status, prUrl: d.task!.prUrl } }));
+            if (!d?.task) return;
+            // Only update when something actually changed — otherwise every 5s poll would return a
+            // fresh object, the [tasks] effect would re-run, and the interval would churn/reset.
+            setTasks((m) => {
+              const prev = m[fp];
+              if (prev && prev.status === d.task!.status && (prev.prUrl ?? null) === (d.task!.prUrl ?? null)) return m;
+              return { ...m, [fp]: { status: d.task!.status, prUrl: d.task!.prUrl } };
+            });
           })
           .catch(() => { /* transient — keep polling */ });
       }

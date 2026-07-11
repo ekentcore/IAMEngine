@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { formatDateTime } from "@/lib/dates";
+import { defaultScheduleFor } from "@/lib/cases/schedule";
 
 const overlayStyle: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "grid", placeItems: "center", zIndex: 80 };
 const cardStyle: React.CSSProperties = { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.3rem", maxWidth: 460, boxShadow: "var(--shadow-2, 0 10px 40px rgba(0,0,0,.3))" };
@@ -29,12 +30,13 @@ function toLocalInputValue(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function ScheduleButton({ caseId, action, scheduledForIso, defaultIso }: {
+export function ScheduleButton({ caseId, action, scheduledForIso, effectiveDate }: {
   caseId: string;
   action: string;
   scheduledForIso: string | null;
-  // The suggested time (ISO) from defaultScheduleFor — already falls back to ~now+1h server-side.
-  defaultIso: string;
+  // The case's effective date string; the default time is computed from it HERE, in the browser, so
+  // "08:00" / "+5 min" resolve in the operator's timezone rather than the server's.
+  effectiveDate: string | null;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -56,7 +58,13 @@ export function ScheduleButton({ caseId, action, scheduledForIso, defaultIso }: 
 
   const openPicker = () => {
     setErr(null);
-    setValue(toLocalInputValue(new Date(scheduledForIso ?? defaultIso)));
+    // Prefill: the current schedule if set, else the suggested default computed in the browser
+    // (offboard date + 5 min / onboard start − 3 business days), falling back to ~an hour from now.
+    const now = new Date();
+    const suggested = scheduledForIso
+      ? new Date(scheduledForIso)
+      : defaultScheduleFor(action === "offboard" ? "offboard" : "onboard", effectiveDate, now) ?? new Date(now.getTime() + 3600_000);
+    setValue(toLocalInputValue(suggested));
     setOpen(true);
   };
 

@@ -25,8 +25,9 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   for (const j of inflight) {
     try { await svc.stopJob(j.id, actorLabel(_g.user, "ui:cancel")); stopped++; } catch { /* already terminal / lost the race — ignore */ }
   }
-  // Pause so the remaining pending steps aren't claimed (claim filters pausedAt: null).
-  await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: new Date(), pausedReason: "operator" } });
+  // Pause so the remaining pending steps aren't claimed (claim filters pausedAt: null), and clear any
+  // pending schedule — a cancel must not leave a schedule that would auto-resume the case.
+  await db.caseRequest.update({ where: { id: params.id }, data: { pausedAt: new Date(), pausedReason: "operator", scheduledFor: null, scheduledBy: null } });
   await recordAudit("case.cancel", { user: _g.user, caseRequestId: params.id, clientId: c.clientId, detail: { stopped } });
   return NextResponse.json({ ok: true, stopped });
 }

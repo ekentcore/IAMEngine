@@ -85,14 +85,18 @@ export async function sweepAutoRetries(db: PrismaClient): Promise<void> {
 // sweeps can't both fire (the second one matches zero rows), and a case the operator resumed or
 // trashed in between is skipped.
 export async function sweepScheduledCases(db: PrismaClient): Promise<void> {
+  // ONLY auto-release holds whose reason is "scheduled". A case that's since been paused by an
+  // operator (reason "operator"), cancelled, or gated on missing intake ("needs_info") / credentials
+  // ("creds") must NOT be auto-run — the schedule route refuses to schedule those hard gates, and this
+  // reason filter is the safety net if a case regresses into one after it was scheduled.
   const due = await db.caseRequest.findMany({
-    where: { scheduledFor: { lte: new Date() }, deletedAt: null, pausedAt: { not: null }, status: { notIn: ["failed", "completed"] } },
+    where: { scheduledFor: { lte: new Date() }, deletedAt: null, pausedReason: "scheduled", status: { notIn: ["failed", "completed"] } },
     take: 10,
     select: { id: true, clientId: true, scheduledFor: true },
   });
   for (const c of due) {
     const claimed = await db.caseRequest.updateMany({
-      where: { id: c.id, scheduledFor: c.scheduledFor, pausedAt: { not: null }, deletedAt: null },
+      where: { id: c.id, scheduledFor: c.scheduledFor, pausedReason: "scheduled", deletedAt: null },
       data: { pausedAt: null, pausedReason: null, scheduledFor: null, scheduledBy: null },
     });
     if (claimed.count === 0) continue;

@@ -65,7 +65,7 @@ export function buildPrompt(task) {
     "Do the following, in order:",
     "1. Find the root cause. The app code is in web/ (Next.js + TypeScript + Prisma) and the executors are in runner/ (PowerShell 7 modules under runner/modules). Search for the error text and the module named above.",
     "2. Make the MINIMAL code fix. Do not refactor, do not fix unrelated issues, do not touch docs or config unless they are the root cause.",
-    "3. Verify: run `cd web && npx tsc --noEmit`, and run the tests relevant to what you changed (e.g. `cd web && npm test`). If you changed runner PowerShell only, tsc still must pass (it will — you didn't touch web).",
+    "3. Verify WITHOUT `cd` (the allowlist matches the command's start): run `npx tsc --noEmit -p web` and, for a web change, `npm test --prefix web`. If you changed runner PowerShell only, tsc still must pass (it will — you didn't touch web).",
     "4. Commit your change with a descriptive message explaining the root cause and the fix.",
     "5. REPLY with a one-paragraph diagnosis: what was broken, why, and what you changed. If you could NOT find or fix the root cause, say so plainly and DO NOT commit speculative changes.",
     "",
@@ -106,9 +106,14 @@ function loadPrisma(mainRoot) {
 }
 
 // Headless Claude Code with a hard timeout. Resolves { code, stdout, stderr, timedOut }.
+// The child runs with DATABASE_URL scrubbed: loadPrisma stamped the production URL into this
+// process's env for the worker's own Prisma, but the headless session's allowlisted `npm test`
+// must never reach a real database (the /tmp worktree has no gitignored web/.env of its own).
 function runClaude(args, cwd) {
   return new Promise((resolve) => {
-    const child = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const env = { ...process.env };
+    delete env.DATABASE_URL;
+    const child = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"], env });
     let stdout = "", stderr = "", timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, CLAUDE_TIMEOUT_MS);
     child.stdout.on("data", (d) => { stdout += d; });
@@ -127,24 +132,39 @@ async function main() {
   const taskId = taskIdx >= 0 ? process.argv[taskIdx + 1] : null;
   if (!taskId) { console.error("usage: node scripts/claude-fix.mjs --task <FixTask id>"); process.exit(2); }
 
-  const mainRoot = findMainRepoRoot();
-  const db = loadPrisma(mainRoot);
-  const task = await db.fixTask.findUnique({ where: { id: taskId } });
-  if (!task) { console.error(`FixTask ${taskId} not found`); await db.$disconnect(); process.exit(2); }
-
-  const branch = `claude-fixes/${task.id}`;
-  const wt = `/tmp/iam-fix-${task.id}`;
+  // db + task are resolved INSIDE the try so a failure here (bad git repo, missing DATABASE_URL, DB
+  // down) is caught and — once we have a db handle — recorded on the row, instead of the detached
+  // worker (stdio ignored) dying as a silent unhandled rejection and wedging the task at "queued".
+  let db = null;
+  let task = null;
+  const branch = `claude-fixes/${taskId}`;
+  const wt = `/tmp/iam-fix-${taskId}`;
   let pushed = false;
   let worktreeAdded = false;
+  let mainRoot = null; // set once findMainRepoRoot succeeds; the finally uses it to clean up
 
   const finish = (status, fields = {}) =>
-    db.fixTask.update({ where: { id: task.id }, data: { status, finishedAt: new Date(), ...fields } });
+    db.fixTask.update({ where: { id: taskId }, data: { status, finishedAt: new Date(), ...fields } });
 
   try {
+    mainRoot = findMainRepoRoot();
+    db = loadPrisma(mainRoot);
+    task = await db.fixTask.findUnique({ where: { id: taskId } });
+    if (!task) { console.error(`FixTask ${taskId} not found`); await db.$disconnect(); process.exit(2); }
+
     await db.fixTask.update({ where: { id: task.id }, data: { status: "running", branch } });
 
+    // Branch from the up-to-date default branch, NOT the primary checkout's local HEAD (which may sit
+    // on a stale commit or an unrelated feature branch — the web server runs from its own worktree, so
+    // nothing keeps main-checkout HEAD current). Fetch first, resolve origin's default branch, and cut
+    // the fix branch from it so Claude patches current code and the PR diff is just the fix.
+    run("git", ["-C", mainRoot, "fetch", "origin", "--quiet"]);
+    const defaultBranch =
+      run("git", ["-C", mainRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).stdout.replace(/^origin\//, "") || "main";
+    const base = `origin/${defaultBranch}`;
+
     // Isolated throwaway worktree on its own branch — the fixer never sees your checkout.
-    must("git", ["-C", mainRoot, "worktree", "add", wt, "-b", branch]);
+    must("git", ["-C", mainRoot, "worktree", "add", wt, "-b", branch, base]);
     worktreeAdded = true;
     const baseSha = must("git", ["-C", wt, "rev-parse", "HEAD"]).stdout;
 
@@ -158,7 +178,9 @@ async function main() {
       "--output-format", "json",
       "--max-turns", "25",
       "--permission-mode", "acceptEdits",
-      "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(npm test:*),Bash(npx tsc:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*)",
+      // Prefix-matched: each entry must be how the command STARTS (so the prompt uses `npx tsc -p web`
+      // and `npm test --prefix web`, never `cd web && …`, which wouldn't match and gets silently denied).
+      "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(npm test:*),Bash(npm test --prefix web:*),Bash(npx tsc:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*)",
       ...isolation,
     ];
     const res = await runClaude(claudeArgs, wt);
@@ -183,21 +205,25 @@ async function main() {
     pushed = true;
     const module = moduleFromTitle(task.title);
     const body = `${diagnosis}\n\nAuto-generated by the iam-engine fix lane from run-log fingerprint ${task.fingerprint}.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
-    const pr = must("gh", ["pr", "create", "--draft", "--title", `fix(${module}): ${task.title}`, "--body", body, "--head", branch], { cwd: wt });
+    const pr = must("gh", ["pr", "create", "--draft", "--base", defaultBranch, "--title", `fix(${module}): ${task.title}`, "--body", body, "--head", branch], { cwd: wt });
     const prUrl = pr.stdout.split("\n").find((l) => l.startsWith("https://")) ?? pr.stdout;
     await finish("opened_pr", { log, prUrl });
   } catch (e) {
-    await finish("failed", { log: tail(String(e?.stack ?? e)) }).catch(() => {});
+    // Record on the row when we have a DB handle; otherwise (findMainRepoRoot / loadPrisma failed
+    // before we connected) there's nowhere to write it — surface to stderr so the launcher's captured
+    // output isn't empty, and exit non-zero.
+    if (db && task) await finish("failed", { log: tail(String(e?.stack ?? e)) }).catch(() => {});
+    else console.error(`fix worker aborted before it could record status: ${e?.stack ?? e}`);
     process.exitCode = 1;
   } finally {
     // ALWAYS clean up: remove the temp worktree; drop the local branch ref only if never pushed.
-    if (worktreeAdded) run("git", ["-C", mainRoot, "worktree", "remove", "--force", wt]);
-    if (!pushed) run("git", ["-C", mainRoot, "branch", "-D", branch]);
-    await db.$disconnect().catch(() => {});
+    if (worktreeAdded && mainRoot) run("git", ["-C", mainRoot, "worktree", "remove", "--force", wt]);
+    if (!pushed && mainRoot) run("git", ["-C", mainRoot, "branch", "-D", branch]);
+    if (db) await db.$disconnect().catch(() => {});
   }
 }
 
 // Importable for tests (parseEnvFile / buildPrompt / moduleFromTitle) without running the worker.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  main().catch((e) => { console.error(e); process.exitCode = 1; });
 }

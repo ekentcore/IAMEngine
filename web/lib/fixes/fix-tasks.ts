@@ -13,6 +13,10 @@ export const AUTO_FIX_SETTING_KEY = "autoFix";
 export type AutoFixSetting = { enabled: boolean };
 
 export const UNFINISHED_STATUSES = ["queued", "running"];
+// A task the worker hasn't finished within this window is presumed dead (the worker's own hard cap is
+// 15 min) — reclaimed to "failed" so a rebooted/OOM-killed worker can't wedge the fingerprint behind
+// the one-per-fingerprint guard forever.
+const STALE_MS = 20 * 60_000;
 
 // scripts/claude-fix.mjs relative to the running web server (cwd is web/ under next; fall back to
 // a repo-root cwd for safety). Returns null when the script can't be found (e.g. a stripped deploy).
@@ -39,16 +43,32 @@ export type CreateFixTaskResult =
 // Create the row and launch the worker. Refuses (409) while an unfinished task exists for the same
 // fingerprint, so the same failure can't fan out into parallel fixers.
 export async function createFixTask(db: PrismaClient, input: CreateFixTaskInput): Promise<CreateFixTaskResult> {
+  // Reclaim any task that's been unfinished past the worker's lifetime — a dead worker must not
+  // block this fingerprint permanently.
+  await db.fixTask.updateMany({
+    where: { status: { in: UNFINISHED_STATUSES }, createdAt: { lt: new Date(Date.now() - STALE_MS) } },
+    data: { status: "failed", finishedAt: new Date(), log: "abandoned: the worker made no update within 20 minutes (likely crashed or was killed)" },
+  });
+
   const existing = await db.fixTask.findFirst({
     where: { fingerprint: input.fingerprint, status: { in: UNFINISHED_STATUSES } },
     select: { id: true, status: true },
   });
   if (existing) return { ok: false, status: 409, error: `a fix task for this line is already ${existing.status}` };
 
-  const task = await db.fixTask.create({
-    data: { fingerprint: input.fingerprint, title: input.title, context: input.context, requestedBy: input.requestedBy },
-    select: { id: true, status: true },
-  });
+  let task: { id: string; status: string };
+  try {
+    task = await db.fixTask.create({
+      data: { fingerprint: input.fingerprint, title: input.title, context: input.context, requestedBy: input.requestedBy },
+      select: { id: true, status: true },
+    });
+  } catch (e) {
+    // Two concurrent callers (two operators, or the sweep racing a click) both passed the findFirst
+    // check — the partial-unique index on (fingerprint) WHERE status in (queued,running) rejects the
+    // loser with P2002. Treat it as the same "already in flight" 409, not a 500.
+    if ((e as { code?: string }).code === "P2002") return { ok: false, status: 409, error: "a fix task for this line is already queued" };
+    throw e;
+  }
   try {
     spawnFixer(task.id);
   } catch (e) {

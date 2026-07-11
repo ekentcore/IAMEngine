@@ -304,6 +304,7 @@ model CaseRequest {
 
   @@index([deletedAt])
   @@index([clientId]) // client-network agents claim by case.clientId; client pages filter by it
+  @@index([scheduledFor]) // the every-~minute sweepScheduledCases due-case query
 }
 
 model Job {
@@ -426,8 +427,9 @@ model RunOutcome {
 // A "self-healing" fix task: one headless Claude Code run against an isolated git worktree,
 // triggered from a failing run-log line (operator button or the opt-in auto-fix sweep). The fixer
 // (scripts/claude-fix.mjs) diagnoses + patches the code and opens a DRAFT PR — a human always
-// merges. One unfinished task per fingerprint (enforced by the API), so the same failure can't
-// fan out into parallel fixers.
+// merges. One unfinished task per fingerprint — enforced by the API AND by a partial unique index
+// (added in the migration: UNIQUE(fingerprint) WHERE status IN ('queued','running')) so a race
+// can't fan the same failure out into parallel fixers.
 model FixTask {
   id          String    @id @default(cuid())
   fingerprint String // the RunOutcome fingerprint that triggered it
