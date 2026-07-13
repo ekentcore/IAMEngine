@@ -109,6 +109,22 @@ test("a title mentioning both actions is claimed by neither", () => {
   assert.equal(r.offboard, null);
 });
 
+test("the ABBREVIATED combined title is claimed by neither either", () => {
+  // "On/Off Boarding Guide" has no "onboard" for the word-boundary test to find, so it used to read
+  // as offboard-only — and the whole combined document, account-creation steps and all, would be
+  // saved as the client's OFFBOARD runbook.
+  for (const title of [
+    "Acme On/Off Boarding Guide",
+    "Acme On & Off Boarding Guide",
+    "Acme On and Offboarding Guide",
+    "Acme On-/Offboarding Guide",
+  ]) {
+    const r = scoreKbCandidates([row("KB0006", title)]);
+    assert.equal(r.offboard, null, `must not adopt "${title}" as an offboard runbook`);
+    assert.equal(r.onboard, null, `must not adopt "${title}" as an onboard runbook`);
+  }
+});
+
 test("unrelated domain articles are ignored", () => {
   const r = scoreKbCandidates([
     row("KB0043448", "Configure settings for the Webex device to allow local Login"),
@@ -157,6 +173,32 @@ test("findClientKbs falls back to unpublished when nothing is published", async 
   assert.equal(pick(r.onboard), "KB0007", "a client whose only guide is unpublished still imports");
   assert.equal(queries.length, 2);
   assert.ok(!queries[1].includes("workflow_state"), "the retry must not filter on state");
+});
+
+test("a published non-guide does not hide a real guide that is only a draft", async () => {
+  // Stopping at the published pass because it produced *a* pick would settle for Century Equity's
+  // "Offboard User Request" form while the actual guide sat one query away, unpublished.
+  const fetcher = (async (url: string) => {
+    const q = new URL(url).searchParams.get("sysparm_query") ?? "";
+    const publishedOnly = q.includes("workflow_state=published");
+    return {
+      ok: true,
+      json: async () => ({
+        result: publishedOnly
+          ? [row("KB0017027", "Offboard User Request - Acme"), row("KB0001", "New User Onboarding Guide - Acme")]
+          : [
+              row("KB0017027", "Offboard User Request - Acme"),
+              row("KB0001", "New User Onboarding Guide - Acme"),
+              row("KB0002", "User Offboarding Guide - Acme", { state: "draft", latest: "false" }),
+            ],
+      }),
+    };
+  }) as unknown as typeof fetch;
+
+  const r = await findClientKbs(cfg, "a".repeat(32), fetcher);
+  assert.equal(pick(r.offboard), "KB0002", "the guide wins over the published request form");
+  assert.equal(r.offboard?.confident, true);
+  assert.equal(pick(r.onboard), "KB0001");
 });
 
 test("findClientKbs returns nothing for a client with no domain", async () => {

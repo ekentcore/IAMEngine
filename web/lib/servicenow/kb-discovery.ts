@@ -63,6 +63,16 @@ const truthy = (v?: string) => v === "true" || v === "1";
 // on+offboarding doc can't be saved as one action's runbook without corrupting the other.
 function actionOf(title: string): "onboard" | "offboard" | null {
   const t = title.toLowerCase();
+
+  // Combined docs are written in shorthand far more often than in full: "On/Off Boarding Guide",
+  // "On & Off Boarding", "On and Offboarding". The word-boundary tests below DON'T see the "on" in
+  // those (it isn't followed by "board"), so the doc reads as offboard-only — and the whole thing,
+  // account-creation steps and all, would be saved as the client's OFFBOARD runbook. Catch the
+  // shorthand first and claim neither action.
+  if (/\bon\s*[/&+]\s*off[\s-]?board/.test(t) || /\bon\s+and\s+off[\s-]?board/.test(t) || /\bon-\/?off[\s-]?board/.test(t)) {
+    return null;
+  }
+
   const off = /\boff[\s-]?board(ing)?\b/.test(t);
   const on = /(?<!f)\bon[\s-]?board(ing)?\b/.test(t);
   if (on && off) return null;
@@ -151,18 +161,28 @@ export async function findClientKbs(
   const base = `${scope}^ORDERBYDESCsys_updated_on`;
   const published = await query(config, `${scope}^workflow_state=published^ORDERBYDESCsys_updated_on`, fetcher);
   const first = scoreKbCandidates(published);
-  if (first.onboard && first.offboard) return first;
 
-  // An action with no PUBLISHED guide may still have an unpublished one — for some clients the only
-  // onboarding guide is a draft/retired revision (the same case the profile generator's
-  // best_per_action recovers). Widen rather than leave the client unbuilt.
+  // Settle only when BOTH picks are real guides. A published non-guide — Century Equity's "Offboard
+  // User Request" form — is a pick, but a poor one, and stopping here would hide an actual guide that
+  // happens to be a draft/retired revision (for some clients that is the only one there is: the same
+  // case the profile generator's best_per_action recovers).
+  if (first.onboard?.confident && first.offboard?.confident) return first;
+
   const all = await query(config, base, fetcher);
   const second = scoreKbCandidates(all);
 
-  // Keep the published pick where we have one — a published guide always beats a draft.
+  // Prefer a guide over a non-guide, whatever its state; between two of a kind, the published pass
+  // wins (a published guide always beats a draft one).
+  const better = (a: KbCandidate | null, b: KbCandidate | null) => {
+    if (!a) return b;
+    if (!b) return a;
+    if (a.confident !== b.confident) return a.confident ? a : b;
+    return a;
+  };
+
   return {
-    onboard: first.onboard ?? second.onboard,
-    offboard: first.offboard ?? second.offboard,
+    onboard: better(first.onboard, second.onboard),
+    offboard: better(first.offboard, second.offboard),
     candidates: second.candidates.length ? second.candidates : first.candidates,
   };
 }

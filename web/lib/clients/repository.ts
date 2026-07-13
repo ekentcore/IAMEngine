@@ -3,6 +3,7 @@
 import type { PrismaClient, Backbone } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
+import { normalizeCoreId } from "./core-id";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 import { computeClientReadiness, type ConnTestState, type ClientReadiness, type RightsState } from "./readiness";
@@ -48,7 +49,10 @@ async function addEdited(db: PrismaClient, slug: string, field: string): Promise
 function snData(c: NormalizedSnClient) {
   return {
     name: c.name,
-    coreId: c.coreId,
+    // Canonical shape ("CORE1269"). coreId is a case-SENSITIVE unique column, so storing ServiceNow's
+    // raw value alongside a normalized one elsewhere would let two rows exist for one company — and a
+    // case-insensitive lookup would then pick between them at random.
+    coreId: c.coreId ? normalizeCoreId(c.coreId) ?? c.coreId : null,
     region: c.region,
     timezone: c.timezone,
     supportStatus: c.supportStatus,

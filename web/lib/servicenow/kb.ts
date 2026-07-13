@@ -55,6 +55,14 @@ type KbRow = {
 const truthy = (v?: string) => v === "true" || v === "1";
 
 export async function fetchKbArticle(config: SnConfig, number: string, fetcher: Fetcher = fetch): Promise<KbArticle | null> {
+  // A KB number is KB + digits, and nothing else. ServiceNow parses `^` and `=` in sysparm_query as
+  // operators, so an unvalidated number could widen the query and hand back an unrelated article's
+  // body — which the import would then save as the client's runbook. The operator-facing route
+  // validates its input; validating HERE means every caller inherits it (the import passes a number
+  // discovered from ServiceNow, which is trusted-ish, but this is the one place it can be enforced
+  // once).
+  const kb = number.trim().toUpperCase();
+  if (!/^KB\d{4,12}$/.test(kb)) return null;
   // kb_knowledge keeps EVERY revision as its own row under the SAME number (a KB updated 7 times =
   // 7 rows). Without a version filter, `limit 1` returns an arbitrary — often OUTDATED — revision,
   // so the runbook can show stale licenses/steps. Pull the candidates newest-first and pick the live
@@ -63,7 +71,7 @@ export async function fetchKbArticle(config: SnConfig, number: string, fetcher: 
     config,
     "/api/now/table/kb_knowledge",
     {
-      sysparm_query: `number=${number}^ORDERBYDESCsys_updated_on`,
+      sysparm_query: `number=${kb}^ORDERBYDESCsys_updated_on`, // the VALIDATED value, not the raw one
       sysparm_fields: "number,short_description,text,workflow_state,latest,sys_updated_on",
       sysparm_display_value: "all",
       sysparm_limit: "25",
@@ -77,7 +85,7 @@ export async function fetchKbArticle(config: SnConfig, number: string, fetcher: 
     rows[0]; // already newest-first by sys_updated_on
   const html = r.text?.value ?? r.text?.display_value ?? "";
   return {
-    number: r.number?.display_value ?? number,
+    number: r.number?.display_value ?? kb,
     title: r.short_description?.display_value ?? "",
     text: htmlToText(html),
   };

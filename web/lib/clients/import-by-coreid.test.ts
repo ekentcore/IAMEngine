@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCoreId, parseCoreIds, importClientByCoreId, type ImportDeps } from "./import-by-coreid";
+import { normalizeCoreId, parseCoreIds, importClientByCoreId, sameCompany, type ImportDeps } from "./import-by-coreid";
 import type { Action } from "@prisma/client";
 import type { SnAccount } from "../servicenow/types";
 import type { KbCandidate, KbDiscovery } from "../servicenow/kb-discovery";
@@ -44,11 +44,15 @@ const discovery = (over: Partial<KbDiscovery> = {}): KbDiscovery => ({
 // A deps set where everything succeeds; each test overrides just the part it exercises.
 function deps(over: Partial<ImportDeps> = {}): ImportDeps {
   return {
+    isVisible: async () => true,
     findByCoreId: async () => null,
     findBySysId: async () => null,
     findUnclaimedByDomain: async () => null,
     claimForSn: async () => ({ ok: true, claimed: true }),
     hasSystems: async () => false,
+    isHandConfigured: async () => false,
+    candidateRows: async () => [],
+    fetchAccountBySysId: async () => null,
     linkParent: async () => true,
     actionsWithRunbook: async () => [],
     fetchAccount: async () => account(),
@@ -181,7 +185,7 @@ test("a profile-seeded client (no CORE id, no sys_id) is matched by domain, not 
   const claimed: string[] = [];
   const r = await importClientByCoreId(
     deps({
-      findUnclaimedByDomain: async (d) => (d === "dcg.co" ? { id: "seeded", slug: "dcg", name: "DCG" } : null),
+      findUnclaimedByDomain: async (d) => (d === "dcg.co" ? { id: "seeded", slug: "dcg", name: "Digital Currency Group" } : null),
       claimForSn: async (id) => { claimed.push(id); return { ok: true, claimed: true }; },
       createFromSn: async () => { created = true; return "x"; },
     }),
@@ -193,6 +197,234 @@ test("a profile-seeded client (no CORE id, no sys_id) is matched by domain, not 
   assert.equal(r.slug, "dcg", "the seeded client is adopted, not shadowed by a duplicate");
   assert.equal(created, false);
   assert.deepEqual(claimed, ["seeded"], "and it is claimed for the ServiceNow account");
+});
+
+test("a CHILD account is never matched by domain — it would adopt its parent's row", async () => {
+  // Subsidiaries share their parent's website. The parent is often profile-seeded (no CORE id, no
+  // sys_id), so it IS an "unclaimed row with that domain" — and claiming it would stamp the child's
+  // identity onto the parent, binding the parent's systems and Delinea secret refs to the child's
+  // ServiceNow account. A child gets its own row, full stop.
+  let domainLookups = 0;
+  let created = false;
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      findUnclaimedByDomain: async () => { domainLookups++; return { id: "parent", slug: "acme", name: "Acme Corp" }; },
+      createFromSn: async () => { created = true; return "new-child"; },
+    }),
+    "CORE2181",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "imported");
+  assert.equal(created, true, "the child gets its own row");
+  assert.notEqual(r.slug, "acme", "and the parent's row is not adopted");
+  assert.equal(domainLookups, 0, "a child account never even asks the domain question");
+});
+
+test("a domain match over a client WITH SYSTEMS writes nothing at all", async () => {
+  // The domain is a guess. A client with systems has lanes and Delinea secret refs that cases
+  // dispatch against — re-keying it to the wrong ServiceNow account would run one client's
+  // onboarding against another's tenant. Gate on hasSystems, NOT on isHandConfigured: whether a
+  // human or a past import created those systems is irrelevant to how dangerous mis-keying is.
+  let claimed = false;
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findUnclaimedByDomain: async () => ({ id: "seeded", slug: "dcg", name: "Digital Currency Group" }),
+      hasSystems: async () => true,
+      isHandConfigured: async () => false, // seeded rows carry a KB-sourced runbook — must NOT disarm the guard
+      claimForSn: async () => { claimed = true; return { ok: true, claimed: true }; },
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 1, createdSystems: [] }; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "exists");
+  assert.equal(claimed, false, "a guessed match must not re-key a client that has systems");
+  assert.deepEqual(saved, []);
+  assert.ok(r.warnings.some((w) => /link it by hand/i.test(w)));
+});
+
+test("a domain match whose NAME disagrees is not adopted — a parent must not claim a subsidiary's row", async () => {
+  // The child guard (!parentSysId) only stops a CHILD adopting its parent. Nothing stopped a PARENT
+  // account adopting an unclaimed SUBSIDIARY's row — they share a website. Then every case for the
+  // parent would run under a client named for the subsidiary.
+  let claimed = false;
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => account({ name: "Acme Inc" }),
+      findUnclaimedByDomain: async () => ({ id: "sub", slug: "acme-west", name: "Acme West" }),
+      claimForSn: async () => { claimed = true; return { ok: true, claimed: true }; },
+    }),
+    "CORE1000",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "imported", "the parent gets its own row");
+  assert.notEqual(r.slug, "acme-west");
+  assert.equal(claimed, false, "the subsidiary's row is not re-keyed");
+  assert.ok(r.warnings.some((w) => /name doesn't match/i.test(w)));
+});
+
+test("sameCompany is loose about legal suffixes and strict about everything else", () => {
+  assert.equal(sameCompany("Acme Corp.", "Acme Corporation"), true);
+  assert.equal(sameCompany("Digital Currency Group, Inc.", "Digital Currency Group"), true);
+  assert.equal(sameCompany("Acme", "Acme West"), false, "a subsidiary is not its parent");
+  assert.equal(sameCompany("Acme", ""), false);
+});
+
+test("a child whose parent domain can't be checked is NOT built (fail closed)", async () => {
+  // A ServiceNow blip must not end with the parent's runbook saved onto the child — that would give
+  // the child systems and permanently sever the inheritance planning relies on.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccountBySysId: async () => { throw new Error("ServiceNow timed out"); },
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 4, createdSystems: ["m365"] }; },
+    }),
+    "CORE2181",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "imported");
+  assert.deepEqual(saved, [], "nothing is built when we can't prove the domain is the child's own");
+  assert.ok(r.warnings.some((w) => /could not check/i.test(w)));
+});
+
+test("a decoy row can't be used to steer the match away from a restricted client", async () => {
+  // An operator mints a row carrying a restricted client's CORE id. findByCoreId would return the
+  // decoy (which they CAN see), the restricted row it shadows would never be consulted, and the
+  // decoy would claim that company's ServiceNow account — pulling its KB and re-routing its cases.
+  // So every row that could stand for the account is checked for visibility, not just the match.
+  let claimed = false;
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "decoy", slug: "decoy", name: "Decoy" }),
+      candidateRows: async () => [
+        { id: "decoy", slug: "decoy", name: "Decoy" },
+        { id: "restricted", slug: "coretelligent", name: "Coretelligent" },
+      ],
+      isVisible: async (id) => id !== "restricted",
+      claimForSn: async () => { claimed = true; return { ok: true, claimed: true }; },
+    }),
+    "CORE1",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /restricted/i);
+  assert.equal(claimed, false, "the decoy never claims the restricted client's account");
+});
+
+test("a claim lost to a concurrent import is reported, not silently overwritten", async () => {
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "acme", name: "Acme" }),
+      claimForSn: async () => ({ ok: false, claimed: false, reason: "this client was linked to a ServiceNow account by someone else just now — re-run the import" }),
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /someone else just now/);
+});
+
+test("a half-built import can be finished by re-running it", async () => {
+  // The first run built the onboard runbook (which created ClientSystem rows) and then the offboard
+  // KB fetch failed. Those systems must not make the client look "hand-configured" — otherwise the
+  // offboard runbook could NEVER be built by the import, and its offboard cases plan zero steps.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "core1269", name: "DCG" }),
+      isHandConfigured: async () => false, // has systems, but they came from a KB import
+      actionsWithRunbook: async () => ["onboard"] as Action[],
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 6, createdSystems: [] }; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "exists");
+  assert.deepEqual(saved, ["offboard"], "the run finishes what the last one started");
+});
+
+test("a client linked to a DIFFERENT ServiceNow account is refused", async () => {
+  // Carrying on would split one account across two rows: linkParent resolves by sys_id and would
+  // touch the other row while the runbook landed on this one.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "acme", name: "Acme" }),
+      claimForSn: async () => ({ ok: false, claimed: false, reason: "this client is already linked to a different ServiceNow account — check its CORE id" }),
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 1, createdSystems: [] }; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /different ServiceNow account/);
+  assert.deepEqual(saved, [], "and nothing is written to either row");
+});
+
+test("a child in its PARENT's ServiceNow domain is not given the parent's runbook", async () => {
+  // Planning falls back to the parent's systems only while the child has NONE of its own. Building
+  // the parent's KB onto the child would give it systems and silently sever that inheritance.
+  const saved: string[] = [];
+  const sharedDomain = "d".repeat(32);
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account({ domain: sharedDomain }), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccountBySysId: async () => account({ domain: sharedDomain }), // parent, same domain
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 9, createdSystems: ["m365"] }; },
+    }),
+    "CORE2181",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "imported");
+  assert.deepEqual(saved, [], "the parent's KBs are not saved onto the child");
+  assert.deepEqual(r.createdSystems, [], "so the child stays bare and keeps inheriting");
+  assert.ok(r.warnings.some((w) => /shares .*domain/i.test(w)));
+});
+
+test("a child with its OWN ServiceNow domain still gets built", async () => {
+  // CVP practices (Bernville, Coyne) do have their own KBs — a child is not automatically empty.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account({ domain: "d".repeat(32) }), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccountBySysId: async () => account({ domain: "e".repeat(32) }), // parent, DIFFERENT domain
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 4, createdSystems: [] }; },
+    }),
+    "CORE809",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "imported");
+  assert.deepEqual(saved, ["onboard", "offboard"]);
+});
+
+test("a restricted client the operator can't see is refused before any write", async () => {
+  let claimed = false;
+  const r = await importClientByCoreId(
+    deps({
+      isVisible: async () => false,
+      findByCoreId: async () => ({ id: "restricted", slug: "coretelligent", name: "Coretelligent" }),
+      claimForSn: async () => { claimed = true; return { ok: true, claimed: true }; },
+    }),
+    "CORE1",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /restricted/i);
+  assert.equal(claimed, false);
+  assert.equal(r.slug, undefined, "and its slug is not echoed back");
 });
 
 test("an unclaimable domain falls through to create rather than hijacking a client's row", async () => {
@@ -224,7 +456,7 @@ test("a hand-configured client (already has systems) is never auto-built", async
   const r = await importClientByCoreId(
     deps({
       findByCoreId: async () => ({ id: "c1", slug: "acme", name: "Acme" }),
-      hasSystems: async () => true,
+      isHandConfigured: async () => true,
       actionsWithRunbook: async () => [],
       saveRunbook: async (_s, a) => { saved.push(a); return { count: 1, createdSystems: ["adobe"] }; },
     }),
@@ -242,7 +474,8 @@ test("the ServiceNow parent is linked, so an imported child's cases can inherit"
   const links: Array<[string, string]> = [];
   const r = await importClientByCoreId(
     deps({
-      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccount: async () => ({ ...account({ domain: "d".repeat(32) }), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccountBySysId: async () => account({ domain: "e".repeat(32) }), // parent, different domain
       linkParent: async (child, parent) => { links.push([child, parent]); return true; },
     }),
     "CORE1269",
@@ -256,13 +489,14 @@ test("the ServiceNow parent is linked, so an imported child's cases can inherit"
 test("a child whose parent isn't imported yet is told so — not promised inheritance it won't get", async () => {
   const r = await importClientByCoreId(
     deps({
-      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccount: async () => ({ ...account({ domain: "d".repeat(32) }), account_parent: f("b".repeat(32)) }) as SnAccount,
+      fetchAccountBySysId: async () => account({ domain: "e".repeat(32) }),
       linkParent: async () => false, // parent not in the DB
     }),
     "CORE1269",
     "ui:test"
   );
-  assert.ok(r.warnings.some((w) => /parent account is not in the system/i.test(w)));
+  assert.ok(r.warnings.some((w) => /parent account isn't in the system/i.test(w) && /run this import again/i.test(w)));
 });
 
 test("an account with no sys_id is an error, not a row upserted onto the empty sys_id", async () => {

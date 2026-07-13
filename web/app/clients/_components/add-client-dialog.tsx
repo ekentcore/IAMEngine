@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { parseCoreIds } from "@/lib/clients/core-id";
 
 // One or many CORE ids in, clients out: each is resolved in ServiceNow, created, and built out from
 // its KB runbooks (sections + the systems those imply). Results stream back a row at a time — a
@@ -32,6 +33,11 @@ const STATUS_BADGE: Record<ImportRow["status"], string> = {
   error: "badge archived",
 };
 
+// Did anything change behind the dialog? An "exists" row is not read-only: it may have claimed the
+// ServiceNow keys, linked a parent, or built a runbook — all of which show in the clients list.
+const touchedAnything = (rows: ImportRow[]) =>
+  rows.some((r) => r.status === "imported" || r.status === "exists");
+
 const STATUS_LABEL: Record<ImportRow["status"], string> = {
   imported: "Imported",
   exists: "Already in the system",
@@ -44,6 +50,7 @@ export function AddClientDialog() {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const navigating = useRef(false); // a single import navigates away; don't also refresh the list
+  const inflight = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<ImportRow[]>([]);
@@ -52,9 +59,14 @@ export function AddClientDialog() {
   // Runs however the dialog closes — the Done button, Escape, or the backdrop. Hanging the reset off
   // the button alone leaves the previous run's table sitting there when it is reopened.
   function onClose() {
-    if (!navigating.current && rows.some((r) => r.status === "imported" || r.built.length > 0)) {
-      router.refresh(); // the list behind the dialog changed
-    }
+    // Cancel an import still in flight. Without this the reader keeps consuming the stream and
+    // re-populating the table we just cleared — and a single-id run would even navigate the operator
+    // to a client they closed the dialog on. Aborting also stops the server's loop (it checks
+    // req.signal between ids), so no further ServiceNow/Azure work is done for a result nobody sees.
+    inflight.current?.abort();
+    inflight.current = null;
+
+    if (!navigating.current && touchedAnything(rows)) router.refresh(); // the list behind changed
     setRows([]);
     setTotal(0);
     setError(null);
@@ -68,16 +80,21 @@ export function AddClientDialog() {
     setBusy(true);
     setError(null);
     setRows([]);
-    // Rough count for the "n/total" progress line. The server decides what it actually processes
-    // (it de-duplicates), so once the two disagree the row count is the truth.
-    setTotal(coreIds.split(/[,;\s]+/).filter(Boolean).length);
+    // The SAME parser the route runs, so the denominator matches the number of rows that will
+    // actually stream back. A naive split counts "CORE 1269" as two and a repeated id twice — the
+    // button would climb to "2/3" and sit there looking hung.
+    const { ids, invalid } = parseCoreIds(coreIds);
+    setTotal(ids.length + invalid.length);
 
     const collected: ImportRow[] = [];
+    const ctrl = new AbortController();
+    inflight.current = ctrl;
     try {
       const res = await fetch("/api/clients/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ coreIds }),
+        signal: ctrl.signal,
       });
 
       if (!res.ok || !res.body) {
@@ -110,10 +127,14 @@ export function AddClientDialog() {
         router.push(`/clients/${only.slug}`);
         return;
       }
-      if (collected.some((r) => r.status === "imported" || r.built.length > 0)) router.refresh();
+      if (touchedAnything(collected)) router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // An abort is the operator closing the dialog, not a failure — onClose has already reset.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
+      if (inflight.current === ctrl) inflight.current = null;
       setBusy(false);
     }
   }

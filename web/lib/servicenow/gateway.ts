@@ -83,7 +83,12 @@ export async function fetchSnAccountByCoreId(
   fetcher: Fetcher = fetch
 ): Promise<SnAccount | null> {
   const id = (coreId ?? "").trim();
-  if (!id) return null;
+  // A CORE id is CORE + digits. ServiceNow decodes sysparm_query and parses `^` as an operator, so an
+  // unvalidated value can inject query conditions — "X^ORnameLIKEacme" would return an ARBITRARY
+  // account, whose sys_id a caller may then write onto a client row (refresh-name back-fills it).
+  // The value reaching here is not always freshly normalized: it can be a coreId column written long
+  // ago, so validate at the gateway where every caller inherits it (as fetchSnAccountById does).
+  if (!/^CORE\d{1,12}$/i.test(id)) return null;
   assertConfig(config);
   const rows = await snGet<SnAccount[]>(
     config,
