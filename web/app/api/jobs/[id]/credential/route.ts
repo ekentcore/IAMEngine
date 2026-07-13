@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  let body: { agentId?: unknown; secretName?: unknown };
+  let body: { agentId?: unknown; secretName?: unknown; otp?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -20,7 +20,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (typeof body.secretName !== "string" || !body.secretName) return NextResponse.json({ error: "secretName is required" }, { status: 422 });
 
   try {
-    const cred = await makeRunnerService(db).brokerCredential(params.id, body.agentId, body.secretName);
+    // otp:true also mints a CURRENT one-time password from Delinea (see brokerCredential).
+    const cred = await makeRunnerService(db).brokerCredential(params.id, body.agentId, body.secretName, body.otp === true);
     return NextResponse.json(cred, { headers: NO_STORE });
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

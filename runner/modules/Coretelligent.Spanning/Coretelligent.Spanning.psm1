@@ -424,6 +424,11 @@ function Invoke-CtgSpanningForceSync {
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
         $Secret
+        ,
+        # Closure the runner supplies: returns @{ Code; RemainingSeconds } from Delinea, fetched at the
+        # moment we need it. Absent (or returning nothing) -> we fall back to a stored seed, then to a
+        # clean bail on MFA. Injectable so tests can drive the MFA path without a vault.
+        [scriptblock]$OtpProvider
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $email   = $User.UserPrincipalName
@@ -447,11 +452,28 @@ function Invoke-CtgSpanningForceSync {
         return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
 
-    # Optional authenticator seed: when the console enforces app/TOTP MFA, the flow generates the code
-    # from this base32 seed to complete the login headless. Absent → the flow bails clearly on any MFA.
-    $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    # MFA. PREFERRED: DELINEA mints the code — the authenticator seed lives in Secret Server (one-time
+    # password enabled on the secret) and never reaches us. -OtpProvider is a closure the runner hands
+    # in; we invoke it HERE, immediately before launching the browser, because the code lives ~30s and
+    # a code fetched at claim time would be dead by the time the login reached the MFA box.
+    $otpCode = $null
+    if ($OtpProvider) {
+        $otp = & $OtpProvider
+        if ($otp -and $otp.Code) {
+            $otpCode = [string]$otp.Code
+            $actions.Add("fetched a one-time password from Delinea ($($otp.RemainingSeconds)s valid)")
+        }
+    }
+    # LEGACY fallback: a TOTPSeed field on the secret. Storing a PERMANENT seed where a 30-second code
+    # would do is strictly worse — prefer enabling One-Time Password on the Delinea secret instead.
+    $totpSeed = $null
+    if (-not $otpCode) {
+        $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+        if ($totpSeed) { $actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
+    }
 
     $params = @{ email = $email }
+    if ($otpCode)  { $params['otpCode']  = $otpCode }
     if ($totpSeed) { $params['totpSeed'] = $totpSeed }
     $flowInput = @{ username = $username; password = $password; params = $params }
     $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput

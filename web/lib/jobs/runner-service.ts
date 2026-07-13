@@ -11,7 +11,7 @@ export const SETUP_GATE_KEY = "setup_gate";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
-import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "../secrets/delinea";
+import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken, getOneTimePasswordCode } from "../secrets/delinea";
 import { checkFieldShape } from "../secrets/field-requirements";
 import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
@@ -676,7 +676,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Broker a Delinea credential for a job. Least-privilege: the agent must own the job and
     // the secret must be one named on that job. Never returns a secret value (we store only
     // the Delinea reference); production exchanges externalId for a short-TTL scoped cred here.
-    async brokerCredential(jobId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
+    async brokerCredential(jobId: string, agentId: string, secretName: string, withOtp = false): Promise<BrokeredCredential> {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, request: true, case: { select: { clientId: true, secretOverrides: true, client: { select: { parentId: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
@@ -715,9 +715,24 @@ export function makeRunnerService(db: PrismaClient) {
         fields = resolved.fields;
         note = undefined;
       }
-      // Audit records metadata ONLY — the field NAMES, never their values.
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source, fieldNames: fields ? Object.keys(fields) : [] } } });
-      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
+      // One-time password, ON REQUEST only. Delinea holds the authenticator seed (one-time-password
+      // enabled on the secret) and mints the current code; we never store or broker the SEED. The
+      // code lives ~30s, so the runner asks for it at the moment it needs it — not at claim time —
+      // and getOneTimePasswordCode waits out a nearly-dead window so it can't expire mid-login.
+      let otpCode: string | undefined;
+      let otpRemainingSeconds: number | undefined;
+      let otpError: string | undefined;
+      if (withOtp) {
+        if (!delineaConfigured(cfg)) otpError = "Delinea not configured on the app";
+        else {
+          const otp = await getOneTimePasswordCode(cfg, secret.externalId);
+          if (otp.ok) { otpCode = otp.code; otpRemainingSeconds = otp.remainingSeconds; }
+          else otpError = otp.error;
+        }
+      }
+      // Audit records metadata ONLY — the field NAMES, never their values (and never the OTP).
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source, fieldNames: fields ? Object.keys(fields) : [], ...(withOtp ? { otp: otpCode ? "minted" : `unavailable: ${otpError}` } : {}) } } });
+      return { provider: secret.provider, externalId: secret.externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields, otpCode, otpRemainingSeconds, otpError };
     },
 
     // --- Connection tests (isolated permission preflight) ----------------------------------------

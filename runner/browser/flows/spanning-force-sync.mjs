@@ -62,19 +62,31 @@ const SELECTORS = {
 // Handle a possible second factor after the password step. Returns { done:true } when past MFA (or
 // there is none), or { bail:<structured error> } when we can't proceed. A TOTP/app code is completed
 // from the seed on the secret; push/number-matching/SMS is a hard stop (no live device).
-async function handleSecondFactor(page, shot, totpSeed, log) {
+async function handleSecondFactor(page, shot, otpCode, totpSeed, log) {
   try {
     // Unautomatable factors first — a push/number/SMS prompt can't be satisfied headless.
     if (await page.locator(SELECTORS.pushChallenge).first().isVisible().catch(() => false)) {
-      return { bail: { ok: false, error: "the login requires push / number-matching / SMS MFA — a headless bot can't approve that. Switch the automation account to app (TOTP) MFA and put its seed on the secret, or trigger the Spanning sync manually.", evidence: await shot("mfa-push") } };
+      return { bail: { ok: false, error: "the login requires push / number-matching / SMS MFA — a headless bot can't approve that. Switch the automation account to app (authenticator) MFA and enable One-Time Password on its Delinea secret, or trigger the Spanning sync manually.", evidence: await shot("mfa-push") } };
     }
     const otp = page.locator(SELECTORS.otpInput).first();
     const hasOtp = await otp.isVisible().catch(() => false);
     const textChallenge = await page.locator(SELECTORS.mfaChallenge).first().isVisible().catch(() => false);
     if (!hasOtp && !textChallenge) return { done: true }; // no second factor
 
+    // PREFERRED: a code already minted by Delinea (fetched moments ago, so still valid). We never
+    // hold the seed. LEGACY: generate from a stored seed if that's all the secret has.
+    if (otpCode && hasOtp) {
+      log("MFA code prompt — using the one-time password Delinea minted");
+      await otp.fill(String(otpCode));
+      await page.locator(SELECTORS.otpSubmit).first().click().catch(() => {});
+      await page.waitForTimeout(3500);
+      if (await page.locator(SELECTORS.otpInput).first().isVisible().catch(() => false)) {
+        return { bail: { ok: false, error: "the one-time password was rejected — it may have expired in transit, or the account's MFA is not the authenticator this Delinea secret holds", evidence: await shot("otp-rejected") } };
+      }
+      return {};
+    }
     if (!totpSeed) {
-      return { bail: { ok: false, error: "the login requires MFA and no TOTP seed is on the Spanning secret — add the authenticator seed (a TOTP/OTP field) so the sync can complete headless, or trigger it manually.", evidence: await shot("mfa-no-seed") } };
+      return { bail: { ok: false, error: "the login requires MFA but no code was available — enable One-Time Password on the Spanning secret in Delinea (paste the authenticator seed there once); the runner then fetches a fresh code each run. Or trigger the sync manually.", evidence: await shot("mfa-no-code") } };
     }
     if (!hasOtp) {
       return { bail: { ok: false, error: "an MFA challenge appeared but no code-entry field was found — if it's a push/number prompt it can't be automated; if it's a code prompt, VERIFY the otpInput selector against the real console.", evidence: await shot("mfa-no-code-field") } };
@@ -100,7 +112,8 @@ export default async function spanningForceSync({ page, shot, input, log }) {
   const email = input?.params?.email ?? null;
   const username = input?.username ?? null;
   const password = input?.password ?? null; // NEVER logged
-  const totpSeed = input?.params?.totpSeed ?? input?.totpSeed ?? null; // optional authenticator seed; NEVER logged
+  const otpCode = input?.params?.otpCode ?? null;   // a CURRENT code minted by Delinea — preferred; NEVER logged
+  const totpSeed = input?.params?.totpSeed ?? input?.totpSeed ?? null; // legacy stored seed; NEVER logged
 
   if (!username || !password) {
     return { ok: false, error: "no Spanning portal credentials brokered (username/password) — set them on the client's Spanning secret" };
@@ -142,7 +155,7 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     if (!(await pwField.isVisible().catch(() => false))) {
       // No password field — could be an MFA-first / passwordless prompt. Let the second-factor handler
       // report precisely (push vs code vs unknown) instead of a generic "no password field".
-      const mfa = await handleSecondFactor(page, shot, totpSeed, log);
+      const mfa = await handleSecondFactor(page, shot, otpCode, totpSeed, log);
       if (mfa.bail) return mfa.bail;
       return { ok: false, error: "could not find the password field on the Spanning login page — VERIFY the portal URL and selectors against the real console", evidence: await shot("no-password-field") };
     }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -259,4 +259,54 @@ test("parseDelineaExpiry: explicit date, days-until, and absent", () => {
   assert.equal(parseDelineaExpiry({ daysUntilExpiration: 10 }, now), "2026-07-21T00:00:00.000Z");
   assert.equal(parseDelineaExpiry({ name: "x" }, now), undefined);
   assert.equal(parseDelineaExpiry(null, now), undefined);
+});
+
+// --- One-time password (Delinea mints it; we never hold the seed) --------------------------------
+
+function otpFetcher(seq: { status?: number; body?: unknown }[]): { f: Fetcher; calls: () => number } {
+  let i = 0;
+  const f: Fetcher = async (url) => {
+    if (url.includes("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "tok" }) };
+    const step = seq[Math.min(i++, seq.length - 1)];
+    const status = step.status ?? 200;
+    return { ok: status >= 200 && status < 300, status, json: async () => step.body ?? {} };
+  };
+  return { f, calls: () => i };
+}
+
+test("getOneTimePasswordCode: returns the current code (keyed by index)", async () => {
+  const { f } = otpFetcher([{ body: { "0": { code: "123456", remainingSeconds: 27, durationSeconds: 30 } } }]);
+  const r = await getOneTimePasswordCode(cfg, "47165", f);
+  assert.equal(r.ok, true);
+  assert.equal(r.code, "123456");
+  assert.equal(r.remainingSeconds, 27);
+});
+
+test("getOneTimePasswordCode: a nearly-dead code is NOT handed out — it waits for the next window", async () => {
+  // 3s left would expire mid-login. It must sleep past the rollover and re-fetch.
+  const { f, calls } = otpFetcher([
+    { body: { "0": { code: "111111", remainingSeconds: 3, durationSeconds: 30 } } },
+    { body: { "0": { code: "222222", remainingSeconds: 30, durationSeconds: 30 } } },
+  ]);
+  let slept = 0;
+  const r = await getOneTimePasswordCode(cfg, "47165", f, undefined, { sleep: async (ms) => { slept = ms; } });
+  assert.equal(r.code, "222222");      // the FRESH one, not the dying one
+  assert.equal(r.remainingSeconds, 30);
+  assert.ok(slept >= 3000);            // waited out the old window
+  assert.equal(calls(), 2);
+});
+
+test("getOneTimePasswordCode: 404 = OTP not enabled on the secret, with an actionable message", async () => {
+  const { f } = otpFetcher([{ status: 404 }]);
+  const r = await getOneTimePasswordCode(cfg, "47165", f);
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /one-time password.*not configured|enable it on the secret/i);
+});
+
+test("getOneTimePasswordCode: unset reference short-circuits without calling Delinea", async () => {
+  let called = false;
+  const spy: Fetcher = async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; };
+  const r = await getOneTimePasswordCode(cfg, "REPLACE_ME", spy);
+  assert.equal(r.ok, false);
+  assert.equal(called, false);
 });

@@ -944,7 +944,12 @@ foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-rese
 # One executor serves both lanes (a force-sync can ride an onboard or an offboard case). Withheld from
 # agents that don't report the 'browser' capability (see $script:RunnerCapabilities below).
 $DISPATCH['spanning-force-sync'] = @{
-    Onboard = { param($job, $creds) Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] }
+    # OtpProvider is a CLOSURE the module invokes right before the browser reaches the MFA box, so the
+    # 30-second code can't go stale in transit. The seed stays in Delinea; we only ever hold a code.
+    Onboard = { param($job, $creds)
+        Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] `
+            -OtpProvider { Get-JobOtp -JobId $job.id -SecretName 'spanning' }.GetNewClosure()
+    }
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
 
@@ -1374,6 +1379,28 @@ function Invoke-CtgAdDiscovery {
     catch {
         Write-Warning "AD discovery failed: $($_.Exception.Message)"
     }
+}
+
+# Ask the app for a CURRENT one-time password for this job's secret. Delinea holds the authenticator
+# seed (one-time-password enabled on the secret) and mints the code; the SEED is never sent to us.
+# The code lives ~30s, so this is called at the LAST moment (right before a browser login reaches the
+# MFA box), never at claim time. Returns $null when the secret has no OTP configured — the caller
+# turns that into an actionable message rather than a mystery MFA stall.
+function Get-JobOtp {
+    param($JobId, $SecretName)
+    try {
+        $ref = Invoke-AppApi POST "/api/jobs/$JobId/credential" @{ agentId = $AgentId; secretName = $SecretName; otp = $true }
+    } catch {
+        Write-CtgLog "could not fetch a one-time password from the app: $($_.Exception.Message)" 'WARN'
+        return $null
+    }
+    $code = [string](Get-CtgProp $ref 'otpCode')
+    if (-not $code) {
+        $why = [string](Get-CtgProp $ref 'otpError')
+        if ($why) { Write-CtgLog "no one-time password available: $why" 'WARN' }
+        return $null
+    }
+    [pscustomobject]@{ Code = $code; RemainingSeconds = (Get-CtgProp $ref 'otpRemainingSeconds') }
 }
 
 function Get-JobCredential {

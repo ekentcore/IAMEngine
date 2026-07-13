@@ -10,6 +10,7 @@
 
 BeforeAll {
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Spanning/Coretelligent.Spanning.psm1" -Force
+    Import-Module "$PSScriptRoot/../modules/Coretelligent.Browser/Coretelligent.Browser.psm1" -Force
 }
 
 Describe 'Invoke-CtgSpanningOnboarding' {
@@ -220,5 +221,38 @@ Describe 'Confirm-CtgSpanning' {
         $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ to = 'Archive' } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Invoke-CtgSpanningForceSync — MFA source' {
+    BeforeEach {
+        $script:captured = $null
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = 'sync triggered'; error = $null; evidence = $null; retryAfterMinutes = $null }
+        }
+        $script:secret = [pscustomobject]@{
+            Fields = @{ PortalUsername = 'admin@x.com'; PortalPassword = 'pw' }
+        }
+        $script:user = [pscustomobject]@{ UserPrincipalName = 'new.user@x.com' }
+    }
+
+    It 'passes the Delinea-minted CODE to the flow and never a seed' {
+        $provider = { [pscustomobject]@{ Code = '123456'; RemainingSeconds = 27 } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpProvider $provider
+        $r.Status | Should -Be 'ok'
+        $script:captured.params.otpCode | Should -Be '123456'
+        $script:captured.params.ContainsKey('totpSeed') | Should -BeFalse
+    }
+
+    It 'falls back to a stored seed only when Delinea has no one-time password' {
+        $script:secret.Fields['TOTPSeed'] = 'JBSWY3DPEHPK3PXP'
+        $provider = { $null }   # Delinea could not mint a code
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpProvider $provider
+        $r.Status | Should -Be 'ok'
+        $script:captured.params.totpSeed | Should -Be 'JBSWY3DPEHPK3PXP'
+        $script:captured.params.ContainsKey('otpCode') | Should -BeFalse
+        ($r.Actions -join ' ') | Should -Match 'enable One-Time Password'   # nudges to the better path
     }
 }
