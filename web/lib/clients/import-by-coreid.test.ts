@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeCoreId, parseCoreIds, importClientByCoreId, type ImportDeps } from "./import-by-coreid";
+import type { Action } from "@prisma/client";
 import type { SnAccount } from "../servicenow/types";
 import type { KbCandidate, KbDiscovery } from "../servicenow/kb-discovery";
 
@@ -45,6 +46,10 @@ function deps(over: Partial<ImportDeps> = {}): ImportDeps {
   return {
     findByCoreId: async () => null,
     findBySysId: async () => null,
+    findByUniqueDomain: async () => null,
+    linkToSn: async () => {},
+    linkParent: async () => true,
+    actionsWithRunbook: async () => [],
     fetchAccount: async () => account(),
     slugExists: async () => false,
     createFromSn: async () => "client-id",
@@ -78,6 +83,15 @@ test("parseCoreIds splits, normalizes, de-duplicates and reports junk", () => {
   assert.deepEqual(parseCoreIds(",,  ,").ids, []);
 });
 
+test("parseCoreIds keeps 'CORE 1269' whole instead of tearing it into junk", () => {
+  // Splitting on whitespace first would yield a bogus "CORE" token plus a bare "1269".
+  assert.deepEqual(parseCoreIds("CORE 1269").ids, ["CORE1269"]);
+  assert.deepEqual(parseCoreIds("CORE 1269").invalid, []);
+  assert.deepEqual(parseCoreIds("core-832, CORE 1269").ids, ["CORE832", "CORE1269"]);
+  // Space-separated ids (no comma) still split.
+  assert.deepEqual(parseCoreIds("CORE1269 CORE832").ids, ["CORE1269", "CORE832"]);
+});
+
 test("imports a new client and builds both runbooks", async () => {
   const saved: Array<{ slug: string; action: string; kb?: string }> = [];
   const r = await importClientByCoreId(
@@ -107,13 +121,13 @@ test("imports a new client and builds both runbooks", async () => {
   ]);
 });
 
-test("a client already in the system is reported, never rebuilt", async () => {
-  let built = false;
+test("an existing client's runbook is NEVER rebuilt", async () => {
+  const saved: string[] = [];
   const r = await importClientByCoreId(
     deps({
-      findByCoreId: async () => ({ slug: "core1269", name: "Digital Currency Group, Inc." }),
-      findKbs: async () => { built = true; return discovery(); },
-      saveRunbook: async () => { built = true; return null; },
+      findByCoreId: async () => ({ id: "c1", slug: "core1269", name: "Digital Currency Group, Inc." }),
+      actionsWithRunbook: async () => ["onboard", "offboard"] as Action[],
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 1, createdSystems: [] }; },
     }),
     "CORE1269",
     "ui:test"
@@ -121,19 +135,109 @@ test("a client already in the system is reported, never rebuilt", async () => {
 
   assert.equal(r.status, "exists");
   assert.equal(r.slug, "core1269");
-  assert.equal(built, false, "re-importing must not touch an existing client's runbook");
+  assert.deepEqual(saved, [], "an action that already has a runbook must not be touched");
+  assert.ok(r.warnings.some((w) => /onboard runbook already exists/.test(w)));
+});
+
+test("an existing client's EMPTY action is built (the roster-synced bare row this exists to fix)", async () => {
+  // Opening the clients list auto-syncs the roster, so almost every client ALREADY exists as a bare
+  // row: no runbook, no systems, cases that plan zero steps. Reporting "exists" and stopping would
+  // make the import a no-op for the whole fleet.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "core1269", name: "DCG" }),
+      actionsWithRunbook: async () => ["onboard"] as Action[], // offboard is empty
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 5, createdSystems: ["duo"] }; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "exists");
+  assert.deepEqual(saved, ["offboard"], "only the empty action is built");
+  assert.deepEqual(r.built.map((b) => b.action), ["offboard"]);
+  assert.deepEqual(r.createdSystems, ["duo"]);
 });
 
 test("an account already linked by sys_id is 'exists', even without a CORE id on the row", async () => {
   // The roster sync creates clients keyed on sys_id; an older row may carry no coreId. Creating a
   // second client for the same account would be a duplicate the unique sys_id constraint rejects.
   const r = await importClientByCoreId(
-    deps({ findByCoreId: async () => null, findBySysId: async () => ({ slug: "acme", name: "Acme" }) }),
+    deps({ findByCoreId: async () => null, findBySysId: async () => ({ id: "c1", slug: "acme", name: "Acme" }) }),
     "CORE1269",
     "ui:test"
   );
   assert.equal(r.status, "exists");
   assert.equal(r.slug, "acme");
+});
+
+test("a profile-seeded client (no CORE id, no sys_id) is matched by domain, not duplicated", async () => {
+  // prisma/seed.ts writes clients from profiles/*.json with neither key set. Without the domain
+  // reconcile the import would create a SECOND row for the same company — and the original, which
+  // holds the systems, credentials and case history, would be the one left behind.
+  let created = false;
+  const stamped: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => null,
+      findBySysId: async () => null,
+      findByUniqueDomain: async (d) => (d === "dcg.co" ? { id: "seeded", slug: "dcg", name: "DCG" } : null),
+      linkToSn: async (id) => { stamped.push(id); },
+      createFromSn: async () => { created = true; return "x"; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "exists");
+  assert.equal(r.slug, "dcg", "the seeded client is adopted, not shadowed by a duplicate");
+  assert.equal(created, false);
+  assert.deepEqual(stamped, ["seeded"], "and it gets stamped with the ServiceNow keys");
+});
+
+test("an ambiguous domain falls through to create rather than mis-linking a client", async () => {
+  // findByUniqueDomain returns null when a domain maps to more than one client — adopting the wrong
+  // one is worse than a new row.
+  const r = await importClientByCoreId(deps({ findByUniqueDomain: async () => null }), "CORE1269", "ui:test");
+  assert.equal(r.status, "imported");
+});
+
+test("the ServiceNow parent is linked, so an imported child's cases can inherit", async () => {
+  const links: Array<[string, string]> = [];
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      linkParent: async (child, parent) => { links.push([child, parent]); return true; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.equal(r.status, "imported");
+  assert.deepEqual(links, [["a".repeat(32), "b".repeat(32)]]);
+  assert.deepEqual(r.warnings, []);
+});
+
+test("a child whose parent isn't imported yet is told so — not promised inheritance it won't get", async () => {
+  const r = await importClientByCoreId(
+    deps({
+      fetchAccount: async () => ({ ...account(), account_parent: f("b".repeat(32)) }) as SnAccount,
+      linkParent: async () => false, // parent not in the DB
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.ok(r.warnings.some((w) => /parent account is not in the system/i.test(w)));
+});
+
+test("an account with no sys_id is an error, not a row upserted onto the empty sys_id", async () => {
+  const r = await importClientByCoreId(
+    deps({ fetchAccount: async () => ({ ...account(), sys_id: f("") }) as SnAccount }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /sys_id/);
 });
 
 test("an id ServiceNow doesn't know is not_found, and nothing is written", async () => {
@@ -165,7 +269,7 @@ test("no KB in ServiceNow: the client is still created, with a warning", async (
   assert.equal(r.status, "imported");
   assert.equal(r.built.length, 0);
   assert.equal(r.warnings.length, 1);
-  assert.match(r.warnings[0], /no onboarding or offboarding KB/i);
+  assert.match(r.warnings[0], /no onboard or offboard KB found/i);
 });
 
 test("a KB fetch that fails leaves the client created and warns", async () => {
@@ -206,16 +310,25 @@ test("AI extraction failure falls back to the heuristic parse", async () => {
   assert.deepEqual((sent[0] as { sections?: unknown }).sections, undefined);
 });
 
-test("a low-confidence KB pick builds but is flagged for review", async () => {
+test("a low-confidence KB pick is NOT saved — it is named for a human to review", async () => {
+  // Century Equity has no onboarding guide, only an "Offboard User Request" form. Saving it would
+  // create ClientSystem rows out of whatever the extractor made of that prose — config a live case
+  // would then dispatch jobs against.
+  const saved: string[] = [];
   const r = await importClientByCoreId(
-    deps({ findKbs: async () => discovery({ offboard: kb("KB0017027", "offboard", false) }) }),
+    deps({
+      findKbs: async () => discovery({ offboard: kb("KB0017027", "offboard", false) }),
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 9, createdSystems: ["box"] }; },
+    }),
     "CORE82",
     "ui:test"
   );
-  assert.equal(r.status, "imported");
-  assert.equal(r.built[0].confident, false);
-  assert.ok(r.warnings.some((w) => /review/i.test(w) && w.includes("KB0017027")));
-  assert.ok(r.warnings.some((w) => /no onboarding KB/i.test(w)), "the missing action is still called out");
+
+  assert.equal(r.status, "imported", "the client is still created");
+  assert.deepEqual(saved, [], "but nothing is written from a doc that isn't a runbook");
+  assert.deepEqual(r.built, []);
+  assert.deepEqual(r.createdSystems, [], "and no systems are conjured from it");
+  assert.ok(r.warnings.some((w) => w.includes("KB0017027") && /review/i.test(w)));
 });
 
 test("a create that fails is reported as an error, not a silent success", async () => {
@@ -226,6 +339,20 @@ test("a create that fails is reported as an error, not a silent success", async 
   );
   assert.equal(r.status, "error");
   assert.match(r.error!, /unique constraint/);
+  assert.equal(r.slug, undefined, "nothing was created, so there is no client to name");
+});
+
+test("a failure AFTER the client is created still names the client it left behind", async () => {
+  // Otherwise the row reads "Failed — —" while a real client sits in the list, and the operator has
+  // no idea it exists.
+  const r = await importClientByCoreId(
+    deps({ writeAudit: async () => { throw new Error("db hiccup"); } }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.equal(r.status, "error");
+  assert.equal(r.slug, "core1269");
+  assert.equal(r.name, "Digital Currency Group, Inc.");
 });
 
 test("a child account with no KB names its parent (cases inherit it at plan time)", async () => {
