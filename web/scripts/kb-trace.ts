@@ -11,7 +11,7 @@ for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").spl
 async function main() {
 const { fetchKbArticle } = await import("../lib/servicenow/kb");
 const { snConfigFromEnv } = await import("../lib/servicenow/gateway");
-const { redact } = await import("../lib/automation/redact");
+const { redact, maskEmailsReversible } = await import("../lib/automation/redact");
 const { parseRunbookText } = await import("../lib/clients/runbook-parse");
 const { extractRunbookAI } = await import("../lib/clients/runbook-extract");
 const { azureConfigFromEnv, azureConfigured } = await import("../lib/generator/llm");
@@ -26,8 +26,8 @@ const dash = (s: string) => console.log("\n" + "=".repeat(8) + " " + s + " " + "
 dash("1) app's decoded KB text (fetchKbArticle)");
 console.log(art.text);
 
-dash("2) after redact() — what is actually sent to the AI");
-const red = redact(art.text);
+dash("2) after email masking + redact() — what is actually sent to the AI");
+const red = redact(maskEmailsReversible(art.text).masked);
 console.log(red);
 console.log("\n[username line check]:", (red.match(/Username[^\n]*/i) || ["<none>"])[0]);
 console.log("[license line check]:", (red.match(/Assign default licensing[^\n]*/i) || ["<none>"])[0]);

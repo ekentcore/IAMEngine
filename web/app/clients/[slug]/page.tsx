@@ -11,6 +11,7 @@ import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
+import { SyncSystemsButton } from "../_components/sync-systems-button";
 import { SetupStageChips } from "../_components/setup-stage-chips";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
@@ -57,7 +58,7 @@ const HELP = {
     "Captures the before-state (group memberships, license/app assignments) and attaches it to the case BEFORE anything is removed — for audit and restore. Mainly used on offboarding.",
 };
 const laneHelp = (l: string) =>
-  l === "always" ? "Runs every time for this action" : l === "on_request" ? "Runs only when the intake form requests it" : "Not part of this action";
+  l === "always" ? "Runs every time for this action" : l === "on_request" ? "Runs only when the intake form requests it" : l === "by_persona" ? "Runs only when the matched persona's bundle lists this system (Roles & rules)" : "Not part of this action";
 
 type SysRow = {
   id: string; systemKey: string; mode: string; onboardWhen: string; offboardWhen: string;
@@ -219,7 +220,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </tbody>
       </table>
 
-      <h2>Systems</h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <h2 style={{ marginRight: "auto" }}>Systems</h2>
+        <SyncSystemsButton slug={client.slug} />
+      </div>
       {sysByKey.has("active-directory") && (sysByKey.has("m365") || sysByKey.has("entra") || sysByKey.has("exchange")) && !sysByKey.has("directory-sync") && (
         <p className="note" style={{ color: "var(--warn-fg)", border: "1px solid var(--warn-fg)", background: "var(--warn-bg)", borderRadius: 8, padding: "0.5rem 0.7rem", margin: "0 0 0.75rem" }}>
           ⚠ Hybrid client with on-prem Active Directory <b>and</b> cloud systems, but <b>no directory-sync step</b>. New AD accounts won&rsquo;t be pushed to Entra before the cloud steps run — they can race or fail. Add <b>directory-sync</b> (depends on <code>active-directory</code>) in <b>Edit systems</b>.
@@ -336,8 +340,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
                   <td>
                     <span className="badge" title={`${s.mode} mode`}>{s.mode}</span>
                   </td>
-                  <td className="muted help" title={laneHelp(s.onboardWhen)}>{s.onboardWhen}</td>
-                  <td className="muted help" title={laneHelp(s.offboardWhen)}>{s.offboardWhen}</td>
+                  <td className="muted help" title={laneHelp(s.onboardWhen)}>{s.onboardWhen.replace("_", " ")}</td>
+                  <td className="muted help" title={laneHelp(s.offboardWhen)}>{s.offboardWhen.replace("_", " ")}</td>
                   <td className="muted">
                     {!s.requiresApproval && !s.captureEvidence && "—"}
                     {s.requiresApproval && <span className="badge help" title={HELP.approval}>approval</span>}

@@ -21,3 +21,22 @@ test("redacts secrets from the user message before sending to Azure", async () =
     globalThis.fetch = original;
   }
 });
+
+test("restores masked email addresses in the model's response (reversible round-trip)", async () => {
+  const original = globalThis.fetch;
+  let sentBody = "";
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    sentBody = String(init.body);
+    // The model echoes the placeholder back (as the extractor does with runbook steps).
+    const m = sentBody.match(/\[u1\]@dcg\.co/);
+    assert.ok(m, "placeholder must be in the sent body");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '{"step":"Add the user to [u1]@dcg.co"}' } }] }) } as Response;
+  }) as typeof fetch;
+  try {
+    const out = await azureChatJson(cfg, "sys", "Add the user to groups: DCG@dcg.co");
+    assert.doesNotMatch(sentBody, /DCG@dcg\.co/i, "real address never leaves the boundary");
+    assert.deepEqual(out, { step: "Add the user to DCG@dcg.co" });
+  } finally {
+    globalThis.fetch = original;
+  }
+});

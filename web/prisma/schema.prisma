@@ -33,6 +33,7 @@ enum Lifecycle {
   always
   on_request
   never
+  by_persona // included only when the selected persona's bundle lists this system
 }
 
 enum Action {
@@ -491,26 +492,48 @@ model RunOutcome {
   @@index([resolvedAt])
 }
 
-// A "self-healing" fix task: one headless Claude Code run against an isolated git worktree,
-// triggered from a failing run-log line (operator button or the opt-in auto-fix sweep). The fixer
-// (scripts/claude-fix.mjs) diagnoses + patches the code and opens a DRAFT PR — a human always
-// merges. One unfinished task per fingerprint — enforced by the API AND by a partial unique index
-// (added in the migration: UNIQUE(fingerprint) WHERE status IN ('queued','running')) so a race
-// can't fan the same failure out into parallel fixers.
+// A "self-healing" fix task: an LLM tool-calling session (scripts/llm-fix.mjs, provider from the
+// LlmProvider registry) reads the code, diagnoses a failing run-log line, and stores a structured
+// fix PROPOSAL (file + lines + old/new text) for on-screen review. An operator then applies it:
+// isolated git worktree → drift check → tsc/tests → DRAFT PR — a human always merges. One
+// unfinished task per fingerprint — enforced by the API AND by a partial unique index
+// (in the migrations: UNIQUE(fingerprint) WHERE status IN ('queued','running','applying')) so a
+// race can't fan the same failure out into parallel fixers.
 model FixTask {
   id          String    @id @default(cuid())
   fingerprint String // the RunOutcome fingerprint that triggered it
   title       String // short description shown in UI (e.g. "m365: license assignment failed")
-  context     String // the error text handed to Claude (the run-log line's copy text)
-  status      String    @default("queued") // queued | running | opened_pr | failed | no_change
+  context     String // the error text handed to the LLM (the run-log line's copy text)
+  status      String    @default("queued") // queued | running | proposed | no_change | failed | applying | opened_pr | dismissed
   branch      String? // claude-fixes/<id>
   prUrl       String? // the draft PR, when one was opened
-  log         String? // tail of the fixer output (diagnosis + cost, or the error)
+  log         String? // diagnosis / provider error tail
+  proposal    Json? // { diagnosis, edits: [{ file, startLine, endLine, oldText, newText, note? }] }
+  provider    String? // "name (model)" snapshot of the LlmProvider that analyzed it
   requestedBy String? // operator email or "system:auto-fix"
+  appliedBy   String? // operator who clicked Apply & open draft PR
+  appliedAt   DateTime?
   createdAt   DateTime  @default(now())
   finishedAt  DateTime?
 
   @@index([fingerprint])
+}
+
+// An LLM provider the fix lane can use — an extensible registry edited on the Settings page
+// (presets: Claude, OpenAI, OpenRouter, Azure AI, Hugging Face; any OpenAI-compatible endpoint
+// works). The API key is entered in Settings and stored here: a deliberate, platform-level
+// exception to the "secrets only in Delinea" rule for CLIENT credentials. The key never leaves
+// the server — every API response masks it to its last 4 characters.
+model LlmProvider {
+  id        String   @id @default(cuid())
+  name      String // display name, e.g. "Claude", "OpenRouter"
+  adapter   String // "anthropic" | "openai-compatible"
+  baseUrl   String // e.g. https://api.anthropic.com, https://openrouter.ai/api/v1
+  model     String // e.g. claude-sonnet-5, gpt-4o, meta-llama/Llama-3.3-70B-Instruct
+  apiKey    String // server-side only; masked in all API responses
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ── Auth: operators, their roles, and live sessions ──────────────────────────

@@ -17,6 +17,7 @@ export default async function ModulesPage() {
         <div>
           <h1>Modules</h1>
           <p className="note">
+        Setup guides for each system live under <a href="/help">Help</a>.{" "}
             {built.length} executors built · {guides} with a setup guide ·{" "}
             <strong>{gaps.length} built but missing instructions</strong> · {planned.length} not built yet
           </p>

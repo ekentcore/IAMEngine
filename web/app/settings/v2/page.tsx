@@ -8,11 +8,14 @@ import { can } from "@/lib/auth/permissions";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
 import { AUTO_FIX_SETTING_KEY, type AutoFixSetting } from "@/lib/fixes/fix-tasks";
+import { listProvidersMasked } from "@/lib/fixes/providers";
 import { NotificationForm } from "../_components/notification-form";
 import { FeatureRequestsAdmin } from "../_components/feature-requests-admin";
 import { RestartServerButton } from "../_components/restart-server-button";
 import { AutoFixToggle } from "../_components/auto-fix-toggle";
-import { loadFeatureRequests } from "../_lib/loader";
+import { LlmProviders } from "../_components/llm-providers";
+import { loadDbBackupStatus, loadFeatureRequests } from "../_lib/loader";
+import { DbBackupCard } from "../_components/db-backup-card";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings (v2)" };
@@ -22,9 +25,15 @@ export default async function SettingsV2Page() {
     const me = await getCurrentUser();
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
-  const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
-  const featureRequests = await loadFeatureRequests();
-  const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
+  // independent single-row reads — fetch in parallel, not as five serial round trips
+  const [rawSettings, featureRequests, autoFix, llmProviders, dbBackup] = await Promise.all([
+    getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
+    loadFeatureRequests(),
+    getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
+    listProvidersMasked(db),
+    loadDbBackupStatus(),
+  ]);
+  const settings = normalizeSettings(rawSettings);
   return (
     <main>
       <div className="row-between" style={{ marginBottom: "1.5rem" }}>
@@ -46,7 +55,9 @@ export default async function SettingsV2Page() {
         <a href="/feature-requests">requests board</a>.
       </p>
       <FeatureRequestsAdmin initial={featureRequests} />
+      <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
+      <DbBackupCard initial={dbBackup} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );

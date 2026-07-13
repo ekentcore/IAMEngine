@@ -10,6 +10,7 @@ import { snConfigFromEnv } from "@/lib/servicenow/gateway";
 import { fetchTaskState, classifyTaskState } from "@/lib/servicenow/task-state";
 import { getAppSetting } from "@/lib/settings";
 import { AUTO_FIX_SETTING_KEY, type AutoFixSetting, createFixTask } from "@/lib/fixes/fix-tasks";
+import { getDefaultProvider } from "@/lib/fixes/providers";
 import { requeueJob } from "./requeue";
 
 const CHECK_EVERY_MS = 5 * 60_000;
@@ -108,12 +109,16 @@ export async function sweepScheduledCases(db: PrismaClient): Promise<void> {
 
 // Auto-trigger for the self-healing fix lane (OPT-IN via the "autoFix" app setting; default OFF).
 // A failure that keeps recurring — the SAME fingerprint, unresolved, ≥3 occurrences — is handed to
-// the fixer (headless Claude Code in an isolated worktree → DRAFT PR; a human always merges).
-// Rate-limited to ONE new task per sweep, and a fingerprint that EVER had a FixTask is never
-// re-queued automatically (no retry loops; an operator can still trigger it by hand from /runs).
+// the analyze worker (LLM tool-calling session → a fix PROPOSAL an operator reviews on /runs; the
+// eventual PR is a draft a human merges). Rate-limited to ONE new task per sweep, and a
+// fingerprint that EVER had a FixTask is never re-queued automatically (no retry loops; an
+// operator can still trigger it by hand from /runs).
 export async function sweepAutoFix(db: PrismaClient): Promise<void> {
   const setting = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
   if (!setting?.enabled) return;
+  // No provider registered → nothing to analyze with; skip quietly (rather than one audit row per
+  // sweep) — the Settings page is where this gets fixed.
+  if (!(await getDefaultProvider(db))) return;
 
   // Recurring unresolved failures, worst first. Legacy rows without a fingerprint can't be tracked.
   const groups = await db.runOutcome.groupBy({

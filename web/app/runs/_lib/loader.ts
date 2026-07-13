@@ -6,7 +6,9 @@ import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
+import type { FixProposal } from "@/lib/fixes/fix-tasks";
 import type { RunLogRow } from "../_components/run-log-table";
+import type { FixTaskInfo } from "../_components/claude-fix";
 
 export type RunsSearchParams = { q?: string; system?: string; verdict?: string; all?: string; resolved?: string };
 
@@ -58,5 +60,28 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
 
   const emptyText = `No ${includeResolved ? "" : "open "}outcomes${verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.`;
 
-  return { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText };
+  // The NEWEST fix-lane task per visible fingerprint seeds the client hook, so a proposal survives
+  // reloads and auto-filed tasks show up without a click. Considering only the newest (not the
+  // newest non-dismissed) matters: after a line's latest task is dismissed, an OLDER failed/proposed
+  // task must not resurface its chip — and this agrees with GET /api/fix-tasks, which the 5s poll
+  // uses and which also returns the newest task. A dismissed newest → seed nothing for that line.
+  const fingerprints = [...new Set(rows.map((r) => r.fingerprint).filter(Boolean))];
+  const initialFixTasks: Record<string, FixTaskInfo> = {};
+  if (fingerprints.length > 0) {
+    const fixTasks = await db.fixTask.findMany({
+      where: { fingerprint: { in: fingerprints } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, fingerprint: true, status: true, prUrl: true, log: true, proposal: true, provider: true },
+    });
+    const seen = new Set<string>();
+    for (const t of fixTasks) {
+      if (seen.has(t.fingerprint)) continue; // newest wins (rows are createdAt desc)
+      seen.add(t.fingerprint);
+      if (t.status === "dismissed") continue; // newest is dismissed → the line is quiet
+      const log = t.log && t.log.length > 4000 ? t.log.slice(-4000) : t.log;
+      initialFixTasks[t.fingerprint] = { id: t.id, status: t.status, prUrl: t.prUrl, log, proposal: t.proposal as FixProposal | null, provider: t.provider };
+    }
+  }
+
+  return { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText, initialFixTasks };
 }

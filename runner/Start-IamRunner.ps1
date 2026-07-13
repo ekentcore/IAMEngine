@@ -1376,6 +1376,33 @@ function Invoke-CtgAdDiscovery {
     }
 }
 
+# Field-name SYNONYMS for the two values every brokered credential reduces to.
+#
+# Delinea templates disagree on what they call the SAME app-registration credential: the "Entra Azure
+# AD Account" template stores it as Username/Password, while "Automation - Azure App" stores it as
+# appID/Secret (+ tenantID). Both are the client-credentials pair Connect-CtgM365 needs — it connects
+# with -ClientSecretCredential, where UserName IS the app id and Password IS the client secret. Reading
+# only 'Username'/'Password' handed those clients a $null credential and failed at connect time with an
+# opaque bind error, so the broker accepts either spelling.
+#
+# $fields is a case-INSENSITIVE PowerShell hashtable, so only the SPELLING matters here, not the case
+# (that's also why 'tenantID' already satisfies Get-CtgTenantDomain's $s.Fields['TenantId'] lookup).
+$script:CRED_USERNAME_FIELDS = @('Username', 'appID', 'AppId', 'ApplicationId', 'ClientId')
+$script:CRED_PASSWORD_FIELDS = @('Password', 'Secret', 'ClientSecret', 'AppSecret')
+
+function Select-CtgCredField {
+    # First NON-EMPTY value among $Names, or $null. A field that exists but is blank must not win over
+    # a later synonym that actually carries the value.
+    param([hashtable]$Fields, [string[]]$Names)
+    foreach ($n in $Names) {
+        if ($Fields.ContainsKey($n)) {
+            $v = [string]$Fields[$n]
+            if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
+        }
+    }
+    return $null
+}
+
 function Get-JobCredential {
     # Push-down model: ask the app to broker secret $SecretName for this job. The app resolves the
     # VALUE from Delinea and returns the fields (Username/Password/Server/...), so the runner needs
@@ -1392,10 +1419,9 @@ function Get-JobCredential {
         $why = if ($ref.note) { $ref.note } else { "the app returned no secret fields" }
         throw "secret '$SecretName' was not resolved by the app — $why"
     }
-    $username = $fields['Username']
-    $password = if ($fields.ContainsKey('Password') -and $fields['Password']) {
-        ConvertTo-SecureString ([string]$fields['Password']) -AsPlainText -Force
-    } else { $null }
+    $username = Select-CtgCredField $fields $script:CRED_USERNAME_FIELDS
+    $pw = Select-CtgCredField $fields $script:CRED_PASSWORD_FIELDS
+    $password = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { $null }
     $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
@@ -1411,8 +1437,9 @@ function Get-ConnTestCredential {
         $why = if ($ref.note) { $ref.note } else { "the app returned no secret fields" }
         throw "secret '$SecretName' was not resolved by the app — $why"
     }
-    $username = $fields['Username']
-    $password = if ($fields.ContainsKey('Password') -and $fields['Password']) { ConvertTo-SecureString ([string]$fields['Password']) -AsPlainText -Force } else { $null }
+    $username = Select-CtgCredField $fields $script:CRED_USERNAME_FIELDS
+    $pw = Select-CtgCredField $fields $script:CRED_PASSWORD_FIELDS
+    $password = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { $null }
     $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
     [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $fields }
 }
@@ -1774,8 +1801,9 @@ function Invoke-CtgCloudGroupDiscovery {
                 foreach ($p in $w.creds.PSObject.Properties) {
                     $f = @{}
                     if ($p.Value.fields) { foreach ($q in $p.Value.fields.PSObject.Properties) { $f[$q.Name] = $q.Value } }
-                    $username = $f['Username']
-                    $password = if ($f.ContainsKey('Password') -and $f['Password']) { ConvertTo-SecureString ([string]$f['Password']) -AsPlainText -Force } else { $null }
+                    $username = Select-CtgCredField $f $script:CRED_USERNAME_FIELDS
+                    $pw = Select-CtgCredField $f $script:CRED_PASSWORD_FIELDS
+                    $password = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { $null }
                     $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
                     $creds[$p.Name] = [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $f }
                 }
@@ -1840,7 +1868,7 @@ $script:BrowserInstallJob = $null
 if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -eq '1') {
     Write-Host "Browser sidecar: install disabled (IAM_RUNNER_NO_BROWSER_INSTALL=1) — browser jobs are withheld from this agent." -ForegroundColor DarkGray
 }
-elseif (-not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+elseif (-not (Test-CtgBrowserAvailable) -and (Resolve-CtgNodeTool 'node')) {
     Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium in the BACKGROUND (the runner keeps polling)…" -ForegroundColor Yellow
     try {
         $script:BrowserModulePath = (Get-Module Coretelligent.Browser).Path

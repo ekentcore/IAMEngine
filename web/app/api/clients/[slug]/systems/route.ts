@@ -8,7 +8,7 @@ import { makeClientRepository } from "@/lib/clients/repository";
 import type { EditableSystem } from "@/lib/clients/types";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
-const LANES = ["always", "on_request", "never"];
+const LANES = ["always", "on_request", "never", "by_persona"];
 const MODES = ["api", "browser", "manual"];
 
 // Coerce an untrusted object into a valid EditableSystem (or null to drop it).

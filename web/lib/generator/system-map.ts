@@ -2,7 +2,7 @@
 // system keys, the default mode/lane/secret for each modeled system, and how to infer the
 // identity backbone from what was detected. Mirrors docs/modules/_INDEX.md.
 
-export type Lane = "always" | "on-request" | "never";
+export type Lane = "always" | "on-request" | "never" | "by-persona";
 export type Mode = "api" | "browser" | "manual";
 
 export type CatalogEntry = {
@@ -102,6 +102,14 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/x ?matters/, "xmatters"],
   [/logic ?monitor/, "logicmonitor"],
 ];
+
+// Does this text mention the given system by ITS OWN name rules? Used to reject an LLM section
+// mapping when neither the title nor the steps ever name the product (a near-miss hallucination,
+// e.g. a Dashlane section mapped to "1password").
+export function textMentionsSystem(key: string, text: string): boolean {
+  const s = text.toLowerCase();
+  return HEADER_RULES.some(([re, k]) => k === key && re.test(s));
+}
 
 // Map a raw runbook header to a system key, or null if it isn't a modeled system.
 export function headerToSystemKey(header: string): string | null {

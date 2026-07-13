@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 import { ActionsMenu, type ActionsMenuItem } from "../../_components/actions-menu";
 import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
-import { ClaudeFixButton, ClaudeFixChip, useClaudeFixes } from "./claude-fix";
+import { ClaudeFixButton, ClaudeFixChip, FixReviewPanel, useClaudeFixes, type FixTaskInfo } from "./claude-fix";
 import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
 
 export type RunLogRow = {
@@ -48,8 +48,9 @@ const isFixable = (r: RunLogRow) => !r.done && (r.verdict === "warning" || r.ver
 
 // v2 presentation: per-row Copy/Fixed collapse into the shared "Actions ▾" menu, and fixed lines
 // come OFF the main table into their own <details> below (mirrors the cases v2 completed-split).
-// Non-v2 rendering is unchanged.
-export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]; emptyText: string; v2?: boolean }) {
+// Non-v2 rendering is unchanged. initialFixTasks: the latest fix-lane task per fingerprint,
+// server-seeded so proposals survive reloads and auto-filed tasks are visible without a click.
+export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { rows: RunLogRow[]; emptyText: string; v2?: boolean; initialFixTasks?: Record<string, FixTaskInfo> }) {
   const router = useRouter();
   const [sel, setSel] = useState<Set<string>>(new Set()); // selected fingerprints
   const [pending, start] = useTransition();
@@ -80,8 +81,12 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
     });
   }
 
-  // "Fix with Claude" (self-healing lane): per-fingerprint task state + 5s polling live in the hook.
-  const { tasks: fixTasks, start: startClaudeFix } = useClaudeFixes();
+  // "Fix with AI" (self-healing lane): per-fingerprint task state + 5s polling live in the hook.
+  const { tasks: fixTasks, start: startClaudeFix, apply: applyFix, dismiss: dismissFix } = useClaudeFixes(initialFixTasks);
+  // The proposal review panel — open for at most one fingerprint at a time.
+  const [reviewFp, setReviewFp] = useState<string | null>(null);
+  const reviewRow = reviewFp ? rows.find((r) => r.fingerprint === reviewFp) : undefined;
+  const reviewTask = reviewFp ? fixTasks[reviewFp] : undefined;
 
   const rowMenu = (r: RunLogRow): ActionsMenuItem[] => {
     const t = fixTasks[r.fingerprint];
@@ -92,9 +97,9 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
         : { label: "✓ Fixed", title: r.count > 1 ? `Mark Fixed — clears all ${r.count} occurrences of this line for this case` : "Mark this line Fixed", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) },
       ...(isFixable(r)
         ? [{
-            label: "🤖 Fix with Claude",
-            title: "Hand this failure to Claude Code: it diagnoses and fixes the code in an isolated worktree and opens a draft PR — a human merges",
-            disabled: !!t && (t.status === "queued" || t.status === "running"),
+            label: "🤖 Fix with AI",
+            title: "Hand this failure to the fix lane: the configured LLM proposes an exact fix you review on screen — applying opens a draft PR a human merges",
+            disabled: !!t && (t.status === "queued" || t.status === "running" || t.status === "applying" || t.status === "proposed"),
             onClick: () => startClaudeFix(r),
           }]
         : []),
@@ -163,14 +168,14 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
                     <span style={{ float: "right", marginLeft: 10, display: "inline-flex", gap: 4, whiteSpace: "nowrap", alignItems: "center" }}>
                       {v2 ? (
                         <>
-                          <ClaudeFixChip task={fixTasks[r.fingerprint]} />
+                          <ClaudeFixChip task={fixTasks[r.fingerprint]} onReview={() => setReviewFp(r.fingerprint)} />
                           <ActionsMenu items={rowMenu(r)} />
                         </>
                       ) : (
                         <>
                           <CopyButton text={r.copyText} />
                           <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
-                          {isFixable(r) && <ClaudeFixButton row={r} task={fixTasks[r.fingerprint]} onStart={startClaudeFix} />}
+                          {isFixable(r) && <ClaudeFixButton row={r} task={fixTasks[r.fingerprint]} onStart={startClaudeFix} onReview={() => setReviewFp(r.fingerprint)} />}
                         </>
                       )}
                     </span>
@@ -203,9 +208,10 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
               <span className="k">{r.clientName}</span>
               <span className="k">{r.atLabel}{r.count > 1 ? ` ×${r.count}` : ""}</span>
             </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
               <CopyButton text={r.copyText} />
               <FixButton fingerprint={r.fingerprint} resolved={r.done} count={r.count} />
+              {isFixable(r) && <ClaudeFixButton row={r} task={fixTasks[r.fingerprint]} onStart={startClaudeFix} onReview={() => setReviewFp(r.fingerprint)} />}
             </div>
           </div>
         ))}
@@ -259,6 +265,17 @@ export function RunLogTable({ rows, emptyText, v2 = false }: { rows: RunLogRow[]
             </tbody>
           </table>
         </details>
+      )}
+
+      {/* The fix lane's review panel: diagnosis + exact proposed edits (file, lines, before/after). */}
+      {reviewFp && reviewTask && (
+        <FixReviewPanel
+          task={reviewTask}
+          title={reviewRow ? `${reviewRow.systemKey} (${reviewRow.caseNumber})` : "fix task"}
+          onClose={() => setReviewFp(null)}
+          onApply={() => (reviewTask.id ? applyFix(reviewFp, reviewTask.id) : Promise.resolve("task id missing"))}
+          onDismiss={() => (reviewTask.id ? dismissFix(reviewFp, reviewTask.id) : Promise.resolve("task id missing"))}
+        />
       )}
     </>
   );

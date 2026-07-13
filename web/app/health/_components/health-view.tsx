@@ -1,6 +1,6 @@
 "use client";
 
-// Shared health view: fetches /api/health and renders the check table + credential setup guides.
+// Shared health view: fetches /api/health and renders the check table.
 // Rendered by /health (classic) and /health/v2 (denser: identity cell = badge + name with the
 // detail as a note line underneath; counts live in the page header).
 import Link from "next/link";
@@ -47,25 +47,6 @@ export function HealthView({ v2 = false }: { v2?: boolean }) {
       &ldquo;Not configured&rdquo; means the env vars are absent (the integration is off, not broken).
       &ldquo;Failing&rdquo; means it&rsquo;s configured but the credential/connection didn&rsquo;t work.
     </p>
-  );
-
-  const guides = (
-    <div style={{ marginTop: "1.25rem", borderTop: "1px solid var(--line)", paddingTop: "0.85rem" }}>
-      <b style={{ fontSize: 14 }}>Credential setup guides</b>
-      <ul className="note" style={{ margin: "0.35rem 0 0" }}>
-        <li><Link href="/help/cloud-auth">Cloud auth (M365 + Exchange Online)</Link> — Entra app registration, client secret + certificate.</li>
-        <li><Link href="/help/spanning">Spanning Backup (Microsoft 365)</Link> — Client ID + Secret, region host, Delinea template.</li>
-        <li><Link href="/help/mimecast">Mimecast</Link> — API 2.0 application (client ID + secret), directory sync + user checks.</li>
-        <li><Link href="/help/proofpoint">Proofpoint Essentials</Link> — admin account (X-User / X-Password), pod/region + org domain; read-only sync verification.</li>
-        <li><Link href="/help/tap">Temporary Access Pass</Link> <span className="note">(optional)</span> — Graph UserAuthenticationMethod.ReadWrite.All + TAP enabled in the Authentication methods policy.</li>
-        <li><Link href="/help/egnyte">Egnyte</Link> — API token (or API key + service account), per-tenant domain, license tiers.</li>
-        <li><Link href="/help/google">Google Workspace</Link> — service account + domain-wide delegation (JSON key, base64 into Delinea), impersonated super-admin.</li>
-        <li><Link href="/help/salesforce">Salesforce</Link> — Connected App + JWT certificate, integration user, config-driven Profile.</li>
-        <li><Link href="/help/knowbe4">KnowBe4</Link> — SCIM token (no create-user REST API); skip if provisioned via Entra/Okta sync.</li>
-        <li><Link href="/help/jira">Jira (Atlassian)</Link> — admin email + API token, site URL, product access list.</li>
-        <li><Link href="/help/hubspot">HubSpot</Link> — private-app access token, config-driven role + team.</li>
-      </ul>
-    </div>
   );
 
   if (!v2) {
@@ -122,8 +103,6 @@ export function HealthView({ v2 = false }: { v2?: boolean }) {
         )}
 
         {legend}
-
-        {guides}
       </main>
     );
   }
@@ -184,8 +163,6 @@ export function HealthView({ v2 = false }: { v2?: boolean }) {
       )}
 
       {legend}
-
-      {guides}
     </main>
   );
 }

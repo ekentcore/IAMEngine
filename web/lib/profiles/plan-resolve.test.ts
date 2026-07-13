@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { resolvePlannedConfigs } from "./plan-resolve";
+import { resolvePlannedConfigs, personaSystemKeys } from "./plan-resolve";
 import type { PlannedJob } from "../orchestrator";
 
 // End-to-end of step 1: a real onboard PAYLOAD (intake + derived identity) → the planner's
@@ -202,4 +202,27 @@ test("ad-source license group already in the AD groups is not duplicated", () =>
   const resolved = resolvePlannedConfigs(noP, p, "onboard", planned);
   const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
   assert.deepEqual(ad.groups, ["m365 e3 users group"]);
+});
+
+test("personaSystemKeys: onboard = the persona's systems keys; no persona/personas -> empty", () => {
+  const c = {
+    personas: {
+      Ops: { titles: ["Ops Engineer"], systems: { xmatters: {}, m365: { groups: ["Ops-All"] } }, offboardSystems: { pagerduty: {} } },
+    },
+    locations: null,
+  };
+  const on = personaSystemKeys(c, { department: "Ops" }, "onboard");
+  assert.deepEqual([...on].sort(), ["m365", "xmatters"]);
+  // Unmatched persona -> empty set (a by_persona system is simply excluded).
+  assert.equal(personaSystemKeys(c, { department: "Finance" }, "onboard").size, 0);
+  assert.equal(personaSystemKeys({ personas: null, locations: null }, { department: "Ops" }, "onboard").size, 0);
+});
+
+test("personaSystemKeys: offboard is the union of systems + offboardSystems (granted -> cleaned up)", () => {
+  const c = {
+    personas: { Ops: { systems: { xmatters: {} }, offboardSystems: { pagerduty: {} } } },
+    locations: null,
+  };
+  const off = personaSystemKeys(c, { department: "Ops" }, "offboard");
+  assert.deepEqual([...off].sort(), ["pagerduty", "xmatters"]);
 });

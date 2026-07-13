@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -14,6 +14,10 @@ export type AgentVM = {
   clientName: string | null;
   version: string | null; // content-hash build id
   semver: string | null; // human release version (runner/VERSION), display only
+  // What this runner reported it can DO: on-prem systems it has modules for (active-directory,
+  // directory-sync…) plus cross-cutting 'browser' when the Playwright sidecar is installed. The
+  // claim gate withholds work an agent hasn't claimed the capability for, so this is load-bearing.
+  capabilities: string[] | null; // null = legacy runner that never reported (treated as capable)
   priority: number; // failover rank (lower = higher precedence); a backup stands by while a higher peer is online
   enabled: boolean;
   lastSeenAt: string | null;
@@ -161,6 +165,34 @@ function PriorityControl({ a }: { a: AgentVM }) {
   );
 }
 
+// What the runner reported it can DO. Load-bearing, not decoration: the claim gate withholds work an
+// agent hasn't claimed the capability for — so a missing 'browser' chip is exactly why a Spanning
+// force-sync never dispatches, and a missing 'active-directory' chip is why AD jobs sit unclaimed.
+const CAP_LABEL: Record<string, string> = {
+  browser: "browser",
+  "active-directory": "AD",
+  "directory-sync": "dir-sync",
+};
+function CapabilityChips({ a }: { a: AgentVM }) {
+  if (!a.lastSeenAt) return <span className="note muted" style={{ fontSize: 11 }}>— not reported yet</span>;
+  // null = a pre-1.31 runner that doesn't report capabilities at all. The claim gate treats it as
+  // capable (old behaviour), so say so rather than implying it can do nothing.
+  if (a.capabilities === null) return <span className="note muted" style={{ fontSize: 11 }}>legacy runner (no capability report)</span>;
+  if (a.capabilities.length === 0) return <span className="note muted" style={{ fontSize: 11 }}>cloud only</span>;
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+      {a.capabilities.map((c) => (
+        <span key={c} className="badge" style={{ fontSize: 10, color: c === "browser" ? "var(--ok-fg)" : undefined }}
+          title={c === "browser"
+            ? "Playwright/Chromium sidecar installed — this agent can run browser jobs (e.g. Spanning force-sync)"
+            : `this runner has the ${c} module loaded`}>
+          {CAP_LABEL[c] ?? c}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 // Version display (semver line + build hash + up-to-date/needs-update note). Shared so the v2 table
 // reads the same as the classic one without inlining the branch twice.
 function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentBuild: string; currentVersion: string | null }) {
@@ -177,6 +209,7 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
         {v === currentBuild
           ? <div className="note" style={{ color: "var(--ok-fg)" }}>✓ up to date</div>
           : <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ update available</div>}
+        <div style={{ marginTop: 3 }}><CapabilityChips a={a} /></div>
       </>
     );
   }
@@ -184,6 +217,7 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
     <>
       <span className="muted">{v ?? "—"}</span>
       {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
+      <div style={{ marginTop: 3 }}><CapabilityChips a={a} /></div>
     </>
   );
 }
@@ -216,6 +250,33 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
   const localRestartRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
+
+  // Edit an agent's identity: rename, and re-point a client-network agent at its client. Also the
+  // recovery path for an agent row recreated after data loss — the runner keeps polling with its
+  // baked-in id, so fixing the row here re-links it without touching the host.
+  const [editAgent, setEditAgent] = useState<AgentVM | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editClient, setEditClient] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const editRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (editAgent) editRef.current?.showModal(); else editRef.current?.close(); }, [editAgent]);
+  function openEdit(a: AgentVM) {
+    setEditName(a.name); setEditClient(a.clientSlug ?? ""); setEditError(null); setEditAgent(a);
+  }
+  async function saveEdit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!editAgent) return;
+    setEditBusy(true); setEditError(null);
+    const res = await updateAgentIdentity(editAgent.id, {
+      name: editName,
+      clientSlug: editAgent.scope === "client_network" ? editClient || null : null,
+    });
+    setEditBusy(false);
+    if (!res.ok) { setEditError(res.error); return; }
+    setEditAgent(null);
+    router.refresh();
+  }
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -464,6 +525,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
+                    <button onClick={() => openEdit(a)} title="Rename this runner or point it at a different client">Edit</button>
                     <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
                     <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
                     <button onClick={() => setTroubleshootAgent(a)} title="Get a diagnostic command for a runner that never comes online (pre-build / update stuck on queued)">Troubleshoot</button>
@@ -556,6 +618,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
                       shows every button inline). */}
                   <ActionsMenu items={[
+                    { label: "Edit", onClick: () => openEdit(a) },
                     { label: "Install", onClick: () => setInstallAgent(a) },
                     { label: a.enabled ? "Disable" : "Enable", disabled: toggling === a.id, onClick: () => toggle(a.id, !a.enabled) },
                     { label: "Troubleshoot", onClick: () => setTroubleshootAgent(a) },
@@ -748,6 +811,37 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               <button className="primary" onClick={() => setInstallAgent(null)}>Done</button>
             </div>
           </div>
+        )}
+      </dialog>
+
+      {/* Edit agent: rename + (client-network) re-point at a client. */}
+      <dialog ref={editRef} onClose={() => setEditAgent(null)} style={{ maxWidth: 480 }}>
+        {editAgent && (
+          <form onSubmit={saveEdit}>
+            <div className="row-between">
+              <h2>Edit agent</h2>
+              <button type="button" onClick={() => setEditAgent(null)} aria-label="Close">×</button>
+            </div>
+            <label style={{ display: "block", marginTop: "0.5rem" }}>Name
+              <input value={editName} onChange={(e) => setEditName(e.target.value)} required style={{ width: "100%" }} />
+            </label>
+            {editAgent.scope === "client_network" ? (
+              <label style={{ display: "block", marginTop: "0.5rem" }}>Client
+                <select value={editClient} onChange={(e) => setEditClient(e.target.value)} required style={{ width: "100%" }}>
+                  <option value="">— pick a client —</option>
+                  {clients.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+                </select>
+              </label>
+            ) : (
+              <p className="note">A central runner serves all clients — only the name is editable.</p>
+            )}
+            {editError && <p className="note danger">{editError}</p>}
+            <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+              <span className="grow" />
+              <button type="button" onClick={() => setEditAgent(null)}>Cancel</button>
+              <button className="primary" disabled={editBusy}>{editBusy ? "Saving…" : "Save"}</button>
+            </div>
+          </form>
         )}
       </dialog>
 

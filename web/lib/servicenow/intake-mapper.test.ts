@@ -160,6 +160,75 @@ test("emailTemplateFields fills the .eml variable labels from the payload", () =
   assert.equal(f["Work Email"], "janevandoe@acme.com");
 });
 
+test("deriveIdentity: a nickname becomes the effective first name (givenName, displayName, username tokens)", () => {
+  const p = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "Bill", displayName: "William Smith" },
+    { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" }
+  );
+  // Bill Smith -> BSmith, not WSmith.
+  assert.equal(p.samAccountName, "bsmith");
+  assert.equal(p.userPrincipalName, "bsmith@acme.com");
+  assert.equal(p.mailNickname, "bsmith");
+  // The runner writes payload.firstName to AD givenName / Graph GivenName — it must carry the nickname.
+  assert.equal(p.firstName, "Bill");
+  assert.equal(p.legalFirstName, "William");
+  // The intake-built displayName was assembled from the legal first — recomputed from the nickname.
+  assert.equal(p.displayName, "Bill Smith");
+});
+
+test("deriveIdentity: no nickname leaves the legal first name in charge (and adds no legalFirstName)", () => {
+  const p = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "", displayName: "William Smith" },
+    { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" }
+  );
+  assert.equal(p.samAccountName, "wsmith");
+  assert.equal(p.firstName, "William");
+  assert.equal(p.displayName, "William Smith");
+  assert.equal("legalFirstName" in p, false);
+});
+
+test("deriveIdentity: nickname derivation is idempotent across re-plans", () => {
+  const once = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "Bill" },
+    { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" }
+  );
+  // Re-plan re-derives over the already-derived payload (firstName now "Bill") — the preserved
+  // legalFirstName must survive, not get clobbered by the overridden firstName.
+  const twice = deriveIdentity(once, { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(twice.firstName, "Bill");
+  assert.equal(twice.legalFirstName, "William");
+  assert.equal(twice.samAccountName, "bsmith");
+});
+
+test("deriveIdentity: clearing a nickname reverts firstName/displayName/sam to the legal name", () => {
+  const opts = { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" };
+  const once = deriveIdentity({ firstName: "William", lastName: "Smith", nickname: "Bill" }, opts);
+  // The nickname is emptied on the stored (already-derived) payload — e.g. a payload edit without a
+  // full ServiceNow refresh. Everything must revert, not leave firstName stuck on "Bill".
+  const cleared = deriveIdentity({ ...once, nickname: "" }, opts);
+  assert.equal(cleared.firstName, "William");
+  assert.equal(cleared.displayName, "William Smith");
+  assert.equal(cleared.samAccountName, "wsmith");
+});
+
+test("deriveIdentity: an operator-edited displayName survives re-derivation even with a nickname", () => {
+  const opts = { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" };
+  const p = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "Bill", displayName: "Bill Smith Jr.", fieldSource: { displayName: "operator" } },
+    opts
+  );
+  assert.equal(p.displayName, "Bill Smith Jr."); // operator provenance wins over the nickname recompute
+  assert.equal(p.samAccountName, "bsmith"); // username derivation still nickname-based
+});
+
+test("deriveIdentity: nickname feeds {first} fallback patterns too", () => {
+  const p = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "Bill", mi: "J" },
+    { usernamePatterns: ["{firstInitial}{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "acme.com" }
+  );
+  assert.deepEqual(p.userPrincipalNameFallbacks, ["bill.j@acme.com"]);
+});
+
 test("deriveIdentity derives fallback UPNs from extra username patterns", () => {
   const p = deriveIdentity(
     { firstName: "Jane", lastName: "Doe", mi: "M" },

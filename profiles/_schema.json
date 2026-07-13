@@ -248,15 +248,20 @@
         "systems": {
           "type": "object",
           "minProperties": 1,
-          "description": "system key -> config fragment this persona contributes (e.g. active-directory: { ou, groups, attributes }, m365: { licenses }).",
+          "description": "system key -> config fragment this persona contributes (e.g. active-directory: { ou, groups, attributes }, m365: { licenses }). Presence of a key also INCLUDES that system for this persona when its lane is by-persona.",
+          "additionalProperties": { "$ref": "#/$defs/configFragment" }
+        },
+        "offboardSystems": {
+          "type": "object",
+          "description": "system key -> OFFBOARD config fragment (onboard-shaped keys map to offboard semantics: groups -> removeGroups, ou -> moveToOu, attributes -> offboardAttributes). Unioned with `systems` to gate by-persona OFFBOARD lanes.",
           "additionalProperties": { "$ref": "#/$defs/configFragment" }
         }
       }
     },
 
     "when": {
-      "enum": ["always", "on-request", "never"],
-      "description": "always = every run; on-request = only if a case variable asks for it; never = system absent for this lifecycle action."
+      "enum": ["always", "on-request", "never", "by-persona"],
+      "description": "always = every run; on-request = only if a case variable asks for it; never = system absent for this lifecycle action; by-persona = only when the selected persona's `systems` (or `offboardSystems` on offboard) lists this system."
     },
 
     "lane": {

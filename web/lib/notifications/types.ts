@@ -8,7 +8,7 @@ export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
 // "announcement" is manual-only (change-log sends): it never fires from triggers, bypasses the
 // master switch + event toggles like a test send, and deliberately has no NOTIF_EVENTS toggle row.
-export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "announcement";
+export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "announcement";
 export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
@@ -18,6 +18,7 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "needsApproval", label: "Needs approval" },
   { key: "connTestFailed", label: "Connection test failed (scheduled sweep)" },
   { key: "credExpiring", label: "Credential expiring" },
+  { key: "backupFailed", label: "Nightly database backup failed" },
 ];
 
 // kind drives the sender + the form fields (webhook URL vs Zoom URL+token vs email recipients).
@@ -62,7 +63,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
     zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
     email: { default: emptyEmail(), restricted: emptyEmail() },
   },
-  events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, announcement: true },
+  events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, announcement: true },
   credExpiryDays: 30,
 };
 
