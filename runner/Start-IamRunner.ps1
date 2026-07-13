@@ -944,11 +944,12 @@ foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-rese
 # One executor serves both lanes (a force-sync can ride an onboard or an offboard case). Withheld from
 # agents that don't report the 'browser' capability (see $script:RunnerCapabilities below).
 $DISPATCH['spanning-force-sync'] = @{
-    # OtpProvider is a CLOSURE the module invokes right before the browser reaches the MFA box, so the
-    # 30-second code can't go stale in transit. The seed stays in Delinea; we only ever hold a code.
+    # OtpRequest is a REQUEST SPEC the browser flow itself calls when the MFA box is actually visible,
+    # so the 30-second Delinea-minted code can't go stale in transit (browser launch + portal load +
+    # the SSO hop routinely outlive a TOTP window). The seed stays in Delinea; we only ever hold a code.
     Onboard = { param($job, $creds)
         Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] `
-            -OtpProvider { Get-JobOtp -JobId $job.id -SecretName 'spanning' }.GetNewClosure()
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = 'spanning' }
     }
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
@@ -1383,9 +1384,9 @@ function Invoke-CtgAdDiscovery {
 
 # Ask the app for a CURRENT one-time password for this job's secret. Delinea holds the authenticator
 # seed (one-time-password enabled on the secret) and mints the code; the SEED is never sent to us.
-# The code lives ~30s, so this is called at the LAST moment (right before a browser login reaches the
-# MFA box), never at claim time. Returns $null when the secret has no OTP configured — the caller
-# turns that into an actionable message rather than a mystery MFA stall.
+# NOTE: this is the PRE-MINT variant — anything fetched here still has to survive until the consumer
+# uses it. Browser flows must NOT use this (browser launch + SSO outlive a 30s code): they get an
+# -OtpRequest spec and mint at the MFA prompt instead. Kept for non-browser MFA needs and tests.
 function Get-JobOtp {
     param($JobId, $SecretName)
     try {

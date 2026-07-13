@@ -59,10 +59,39 @@ const SELECTORS = {
   mfaChallenge: 'text=/verify your identity|enter (the )?code|authenticator|two-factor|2FA|one-time (code|passcode)/i',
 };
 
+// Mint a CURRENT one-time password from the app AT THE MFA BOX — not before the browser launched.
+// A TOTP code lives ~30s; browser start + portal load + the SSO hop routinely take longer than
+// that, so any code fetched before page-load is dead on arrival. otpReq = { url, token, agentId,
+// secretName } (the job credential endpoint the runner already uses). Returns the code or null;
+// the code itself is NEVER logged.
+async function mintOtp(otpReq, log) {
+  if (!otpReq?.url) return null;
+  try {
+    const res = await fetch(otpReq.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+        ...(otpReq.token ? { Authorization: `Bearer ${otpReq.token}` } : {}),
+      },
+      body: JSON.stringify({ agentId: otpReq.agentId, secretName: otpReq.secretName, otp: true }),
+    });
+    if (!res.ok) { log(`could not mint a one-time password (HTTP ${res.status})`); return null; }
+    const d = await res.json().catch(() => null);
+    if (!d?.otpCode) { log(`no one-time password available${d?.otpError ? `: ${d.otpError}` : ""}`); return null; }
+    log(`one-time password minted (${d.otpRemainingSeconds ?? "?"}s valid)`);
+    return String(d.otpCode);
+  } catch (e) {
+    log(`could not mint a one-time password: ${e?.message ?? e}`);
+    return null;
+  }
+}
+
 // Handle a possible second factor after the password step. Returns { done:true } when past MFA (or
-// there is none), or { bail:<structured error> } when we can't proceed. A TOTP/app code is completed
-// from the seed on the secret; push/number-matching/SMS is a hard stop (no live device).
-async function handleSecondFactor(page, shot, otpCode, totpSeed, log) {
+// there is none), or { bail:<structured error> } when we can't proceed. Code sources, best first:
+// mint from Delinea AT this moment (mfa.otpReq), a pre-minted code (mfa.otpCode, legacy runner), a
+// stored seed (mfa.totpSeed, legacy secret). Push/number-matching/SMS is a hard stop (no device).
+async function handleSecondFactor(page, shot, mfa, log) {
   try {
     // Unautomatable factors first — a push/number/SMS prompt can't be satisfied headless.
     if (await page.locator(SELECTORS.pushChallenge).first().isVisible().catch(() => false)) {
@@ -72,37 +101,46 @@ async function handleSecondFactor(page, shot, otpCode, totpSeed, log) {
     const hasOtp = await otp.isVisible().catch(() => false);
     const textChallenge = await page.locator(SELECTORS.mfaChallenge).first().isVisible().catch(() => false);
     if (!hasOtp && !textChallenge) return { done: true }; // no second factor
-
-    // PREFERRED: a code already minted by Delinea (fetched moments ago, so still valid). We never
-    // hold the seed. LEGACY: generate from a stored seed if that's all the secret has.
-    if (otpCode && hasOtp) {
-      log("MFA code prompt — using the one-time password Delinea minted");
-      await otp.fill(String(otpCode));
-      await page.locator(SELECTORS.otpSubmit).first().click().catch(() => {});
-      await page.waitForTimeout(3500);
-      if (await page.locator(SELECTORS.otpInput).first().isVisible().catch(() => false)) {
-        return { bail: { ok: false, error: "the one-time password was rejected — it may have expired in transit, or the account's MFA is not the authenticator this Delinea secret holds", evidence: await shot("otp-rejected") } };
-      }
-      return {};
-    }
-    if (!totpSeed) {
-      return { bail: { ok: false, error: "the login requires MFA but no code was available — enable One-Time Password on the Spanning secret in Delinea (paste the authenticator seed there once); the runner then fetches a fresh code each run. Or trigger the sync manually.", evidence: await shot("mfa-no-code") } };
-    }
     if (!hasOtp) {
       return { bail: { ok: false, error: "an MFA challenge appeared but no code-entry field was found — if it's a push/number prompt it can't be automated; if it's a code prompt, VERIFY the otpInput selector against the real console.", evidence: await shot("mfa-no-code-field") } };
     }
-    log("entering the authenticator code"); // the code is never logged
-    let code;
-    try { code = totp(totpSeed); } catch (e) { return { bail: { ok: false, error: `could not generate the TOTP code from the secret's seed: ${e?.message ?? e}`, evidence: await shot("totp-error") } }; }
-    await otp.fill(code);
-    await page.locator(SELECTORS.otpSubmit).first().click().catch(() => {});
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
-    await page.waitForTimeout(1500);
-    // Still on a code field ⇒ the code was rejected (bad seed, or not app/TOTP MFA).
-    if (await page.locator(SELECTORS.otpInput).first().isVisible().catch(() => false)) {
-      return { bail: { ok: false, error: "the TOTP code was not accepted — check the seed on the Spanning secret and that the automation account uses app/TOTP MFA (not push/SMS).", evidence: await shot("otp-rejected") } };
+
+    // Next code to try, freshest source first. The pre-minted code is single-use for retry purposes
+    // (if it was stale once it stays stale); minting and the seed can produce a new code each try.
+    let preMintedUsed = false;
+    const nextCode = async () => {
+      if (mfa.otpReq) { const c = await mintOtp(mfa.otpReq, log); if (c) return { code: c, source: "delinea" }; }
+      if (mfa.otpCode && !preMintedUsed) { preMintedUsed = true; return { code: String(mfa.otpCode), source: "delinea" }; }
+      if (mfa.totpSeed) {
+        try { return { code: totp(mfa.totpSeed), source: "seed" }; }
+        catch (e) { return { err: `could not generate the TOTP code from the secret's seed: ${e?.message ?? e}` }; }
+      }
+      return null;
+    };
+
+    // One retry: a code can legitimately die between mint and submit (window rollover) — get a
+    // fresh one and try again before declaring the MFA setup broken.
+    let lastSource = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next = await nextCode();
+      if (next?.err) return { bail: { ok: false, error: next.err, evidence: await shot("totp-error") } };
+      if (!next) {
+        if (attempt > 0) break; // had a code, it was rejected, and no source can mint another
+        return { bail: { ok: false, error: "the login requires MFA but no code was available — enable One-Time Password on the Spanning secret in Delinea (paste the authenticator seed there once); the runner then fetches a fresh code at the MFA prompt. Or trigger the sync manually.", evidence: await shot("mfa-no-code") } };
+      }
+      lastSource = next.source;
+      log(attempt === 0 ? "entering the one-time code" : "code rejected — retrying once with a fresh code"); // the code is never logged
+      await otp.fill(next.code);
+      await page.locator(SELECTORS.otpSubmit).first().click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForTimeout(3500);
+      // No longer on a code field ⇒ accepted.
+      if (!(await page.locator(SELECTORS.otpInput).first().isVisible().catch(() => false))) return { done: true };
     }
-    return { done: true };
+    const hint = lastSource === "seed"
+      ? "check the seed on the Spanning secret and that the automation account uses app/TOTP MFA (not push/SMS)"
+      : "the account's MFA may not be the authenticator this Delinea secret holds (re-pair the authenticator into the secret's One-Time Password)";
+    return { bail: { ok: false, error: `the one-time code was rejected — ${hint}.`, evidence: await shot("otp-rejected") } };
   } catch (e) {
     return { bail: { ok: false, error: `second-factor handling failed: ${e?.message ?? e}`, evidence: await shot("mfa-error") } };
   }
@@ -112,8 +150,14 @@ export default async function spanningForceSync({ page, shot, input, log }) {
   const email = input?.params?.email ?? null;
   const username = input?.username ?? null;
   const password = input?.password ?? null; // NEVER logged
-  const otpCode = input?.params?.otpCode ?? null;   // a CURRENT code minted by Delinea — preferred; NEVER logged
-  const totpSeed = input?.params?.totpSeed ?? input?.totpSeed ?? null; // legacy stored seed; NEVER logged
+  // MFA code sources (all values NEVER logged). otp = { url, token, agentId, secretName }: the app
+  // endpoint to mint a fresh Delinea code AT the MFA prompt — preferred, because a TOTP code lives
+  // ~30s and anything fetched before the browser launched is stale by the time login reaches MFA.
+  const mfaSources = {
+    otpReq: input?.params?.otp ?? null,
+    otpCode: input?.params?.otpCode ?? null, // pre-minted code (legacy runner) — likely stale, kept as fallback
+    totpSeed: input?.params?.totpSeed ?? input?.totpSeed ?? null, // legacy stored seed
+  };
 
   if (!username || !password) {
     return { ok: false, error: "no Spanning portal credentials brokered (username/password) — set them on the client's Spanning secret" };
@@ -155,7 +199,7 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     if (!(await pwField.isVisible().catch(() => false))) {
       // No password field — could be an MFA-first / passwordless prompt. Let the second-factor handler
       // report precisely (push vs code vs unknown) instead of a generic "no password field".
-      const mfa = await handleSecondFactor(page, shot, otpCode, totpSeed, log);
+      const mfa = await handleSecondFactor(page, shot, mfaSources, log);
       if (mfa.bail) return mfa.bail;
       return { ok: false, error: "could not find the password field on the Spanning login page — VERIFY the portal URL and selectors against the real console", evidence: await shot("no-password-field") };
     }
@@ -165,8 +209,8 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     await page.waitForLoadState("domcontentloaded").catch(() => {});
     await page.waitForTimeout(2000);
 
-    // Second factor after the password (the common case) — complete via TOTP or bail clearly.
-    const mfa = await handleSecondFactor(page, shot, totpSeed, log);
+    // Second factor after the password (the common case) — mint/complete a code or bail clearly.
+    const mfa = await handleSecondFactor(page, shot, mfaSources, log);
     if (mfa.bail) return mfa.bail;
 
     // Still on a password field after submit ⇒ the login was rejected (or the selectors are wrong).
