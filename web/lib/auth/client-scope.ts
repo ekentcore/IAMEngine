@@ -101,3 +101,14 @@ export async function jobInScope(db: PrismaClient, jobId: string): Promise<boole
   const j = await db.job.findUnique({ where: { id: jobId }, select: { case: { select: { clientId: true } } } });
   return !!j && scopeAllows(scope, j.case.clientId);
 }
+
+// The same guard for the ~20 routes under /api/clients/[slug]/* that act by SLUG. Hiding a client
+// from the list and 404ing its detail route is not a boundary if its sub-resources still answer to a
+// guessed slug — /secrets returns the Delinea wiring and /secrets/test performs a full VALUE read.
+// Returns false → the caller should 404. Unrestricted operators (null scope) always pass.
+export async function clientSlugInScope(db: PrismaClient, slug: string): Promise<boolean> {
+  const scope = await currentClientScope(db);
+  if (scope === null) return true;
+  const c = await db.client.findUnique({ where: { slug }, select: { id: true } });
+  return !!c && scopeAllows(scope, c.id);
+}

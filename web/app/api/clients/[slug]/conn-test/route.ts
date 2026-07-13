@@ -4,6 +4,7 @@
 // GET  /api/clients/:slug/conn-test — current results (for the panel to poll).
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
@@ -13,6 +14,8 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   // Optional body: { systemKey } retests ONE system (its row is replaced, the rest survive).
   // The existing "Test connections" button sends no body — whole-client semantics unchanged.
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
@@ -30,6 +33,8 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const g = await guardAuth(); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
     const out = await makeRunnerService(db).listConnectionTests(params.slug);
     return NextResponse.json(out);

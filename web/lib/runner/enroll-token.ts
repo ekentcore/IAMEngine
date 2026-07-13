@@ -9,9 +9,21 @@ export type EnrollClaims = { scope: "central" | "client_network"; client: string
 const b64url = (b: Buffer) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64url = (s: string) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
+// A dedicated secret if set, else reuse the app's JWT secret. NO literal fallback: this HMAC is the
+// only thing standing between a stranger and a valid enroll token, and /api/runner/install.ps1 hands
+// the RUNNER_API_TOKEN to anyone presenting one. A committed default would let anyone holding the
+// source forge a token, pull the bearer, and broker every client's Delinea credentials. Fail closed.
 export function enrollSecret(): string {
-  // A dedicated secret if set, else reuse the app's JWT secret; never empty (dev fallback).
-  return process.env.RUNNER_ENROLL_SECRET || process.env.JWT_SECRET_KEY || "iam-engine-dev-enroll-secret";
+  const secret = process.env.RUNNER_ENROLL_SECRET || process.env.JWT_SECRET_KEY;
+  if (!secret) {
+    throw new Error(
+      "RUNNER_ENROLL_SECRET (or JWT_SECRET_KEY) is not set — refusing to mint or verify enroll tokens " +
+        "against a default secret. A valid enroll token can fetch /api/runner/install.ps1, which returns " +
+        "RUNNER_API_TOKEN. Set RUNNER_ENROLL_SECRET in env.env and run `npm run env:sync` " +
+        "(generate with: openssl rand -hex 32)."
+    );
+  }
+  return secret;
 }
 
 function sign(payload: string, secret: string): string {

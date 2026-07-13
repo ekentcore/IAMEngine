@@ -997,6 +997,38 @@ function Invoke-JobWithValidation {
 # rotation (and keeps blank-domain clients with different secret TenantIds apart).
 $script:ConnectedTenant = @{}
 
+# ...but the cache is keyed per systemKey, and several systemKeys drive the SAME ambient connection:
+#   graph  — m365, its 'entra' alias, m365-password-reset, tap and notify all Connect-CtgM365 with
+#            the m365-admin credential (Connect-MgGraph holds ONE process-wide context).
+#   google — google-workspace + google-password-reset share one Google session.
+# So the A->B->A interleave above reappears ACROSS keys: an m365 job for client A connects Graph to A;
+# an entra job for client B rebinds that same Graph session to B; a second m365 job for A then finds
+# ConnectedTenant['m365'] still == A's key, SKIPS Connect, and provisions/offboards A's user inside
+# B's tenant. Whenever a shared session is (re)bound, forget the SIBLING keys so they reconnect.
+$script:ConnectionGroups = @{
+    graph  = @('m365', 'entra', 'm365-password-reset', 'tap', 'notify')
+    google = @('google-workspace', 'google-password-reset')
+}
+
+# The other systemKeys that share an ambient connection with this one ('' when it owns its session).
+function Get-CtgConnectionSiblings {
+    param([string]$SystemKey)
+    foreach ($group in $script:ConnectionGroups.Values) {
+        if ($group -contains $SystemKey) { return @($group | Where-Object { $_ -ne $SystemKey }) }
+    }
+    return @()
+}
+
+# Drop the connect-cache entries that no longer describe the ambient connection. Call AFTER any
+# Connect that (re)binds a shared session. -IncludeSelf when the connection was established outside
+# the cached path (a conn-test, cloud-group discovery) so no real job may reuse it.
+function Clear-CtgConnectionSiblings {
+    param([string]$SystemKey, [switch]$IncludeSelf)
+    if (-not $script:ConnectedTenant) { return }
+    foreach ($sibling in (Get-CtgConnectionSiblings $SystemKey)) { [void]$script:ConnectedTenant.Remove($sibling) }
+    if ($IncludeSelf) { [void]$script:ConnectedTenant.Remove($SystemKey) }
+}
+
 # A short, non-reversible fingerprint of every brokered secret's fields for this job. Used ONLY as
 # a connect-cache key component — never logged, never sent anywhere. SHA-256 over sorted
 # name.field=value pairs, truncated.
@@ -1708,7 +1740,9 @@ function Invoke-CtgConnectionTests {
             finally {
                 # A conn-test connects OUTSIDE the cached-connection path — drop this system's cache key
                 # so the next REAL job reconnects with its own tenant/creds (never reuses this session).
-                if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($t.systemKey) }
+                # Siblings too: an m365 conn-test rebinds the one Graph session that entra/tap/notify/
+                # m365-password-reset also ride, so their cache keys are stale as well.
+                Clear-CtgConnectionSiblings -SystemKey $t.systemKey -IncludeSelf
             }
         }
         $body = @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" }
@@ -1748,7 +1782,9 @@ function Invoke-CtgCloudGroupDiscovery {
             }
             $job = [pscustomobject]@{ id = ''; systemKey = 'm365'; client = [pscustomobject]@{ slug = $w.clientSlug; primaryDomain = $w.primaryDomain } }
             & $DISPATCH['m365'].Connect $job $creds
-            if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove('m365') }  # don't let a real job reuse this connection
+            # Don't let a real job reuse this connection — and not just an m365 job: this Connect bound
+            # the shared Graph session, so entra/tap/notify/m365-password-reset are stale too.
+            Clear-CtgConnectionSiblings -SystemKey 'm365' -IncludeSelf
             $groups = @()
             foreach ($g in (Get-MgGroup -All -Property 'DisplayName,GroupTypes,MailEnabled,SecurityEnabled' -ErrorAction Stop)) {
                 $type = if ($g.GroupTypes -contains 'Unified') { 'm365' }
@@ -1915,6 +1951,10 @@ while ($true) {
                         Set-CtgPhase $job.id "connecting to $($job.systemKey)"
                         & $handler.Connect $job $creds
                         $script:ConnectedTenant[$job.systemKey] = $connectKey
+                        # This Connect just rebound any session shared with sibling keys (Graph/Google),
+                        # so their cached keys no longer describe the live connection — drop them or the
+                        # next sibling job skips Connect and runs against THIS job's tenant.
+                        Clear-CtgConnectionSiblings -SystemKey $job.systemKey
                     }
                 }
 
@@ -1975,6 +2015,10 @@ while ($true) {
                             if ($script:ConnectedTenant) { [void]$script:ConnectedTenant.Remove($job.systemKey) }
                             & $handler.Connect $job $creds
                             $script:ConnectedTenant[$job.systemKey] = "$(if ($job.client) { $job.client.primaryDomain } else { '' })|$(Get-CtgCredFingerprint $creds)"
+                            # Disconnect-MgGraph tore down the session entra/tap/notify/m365-password-reset
+                            # share, and the reconnect above bound it to THIS job's tenant — their cached
+                            # keys describe a connection that no longer exists. Forget them.
+                            Clear-CtgConnectionSiblings -SystemKey $job.systemKey
                             continue
                         }
                         throw

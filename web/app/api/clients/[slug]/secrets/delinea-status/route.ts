@@ -4,6 +4,7 @@
 // any secret value; the write leg is tri-state ("unknown" when Secret Server won't say).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
 import {
@@ -23,6 +24,8 @@ type Leg = { state: "ok" | "fail" | "unknown"; detail: string };
 
 export async function POST(_req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const client = await db.client.findUnique({
     where: { slug: params.slug },
     select: { id: true, delineaFolderId: true, secrets: { select: { externalId: true, name: true } } },

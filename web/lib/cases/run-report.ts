@@ -459,7 +459,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const c = await db.caseRequest.findUnique({
     where: { id: caseId },
     include: {
-      client: { select: { id: true, name: true, slug: true } },
+      client: { select: { id: true, name: true, slug: true, parentId: true } },
       jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, progressAt: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
     },
   });
@@ -521,6 +521,14 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   // and the case-level credsMissing banner below. Fetch ONCE (was queried twice per run-report load).
   const clientSecrets = await db.secret.findMany({ where: { clientId: c.client.id }, select: { name: true, externalId: true } });
   const byName = new Map<string, string | null>(clientSecrets.map((sx) => [sx.name, sx.externalId]));
+  // A child account inherits its parent's secret refs (claim() passes this same parentMap, as does the
+  // broker). Without it the report calls a perfectly runnable child-account step "blocked — credential
+  // not set" — the runner would happily claim it. Display must agree with dispatch.
+  let parentByName: Map<string, string | null> | undefined;
+  if (c.client.parentId) {
+    const parentSecrets = await db.secret.findMany({ where: { clientId: c.client.parentId }, select: { name: true, externalId: true } });
+    parentByName = new Map<string, string | null>(parentSecrets.map((sx) => [sx.name, sx.externalId]));
+  }
 
   const ready = report.steps.filter((st) => st.pendingReason === "ready — waiting for a runner to claim it");
   if (ready.length > 0) {
@@ -545,7 +553,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       const job = c.jobs.find((j) => j.id === st.jobId);
       const needed = ((job?.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
       // Same preflight rule the claim loop uses (case override > client default, REPLACE_ME = unset).
-      const missing = missingRequiredSecrets(needed, c.secretOverrides, byName);
+      const missing = missingRequiredSecrets(needed, c.secretOverrides, byName, parentByName);
       if (missing.length) {
         st.pendingReason = `blocked — credential not set: ${missing.join(", ")}. Fill it on the Credentials panel; the runner skips this step until it resolves.`;
         continue;
@@ -603,7 +611,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     for (const job of c.jobs) {
       if (job.mode !== "api") continue;
       const needed = ((job.request ?? {}) as { secretNames?: string[] }).secretNames ?? [];
-      for (const m of missingRequiredSecrets(needed, c.secretOverrides, byName)) {
+      for (const m of missingRequiredSecrets(needed, c.secretOverrides, byName, parentByName)) {
         if (!missMap.has(m)) missMap.set(m, new Set());
         missMap.get(m)!.add(job.systemKey);
       }

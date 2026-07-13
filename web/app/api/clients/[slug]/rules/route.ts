@@ -2,6 +2,7 @@
 // PUT /api/clients/:slug/rules — { personas, globals } — validate every condition, then persist.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { validateRules } from "@/lib/clients/rules";
@@ -10,6 +11,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const rules = await makeClientRepository(db).getRules(params.slug);
   if (!rules) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(rules);
@@ -17,6 +20,8 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: unknown;
   try {
     body = await req.json();

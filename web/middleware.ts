@@ -3,8 +3,11 @@
 //      and /api/jobs/<id>/{credential,result,progress}. Bearer-gated; when RUNNER_API_TOKEN is unset
 //      it fails CLOSED in production (or when RUNNER_AUTH_REQUIRED=true) and open in dev/tunnel.
 //      These BYPASS the operator session gate (runners have no cookie).
-//   2. RUNNER DOWNLOADS — /api/runner/* (bundle manifest/file, one-line installer). Open, bypasses
-//      the operator gate so a runner can install/self-update without a session.
+//      Also covers the machine routes under /api/runner/ (conn-test credential broker, cloud-group
+//      claim) — those return resolved Delinea secret values and MUST carry the bearer.
+//   2. RUNNER BOOTSTRAP — the short allowlist in lib/auth/runner-paths (bundle manifest/file, the
+//      one-line installer, troubleshoot). Open by necessity: a host with no token yet has to fetch
+//      these to install and self-update. This is an allowlist, NOT the /api/runner/ prefix.
 //   3. OPERATOR SURFACE — everything else (pages + the operator API, incl. the job-action routes
 //      approve/rerun/procurement/complete). When AUTH_ENABLED, require a session cookie's PRESENCE;
 //      validity + per-permission checks happen server-side. x-pathname is forwarded so the layout
@@ -12,6 +15,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { V2_COOKIE, V2_ROUTES, V2_CANONICAL } from "./lib/v2";
+import { isRunnerApi, isRunnerBootstrap, isSecretBearing } from "./lib/auth/runner-paths";
 
 const PUBLIC = ["/login", "/api/auth"];
 const SESSION_COOKIE = "iam_session";
@@ -28,28 +32,20 @@ function v2Redirect(req: NextRequest, pathname: string): NextResponse | null {
   return NextResponse.redirect(url);
 }
 
-function isRunnerApi(p: string): boolean {
-  // NOTE: /api/agents (exact) is enrollment — NOT bearer-gated here (a brand-new agent has no token
-  // yet; it's gated in-handler by the enroll token). Only the /api/agents/* sub-paths (heartbeat,
-  // ad-objects, …) are bearer-gated — those are called by already-enrolled agents that carry the token.
-  return (
-    p.startsWith("/api/agents/") ||
-    p === "/api/jobs/claim" ||
-    /^\/api\/jobs\/[^/]+\/(credential|result|progress)$/.test(p)
-  );
-}
-
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (isRunnerApi(pathname)) {
     const token = process.env.RUNNER_API_TOKEN;
     if (!token) {
-      // Production-gated fail-CLOSED: in prod (or when explicitly required) a missing token is a
-      // misconfiguration — refuse rather than serve runner APIs (incl. the Delinea credential broker)
-      // unauthenticated. In dev/tunnel it stays fail-open so a local runner works without a token.
+      // Fail-CLOSED in prod (or when explicitly required) — a missing token is a misconfiguration.
+      // ALSO fail closed, in every environment, for the routes that return resolved Delinea secret
+      // VALUES: "no token configured" must never mean "serve tenant-admin credentials to an
+      // unauthenticated caller". A dev/tunnel box is exactly where this used to be wide open.
       const required = process.env.NODE_ENV === "production" || process.env.RUNNER_AUTH_REQUIRED === "true";
-      if (required) return NextResponse.json({ error: "runner auth not configured" }, { status: 503 });
+      if (required || isSecretBearing(pathname)) {
+        return NextResponse.json({ error: "runner auth not configured" }, { status: 503 });
+      }
       return NextResponse.next();
     }
     const auth = req.headers.get("authorization") ?? "";
@@ -63,7 +59,7 @@ export function middleware(req: NextRequest) {
   headers.set("x-pathname", pathname);
   const pass = () => NextResponse.next({ request: { headers } });
 
-  if (pathname.startsWith("/api/runner")) return pass(); // runner bundle download / installer — open
+  if (isRunnerBootstrap(pathname)) return pass(); // runner bundle download / installer — open by necessity (no token yet)
   if (pathname === "/api/agents" && req.method === "POST") return pass(); // agent enrollment — gated in-handler by the enroll token (no operator cookie / no bearer)
   if (process.env.AUTH_ENABLED !== "true") return v2Redirect(req, pathname) ?? pass();
   if (PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return pass();

@@ -6,6 +6,7 @@
 // but ONLY field NAMES and missing-requirement LABELS are returned — values never leave the server.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
@@ -17,6 +18,8 @@ type TestItem = { name: string; externalId: string };
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { secrets?: unknown };
   try {
     body = await req.json();

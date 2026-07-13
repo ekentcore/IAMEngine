@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 // POST /api/clients/:slug/runbook/attachment/resolve
 // Body: { action, seq, i?, user?: { department, jobTitle, location } }
 // Fetches the section's sys_attachment spreadsheet (app-side creds), parses it, and asks the
@@ -5,6 +6,7 @@
 // applied inside azureChatJson. Degrades with clear errors when SN/Azure env is absent.
 import { db } from "@/lib/db";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { asArtifacts, isAttachment } from "@/lib/runbook/artifacts";
 import { fetchAttachment } from "@/lib/servicenow/attachments";
 import { snConfigFromEnv } from "@/lib/servicenow/gateway";
@@ -15,6 +17,8 @@ type Ctx = { params: { slug: string } };
 
 export async function POST(req: Request, { params }: Ctx) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { action?: string; seq?: number; i?: number; user?: UserAttrs };
   try {
     body = await req.json();
