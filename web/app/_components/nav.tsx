@@ -1,39 +1,95 @@
 "use client";
 
-// Top-bar navigation with an active-route pill. Client component so it can read the path; the
-// rest of the header (logomark, wordmark) stays in the server layout.
+// Top-bar navigation. The four operational pages stay as inline links; everything else
+// (reference + admin, role-gated) folds into one "More" menu so the bar stays compact as
+// pages accumulate. Client component so it can read the path for active states.
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
-const ITEMS = [
+// Always-visible: the pages an operator lives in. (Also the mobile drawer's first group.)
+export const PRIMARY = [
   ["/clients", "Clients"],
   ["/cases", "Cases"],
   ["/runs", "Run log"],
   ["/agents", "Agents"],
-  ["/modules", "Modules"],
-  ["/help", "Help"],
-  ["/health", "Health"],
 ] as const;
 
-export function Nav({ showUsers = false, showAudit = false, showSettings = false, showChangelog = false }: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }) {
-  const path = usePathname() ?? "";
-  const items: ReadonlyArray<readonly [string, string]> = [
-    ...ITEMS,
-    ...(showAudit ? ([["/audit", "Audit"]] as const) : []),
-    ...(showUsers ? ([["/users", "Users"]] as const) : []),
-    ...(showChangelog ? ([["/changelog", "Change log"]] as const) : []),
-    ...(showSettings ? ([["/settings", "Settings"]] as const) : []),
+type Item = readonly [string, string];
+
+// Reference + admin pages, grouped for the menu. Role-gated entries are filtered by the flags
+// the server layout passes down (the server stays the authority; this only hides links).
+export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }): { label: string; items: Item[] }[] {
+  const reference: Item[] = [
+    ["/modules", "Modules"],
+    ["/health", "Health"],
+    ["/help", "Help"],
   ];
+  const admin: Item[] = [
+    ...(flags.showAudit ? ([["/audit", "Audit"]] as const) : []),
+    ...(flags.showUsers ? ([["/users", "Users"]] as const) : []),
+    ...(flags.showChangelog ? ([["/changelog", "Change log"]] as const) : []),
+    ...(flags.showSettings ? ([["/settings", "Settings"]] as const) : []),
+  ];
+  return [
+    { label: "Reference", items: reference },
+    ...(admin.length ? [{ label: "Administration", items: admin }] : []),
+  ];
+}
+
+const isActive = (path: string, href: string) => path === href || path.startsWith(`${href}/`);
+
+export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }) {
+  const path = usePathname() ?? "";
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const groups = menuGroups(flags);
+  const menuActive = groups.some((g) => g.items.some(([href]) => isActive(path, href)));
+
+  // Close on route change, outside click, and Escape — standard disclosure behavior.
+  useEffect(() => setOpen(false), [path]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
   return (
-    <nav style={{ display: "flex", gap: 2 }}>
-      {items.map(([href, label]) => {
-        const active = path === href || path.startsWith(`${href}/`);
-        return (
-          <Link key={href} href={href} className="nav-link" aria-current={active ? "page" : undefined}>
-            {label}
-          </Link>
-        );
-      })}
+    <nav style={{ display: "flex", gap: 2, alignItems: "center" }}>
+      {PRIMARY.map(([href, label]) => (
+        <Link key={href} href={href} className="nav-link" aria-current={isActive(path, href) ? "page" : undefined}>
+          {label}
+        </Link>
+      ))}
+      <div className="nav-more" ref={wrap}>
+        <button
+          type="button"
+          className="nav-link nav-more-btn"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-current={menuActive ? "page" : undefined}
+          onClick={() => setOpen((v) => !v)}
+        >
+          More <span className="nav-caret" aria-hidden="true" />
+        </button>
+        {open && (
+          <div className="nav-menu" role="menu" aria-label="More pages">
+            {groups.map((g) => (
+              <div key={g.label} className="nav-menu-group">
+                <div className="nav-menu-label">{g.label}</div>
+                {g.items.map(([href, label]) => (
+                  <Link key={href} href={href} role="menuitem" className="nav-menu-item" aria-current={isActive(path, href) ? "page" : undefined}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </nav>
   );
 }

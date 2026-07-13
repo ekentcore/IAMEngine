@@ -149,6 +149,40 @@ a:hover { text-decoration-color: currentColor; }
 .app-header .nav-link[aria-current="page"] { color: var(--accent-press); background: var(--accent-soft); }
 .app-header .muted { color: var(--muted); }
 
+/* "More" disclosure: the reference/admin pages fold into one grouped menu so the bar stays
+   compact as pages accumulate. Same visual language as the nav pills; the panel matches the
+   app's cards (flat surface, hairline border, soft shadow) with a short settle-in. */
+.nav-more { position: relative; }
+.nav-more-btn { display: inline-flex; align-items: center; gap: 0.35rem; border: 0; background: none; cursor: pointer; font: inherit; }
+.nav-caret {
+  width: 7px; height: 7px; margin-top: -3px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg); transition: transform 0.14s ease; opacity: 0.7;
+}
+.nav-more-btn[aria-expanded="true"] .nav-caret { transform: rotate(-135deg); margin-top: 3px; }
+.nav-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  min-width: 190px; padding: 0.4rem;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  animation: nav-menu-in 0.13s ease-out;
+}
+@keyframes nav-menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.nav-menu-group + .nav-menu-group { margin-top: 0.35rem; padding-top: 0.4rem; border-top: 1px solid var(--line); }
+.nav-menu-label {
+  padding: 0.25rem 0.55rem 0.2rem;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--muted); opacity: 0.75;
+}
+.nav-menu-item {
+  display: block; padding: 0.42rem 0.55rem; border-radius: 7px;
+  color: var(--fg); font-size: 13.5px; font-weight: 500; text-decoration: none;
+  transition: background 0.12s ease;
+}
+.nav-menu-item:hover { background: color-mix(in srgb, var(--page) 60%, transparent); }
+.nav-menu-item[aria-current="page"] { color: var(--accent-press); background: var(--accent-soft); }
+@media (prefers-reduced-motion: reduce) { .nav-menu { animation: none; } .nav-caret { transition: none; } }
+
 /* ── page panel: every <main> becomes a clean floating card ───────────────── */
 main {
   max-width: 1180px;
@@ -486,7 +520,8 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
   background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-2);
   padding: 1rem; display: flex; flex-direction: column; gap: 0.15rem; overflow-y: auto;
 }
-.mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; }
+.mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; display: block; }
+.mobile-drawer-group + .mobile-drawer-group { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
 .mobile-drawer a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-press); }
 .mobile-drawer a:active { background: var(--bg-soft); }
 
