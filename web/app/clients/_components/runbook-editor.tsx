@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { COMMON_LICENSES, COMMON_USERNAME_PATTERNS } from "@/lib/m365/license-catalog";
-import { headerToSystemKey } from "@/lib/generator/system-map";
+import { CATALOG, headerToSystemKey } from "@/lib/generator/system-map";
 
 type Section = { seq: number; systemKey: string | null; title: string; status: string; steps: string[] };
 
@@ -103,7 +103,26 @@ export function RunbookEditor({ slug, kbArticles = [], current }: { slug: string
     setPreview((p) => { if (!p) return p; const next = [...p]; next[si] = { ...next[si], steps: [...next[si].steps, ""] }; return next; });
   }
   function editTitle(si: number, value: string) {
-    setPreview((p) => { if (!p) return p; const next = [...p]; next[si] = { ...next[si], title: value }; return next; });
+    setPreview((p) => {
+      if (!p) return p;
+      const next = [...p];
+      // Retitling re-links: a title that names a known system re-maps the section (fixes an LLM
+      // mis-link by just typing the right name); an unrecognized title keeps the current link —
+      // the system select next to the title is the explicit control either way.
+      const mapped = headerToSystemKey(value);
+      const systemKey = mapped ?? next[si].systemKey;
+      next[si] = { ...next[si], title: value, systemKey, status: systemKey ? "automated" : "unmodeled" };
+      return next;
+    });
+  }
+  function setSectionSystem(si: number, key: string) {
+    setPreview((p) => {
+      if (!p) return p;
+      const next = [...p];
+      const systemKey = key === "" ? null : key;
+      next[si] = { ...next[si], systemKey, status: systemKey ? "automated" : "unmodeled" };
+      return next;
+    });
   }
   function removeSection(si: number) {
     setPreview((p) => { if (!p) return p; return p.filter((_, k) => k !== si).map((s, k) => ({ ...s, seq: k })); });
@@ -299,7 +318,12 @@ export function RunbookEditor({ slug, kbArticles = [], current }: { slug: string
                 <span style={{ fontWeight: 700 }}>{si + 1}.</span>
                 <input value={s.title} onChange={(e) => editTitle(si, e.target.value)} aria-label="section title"
                   style={{ fontWeight: 700, fontSize: 13, flex: 1, minWidth: 0, maxWidth: 320 }} />
-                <span className="badge" style={{ color: s.systemKey ? "#2e7d32" : "var(--muted)" }}>{s.systemKey ?? "unmodeled"}</span>
+                <select value={s.systemKey ?? ""} onChange={(e) => setSectionSystem(si, e.target.value)} aria-label="linked system"
+                  title="Which modeled system this section is linked to — drives the automated step and the systems sync on save"
+                  style={{ fontSize: 11.5, color: s.systemKey ? "#2e7d32" : "var(--muted)", maxWidth: 130 }}>
+                  <option value="">unmodeled</option>
+                  {Object.keys(CATALOG).sort().map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
                 <button onClick={() => removeSection(si)} title="remove this whole section" style={{ fontSize: 11, color: "#b91c1c" }}>✕ section</button>
               </div>
               <ul style={{ margin: "0.2rem 0", listStyle: "none", paddingLeft: 0 }}>
