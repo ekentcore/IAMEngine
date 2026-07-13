@@ -14,7 +14,8 @@ import { FeatureRequestsAdmin } from "../_components/feature-requests-admin";
 import { RestartServerButton } from "../_components/restart-server-button";
 import { AutoFixToggle } from "../_components/auto-fix-toggle";
 import { LlmProviders } from "../_components/llm-providers";
-import { loadFeatureRequests } from "../_lib/loader";
+import { loadDbBackupStatus, loadFeatureRequests } from "../_lib/loader";
+import { DbBackupCard } from "../_components/db-backup-card";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings (v2)" };
@@ -28,6 +29,7 @@ export default async function SettingsV2Page() {
   const featureRequests = await loadFeatureRequests();
   const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
   const llmProviders = await listProvidersMasked(db);
+  const dbBackup = await loadDbBackupStatus();
   return (
     <main>
       <div className="row-between" style={{ marginBottom: "1.5rem" }}>
@@ -51,6 +53,7 @@ export default async function SettingsV2Page() {
       <FeatureRequestsAdmin initial={featureRequests} />
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
+      <DbBackupCard initial={dbBackup} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );

@@ -161,10 +161,13 @@ async function claimSetting(db: PrismaClient, expected: unknown, next: ConnSweep
       let current: unknown = null;
       if (row) { try { current = JSON.parse(row.value); } catch { current = null; } }
       if (JSON.stringify(current) !== JSON.stringify(expected ?? null)) return false; // someone else moved it
+      // AppSetting.value is a String column — store JSON TEXT. Passing the object made Prisma
+      // throw, the catch below swallowed it, and the claim never won: the sweep never ran.
+      const v = JSON.stringify(next);
       await tx.appSetting.upsert({
         where: { key: CONN_SWEEP_KEY },
-        update: { value: next as never },
-        create: { key: CONN_SWEEP_KEY, value: next as never },
+        update: { value: v },
+        create: { key: CONN_SWEEP_KEY, value: v },
       });
       return true;
     });

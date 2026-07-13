@@ -15,7 +15,8 @@ import { AutoFixToggle } from "./_components/auto-fix-toggle";
 import { LlmProviders } from "./_components/llm-providers";
 import { AgentAutoUpdateToggle } from "./_components/agent-auto-update-toggle";
 import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
-import { loadFeatureRequests } from "./_lib/loader";
+import { loadDbBackupStatus, loadFeatureRequests } from "./_lib/loader";
+import { DbBackupCard } from "./_components/db-backup-card";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings" };
@@ -30,6 +31,7 @@ export default async function SettingsPage() {
   const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
   const llmProviders = await listProvidersMasked(db);
   const autoUpdate = await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY);
+  const dbBackup = await loadDbBackupStatus();
   return (
     <main>
       <h1>Notifications</h1>
@@ -49,6 +51,7 @@ export default async function SettingsPage() {
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
       <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
+      <DbBackupCard initial={dbBackup} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>
   );
