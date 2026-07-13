@@ -194,6 +194,28 @@ Describe 'Invoke-CtgADOffboarding' {
         Should -Invoke Move-ADObject -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly -ParameterFilter { $TargetPath -match 'Disabled Users' }
     }
 
+    It 'captures the manager it clears (name + email) — Exchange grants them the shared mailbox' {
+        # Without this, an Exchange step that runs AFTER the AD step (a re-run) finds the manager link
+        # already gone and silently skips the Full Access delegate.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Identity" -eq 'jdoe' } -MockWith {
+            [pscustomobject]@{ SamAccountName='jdoe'; DistinguishedName='CN=Jane Doe,OU=Six One Users,DC=x'; Enabled=$true; Manager='CN=Boss Person,OU=Users,DC=x' }
+        }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Identity" -eq 'CN=Boss Person,OU=Users,DC=x' } -MockWith {
+            [pscustomobject]@{ DisplayName='Boss Person'; EmailAddress='boss@core.tech'; UserPrincipalName='boss@core.tech' }
+        }
+        $r = Invoke-CtgADOffboarding -User $user -Config ([pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou') })
+        $r.Manager.Name | Should -Be 'Boss Person'
+        $r.Manager.Email | Should -Be 'boss@core.tech'
+        $r.Evidence.Manager.Email | Should -Be 'boss@core.tech'
+        ($r.Actions -join ' ') | Should -Match 'cleared manager: Boss Person <boss@core.tech>'
+    }
+
+    It 'says so when there was no manager to clear' {
+        $r = Invoke-CtgADOffboarding -User $user -Config ([pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou') })
+        $r.Manager | Should -BeNullOrEmpty
+        ($r.Actions -join ' ') | Should -Match 'cleared manager \(none set\)'
+    }
+
     It 'removes a group whose display Name differs from its sAMAccountName (Teams/M365 group) — by DN, not Name' {
         # The bug: Remove-ADGroupMember -Identity $g.Name failed "cannot find an object with identity"
         # for groups whose Name != sAMAccountName (e.g. a Teams group "Chatsoft-Contracts Team_<hex>"),

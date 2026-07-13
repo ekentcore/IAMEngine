@@ -63,7 +63,8 @@ export async function createAndPlanCase(
 
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
   const planned = resolvePlannedConfigs(client, payload, input.action,
-    planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action)));
+    planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
+      new Set(client.notNeededSecrets)));
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 

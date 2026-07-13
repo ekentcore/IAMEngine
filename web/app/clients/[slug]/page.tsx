@@ -11,6 +11,7 @@ import { EngineOptOutToggle } from "../_components/engine-opt-out-toggle";
 import { ParentInheritanceControl } from "../_components/parent-inheritance-control";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
+import { MODULES } from "@/lib/modules/catalog";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { SyncSystemsButton } from "../_components/sync-systems-button";
@@ -152,6 +153,22 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const keysInAction: Record<"onboard" | "offboard", Set<string>> = { onboard: new Set(), offboard: new Set() };
   for (const r of runbook) if (r.systemKey) keysInAction[r.action].add(r.systemKey);
 
+  // Systems that RUN in a lane but have no section in the KB doc — a client whose runbook came from a
+  // script or the systems editor (not an article) would otherwise show a runbook that silently omits
+  // steps a real case executes. Collected per lane, appended below, and flagged `unlisted` in the view.
+  // They also join keysInAction FIRST so the "after: …" dependency badges resolve against them.
+  const laneOf = (s: (typeof client.systems)[number], action: "onboard" | "offboard") =>
+    action === "onboard" ? s.onboardWhen : s.offboardWhen;
+  const unlisted: Record<"onboard" | "offboard", typeof client.systems> = { onboard: [], offboard: [] };
+  for (const action of ["onboard", "offboard"] as const) {
+    for (const s of client.systems) {
+      if (laneOf(s, action) === "never" || keysInAction[action].has(s.systemKey)) continue;
+      unlisted[action].push(s);
+      keysInAction[action].add(s.systemKey);
+    }
+  }
+  const whenLabel = (lane: string) => (lane === "on_request" ? "on request" : lane === "by_persona" ? "by persona" : null);
+
   const items: RunbookItemVM[] = runbook.map((r) => {
     const sys = r.systemKey ? sysByKey.get(r.systemKey) : undefined;
     const cfg = (sys?.config ?? null) as { onboard?: unknown; offboard?: unknown; dependsOn?: Record<string, string[]> } | null;
@@ -179,6 +196,34 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       artifacts: asArtifacts(r.artifacts),
     };
   });
+
+  const maxSeq: Record<"onboard" | "offboard", number> = { onboard: 0, offboard: 0 };
+  for (const r of runbook) maxSeq[r.action] = Math.max(maxSeq[r.action], r.seq + 1);
+  for (const action of ["onboard", "offboard"] as const) {
+    unlisted[action].forEach((s, i) => {
+      const cfg = (s.config ?? null) as { onboard?: unknown; offboard?: unknown; dependsOn?: Record<string, string[]> } | null;
+      const laneDeps = cfg?.dependsOn?.[action];
+      const laneConfig = cfg?.[action] ?? null;
+      const automated = s.mode === "api";
+      items.push({
+        id: `${action}-sys-${s.systemKey}`,
+        action,
+        seq: maxSeq[action] + i,
+        status: automated ? "automated" : "manual",
+        systemKey: s.systemKey,
+        title: MODULES.find((m) => m.key === s.systemKey)?.name ?? s.systemKey,
+        guess: null,
+        steps: [],
+        after: (laneDeps ?? s.dependsOn ?? []).filter((d) => keysInAction[action].has(d)),
+        kbHref: null,
+        kbNum: null,
+        code: automated ? automationPreview(s.systemKey, action, laneConfig, client.identity, client.primaryDomain) : null,
+        artifacts: [],
+        unlisted: true,
+        when: whenLabel(laneOf(s, action)),
+      });
+    });
+  }
 
   const onboardKb = items.find((i) => i.action === "onboard" && i.kbHref)?.kbHref ?? null;
   const offboardKb = items.find((i) => i.action === "offboard" && i.kbHref)?.kbHref ?? null;

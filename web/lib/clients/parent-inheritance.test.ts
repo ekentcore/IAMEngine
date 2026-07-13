@@ -43,6 +43,9 @@ function fakeDb(childRow: ReturnType<typeof child>) {
     clientSystem: {
       createMany: async (a: { data: unknown[] }) => { writes.createMany.push(...a.data); },
     },
+    // clientForPlanning also reads the client's (and parent's) secrets to find the ones marked
+    // NOT_NEEDED — those systems plan as manual steps. These fixtures wire none.
+    secret: { findMany: async () => [] },
     $transaction: async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]),
   };
   return { db: db as unknown as PrismaClient, writes };

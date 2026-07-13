@@ -19,9 +19,14 @@
   },
 
   "secrets": {
-    "ad-dc": { "provider": "delinea", "id": "REPLACE_ME", "label": "Domain controller (core-cce-dc01) admin" },
-    "exchange-onprem": { "provider": "delinea", "id": "REPLACE_ME", "label": "On-prem Exchange (core-cce1-ex01) admin" },
-    "m365-admin": { "provider": "delinea", "id": "REPLACE_ME", "label": "Entra app (On-Boarding Script) cert + tenant" }
+    "ad-dc": { "provider": "delinea", "id": "56408", "label": "IAM API AD — domain controller (core-cce-dc01) service account" },
+    "exchange-onprem": { "provider": "delinea", "id": "56408", "label": "IAM API AD (on-prem Exchange session via core-cce1-ex01)" },
+    "m365-admin": { "provider": "delinea", "id": "56410", "label": "Entra app registration (IAM API Entra) cert + tenant" },
+    "zoom": { "provider": "delinea", "id": "56730", "label": "Zoom API (Server-to-Server OAuth)" },
+    "xmatters": { "provider": "delinea", "id": "56734", "label": "IAM Xmatters API" },
+    "sentinelone": { "provider": "delinea", "id": "56735", "label": "Sentinel One IAM API key" },
+    "duo": { "provider": "delinea", "id": "NOT_NEEDED", "label": "Duo — no API cred in Delinea; done by hand (planner makes it a manual step)" },
+    "logicmonitor": { "provider": "delinea", "id": "NOT_NEEDED", "label": "LogicMonitor — no API cred in Delinea; done by hand (planner makes it a manual step)" }
   },
 
   "locations": {
@@ -210,7 +215,24 @@
       "secrets": ["ad-dc"],
       "dependsOn": ["servicenow"],
       "onboard": { "when": "always", "config": { "enabled": true } },
-      "offboard": { "when": "always", "captureEvidence": true, "guardrails": ["do-not-move-ou"], "config": { "disable": true, "resetPassword": true, "hideFromGAL": true, "removeGroups": true } }
+      "offboard": {
+        "when": "always",
+        "captureEvidence": true,
+        "guardrails": ["do-not-move-ou"],
+        "dependsOn": ["exchange"],
+        "config": {
+          "disable": true,
+          "disableAccount": true,
+          "resetPassword": true,
+          "hideFromGAL": true,
+          "removeGroups": true,
+          "removeAllGroups": true,
+          "disabledUsersPrimaryGroup": "Disabled Users",
+          "disabledUsersOu": "OU=Disabled Users,OU=Users,OU=Coretelligent,DC=coretelligent,DC=local",
+          "disableComputer": true,
+          "disabledComputersOu": "OU=Disabled,OU=Computers,OU=Coretelligent,DC=coretelligent,DC=local"
+        }
+      }
     },
     {
       "key": "exchange",
@@ -226,7 +248,17 @@
           "calendar": { "grantManagerReviewer": true }
         }
       },
-      "offboard": { "when": "always", "config": { "convertToShared": { "skipIfMailboxOverGB": 50 }, "blockMobileDevices": true } }
+      "offboard": {
+        "when": "always",
+        "captureEvidence": true,
+        "dependsOn": [],
+        "config": {
+          "convertToShared": { "skipIfMailboxOverGB": 50 },
+          "delegateManagerFullAccess": true,
+          "blockMobileDevices": true,
+          "onPremExchangeUri": "http://core-cce1-ex01.coretelligent.local/PowerShell/"
+        }
+      }
     },
     {
       "key": "directory-sync",
@@ -234,7 +266,7 @@
       "secrets": ["ad-dc"],
       "dependsOn": ["exchange"],
       "onboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta", "waitForMailbox": true } },
-      "offboard": { "when": "always", "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta" } }
+      "offboard": { "when": "always", "dependsOn": ["exchange", "active-directory"], "config": { "command": "Start-ADSyncSyncCycle -PolicyType Delta", "host": "CORE-CCE-AZSYNC.coretelligent.local" } }
     },
     {
       "key": "m365",
@@ -242,7 +274,15 @@
       "secrets": ["m365-admin"],
       "dependsOn": ["directory-sync"],
       "onboard": { "when": "always", "config": {} },
-      "offboard": { "when": "always", "config": { "blockSignIn": true } }
+      "offboard": { "when": "always", "dependsOn": ["exchange"], "config": { "blockSignIn": true, "removeLicense": {}, "mailbox": { "sizeThresholdGB": 50 } } }
+    },
+    {
+      "key": "tap",
+      "mode": "api",
+      "secrets": ["m365-admin"],
+      "dependsOn": ["m365"],
+      "onboard": { "when": "always", "config": {} },
+      "offboard": { "when": "never" }
     },
     {
       "key": "case-resolution",
@@ -250,6 +290,80 @@
       "dependsOn": ["m365"],
       "onboard": { "when": "always", "config": {} },
       "offboard": { "when": "always", "config": {} }
+    },
+    {
+      "key": "entra",
+      "mode": "api",
+      "secrets": ["m365-admin"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": {
+        "when": "always",
+        "captureEvidence": true,
+        "dependsOn": ["exchange"],
+        "config": { "blockSignIn": true, "revokeSessions": true, "disableDevices": true, "captureDevices": true, "removeAllGroups": true }
+      }
+    },
+    {
+      "key": "sentinelone",
+      "mode": "api",
+      "secrets": ["sentinelone"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": { "when": "always", "requiresApproval": true, "dependsOn": ["entra"], "config": { "shutdown": false } }
+    },
+    {
+      "key": "zoom",
+      "mode": "api",
+      "secrets": ["zoom"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": { "when": "always", "dependsOn": ["exchange"], "config": { "revokeSso": true } }
+    },
+    {
+      "key": "duo",
+      "mode": "api",
+      "secrets": ["duo"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": { "when": "always", "dependsOn": ["m365"], "config": {} }
+    },
+    {
+      "key": "xmatters",
+      "mode": "api",
+      "secrets": ["xmatters"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": { "when": "always", "dependsOn": ["m365"], "config": {} }
+    },
+    {
+      "key": "logicmonitor",
+      "mode": "api",
+      "secrets": ["logicmonitor"],
+      "dependsOn": [],
+      "onboard": { "when": "never" },
+      "offboard": { "when": "always", "dependsOn": ["m365"], "config": {} }
+    },
+    {
+      "key": "notify",
+      "mode": "api",
+      "secrets": ["m365-admin"],
+      "dependsOn": [],
+      "runLast": true,
+      "onboard": { "when": "never" },
+      "offboard": {
+        "when": "always",
+        "dependsOn": [],
+        "config": {
+          "sender": "ekent@core.tech",
+          "recipients": [
+            "scott.camara@coretelligent.com", "todd.oblak@coretelligent.com", "evan.kent@coretelligent.com",
+            "joe.aukofer@coretelligent.com", "miguel.gallegos@coretelligent.com", "anthony.bostock@coretelligent.com",
+            "erik.truax@coretelligent.com", "jennifer.hughes@coretelligent.com", "justin.mascio@coretelligent.com"
+          ],
+          "caseNoteAddress": "internalsupport@core.tech"
+        }
+      }
     }
   ],
 

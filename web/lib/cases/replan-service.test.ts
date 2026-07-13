@@ -22,6 +22,9 @@ function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
       createMany: async () => { calls.createMany++; },
     },
     auditLog: { create: async () => { calls.audit++; } },
+    // repo.replanInputs reads the client's secrets to find the ones marked NOT_NEEDED (those systems
+    // plan as manual steps). None of these fixtures wire secrets, so an empty set is the right answer.
+    secret: { findMany: async () => [] },
     $transaction: async (cb: (tx: unknown) => Promise<unknown>) =>
       cb({
         job: {

@@ -7,7 +7,7 @@ import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
 import { deriveCaseStatus } from "../jobs/runner-logic";
-import { missingRequiredSecrets } from "./case-secrets";
+import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 
@@ -82,6 +82,21 @@ export function buildCaseStatusHint(
   }
 }
 
+// Secret names the client has marked "not needed" (NOT_NEEDED) — the step is done by hand, so there
+// is no credential to broker. The planner turns such a system into a manual checklist item instead of
+// an api job that would 409 at the broker. A child inherits the parent's marks for names it doesn't
+// set itself (same precedence as credential resolution in case-secrets).
+async function notNeededSecretNames(db: PrismaClient, clientId: string, parentId: string | null): Promise<string[]> {
+  const rows = await db.secret.findMany({
+    where: { clientId: { in: parentId ? [clientId, parentId] : [clientId] } },
+    select: { clientId: true, name: true, externalId: true },
+  });
+  const effective = new Map<string, string>();
+  for (const r of rows) if (r.clientId !== clientId) effective.set(r.name, r.externalId); // parent first…
+  for (const r of rows) if (r.clientId === clientId) effective.set(r.name, r.externalId); // …child wins
+  return [...effective].filter(([, id]) => id === NOT_NEEDED).map(([name]) => name);
+}
+
 export function makeCaseRepository(db: PrismaClient) {
   return {
     // Client + its systems + identity, needed to plan a case (identity/domain drive the UPN/
@@ -91,6 +106,7 @@ export function makeCaseRepository(db: PrismaClient) {
           id: string; name: string; slug: string; primaryDomain: string;
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
+          notNeededSecrets: string[];
         }
       | null
     > {
@@ -104,6 +120,7 @@ export function makeCaseRepository(db: PrismaClient) {
         },
       });
       if (!c) return null;
+      const notNeededSecrets = await notNeededSecretNames(db, c.id, c.parentId);
       // Account hierarchy: a child with NO modeled systems of its own plans with its PARENT's
       // runbook (e.g. CORE2181..89 inherit CORE1456). Systems come wholesale from the parent;
       // the modeling inputs fall back individually so anything the child HAS set still wins.
@@ -117,6 +134,7 @@ export function makeCaseRepository(db: PrismaClient) {
         if (p && p.systems.length > 0) {
           return {
             ...c,
+            notNeededSecrets,
             systems: p.systems,
             identity: c.identity ?? p.identity,
             personas: c.personas ?? p.personas,
@@ -126,7 +144,7 @@ export function makeCaseRepository(db: PrismaClient) {
           };
         }
       }
-      return c;
+      return { ...c, notNeededSecrets };
     },
 
     async clientSysIdToSlug(serviceNowSysId: string): Promise<string | null> {
@@ -196,6 +214,7 @@ export function makeCaseRepository(db: PrismaClient) {
             id: string; slug: string; primaryDomain: string;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
             identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
+            notNeededSecrets: string[];
           }; started: boolean }
       | null
     > {
@@ -208,18 +227,20 @@ export function makeCaseRepository(db: PrismaClient) {
               id: true, slug: true, primaryDomain: true,
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
               identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
+              parentId: true,
             },
           },
           jobs: { select: { status: true } },
         },
       });
       if (!c) return null;
+      const notNeededSecrets = await notNeededSecretNames(db, c.client.id, c.client.parentId);
       return {
         serviceNowCaseNumber: c.serviceNowCaseNumber,
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         emailDomainOverride: c.emailDomainOverride,
-        client: c.client,
+        client: { ...c.client, notNeededSecrets },
         started: hasStartedJobs(c.jobs),
       };
     },
