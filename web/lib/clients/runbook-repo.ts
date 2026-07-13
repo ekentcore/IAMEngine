@@ -11,7 +11,7 @@ const laneToDb = (l: string | null): Lifecycle =>
 type NewSystemRow = {
   clientId: string;
   systemKey: string;
-  mode: "api" | "browser" | "manual";
+  mode: "api" | "browser" | "manual" | "scim";
   onboardWhen: Lifecycle;
   offboardWhen: Lifecycle;
   dependsOn: string[];

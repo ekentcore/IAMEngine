@@ -165,7 +165,9 @@ export function makeCaseRepository(db: PrismaClient) {
               systemKey: p.systemKey,
               sequence: p.sequence,
               mode: p.mode,
-              status: p.mode === "api" ? "pending" : "manual",
+              // scim = the IdP provisions this app automatically: the step stays VISIBLE in the plan
+              // (it is part of the process) but is born satisfied so the case never waits on it.
+              status: p.mode === "api" ? "pending" : p.mode === "scim" ? "succeeded" : "manual",
               // Resolved instructions for the runner (Phase 3) + the planning flags we surface now.
               request: {
                 config: p.config ?? null,
@@ -312,7 +314,7 @@ export function makeCaseRepository(db: PrismaClient) {
             await tx.job.create({
               data: {
                 caseRequestId: caseId, systemKey: p.systemKey, sequence: p.sequence, mode: p.mode,
-                status: p.mode === "api" ? "pending" : "manual",
+                status: p.mode === "api" ? "pending" : p.mode === "scim" ? "succeeded" : "manual",
                 request: newReq as Prisma.InputJsonValue,
               },
             });

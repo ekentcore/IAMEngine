@@ -27,6 +27,7 @@ enum Mode {
   api
   browser
   manual
+  scim // provisioned automatically by identity-provider SCIM push — planned as a visible step, auto-satisfied so the case keeps moving
 }
 
 enum Lifecycle {

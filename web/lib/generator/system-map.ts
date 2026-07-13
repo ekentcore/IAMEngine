@@ -3,7 +3,7 @@
 // identity backbone from what was detected. Mirrors docs/modules/_INDEX.md.
 
 export type Lane = "always" | "on-request" | "never" | "by-persona";
-export type Mode = "api" | "browser" | "manual";
+export type Mode = "api" | "browser" | "manual" | "scim";
 
 export type CatalogEntry = {
   mode: Mode;
