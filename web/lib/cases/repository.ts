@@ -100,15 +100,16 @@ export function makeCaseRepository(db: PrismaClient) {
           id: true, name: true, slug: true, primaryDomain: true,
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
           identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
-          parentId: true,
+          parentId: true, inheritParentSystems: true,
         },
       });
       if (!c) return null;
       // Account hierarchy: a child with NO modeled systems of its own plans with its PARENT's
       // runbook (e.g. CORE2181..89 inherit CORE1456). Systems come wholesale from the parent;
       // the modeling inputs fall back individually so anything the child HAS set still wins.
-      // Adding systems to the child later automatically ends the inheritance.
-      if (c.systems.length === 0 && c.parentId) {
+      // Adding systems to the child later automatically ends the inheritance, and a child whose
+      // inheritParentSystems was switched off (it doesn't match its parent) never inherits.
+      if (c.systems.length === 0 && c.parentId && c.inheritParentSystems) {
         const p = await db.client.findUnique({
           where: { id: c.parentId },
           select: { identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true },

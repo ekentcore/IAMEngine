@@ -7,6 +7,8 @@ import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { currentIsSuperAdmin } from "@/lib/auth/acting";
 import { RestrictedToggle } from "../_components/restricted-toggle";
 import { OwnAgentToggle } from "../_components/own-agent-toggle";
+import { EngineOptOutToggle } from "../_components/engine-opt-out-toggle";
+import { ParentInheritanceControl } from "../_components/parent-inheritance-control";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
@@ -89,6 +91,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const canRestrict = await currentIsSuperAdmin(); // only super admins see/flip the restricted control
   // Does this client have its own (client-network) agent? Drives the "run cloud on own agent" hint.
   const hasClientAgent = (await db.agent.count({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null } })) > 0;
+  // SN account hierarchy: the parent's name for the inheritance control (child clients only).
+  const parent = client.parentId
+    ? await db.client.findUnique({ where: { id: client.parentId }, select: { name: true } })
+    : null;
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
   const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true } });
@@ -193,6 +199,15 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {canRestrict && <RestrictedToggle slug={client.slug} name={client.name} restricted={client.restricted} />}
+          <EngineOptOutToggle slug={client.slug} name={client.name} on={client.engineOptOut} />
+          {parent && (
+            <ParentInheritanceControl
+              slug={client.slug}
+              parentName={parent.name}
+              inherit={client.inheritParentSystems}
+              ownSystemCount={client.systems.length}
+            />
+          )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />

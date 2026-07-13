@@ -12,7 +12,16 @@ import { makeEmailDomainResolver } from "./plan-domain";
 
 export type ImportResult =
   | { ok: true; outcome: PlanOutcome; caseNumber: string; alreadyImported?: boolean }
-  | { ok: false; error: string; code: "not_found" | "no_client" | "duplicate" | "no_number" };
+  | { ok: false; error: string; code: "not_found" | "no_client" | "duplicate" | "no_number" | "engine_opt_out" };
+
+// "Do not use engine": the client's SN cases are never imported (the intake sweep counts these as
+// skipped, a manual import surfaces the reason). Checked after client matching so an unknown
+// client still reads no_client; cases already imported are untouched (the idempotence check runs
+// before this and re-imports/restores them as usual).
+async function engineOptedOut(db: PrismaClient, slug: string): Promise<boolean> {
+  const c = await db.client.findUnique({ where: { slug }, select: { engineOptOut: true } });
+  return c?.engineOptOut ?? false;
+}
 
 export async function importCaseFromServiceNow(
   db: PrismaClient,
@@ -59,6 +68,10 @@ export async function importCaseFromServiceNow(
       code: "no_client",
       error: `the case's client isn't in the synced roster yet — run "Refresh from ServiceNow" first`,
     };
+  }
+
+  if (await engineOptedOut(db, slug)) {
+    return { ok: false, code: "engine_opt_out", error: `${trimmed}'s client is marked "do not use engine" — its cases aren't imported` };
   }
 
   const resolver = makeEmailDomainResolver(db);
@@ -116,6 +129,10 @@ export async function importIncidentCase(
   }
   if (!slug && intake.clientSysId) slug = await repo.clientSysIdToSlug(intake.clientSysId);
   if (!slug) return { ok: false, code: "no_client", error: `the incident's company "${companyName}" isn't in the roster` };
+
+  if (await engineOptedOut(db, slug)) {
+    return { ok: false, code: "engine_opt_out", error: `${companyName || slug} is marked "do not use engine" — its cases aren't imported` };
+  }
 
   const resolver = makeEmailDomainResolver(db);
   const outcome = await createAndPlanCase(

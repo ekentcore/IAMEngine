@@ -12,6 +12,8 @@ export type ClientListItem = {
   status: ClientStatus;
   intakeSource: string; // "um" (external) | "incident" (internal) — which SN table to scan for cases
   restricted: boolean; // internal-only: hidden from operators not granted it (see lib/auth/client-scope)
+  engineOptOut: boolean; // "do not use engine" — the intake sweep / manual import skip this client's cases
+  inheritParentSystems: boolean; // false = a system-less child does NOT plan from its parent (link broken)
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;

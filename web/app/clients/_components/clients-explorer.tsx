@@ -341,6 +341,7 @@ export function ClientsExplorer({ clients, canRestrict = false }: { clients: Cli
                 <ClientFlagBadges
                   intakeSource={c.intakeSource}
                   restricted={c.restricted}
+                  engineOptOut={c.engineOptOut}
                   name={c.name}
                   canRestrict={canRestrict}
                   onPatch={(action, payload) => saveCell(c.slug, action, payload)}

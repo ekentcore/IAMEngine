@@ -77,6 +77,8 @@ export function makeClientRepository(db: PrismaClient) {
           status: true,
           intakeSource: true,
           restricted: true,
+          engineOptOut: true,
+          inheritParentSystems: true,
           coreId: true,
           region: true,
           supportStatus: true,
@@ -144,6 +146,8 @@ export function makeClientRepository(db: PrismaClient) {
         status: r.status,
         intakeSource: r.intakeSource,
         restricted: r.restricted,
+        engineOptOut: r.engineOptOut,
+        inheritParentSystems: r.inheritParentSystems,
         coreId: r.coreId,
         region: r.region,
         supportStatus: r.supportStatus,
@@ -160,12 +164,12 @@ export function makeClientRepository(db: PrismaClient) {
         systemCount: r.systems.length,
         // modeled = has its OWN systems, OR inherits a modeled parent (SN account hierarchy) — a child
         // with no systems is planned from its parent, so it counts as modeled. Matches `coverage`.
-        modeled: r.systems.length > 0 || (r.parentId != null && (r.parent?.systems.length ?? 0) > 0),
+        modeled: r.systems.length > 0 || (r.inheritParentSystems && r.parentId != null && (r.parent?.systems.length ?? 0) > 0),
         parentId: r.parentId,
         parentName: r.parent?.name ?? null,
         parentSystemKeys: r.parent?.systems.map((s) => s.systemKey) ?? [],
         // own = has its own systems; parent = inherits a modeled parent; none = truly unmodeled.
-        coverage: r.systems.length > 0 ? "own" : r.parentId && (r.parent?.systems.length ?? 0) > 0 ? "parent" : "none",
+        coverage: r.systems.length > 0 ? "own" : r.inheritParentSystems && r.parentId && (r.parent?.systems.length ?? 0) > 0 ? "parent" : "none",
         // Run-readiness, computed from wired secrets + latest connection tests (own systems).
         readiness: computeClientReadiness({
           systems: r.systems
@@ -339,6 +343,57 @@ export function makeClientRepository(db: PrismaClient) {
     async setRunCloudOnOwnAgent(slug: string, runCloudOnOwnAgent: boolean) {
       return db.client.update({ where: { slug }, data: { runCloudOnOwnAgent } });
     },
+    // "Do not use engine": the intake sweep / manual import skip this client's SN cases entirely.
+    async setEngineOptOut(slug: string, engineOptOut: boolean) {
+      return db.client.update({ where: { slug }, data: { engineOptOut } });
+    },
+    // Break (or restore) the parent-systems inheritance for a child that doesn't match its parent.
+    async setInheritParentSystems(slug: string, inheritParentSystems: boolean) {
+      return db.client.update({ where: { slug }, data: { inheritParentSystems } });
+    },
+    // Materialize the parent's modeling onto the child — exactly what clientForPlanning inherits:
+    // the ClientSystem rows plus identity/personas/globals/locations WHERE THE CHILD HAS NONE.
+    // Used when breaking inheritance with "keep a copy" so the operator can then edit the steps
+    // that differ. Idempotent: systems the child already has (by systemKey) are left alone.
+    async copyParentModeling(slug: string): Promise<{ ok: true; copied: number } | { ok: false; reason: string }> {
+      const c = await db.client.findUnique({
+        where: { slug },
+        select: {
+          id: true, parentId: true, identity: true, personas: true, globals: true, globalsOffboard: true, locations: true,
+          systems: { select: { systemKey: true } },
+        },
+      });
+      if (!c) return { ok: false, reason: "client not found" };
+      if (!c.parentId) return { ok: false, reason: "client has no parent" };
+      const p = await db.client.findUnique({
+        where: { id: c.parentId },
+        select: {
+          identity: true, personas: true, globals: true, globalsOffboard: true, locations: true,
+          systems: {
+            select: {
+              systemKey: true, mode: true, onboardWhen: true, offboardWhen: true, dependsOn: true,
+              requiresApproval: true, captureEvidence: true, secretNames: true, config: true,
+            },
+          },
+        },
+      });
+      if (!p || p.systems.length === 0) return { ok: false, reason: "the parent has no modeled systems to copy" };
+      const have = new Set(c.systems.map((s) => s.systemKey));
+      const toCopy = p.systems.filter((s) => !have.has(s.systemKey));
+      const identityData: Record<string, unknown> = {};
+      for (const k of ["identity", "personas", "globals", "globalsOffboard", "locations"] as const) {
+        if (c[k] == null && p[k] != null) identityData[k] = p[k] as Prisma.InputJsonValue;
+      }
+      await db.$transaction([
+        ...(toCopy.length
+          ? [db.clientSystem.createMany({
+              data: toCopy.map((s) => ({ ...s, config: (s.config ?? Prisma.DbNull) as Prisma.InputJsonValue, clientId: c.id })),
+            })]
+          : []),
+        ...(Object.keys(identityData).length ? [db.client.update({ where: { id: c.id }, data: identityData })] : []),
+      ]);
+      return { ok: true, copied: toCopy.length };
+    },
     // Per-client notification override (per-channel object, or null to clear). Shape sanitized by the
     // API route via parseClientOverride before it lands here.
     async setNotifyOverride(slug: string, notifyOverride: unknown | null) {
@@ -486,6 +541,7 @@ export function makeClientRepository(db: PrismaClient) {
         select: {
           id: true,
           parentId: true,
+          inheritParentSystems: true,
           systems: { select: { systemKey: true, secretNames: true } },
           secrets: { select: { name: true, externalId: true, label: true, provider: true } },
         },
@@ -496,7 +552,7 @@ export function makeClientRepository(db: PrismaClient) {
       // here so the child's Secrets panel lists exactly the names its cases will need — otherwise
       // the panel is empty and the operator has no way to wire the child's credentials at all.
       let systems = c.systems;
-      if (systems.length === 0 && c.parentId) {
+      if (systems.length === 0 && c.parentId && c.inheritParentSystems) {
         const p = await db.client.findUnique({
           where: { id: c.parentId },
           select: { systems: { select: { systemKey: true, secretNames: true } } },

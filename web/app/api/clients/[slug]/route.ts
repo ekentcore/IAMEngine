@@ -27,7 +27,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -186,6 +186,36 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const client = await repo.setRunCloudOnOwnAgent(params.slug, body.runCloudOnOwnAgent);
     await repo.writeAudit({ actor: _g.user.email || "ui", action: "client.run_cloud_on_own_agent.set", clientId: client.id, detail: { runCloudOnOwnAgent: body.runCloudOnOwnAgent } });
     return NextResponse.json(client);
+  }
+
+  // "Do not use engine": stop importing this client's ServiceNow cases (sweep + manual import).
+  if (body.action === "set-engine-opt-out") {
+    if (typeof body.engineOptOut !== "boolean") return NextResponse.json({ error: "engineOptOut must be a boolean" }, { status: 422 });
+    const client = await repo.setEngineOptOut(params.slug, body.engineOptOut);
+    await repo.writeAudit({ actor: _g.user.email || "ui", action: "client.engine_opt_out.set", clientId: client.id, detail: { engineOptOut: body.engineOptOut } });
+    return NextResponse.json(client);
+  }
+
+  // Break/restore the parent-systems inheritance for a child that doesn't match its parent.
+  // When breaking with { copy: true }, the parent's modeling is materialized onto the child FIRST
+  // (so the operator can then edit the steps that differ); { copy: false } leaves the child empty.
+  if (body.action === "set-parent-inheritance") {
+    if (typeof body.inherit !== "boolean") return NextResponse.json({ error: "inherit must be a boolean" }, { status: 422 });
+    if (!existing.parentId) return NextResponse.json({ error: "this client has no parent to inherit from" }, { status: 422 });
+    let copied = 0;
+    if (!body.inherit && body.copy === true) {
+      const r = await repo.copyParentModeling(params.slug);
+      if (!r.ok) return NextResponse.json({ error: r.reason }, { status: 422 });
+      copied = r.copied;
+    }
+    const client = await repo.setInheritParentSystems(params.slug, body.inherit);
+    await repo.writeAudit({
+      actor: _g.user.email || "ui",
+      action: "client.inherit_parent_systems.set",
+      clientId: client.id,
+      detail: { inheritParentSystems: body.inherit, copiedSystems: copied },
+    });
+    return NextResponse.json({ ...client, copiedSystems: copied });
   }
 
   // Per-client notification override: this client's own destination per channel, added to ("also") or
