@@ -188,6 +188,7 @@ export function makeCaseRepository(db: PrismaClient) {
     // identity + systems), and whether any job has already started (re-plan is pre-execution only).
     async replanInputs(caseId: string): Promise<
       | { serviceNowCaseNumber: string | null; action: Action; payload: Record<string, unknown>;
+          emailDomainOverride: string | null;
           client: {
             id: string; slug: string; primaryDomain: string;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
@@ -198,7 +199,7 @@ export function makeCaseRepository(db: PrismaClient) {
       const c = await db.caseRequest.findUnique({
         where: { id: caseId },
         select: {
-          serviceNowCaseNumber: true, action: true, payload: true,
+          serviceNowCaseNumber: true, action: true, payload: true, emailDomainOverride: true,
           client: {
             select: {
               id: true, slug: true, primaryDomain: true,
@@ -214,6 +215,7 @@ export function makeCaseRepository(db: PrismaClient) {
         serviceNowCaseNumber: c.serviceNowCaseNumber,
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
+        emailDomainOverride: c.emailDomainOverride,
         client: c.client,
         started: hasStartedJobs(c.jobs),
       };

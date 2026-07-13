@@ -49,7 +49,9 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
   // EMAIL domain (contact-derived, with any per-case override), falling back to the website domain.
   if (action === "onboard") {
     const identity = (info.client.identity ?? {}) as { usernamePatterns?: string[] | null };
-    const { domain } = await makeEmailDomainResolver(db)(info.client, override);
+    // Explicit override (request body) wins; else the PERSISTED per-case choice (the operator's
+    // domain pick survives later replans); else the client's default resolution.
+    const { domain } = await makeEmailDomainResolver(db)(info.client, override ?? info.emailDomainOverride ?? undefined);
     payload = deriveIdentity(payload, { usernamePatterns: identity.usernamePatterns ?? null, primaryDomain: domain });
   }
 

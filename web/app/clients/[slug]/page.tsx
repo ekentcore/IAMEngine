@@ -12,6 +12,7 @@ import { automationPreview } from "@/lib/automation";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { SyncSystemsButton } from "../_components/sync-systems-button";
+import { EmailDomainsEditor } from "../_components/email-domains-editor";
 import { SetupStageChips } from "../_components/setup-stage-chips";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
@@ -219,6 +220,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           />
         </tbody>
       </table>
+
+      {/* Multi-domain clients: which email domains cases may onboard under (default = curated
+          emailDomain). Pullable from the M365 tenant; the case page offers these before running. */}
+      <EmailDomainsEditor slug={client.slug} domains={client.domains ?? []} defaultDomain={client.emailDomain ?? client.primaryDomain ?? null} />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h2 style={{ marginRight: "auto" }}>Systems</h2>

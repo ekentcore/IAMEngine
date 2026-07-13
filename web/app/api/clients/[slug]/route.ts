@@ -27,7 +27,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -82,6 +82,20 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
   // Inline table edit: the email/UPN name format. Accepts "primary | fallback" — the fallback is
   // used when the primary UPN is taken by a different person (e.g. "{first}.{last} | {first}.{mi}").
+  if (body.action === "set-domains") {
+    const raw = Array.isArray(body.domains) ? body.domains : null;
+    if (!raw) return NextResponse.json({ error: "domains[] is required" }, { status: 422 });
+    const domains: string[] = [];
+    for (const d of raw) {
+      const n = normalizeDomainInput(typeof d === "string" ? d : "");
+      if (!n) return NextResponse.json({ error: `'${String(d)}' is not a valid domain` }, { status: 422 });
+      if (!domains.includes(n)) domains.push(n);
+    }
+    const updated = await repo.setDomains(params.slug, domains);
+    await repo.writeAudit({ actor: "ui", action: "client.domains.set", clientId: updated.id, detail: { domains } });
+    return NextResponse.json({ ok: true, domains });
+  }
+
   if (body.action === "set-username-pattern") {
     const raw = typeof body.pattern === "string" ? body.pattern.trim() : "";
     const NAME_TOKEN = /\{(first|last|f|l|firstinitial|lastinitial|mi)\}/i;
