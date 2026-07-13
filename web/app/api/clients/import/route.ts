@@ -7,6 +7,7 @@
 // progressing or hung. Ids run sequentially: it keeps ServiceNow/Azure load flat and makes the
 // stream a readable progress log.
 import { guard } from "@/lib/auth/route-guard";
+import { currentClientScope } from "@/lib/auth/client-scope";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseCoreIds, importClientByCoreId, type ImportResult } from "@/lib/clients/import-by-coreid";
@@ -21,6 +22,14 @@ const MAX_IDS = 25;
 
 export async function POST(req: Request) {
   const g = await guard("client.edit_systems"); if (g.res) return g.res;
+
+  // Import resolves clients by CORE id, not by slug — so the per-client scope boundary every other
+  // client-mutating route applies (clientSlugInScope) has nothing to hang off: an operator restricted
+  // to a few clients could name ANY CORE id and have its row claimed, re-parented and rebuilt.
+  // Importing is a fleet-level action; restrict it to operators who can see the whole fleet.
+  if ((await currentClientScope(db)) !== null) {
+    return NextResponse.json({ error: "importing clients requires access to all clients" }, { status: 403 });
+  }
   const actor = `ui:${g.user.email ?? g.user.id}`;
 
   let body: { coreIds?: unknown };
