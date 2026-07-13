@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:lan": "next dev -H 0.0.0.0 -p 3000",
+    "dev:fresh": "bash ../scripts/dev-lan.sh",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
