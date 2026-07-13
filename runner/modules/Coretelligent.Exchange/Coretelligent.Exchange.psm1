@@ -97,6 +97,36 @@ function Resolve-CtgManagerAddress {
     return ''
 }
 
+# Resolve a person's DISPLAY NAME to a mailbox address. The ServiceNow intake carries the manager as a
+# NAME (payload `managerName`, e.g. "Elizabeth McPhillips") and NEVER as an address — so a delegate
+# grant that only understood addresses skipped the very manager the form named. Exactly-one match wins;
+# 0 or several return '' — we never guess who gets access to someone's mailbox. EXO first, then on-prem
+# AD (hybrid clients, where the manager may not be mail-enabled in the cloud view).
+function Resolve-CtgAddressByDisplayName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    $safe = $Name -replace "'", "''"   # "Sean O'Brien" must not break the OPATH/LDAP filter
+    if (Get-Command Get-Recipient -ErrorAction SilentlyContinue) {
+        $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$safe'" -ErrorAction SilentlyContinue)
+        if ($rcpt.Count -gt 1) { Write-Warning "manager '$Name' is ambiguous in Exchange ($($rcpt.Count) matches) — not guessing"; return '' }
+        if ($rcpt.Count -eq 1) {
+            $addr = [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID'))
+            if ($addr) { return $addr }
+        }
+    }
+    if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) {
+        try {
+            $u = @(Get-ADUser -Filter "DisplayName -eq '$safe'" -Properties mail, UserPrincipalName -ErrorAction SilentlyContinue)
+            if ($u.Count -eq 1) {
+                $addr = [string]((Get-CtgProp $u[0] 'mail') ?? (Get-CtgProp $u[0] 'UserPrincipalName'))
+                if ($addr) { return $addr }
+            }
+        }
+        catch { }
+    }
+    return ''
+}
+
 # Exchange Online (cloud) session — app-only certificate auth. Used for the EXO-side cmdlets:
 # offboard (convert-to-shared, CAS), the post-sync mailbox wait, and regional/calendar finishing.
 function Connect-CtgExchange {
@@ -634,8 +664,27 @@ function Invoke-CtgExchangeOffboarding {
             if ($delegate -is [string]) { $delegate }
             elseif (Get-CtgProp $delegate 'address') { [string](Get-CtgProp $delegate 'address') }
             else { [string]((Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerUpn') ?? (Get-CtgProp $User 'Manager')) }
-        # The intake usually has no manager — look it up from the DIRECTORY: Entra/Graph first (the
-        # authoritative cloud manager link), then Exchange, then on-prem AD. Resolved to a primary SMTP.
+        # A manager given as a NAME, not an address — resolve it to a mailbox before granting anything.
+        if ($mgr -and $mgr -notmatch '@') {
+            $named = $mgr
+            $mgr = Resolve-CtgAddressByDisplayName -Name $named
+            if ($mgr) { $actions.Add("resolved manager '$named' -> $mgr") }
+            else { $actions.Add("WARN could not resolve manager '$named' to a mailbox (no single match) — Full Access delegate skipped") }
+        }
+        # The intake's OWN manager field: ServiceNow carries `managerName` (a display name). Reading it
+        # here is what makes the delegate work on a case whose directory link is already gone (the AD
+        # offboard step clears it) — the form named the person all along.
+        if (-not $mgr) {
+            $named = [string](Get-CtgProp $User 'managerName')
+            if ($named) {
+                Write-CtgStep "the case names manager '$named' — resolving to a mailbox"
+                $mgr = Resolve-CtgAddressByDisplayName -Name $named
+                if ($mgr) { $actions.Add("resolved manager '$named' from the case -> $mgr") }
+                else { $actions.Add("WARN the case names manager '$named' but no single matching mailbox was found") }
+            }
+        }
+        # Last resort — the DIRECTORY link: Entra/Graph first (the authoritative cloud manager link),
+        # then Exchange, then on-prem AD. Resolved to a primary SMTP.
         if (-not $mgr) {
             Write-CtgStep "no manager on the case — looking it up in the directory (Entra/Exchange/AD) for '$upn'"
             $mgr = Resolve-CtgManagerAddress -Upn $upn
