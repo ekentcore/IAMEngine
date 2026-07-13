@@ -14,6 +14,10 @@ export type AgentVM = {
   clientName: string | null;
   version: string | null; // content-hash build id
   semver: string | null; // human release version (runner/VERSION), display only
+  // What this runner reported it can DO: on-prem systems it has modules for (active-directory,
+  // directory-sync…) plus cross-cutting 'browser' when the Playwright sidecar is installed. The
+  // claim gate withholds work an agent hasn't claimed the capability for, so this is load-bearing.
+  capabilities: string[] | null; // null = legacy runner that never reported (treated as capable)
   priority: number; // failover rank (lower = higher precedence); a backup stands by while a higher peer is online
   enabled: boolean;
   lastSeenAt: string | null;
@@ -161,6 +165,34 @@ function PriorityControl({ a }: { a: AgentVM }) {
   );
 }
 
+// What the runner reported it can DO. Load-bearing, not decoration: the claim gate withholds work an
+// agent hasn't claimed the capability for — so a missing 'browser' chip is exactly why a Spanning
+// force-sync never dispatches, and a missing 'active-directory' chip is why AD jobs sit unclaimed.
+const CAP_LABEL: Record<string, string> = {
+  browser: "browser",
+  "active-directory": "AD",
+  "directory-sync": "dir-sync",
+};
+function CapabilityChips({ a }: { a: AgentVM }) {
+  if (!a.lastSeenAt) return <span className="note muted" style={{ fontSize: 11 }}>— not reported yet</span>;
+  // null = a pre-1.31 runner that doesn't report capabilities at all. The claim gate treats it as
+  // capable (old behaviour), so say so rather than implying it can do nothing.
+  if (a.capabilities === null) return <span className="note muted" style={{ fontSize: 11 }}>legacy runner (no capability report)</span>;
+  if (a.capabilities.length === 0) return <span className="note muted" style={{ fontSize: 11 }}>cloud only</span>;
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+      {a.capabilities.map((c) => (
+        <span key={c} className="badge" style={{ fontSize: 10, color: c === "browser" ? "var(--ok-fg)" : undefined }}
+          title={c === "browser"
+            ? "Playwright/Chromium sidecar installed — this agent can run browser jobs (e.g. Spanning force-sync)"
+            : `this runner has the ${c} module loaded`}>
+          {CAP_LABEL[c] ?? c}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 // Version display (semver line + build hash + up-to-date/needs-update note). Shared so the v2 table
 // reads the same as the classic one without inlining the branch twice.
 function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentBuild: string; currentVersion: string | null }) {
@@ -177,6 +209,7 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
         {v === currentBuild
           ? <div className="note" style={{ color: "var(--ok-fg)" }}>✓ up to date</div>
           : <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ update available</div>}
+        <div style={{ marginTop: 3 }}><CapabilityChips a={a} /></div>
       </>
     );
   }
@@ -184,6 +217,7 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
     <>
       <span className="muted">{v ?? "—"}</span>
       {a.enabled && <div className="note" style={{ color: "var(--warn-fg)" }}>⚠ pre-build runner — Update to report its build; still here after an update? Troubleshoot</div>}
+      <div style={{ marginTop: 3 }}><CapabilityChips a={a} /></div>
     </>
   );
 }
