@@ -765,8 +765,10 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               For a runner that <b>never comes online</b> — it shows &ldquo;pre-build runner&rdquo; forever, or an update
               sits on &ldquo;queued — waiting for the runner to poll&rdquo;. Run this in <b>PowerShell on the runner host</b>{" "}
               (elevated, so it can read the machine-level token). It checks PowerShell 7, the runner files, the
-              Scheduled Task, <code>RUNNER_API_TOKEN</code>, connectivity and auth, then prints a verdict and offers to
-              run the runner in the foreground so you can watch it live.
+              Scheduled Task, <code>RUNNER_API_TOKEN</code>, the browser sidecar, connectivity and auth — then prints a
+              verdict, <b>offers to fix</b> what it safely can, and <b>offers to reboot</b> (a SYSTEM task only picks up
+              machine env vars after one). It can also run the runner in the foreground so you can watch it live.
+              {" "}<a href="/help/runner-troubleshooting" target="_blank" rel="noreferrer">Troubleshooting guide →</a>
             </p>
             <textarea readOnly rows={2} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
               value={troubleshootCommand(troubleshootAgent, origin)} onFocus={(e) => e.currentTarget.select()} />

@@ -59,6 +59,26 @@ $tok = [Environment]::GetEnvironmentVariable('RUNNER_API_TOKEN', 'Machine')
 if (-not $tok) { $tok = $env:RUNNER_API_TOKEN }
 if ($tok) { OK "RUNNER_API_TOKEN is set (machine or session env)" } else { INFO "RUNNER_API_TOKEN is NOT set - required if the app enforces runner auth" }
 
+# 5b. Browser sidecar: the #1 cause of "enrolled, updated, then went SILENT". If node is on PATH and
+# the Playwright sidecar isn't fully installed, an older runner would try to npm-install + download
+# ~170MB of Chromium BEFORE its first heartbeat - on a locked-down DC that stalls for minutes and the
+# agent looks stuck "updating". A DC never needs a browser (that's a central-runner job), so the fix
+# is to disable it here. Newer runners install in the background instead, but the flag still saves
+# the wasted download and the repeated retries.
+$noBrowser  = [Environment]::GetEnvironmentVariable('IAM_RUNNER_NO_BROWSER_INSTALL', 'Machine')
+if (-not $noBrowser) { $noBrowser = $env:IAM_RUNNER_NO_BROWSER_INSTALL }
+$hasNode    = [bool](Get-Command node -ErrorAction SilentlyContinue)
+$sidecarOk  = $false
+if ($Dir) { $sidecarOk = Test-Path -LiteralPath (Join-Path $Dir 'browser/node_modules/@playwright') }
+$browserRisk = $false
+if ($noBrowser -eq '1') { OK "IAM_RUNNER_NO_BROWSER_INSTALL=1 (browser install disabled - correct for a client/DC agent)" }
+elseif (-not $hasNode)  { OK "node is not installed - the runner skips the browser sidecar entirely (no stall risk)" }
+elseif ($sidecarOk)     { OK "browser sidecar already installed - no download needed at startup" }
+else {
+  $browserRisk = $true
+  BAD "browser sidecar NOT installed and node IS present - this host will try to download Chromium (~170MB) on startup. On an older runner that BLOCKS the first heartbeat (agent looks stuck 'updating'). Set IAM_RUNNER_NO_BROWSER_INSTALL=1 unless this host is the CENTRAL runner."
+}
+
 # 6. Reachability — /api/runner/manifest is unauthenticated, so this isolates pure network problems.
 $reach = $false
 try {
@@ -92,6 +112,40 @@ if (-not $reach) {
   Write-Host "VERDICT: everything checks out from THIS session, and a runner process is running. If the Agents page still shows this runner offline / 'pre-build', that process started before the token landed: REBOOT this host (the Task Scheduler service caches machine env vars until reboot)." -ForegroundColor Yellow
 } else {
   Write-Host "VERDICT: connectivity and auth are fine but no runner is running. Start it below (or Start-ScheduledTask iam-runner) - it takes over any stale instance safely." -ForegroundColor Yellow
+}
+
+# ---- Offer to APPLY the fixes -----------------------------------------------------------------
+# Only settings this script can safely set itself. It deliberately carries NO secrets, so it can NEVER
+# set RUNNER_API_TOKEN - that value only exists in the token-gated installer. A 401 therefore sends
+# the operator back to the Agents page for a fresh install command.
+$needReboot = $false
+Write-Host ""
+if ($browserRisk) {
+  $ans = Read-Host "Disable the browser/Chromium install on this host (recommended for a client/DC agent)? (Y/n)"
+  if ($ans -notmatch '^[Nn]') {
+    try {
+      [Environment]::SetEnvironmentVariable('IAM_RUNNER_NO_BROWSER_INSTALL', '1', 'Machine')
+      $env:IAM_RUNNER_NO_BROWSER_INSTALL = '1'
+      OK "set IAM_RUNNER_NO_BROWSER_INSTALL=1 (Machine env)"
+      $needReboot = $true
+    } catch { BAD ("could not set the machine env var - re-run this script AS ADMINISTRATOR. " + $_.Exception.Message) }
+  }
+}
+if (-not $authOk -and $reach) {
+  Write-Host ""
+  Write-Host "This host's RUNNER_API_TOKEN is missing or wrong. This script carries no secrets, so it cannot set it for you." -ForegroundColor Yellow
+  Write-Host "Fix: on the app's Agents page, copy this agent's INSTALL command and re-run it here (it sets the token machine-wide), then reboot." -ForegroundColor Yellow
+}
+
+# A SYSTEM Scheduled Task inherits the MACHINE environment captured by the Task Scheduler service at
+# ITS start - so a machine env var set now is invisible to the running task until the box reboots.
+# This is the single most-missed step; offer it rather than print it and hope.
+if ($needReboot -or ($proc -and -not $authOk)) {
+  Write-Host ""
+  Write-Host "A REBOOT is required for the SYSTEM Scheduled Task to pick up the new machine environment." -ForegroundColor Yellow
+  $rb = Read-Host "Reboot this host now? (y/N)"
+  if ($rb -match '^[Yy]') { Write-Host "rebooting..." -ForegroundColor Red; Restart-Computer -Force }
+  else { INFO "skipped - remember: the runner will keep using the OLD environment until this host reboots." }
 }
 
 # Optional: run the runner in the FOREGROUND so you can watch it live. A new instance takes over

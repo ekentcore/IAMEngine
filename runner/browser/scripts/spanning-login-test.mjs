@@ -66,6 +66,34 @@ async function delineaToken() {
   if (!r.ok) throw new Error(`Delinea token failed (${r.status})`);
   return (await r.json()).access_token;
 }
+// PREFERRED MFA PATH: let Delinea GENERATE the code. Secret Server holds the TOTP seed itself (the
+// secret/template has "one-time password" enabled), so the seed never lands in a custom field and we
+// never handle it — we just ask for the current code:
+//   GET /api/v1/one-time-password-code/{secretId}
+//   -> { "0": { code: "123456", remainingSeconds: 11, durationSeconds: 30 } }
+// Keyed by index (a secret can carry several OTP fields); we take the first.
+// A code with 2s left is useless to a login that still has to reach the MFA box, so if the window is
+// nearly over we WAIT for the next one and take a fresh, full-length code.
+const MIN_OTP_SECONDS = 8;
+async function delineaOtpCode(id, { waitForFresh = true } = {}) {
+  const base = process.env.DELINEA_BASE_URL, token = await delineaToken();
+  const get = async () => {
+    const r = await fetch(`${base}/api/v1/one-time-password-code/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (r.status === 404) return null;               // no one-time password configured on this secret
+    if (!r.ok) throw new Error(`Delinea one-time-password-code failed (${r.status})`);
+    const body = await r.json().catch(() => null);
+    const first = body && typeof body === "object" ? Object.values(body)[0] : null;
+    return first && first.code ? first : null;
+  };
+  let otp = await get();
+  if (!otp) return null;
+  if (waitForFresh && Number.isFinite(otp.remainingSeconds) && otp.remainingSeconds < MIN_OTP_SECONDS) {
+    await new Promise((r) => setTimeout(r, (otp.remainingSeconds + 1) * 1000));
+    otp = (await get()) ?? otp;
+  }
+  return otp;
+}
+
 const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 const fieldName = (f) => f.slug || f.fieldName || "";
 
@@ -107,10 +135,17 @@ async function credsFromDelinea(id) {
   const p = pickField(items, PASS_FIELDS);
   const s = pickField(items, SEED_FIELDS);
 
+  // Can Secret Server mint the OTP itself? That's the path we want — the seed stays in the vault.
+  // The legacy TOTPSeed field still works, but is no longer required (and shouldn't be used).
+  let otp = null;
+  try { otp = await delineaOtpCode(id, { waitForFresh: false }); } catch { otp = null; }
+
   return {
     secretName: body.name ?? `#${id}`,
+    secretId: id,
     username: u.value, usernameFrom: u.from,
     password: p.value, passwordFrom: p.from,
+    otpFromDelinea: Boolean(otp),
     totpSeed: s.value, totpSeedFrom: s.from,
     // Everything on the secret, so a missing field tells you exactly what to add and what it's called.
     available: items.filter((f) => f.itemValue).map(fieldName),
@@ -170,7 +205,7 @@ async function main() {
   // instead of as a mystery "wrong password" three screens into the Microsoft login.
   say(`  username : ${creds.username ?? "(MISSING)"}${creds.usernameFrom ? `   [field: ${creds.usernameFrom}]` : ""}`);
   say(`  password : ${redact(creds.password)}${creds.passwordFrom ? `   [field: ${creds.passwordFrom}]` : ""}`);
-  say(`  totpSeed : ${creds.totpSeed ? "present" : "(MISSING)"}${creds.totpSeedFrom ? `   [field: ${creds.totpSeedFrom}]` : ""}`);
+  say(`  MFA code : ${creds.otpFromDelinea ? "Delinea generates it (one-time-password enabled on the secret) ✔" : creds.totpSeed ? `from a TOTPSeed field [${creds.totpSeedFrom}] — legacy` : "(none available)"}`);
 
   if (!creds.username || !creds.password) {
     if (creds.available?.length) say(`  fields on this secret: ${creds.available.join(", ")}`);
@@ -184,23 +219,30 @@ async function main() {
     say(`  WARNING: username "${creds.username}" is not an email address — the Microsoft sign-in expects a UPN.`);
     say(`           If this came from an API field, add an explicit PortalUsername to the secret.`);
   }
-  if (!creds.totpSeed) {
-    say("  NOTE: no TOTP seed — if the account prompts for a code the run stops there and screenshots it.");
-    say("        Add TOTPSeed (base32) to the secret to complete MFA unattended.");
-  } else {
-    // Print the current code so you can eyeball it against the authenticator BEFORE spending a login.
+  if (creds.otpFromDelinea) {
+    // Delinea mints it. Show the LIVE code so you can eyeball it against the authenticator before
+    // spending a real sign-in — the seed itself is never fetched, printed, or stored by us.
+    const now = await delineaOtpCode(creds.secretId, { waitForFresh: false });
+    say(`  code now : ${now.code}  (valid ${now.remainingSeconds}s of ${now.durationSeconds}s) ← compare with your authenticator`);
+  } else if (creds.totpSeed) {
+    say("  NOTE: this secret still uses a TOTPSeed FIELD. Prefer Delinea's built-in one-time password:");
+    say("        enable it on the secret (Security -> One-Time Password) and delete the seed field.");
     try {
-      say(`  TOTP now : ${totp(creds.totpSeed)}  ← compare with your authenticator app; if it differs, the seed is wrong`);
+      say(`  code now : ${totp(creds.totpSeed)}  ← compare with your authenticator app; if it differs, the seed is wrong`);
     } catch (e) {
       throw new Error(`the TOTP seed on the secret is not valid base32 (${e.message}) — fix TOTPSeed`);
     }
+  } else {
+    say("  NOTE: no MFA code source — if the account prompts for a code the run stops there and screenshots it.");
+    say("        Fix: in Delinea, enable One-Time Password on this secret (paste the authenticator seed there ONCE);");
+    say("        the flow then asks Delinea for the current code and never handles the seed.");
   }
 
   // --check: validate the secret and stop. No browser, no sign-in attempt against the client's tenant.
   // Use it to confirm a client's `spanning` secret is wired for the browser flow before running it.
   if (CHECK_ONLY) {
     say("");
-    say(`--check: secret is usable for the browser flow (portal login present${creds.totpSeed ? " + TOTP seed" : ", NO TOTP seed"}). No sign-in attempted.`);
+    say(`--check: secret is usable for the browser flow (portal login present${creds.otpFromDelinea ? " + Delinea-generated MFA code" : creds.totpSeed ? " + legacy TOTP seed" : ", NO MFA code source"}). No sign-in attempted.`);
     writeFileSync(path.join(OUT, "run.log"), log.join("\n"));
     return;
   }
@@ -258,14 +300,23 @@ async function main() {
     // 4. Second factor. TOTP code box (MS: input[name="otc"]) → fill from the seed. Push/number → report.
     const otcBox = page.locator('input[name="otc"], input[autocomplete="one-time-code"], input[id*="otc" i]').first();
     if (await otcBox.isVisible().catch(() => false)) {
-      if (creds.totpSeed) {
-        say("TOTP code prompt found — generating from the seed");
-        await otcBox.fill(totp(creds.totpSeed));
+      // Fetch the code AT THIS MOMENT, not at startup: it lives for 30s and the login took time to
+      // get here. delineaOtpCode() waits out a nearly-dead window so we always type a fresh one.
+      let code = null;
+      if (creds.otpFromDelinea) {
+        const otp = await delineaOtpCode(creds.secretId).catch(() => null);
+        if (otp) { code = otp.code; say(`code prompt found — Delinea minted a fresh code (${otp.remainingSeconds}s left)`); }
+      } else if (creds.totpSeed) {
+        code = totp(creds.totpSeed);
+        say("code prompt found — generated from the legacy TOTPSeed field");
+      }
+      if (code) {
+        await otcBox.fill(code);
         await page.locator('#idSubmit_SAOTCC_Continue, #idSIButton9, input[type="submit"], button:has-text("Verify")').first().click().catch(() => {});
         await page.waitForTimeout(3000);
       } else {
-        say("TOTP code prompt found but NO seed provided — stopping here (add SPANNING_TEST_TOTP_SEED)");
-        await shot("mfa-totp-no-seed");
+        say("code prompt found but NO code source — stopping. Enable One-Time Password on the Delinea secret.");
+        await shot("mfa-no-code-source");
       }
     } else {
       const pushHint = await page.locator('text=/approve|number shown|open your authenticator|check your (phone|device)/i').first().isVisible().catch(() => false);
