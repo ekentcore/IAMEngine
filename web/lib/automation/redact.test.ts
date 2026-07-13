@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { redact } from "./redact";
+import { maskEmailsReversible, redact } from "./redact";
 
 test("strips Delinea / secret-server vault URLs", () => {
   const t = redact("Password: https://coretelligent.secretservercloud.com/app/#/secrets/14990/general here");
@@ -50,4 +50,26 @@ test("leaves ordinary runbook text untouched", () => {
 test("handles empty / undefined input", () => {
   assert.equal(redact(""), "");
   assert.equal(redact(undefined as unknown as string), undefined);
+});
+
+test("does not treat a bullet dash after 'passwords:' as a password value", () => {
+  // KB shape: a "…account passwords:" label with the actual steps as bullets below it.
+  const t = redact("Assist the user with changing the following account passwords:\n- Update Azure AD password and save to Dashlane");
+  assert.doesNotMatch(t, /\[redacted\]/);
+  assert.match(t, /- Update Azure AD password/);
+});
+
+test("maskEmailsReversible round-trips real addresses and leaves templates alone", () => {
+  const mask = maskEmailsReversible;
+  const src = "Add to DCG@dcg.co and TeamDCG@dcg.co; username firstinitiallastname@dcg.co; DCG@dcg.co again";
+  const { masked, restore } = mask(src);
+  assert.doesNotMatch(masked, /DCG@dcg\.co/i, "real locals must not survive masking");
+  assert.match(masked, /firstinitiallastname@dcg\.co/, "naming-convention template stays");
+  // same address -> same placeholder (the model sees a consistent token)
+  const m = masked.match(/\[u\d+\]@dcg\.co/g) ?? [];
+  assert.equal(new Set(m).size, 2, "two distinct placeholders for two distinct addresses");
+  // a response quoting the placeholders gets the real addresses back
+  assert.equal(restore(masked), src);
+  // masked text survives a redact() pass untouched (bracketed placeholders are templates)
+  assert.equal(redact(masked), masked);
 });

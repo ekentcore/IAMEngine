@@ -13,6 +13,10 @@ type Fetcher = typeof fetch;
 // entities decode. Enough for the runbook parser, which works line-by-line.
 export function htmlToText(html: string): string {
   return html
+    // whole style/script blocks drop — some KBs inline a stylesheet, which otherwise becomes
+    // pages of CSS "steps" and starves the AI extractor's input window
+    .replace(/<style[\s\S]*?<\/style>/gi, "\n")
+    .replace(/<script[\s\S]*?<\/script>/gi, "\n")
     .replace(/<(br|\/p|\/div|\/h[1-6]|\/tr|\/li)[^>]*>/gi, "\n")
     .replace(/<li[^>]*>/gi, "- ")
     .replace(/<[^>]+>/g, "")
@@ -27,6 +31,10 @@ export function htmlToText(html: string): string {
     .replace(/&#(\d{1,6});/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/&#x([0-9a-f]{1,6});/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/\r/g, "")
+    // ServiceNow nests blocks inside list items (<li>\n<p>text</p></li>), which decodes to an
+    // orphan "- " line with its text on the next line — rejoin them so a bullet is one line.
+    // (Not when the next line is itself a bullet: an empty <li> must not swallow its sibling.)
+    .replace(/(^|\n)([ \t]*)-[ \t]*(?:\n[ \t]*)+(?=[^-\s])/g, "$1$2- ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

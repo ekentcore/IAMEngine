@@ -1,6 +1,6 @@
 // Minimal Azure OpenAI chat client for the generator's enrichment pass. JSON mode only.
 // Reads AZURE_OPENAI_* from process.env (loaded from env.env by the CLI).
-import { redact } from "../automation/redact";
+import { maskEmailsReversible, redact } from "../automation/redact";
 
 export type AzureConfig = {
   endpoint: string;
@@ -33,6 +33,10 @@ export async function azureChatJson(
   maxTokens = 600
 ): Promise<Record<string, unknown> | null> {
   const url = `${c.endpoint}/openai/deployments/${c.deployment}/chat/completions?api-version=${c.apiVersion}`;
+  // Emails are masked REVERSIBLY: unique placeholders go to Azure, and the real addresses are
+  // restored in the response — extractors that echo the text back (runbook steps) keep group/DL
+  // addresses intact instead of a lossy [user]@domain. redact() still scrubs everything else.
+  const { masked, restore } = maskEmailsReversible(user);
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -41,7 +45,7 @@ export async function azureChatJson(
         messages: [
           { role: "system", content: system },
           // redact secrets/PII from user-supplied content before it leaves the boundary
-          { role: "user", content: redact(user) },
+          { role: "user", content: redact(masked) },
         ],
         temperature: 0,
         max_tokens: maxTokens,
@@ -53,7 +57,7 @@ export async function azureChatJson(
     const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content;
     if (!content) return null;
-    return JSON.parse(content) as Record<string, unknown>;
+    return JSON.parse(restore(content)) as Record<string, unknown>;
   } catch {
     return null;
   }
