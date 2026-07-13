@@ -14,7 +14,7 @@ import { getAppSetting, setAppSetting, INTAKE_SETTING_KEY, type IntakeSetting } 
 const POLL_EVERY_MS = 15 * 60 * 1000; // 15 minutes
 let lastRunAt = 0; // in-process throttle so concurrent heartbeats don't stack runs
 
-export type IntakeSweepResult = { scanned: number; imported: number; alreadyImported: number; failed: number };
+export type IntakeSweepResult = { scanned: number; imported: number; alreadyImported: number; skipped: number; failed: number };
 
 // One sweep: fetch open/unassigned UMs + lifecycle INCs, import the new ones (idempotent, HELD), and
 // record the run on the AppSetting. Preserves the `enabled` flag (a manual run never flips it). Shared
@@ -25,7 +25,7 @@ async function sweepOnce(db: PrismaClient, actor: string, setting: IntakeSetting
 
   let importedTotal = setting.imported ?? 0;
   let lastNumber = setting.lastImportedNumber;
-  const res: IntakeSweepResult = { scanned: 0, imported: 0, alreadyImported: 0, failed: 0 };
+  const res: IntakeSweepResult = { scanned: 0, imported: 0, alreadyImported: 0, skipped: 0, failed: 0 };
 
   // UM external client tickets + internal on/off-boarding incidents. importByNumber routes each by
   // prefix (INC→incident path, UM→user-management path) and dedupes by serviceNowCaseNumber.
@@ -35,6 +35,9 @@ async function sweepOnce(db: PrismaClient, actor: string, setting: IntakeSetting
   for (const number of numbers) {
     // importByNumber is idempotent (dedupes by serviceNowCaseNumber) and leaves the case HELD.
     const r = await importByNumber(db, number, actor).catch(() => null);
+    // A "do not use engine" client's ticket is deliberate, not a failure — count it apart so the
+    // run summary doesn't read as broken.
+    if (r && !r.ok && r.code === "engine_opt_out") { res.skipped++; continue; }
     if (!r || !(r as { ok?: boolean }).ok) { res.failed++; continue; }
     if ((r as { alreadyImported?: boolean }).alreadyImported) { res.alreadyImported++; continue; }
     res.imported++; importedTotal++; lastNumber = number;

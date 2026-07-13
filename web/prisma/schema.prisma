@@ -118,6 +118,15 @@ model Client {
   // Internal-only: a restricted client is hidden from every operator EXCEPT those explicitly granted
   // it (and super admins), regardless of their access mode. Use for sensitive orgs like Coretelligent.
   restricted             Boolean      @default(false)
+  // "Do not use engine": this client's ServiceNow cases are never imported — the intake sweep skips
+  // them (counted as skipped, not failed) and a manual import refuses. For clients handled entirely
+  // outside the engine. Cases already imported are untouched.
+  engineOptOut           Boolean      @default(false)
+  // Parent-systems inheritance (SN account hierarchy): by default a child with NO modeled systems
+  // plans from its parent (see clientForPlanning). Set false to break that link for a child that
+  // doesn't match its parent — it then plans from its own (possibly copied) systems, or reads
+  // unmodeled if it has none.
+  inheritParentSystems   Boolean      @default(true)
   // When true AND this client has its own (client-network) agent, ALL of its jobs — including cloud
   // ones (m365/exchange) — are claimed by that agent, not the central runner. Lets a client run
   // everything on-prem the way its native script did (e.g. Windows-store EXO cert). Falls back to the

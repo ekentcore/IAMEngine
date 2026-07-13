@@ -25,7 +25,7 @@ export default async function ConfigReviewPage() {
     db.client.findMany({
       where: { archivedAt: null, id: clientIdWhere(scope) },
       orderBy: { name: "asc" },
-      select: { id: true, slug: true, name: true, primaryDomain: true, emailDomain: true, identity: true, editedFields: true, parentId: true },
+      select: { id: true, slug: true, name: true, primaryDomain: true, emailDomain: true, identity: true, editedFields: true, parentId: true, inheritParentSystems: true },
     }),
     db.runbookSection.findMany({ select: { clientId: true, action: true, systemKey: true, status: true, kbArticle: true } }),
   ]);
@@ -55,7 +55,8 @@ export default async function ConfigReviewPage() {
       systems: [...(r?.systems ?? [])].sort(),
       unmodeled: r?.unmodeled ?? 0,
       kbs: [...(r?.kbs ?? [])].sort(),
-      hasParent: Boolean(c.parentId),
+      // A child that broke its parent link is on its own — its missing runbook is a real gap again.
+      hasParent: Boolean(c.parentId) && c.inheritParentSystems,
     };
   });
 
