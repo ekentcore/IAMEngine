@@ -1,13 +1,14 @@
 // PUT /api/clients/:slug/systems — replace the client's system set (+ optional backbone).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import type { EditableSystem } from "@/lib/clients/types";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
-const LANES = ["always", "on_request", "never"];
+const LANES = ["always", "on_request", "never", "by_persona"];
 const MODES = ["api", "browser", "manual"];
 
 // Coerce an untrusted object into a valid EditableSystem (or null to drop it).
@@ -31,6 +32,8 @@ function sanitize(s: unknown): EditableSystem | null {
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { systems?: unknown; backbone?: unknown };
   try {
     body = await req.json();

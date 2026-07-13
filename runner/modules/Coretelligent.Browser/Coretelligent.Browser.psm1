@@ -11,6 +11,40 @@
 Set-StrictMode -Version Latest
 
 # Where the Node sidecar lives, relative to this module (runner/modules/Coretelligent.Browser -> runner/browser).
+# Resolve a Node tool (node/npm/npx) even when PATH is the minimal one a SERVICE MANAGER hands us.
+# This bit the central Mac: node lives in /usr/local/bin, but launchd's default PATH is only
+# /usr/bin:/bin:/usr/sbin:/sbin — so `Get-Command node` failed, the runner silently skipped the whole
+# browser sidecar, and the agent never advertised 'browser' (a Windows SYSTEM task and a systemd unit
+# have exactly the same minimal-PATH problem). So: try PATH first, then the well-known install roots.
+# Prepends the found directory to PATH for this process, so child tools (npm calling node) work too.
+$script:CommonNodeDirs = @(
+    '/usr/local/bin',                                   # macOS (Node installer), most Linux
+    '/opt/homebrew/bin',                                # macOS Apple-silicon Homebrew
+    '/usr/bin',
+    "$env:ProgramFiles\nodejs",                         # Windows default
+    "$env:LOCALAPPDATA\Programs\nodejs"
+)
+function Resolve-CtgNodeTool {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($dir in $script:CommonNodeDirs) {
+        if (-not $dir) { continue }
+        foreach ($ext in @('', '.cmd', '.exe')) {
+            $candidate = Join-Path $dir "$Name$ext"
+            if (Test-Path -LiteralPath $candidate) {
+                # Make it discoverable to child processes too (npm shells out to node).
+                if (($env:PATH -split [IO.Path]::PathSeparator) -notcontains $dir) {
+                    $env:PATH = "$dir$([IO.Path]::PathSeparator)$env:PATH"
+                }
+                return $candidate
+            }
+        }
+    }
+    return $null
+}
+
 function Get-CtgBrowserRoot {
     Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'browser'
 }
@@ -46,7 +80,7 @@ function Test-CtgBrowserAvailable {
     [CmdletBinding()]
     param()
     try {
-        if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+        if (-not (Resolve-CtgNodeTool 'node')) { return $false }
         $pw = Join-Path (Get-CtgBrowserRoot) 'node_modules/@playwright'
         if (-not (Test-Path -LiteralPath $pw)) { return $false }
         return (Test-CtgChromiumInstalled)
@@ -109,11 +143,11 @@ function Install-CtgBrowser {
     [CmdletBinding()]
     param([int]$TimeoutSeconds = 900) # npm install + a cold Chromium download can take minutes
     try {
-        if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        if (-not (Resolve-CtgNodeTool 'node')) {
             Write-Warning "browser sidecar: 'node' is not on PATH — install Node 18+ to enable browser automation."
             return $false
         }
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        if (-not (Resolve-CtgNodeTool 'npm')) {
             Write-Warning "browser sidecar: 'npm' is not on PATH (it ships with Node)."
             return $false
         }
@@ -133,7 +167,7 @@ function Install-CtgBrowser {
         # 2. Chromium binary (separate download, cached in ms-playwright) — skip if already present.
         if (-not (Test-CtgChromiumInstalled)) {
             Write-Host "browser sidecar: downloading Chromium (playwright install chromium) …" -ForegroundColor Yellow
-            $r = if (Get-Command npx -ErrorAction SilentlyContinue) {
+            $r = if (Resolve-CtgNodeTool 'npx') {
                 Invoke-CtgNodeTool -Tool 'npx' -Arguments @('playwright', 'install', 'chromium') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
             } else {
                 Invoke-CtgNodeTool -Tool 'npm' -Arguments @('run', 'install-browser') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
@@ -185,7 +219,7 @@ function Invoke-CtgBrowserFlow {
     # ProcessStartInfo so the spec (with the password) goes over stdin — never the command line/args
     # (which are visible in the process list) and never a temp file on disk.
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName               = (Get-Command node).Source
+    $psi.FileName               = (Resolve-CtgNodeTool 'node')
     $psi.ArgumentList.Add($script)
     $psi.WorkingDirectory       = $root
     $psi.RedirectStandardInput  = $true
@@ -239,4 +273,4 @@ function Invoke-CtgBrowserFlow {
     }
 }
 
-Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow
+Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow, Resolve-CtgNodeTool

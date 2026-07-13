@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CATALOG } from "@/lib/generator/system-map";
 
-type Lane = "always" | "on_request" | "never";
+type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual";
 type Row = {
   systemKey: string;
@@ -26,20 +26,21 @@ const BACKBONES = [
   { v: "ad_synced", label: "AD synced" },
   { v: "ad_standalone", label: "AD standalone" },
 ];
-const LANES: Lane[] = ["always", "on_request", "never"];
+const LANES: Lane[] = ["always", "on_request", "by_persona", "never"];
 const MODES: Mode[] = ["api", "browser", "manual"];
 // Color the lane selects so onboard/offboard participation is scannable at a glance: green = runs,
 // amber = only on request, grey = off. (Flat tints, no gradients — matches the host design system.)
 const LANE_STYLE: Record<Lane, CSSProperties> = {
   always: { background: "#e8f5ee", color: "#15803d", borderColor: "#bbf7d0" },
   on_request: { background: "#fef6e7", color: "#92400e", borderColor: "#fde9c8" },
+  by_persona: { background: "#f2ecfd", color: "#6d28d9", borderColor: "#e4d9fb" },
   never: { background: "#f4f4f5", color: "#9ca3af", borderColor: "#e5e7eb" },
 };
 // Hover help for each field — the ⓘ next to every label (sentence case, plain English).
 const HELP = {
   mode: "How the step runs — api: automated via a Coretelligent.* module · browser: Playwright automation · manual: a human checklist item recorded on the case.",
-  onboard: "When this system runs on ONBOARDING — always · on request (only when the intake asks for it) · never (not part of onboarding).",
-  offboard: "When this system runs on OFFBOARDING — always · on request · never. Onboard and Offboard are the two runbooks; set each independently.",
+  onboard: "When this system runs on ONBOARDING — always · on request (only when the intake asks for it) · by persona (only when the matched persona's systems list includes it — edit personas under Roles & rules) · never (not part of onboarding).",
+  offboard: "When this system runs on OFFBOARDING — always · on request · by persona (only when the matched persona granted it) · never. Onboard and Offboard are the two runbooks; set each independently.",
   depends: "System keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
   approval: "Destructive step — gated server-side. The job won't run until an operator approves it on the case (offboarding deletes/disables).",
   evidence: "Before doing anything, snapshot the user's current state (group memberships, license/app assignments) and attach it to the case — so there's an audit trail and you can restore if needed. Mainly used on offboarding.",
@@ -61,7 +62,7 @@ function Field({ label, help, children, grow }: { label: string; help: string; c
 }
 
 const ALL_KEYS = Object.keys(CATALOG).sort();
-const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "always" ? "always" : "never");
+const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : l === "always" ? "always" : "never");
 
 function rowFromCatalog(key: string): Row {
   const c = CATALOG[key];
@@ -240,7 +241,9 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             <b>Onboard</b> and <b>Offboard</b> are the two runbooks — set when each system runs:{" "}
             <span className="badge" style={LANE_STYLE.always}>always</span>{" "}
             <span className="badge" style={LANE_STYLE.on_request}>on request</span>{" "}
-            <span className="badge" style={LANE_STYLE.never}>never</span>. (e.g. for xMatters onboarding-only: Onboard = always, Offboard = never.)
+            <span className="badge" style={LANE_STYLE.by_persona}>by persona</span>{" "}
+            <span className="badge" style={LANE_STYLE.never}>never</span>. by persona = only when the matched
+            persona lists the system (e.g. xMatters for on-call departments — add it to those personas under Roles & rules).
           </p>
           <div style={{ display: "grid", gap: 10 }}>
             {rows.map((r, i) => (

@@ -4,6 +4,7 @@
 // rule wins; an explicit license on the ServiceNow ticket overrides these. Re-plan open cases to apply.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
@@ -18,6 +19,8 @@ async function m365System(slug: string) {
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_systems"); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const sys = await m365System(params.slug);
   if (!sys) return NextResponse.json({ error: "this client has no m365 system" }, { status: 404 });
   const onboard = ((sys.config ?? {}) as { onboard?: { licenseRules?: unknown } }).onboard ?? {};
@@ -26,7 +29,8 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_systems"); if (g.res) return g.res;
-
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { rules?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   if (!Array.isArray(body.rules)) return NextResponse.json({ error: "rules must be an array" }, { status: 422 });

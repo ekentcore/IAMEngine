@@ -4,6 +4,7 @@
 // the runbook doc — so this is how new users actually get added to groups.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
@@ -14,7 +15,8 @@ const TYPES = new Set(["dl", "security", "m365", "unsure"]);
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_systems"); if (g.res) return g.res;
-
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { groups?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   if (!Array.isArray(body.groups)) return NextResponse.json({ error: "groups must be an array" }, { status: 422 });

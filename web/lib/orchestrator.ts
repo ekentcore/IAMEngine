@@ -71,10 +71,14 @@ function identityPipelineDeps(active: ClientSystem[], declaredOf: (s: ClientSyst
 }
 
 // Decide whether a system participates in this action, given the case payload.
-function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>): boolean {
+function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>, personaSystems?: ReadonlySet<string>): boolean {
   const when = action === "onboard" ? cs.onboardWhen : cs.offboardWhen;
   if (when === "never") return false;
   if (when === "always") return true;
+  // by_persona: only when the selected persona's bundle lists this system (no persona -> excluded,
+  // same shape as an unsignalled on_request). The key set comes from the caller via
+  // personaSystemKeys() so persona selection stays centralized in buildPlanContext.
+  if (when === "by_persona") return personaSystems?.has(cs.systemKey) ?? false;
   // on_request: explicit requestKey override -> central signal map -> systemKey fallback.
   const cfg = cs.config as SystemConfig | null;
   if (cfg?.requestKey) return Boolean(payload[cfg.requestKey]);
@@ -88,9 +92,11 @@ function included(cs: ClientSystem, action: Action, payload: Record<string, unkn
 export function planCase(
   systems: ClientSystem[],
   action: Action,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  // System keys the selected persona pulls in — gates by_persona lanes only (see personaSystemKeys).
+  personaSystems?: ReadonlySet<string>
 ): PlannedJob[] {
-  const active = systems.filter((s) => included(s, action, payload));
+  const active = systems.filter((s) => included(s, action, payload, personaSystems));
   // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
   // `mail` attribute. Applies to every AD-origin client (identity starts on-prem) automatically — no
   // per-client ClientSystem row or migration. It depends on the cloud consumers present (m365/exchange)

@@ -539,6 +539,11 @@ function Invoke-CtgM365Onboarding {
     $chosenUpn = $null
     $adopt = $false
     $targetName = ([string]$User.DisplayName).Trim()
+    # A nicknamed hire's DisplayName carries the nickname ("Bill Smith"); a rehire's existing account
+    # was created from the LEGAL name ("William Smith"). Accept either as the same-person signal.
+    $legalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
+    $legalName = if ($legalFirst -and ([string]$User.LastName).Trim()) { "$legalFirst $(([string]$User.LastName).Trim())" } else { '' }
+    $nameMatches = { param($disp) $d = ([string]$disp).Trim(); ($targetName -and $d -ieq $targetName) -or ($legalName -and $d -ieq $legalName) }
     # How to handle a same-name account with NO provisioning marker (ambiguous: our re-run vs a
     # different person who happens to share a name): 'adopt' = it's ours, 'new' = different person
     # (use a fallback), unset/'ask' = PAUSE and let an operator decide on the case.
@@ -558,7 +563,7 @@ function Invoke-CtgM365Onboarding {
         # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
         # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the
         # operator's decision if one was made; otherwise PAUSE and ask rather than guess.
-        if (-not $foundMarker -and $targetName -and ([string]$found.DisplayName).Trim() -ieq $targetName) {
+        if (-not $foundMarker -and (& $nameMatches $found.DisplayName)) {
             if ($collisionPolicy -ieq 'adopt') {
                 $existing = $found; $chosenUpn = $cand; $adopt = $true
                 $actions.Add("user exists ($cand) with no marker but matching name '$($found.DisplayName)' — operator chose ADOPT (stamping marker), skipping create")
@@ -1424,4 +1429,37 @@ function Invoke-CtgM365PasswordReset {
     [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset
+# The nearest expiry of THIS app registration's own secret/cert, so the connection test can warn
+# before onboarding starts failing with an expired credential. Needs Application.Read.All (the app
+# already needs it to read its granted roles); returns $null + a note when it can't read it, never
+# throws. Returns @{ expiresAt = <ISO string or $null>; note = <string> }.
+function Get-CtgAppCredentialExpiry {
+    [CmdletBinding()]
+    param()
+    $ctx = Get-MgContext
+    if (-not $ctx -or -not $ctx.ClientId) { return @{ expiresAt = $null; note = 'no Graph context' } }
+    $appId = [string]$ctx.ClientId
+    try {
+        $resp = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+            -Uri "https://graph.microsoft.com/v1.0/applications(appId='$appId')?`$select=passwordCredentials,keyCredentials"
+    }
+    catch {
+        return @{ expiresAt = $null; note = "couldn't read app credential expiry — grant Application.Read.All to enable the expiry warning ($([string]$_.Exception.Message))" }
+    }
+    $ends = @()
+    foreach ($set in @($resp.passwordCredentials), @($resp.keyCredentials)) {
+        foreach ($c in @($set)) {
+            $e = $null
+            try { $e = [datetimeoffset]::Parse([string]$c.endDateTime) } catch { }
+            if ($e) { $ends += $e }
+        }
+    }
+    if ($ends.Count -eq 0) { return @{ expiresAt = $null; note = 'no password/cert credentials on the app registration' } }
+    $now = [datetimeoffset]::UtcNow
+    # Prefer the nearest FUTURE expiry; if all are past, the most recent past one (already expired).
+    $future = @($ends | Where-Object { $_ -gt $now } | Sort-Object)
+    $pick = if ($future.Count) { $future[0] } else { @($ends | Sort-Object)[-1] }
+    @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
+}
+
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry

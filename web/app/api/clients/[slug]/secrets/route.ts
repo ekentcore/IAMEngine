@@ -3,6 +3,7 @@
 // PUT  /api/clients/:slug/secrets — upsert the references (name -> id + label). Stores only refs.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { deriveSecretRows } from "@/lib/secrets/wiring";
@@ -12,6 +13,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const wiring = await makeClientRepository(db).secretsWiring(params.slug);
   if (!wiring) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({
@@ -36,6 +39,8 @@ function sanitize(s: unknown): Entry | null {
 
 export async function PUT(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { secrets?: unknown };
   try {
     body = await req.json();

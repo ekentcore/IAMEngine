@@ -2,20 +2,154 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import type { ScanResult } from "@/lib/cases/sn-completion";
 
 type ClientOpt = { slug: string; name: string };
 type PlanFields = { personas: { name: string; titles: string[] }[]; locations: string[]; hasPlanConfig: boolean };
 const EMPLOYMENT_TYPES = ["Full-Time", "Part-Time", "Contractor", "Temp"];
 type PlanOutcome = { caseId: string; status: string; jobCount: number; manualCount: number; approvalCount: number };
 
-export function CasesToolbar({ clients }: { clients: ClientOpt[] }) {
+export function CasesToolbar({ clients, snScan = false }: { clients: ClientOpt[]; snScan?: boolean }) {
   return (
     <div className="toolbar" style={{ marginTop: "1rem" }}>
       <ImportButton />
       <NewCaseDialog clients={clients} />
+      {snScan && <ScanServiceNowButton />}
       <span className="grow" />
       <AutoImportToggle />
     </div>
+  );
+}
+
+// Scan every open case's ServiceNow ticket; tickets that are resolved/closed come back in a confirm
+// dialog where the operator picks which cases to mark completed (all steps → succeeded, undoable
+// per step on the case page; the case moves to the Completed table).
+function ScanServiceNowButton() {
+  const router = useRouter();
+  const ref = useRef<HTMLDialogElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [failures, setFailures] = useState<{ id: string; caseNumber: string; error: string }[]>([]);
+
+  async function scanNow() {
+    setBusy(true); setError(null); setScan(null); setFailures([]); setChecked(new Set());
+    ref.current?.showModal();
+    try {
+      const r = await fetch("/api/cases/scan-servicenow", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
+      setScan(d);
+      setChecked(new Set((d as ScanResult).resolved.map((c) => c.id)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleCase(id: string) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function markCompleted() {
+    if (!scan) return;
+    setMarking(true); setFailures([]);
+    const picked = scan.resolved.filter((c) => checked.has(c.id));
+    const failed: { id: string; caseNumber: string; error: string }[] = [];
+    for (const c of picked) {
+      try {
+        const r = await fetch(`/api/cases/${c.id}/complete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ snState: c.snState }),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          failed.push({ id: c.id, caseNumber: c.caseNumber, error: d.error ?? `failed (${r.status})` });
+        }
+      } catch (e) {
+        failed.push({ id: c.id, caseNumber: c.caseNumber, error: (e as Error).message });
+      }
+    }
+    setMarking(false);
+    if (failed.length) {
+      // Drop the ones that DID complete from the list so a retry only re-sends the failures.
+      setFailures(failed);
+      const failedIds = new Set(failed.map((f) => f.id));
+      setScan((p) => (p ? { ...p, resolved: p.resolved.filter((c) => failedIds.has(c.id)) } : p));
+      router.refresh();
+    } else {
+      ref.current?.close();
+      router.refresh();
+    }
+  }
+
+  const pickedCount = scan ? scan.resolved.filter((c) => checked.has(c.id)).length : 0;
+
+  return (
+    <>
+      <button onClick={scanNow} disabled={busy} title="Check every open case's ServiceNow ticket; offer to mark the resolved/closed ones completed">
+        {busy ? "Checking…" : "Check ServiceNow"}
+      </button>
+      <dialog ref={ref} style={{ minWidth: "min(560px, 90vw)" }}>
+        <h2>Resolved in ServiceNow</h2>
+        {busy && <p className="note"><span className="spinner" />Checking open cases against ServiceNow…</p>}
+        {error && <p className="note danger">{error}</p>}
+        {scan && !busy && (
+          <>
+            {scan.resolved.length === 0 ? (
+              <p className="note">Checked {scan.scanned} open case{scan.scanned === 1 ? "" : "s"} — none are resolved or closed in ServiceNow.</p>
+            ) : (
+              <>
+                <p className="note">
+                  {scan.resolved.length} of {scan.scanned} open case{scan.scanned === 1 ? "" : "s"} {scan.resolved.length === 1 ? "is" : "are"} resolved or closed in ServiceNow.
+                  Marking a case completed sets every remaining step to completed (each step stays undoable on the case page) and moves it to the Completed table.
+                </p>
+                <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0", maxHeight: "45vh", overflowY: "auto" }}>
+                  {scan.resolved.map((c) => (
+                    <li key={c.id} style={{ padding: "0.3rem 0" }}>
+                      <label style={{ display: "flex", gap: 8, alignItems: "baseline", cursor: "pointer" }}>
+                        <input type="checkbox" checked={checked.has(c.id)} onChange={() => toggleCase(c.id)} style={{ width: "auto" }} />
+                        <span>
+                          <b>{c.caseNumber}</b> · {c.clientName} · {c.subject ?? "(no subject)"}
+                          <span className="note" style={{ display: "block" }}>ServiceNow: {c.snState} · case is {c.status.replace("_", " ")}</span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {scan.cancelled.length > 0 && (
+              <p className="note">
+                Closed without the work being done (not offered for completion): {scan.cancelled.map((c) => `${c.caseNumber} (${c.snState})`).join(", ")} — review these on their case pages.
+              </p>
+            )}
+            {scan.errors.length > 0 && (
+              <p className="note danger">Couldn’t check: {scan.errors.map((e) => e.caseNumber).join(", ")}</p>
+            )}
+            {failures.length > 0 && (
+              <p className="note danger">Failed to complete: {failures.map((f) => `${f.caseNumber} (${f.error})`).join("; ")}</p>
+            )}
+          </>
+        )}
+        <div className="dialog-actions">
+          <button type="button" onClick={() => ref.current?.close()} disabled={marking}>Close</button>
+          {scan && scan.resolved.length > 0 && (
+            <button type="button" className="primary" onClick={markCompleted} disabled={marking || pickedCount === 0}>
+              {marking ? "Marking…" : `Mark ${pickedCount} completed`}
+            </button>
+          )}
+        </div>
+      </dialog>
+    </>
   );
 }
 

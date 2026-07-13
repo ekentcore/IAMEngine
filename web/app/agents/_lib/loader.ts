@@ -2,6 +2,7 @@
 // view-models live here once so the two variants can't drift (they used to carry ~90
 // duplicated lines each).
 import { db } from "@/lib/db";
+import { parseCapabilities } from "@/lib/runner/capabilities";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { trashDaysLeft } from "@/lib/jobs/agent-trash";
@@ -72,6 +73,7 @@ export async function loadAgentsPage() {
       clientName: a.client?.name ?? null,
       version: a.version,
       semver: a.semver,
+      capabilities: parseCapabilities(a.capabilities),
       priority: a.priority ?? 100,
       enabled: a.enabled,
       lastSeenAt: a.lastSeenAt?.toISOString() ?? null,

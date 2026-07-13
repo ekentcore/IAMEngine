@@ -2,6 +2,7 @@
 // rows for clients with no ServiceNow KB. GET (?action=) previews the parse without saving.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -34,6 +35,8 @@ function sanitizeSections(arr: unknown[]): ParsedSection[] {
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { action?: unknown; text?: unknown; preview?: unknown; useAI?: unknown; sections?: unknown; kbArticle?: unknown; fromSystems?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   if (!isAction(body.action)) return NextResponse.json({ error: 'action must be "onboard" or "offboard"' }, { status: 422 });

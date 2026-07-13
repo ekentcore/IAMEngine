@@ -3,8 +3,11 @@
 // { ready:false, status } (the popup polls it); on failure { ready:false, status, error }; on
 // success it returns the password once and wipes it (410 after — it cannot be recalled). The audit
 // records the reveal, never the value.
+// Gated by case.dispatch, matching cases/[id]/reveal-password: this discloses a LIVE credential and
+// consumes the one-time reveal, so it belongs to the roles that run cases — not to read-only roles
+// (auditor/importer) or impersonated sessions, which guardAuth would admit.
 import { NextResponse } from "next/server";
-import { guardAuth } from "@/lib/auth/route-guard";
+import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { actorLabel } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
@@ -13,7 +16,7 @@ import { PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
-  const _g = await guardAuth(); if (_g.res) return _g.res;
+  const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const job = await db.job.findUnique({

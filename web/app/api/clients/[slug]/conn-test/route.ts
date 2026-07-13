@@ -4,16 +4,26 @@
 // GET  /api/clients/:slug/conn-test — current results (for the panel to poll).
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
+import { recordAudit } from "@/lib/auth/audit";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request, { params }: { params: { slug: string } }) {
+export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
+  // Optional body: { systemKey } retests ONE system (its row is replaced, the rest survive).
+  // The existing "Test connections" button sends no body — whole-client semantics unchanged.
+  const body = await req.json().catch(() => ({} as Record<string, unknown>));
+  const systemKey = typeof body?.systemKey === "string" && body.systemKey.trim() ? body.systemKey.trim() : undefined;
   try {
-    const out = await makeRunnerService(db).requestConnectionTests(params.slug);
+    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey);
+    const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
+    await recordAudit("conntest.request", { user: g.user, clientId: client?.id ?? null, detail: { systemKey: systemKey ?? "*", queued: out.tests.length } });
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });
@@ -23,6 +33,8 @@ export async function POST(_req: Request, { params }: { params: { slug: string }
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const g = await guardAuth(); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
     const out = await makeRunnerService(db).listConnectionTests(params.slug);
     return NextResponse.json(out);

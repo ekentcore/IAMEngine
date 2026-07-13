@@ -18,9 +18,14 @@ export function parseEnvFile(path = ENV_PATH) {
     const key = line.slice(0, eq).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     let value = line.slice(eq + 1).trim();
-    // strip surrounding single or double quotes; drop trailing inline comments only if unquoted
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
+    // Take the QUOTED SPAN when the value is quoted, ignoring anything after the closing quote.
+    // The old rule required the value to both start AND end with a quote, so a quoted value with a
+    // trailing comment — KEY="val"  # note — matched neither branch: the comment was trimmed but the
+    // quotes were left ON. DELINEA_BASE_URL is written exactly that way, so every consumer got
+    // `"https://…"` (quotes included) and every Delinea fetch died on an invalid URL.
+    const quoted = /^(["'])([\s\S]*?)\1\s*(?:#.*)?$/.exec(value);
+    if (quoted) {
+      value = quoted[2];
     } else {
       const hash = value.indexOf(" #");
       if (hash >= 0) value = value.slice(0, hash).trim();

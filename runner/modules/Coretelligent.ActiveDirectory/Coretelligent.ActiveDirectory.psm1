@@ -186,6 +186,11 @@ function Invoke-CtgADOnboarding {
     $wantFirst = ([string]$User.FirstName).Trim()
     $wantLast  = ([string]$User.LastName).Trim()
     $wantName  = ([string]$User.DisplayName).Trim()
+    # A nicknamed hire ("Bill" for William) carries the nickname in FirstName/DisplayName; the legal
+    # first name rides along as LegalFirstName. A rehire's existing account was created from the
+    # LEGAL name, so same-person matching must accept either — else a rehire reads as a collision.
+    $wantLegalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
+    $wantLegalName  = if ($wantLegalFirst -and $wantLast) { "$wantLegalFirst $wantLast" } else { '' }
     # 'adopt' = it's ours, unset = pause for a decision; a different name auto-falls-back regardless.
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
 
@@ -197,7 +202,8 @@ function Invoke-CtgADOnboarding {
         $fGiven = ([string](Get-CtgProp $found 'GivenName')).Trim()
         $fSur   = ([string](Get-CtgProp $found 'Surname')).Trim()
         $fDisp  = ([string](Get-CtgProp $found 'DisplayName')).Trim()
-        $sameName = ($wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fSur -ieq $wantLast) -or ($wantName -and $fDisp -ieq $wantName)
+        $sameName = ($wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fSur -ieq $wantLast) -or ($wantName -and $fDisp -ieq $wantName) `
+            -or ($wantLegalFirst -and $wantLast -and $fGiven -ieq $wantLegalFirst -and $fSur -ieq $wantLast) -or ($wantLegalName -and $fDisp -ieq $wantLegalName)
         if ($sameName) {
             $sam = $cand; $chosenUpn = $candUpn; $existing = $found
             $actions.Add("user exists ($cand) and matches '$(if ($fDisp) { $fDisp } else { "$fGiven $fSur" })' — same person (re-run), skipped create"); break
@@ -885,4 +891,124 @@ function Invoke-CtgADPasswordReset {
     [pscustomobject]@{ System = 'ad-password-reset'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD
+
+# --- Connection-test rights helpers -------------------------------------------------------------
+# Can this account CREATE USER objects in a given OU? Evaluated from the OU's ACL (read-only).
+# The evaluator is PURE (rule POCOs in, verdict out) so it's unit-testable on any platform; the
+# two wrappers below do the directory reads and degrade to "verify manually" on anything odd.
+
+# The AD schema class GUID for `user` objects — an ACE granting CreateChild scoped to this GUID
+# (or unscoped, or GenericAll) is what "can create users here" means.
+$script:AD_USER_CLASS_GUID = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+
+function Test-CtgAdCreateUserAce {
+    <#
+    .SYNOPSIS
+        Pure ACE evaluation: do these SIDs get create-user on an object with these access rules?
+    .PARAMETER Rules
+        Rule POCOs: @{ Type = 'Allow'|'Deny'; Sid = 'S-1-…'; Rights = 'CreateChild, GenericRead…'
+        (the ActiveDirectoryRights string); ObjectType = '<guid>' or '' (empty = all child classes) }.
+    .OUTPUTS
+        $true (an allow matches, no overriding deny), $false (denied / nothing allows), following
+        the simplified model: any matching deny wins over allows.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rules,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Sids
+    )
+    $applies = {
+        param($rule)
+        $sid = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['Sid'] } else { $rule.Sid })
+        if ($Sids -notcontains $sid) { return $false }
+        $rights = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['Rights'] } else { $rule.Rights })
+        $objType = [string]$(if ($rule -is [System.Collections.IDictionary]) { $rule['ObjectType'] } else { $rule.ObjectType })
+        $isCreate = ($rights -match 'GenericAll') -or (
+            ($rights -match 'CreateChild') -and (
+                -not $objType -or $objType -eq '00000000-0000-0000-0000-000000000000' -or $objType -ieq $script:AD_USER_CLASS_GUID
+            )
+        )
+        return $isCreate
+    }
+    foreach ($r in $Rules) {
+        $type = [string]$(if ($r -is [System.Collections.IDictionary]) { $r['Type'] } else { $r.Type })
+        if ($type -ieq 'Deny' -and (& $applies $r)) { return $false }
+    }
+    foreach ($r in $Rules) {
+        $type = [string]$(if ($r -is [System.Collections.IDictionary]) { $r['Type'] } else { $r.Type })
+        if ($type -ieq 'Allow' -and (& $applies $r)) { return $true }
+    }
+    return $false
+}
+
+function Get-CtgAdAccountSids {
+    <#
+    .SYNOPSIS
+        The service account's SID plus its group SIDs (tokenGroups when readable — nested and
+        well-known groups included — else direct memberships), for ACL evaluation. Returns @()
+        when nothing could be resolved (callers then report "verify manually").
+    #>
+    [CmdletBinding()]
+    param([hashtable]$AdConnection = @{}, $Creds)
+    $sam = $null
+    try {
+        $s = if ($Creds -is [System.Collections.IDictionary]) { $Creds['ad-dc'] } else { $null }
+        if ($s -and $s.Username) { $sam = ([string]$s.Username -split '[\\@]')[0]; if ([string]$s.Username -match '\\') { $sam = ([string]$s.Username -split '\\')[-1] } }
+    } catch { }
+    if (-not $sam) { return @() }
+    $sids = [System.Collections.Generic.List[string]]::new()
+    try {
+        $u = Get-ADUser -Identity $sam @AdConnection -ErrorAction Stop
+        $sids.Add([string]$u.SID)
+        # tokenGroups = the full transitive group set (what an access check actually uses).
+        try {
+            $obj = Get-ADUser -Identity $sam -Properties tokenGroups @AdConnection -ErrorAction Stop
+            foreach ($g in @($obj.tokenGroups)) { $sids.Add([string]$g) }
+        } catch {
+            foreach ($g in @(Get-ADPrincipalGroupMembership -Identity $sam @AdConnection -ErrorAction SilentlyContinue)) { $sids.Add([string]$g.SID) }
+        }
+        # Everyone / Authenticated Users ACEs apply to any bound account.
+        $sids.Add('S-1-1-0'); $sids.Add('S-1-5-11')
+    } catch { return @() }
+    @($sids | Select-Object -Unique)
+}
+
+function Test-CtgAdOuCreateUserRight {
+    <#
+    .SYNOPSIS
+        One rights row (@{ op; ok; detail }) for "create users in $OuDn": reads the OU's security
+        descriptor and evaluates it against the account's SIDs. Read-only; anything unreadable
+        degrades to ok=$null ("verify manually"), never a false failure.
+    #>
+    [CmdletBinding()]
+    param(
+        [hashtable]$AdConnection = @{},
+        [Parameter(Mandatory)][string]$OuDn,
+        [AllowEmptyCollection()][string[]]$Sids = @()
+    )
+    $op = "create users in $OuDn"
+    if (-not $Sids -or $Sids.Count -eq 0) {
+        return @{ op = $op; ok = $null; detail = 'could not resolve the service account''s SIDs — check the OU ACL manually' }
+    }
+    try {
+        $ou = Get-ADOrganizationalUnit -Identity $OuDn -Properties ntSecurityDescriptor @AdConnection -ErrorAction Stop
+        $acl = $ou.ntSecurityDescriptor
+        $rules = @()
+        foreach ($ace in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+            $rules += @{
+                Type       = [string]$ace.AccessControlType
+                Sid        = [string]$ace.IdentityReference
+                Rights     = [string]$ace.ActiveDirectoryRights
+                ObjectType = [string]$ace.ObjectType
+            }
+        }
+        $can = Test-CtgAdCreateUserAce -Rules $rules -Sids $Sids
+        if ($can) { return @{ op = $op; ok = $true; detail = 'the account (or one of its groups) can create user objects here' } }
+        return @{ op = $op; ok = $false; detail = 'no ACE grants this account CreateChild(user)/GenericAll on the OU — delegate "Create user objects" to it' }
+    }
+    catch {
+        return @{ op = $op; ok = $null; detail = "could not read the OU ACL ($(([string]$_.Exception.Message).Trim())) — check it manually" }
+    }
+}
+
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD, Test-CtgAdCreateUserAce, Get-CtgAdAccountSids, Test-CtgAdOuCreateUserRight

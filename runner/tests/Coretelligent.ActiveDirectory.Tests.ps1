@@ -615,3 +615,40 @@ Describe 'Invoke-CtgADPasswordReset' {
         ($r.Actions -join '|') | Should -Match 'WARN'
     }
 }
+
+Describe 'Test-CtgAdCreateUserAce' {
+    BeforeAll {
+        $script:userGuid = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+        $script:me = 'S-1-5-21-1-1-1-1111'
+        $script:myGroup = 'S-1-5-21-1-1-1-2222'
+    }
+
+    It 'allows via CreateChild scoped to the user class' {
+        $rules = @(@{ Type = 'Allow'; Sid = $myGroup; Rights = 'CreateChild'; ObjectType = $userGuid })
+        Test-CtgAdCreateUserAce -Rules $rules -Sids @($me, $myGroup) | Should -BeTrue
+    }
+
+    It 'allows via unscoped CreateChild (all child classes) and GenericAll' {
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'CreateChild'; ObjectType = '' }) -Sids @($me) | Should -BeTrue
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'GenericAll'; ObjectType = '' }) -Sids @($me) | Should -BeTrue
+    }
+
+    It 'ignores ACEs for other SIDs and CreateChild scoped to a different class' {
+        $other = 'S-1-5-21-9-9-9-9999'
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $other; Rights = 'GenericAll'; ObjectType = '' }) -Sids @($me) | Should -BeFalse
+        $groupGuid = 'bf967a9c-0de6-11d0-a285-00aa003049e2' # group class — not user
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'CreateChild'; ObjectType = $groupGuid }) -Sids @($me) | Should -BeFalse
+    }
+
+    It 'an explicit deny wins over an allow' {
+        $rules = @(
+            @{ Type = 'Allow'; Sid = $myGroup; Rights = 'GenericAll'; ObjectType = '' }
+            @{ Type = 'Deny';  Sid = $me;      Rights = 'CreateChild'; ObjectType = $userGuid }
+        )
+        Test-CtgAdCreateUserAce -Rules $rules -Sids @($me, $myGroup) | Should -BeFalse
+    }
+
+    It 'ReadProperty-only rules never grant create' {
+        Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'ReadProperty, ListChildren'; ObjectType = '' }) -Sids @($me) | Should -BeFalse
+    }
+}

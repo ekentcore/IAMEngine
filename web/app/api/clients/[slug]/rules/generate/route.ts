@@ -3,6 +3,7 @@
 // cloud groups + AD OUs/groups so the model uses real names.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { generateRuleDraft, type RuleDraft } from "@/lib/rules/nl-rule";
@@ -11,6 +12,8 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   let body: { text?: unknown; kind?: unknown; action?: unknown; systemKey?: unknown; current?: unknown; correction?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 

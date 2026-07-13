@@ -66,3 +66,94 @@ test("no_systems: no credentialed systems modeled", () => {
   const r = computeClientReadiness({ systems: [], secretExternalIds: new Map(), testBySystem: new Map() });
   assert.equal(r.tier, "no_systems");
 });
+
+// --- Setup stage vector --------------------------------------------------------------------------
+
+test("setup vector: legacy inputs (no setup/preflight/rights maps) derive with unknowns, not failures", () => {
+  const r = computeClientReadiness({
+    systems: [sys("m365", ["m365-admin"])],
+    secretExternalIds: new Map([["m365-admin", "111"]]),
+    testBySystem: new Map([["m365", "ok"]]),
+  });
+  const v = r.systems[0].setup;
+  assert.equal(v.started, "done");     // implied by wired + test evidence
+  assert.equal(v.wired, "done");
+  assert.equal(v.preflight, "unknown"); // absent map -> unknown, never failed
+  assert.equal(v.test, "done");
+  assert.equal(v.rights, "unknown");
+  assert.equal(v.complete, true);      // ready and nothing DEFINITELY failed
+});
+
+test("setup vector: full pipeline states (preflight fail, rights missing, attestation overlay)", () => {
+  const base = {
+    systems: [sys("m365", ["m365-admin"])],
+    secretExternalIds: new Map([["m365-admin", "111"]]),
+    testBySystem: new Map([["m365", "fail" as const]]),
+  };
+  const failed = computeClientReadiness({
+    ...base,
+    preflightBySystem: new Map([["m365", false]]),
+    rightsBySystem: new Map([["m365", "missing" as const]]),
+  }).systems[0].setup;
+  assert.equal(failed.preflight, "failed");
+  assert.equal(failed.test, "failed");
+  assert.equal(failed.rights, "failed");
+  assert.equal(failed.complete, false);
+
+  const attested = computeClientReadiness({
+    ...base,
+    testBySystem: new Map([["m365", "ok" as const]]),
+    preflightBySystem: new Map([["m365", true]]),
+    rightsBySystem: new Map([["m365", "unverified" as const]]),
+    setupBySystem: new Map([["m365", { startedAt: new Date(), attestedAt: new Date() }]]),
+  }).systems[0].setup;
+  assert.equal(attested.preflight, "done");
+  assert.equal(attested.rights, "attested"); // unverified + operator attestation
+  assert.equal(attested.complete, true);
+});
+
+test("setup vector: verified rights beat attestation; a fresh system is pending, not failed", () => {
+  const verified = computeClientReadiness({
+    systems: [sys("google-workspace", ["google-admin"])],
+    secretExternalIds: new Map([["google-admin", "222"]]),
+    testBySystem: new Map([["google-workspace", "ok"]]),
+    rightsBySystem: new Map([["google-workspace", "verified" as const]]),
+    setupBySystem: new Map([["google-workspace", { startedAt: null, attestedAt: new Date() }]]),
+  }).systems[0].setup;
+  assert.equal(verified.rights, "done");
+
+  const fresh = computeClientReadiness({
+    systems: [sys("zoom", ["zoom"])],
+    secretExternalIds: new Map([["zoom", ""]]),
+    testBySystem: new Map(),
+  }).systems[0].setup;
+  assert.equal(fresh.started, "pending");
+  assert.equal(fresh.wired, "pending");
+  assert.equal(fresh.test, "pending");
+  assert.equal(fresh.complete, false);
+});
+
+test("setup vector: not-needed systems mark preflight/test/rights as not_needed and complete", () => {
+  const v = computeClientReadiness({
+    systems: [sys("1password", ["1password"])],
+    secretExternalIds: new Map([["1password", NOT_NEEDED]]),
+    testBySystem: new Map(),
+  }).systems[0].setup;
+  assert.equal(v.preflight, "not_needed");
+  assert.equal(v.test, "not_needed");
+  assert.equal(v.rights, "not_needed");
+  assert.equal(v.complete, true);
+});
+
+test("partial summary names rights gaps", () => {
+  const r = computeClientReadiness({
+    systems: [sys("m365", ["m365-admin"]), sys("zoom", ["zoom"])],
+    secretExternalIds: new Map([["m365-admin", "111"], ["zoom", "222"]]),
+    testBySystem: new Map([["m365", "ok"], ["zoom", "ok"]]),
+    rightsBySystem: new Map([["zoom", "missing" as const]]),
+  });
+  assert.equal(r.tier, "ready"); // rights don't demote the tier (test passes) ...
+  const zoom = r.systems.find((s) => s.systemKey === "zoom")!;
+  assert.equal(zoom.setup.rights, "failed"); // ... but the chip shows the gap
+  assert.equal(zoom.setup.complete, false);
+});

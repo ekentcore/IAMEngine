@@ -37,6 +37,19 @@ test("on-request falls back to a payload flag named after the system (manual cas
   assert.equal(planCase(systems, "onboard", {}).length, 0);
 });
 
+test("by-persona lane: included only when the persona's system keys carry it", () => {
+  const systems = [sys({ systemKey: "servicenow" }), sys({ systemKey: "xmatters", onboardWhen: "by_persona" })];
+  assert.ok(planCase(systems, "onboard", {}, new Set(["xmatters"])).some((j) => j.systemKey === "xmatters"));
+  assert.equal(planCase(systems, "onboard", {}, new Set()).some((j) => j.systemKey === "xmatters"), false);
+  // No persona context at all (e.g. a caller that never resolves personas) -> excluded, never a crash.
+  assert.equal(planCase(systems, "onboard", {}).some((j) => j.systemKey === "xmatters"), false);
+});
+
+test("by-persona lane ignores payload flags — only the persona set includes it", () => {
+  const systems = [sys({ systemKey: "xmatters", onboardWhen: "by_persona" })];
+  assert.equal(planCase(systems, "onboard", { xmatters: true }, new Set()).length, 0);
+});
+
 test("planned job config is the lane's config, not the whole blob", () => {
   const cfg = { onboard: { licenses: ["E3"] }, offboard: { blockSignIn: true }, dependsOn: {} };
   assert.deepEqual(planCase([sys({ config: cfg })], "onboard", {})[0].config, { licenses: ["E3"] });

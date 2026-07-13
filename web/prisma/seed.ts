@@ -17,8 +17,8 @@ const GENERATED = join(PROFILES, "_drafts");
 const backboneMap: Record<string, "entra" | "google" | "ad_synced" | "ad_standalone"> = {
   entra: "entra", google: "google", "ad-synced": "ad_synced", "ad-standalone": "ad_standalone",
 };
-const laneMap: Record<string, "always" | "on_request" | "never"> = {
-  always: "always", "on-request": "on_request", never: "never",
+const laneMap: Record<string, "always" | "on_request" | "never" | "by_persona"> = {
+  always: "always", "on-request": "on_request", never: "never", "by-persona": "by_persona",
 };
 
 const CATALOG: Array<[string, string, number, string?]> = [

@@ -3,7 +3,7 @@
 // sibling, per the grammar's `country.*`), and select the persona. Pure — no I/O.
 import { evalCondition, type PlanContext } from "./conditions";
 
-type PersonaDef = { match?: string; titles?: string[]; systems?: Record<string, unknown> };
+type PersonaDef = { match?: string; titles?: string[]; systems?: Record<string, unknown>; offboardSystems?: Record<string, unknown> };
 type Personas = Record<string, PersonaDef>;
 // A location can also carry AD/Entra TARGETS applied when a hire matches it (e.g. Boston → group
 // FalconBOS + the floor-printer groups). All optional and per-client: groups, an OU placement, address

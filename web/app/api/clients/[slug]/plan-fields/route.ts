@@ -3,12 +3,15 @@
 // clients (the form then shows only the basic fields).
 import { NextResponse } from "next/server";
 import { guardAuth } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const c = await db.client.findUnique({ where: { slug: params.slug }, select: { personas: true, locations: true } });
   if (!c) return NextResponse.json({ error: "not found" }, { status: 404 });
 

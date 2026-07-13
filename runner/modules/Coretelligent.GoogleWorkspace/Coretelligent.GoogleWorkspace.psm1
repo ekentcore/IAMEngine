@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 
 $script:GoogleApiUrl = 'https://admin.googleapis.com/admin/directory/v1'
 $script:GoogleToken  = $null
+$script:GoogleScopes = @()
 
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
@@ -61,6 +62,7 @@ function Connect-CtgGoogle {
     $script:GoogleCustomer = $CustomerId
     if ($PSCmdlet.ParameterSetName -eq 'Token') {
         $script:GoogleToken = $AccessToken
+        $script:GoogleScopes = @()   # unknown — the caller minted the token
         Write-Verbose "Google Workspace session established (token provided)."
         return
     }
@@ -93,7 +95,19 @@ function Connect-CtgGoogle {
     $token = Get-CtgProp $resp 'access_token'
     if (-not $token) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
     $script:GoogleToken = $token
+    # Domain-wide delegation is all-or-nothing per request: the exchange FAILS if any requested
+    # scope isn't authorized for the service account's client ID. A minted token therefore proves
+    # every scope in $Scopes — record them so the connection test can report them as verified.
+    $script:GoogleScopes = @($Scopes)
     Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
+}
+
+function Get-CtgGoogleSessionScopes {
+    # The scopes the current session's token was minted with (empty when a raw token was passed —
+    # then the delegation proof doesn't apply).
+    [CmdletBinding()]
+    param()
+    if ($script:GoogleScopes) { @($script:GoogleScopes) } else { @() }
 }
 
 function Invoke-CtgGoogleApi {
@@ -161,6 +175,9 @@ function Invoke-CtgGoogleOnboarding {
     $candidates = @($candidates | Where-Object { $lp = ($_ -split '@')[0]; $lp -and ($lp -notmatch '(^[._-]|[._-]$|[._-]{2,})') })
     $wantFirst = ([string]$User.FirstName).Trim()
     $wantLast  = ([string]$User.LastName).Trim()
+    # Nicknamed hire: FirstName carries the nickname, LegalFirstName the intake first name. A
+    # rehire's existing account has the LEGAL given name — accept either as the same person.
+    $wantLegalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
     # 'adopt' = it's ours, 'new' = different person (use a fallback), unset/'ask' = pause and let an operator decide.
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
 
@@ -172,7 +189,7 @@ function Invoke-CtgGoogleOnboarding {
         $fGiven = ([string](Get-CtgProp $gName 'givenName')).Trim()
         $fFamily = ([string](Get-CtgProp $gName 'familyName')).Trim()
         $haveName = [bool]($fGiven -or $fFamily)
-        if ($haveName -and $wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fFamily -ieq $wantLast) {
+        if ($haveName -and $wantLast -and $fFamily -ieq $wantLast -and (($wantFirst -and $fGiven -ieq $wantFirst) -or ($wantLegalFirst -and $fGiven -ieq $wantLegalFirst))) {
             # Same person — a re-run. Adopt and reconcile the rest below.
             $email = $cand; $existing = $found
             $actions.Add("Google user exists ($cand) and matches '$fGiven $fFamily' — same person (re-run), skipped create"); break
@@ -350,4 +367,4 @@ function Invoke-CtgGooglePasswordReset {
     [pscustomobject]@{ System = 'google-password-reset'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset

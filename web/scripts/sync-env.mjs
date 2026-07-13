@@ -19,6 +19,14 @@ const lines = [
   `SN_USER="${env.SN_USER ?? env.SN_USERNAME ?? ""}"`,
   `SN_PASSWORD="${env.SN_PASSWORD ?? ""}"`,
   "",
+  `# Delinea Secret Server — the credential broker. Without all three the app cannot resolve ANY`,
+  `# secret: delineaConfigured() requires baseUrl + user + password, and every broker call degrades to`,
+  `# "Delinea not configured on the app" instead of pushing fields to the runner. Omitting these here`,
+  `# silently broke credential brokering on a restart, because this file is REGENERATED (not merged).`,
+  `DELINEA_BASE_URL="${env.DELINEA_BASE_URL ?? ""}"`,
+  `DELINEA_USER="${env.DELINEA_USER ?? ""}"`,
+  `DELINEA_PASSWORD="${env.DELINEA_PASSWORD ?? ""}"`,
+  "",
   `AZURE_OPENAI_ENDPOINT="${env.AZURE_OPENAI_ENDPOINT ?? ""}"`,
   `AZURE_OPENAI_KEY="${env.AZURE_OPENAI_KEY ?? ""}"`,
   `AZURE_OPENAI_DEPLOYMENT="${env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o-mini"}"`,
@@ -32,6 +40,13 @@ const lines = [
   `# middleware fails OPEN only while this is blank). Roll the token to all runners BEFORE setting it`,
   `# here + restarting the app, or unauthenticated runners drop offline.`,
   `RUNNER_API_TOKEN="${env.RUNNER_API_TOKEN ?? ""}"`,
+  "",
+  `# HMAC key for the short-lived runner enroll token. REQUIRED — there is no default: a valid enroll`,
+  `# token is enough to fetch /api/runner/install.ps1, which returns RUNNER_API_TOKEN, so a guessable`,
+  `# value here is equivalent to publishing the runner bearer. The app refuses to mint or verify enroll`,
+  `# tokens when neither of these is set (fail closed). Generate with: openssl rand -hex 32`,
+  `RUNNER_ENROLL_SECRET="${env.RUNNER_ENROLL_SECRET ?? ""}"`,
+  `JWT_SECRET_KEY="${env.JWT_SECRET_KEY ?? ""}"`,
   "",
   `# Microsoft 365 single sign-on (Entra app registration). Set all three to enable the SSO button.`,
   `# Register the redirect URI <origin>/api/auth/sso/callback in the app. AUTH_PUBLIC_ORIGIN forces`,
@@ -47,3 +62,33 @@ writeFileSync(OUT, lines.join("\n"));
 console.log(`Wrote ${OUT}`);
 console.log(`  DATABASE_URL -> ${env.POSTGRES_HOST}:${env.POSTGRES_PORT}/${dbName}`);
 console.log(`  SN_INSTANCE_URL -> ${env.SN_INSTANCE_URL ?? "(missing)"}`);
+
+// This file is REGENERATED, not merged — anything env.env carries that the template above doesn't
+// emit is silently dropped on the next sync. That is not hypothetical: DELINEA_* and the enroll
+// secret were both in env.env, both absent from the template, and both vanished from web/.env on a
+// re-sync — taking credential brokering and enroll-token verification down with them. Name every key
+// we drop so the next omission is loud instead of a mystery outage.
+const WRITTEN = new Set(
+  lines.flatMap((l) => {
+    const m = /^([A-Z][A-Z0-9_]*)=/.exec(l);
+    return m ? [m[1]] : [];
+  })
+);
+// Consumed to build DATABASE_URL rather than emitted verbatim — not a drop.
+const CONSUMED = new Set(["POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_SCHEMA", "SN_USERNAME"]);
+const dropped = Object.keys(env).filter((k) => !WRITTEN.has(k) && !CONSUMED.has(k));
+if (dropped.length) {
+  console.warn(`\n  WARNING: ${dropped.length} key(s) in env.env are NOT written to web/.env:`);
+  for (const k of dropped) console.warn(`    - ${k}`);
+  console.warn(`  If the app reads any of these from process.env, add it to scripts/sync-env.mjs.`);
+}
+
+// Fail loudly on the keys the app cannot run without, rather than serving a half-configured app.
+const REQUIRED = ["DATABASE_URL", "DELINEA_BASE_URL", "DELINEA_USER", "DELINEA_PASSWORD"];
+const missing = REQUIRED.filter((k) => !new RegExp(`^${k}="..*"$`, "m").test(lines.join("\n")));
+if (missing.length) {
+  console.error(`\n  ERROR: required key(s) missing or empty: ${missing.join(", ")}`);
+  console.error(`  Set them in env.env and re-run. Without DELINEA_*, credential brokering is dead:`);
+  console.error(`  every job gets "Delinea not configured on the app" instead of its secret.`);
+  process.exit(1);
+}

@@ -3,6 +3,7 @@
 // back to back the group pickers (DLs / Security / M365 Groups).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
@@ -11,6 +12,8 @@ export const dynamic = "force-dynamic";
 
 export async function POST(_req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_systems"); if (g.res) return g.res;
+  // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
+  if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
     const out = await makeRunnerService(db).requestCloudGroupDiscovery(params.slug);
     return NextResponse.json(out);

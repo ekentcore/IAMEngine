@@ -14,20 +14,33 @@ Describe 'Test-CtgBrowserAvailable' {
         # node may or may not be on PATH; either way, node_modules/@playwright is not present in the repo.
         Test-CtgBrowserAvailable | Should -BeOfType [bool]
     }
-    It 'returns $false when node is not on PATH' {
+    It 'returns $false when node is genuinely absent (not on PATH AND not in a standard dir)' {
         Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        # Also defeat the standard-install-dir fallback, or this would find the real node on the box.
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $false }
         Test-CtgBrowserAvailable | Should -BeFalse
+    }
+
+    It 'finds node in a standard dir even when PATH does not have it (launchd / SYSTEM task)' {
+        # The exact failure on the central Mac: node is at /usr/local/bin but launchd's PATH is
+        # /usr/bin:/bin:/usr/sbin:/sbin, so Get-Command finds nothing and the sidecar was skipped.
+        Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $true } -ParameterFilter { $LiteralPath -like '*node*' }
+        Resolve-CtgNodeTool 'node' | Should -Not -BeNullOrEmpty
     }
 }
 
 Describe 'Install-CtgBrowser' {
-    It 'returns $false (and never throws) when node is not on PATH — nothing to install against' {
+    It 'returns $false (and never throws) when node is genuinely absent — nothing to install against' {
         Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $false }
         Install-CtgBrowser | Should -BeFalse
     }
-    It 'returns $false when npm is not on PATH' {
+    It 'returns $false when npm is genuinely absent' {
         Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { [pscustomobject]@{ Source = '/usr/bin/node' } } -ParameterFilter { $Name -eq 'node' }
         Mock Get-Command -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'npm' }
+        # npm must be absent from the standard dirs too, or the resolver would find the real one.
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $false } -ParameterFilter { $LiteralPath -like '*npm*' }
         Install-CtgBrowser | Should -BeFalse
     }
     It 'returns $false when the sidecar directory is missing (never runs an installer)' {
