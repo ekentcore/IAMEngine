@@ -28,7 +28,7 @@
 
   "systems": [
     {
-      "key": "servicenow", "mode": "api", "dependsOn": [],
+      "key": "servicenow", "mode": "manual", "dependsOn": [],
       "onboard":  { "when": "always", "config": { "requiredFields": ["email", "phone", "location", "title"] } },
       "offboard": { "when": "always", "config": { "action": "mark-inactive-on-end-date" } }
     },
@@ -154,7 +154,7 @@
       "onboard": { "when": "always", "schedule": { "offsetDaysMin": 0, "offsetDaysMax": 0, "note": "Finance Pod calls the user at 2pm local on first day to confirm login." } }
     },
     {
-      "key": "case-resolution", "mode": "api", "dependsOn": ["m365", "mimecast"],
+      "key": "case-resolution", "mode": "manual", "dependsOn": ["m365", "mimecast"],
       "onboard":  { "when": "always", "config": { "verifyMfaPhone": true, "sendCredentials": true, "closeAllTasks": true } },
       "offboard": { "when": "always", "config": { "deliverResetPasswordIfRequested": true, "closeAllTasks": true } }
     }

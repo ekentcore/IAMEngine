@@ -23,7 +23,7 @@ export type ModuleEntry = {
 
 export const MODULES: ModuleEntry[] = [
   // --- Core / identity ---
-  { key: "servicenow", name: "ServiceNow", group: "Core / identity", executor: "built", secret: "servicenow", note: "case contact + work notes (runner lib)" },
+  { key: "servicenow", name: "ServiceNow", group: "Core / identity", executor: "manual", secret: "servicenow", note: "checklist step — there is NO runner executor (no DISPATCH entry). The app's only ServiceNow write is a work note, gated on SN_WRITE_ENABLED; nothing writes ticket state." },
   { key: "m365", name: "Microsoft 365", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "cloud-auth" },
   { key: "entra", name: "Entra", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "cloud-auth", note: "runs through the M365 module" },
   { key: "tap", name: "Temporary Access Pass", group: "Core / identity", executor: "built", secret: "m365-admin", helpSlug: "tap", note: "Entra TAP for first sign-in — runs through the M365 module; start-day 8am/4h (configurable)" },
@@ -31,7 +31,7 @@ export const MODULES: ModuleEntry[] = [
   { key: "exchange-onprem", name: "Exchange (on-prem / hybrid)", group: "Core / identity", executor: "built", secret: "exchange-onprem", note: "hybrid mailbox session — needs a setup guide" },
   { key: "active-directory", name: "Active Directory", group: "Core / identity", executor: "built", secret: "ad-dc", note: "on-prem only — see docs/runner-dc-setup.md (needs an in-app guide)" },
   { key: "directory-sync", name: "Entra Connect sync", group: "Core / identity", executor: "built", secret: "ad-dc", note: "on-prem only (ADSync on the AAD Connect host)" },
-  { key: "case-resolution", name: "Case resolution", group: "Core / identity", executor: "built" },
+  { key: "case-resolution", name: "Case resolution", group: "Core / identity", executor: "manual", note: "checklist step — closing the ticket is still a human action. No executor writes ServiceNow state; the app only READS it back (Check ServiceNow) to confirm a case is done." },
 
   // --- Email security ---
   { key: "mimecast", name: "Mimecast", group: "Email security", executor: "built", secret: "mimecast", helpSlug: "mimecast" },

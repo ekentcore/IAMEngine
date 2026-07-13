@@ -23,7 +23,7 @@
 
   "systems": [
     {
-      "key": "servicenow", "mode": "api", "dependsOn": [],
+      "key": "servicenow", "mode": "manual", "dependsOn": [],
       "onboard":  { "when": "always", "config": { "requiredFields": ["email", "phone", "location", "title"] } },
       "offboard": { "when": "always", "config": { "action": "mark-inactive-on-end-date" } }
     },
@@ -53,7 +53,7 @@
       }
     },
     {
-      "key": "case-resolution", "mode": "api", "dependsOn": ["m365"],
+      "key": "case-resolution", "mode": "manual", "dependsOn": ["m365"],
       "onboard":  { "when": "always", "config": { "sendCredentials": true, "closeAllTasks": true } },
       "offboard": { "when": "always", "config": { "deliverResetPasswordIfRequested": true, "closeAllTasks": true } }
     }
