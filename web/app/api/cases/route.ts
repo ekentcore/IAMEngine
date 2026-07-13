@@ -7,7 +7,7 @@ import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { actorLabel } from "@/lib/auth/audit";
-import { createAndPlanCase } from "@/lib/cases/planning-service";
+import { createAndPlanCase, EngineOptOutError } from "@/lib/cases/planning-service";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +55,8 @@ export async function POST(req: Request) {
     );
     return NextResponse.json(outcome, { status: 201 });
   } catch (err) {
+    // A "do not use engine" client is a refusal the operator can act on, not a server fault.
+    if (err instanceof EngineOptOutError) return NextResponse.json({ error: err.message }, { status: 422 });
     const reason = err instanceof Error ? err.message : String(err);
     const status = reason.startsWith("client not found") ? 404 : 500;
     return NextResponse.json({ error: reason }, { status });

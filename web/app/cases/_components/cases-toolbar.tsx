@@ -179,7 +179,7 @@ function AutoImportToggle() {
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setMsg({ ok: false, text: d.error ?? `failed (${r.status})` }); return; }
       if (d.setting) setInfo((p) => ({ ...(p ?? {}), ...d.setting }));
-      setMsg({ ok: true, text: `Imported ${d.imported} new of ${d.scanned} open${d.alreadyImported ? `, ${d.alreadyImported} already imported` : ""}${d.failed ? `, ${d.failed} failed` : ""}.` });
+      setMsg({ ok: true, text: `Imported ${d.imported} new of ${d.scanned} open${d.alreadyImported ? `, ${d.alreadyImported} already imported` : ""}${d.skipped ? `, ${d.skipped} skipped (do not use engine)` : ""}${d.failed ? `, ${d.failed} failed` : ""}.` });
       if (d.imported > 0) router.refresh(); // surface the new cases in the list
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });

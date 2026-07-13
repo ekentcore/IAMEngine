@@ -23,6 +23,61 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    id: "engine-opt-out-hardening",
+    date: "2026-07-13",
+    title: "Hardening: 'do not use engine' + parent inheritance (PR #41)",
+    items: [
+      "A 'do not use engine' client's trashed cases now STAY trashed - previously every intake sweep un-trashed them because the check ran after the restore",
+      "The New case form now refuses an opted-out client too; the flag is enforced once at the case-creation layer, so no path can bypass it",
+      "Breaking a child's parent link with 'Keep a copy' no longer merges the parent's systems onto a child that already has its own",
+      "Breaking the link now always records, even when there's nothing to copy (the badge could get stuck on 'inherits')",
+      "A child that brokers its parent's credentials no longer shows a false 'not set up' badge - readiness now mirrors what dispatch actually resolves",
+      "The client page no longer claims 'inherits the parent's runbook' after the link is broken; clearing 'no engine' from the clients list now asks first",
+    ],
+  },
+  {
+    id: "exchange-manager-name",
+    date: "2026-07-13",
+    title: "Offboard: Exchange now uses the manager the intake form names (runner 1.48.0)",
+    items: [
+      "The offboard form carries the manager as a NAME (\"managerName\"), which the Exchange step never read - it only understood email addresses, so it skipped the Full Access delegate even when the case named the manager",
+      "Exchange now resolves that name to a mailbox (Exchange Online first, then on-prem AD) and grants them Full Access to the shared mailbox",
+      "A name matching several mailboxes is never guessed at - the step warns and skips instead",
+    ],
+  },
+  {
+    id: "offboard-manager-notneeded-runbook",
+    date: "2026-07-13",
+    title: "Offboard: manager hand-off to Exchange, not-needed steps, full runbook (runner 1.47.0)",
+    items: [
+      "The Active Directory offboard step now names the manager it clears in the run report, instead of just saying \"cleared manager\"",
+      "That manager is handed to the Exchange step, which grants them Full Access to the departing user's shared mailbox - previously, if Exchange ran after AD (a re-run), the link was already gone and the delegate was silently skipped",
+      "A system whose credentials are all marked \"not needed\" is now planned as a manual checklist item instead of failing the case at the credential broker",
+      "The client runbook now shows systems that run on a case but were never written up in the KB article, flagged \"not in the KB doc\"",
+    ],
+  },
+  {
+    id: "coretelligent-post-reset-restore",
+    date: "2026-07-13",
+    title: "Coretelligent: post-reset restore (TAP, offboard wiring, Delinea creds)",
+    items: [
+      "The TAP (Temporary Access Pass) onboarding step and the full 12-system offboard wiring lost in the July 13 database reset are restored, now carried by the profile so a reseed keeps them",
+      "Delinea credentials rewired from the \\Coretelligent\\IT Support folder: exchange-onprem back to the IAM API AD account, plus Zoom, xMatters and SentinelOne ids recovered",
+      "Cloud steps pinned to Coretelligent's own agent again (the Exchange Online cert lives in that box's Windows cert store)",
+      "Profiles can now declare runLast (planner runs that system after everything else - used by the offboard notification)",
+    ],
+  },
+  {
+    id: "engine-opt-out-parent-inheritance",
+    date: "2026-07-13",
+    title: "Per-client 'do not use engine' + breakable parent inheritance",
+    items: [
+      "New 'do not use engine' toggle on a client: the intake sweep and manual import skip its ServiceNow cases (reported as skipped, not failed) - cases already imported are kept",
+      "Child clients can break the modeled-by-parent link when they don't match the parent, choosing to keep an editable copy of the parent's systems or start empty",
+      "A broken link is honored everywhere inheritance was: case planning, the clients list coverage, the secrets panel, and config review",
+    ],
+  },
+  {
     id: "spanning-otp-broker",
     date: "2026-07-13",
     title: "Spanning force-sync: Delinea-minted MFA codes (PR #24, runner 1.45.0)",

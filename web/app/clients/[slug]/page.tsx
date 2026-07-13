@@ -7,8 +7,11 @@ import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { currentIsSuperAdmin } from "@/lib/auth/acting";
 import { RestrictedToggle } from "../_components/restricted-toggle";
 import { OwnAgentToggle } from "../_components/own-agent-toggle";
+import { EngineOptOutToggle } from "../_components/engine-opt-out-toggle";
+import { ParentInheritanceControl } from "../_components/parent-inheritance-control";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
+import { MODULES } from "@/lib/modules/catalog";
 import { asArtifacts } from "@/lib/runbook/artifacts";
 import { EditSystemsButton } from "../_components/edit-systems-button";
 import { SyncSystemsButton } from "../_components/sync-systems-button";
@@ -89,6 +92,15 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const canRestrict = await currentIsSuperAdmin(); // only super admins see/flip the restricted control
   // Does this client have its own (client-network) agent? Drives the "run cloud on own agent" hint.
   const hasClientAgent = (await db.agent.count({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null } })) > 0;
+  // SN account hierarchy: the parent, for the inheritance control + the "inherits the parent's
+  // runbook" banner. One query serves both (the banner needs the system count, the control needs
+  // to know whether there's anything to copy).
+  const parent = client.parentId
+    ? await db.client.findUnique({
+        where: { id: client.parentId },
+        select: { slug: true, name: true, _count: { select: { systems: true } } },
+      })
+    : null;
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
   const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true } });
@@ -125,10 +137,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const cloudGroupsMeta = { count: cloudGroupList.length, discoveredAt: typeof cloudGroups.discoveredAt === "string" ? cloudGroups.discoveredAt : null };
 
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
-  // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled.
-  const parentInfo = client.systems.length === 0
-    ? (await db.client.findUnique({ where: { id: client.id }, select: { parent: { select: { slug: true, name: true, _count: { select: { systems: true } } } } } }))?.parent ?? null
-    : null;
+  // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled — but
+  // ONLY while the link is intact: a child that broke it plans from its own systems, so claiming
+  // the parent's runbook covers it would be a lie (its cases would plan zero jobs).
+  const parentInfo = client.systems.length === 0 && client.inheritParentSystems ? parent : null;
 
   const runbook = await db.runbookSection.findMany({
     where: { clientId: client.id },
@@ -145,6 +157,22 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const sysByKey = new Map(client.systems.map((s) => [s.systemKey, s]));
   const keysInAction: Record<"onboard" | "offboard", Set<string>> = { onboard: new Set(), offboard: new Set() };
   for (const r of runbook) if (r.systemKey) keysInAction[r.action].add(r.systemKey);
+
+  // Systems that RUN in a lane but have no section in the KB doc — a client whose runbook came from a
+  // script or the systems editor (not an article) would otherwise show a runbook that silently omits
+  // steps a real case executes. Collected per lane, appended below, and flagged `unlisted` in the view.
+  // They also join keysInAction FIRST so the "after: …" dependency badges resolve against them.
+  const laneOf = (s: (typeof client.systems)[number], action: "onboard" | "offboard") =>
+    action === "onboard" ? s.onboardWhen : s.offboardWhen;
+  const unlisted: Record<"onboard" | "offboard", typeof client.systems> = { onboard: [], offboard: [] };
+  for (const action of ["onboard", "offboard"] as const) {
+    for (const s of client.systems) {
+      if (laneOf(s, action) === "never" || keysInAction[action].has(s.systemKey)) continue;
+      unlisted[action].push(s);
+      keysInAction[action].add(s.systemKey);
+    }
+  }
+  const whenLabel = (lane: string) => (lane === "on_request" ? "on request" : lane === "by_persona" ? "by persona" : null);
 
   const items: RunbookItemVM[] = runbook.map((r) => {
     const sys = r.systemKey ? sysByKey.get(r.systemKey) : undefined;
@@ -174,6 +202,34 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     };
   });
 
+  const maxSeq: Record<"onboard" | "offboard", number> = { onboard: 0, offboard: 0 };
+  for (const r of runbook) maxSeq[r.action] = Math.max(maxSeq[r.action], r.seq + 1);
+  for (const action of ["onboard", "offboard"] as const) {
+    unlisted[action].forEach((s, i) => {
+      const cfg = (s.config ?? null) as { onboard?: unknown; offboard?: unknown; dependsOn?: Record<string, string[]> } | null;
+      const laneDeps = cfg?.dependsOn?.[action];
+      const laneConfig = cfg?.[action] ?? null;
+      const automated = s.mode === "api";
+      items.push({
+        id: `${action}-sys-${s.systemKey}`,
+        action,
+        seq: maxSeq[action] + i,
+        status: automated ? "automated" : "manual",
+        systemKey: s.systemKey,
+        title: MODULES.find((m) => m.key === s.systemKey)?.name ?? s.systemKey,
+        guess: null,
+        steps: [],
+        after: (laneDeps ?? s.dependsOn ?? []).filter((d) => keysInAction[action].has(d)),
+        kbHref: null,
+        kbNum: null,
+        code: automated ? automationPreview(s.systemKey, action, laneConfig, client.identity, client.primaryDomain) : null,
+        artifacts: [],
+        unlisted: true,
+        when: whenLabel(laneOf(s, action)),
+      });
+    });
+  }
+
   const onboardKb = items.find((i) => i.action === "onboard" && i.kbHref)?.kbHref ?? null;
   const offboardKb = items.find((i) => i.action === "offboard" && i.kbHref)?.kbHref ?? null;
 
@@ -193,6 +249,16 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {canRestrict && <RestrictedToggle slug={client.slug} name={client.name} restricted={client.restricted} />}
+          <EngineOptOutToggle slug={client.slug} name={client.name} on={client.engineOptOut} />
+          {parent && (
+            <ParentInheritanceControl
+              slug={client.slug}
+              parentName={parent.name}
+              inherit={client.inheritParentSystems}
+              ownSystemCount={client.systems.length}
+              parentSystemCount={parent._count.systems}
+            />
+          )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
