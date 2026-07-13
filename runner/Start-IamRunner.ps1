@@ -50,6 +50,48 @@ $ErrorActionPreference = 'Stop'
 # cursor-position reports (the ;1R noise) into the log. PlainText output avoids the escape sequences.
 $ProgressPreference = 'SilentlyContinue'
 try { if (Get-Variable -Name PSStyle -ErrorAction SilentlyContinue) { $PSStyle.OutputRendering = 'PlainText' } } catch { }
+
+# Non-interactive PSGallery bootstrap shared by the Graph skew guard below and the missing-module
+# self-heal further down. The runner is detached (no stdin) — nothing here may ever prompt.
+function Initialize-CtgGallery {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    }
+    if ((Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue).InstallationPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+    }
+}
+
+# --- Microsoft.Graph version-skew guard ---------------------------------------------------------
+# Graph submodules only load together when every resolved submodule carries the SAME version:
+# mixing (say) Authentication 2.33 with Users 2.38 dies at Import-Module with "Assembly with same
+# name is already loaded" — killing the runner before it ever polls (seen on the Six One DC agent).
+# Skew accumulates because installs land in different scopes over time (the SYSTEM task's
+# CurrentUser profile vs AllUsers). PowerShell resolves the HIGHEST version per submodule across
+# PSModulePath, so repair = install the set's max version for every lagging submodule. No deletes:
+# old copies may be file-locked by another process, and a higher version simply wins resolution.
+function Repair-CtgGraphVersionSkew {
+    $avail = Get-Module -ListAvailable -Name 'Microsoft.Graph.*' -ErrorAction SilentlyContinue
+    if (-not $avail) { return }
+    $resolved = $avail | Group-Object Name | ForEach-Object { ($_.Group | Sort-Object Version -Descending)[0] }
+    $versions = @($resolved | ForEach-Object Version | Sort-Object -Unique)
+    if ($versions.Count -le 1) { return }
+    $target = ($versions | Sort-Object -Descending)[0]
+    $lagging = @($resolved | Where-Object { $_.Version -ne $target })
+    Write-Warning ("Microsoft.Graph submodule versions are mixed ({0}) — aligning {1} module(s) to {2}" -f ($versions -join ', '), $lagging.Count, $target)
+    Initialize-CtgGallery
+    foreach ($m in $lagging) {
+        try {
+            Install-Module $m.Name -RequiredVersion $target -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop
+            Write-Host "  aligned $($m.Name) $($m.Version) -> $target" -ForegroundColor Yellow
+        } catch {
+            Write-Warning "  could not align $($m.Name) to ${target}: $($_.Exception.Message)"
+        }
+    }
+}
+Repair-CtgGraphVersionSkew
+
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Mimecast/Coretelligent.Mimecast.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.DirectorySync/Coretelligent.DirectorySync.psd1" -Force
@@ -1175,16 +1217,19 @@ function Repair-CtgMissingModule {
     foreach ($p in $script:CtgAutoInstallModules) { if ($mod -like $p) { $trusted = $true; break } }
     if (-not $trusted) { Write-Warning "self-heal: '$CommandName' is in module '$mod', not on the auto-install allowlist — skipping"; return $null }
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         # The runner is detached (no stdin), so Install-Module must NEVER prompt or it hangs forever.
-        # Bootstrap the NuGet provider + trust the gallery up front, then install fully non-interactively.
-        if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        Initialize-CtgGallery
+        # Microsoft.Graph submodules must all carry the SAME version or the next import dies with
+        # "Assembly with same name is already loaded" (see Repair-CtgGraphVersionSkew). Pin a new
+        # Graph submodule to the version already on the host instead of grabbing the gallery latest.
+        $reqVer = $null
+        if ($mod -like 'Microsoft.Graph*') {
+            $auth = Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue |
+                Sort-Object Version -Descending | Select-Object -First 1
+            if ($auth) { $reqVer = $auth.Version }
         }
-        if ((Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue).InstallationPolicy -ne 'Trusted') {
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-        }
-        Install-Module $mod -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop
+        if ($reqVer) { Install-Module $mod -RequiredVersion $reqVer -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+        else { Install-Module $mod -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
         Import-Module $mod -Force -ErrorAction Stop
         return $mod
     } catch { Write-Warning "self-heal: failed to install '$mod' for '$CommandName': $($_.Exception.Message)"; return $null }

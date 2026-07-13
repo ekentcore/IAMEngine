@@ -32,3 +32,9 @@ test("single quotes in inputs cannot break out of the PS string literal", () => 
   assert.ok(s.includes("$App = 'https://x''; Remove-Item /'"));
   assert.ok(s.includes("$AgentId = 'id''; bad'"));
 });
+
+test("checks for mixed Microsoft.Graph submodule versions", () => {
+  const s = troubleshootScript(APP, AGENT);
+  assert.ok(s.includes("Microsoft.Graph.*"), "script inventories Graph modules");
+  assert.ok(s.includes("Assembly with same name is already loaded"), "explains the failure it predicts");
+});
