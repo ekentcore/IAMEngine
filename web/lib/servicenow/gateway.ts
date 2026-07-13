@@ -22,6 +22,9 @@ const FIELDS = [
   "u_onboarding",
   "u_offboarding",
   "account_parent", // the SN account-hierarchy field (NOT "parent") — child accounts point here
+  // The account's ServiceNow domain ("TOP/Acme, Inc."). Not stored on the Client — it is the only
+  // link from an account to its KB articles, which carry the same domain (see kb-discovery).
+  "sys_domain",
 ].join(",");
 
 const PAGE_SIZE = 100;
