@@ -18,6 +18,7 @@ export default async function AgentsPage() {
           <p className="note">
             {agents.length} runner{agents.length === 1 ? "" : "s"} · enroll one, then start it with
             {" "}<code>runner/Start-IamRunner.ps1</code> using its id.
+            {" · "}<a href="/help/runner-troubleshooting">Troubleshooting guide →</a>
           </p>
         </div>
       </div>
