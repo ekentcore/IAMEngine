@@ -8,6 +8,7 @@ import { currentClientScope } from "@/lib/auth/client-scope";
 import { listOutcomes, groupOutcomes, moduleIssueSummary, outcomeSystems } from "@/lib/runs/outcomes-repo";
 import type { FixProposal } from "@/lib/fixes/fix-tasks";
 import type { RunLogRow } from "../_components/run-log-table";
+import type { CredFailure } from "@/lib/jobs/cred-failure";
 import type { FixTaskInfo } from "../_components/claude-fix";
 
 export type RunsSearchParams = { q?: string; system?: string; verdict?: string; all?: string; resolved?: string };
@@ -50,12 +51,19 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
     validateOnly: r.validateOnly,
     verdict: r.verdict,
     messages: r.messages,
+    credFailure: (r.credFailure ?? null) as CredFailure | null,
     done: Boolean(r.resolvedAt),
     resolvedBy: r.resolvedBy,
     fingerprint: r.fingerprint,
     // error is already messages[0] for a failed step (jobOutcome pushes it first), so append it
     // only when it isn't already shown — otherwise the copy duplicates it.
-    copyText: [`${r.systemKey} (${r.caseNumber})`, ...r.messages, ...(r.error && !r.messages.includes(r.error) ? [r.error] : [])].filter(Boolean).join("\n"),
+    copyText: [
+      `${r.systemKey} (${r.caseNumber})`,
+      ...r.messages,
+      ...(r.error && !r.messages.includes(r.error) ? [r.error] : []),
+      // machine-usable line for scripted remediation
+      ...(r.credFailure ? [`credFailure: ${JSON.stringify(r.credFailure)}`] : []),
+    ].filter(Boolean).join("\n"),
   }));
 
   const emptyText = `No ${includeResolved ? "" : "open "}outcomes${verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.`;

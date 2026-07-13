@@ -25,6 +25,9 @@ export type OutcomeRow = {
   messages: string[];
   error: string | null;
   validateOnly: boolean;
+  // Structured credential-failure detail (see lib/jobs/cred-failure.ts) when the run's problem was a
+  // credential — lets /runs and remediation scripts key off the code instead of the error text.
+  credFailure: unknown | null;
   fingerprint: string;
   resolvedAt: Date | null;
   resolvedBy: string | null;

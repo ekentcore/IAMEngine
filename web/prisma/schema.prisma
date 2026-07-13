@@ -394,6 +394,9 @@ model Job {
   progress         Json? // live phase trail while running: [{ ts, phase }] — shown in the run report
   progressAt       DateTime? // when progress last moved — the per-job "is it still working?" signal
   error            String?
+  // WHY the credential broker last failed for this job (code/secretName/externalId/fix) — stamped by
+  // brokerCredential, cleared on a clean broker, copied onto the RunOutcome so fixes can be scripted.
+  credFailure      Json?
   startedAt        DateTime?
   finishedAt       DateTime?
   procurementWatch ProcurementWatch?
@@ -480,6 +483,10 @@ model RunOutcome {
   // Stable hash of (case + module + verdict + messages + error): the SAME line for the SAME case
   // recurs across re-runs under one fingerprint, so marking it "Fixed" resolves every occurrence and
   // the log collapses duplicates instead of repeating noise.
+  // Structured credential-failure detail copied from the Job (see Job.credFailure) when the run's
+  // problem was a credential — { code, secretName, externalId?, source?, fix?, detail } — so /runs
+  // and remediation scripts act on the CODE instead of parsing the error text.
+  credFailure   Json?
   fingerprint   String    @default("")
   resolvedAt    DateTime? // set when an operator marks the line "Fixed" (hides it from the default view)
   resolvedBy    String? // who resolved it (email / "system")

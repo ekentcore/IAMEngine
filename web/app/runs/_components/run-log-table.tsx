@@ -3,6 +3,7 @@
 // The run-log table with multi-select: tick the open errors/warnings and Fix them in one go. Rows are
 // computed server-side (page.tsx) and passed in as a serializable VM. Per-row Copy/Fix still work.
 import Link from "next/link";
+import type { CredFailure } from "@/lib/jobs/cred-failure";
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ActionsMenu, type ActionsMenuItem } from "../../_components/actions-menu";
@@ -23,6 +24,7 @@ export type RunLogRow = {
   validateOnly: boolean;
   verdict: string;
   messages: string[];
+  credFailure: CredFailure | null; // structured broker "why" when the problem was a credential
   done: boolean; // resolved (Fixed)
   resolvedBy: string | null;
   fingerprint: string;
@@ -37,6 +39,21 @@ const VERDICT_STYLE: Record<string, { bg: string; fg: string; label: string }> =
   manual: { bg: "var(--info-bg)", fg: "var(--info-fg)", label: "✋ manual" },
   pending: { bg: "var(--neutral-bg)", fg: "var(--neutral-fg)", label: "pending" },
 };
+
+
+// The broker's structured credential verdict: the code is the scriptable part; the fix line tells
+// the operator (or a sweep) exactly what to change. Rendered above the free-text messages.
+function CredChip({ cf }: { cf: CredFailure | null }) {
+  if (!cf) return null;
+  return (
+    <div style={{ marginBottom: 3 }}>
+      <span style={{ background: "var(--warn-bg)", color: "var(--warn-fg)", borderRadius: 6, padding: "1px 7px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }}>
+        credential · {cf.code} · {cf.secretName}
+      </span>
+      <div className="note" style={{ fontSize: 12, marginTop: 2 }}>fix: {cf.fix}</div>
+    </div>
+  );
+}
 
 function Badge({ verdict }: { verdict: string }) {
   const s = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.pending;
@@ -180,6 +197,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
                       )}
                     </span>
                   )}
+                  <CredChip cf={r.credFailure} />
                   {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : (r.verdict === "verified" ? "—" : "")}
                   {r.done && <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>}
                 </td>
@@ -201,7 +219,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
               <Badge verdict={r.verdict} />
             </div>
             <div className="m-card-msg" style={{ color: r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
-              {r.messages.length ? r.messages.join(" ") : (r.verdict === "verified" ? "—" : "")}
+              {r.credFailure ? `credential · ${r.credFailure.code} · ${r.credFailure.secretName} — ` : ""}{r.messages.length ? r.messages.join(" ") : (r.verdict === "verified" ? "—" : "")}
             </div>
             <div className="m-card-meta">
               <Link href={`/cases/${r.caseRequestId}`}>{r.caseNumber}</Link>
@@ -254,6 +272,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
                     <span style={{ float: "right", marginLeft: 10, whiteSpace: "nowrap" }}>
                       <ActionsMenu items={rowMenu(r)} />
                     </span>
+                    <CredChip cf={r.credFailure} />
                     {r.messages.length ? r.messages.map((m, i) => <div key={i} style={{ marginBottom: 2 }}>{m}</div>) : "—"}
                     <div className="note" style={{ fontSize: 10 }}>fixed{r.resolvedBy ? ` by ${r.resolvedBy}` : ""}</div>
                   </td>

@@ -29,6 +29,7 @@ function row(over: Partial<OutcomeRow> & { fingerprint: string }): OutcomeRow {
     at: over.at ?? new Date(),
     caseRequestId: "case-1",
     caseNumber: "INC1",
+    credFailure: over.credFailure ?? null,
     action: "offboard",
     clientName: "Acme",
     systemKey: "m365",
