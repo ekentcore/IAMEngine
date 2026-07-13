@@ -15,10 +15,17 @@
 export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean; optional?: boolean };
 
 export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
-  // M365 admin (Graph): username + password + a tenant hint (tenant can come from the client domain).
+  // M365 admin (Graph app registration): an app id + a client secret + a tenant hint (the tenant can
+  // come from the client's domain). Connect-CtgM365 uses -ClientSecretCredential, where UserName IS
+  // the app id and Password IS the client secret.
+  //
+  // The synonyms MIRROR the runner's CRED_USERNAME_FIELDS/CRED_PASSWORD_FIELDS exactly: Delinea's
+  // "Entra Azure AD Account" template calls them Username/Password, while "Automation - Azure App"
+  // calls the same pair appID/Secret. If this list and the runner's ever diverge, the Test goes green
+  // on a credential the runner can't use (or red on one it can) — keep them in lockstep.
   "m365-admin": [
-    { label: "admin username", anyOf: ["Username"] },
-    { label: "admin password", anyOf: ["Password"] },
+    { label: "admin username / app id", anyOf: ["Username", "appID", "AppId", "ApplicationId", "ClientId"] },
+    { label: "admin password / client secret", anyOf: ["Password", "Secret", "ClientSecret", "AppSecret"] },
     { label: "tenant id / domain", anyOf: ["TenantId", "Tenant", "Domain"], orClientDomain: true },
   ],
   // Exchange Online: app-only certificate auth — AppId (the secret username) + a cert. The cert is

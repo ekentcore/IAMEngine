@@ -61,6 +61,18 @@ function Field({ label, help, children, grow }: { label: string; help: string; c
   );
 }
 
+// A credential the app found sitting in this client's Delinea folder for a secret slot it now needs.
+type Suggestion = {
+  secretName: string;
+  externalId: string;
+  label: string;
+  template: string | null;
+  folderPath: string;
+  confidence: "high" | "medium";
+  reason: string;
+  alternatives: { externalId: string; label: string }[];
+};
+
 const ALL_KEYS = Object.keys(CATALOG).sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : l === "always" ? "always" : "never");
 
@@ -144,9 +156,75 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
   function addSystem(key: string) {
     if (!key || rows.some((r) => r.systemKey === key)) return;
-    setRows((rs) => [...rs, rowFromCatalog(key)]);
+    const row = rowFromCatalog(key);
+    setRows((rs) => [...rs, row]);
     setAddKey("");
+    // The system knows which secret it brokers the moment it's added, so scan this client's Delinea
+    // folder for a credential that fits and offer it — rather than leaving the operator to hunt for
+    // the id. Fire-and-forget: a failed or slow scan must never block adding the system.
+    void suggestFor(row.secretNames);
   }
+
+  // Delinea credential suggestions, keyed by secret name (e.g. "sentinelone" -> the folder's
+  // "S1_API integration" secret). Dismissed suggestions stay dismissed for the session.
+  const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>({});
+  const [scanning, setScanning] = useState(false);
+
+  async function suggestFor(secretNames: string[]) {
+    const names = secretNames.filter((n) => n && !(n in suggestions));
+    if (names.length === 0) return;
+    setScanning(true);
+    try {
+      const res = await fetch(`/api/clients/${slug}/secrets/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secretNames: names }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { suggestions?: Suggestion[] };
+      if (!data.suggestions?.length) return;
+      setSuggestions((s) => ({ ...s, ...Object.fromEntries(data.suggestions!.map((x) => [x.secretName, x])) }));
+    } catch {
+      // an assist, not a gate — stay silent
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  function dismissSuggestion(secretName: string) {
+    setSuggestions((s) => {
+      const next = { ...s };
+      delete next[secretName];
+      return next;
+    });
+  }
+
+  // Accepting a suggestion wires the Delinea REFERENCE (the secret id) on the client — the same write
+  // the Secrets panel's save does. The systems editor itself only carries secret NAMES, so this can't
+  // ride along with the systems save; it's persisted immediately and surfaced on the Secrets panel,
+  // where the operator can Test it.
+  async function setSecretRef(secretName: string, externalId: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${slug}/secrets`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secrets: [{ name: secretName, externalId }] }),
+      });
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(d?.error ?? `could not wire ${secretName} (HTTP ${res.status})`);
+        return;
+      }
+      setWired((w) => ({ ...w, [secretName]: externalId }));
+      router.refresh(); // the Secrets panel on the page behind reflects the new reference
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  // Secret refs wired from a suggestion during this session — so the banner can confirm rather than
+  // silently vanish.
+  const [wired, setWired] = useState<Record<string, string>>({});
 
   async function save() {
     setSaving(true); setError(null);
@@ -236,6 +314,52 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             </select>
             <button onClick={() => addSystem(addKey)} disabled={!addKey}>Add</button>
           </div>
+
+          {scanning && <p className="note" style={{ margin: "0.4rem 0 0" }}><span className="spinner" />Scanning this client&apos;s Delinea folder for a matching credential…</p>}
+
+          {/* A credential for the system just added is already sitting in the client's Delinea folder —
+              offer it rather than making the operator hunt for the id. Wiring it fills the secret ref;
+              it still has to be saved (and tested) like any other edit. */}
+          {Object.entries(wired).map(([name, id]) => (
+            <p key={name} className="note" style={{ margin: "0.4rem 0 0", color: "#15803d" }}>
+              Wired <b style={{ fontFamily: "monospace" }}>{name}</b> to Delinea #{id} — test it on the Secrets panel.
+            </p>
+          ))}
+
+          {Object.values(suggestions).map((s) => (
+            <div
+              key={s.secretName}
+              style={{
+                margin: "0.5rem 0 0",
+                border: "1px solid #bbf7d0",
+                background: "#e8f5ee",
+                color: "#15803d",
+                borderRadius: 10,
+                padding: "0.6rem 0.75rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ flex: "1 1 320px", fontSize: 13 }}>
+                Found a credential for <b style={{ fontFamily: "monospace" }}>{s.secretName}</b> in this client&apos;s Delinea
+                folder: <b>{s.label}</b> (#{s.externalId}){s.template ? <> · {s.template}</> : null}
+                {s.confidence === "medium" && (
+                  <> — <b>a guess</b>, so check it before saving.</>
+                )}
+              </span>
+              <button
+                onClick={() => {
+                  setSecretRef(s.secretName, s.externalId);
+                  dismissSuggestion(s.secretName);
+                }}
+              >
+                Use #{s.externalId}
+              </button>
+              <button className="ghost" onClick={() => dismissSuggestion(s.secretName)}>Dismiss</button>
+            </div>
+          ))}
 
           <p className="note" style={{ margin: "0.4rem 0 0.3rem" }}>
             <b>Onboard</b> and <b>Offboard</b> are the two runbooks — set when each system runs:{" "}

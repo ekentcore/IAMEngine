@@ -47,7 +47,9 @@ export type Candidate = {
 const NOT_A_CRED =
   // NOTE: `ldap` has no leading \b — it shows up glued to a system name ("MimecastLdap"), and any
   // name containing it is a directory-sync connector, not an integration credential.
-  /ldap|\b(smtp|scan[ -]?to[ -]?email|scan|alerts? subscriber|password expiration|wifi|wi-fi|ssid|printer|conference|kiosk|welcome|distribution list|room|ipad|passcode|sftp|ftp|dmarc|non-sso|nonsso|shared mailbox|mailbox|jamf|maas360|papercut|autopilot|auto-pilot)\b/i;
+  // "backup codes"/"recovery codes"/"MFA" are the break-glass codes for an account, NOT the API
+  // credential — "S1 API backup codes" is not a SentinelOne integration secret.
+  /ldap|backup codes?|recovery codes?|\b(mfa|2fa|totp|smtp|scan[ -]?to[ -]?email|scan|alerts? subscriber|password expiration|wifi|wi-fi|ssid|printer|conference|kiosk|welcome|distribution list|room|ipad|passcode|sftp|ftp|dmarc|non-sso|nonsso|shared mailbox|mailbox|jamf|maas360|papercut|autopilot|auto-pilot)\b/i;
 
 // Retired / previous-MSP / test credentials: kept visible as candidates for the report and the LLM,
 // but never auto-picked while a non-stale candidate exists (and never picked at all by heuristics).

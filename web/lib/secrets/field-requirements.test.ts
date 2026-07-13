@@ -10,6 +10,22 @@ test("m365-admin: needs username + password + tenant (or client domain)", () => 
   assert.deepEqual(checkFieldShape("m365-admin", ["Username", "Password"]), { ok: false, missing: ["tenant id / domain"] });
 });
 
+// Delinea's "Automation - Azure App" template stores the SAME app-registration credential as
+// appID/Secret/tenantID that "Entra Azure AD Account" stores as Username/Password/TenantId. The
+// runner accepts both (CRED_USERNAME_FIELDS/CRED_PASSWORD_FIELDS in Start-IamRunner.ps1) — these
+// synonyms keep the app's Test in lockstep, so it can't go red on a credential that actually works.
+test("m365-admin: the Automation - Azure App field spelling (appID/Secret/tenantID) is accepted", () => {
+  assert.deepEqual(checkFieldShape("m365-admin", ["appID", "Secret", "tenantID"]), { ok: true, missing: [] });
+  // the real CoreAutomation - Azure App field set, verbatim
+  const coreAutomation = ["OrganizationLongName", "OrgShortName", "AzOrgSubscription", "AzOrgResourceGroup", "AzOrgLocation", "tenantID", "appID", "OnMicrosoftOrgName", "Secret"];
+  assert.deepEqual(checkFieldShape("m365-admin", coreAutomation), { ok: true, missing: [] });
+  // still catches a genuinely unusable secret
+  assert.deepEqual(checkFieldShape("m365-admin", ["Notes"], { clientHasTenantHint: true }), {
+    ok: false,
+    missing: ["admin username / app id", "admin password / client secret"],
+  });
+});
+
 test("exchange (online): needs an app id + a cert (thumbprint OR .pfx)", () => {
   assert.deepEqual(checkFieldShape("exchange", ["Username", "CertificateThumbprint"]), { ok: true, missing: [] });
   assert.deepEqual(checkFieldShape("exchange", ["Username", "CertificateBase64"]), { ok: true, missing: [] }); // cross-platform .pfx
