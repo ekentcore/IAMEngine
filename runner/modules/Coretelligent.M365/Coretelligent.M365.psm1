@@ -3,7 +3,7 @@
 # Coretelligent.M365
 # Shared system module — written once, reused by every client.
 # Depends on the Microsoft.Graph SDK. Required delegated/app scopes:
-#   User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All
+#   User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All, Domain.Read.All (domain list)
 #
 # Public surface:
 #   Connect-CtgM365            - establish a Graph session from a credential

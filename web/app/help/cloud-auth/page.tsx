@@ -62,8 +62,9 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
 
       <h2>{step()}. API permissions (application, not delegated)</h2>
       <ul>
-        <li><b>Microsoft Graph</b> → Application permissions → <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>, <code>Organization.Read.All</code> (license/seat counts; add <code>Directory.Read.All</code> if you resolve managers by name).</li>
+        <li><b>Microsoft Graph</b> → Application permissions → <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>, <code>Organization.Read.All</code> (license/seat counts), <code>Domain.Read.All</code> (lists the tenant’s verified email domains for multi-domain clients; add <code>Directory.Read.All</code> if you resolve managers by name).</li>
         <li>{!hybrid && <b>(distribution lists only) </b>}<b>APIs my organization uses</b> → <b>Office 365 Exchange Online</b> → Application permissions → <code>Exchange.ManageAsApp</code>{!hybrid && " — only if this client has distribution lists"}.</li>
+        <li className="note">Adding a permission is always a MANUAL admin step — the app registration cannot grant itself new permissions (that would need <code>Application.ReadWrite.All</code> + <code>AppRoleAssignment.ReadWrite.All</code>, which we deliberately do not hold). Portal: API permissions → Add → Grant admin consent. Or a Global Admin can run: <code>Add-MgApplicationApiPermission</code> equivalents via Graph PowerShell — e.g. add the <code>Domain.Read.All</code> app role (id <code>7e05723c-0bb0-42da-be95-ae9f08a6e53c</code>) to the app’s requiredResourceAccess and then <code>New-MgServicePrincipalAppRoleAssignment</code> to consent.</li>
         <li>Click <b>Grant admin consent</b> (the statuses must show a green check).</li>
       </ul>
 
