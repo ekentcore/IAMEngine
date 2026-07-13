@@ -14,7 +14,7 @@ maps the ServiceNow intake forms to the `CaseRequest` payload.
   …). Holds the default mode, which lifecycle lanes it supports, the executing module
   name, and a build-priority tier so the UI can show "modeled vs not-yet-built."
 - ClientSystem — the normalized profile: client × system, with `mode`, `onboardWhen` /
-  `offboardWhen` (always | on-request | never), `dependsOn`, `requiresApproval`,
+  `offboardWhen` (always | on-request | by-persona | never), `dependsOn`, `requiresApproval`,
   `captureEvidence`, and a free-form `config` JSON for the per-client bits (license
   bundles, group lists, OU paths, mailbox thresholds, transfer targets).
 - Secret — per-client secret reference: `provider` (delinea) + `externalId` + label.
@@ -31,7 +31,8 @@ maps the ServiceNow intake forms to the `CaseRequest` payload.
 ## Planning a case (orchestrator)
 
 Given a CaseRequest, the orchestrator: loads the client's ClientSystems, drops any whose
-lane is `never` or whose `on-request` condition isn't met by the payload, topologically
+lane is `never`, whose `on-request` condition isn't met by the payload, or whose
+`by-persona` system isn't listed by the matched persona's bundle, then topologically
 sorts by `dependsOn` (lane-specific deps win), and creates one Job per remaining system.
 `api` jobs go to the queue for a runner; `manual`/`browser` jobs become case checklist
 items (browser auto-runs if a capable runner exists, else manual).

@@ -157,6 +157,7 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     firstName,
     lastName,
     mi: trimmed(val(r, "u_mi")),
+    nickname: trimmed(val(r, "u_nickname")), // preferred/goes-by name — deriveIdentity substitutes it for the first name when filled
     // canonical identity fields the Coretelligent.* modules read (PowerShell access is
     // case-insensitive, so e.g. $User.JobTitle resolves these). UserPrincipalName /
     // SamAccountName / PrimaryDomain are filled by deriveIdentity() once the client is known.
@@ -285,7 +286,14 @@ export function deriveIdentity(
   payload: Record<string, unknown>,
   opts: { usernamePatterns?: string[] | null; primaryDomain?: string | null }
 ): Record<string, unknown> {
-  const first = String(payload.firstName ?? "");
+  // A filled-in nickname REPLACES the first name everywhere downstream: the {first}/{firstinitial}
+  // username tokens (sam/UPN/mailNickname — "Bill Smith" -> bsmith, not wsmith), the displayName,
+  // and payload.firstName itself (which the runner writes to AD givenName / Graph GivenName). The
+  // intake first name survives as legalFirstName — read back first so re-derivation on a re-plan
+  // (where firstName already holds the nickname) stays idempotent.
+  const legalFirst = String(payload.legalFirstName ?? payload.firstName ?? "");
+  const nickname = String(payload.nickname ?? "").trim();
+  const first = nickname || legalFirst;
   const last = String(payload.lastName ?? "");
   const mi = String(payload.mi ?? "");
   const domain = (opts.primaryDomain ?? "").trim().toLowerCase();
@@ -319,10 +327,14 @@ export function deriveIdentity(
   const upn = buildUpn(patterns[0]);
   // Fallback UPNs from the remaining USABLE patterns (deduped, excluding the primary).
   const fallbacks = [...new Set(patterns.slice(1).filter(patternUsable).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
-  const displayName = (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
+  // With a nickname, the intake-built displayName (assembled from the legal first) can't be trusted.
+  const displayName = nickname
+    ? [first, last].filter(Boolean).join(" ") || null
+    : (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
 
   const merged = {
     ...payload,
+    ...(nickname ? { firstName: first, legalFirstName: legalFirst } : {}),
     displayName,
     userPrincipalName: upn,
     userPrincipalNameFallbacks: fallbacks, // runner tries these when the primary is taken by another person

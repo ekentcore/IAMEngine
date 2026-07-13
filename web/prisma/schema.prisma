@@ -33,6 +33,7 @@ enum Lifecycle {
   always
   on_request
   never
+  by_persona // included only when the selected persona's bundle lists this system
 }
 
 enum Action {

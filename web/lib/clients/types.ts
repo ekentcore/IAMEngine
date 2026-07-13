@@ -35,8 +35,8 @@ export type ClientListItem = {
 export type EditableSystem = {
   systemKey: string;
   mode: "api" | "browser" | "manual";
-  onboardWhen: "always" | "on_request" | "never";
-  offboardWhen: "always" | "on_request" | "never";
+  onboardWhen: "always" | "on_request" | "never" | "by_persona";
+  offboardWhen: "always" | "on_request" | "never" | "by_persona";
   dependsOn: string[];
   requiresApproval: boolean;
   captureEvidence: boolean;

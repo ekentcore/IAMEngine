@@ -255,8 +255,8 @@
     },
 
     "when": {
-      "enum": ["always", "on-request", "never"],
-      "description": "always = every run; on-request = only if a case variable asks for it; never = system absent for this lifecycle action."
+      "enum": ["always", "on-request", "never", "by-persona"],
+      "description": "always = every run; on-request = only if a case variable asks for it; never = system absent for this lifecycle action; by-persona = only when the selected persona's `systems` (or `offboardSystems` on offboard) lists this system."
     },
 
     "lane": {

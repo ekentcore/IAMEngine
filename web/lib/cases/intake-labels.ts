@@ -2,6 +2,7 @@
 // a humanized camelCase/snake_case form so a new field is still readable.
 export const INTAKE_LABELS: Record<string, string> = {
   firstName: "First name", lastName: "Last name", mi: "Middle initial", displayName: "Display name",
+  nickname: "Nickname (goes by)", legalFirstName: "Legal first name",
   jobTitle: "Job title", department: "Department", managerName: "Manager", manager: "Manager",
   employmentType: "Employment type", otherEmploymentType: "Employment type (other)",
   startDate: "Start date", dateOfOffboarding: "Offboarding date",

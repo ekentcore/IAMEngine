@@ -2,7 +2,7 @@
 // system keys, the default mode/lane/secret for each modeled system, and how to infer the
 // identity backbone from what was detected. Mirrors docs/modules/_INDEX.md.
 
-export type Lane = "always" | "on-request" | "never";
+export type Lane = "always" | "on-request" | "never" | "by-persona";
 export type Mode = "api" | "browser" | "manual";
 
 export type CatalogEntry = {
