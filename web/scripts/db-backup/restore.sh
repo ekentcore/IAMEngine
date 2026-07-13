@@ -56,7 +56,8 @@ if [[ -z "$DATABASE_URL" ]]; then
     ENV_FILE="$SCRIPT_DIR/../../.env"
   fi
   [[ -f "$ENV_FILE" ]] || fail "no --database-url given and env file not found: $ENV_FILE"
-  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+  # strip only SURROUNDING quotes — a quote character inside the password must survive
+  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -E "s/^[\"']//; s/[\"']\$//")"
   [[ -n "$DATABASE_URL" ]] || fail "DATABASE_URL not set in $ENV_FILE"
 fi
 
@@ -135,7 +136,9 @@ fi
 log "restoring $DUMP_FILE → $TARGET_DB"
 # --no-owner/--no-privileges: restore as the connecting user, ignoring original
 # role ownership (dump may reference roles that don't exist on a new server).
-"$PG_BIN/pg_restore" --no-password --no-owner --no-privileges \
+# --exit-on-error: pg_restore's default is to CONTINUE past object-level errors,
+# which after a --replace DROP would leave a silently incomplete live database.
+"$PG_BIN/pg_restore" --no-password --no-owner --no-privileges --exit-on-error \
   --dbname="$TARGET_URL" "$DUMP_FILE"
 
 TABLE_COUNT="$("$PG_BIN/psql" "$TARGET_URL" --no-password -qAt -c \

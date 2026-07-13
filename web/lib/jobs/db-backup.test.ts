@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backupDue, normalizeDbBackup } from "./db-backup";
+import { backupDue, dbBackupStatus, normalizeDbBackup } from "./db-backup";
 
 // backupDue anchors to the LOCAL hourLocal boundary, so tests build local dates
 // (new Date(y, m, d, h)) — an ISO Z string would shift with the runner's timezone.
@@ -36,6 +36,21 @@ test("backupDue: one run per night, anchored to the 02:00 local boundary", () =>
   // satisfy the 02:00 boundary once it passes
   const ranEarly = normalizeDbBackup({ lastStartedAt: local(13, 1).toISOString() });
   assert.equal(backupDue(ranEarly, local(13, 2, 30)), true);
+});
+
+test("backupDue: an unparseable lastStartedAt reads as due, not as never-again", () => {
+  const s = normalizeDbBackup({ lastStartedAt: "not-a-date" });
+  assert.equal(backupDue(s, local(13, 3)), true);
+});
+
+test("dbBackupStatus: one projection with defaults filled", () => {
+  const st = dbBackupStatus(null);
+  assert.equal(st.enabled, true);
+  assert.equal(st.hourLocal, 2);
+  assert.equal(st.keepDays, 30);
+  assert.ok(st.backupDir.endsWith("Backups/iam-engine"));
+  assert.equal(st.lastStartedAt, null);
+  assert.equal(st.lastResult, null);
 });
 
 test("backupDue: honors a custom hourLocal", () => {

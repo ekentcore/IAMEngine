@@ -25,11 +25,15 @@ export default async function SettingsV2Page() {
     const me = await getCurrentUser();
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
-  const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
-  const featureRequests = await loadFeatureRequests();
-  const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
-  const llmProviders = await listProvidersMasked(db);
-  const dbBackup = await loadDbBackupStatus();
+  // independent single-row reads — fetch in parallel, not as five serial round trips
+  const [rawSettings, featureRequests, autoFix, llmProviders, dbBackup] = await Promise.all([
+    getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
+    loadFeatureRequests(),
+    getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
+    listProvidersMasked(db),
+    loadDbBackupStatus(),
+  ]);
+  const settings = normalizeSettings(rawSettings);
   return (
     <main>
       <div className="row-between" style={{ marginBottom: "1.5rem" }}>

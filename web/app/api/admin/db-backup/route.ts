@@ -7,26 +7,14 @@ import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { getAppSetting, setAppSetting } from "@/lib/settings";
-import { DB_BACKUP_KEY, defaultBackupDir, normalizeDbBackup, runDbBackup } from "@/lib/jobs/db-backup";
+import { DB_BACKUP_KEY, dbBackupStatus, normalizeDbBackup, recordRunResult, runDbBackup } from "@/lib/jobs/db-backup";
 
 export const dynamic = "force-dynamic";
-
-function summarize(s: ReturnType<typeof normalizeDbBackup>) {
-  return {
-    enabled: s.enabled,
-    hourLocal: s.hourLocal ?? 2,
-    keepDays: s.keepDays ?? 30,
-    backupDir: s.backupDir ?? defaultBackupDir(),
-    lastStartedAt: s.lastStartedAt ?? null,
-    lastResult: s.lastResult ?? null,
-  };
-}
 
 export async function GET() {
   const g = await guard("settings.manage");
   if (g.res) return g.res;
-  const s = normalizeDbBackup(await getAppSetting(db, DB_BACKUP_KEY));
-  return NextResponse.json(summarize(s));
+  return NextResponse.json(dbBackupStatus(await getAppSetting(db, DB_BACKUP_KEY)));
 }
 
 export async function POST(req: Request) {
@@ -39,24 +27,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
 
-  const s = normalizeDbBackup(await getAppSetting(db, DB_BACKUP_KEY));
-
   if (body.action === "run") {
+    const s = normalizeDbBackup(await getAppSetting(db, DB_BACKUP_KEY));
     const result = await runDbBackup(s);
-    await setAppSetting(db, DB_BACKUP_KEY, { ...s, lastResult: result });
-    await db.auditLog
-      .create({
-        data: {
-          actor: "system:db-backup",
-          action: result.ok ? "db.backup.completed" : "db.backup.failed",
-          detail: { ...result, trigger: "manual", by: g.user?.email ?? null },
-        },
-      })
-      .catch(() => {});
+    // merge-write: a nightly claim may have landed while the dump ran — never clobber it
+    await recordRunResult(db, result);
+    await recordAudit(result.ok ? "db.backup.completed" : "db.backup.failed", {
+      user: g.user,
+      detail: { ...result, trigger: "manual" },
+    });
     return NextResponse.json({ ok: result.ok, result }, { status: result.ok ? 200 : 502 });
   }
 
-  const enabled = body.enabled === true;
+  // Anything that isn't an explicit boolean toggle is a client bug — reject it rather than
+  // coercing a typo'd body into "disable the nightly backups".
+  if (typeof body.enabled !== "boolean") {
+    return NextResponse.json({ error: "expected { enabled: boolean } or { action: \"run\" }" }, { status: 422 });
+  }
+  const enabled = body.enabled;
+  const s = normalizeDbBackup(await getAppSetting(db, DB_BACKUP_KEY));
   await setAppSetting(db, DB_BACKUP_KEY, { ...s, enabled });
   await recordAudit("settings.dbbackup.update", { user: g.user, detail: { enabled } });
   return NextResponse.json({ ok: true, enabled });

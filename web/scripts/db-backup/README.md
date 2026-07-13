@@ -5,6 +5,19 @@ Dumps are compressed custom-format archives (`pg_dump -Fc`), verified readable
 after every run, rotated after 30 days, with a `latest.dump` symlink always
 pointing at the newest snapshot.
 
+There are **two independent layers**, both writing timestamped dumps to the
+same directory:
+
+1. **In-app (default on, zero setup)** — `web/lib/jobs/db-backup.ts` takes one
+   backup per night after 02:00 local, riding the runner-heartbeat sweep chain.
+   Because the app already holds macOS Local Network permission, its `pg_dump`
+   child reaches the DB server without any grant. Status, toggle, and a
+   "Back up now" button live on the Settings page. Caveat: the sweep's clock is
+   runner heartbeats — if every runner is offline all night, the in-app layer
+   takes no backup (the launchd layer below covers that gap).
+2. **Standalone launchd agent (below)** — independent of the app entirely, but
+   needs a one-time Local Network allow in System Settings on macOS.
+
 ## One-time setup
 
 ```sh

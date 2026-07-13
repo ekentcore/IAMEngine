@@ -9,7 +9,7 @@
 #
 # Usage:
 #   backup.sh [--env-file PATH] [--database-url URL] [--backup-dir DIR]
-#             [--keep-days N] [--quiet]
+#             [--keep-days N]
 #
 # Connection resolution order: --database-url, $DATABASE_URL, DATABASE_URL in
 # the env file (default: web/.env next to this script's repo checkout).
@@ -23,7 +23,6 @@ ENV_FILE="${ENV_FILE:-}"
 DATABASE_URL="${DATABASE_URL:-}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/iam-engine}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
-QUIET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,13 +30,12 @@ while [[ $# -gt 0 ]]; do
     --database-url) DATABASE_URL="$2"; shift 2 ;;
     --backup-dir)   BACKUP_DIR="$2"; shift 2 ;;
     --keep-days)    KEEP_DAYS="$2"; shift 2 ;;
-    --quiet)        QUIET=1; shift ;;
     -h|--help)      grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "backup.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-log() { [[ $QUIET -eq 1 ]] || echo "[db-backup] $*"; }
+log() { echo "[db-backup] $*"; }
 fail() { echo "[db-backup] ERROR: $*" >&2; exit 1; }
 
 # --- locate DATABASE_URL ----------------------------------------------------
@@ -47,7 +45,8 @@ if [[ -z "$DATABASE_URL" ]]; then
     ENV_FILE="$SCRIPT_DIR/../../.env"
   fi
   [[ -f "$ENV_FILE" ]] || fail "no --database-url given and env file not found: $ENV_FILE"
-  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+  # strip only SURROUNDING quotes — a quote character inside the password must survive
+  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -E "s/^[\"']//; s/[\"']\$//")"
   [[ -n "$DATABASE_URL" ]] || fail "DATABASE_URL not set in $ENV_FILE"
 fi
 
@@ -80,7 +79,7 @@ DUMP_FILE="$BACKUP_DIR/${DB_NAME}-${STAMP}.dump"
 TMP_FILE="$DUMP_FILE.partial"
 
 log "dumping $DB_NAME → $DUMP_FILE"
-"$PG_BIN/pg_dump" --format=custom --compress=9 --no-password \
+"$PG_BIN/pg_dump" --format=custom --no-password \
   --file="$TMP_FILE" "$CLEAN_URL" \
   || { rm -f "$TMP_FILE"; fail "pg_dump failed"; }
 
@@ -96,8 +95,14 @@ TABLES="$("$PG_BIN/pg_restore" --list "$DUMP_FILE" | grep -c 'TABLE DATA' || tru
 log "ok: $SIZE, $TABLES tables with data, verified readable"
 
 # --- rotate ------------------------------------------------------------------
+# Never prune the dump latest.dump points at, even if it aged past the window.
 if [[ "$KEEP_DAYS" -gt 0 ]]; then
-  PRUNED=$(find "$BACKUP_DIR" -name "${DB_NAME}-*.dump" -type f -mtime +"$KEEP_DAYS" -print -delete | wc -l | tr -d ' ')
+  LATEST_TARGET="$(readlink "$BACKUP_DIR/latest.dump" 2>/dev/null || true)"
+  PRUNED=0
+  while IFS= read -r OLD; do
+    [[ -n "$LATEST_TARGET" && ( "$OLD" == "$LATEST_TARGET" || "$(basename "$OLD")" == "$(basename "$LATEST_TARGET")" ) ]] && continue
+    rm -f "$OLD" && PRUNED=$((PRUNED + 1))
+  done < <(find "$BACKUP_DIR" -name "${DB_NAME}-*.dump" -type f -mtime +"$KEEP_DAYS" -print)
   [[ "$PRUNED" -gt 0 ]] && log "pruned $PRUNED dump(s) older than $KEEP_DAYS days"
 fi
 

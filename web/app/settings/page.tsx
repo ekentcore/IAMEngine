@@ -26,12 +26,16 @@ export default async function SettingsPage() {
     const me = await getCurrentUser();
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
-  const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
-  const featureRequests = await loadFeatureRequests();
-  const autoFix = await getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY);
-  const llmProviders = await listProvidersMasked(db);
-  const autoUpdate = await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY);
-  const dbBackup = await loadDbBackupStatus();
+  // independent single-row reads — fetch in parallel, not as six serial round trips
+  const [rawSettings, featureRequests, autoFix, llmProviders, autoUpdate, dbBackup] = await Promise.all([
+    getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
+    loadFeatureRequests(),
+    getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
+    listProvidersMasked(db),
+    getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY),
+    loadDbBackupStatus(),
+  ]);
+  const settings = normalizeSettings(rawSettings);
   return (
     <main>
       <h1>Notifications</h1>

@@ -67,7 +67,8 @@ if [[ $UNINSTALL -eq 1 ]]; then
 fi
 
 [[ -f "$ENV_FILE" ]] || fail "env file not found: $ENV_FILE"
-DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+# strip only SURROUNDING quotes — a quote character inside the password must survive
+DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -E "s/^[\"']//; s/[\"']\$//")"
 [[ -n "$DATABASE_URL" ]] || fail "DATABASE_URL not set in $ENV_FILE"
 
 # --- install a checkout-independent copy --------------------------------------
@@ -77,12 +78,15 @@ chmod 755 "$INSTALL_DIR/backup.sh"
 
 CONF="$INSTALL_DIR/backup.env"
 umask 077
+# Values are single-quoted (with embedded single quotes escaped) because this file is `source`d
+# by the launchd job — unquoted, a password containing $ or spaces would be shell-expanded.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 cat > "$CONF" <<EOF
 # written by install-schedule.sh on $(date '+%Y-%m-%d %H:%M:%S'); chmod 600.
 # Contains the database credential — re-run the installer after rotating it.
-DATABASE_URL=$DATABASE_URL
-BACKUP_DIR=$BACKUP_DIR
-KEEP_DAYS=$KEEP_DAYS
+DATABASE_URL=$(shq "$DATABASE_URL")
+BACKUP_DIR=$(shq "$BACKUP_DIR")
+KEEP_DAYS=$(shq "$KEEP_DAYS")
 EOF
 chmod 600 "$CONF"
 

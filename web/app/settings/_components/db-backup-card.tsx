@@ -3,21 +3,10 @@
 // Nightly database backup: status + enable toggle + "Back up now". The backup itself runs
 // in-app off the heartbeat sweep (lib/jobs/db-backup.ts); this card is the operator surface.
 import { useState } from "react";
+import { formatDateTime } from "@/lib/dates";
+import type { DbBackupStatus } from "@/lib/jobs/db-backup";
 
-export type DbBackupStatus = {
-  enabled: boolean;
-  hourLocal: number;
-  keepDays: number;
-  backupDir: string;
-  lastResult: {
-    ok: boolean;
-    file?: string;
-    sizeBytes?: number;
-    dataTables?: number;
-    error?: string;
-    at: string;
-  } | null;
-};
+export type { DbBackupStatus };
 
 function fmtSize(bytes?: number): string {
   if (!bytes && bytes !== 0) return "";
@@ -66,8 +55,9 @@ export function DbBackupCard({ initial }: { initial: DbBackupStatus }) {
     <section style={{ marginTop: "2.5rem" }}>
       <h2>Database backups</h2>
       <p className="note" style={{ marginBottom: "0.75rem" }}>
-        A full <code>pg_dump</code> of the database is taken every night after{" "}
-        {String(status.hourLocal).padStart(2, "0")}:00, verified, and kept for {status.keepDays} days in{" "}
+        A full <code>pg_dump</code> of the database is taken on the first activity pulse after{" "}
+        {String(status.hourLocal).padStart(2, "0")}:00 each night (the pulse rides runner heartbeats — with
+        every runner offline, no in-app backup runs), verified, and kept for {status.keepDays} days in{" "}
         <code>{status.backupDir}</code>. Restore with <code>web/scripts/db-backup/restore.sh</code> (safe
         scratch-database restore by default). If a backup fails, a &ldquo;backup failed&rdquo; notification fires.
       </p>
@@ -75,12 +65,12 @@ export function DbBackupCard({ initial }: { initial: DbBackupStatus }) {
         {last ? (
           last.ok ? (
             <>
-              Last backup: <b>{new Date(last.at).toLocaleString()}</b> — {fmtSize(last.sizeBytes)},{" "}
+              Last backup: <b>{formatDateTime(last.at)}</b> — {fmtSize(last.sizeBytes)},{" "}
               {last.dataTables ?? "?"} tables, verified.
             </>
           ) : (
             <span style={{ color: "#b3261e" }}>
-              Last backup FAILED at {new Date(last.at).toLocaleString()}: {last.error}
+              Last backup failed at {formatDateTime(last.at)}: {last.error}
             </span>
           )
         ) : (
