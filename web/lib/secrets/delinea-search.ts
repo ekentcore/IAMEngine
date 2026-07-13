@@ -35,14 +35,26 @@ const MAX_PAGES = 200; // hard stop — 200k records is far beyond any real tena
 // skip offset; stops on a short page, on reaching `total`, or at the MAX_PAGES backstop.
 async function pageAll<T>(urlFor: (skip: number) => string, token: string, fetcher: Fetcher, map: (rec: Record<string, unknown>) => T): Promise<T[]> {
   const out: T[] = [];
+  let skip = 0;
+  let total: number | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await fetcher(urlFor(page * PAGE), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Delinea search failed (${res.status}) at skip=${page * PAGE}`);
+    const res = await fetcher(urlFor(skip), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Delinea search failed (${res.status}) at skip=${skip}`);
     const body = (await res.json()) as { records?: Record<string, unknown>[]; total?: number };
     const records = body.records ?? [];
     for (const r of records) out.push(map(r));
-    const total = typeof body.total === "number" ? body.total : undefined;
-    if (records.length < PAGE || (total !== undefined && out.length >= total)) break;
+    if (typeof body.total === "number") total = body.total;
+    // Advance by what the server ACTUALLY returned, not by what we asked for: Secret Server may cap
+    // a page below `take`, and stepping by PAGE would skip the remainder of that page. An empty page
+    // is the only safe stop signal besides reaching `total`.
+    skip += records.length;
+    if (records.length === 0) break;
+    if (total !== undefined && out.length >= total) break;
+  }
+  // A silent short read here becomes a "no matching secret" verdict for a client that HAS one, so
+  // fail loudly rather than under-report.
+  if (total !== undefined && out.length < total) {
+    throw new Error(`Delinea search truncated: collected ${out.length} of ${total} records (raise MAX_PAGES)`);
   }
   return out;
 }

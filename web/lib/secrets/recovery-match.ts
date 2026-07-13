@@ -67,7 +67,8 @@ const SYSTEM_TOKENS: Array<{ slot: string; token: RegExp }> = [
   { slot: "adobe", token: /adobe/i },
   { slot: "egnyte", token: /egnyte/i },
   { slot: "zoom", token: /zoom/i },
-  { slot: "google-admin", token: /google|g\s*suite|gsuite|workspace/i },
+  // "workspace" alone is NOT a google signal — "Slack Workspace Admin" is a Slack credential.
+  { slot: "google-admin", token: /google|g\s*suite|gsuite/i },
   { slot: "slack", token: /slack/i },
   { slot: "knowbe4", token: /know\s*be\s*4|knowbe4|\bkb4\b/i },
   { slot: "teams-admin", token: /\bteams\b/i },
@@ -80,7 +81,6 @@ const SYSTEM_TOKENS: Array<{ slot: string; token: RegExp }> = [
   { slot: "hubspot", token: /hubspot/i },
   { slot: "jira", token: /\bjira\b/i },
   { slot: "logicmonitor", token: /logicmonitor|logic\s*monitor/i },
-  { slot: "knowbe4", token: /knowbe4/i },
 ];
 
 // M365/Entra admin-credential shapes. The platform's own secrets ("IAM Engine", template
@@ -88,11 +88,13 @@ const SYSTEM_TOKENS: Array<{ slot: string; token: RegExp }> = [
 // "<domain> - Office 365 GA - Coretelligent" Global Admin account is medium (usable, but a human
 // account rather than the onboarding app).
 const M365_HIGH = /^iam\s*engine$/i;
-const M365_HIGH_COREAUTO = /^(legacy\s*-\s*)?core\s*automation\b.*(azure|auth)|^core\s*automation$/i;
+// The Azure/Entra qualifier must be a WORD, not a substring: an unanchored `auth` alternative also
+// matched "CoreAutomation - Duo Authentication" / "... OAuth key" and filed another product's
+// credential under m365-admin at HIGH confidence.
+const M365_HIGH_COREAUTO = /^(legacy\s*-\s*)?core\s*automation\b(?=.*\b(azure|entra|o365|m365|365)\b)|^core\s*automation$/i;
 const M365_MEDIUM =
   /\b(o365|office\s*365|m365|azure\s*ad|entra)\b.*\b(ga|global admin|admin)\b|\b(ga|global admin)\b.*\b(o365|office\s*365|m365)\b|^iam\s*engineer$/i;
 
-const M365_TOKEN = /\b(o365|office\s*365|m365|azure|entra|365)\b/i;
 
 // On-prem AD automation account. Deliberately NARROW: it must name the automation/IAM/onboarding
 // purpose. A generic "<something> Service Account" is NOT enough — the vault is full of per-vendor
@@ -129,7 +131,6 @@ export function classifySecret(rec: SecretSearchRecord): Candidate[] {
       tokenHits.push({ slot });
     }
   }
-  const m365Hit = M365_TOKEN.test(name) && out.length === 0;
   // Ambiguity means TWO SPECIFIC PRODUCTS in one name ("Adobe / Zoom admin") — a real shared login
   // we shouldn't auto-assign. A generic "365"/"Azure"/"O365" mention does NOT count: SaaS credentials
   // are routinely named for the tenant they administer or back up ("Spanning O365" is the Spanning
@@ -197,12 +198,21 @@ export const AUTOFILL_MEDIUM_SLOTS = new Set([
   "teams-admin", "xmatters", "duo", "salesforce", "hubspot", "jira", "logicmonitor",
 ]);
 
-// Should this pick be persisted, or only suggested? `verified` = the app could resolve it AND its
-// field shape is usable (the same bar the in-app Test applies).
-export function shouldAutofill(c: Candidate, verified: boolean): boolean {
+// Should this pick be persisted, or only suggested?
+//   accessOk  — the app RESOLVED the secret from Delinea (it exists and we can read it).
+//   fieldsOk  — its field shape is usable by the runner (the bar the in-app Test applies). `null`
+//               means we could not determine it (the value read failed) — never treat that as pass.
+//
+// An id the app cannot even read is NEVER written, at any confidence: that would replace an honest
+// "not set" with a broken reference. A high-confidence pick that resolves but whose FIELDS are
+// incomplete is still written (it is demonstrably the right credential — e.g. the platform's own
+// CoreAutomation app — and the report flags the field fix), but a medium-confidence one is not.
+export function shouldAutofill(c: Candidate, accessOk: boolean, fieldsOk: boolean | null): boolean {
   if (c.stale) return false; // a retired/prior-MSP credential is never written unattended
-  if (c.tier === "high") return !c.ambiguous;
-  return verified && !c.ambiguous && AUTOFILL_MEDIUM_SLOTS.has(c.slot);
+  if (c.ambiguous) return false; // a shared two-product login is never auto-assigned
+  if (!accessOk) return false;
+  if (c.tier === "high") return true;
+  return fieldsOk === true && AUTOFILL_MEDIUM_SLOTS.has(c.slot);
 }
 
 // Classify every record in a client's folder and group ranked candidates per slot.

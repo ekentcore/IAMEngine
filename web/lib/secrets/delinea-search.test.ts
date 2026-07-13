@@ -40,3 +40,24 @@ test("a failed page surfaces as an error rather than a truncated result", async 
   const fetcher: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) });
   await assert.rejects(() => listAllFolders(cfg, "tok", fetcher), /500/);
 });
+
+// Secret Server may cap a page BELOW the requested take. Stepping skip by the requested size would
+// jump over the remainder of that page; a short page must not be read as "end of results" either.
+// Silent truncation here becomes a false "no matching secret" verdict for a client that has one.
+test("a server-capped short page keeps paging from where it actually stopped", async () => {
+  const skips: number[] = [];
+  const all = Array.from({ length: 250 }, (_, i) => ({ id: i, folderName: `F${i}`, folderPath: `\\F${i}`, parentFolderId: 18 }));
+  const fetcher: Fetcher = async (url) => {
+    const skip = Number(new URL(url).searchParams.get("skip"));
+    skips.push(skip);
+    return { ok: true, status: 200, json: async () => ({ records: all.slice(skip, skip + 100), total: all.length }) }; // server caps at 100
+  };
+  const out = await listAllFolders(cfg, "tok", fetcher);
+  assert.equal(out.length, 250);
+  assert.deepEqual(skips, [0, 100, 200]); // advanced by what was RETURNED, not by take=1000
+});
+
+test("a genuinely short read fails loudly instead of under-reporting", async () => {
+  const fetcher: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [], total: 42 }) });
+  await assert.rejects(() => listAllFolders(cfg, "tok", fetcher), /truncated: collected 0 of 42/);
+});

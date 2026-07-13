@@ -64,7 +64,7 @@ test("two specific products in one name is ambiguous and never high", () => {
   for (const c of cands) {
     assert.equal(c.ambiguous, true);
     assert.equal(c.tier, "medium");
-    assert.equal(shouldAutofill(c, true), false); // a shared two-product login is never auto-assigned
+    assert.equal(shouldAutofill(c, true, true), false); // a shared two-product login is never auto-assigned
   }
 });
 
@@ -74,7 +74,40 @@ test("a generic 365/Azure mention does not make a product credential ambiguous",
   const [spanning] = classifySecret(rec("Spanning O365"));
   assert.equal(spanning.slot, "spanning");
   assert.equal(spanning.ambiguous, false);
-  assert.equal(shouldAutofill(spanning, true), true);
+  assert.equal(shouldAutofill(spanning, true, true), true);
+});
+
+// The CoreAutomation qualifier must be a WORD. An unanchored `auth` alternative also matched
+// "Duo Authentication"/"OAuth" and filed another product's credential under m365-admin at HIGH.
+test("CoreAutomation only means m365 when it names Azure/Entra/365", () => {
+  assert.deepEqual(slots("CoreAutomation - Azure Auth", { secretTemplateName: "Import" }), ["m365-admin:high"]);
+  assert.deepEqual(slots("CoreAutomation", { secretTemplateName: "Import" }), ["m365-admin:high"]);
+  const duo = slots("CoreAutomation - Duo Authentication", { secretTemplateName: "Import" });
+  assert.ok(!duo.includes("m365-admin:high"), `Duo must not be filed as m365-admin, got ${duo}`);
+  assert.deepEqual(slots("CoreAutomation - Mimecast", { secretTemplateName: "Automation - Api" }), ["mimecast:high"]);
+});
+
+// "workspace" alone is a Slack word too — it must not pull a Slack credential into google-admin.
+test("a bare 'workspace' is not a google signal", () => {
+  assert.deepEqual(slots("Slack Workspace Admin API"), ["slack:high"]);
+  assert.deepEqual(slots("Google Workspace Admin API"), ["google-admin:high"]);
+});
+
+test("an unreadable secret is never written, at any confidence", () => {
+  const [high] = classifySecret(rec("Mimecast API", { secretTemplateName: "Automation - Api" }));
+  assert.equal(high.tier, "high");
+  // access failed -> a broken reference is worse than an honest "not set"
+  assert.equal(shouldAutofill(high, false, true), false);
+  assert.equal(shouldAutofill(high, false, null), false);
+  // resolves but fields incomplete: high is still the right credential (report flags the field fix)
+  assert.equal(shouldAutofill(high, true, false), true);
+
+  const [med] = classifySecret(rec("Office 365 Global Admin"));
+  assert.equal(med.tier, "medium");
+  // an UNKNOWN field shape (the value read failed) must never count as verified for a medium pick
+  assert.equal(shouldAutofill(med, true, null), false);
+  assert.equal(shouldAutofill(med, true, false), false);
+  assert.equal(shouldAutofill(med, true, true), true);
 });
 
 test("stale candidates rank behind live ones; Identity Services beats Vendor", () => {
@@ -109,20 +142,20 @@ test("ad-dc only matches a named automation/IAM account, not any service account
 
 test("write policy: high auto-fills; medium only for fail-closed cloud systems; never ad-dc or stale", () => {
   const [mimecastHigh] = classifySecret(rec("Mimecast API", { secretTemplateName: "Automation - Api" }));
-  assert.equal(shouldAutofill(mimecastHigh, true), true);
+  assert.equal(shouldAutofill(mimecastHigh, true, true), true);
 
   const [m365Med] = classifySecret(rec("Office 365 Global Admin"));
   assert.equal(m365Med.tier, "medium");
-  assert.equal(shouldAutofill(m365Med, true), true);   // cloud + verified -> safe to write
-  assert.equal(shouldAutofill(m365Med, false), false); // unverified medium is never written
+  assert.equal(shouldAutofill(m365Med, true, true), true);   // cloud + verified -> safe to write
+  assert.equal(shouldAutofill(m365Med, true, false), false); // unverified medium is never written
 
   const [adMed] = classifySecret(rec("SVC-Scriptrunner", { secretTemplateName: "Active Directory Account" }));
   assert.equal(adMed.slot, "ad-dc");
-  assert.equal(shouldAutofill(adMed, true), false); // AD is destructive — a guess is suggest-only
+  assert.equal(shouldAutofill(adMed, true, true), false); // AD is destructive — a guess is suggest-only
 
   const staleHigh = classifySecret(rec("Mimecast API (INACTIVE)", { secretTemplateName: "Automation - Api" }))[0];
   assert.equal(staleHigh.stale, true);
-  assert.equal(shouldAutofill(staleHigh, true), false);
+  assert.equal(shouldAutofill(staleHigh, true, true), false);
 });
 
 test("candidatesBySlot groups a realistic folder correctly", () => {

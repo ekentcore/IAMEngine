@@ -28,7 +28,9 @@ import {
   resolveSecretFields,
 } from "../lib/secrets/delinea";
 import { listAllFolders, listFolderSecrets, type SecretSearchRecord } from "../lib/secrets/delinea-search";
-import { candidatesBySlot, parseClientFolderName, normalizeClientName, shouldAutofill, type Candidate } from "../lib/secrets/recovery-match";
+import { candidatesBySlot, parseClientFolderName, normalizeClientName, shouldAutofill, type Candidate, type ParsedClientFolder } from "../lib/secrets/recovery-match";
+import { secretIsSet } from "../lib/secrets/wiring";
+import { NOT_NEEDED } from "../lib/cases/case-secrets";
 import { checkFieldShape } from "../lib/secrets/field-requirements";
 import { azureConfigFromEnv, azureConfigured, azureChatJson } from "../lib/generator/llm";
 
@@ -67,6 +69,9 @@ loadEnvFiles();
 
 const APPLY = process.argv.includes("--apply");
 const USE_LLM = process.argv.includes("--llm");
+// Re-derive slots that are ALREADY wired (normally skipped so a re-run can't clobber an operator's
+// hand-verified id). Only for deliberately rebuilding a slot.
+const FORCE = process.argv.includes("--force");
 const ONLY = process.argv.find((a) => a.startsWith("--client="))?.slice("--client=".length);
 
 const db = new PrismaClient();
@@ -110,6 +115,8 @@ const CAT = {
   discovered: "discovered in Delinea — no slot in the app (wire the system to use it)",
   suggested: "SUGGESTED, not written — confirm this is the right credential",
   staleOnly: "needs manual — only retired/prior-MSP candidates found",
+  alreadySet: "already wired — verified working, left untouched",
+  notNeeded: "NOT_NEEDED — a manual step by design",
 } as const;
 
 // Ask the LLM to choose among candidates for a slot, returning the chosen Delinea id or null. Only
@@ -142,16 +149,39 @@ async function main() {
   const clientFolders = folders
     .map((f) => ({ f, parsed: parseClientFolderName(f.folderName) }))
     .filter((x) => x.parsed && /^\\Clients\\/i.test(x.f.folderPath));
-  const byCore = new Map<string, { id: number; folderPath: string; folderName: string }>();
-  const byName = new Map<string, { id: number; folderPath: string; folderName: string }>();
-  for (const { f, parsed } of clientFolders) {
-    byCore.set(parsed!.coreId.toUpperCase(), { id: f.id, folderPath: f.folderPath, folderName: f.folderName });
-    byName.set(normalizeClientName(parsed!.displayName), { id: f.id, folderPath: f.folderPath, folderName: f.folderName });
-  }
+  // Index by CORE tag and by normalized name. AMBIGUITY IS FATAL, not last-write-wins: two folders
+  // sharing a key (a duplicate CORE tag, or "Acme Capital Management" and "Acme Capital Partners",
+  // which normalize alike) must never silently resolve — that would hand one client ANOTHER client's
+  // credential ids. A colliding key is dropped and the client is reported for a human instead.
+  type Folder = { id: number; folderPath: string; folderName: string };
+  const collect = (key: (p: ParsedClientFolder) => string) => {
+    const m = new Map<string, Folder[]>();
+    for (const { f, parsed } of clientFolders) {
+      const k = key(parsed!);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push({ id: f.id, folderPath: f.folderPath, folderName: f.folderName });
+    }
+    return m;
+  };
+  const coreAll = collect((p) => p.coreId.toUpperCase());
+  const nameAll = collect((p) => normalizeClientName(p.displayName));
+  const coreDupes = [...coreAll].filter(([, v]) => v.length > 1);
+  const nameDupes = [...nameAll].filter(([, v]) => v.length > 1);
   console.log(`  ${folders.length} folders total, ${clientFolders.length} client folders with a CORE tag.`);
+  if (coreDupes.length || nameDupes.length) {
+    console.log(`  ⚠ ambiguous folder keys (left for a human): ${coreDupes.length} CORE tag(s), ${nameDupes.length} name(s)`);
+    for (const [k, v] of [...coreDupes, ...nameDupes].slice(0, 10)) console.log(`     ${k}: ${v.map((f) => `${f.id}:${f.folderName}`).join("  |  ")}`);
+  }
+  const unique = (m: Map<string, Folder[]>) => new Map([...m].filter(([, v]) => v.length === 1).map(([k, v]) => [k, v[0]]));
+  const byCore = unique(coreAll);
+  const byName = unique(nameAll);
 
   // 2. Clients (with their needed secret slots + system references).
-  const where = ONLY ? { OR: [{ slug: ONLY }, { coreId: ONLY.toUpperCase() }] } : { archivedAt: null };
+  // An archived client is out of scope even when named explicitly — recovering credentials for a
+  // client we've offboarded would re-wire a tenant we no longer manage.
+  const where = ONLY
+    ? { archivedAt: null, OR: [{ slug: ONLY }, { coreId: ONLY.toUpperCase() }] }
+    : { archivedAt: null };
   const clients = await db.client.findMany({
     where,
     select: {
@@ -164,7 +194,7 @@ async function main() {
   console.log(`Recovering ${clients.length} client(s).\n`);
 
   const rows: ReportRow[] = [];
-  let filled = 0, verified = 0, suggested = 0;
+  let filled = 0, verified = 0, suggested = 0, skippedWired = 0;
 
   for (const client of clients) {
     if (client.secrets.length === 0) continue; // no secret slots to recover
@@ -197,12 +227,70 @@ async function main() {
     const bySlot = candidatesBySlot(records);
     const clientHasTenantHint = Boolean(client.emailDomain || client.primaryDomain);
 
+    // Verify an id the way the in-app Test does: metadata read, then field shape. `fieldsOk` is
+    // tri-state — null means we could NOT determine it (the value read failed), which must never be
+    // treated as a pass.
+    const verify = async (id: string, slot: string): Promise<{ access: Awaited<ReturnType<typeof checkSecret>>; fieldsOk: boolean | null; missing: string[] }> => {
+      const access = await checkSecret(cfg, id, fetcher, token);
+      if (!access.ok) return { access, fieldsOk: null, missing: [] };
+      const resolved = await resolveSecretFields(cfg, id, fetcher, token);
+      if (!resolved.ok || !resolved.fields) return { access, fieldsOk: null, missing: [] };
+      const shape = checkFieldShape(slot, Object.keys(resolved.fields), { clientHasTenantHint });
+      return { access, fieldsOk: shape.ok, missing: shape.missing };
+    };
+
     const picks: { name: string; externalId: string }[] = [];
     for (const sec of client.secrets) {
       const slot = sec.name;
       const systemKeys = systemKeysForSlot(slot);
       const cands = bySlot.get(slot) ?? [];
       const live = cands.filter((c) => !c.stale);
+      const current = (sec.externalId ?? "").trim();
+
+      // A slot an operator (or an earlier run) already wired is not ours to re-derive. Report its
+      // REAL health rather than a bland "already wired" — this is what makes the sweep re-runnable
+      // as a credential health check.
+      if (current === NOT_NEEDED) {
+        rows.push(blankRow(client, slot, systemKeys, CAT.notNeeded, "marked NOT_NEEDED — a manual step by design"));
+        continue;
+      }
+      if (secretIsSet(current) && !FORCE) {
+        const v = await verify(current, slot);
+        const wouldPick = live[0];
+        const drifted = wouldPick && String(wouldPick.record.id) !== current;
+        // Provenance: which candidate IS the wired id? That recovers how it was derived (a
+        // high-confidence match vs. a guess) so the report keeps those buckets distinct on a re-run.
+        const origin = cands.find((c) => String(c.record.id) === current);
+        skippedWired++;
+        rows.push({
+          ...blankRow(
+            client, slot, systemKeys,
+            !v.access.ok
+              ? CAT.wrong
+              : v.fieldsOk === false
+              ? CAT.thinkRightBroken
+              : origin?.tier === "high"
+              ? CAT.correct
+              : origin
+              ? CAT.guessedRight
+              : CAT.alreadySet, // no candidate matches it — an operator wired this one by hand
+            drifted ? `wired to a different secret than the sweep would pick (${wouldPick.record.id} "${wouldPick.record.name}")` : "already wired"
+          ),
+          tier: origin?.tier ?? "operator",
+          chosenSecretId: current,
+          chosenSecretName: v.access.label ?? origin?.record.name ?? "",
+          templateName: origin?.record.secretTemplateName ?? "",
+          folderPath: origin?.record.folderPath ?? "",
+          written: "no (already set)",
+          accessOk: v.access.ok ? "ok" : `FAIL: ${v.access.error ?? ""}`,
+          fieldShape: v.fieldsOk === null ? "unknown" : v.fieldsOk ? "ok" : "incomplete",
+          missingFields: v.missing.join("; "),
+          candidateCount: cands.length,
+          alternatives: drifted ? `${wouldPick.record.id}:${wouldPick.record.name}` : "",
+        });
+        if (v.access.ok && v.fieldsOk !== false) verified++;
+        continue;
+      }
 
       if (cands.length === 0) {
         rows.push(blankRow(client, slot, systemKeys, CAT.noCandidate, records.length ? `${records.length} secrets in folder, none matched ${slot}` : "folder empty / no read access"));
@@ -238,30 +326,18 @@ async function main() {
       }
 
       // Verify like the app's Test does: read access (metadata) + field shape (values, not shown).
-      const access = await checkSecret(cfg, String(chosen.record.id), fetcher, token);
-      let fieldOk: boolean | null = null;
-      let missing: string[] = [];
-      if (access.ok) {
-        const resolved = await resolveSecretFields(cfg, String(chosen.record.id), fetcher, token);
-        if (resolved.ok && resolved.fields) {
-          const shape = checkFieldShape(slot, Object.keys(resolved.fields), { clientHasTenantHint });
-          fieldOk = shape.ok;
-          missing = shape.missing;
-        } else {
-          fieldOk = null; // resolved failed even though summary worked — treat as unknown shape
-        }
-      }
+      const { access, fieldsOk: fieldOk, missing } = await verify(String(chosen.record.id), slot);
 
-      const isVerified = access.ok && fieldOk !== false;
       // Write policy: a wrong-but-resolvable credential shows green and fails in production, so a
-      // medium-confidence pick is only persisted for cloud systems that fail closed (never ad-dc).
-      const write = shouldAutofill(chosen, isVerified);
+      // medium-confidence pick is only persisted for cloud systems that fail closed (never ad-dc);
+      // an id we cannot even read is never written at any confidence.
+      const write = shouldAutofill(chosen, access.ok, fieldOk);
 
       const category = !write
-        ? CAT.suggested
-        : !access.ok
-        ? CAT.wrong
-        : fieldOk === false
+        ? !access.ok
+          ? CAT.wrong
+          : CAT.suggested
+        : fieldOk !== true
         ? CAT.thinkRightBroken
         : tier === "high"
         ? CAT.correct
@@ -269,7 +345,7 @@ async function main() {
 
       if (write) {
         filled++;
-        if (isVerified) verified++;
+        if (fieldOk === true) verified++;
         picks.push({ name: slot, externalId: String(chosen.record.id) });
       } else {
         suggested++;
@@ -324,7 +400,15 @@ async function main() {
         await db.client.update({ where: { id: client.id }, data: { delineaFolderId: String(folder.id) } });
       }
       for (const p of picks) {
-        await db.secret.update({ where: { clientId_name: { clientId: client.id, name: p.name } }, data: { externalId: p.externalId } });
+        // updateMany + an externalId predicate, not update(): the write is a no-op if the row stopped
+        // being a placeholder since we read it (a concurrent operator edit), so a race can't clobber a
+        // hand-verified id. --force drops the predicate deliberately.
+        await db.secret.updateMany({
+          where: FORCE
+            ? { clientId: client.id, name: p.name }
+            : { clientId: client.id, name: p.name, externalId: { in: ["", "REPLACE_ME"] } },
+          data: { externalId: p.externalId },
+        });
       }
     }
     const okCount = picks.length;
@@ -345,7 +429,7 @@ async function main() {
   for (const r of rows) counts.set(r.category, (counts.get(r.category) ?? 0) + 1);
   console.log(`\n=== Summary (${rows.length} slots across ${clients.length} clients) ===`);
   for (const [cat, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${n.toString().padStart(4)}  ${cat}`);
-  console.log(`\nFilled ${filled} slot(s), ${verified} of them verified (read + field shape); ${suggested} suggested for human confirmation. ${APPLY ? "Written to DB." : "DRY RUN — nothing written."}`);
+  console.log(`\nFilled ${filled} slot(s), ${verified} of them verified (read + field shape); ${suggested} suggested for human confirmation; ${skippedWired} already wired (left untouched). ${APPLY ? "Written to DB." : "DRY RUN — nothing written."}`);
   console.log(`Report: ${outPath}`);
   await db.$disconnect();
 }
