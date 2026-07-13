@@ -79,6 +79,20 @@ else {
   BAD "browser sidecar NOT installed and node IS present - this host will try to download Chromium (~170MB) on startup. On an older runner that BLOCKS the first heartbeat (agent looks stuck 'updating'). Set IAM_RUNNER_NO_BROWSER_INSTALL=1 unless this host is the CENTRAL runner."
 }
 
+# 5c. Microsoft.Graph submodule versions must match EXACTLY: a mixed set (e.g. Authentication 2.33
+# next to Users 2.38 - installs drift across the SYSTEM profile and AllUsers over months) makes the
+# runner die at Import-Module with "Assembly with same name is already loaded", BEFORE it ever polls
+# (scheduled task keeps exiting with last result 1). Runner 1.44+ self-repairs this at startup.
+$gvAll = Get-Module -ListAvailable Microsoft.Graph.* -ErrorAction SilentlyContinue
+if ($gvAll) {
+  $gvTop = $gvAll | Group-Object Name | ForEach-Object { ($_.Group | Sort-Object Version -Descending)[0] }
+  $gvDistinct = @($gvTop | ForEach-Object Version | Sort-Object -Unique)
+  if ($gvDistinct.Count -gt 1) {
+    $gvMax = ($gvDistinct | Sort-Object -Descending)[0]
+    BAD ("Microsoft.Graph module versions are MIXED (" + ($gvDistinct -join ', ') + ") - the runner will fail to load ('Assembly with same name is already loaded'). Fix: update the runner (1.44+ self-repairs on start), or align by hand: foreach one, Install-Module <name> -RequiredVersion " + $gvMax + " -Scope AllUsers -Force")
+  } else { OK ("Microsoft.Graph modules consistent (v" + $gvDistinct[0] + ")") }
+} else { INFO "no Microsoft.Graph modules installed - the runner self-heals them on the first M365 job" }
+
 # 6. Reachability — /api/runner/manifest is unauthenticated, so this isolates pure network problems.
 $reach = $false
 try {
