@@ -46,8 +46,9 @@ function deps(over: Partial<ImportDeps> = {}): ImportDeps {
   return {
     findByCoreId: async () => null,
     findBySysId: async () => null,
-    findByUniqueDomain: async () => null,
-    linkToSn: async () => {},
+    findUnclaimedByDomain: async () => null,
+    claimForSn: async () => ({ ok: true, claimed: true }),
+    hasSystems: async () => false,
     linkParent: async () => true,
     actionsWithRunbook: async () => [],
     fetchAccount: async () => account(),
@@ -177,13 +178,11 @@ test("a profile-seeded client (no CORE id, no sys_id) is matched by domain, not 
   // reconcile the import would create a SECOND row for the same company — and the original, which
   // holds the systems, credentials and case history, would be the one left behind.
   let created = false;
-  const stamped: string[] = [];
+  const claimed: string[] = [];
   const r = await importClientByCoreId(
     deps({
-      findByCoreId: async () => null,
-      findBySysId: async () => null,
-      findByUniqueDomain: async (d) => (d === "dcg.co" ? { id: "seeded", slug: "dcg", name: "DCG" } : null),
-      linkToSn: async (id) => { stamped.push(id); },
+      findUnclaimedByDomain: async (d) => (d === "dcg.co" ? { id: "seeded", slug: "dcg", name: "DCG" } : null),
+      claimForSn: async (id) => { claimed.push(id); return { ok: true, claimed: true }; },
       createFromSn: async () => { created = true; return "x"; },
     }),
     "CORE1269",
@@ -193,14 +192,50 @@ test("a profile-seeded client (no CORE id, no sys_id) is matched by domain, not 
   assert.equal(r.status, "exists");
   assert.equal(r.slug, "dcg", "the seeded client is adopted, not shadowed by a duplicate");
   assert.equal(created, false);
-  assert.deepEqual(stamped, ["seeded"], "and it gets stamped with the ServiceNow keys");
+  assert.deepEqual(claimed, ["seeded"], "and it is claimed for the ServiceNow account");
 });
 
-test("an ambiguous domain falls through to create rather than mis-linking a client", async () => {
-  // findByUniqueDomain returns null when a domain maps to more than one client — adopting the wrong
-  // one is worse than a new row.
-  const r = await importClientByCoreId(deps({ findByUniqueDomain: async () => null }), "CORE1269", "ui:test");
-  assert.equal(r.status, "imported");
+test("an unclaimable domain falls through to create rather than hijacking a client's row", async () => {
+  // findUnclaimedByDomain returns null for a domain held by a client that ALREADY belongs to an
+  // account — the parent-row-hijack case: a subsidiary shares its parent's website, and adopting
+  // the parent would re-key it with the child's identity.
+  const r = await importClientByCoreId(deps({ findUnclaimedByDomain: async () => null }), "CORE1269", "ui:test");
+  assert.equal(r.status, "imported", "a new row for the child, the parent left untouched");
+});
+
+test("a client whose sys_id already belongs to another row is an error, not a constraint crash", async () => {
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "acme", name: "Acme" }),
+      claimForSn: async () => ({ ok: false, claimed: false, reason: "another client (acme-2) is already linked to this ServiceNow account — merge them by hand" }),
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+  assert.equal(r.status, "error");
+  assert.match(r.error!, /already linked to this ServiceNow account/);
+  assert.equal(r.slug, "acme", "and it still names the client it stumbled on");
+});
+
+test("a hand-configured client (already has systems) is never auto-built", async () => {
+  // Building would run createMissingSystems and bolt catalog-default lanes onto a curated client —
+  // systems it may not own, that the next case would dispatch jobs against.
+  const saved: string[] = [];
+  const r = await importClientByCoreId(
+    deps({
+      findByCoreId: async () => ({ id: "c1", slug: "acme", name: "Acme" }),
+      hasSystems: async () => true,
+      actionsWithRunbook: async () => [],
+      saveRunbook: async (_s, a) => { saved.push(a); return { count: 1, createdSystems: ["adobe"] }; },
+    }),
+    "CORE1269",
+    "ui:test"
+  );
+
+  assert.equal(r.status, "exists");
+  assert.deepEqual(saved, [], "nothing is written to a client that is already configured");
+  assert.deepEqual(r.createdSystems, []);
+  assert.ok(r.warnings.some((w) => /already has systems/i.test(w)));
 });
 
 test("the ServiceNow parent is linked, so an imported child's cases can inherit", async () => {

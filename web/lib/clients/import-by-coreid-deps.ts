@@ -23,31 +23,59 @@ export function makeImportDeps(db: PrismaClient): ImportDeps {
       }),
     findBySysId: (sysId) => db.client.findUnique({ where: { serviceNowSysId: sysId }, select: { id: true, slug: true, name: true } }),
 
-    // Only when the domain maps to EXACTLY ONE client. Two clients sharing a website (a parent and
-    // its practice, say) must not be reconciled by it — matching the wrong one is worse than
-    // creating a new row, and it is the rule syncClientsFromSn already follows.
-    findByUniqueDomain: async (domain) => {
+    // UNCLAIMED rows only — no serviceNowSysId AND no coreId — and only when exactly one such row
+    // carries the domain. A row that already belongs to an account is never adopted by another:
+    // subsidiaries share their parent's website, so matching on domain alone would hand a child the
+    // PARENT's row.
+    findUnclaimedByDomain: async (domain) => {
       const rows = await db.client.findMany({
-        where: { primaryDomain: domain },
+        where: { primaryDomain: domain, serviceNowSysId: null, coreId: null },
         select: { id: true, slug: true, name: true },
         take: 2,
       });
       return rows.length === 1 ? rows[0] : null;
     },
-    // Stamp the ServiceNow keys/fields onto a client we matched by domain — but NEVER over a field a
-    // human edited in the UI (editedFields); refreshSnFields overwrites everything it is not told to
-    // skip, and silently reverting someone's correction is precisely what this import must not do.
-    linkToSn: async (clientId, c) => {
-      const row = await db.client.findUnique({ where: { id: clientId }, select: { editedFields: true } });
-      await repo.refreshSnFields(clientId, c, row?.editedFields ?? []);
+
+    // Fill in the MISSING ServiceNow keys, nothing else. Emphatically not refreshSnFields: that
+    // rewrites name and primaryDomain from the ServiceNow website, and a seeded client's
+    // primaryDomain is its EMAIL domain — the one UPNs are minted from. Swapping it silently would
+    // provision the next new user at the wrong domain.
+    claimForSn: async (clientId, c) => {
+      const row = await db.client.findUnique({
+        where: { id: clientId },
+        select: { serviceNowSysId: true, coreId: true },
+      });
+      if (!row) return { ok: false, claimed: false, reason: "client disappeared" };
+
+      // serviceNowSysId is @unique. If another row already holds this account's sys_id, these are two
+      // rows for one company — say so, instead of dying on a raw constraint error.
+      if (!row.serviceNowSysId) {
+        const held = await db.client.findUnique({ where: { serviceNowSysId: c.serviceNowSysId }, select: { slug: true } });
+        if (held) {
+          return { ok: false, claimed: false, reason: `another client (${held.slug}) is already linked to this ServiceNow account — merge them by hand` };
+        }
+      }
+
+      const data: { serviceNowSysId?: string; coreId?: string; snLastSyncedAt: Date } = { snLastSyncedAt: new Date() };
+      if (!row.serviceNowSysId) data.serviceNowSysId = c.serviceNowSysId;
+      if (!row.coreId && c.coreId) data.coreId = c.coreId;
+      const claimed = data.serviceNowSysId !== undefined || data.coreId !== undefined;
+      await db.client.update({ where: { id: clientId }, data });
+      return { ok: true, claimed };
     },
-    // Reports whether the child ENDS UP linked — not how many links were made. linkParentsBySysId
-    // returns 0 both when the parent is missing AND when the link already existed; treating that as
-    // failure would nag about a child that is perfectly well linked.
+
+    hasSystems: async (clientId) => (await db.clientSystem.count({ where: { clientId } })) > 0,
+
+    // Did the child end up linked to THIS parent? linkParentsBySysId returns 0 both when the parent
+    // is absent and when the link already existed, so the count can't be trusted — and a child linked
+    // to some OTHER parent must not read as success either.
     linkParent: async (childSysId, parentSysId) => {
       await repo.linkParentsBySysId([{ childSysId, parentSysId }]);
-      const child = await db.client.findUnique({ where: { serviceNowSysId: childSysId }, select: { parentId: true } });
-      return Boolean(child?.parentId);
+      const [child, parent] = await Promise.all([
+        db.client.findUnique({ where: { serviceNowSysId: childSysId }, select: { parentId: true } }),
+        db.client.findUnique({ where: { serviceNowSysId: parentSysId }, select: { id: true } }),
+      ]);
+      return Boolean(parent && child?.parentId === parent.id);
     },
     actionsWithRunbook: async (clientId) => {
       const rows = await db.runbookSection.findMany({

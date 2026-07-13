@@ -20,12 +20,19 @@ export type Existing = { id: string; slug: string; name: string };
 export type ImportDeps = {
   findByCoreId: (coreId: string) => Promise<Existing | null>;
   findBySysId: (sysId: string) => Promise<Existing | null>;
-  // Only ever returns a match when the domain maps to EXACTLY ONE client — an ambiguous domain must
-  // fall through to create, never mis-link a client (the rule syncClientsFromSn follows).
-  findByUniqueDomain: (domain: string) => Promise<Existing | null>;
-  // Stamp the ServiceNow keys onto a client we matched by domain, so it is linked from now on.
-  linkToSn: (clientId: string, c: NormalizedSnClient) => Promise<void>;
-  // -> is the child linked to a parent now? (true also when the link already existed)
+  // A client with this domain that carries NEITHER ServiceNow key — i.e. one no account has claimed
+  // (the profile-seeded case) — and only when the domain maps to exactly one such row. A row that
+  // already belongs to an account is off limits: a subsidiary shares its parent's website, and
+  // adopting the parent's row would re-key it.
+  findUnclaimedByDomain: (domain: string) => Promise<Existing | null>;
+  // Fill in the ServiceNow keys this client is MISSING (sys_id, CORE id). Never a field refresh:
+  // rewriting name/primaryDomain from the ServiceNow website would clobber a curated email domain.
+  // ok:false when the account's sys_id already belongs to a DIFFERENT client (which would otherwise
+  // die on the unique constraint).
+  claimForSn: (clientId: string, c: NormalizedSnClient) => Promise<{ ok: boolean; claimed: boolean; reason?: string }>;
+  // Has any ClientSystem rows — i.e. hand-configured, not a bare roster row.
+  hasSystems: (clientId: string) => Promise<boolean>;
+  // -> is the child linked to THIS parent now? (true also when the link already existed)
   linkParent: (childSysId: string, parentSysId: string) => Promise<boolean>;
   fetchAccount: (coreId: string) => Promise<SnAccount | null>;
   slugExists: (slug: string) => Promise<boolean>;
@@ -115,29 +122,58 @@ export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, 
       return { ...base, status: "error", error: "ServiceNow account has no sys_id" };
     }
 
-    // Is this client already ours? Three keys, because a client can predate either of the others:
-    // its CORE id, the sys_id the account resolves to (roster-synced rows may carry no CORE id), or
-    // — for a profile-seeded row that has NEITHER — its domain. Skipping the domain check is how you
-    // end up with two rows for one company, the real one holding the systems and case history.
-    const existing =
-      (await deps.findByCoreId(coreId)) ??
-      (await deps.findBySysId(account.serviceNowSysId)) ??
-      (account.primaryDomain ? await deps.findByUniqueDomain(account.primaryDomain) : null);
+    // Is this client already ours? By CORE id, then by the sys_id the account resolves to (a
+    // roster-synced row may carry no CORE id).
+    let existing = (await deps.findByCoreId(coreId)) ?? (await deps.findBySysId(account.serviceNowSysId));
+
+    // Only then by domain, and ONLY over a row that carries neither ServiceNow key — an UNCLAIMED
+    // row (the profile-seeded case). A row that already belongs to some account must never be
+    // adopted by a different one: subsidiaries share their parent's website, so a plain
+    // "one client with this domain" match hands the child the PARENT's row — and re-keying it would
+    // relabel the parent, orphan its sys_id, and leave its systems and case history under the
+    // child's name.
+    if (!existing && account.primaryDomain) {
+      existing = await deps.findUnclaimedByDomain(account.primaryDomain);
+    }
 
     if (existing) {
       result = { ...base, status: "exists", slug: existing.slug, name: existing.name };
-      // Stamp the ServiceNow keys on, so this client is linked from now on (what the roster sync's
-      // reconcile pass does). Cheap, idempotent, and it stops the next import re-deriving all this.
-      await deps.linkToSn(existing.id, account);
+
+      // Claim it for this account: fill in the ServiceNow keys it is MISSING. Deliberately not a
+      // field refresh — refreshSnFields would rewrite name and primaryDomain from the ServiceNow
+      // website, and a seeded client's primaryDomain is its EMAIL domain (what UPNs are minted
+      // from). Silently swapping that provisions the next new user at the wrong domain.
+      const claim = await deps.claimForSn(existing.id, account);
+      if (!claim.ok) return { ...result, status: "error", error: claim.reason };
+      if (claim.claimed) {
+        await deps.writeAudit({
+          actor,
+          action: "client.reconcile",
+          clientId: existing.id,
+          detail: { serviceNowSysId: account.serviceNowSysId, coreId, source: "import" },
+        });
+      }
+
       await linkParent(deps, account, result);
 
-      // Build only what ISN'T there. saveRunbook REPLACES an action's sections, so an action that
-      // already has a runbook is left strictly alone — that is the promise. But the roster sync
-      // creates BARE rows (no runbook, no systems, cases that plan zero steps), and those are the
-      // very clients this feature exists to fix: refusing to touch them would make the import a
-      // no-op for almost the whole fleet.
+      // What may be built here. saveRunbook REPLACES an action's sections, so an action that already
+      // has a runbook is never rebuilt. And a client that already has SYSTEMS is hand-configured (a
+      // profile-seeded client, or one an operator wired up): building its runbook would run
+      // createMissingSystems and bolt catalog-default lanes onto it — systems the client may not own,
+      // that the next case would then dispatch jobs against. Only a BARE row (no systems) is built
+      // out — which is exactly the roster-synced row this feature exists to fix.
       const already = await deps.actionsWithRunbook(existing.id);
       for (const a of already) result.warnings.push(`${a} runbook already exists — left as it is`);
+
+      if (await deps.hasSystems(existing.id)) {
+        if (already.length < 2) {
+          result.warnings.push(
+            "this client already has systems configured — its runbook was not auto-built; fetch the KB from the client page to review it first"
+          );
+        }
+        return result;
+      }
+
       await buildFromKbs(deps, raw, existing.slug, result, already);
       return result;
     }
