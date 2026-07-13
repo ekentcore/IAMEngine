@@ -108,6 +108,8 @@ function Invoke-CtgSalesforceOnboarding {
     $primary = [string]$User.UserPrincipalName
     $email   = [string]((Get-CtgProp $User 'WorkEmail') ?? $User.UserPrincipalName)
     $wantFirst = ([string]$User.FirstName).Trim(); $wantLast = ([string]$User.LastName).Trim()
+    # Nicknamed hire: FirstName carries the nickname; a rehire's account has the LEGAL first name.
+    $wantLegalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
     $candidates = @(@($primary) + @(Get-CtgProp $User 'UserPrincipalNameFallbacks') | Where-Object { $_ })
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
 
@@ -116,7 +118,7 @@ function Invoke-CtgSalesforceOnboarding {
         $found = Get-CtgSalesforceUser -Username $cand
         if (-not $found) { $username = $cand; break }
         $fFirst = ([string](Get-CtgProp $found 'FirstName')).Trim(); $fLast = ([string](Get-CtgProp $found 'LastName')).Trim()
-        if ($wantFirst -and $wantLast -and $fFirst -ieq $wantFirst -and $fLast -ieq $wantLast) {
+        if ($wantLast -and $fLast -ieq $wantLast -and (($wantFirst -and $fFirst -ieq $wantFirst) -or ($wantLegalFirst -and $fFirst -ieq $wantLegalFirst))) {
             $username = $cand; $existing = $found; $actions.Add("Salesforce user exists ($cand) and matches '$fFirst $fLast' — same person (re-run), skipped create"); break
         }
         if (-not ($fFirst -or $fLast)) { $username = $cand; $existing = $found; $actions.Add("Salesforce user exists ($cand) — adopted (no name to confirm), skipped create"); break }

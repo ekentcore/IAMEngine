@@ -57,7 +57,7 @@ const HELP = {
     "Captures the before-state (group memberships, license/app assignments) and attaches it to the case BEFORE anything is removed — for audit and restore. Mainly used on offboarding.",
 };
 const laneHelp = (l: string) =>
-  l === "always" ? "Runs every time for this action" : l === "on_request" ? "Runs only when the intake form requests it" : "Not part of this action";
+  l === "always" ? "Runs every time for this action" : l === "on_request" ? "Runs only when the intake form requests it" : l === "by_persona" ? "Runs only when the matched persona's bundle lists this system (Roles & rules)" : "Not part of this action";
 
 type SysRow = {
   id: string; systemKey: string; mode: string; onboardWhen: string; offboardWhen: string;
@@ -336,8 +336,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
                   <td>
                     <span className="badge" title={`${s.mode} mode`}>{s.mode}</span>
                   </td>
-                  <td className="muted help" title={laneHelp(s.onboardWhen)}>{s.onboardWhen}</td>
-                  <td className="muted help" title={laneHelp(s.offboardWhen)}>{s.offboardWhen}</td>
+                  <td className="muted help" title={laneHelp(s.onboardWhen)}>{s.onboardWhen.replace("_", " ")}</td>
+                  <td className="muted help" title={laneHelp(s.offboardWhen)}>{s.offboardWhen.replace("_", " ")}</td>
                   <td className="muted">
                     {!s.requiresApproval && !s.captureEvidence && "—"}
                     {s.requiresApproval && <span className="badge help" title={HELP.approval}>approval</span>}

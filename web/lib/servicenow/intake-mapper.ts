@@ -221,6 +221,13 @@ function offboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
   return {
     userToOffboard: disp(r, "u_new_contact") ?? [trimmed(val(r, "u_first")), trimmed(val(r, "u_last"))].filter(Boolean).join(" "),
     notListedUser: bool(r, "u_not_listed"),
+    // Persona context (when the offboard form carries it): lets by-persona OFFBOARD lanes and
+    // persona offboardSystems resolve which systems the leaver's role granted. Null when absent —
+    // then no persona matches and by-persona offboard steps are skipped.
+    title: val(r, "u_title"),
+    jobTitle: val(r, "u_title"),
+    department: val(r, "u_department"),
+    roles: dispList(r, "u_role_s"),
     dateOfOffboarding: dateOnly(val(r, "u_end_date")),
     timezone: val(r, "contact_time_zone"),
     employeeAware: bool(r, "u_is_employee_aware_they_are_being_offboarded"),
@@ -290,9 +297,12 @@ export function deriveIdentity(
   // username tokens (sam/UPN/mailNickname — "Bill Smith" -> bsmith, not wsmith), the displayName,
   // and payload.firstName itself (which the runner writes to AD givenName / Graph GivenName). The
   // intake first name survives as legalFirstName — read back first so re-derivation on a re-plan
-  // (where firstName already holds the nickname) stays idempotent.
+  // (where firstName already holds the nickname) stays idempotent. legalFirstName's presence also
+  // marks "a nickname was applied before": CLEARING the nickname must revert firstName/displayName
+  // to the legal name on the next derivation, not leave them stuck on the old nickname.
   const legalFirst = String(payload.legalFirstName ?? payload.firstName ?? "");
   const nickname = String(payload.nickname ?? "").trim();
+  const nicknameTouched = Boolean(nickname) || "legalFirstName" in payload;
   const first = nickname || legalFirst;
   const last = String(payload.lastName ?? "");
   const mi = String(payload.mi ?? "");
@@ -327,14 +337,16 @@ export function deriveIdentity(
   const upn = buildUpn(patterns[0]);
   // Fallback UPNs from the remaining USABLE patterns (deduped, excluding the primary).
   const fallbacks = [...new Set(patterns.slice(1).filter(patternUsable).map(buildUpn).filter((u): u is string => Boolean(u) && u !== upn))];
-  // With a nickname, the intake-built displayName (assembled from the legal first) can't be trusted.
-  const displayName = nickname
-    ? [first, last].filter(Boolean).join(" ") || null
-    : (payload.displayName as string) || [first, last].filter(Boolean).join(" ") || null;
+  // With a nickname applied (or just cleared), the stored displayName was assembled from the wrong
+  // first name and can't be trusted — EXCEPT an operator-edited one (fieldSource), which must
+  // survive a re-plan exactly like it does for non-nicknamed hires.
+  const operatorDisplayName = (payload.fieldSource as Record<string, unknown> | undefined)?.displayName === "operator";
+  const displayName = ((operatorDisplayName || !nicknameTouched) && (payload.displayName as string))
+    || [first, last].filter(Boolean).join(" ") || null;
 
   const merged = {
     ...payload,
-    ...(nickname ? { firstName: first, legalFirstName: legalFirst } : {}),
+    ...(nicknameTouched ? { firstName: first, legalFirstName: legalFirst } : {}),
     displayName,
     userPrincipalName: upn,
     userPrincipalNameFallbacks: fallbacks, // runner tries these when the primary is taken by another person

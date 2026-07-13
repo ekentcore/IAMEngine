@@ -539,6 +539,11 @@ function Invoke-CtgM365Onboarding {
     $chosenUpn = $null
     $adopt = $false
     $targetName = ([string]$User.DisplayName).Trim()
+    # A nicknamed hire's DisplayName carries the nickname ("Bill Smith"); a rehire's existing account
+    # was created from the LEGAL name ("William Smith"). Accept either as the same-person signal.
+    $legalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
+    $legalName = if ($legalFirst -and ([string]$User.LastName).Trim()) { "$legalFirst $(([string]$User.LastName).Trim())" } else { '' }
+    $nameMatches = { param($disp) $d = ([string]$disp).Trim(); ($targetName -and $d -ieq $targetName) -or ($legalName -and $d -ieq $legalName) }
     # How to handle a same-name account with NO provisioning marker (ambiguous: our re-run vs a
     # different person who happens to share a name): 'adopt' = it's ours, 'new' = different person
     # (use a fallback), unset/'ask' = PAUSE and let an operator decide on the case.
@@ -558,7 +563,7 @@ function Invoke-CtgM365Onboarding {
         # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
         # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the
         # operator's decision if one was made; otherwise PAUSE and ask rather than guess.
-        if (-not $foundMarker -and $targetName -and ([string]$found.DisplayName).Trim() -ieq $targetName) {
+        if (-not $foundMarker -and (& $nameMatches $found.DisplayName)) {
             if ($collisionPolicy -ieq 'adopt') {
                 $existing = $found; $chosenUpn = $cand; $adopt = $true
                 $actions.Add("user exists ($cand) with no marker but matching name '$($found.DisplayName)' — operator chose ADOPT (stamping marker), skipping create")

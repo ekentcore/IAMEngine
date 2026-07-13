@@ -200,6 +200,27 @@ test("deriveIdentity: nickname derivation is idempotent across re-plans", () => 
   assert.equal(twice.samAccountName, "bsmith");
 });
 
+test("deriveIdentity: clearing a nickname reverts firstName/displayName/sam to the legal name", () => {
+  const opts = { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" };
+  const once = deriveIdentity({ firstName: "William", lastName: "Smith", nickname: "Bill" }, opts);
+  // The nickname is emptied on the stored (already-derived) payload — e.g. a payload edit without a
+  // full ServiceNow refresh. Everything must revert, not leave firstName stuck on "Bill".
+  const cleared = deriveIdentity({ ...once, nickname: "" }, opts);
+  assert.equal(cleared.firstName, "William");
+  assert.equal(cleared.displayName, "William Smith");
+  assert.equal(cleared.samAccountName, "wsmith");
+});
+
+test("deriveIdentity: an operator-edited displayName survives re-derivation even with a nickname", () => {
+  const opts = { usernamePatterns: ["{firstInitial}{last}@{domain}"], primaryDomain: "acme.com" };
+  const p = deriveIdentity(
+    { firstName: "William", lastName: "Smith", nickname: "Bill", displayName: "Bill Smith Jr.", fieldSource: { displayName: "operator" } },
+    opts
+  );
+  assert.equal(p.displayName, "Bill Smith Jr."); // operator provenance wins over the nickname recompute
+  assert.equal(p.samAccountName, "bsmith"); // username derivation still nickname-based
+});
+
 test("deriveIdentity: nickname feeds {first} fallback patterns too", () => {
   const p = deriveIdentity(
     { firstName: "William", lastName: "Smith", nickname: "Bill", mi: "J" },

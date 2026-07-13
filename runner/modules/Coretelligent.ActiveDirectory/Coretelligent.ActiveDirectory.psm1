@@ -186,6 +186,11 @@ function Invoke-CtgADOnboarding {
     $wantFirst = ([string]$User.FirstName).Trim()
     $wantLast  = ([string]$User.LastName).Trim()
     $wantName  = ([string]$User.DisplayName).Trim()
+    # A nicknamed hire ("Bill" for William) carries the nickname in FirstName/DisplayName; the legal
+    # first name rides along as LegalFirstName. A rehire's existing account was created from the
+    # LEGAL name, so same-person matching must accept either — else a rehire reads as a collision.
+    $wantLegalFirst = ([string](Get-CtgProp $User 'LegalFirstName')).Trim()
+    $wantLegalName  = if ($wantLegalFirst -and $wantLast) { "$wantLegalFirst $wantLast" } else { '' }
     # 'adopt' = it's ours, unset = pause for a decision; a different name auto-falls-back regardless.
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
 
@@ -197,7 +202,8 @@ function Invoke-CtgADOnboarding {
         $fGiven = ([string](Get-CtgProp $found 'GivenName')).Trim()
         $fSur   = ([string](Get-CtgProp $found 'Surname')).Trim()
         $fDisp  = ([string](Get-CtgProp $found 'DisplayName')).Trim()
-        $sameName = ($wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fSur -ieq $wantLast) -or ($wantName -and $fDisp -ieq $wantName)
+        $sameName = ($wantFirst -and $wantLast -and $fGiven -ieq $wantFirst -and $fSur -ieq $wantLast) -or ($wantName -and $fDisp -ieq $wantName) `
+            -or ($wantLegalFirst -and $wantLast -and $fGiven -ieq $wantLegalFirst -and $fSur -ieq $wantLast) -or ($wantLegalName -and $fDisp -ieq $wantLegalName)
         if ($sameName) {
             $sam = $cand; $chosenUpn = $candUpn; $existing = $found
             $actions.Add("user exists ($cand) and matches '$(if ($fDisp) { $fDisp } else { "$fGiven $fSur" })' — same person (re-run), skipped create"); break

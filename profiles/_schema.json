@@ -248,7 +248,12 @@
         "systems": {
           "type": "object",
           "minProperties": 1,
-          "description": "system key -> config fragment this persona contributes (e.g. active-directory: { ou, groups, attributes }, m365: { licenses }).",
+          "description": "system key -> config fragment this persona contributes (e.g. active-directory: { ou, groups, attributes }, m365: { licenses }). Presence of a key also INCLUDES that system for this persona when its lane is by-persona.",
+          "additionalProperties": { "$ref": "#/$defs/configFragment" }
+        },
+        "offboardSystems": {
+          "type": "object",
+          "description": "system key -> OFFBOARD config fragment (onboard-shaped keys map to offboard semantics: groups -> removeGroups, ou -> moveToOu, attributes -> offboardAttributes). Unioned with `systems` to gate by-persona OFFBOARD lanes.",
           "additionalProperties": { "$ref": "#/$defs/configFragment" }
         }
       }
