@@ -1,32 +1,18 @@
 "use client";
 
 // Mobile header nav: a hamburger that opens a slide-in drawer. Only visible ≤760px (the desktop inline
-// nav is hidden there). Mirrors the desktop Nav's items + role gating.
+// nav is hidden there). Renders the SAME structure as the desktop Nav — the primary links, then the
+// grouped reference/admin pages — from the shared definitions, so the two can never drift.
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { createPortal } from "react-dom";
+import { PRIMARY, menuGroups } from "./nav";
 
-const ITEMS: ReadonlyArray<readonly [string, string]> = [
-  ["/clients", "Clients"],
-  ["/cases", "Cases"],
-  ["/runs", "Run log"],
-  ["/agents", "Agents"],
-  ["/modules", "Modules"],
-  ["/help", "Help"],
-  ["/health", "Health"],
-];
-
-export function MobileNav({ showUsers = false, showAudit = false, showSettings = false, showChangelog = false }: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }) {
+export function MobileNav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }) {
   const [open, setOpen] = useState(false);
   const path = usePathname() ?? "";
-  const items: ReadonlyArray<readonly [string, string]> = [
-    ...ITEMS,
-    ...(showAudit ? ([["/audit", "Audit"]] as const) : []),
-    ...(showUsers ? ([["/users", "Users"]] as const) : []),
-    ...(showChangelog ? ([["/changelog", "Change log"]] as const) : []),
-    ...(showSettings ? ([["/settings", "Settings"]] as const) : []),
-  ];
+  const groups = [{ label: "Operate", items: [...PRIMARY] }, ...menuGroups(flags)];
   return (
     <span className="mobile-nav">
       <button type="button" className="mobile-nav-btn" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}>☰</button>
@@ -40,10 +26,15 @@ export function MobileNav({ showUsers = false, showAudit = false, showSettings =
               <strong>Menu</strong>
               <button type="button" className="mobile-nav-btn" aria-label="Close menu" onClick={() => setOpen(false)}>✕</button>
             </div>
-            {items.map(([href, label]) => (
-              <Link key={href} href={href} aria-current={path === href || path.startsWith(`${href}/`) ? "page" : undefined} onClick={() => setOpen(false)}>
-                {label}
-              </Link>
+            {groups.map((g) => (
+              <div key={g.label} className="mobile-drawer-group">
+                <div className="nav-menu-label">{g.label}</div>
+                {g.items.map(([href, label]) => (
+                  <Link key={href} href={href} aria-current={path === href || path.startsWith(`${href}/`) ? "page" : undefined} onClick={() => setOpen(false)}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
             ))}
           </nav>
         </>,
