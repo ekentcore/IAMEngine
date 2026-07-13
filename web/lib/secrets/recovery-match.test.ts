@@ -130,6 +130,10 @@ test("device/mail-flow/per-person accounts never become candidates", () => {
   assert.deepEqual(slots("Mimecast DMARC Analyzer"), []);
   assert.deepEqual(slots("Scan SVC Account"), []);
   assert.deepEqual(slots("MaaS360 Service Account"), []);
+  // break-glass codes for an account are not that account's API credential
+  assert.deepEqual(slots("S1 API backup codes"), []);
+  assert.deepEqual(slots("S1 api MFA backup codes"), []);
+  assert.deepEqual(slots("Zoom recovery codes"), []);
 });
 
 test("ad-dc only matches a named automation/IAM account, not any service account", () => {

@@ -32,6 +32,7 @@ import { candidatesBySlot, parseClientFolderName, normalizeClientName, shouldAut
 import { secretIsSet } from "../lib/secrets/wiring";
 import { NOT_NEEDED } from "../lib/cases/case-secrets";
 import { checkFieldShape } from "../lib/secrets/field-requirements";
+import { classifyM365Credential } from "../lib/secrets/m365-credential";
 import { azureConfigFromEnv, azureConfigured, azureChatJson } from "../lib/generator/llm";
 
 function loadEnvFiles(): void {
@@ -117,6 +118,7 @@ const CAT = {
   staleOnly: "needs manual — only retired/prior-MSP candidates found",
   alreadySet: "already wired — verified working, left untouched",
   notNeeded: "NOT_NEEDED — a manual step by design",
+  wrongKind: "WRONG KIND of credential — needs an app registration, not a user account",
 } as const;
 
 // Ask the LLM to choose among candidates for a slot, returning the chosen Delinea id or null. Only
@@ -230,12 +232,23 @@ async function main() {
     // Verify an id the way the in-app Test does: metadata read, then field shape. `fieldsOk` is
     // tri-state — null means we could NOT determine it (the value read failed), which must never be
     // treated as a pass.
-    const verify = async (id: string, slot: string): Promise<{ access: Awaited<ReturnType<typeof checkSecret>>; fieldsOk: boolean | null; missing: string[] }> => {
+    const verify = async (id: string, slot: string): Promise<{ access: Awaited<ReturnType<typeof checkSecret>>; fieldsOk: boolean | null; missing: string[]; kindNote?: string }> => {
       const access = await checkSecret(cfg, id, fetcher, token);
       if (!access.ok) return { access, fieldsOk: null, missing: [] };
       const resolved = await resolveSecretFields(cfg, id, fetcher, token);
       if (!resolved.ok || !resolved.fields) return { access, fieldsOk: null, missing: [] };
       const shape = checkFieldShape(slot, Object.keys(resolved.fields), { clientHasTenantHint });
+
+      // m365-admin needs more than the right FIELD NAMES: Connect-CtgM365 uses the client-credentials
+      // flow, so the credential must be an APP REGISTRATION (app id + client secret). A human Global
+      // Admin account carries a Username and a Password too — it passes checkFieldShape and then fails
+      // at Entra with AADSTS700016. Only the value's shape tells them apart, so judge it here.
+      if (slot === "m365-admin" && shape.ok) {
+        const kind = classifyM365Credential(resolved.fields);
+        if (kind.kind !== "app-registration") {
+          return { access, fieldsOk: false, missing: [kind.reason], kindNote: kind.reason };
+        }
+      }
       return { access, fieldsOk: shape.ok, missing: shape.missing };
     };
 
@@ -326,16 +339,22 @@ async function main() {
       }
 
       // Verify like the app's Test does: read access (metadata) + field shape (values, not shown).
-      const { access, fieldsOk: fieldOk, missing } = await verify(String(chosen.record.id), slot);
+      const { access, fieldsOk: fieldOk, missing, kindNote } = await verify(String(chosen.record.id), slot);
 
       // Write policy: a wrong-but-resolvable credential shows green and fails in production, so a
       // medium-confidence pick is only persisted for cloud systems that fail closed (never ad-dc);
       // an id we cannot even read is never written at any confidence.
-      const write = shouldAutofill(chosen, access.ok, fieldOk);
+      //
+      // A credential of the WRONG KIND is never written at ANY confidence: unlike an incomplete field
+      // set (which a human can fill in on the right secret), a Global Admin account can never become
+      // an app registration. Writing it would just re-create the failure it was found in.
+      const write = !kindNote && shouldAutofill(chosen, access.ok, fieldOk);
 
       const category = !write
         ? !access.ok
           ? CAT.wrong
+          : kindNote
+          ? CAT.wrongKind
           : CAT.suggested
         : fieldOk !== true
         ? CAT.thinkRightBroken

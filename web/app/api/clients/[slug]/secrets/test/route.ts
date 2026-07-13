@@ -11,6 +11,14 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
 import { checkFieldShape } from "@/lib/secrets/field-requirements";
+import {
+  classifyM365Credential,
+  probeEntraClientCredentials,
+  pickField,
+  M365_APPID_FIELDS,
+  M365_SECRET_FIELDS,
+  M365_TENANT_FIELDS,
+} from "@/lib/secrets/m365-credential";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +70,37 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
       if (!r.ok) return { name: i.name, ok: false, error: r.error };
       // Shape check on field NAMES only — values are never read into the response.
       const shape = checkFieldShape(i.name, Object.keys(r.fields ?? {}), { clientHasTenantHint: hasTenantHint });
+
+      // m365-admin gets two extra checks a name-only shape check cannot make, because a Global Admin
+      // account and an app registration BOTH carry a Username + Password:
+      //   1. kind  — the value's shape (a UPN is a person, a GUID is an app). Free, instant.
+      //   2. live  — the real client-credentials grant against Entra: the same handshake
+      //              Connect-MgGraph -ClientSecretCredential performs, so a pass here means the
+      //              runner WILL connect. This is the definitive answer, and it costs one HTTPS call.
+      // Neither ever puts a credential value in the response.
+      if (i.name === "m365-admin" && r.fields) {
+        const kind = classifyM365Credential(r.fields);
+        if (kind.kind !== "app-registration") {
+          return { name: i.name, ok: false, label: r.label, error: kind.reason, credKind: kind.kind, missingFields: shape.missing };
+        }
+        const appId = pickField(r.fields, M365_APPID_FIELDS);
+        const secret = pickField(r.fields, M365_SECRET_FIELDS);
+        const tenant = pickField(r.fields, M365_TENANT_FIELDS) ?? client?.primaryDomain ?? undefined;
+        if (appId && secret && tenant) {
+          const probe = await probeEntraClientCredentials(tenant, appId, secret);
+          if (!probe.ok) {
+            return {
+              name: i.name,
+              ok: false,
+              label: r.label,
+              error: `Entra rejected this credential (${probe.errorCode ?? probe.error})${probe.hint ? ` — ${probe.hint}` : ""}`,
+              credKind: kind.kind,
+              missingFields: shape.missing,
+            };
+          }
+          return { name: i.name, ok: true, label: r.label, missingFields: shape.missing, credKind: kind.kind, liveAuth: true };
+        }
+      }
       return { name: i.name, ok: true, label: r.label, missingFields: shape.missing };
     })
   );
