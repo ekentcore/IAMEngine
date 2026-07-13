@@ -50,6 +50,10 @@ export function GET(req: Request) {
   // served after verifyEnrollToken passes (a short-lived, operator-issued token).
   const apiToken = process.env.RUNNER_API_TOKEN ?? "";
   const needAd = scope === "client_network"; // on-prem AD only for a client-network agent
+  // Browser automation runs on the CENTRAL runner only (vendor portals with no API). A client-network
+  // agent lives on a DC — never download headless Chromium there; it would stall a locked-down host
+  // and buys nothing. Baked in as a machine env var so the SYSTEM task honors it.
+  const noBrowser = scope === "client_network";
   const installDir = "C:\\iam-runner";
   const agentName = scope === "client_network" ? `runner-${client}-$env:COMPUTERNAME` : `central-$env:COMPUTERNAME`;
 
@@ -61,6 +65,7 @@ $Token     = '${token}'
 $ApiToken  = '${apiToken}'
 $InstallDir= '${installDir}'
 $NeedAd    = $${needAd ? "true" : "false"}
+$NoBrowser = $${noBrowser ? "true" : "false"}
 
 function Step($m) { Write-Host "  -> $m" -ForegroundColor Cyan }
 Write-Host "iam-engine runner install" -ForegroundColor Green
@@ -159,11 +164,22 @@ $AgentId = $enroll.id
 if (-not $AgentId) { Write-Error "Enrollment failed (no agent id returned)."; return }
 Write-Host "  enrolled: $AgentId" -ForegroundColor Green
 
-# 5b. Bearer token (Machine env) so the SYSTEM task authenticates to the app once it fails-closed.
-# Not put on the task command line, so it isn't visible in the task definition.
+# 5b. Machine environment for the SYSTEM task. NOTE: a SYSTEM Scheduled Task only picks these up
+# after a REBOOT (the Task Scheduler service caches the machine environment) — the task we start in
+# step 6 gets them via -Environment below, so a fresh install works without one.
 if ($ApiToken) {
   [Environment]::SetEnvironmentVariable('RUNNER_API_TOKEN', $ApiToken, 'Machine')
+  $env:RUNNER_API_TOKEN = $ApiToken   # also this session, so the task we launch inherits it now
   Write-Host "  set RUNNER_API_TOKEN (Machine env)" -ForegroundColor Green
+}
+# Browser automation (headless Chromium via the Playwright sidecar) is a CENTRAL-runner concern: it
+# drives vendor portals that have no API (e.g. the Spanning force-sync). A client-network agent runs
+# on a domain controller — it must never pull a ~170MB browser down, and on a locked-down DC that
+# download would just stall. Disable it there so the runner comes up clean and heartbeats instantly.
+if ($NoBrowser) {
+  [Environment]::SetEnvironmentVariable('IAM_RUNNER_NO_BROWSER_INSTALL', '1', 'Machine')
+  $env:IAM_RUNNER_NO_BROWSER_INSTALL = '1'
+  Write-Host "  set IAM_RUNNER_NO_BROWSER_INSTALL=1 (browser automation is a central-runner job)" -ForegroundColor Green
 }
 
 # 6. Register + start a Scheduled Task (at startup, restart on failure)
