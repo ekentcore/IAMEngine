@@ -12,7 +12,7 @@ import { useRef, useState } from "react";
 // The manual name/domain form is still here, behind a disclosure, for clients that aren't in
 // ServiceNow at all.
 
-type Built = { action: "onboard" | "offboard"; kb: string; title: string; sections: number; confident: boolean };
+type Built = { action: "onboard" | "offboard"; kb: string; title: string; sections: number };
 type ImportRow = {
   coreId: string;
   status: "imported" | "exists" | "not_found" | "invalid" | "error";
@@ -43,15 +43,18 @@ const STATUS_LABEL: Record<ImportRow["status"], string> = {
 export function AddClientDialog() {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
+  const navigating = useRef(false); // a single import navigates away; don't also refresh the list
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [total, setTotal] = useState(0);
 
-  function close() {
-    ref.current?.close();
-    // Anything imported changes the list behind the dialog.
-    if (rows.some((r) => r.status === "imported")) router.refresh();
+  // Runs however the dialog closes — the Done button, Escape, or the backdrop. Hanging the reset off
+  // the button alone leaves the previous run's table sitting there when it is reopened.
+  function onClose() {
+    if (!navigating.current && rows.some((r) => r.status === "imported" || r.built.length > 0)) {
+      router.refresh(); // the list behind the dialog changed
+    }
     setRows([]);
     setTotal(0);
     setError(null);
@@ -99,14 +102,15 @@ export function AddClientDialog() {
         }
       }
 
-      // One id, one new client: go look at it. Anything else keeps the summary on screen.
+      // One id, one client: go look at it. Anything else keeps the summary on screen.
       const only = collected.length === 1 ? collected[0] : null;
-      if (only?.status === "imported" && only.slug) {
+      if (only?.slug && (only.status === "imported" || only.built.length > 0)) {
+        navigating.current = true;
         ref.current?.close();
         router.push(`/clients/${only.slug}`);
         return;
       }
-      if (collected.some((r) => r.status === "imported")) router.refresh();
+      if (collected.some((r) => r.status === "imported" || r.built.length > 0)) router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -147,8 +151,8 @@ export function AddClientDialog() {
 
   return (
     <>
-      <button onClick={() => ref.current?.showModal()}>Add client</button>
-      <dialog ref={ref} style={showResults ? { width: "min(760px, 94vw)" } : undefined}>
+      <button onClick={() => { navigating.current = false; ref.current?.showModal(); }}>Add client</button>
+      <dialog ref={ref} onClose={onClose} style={showResults ? { width: "min(760px, 94vw)" } : undefined}>
         <h2>Add clients</h2>
         <p className="note">
           Paste one CORE id or several, separated by commas. Each is looked up in ServiceNow, created, and built out
@@ -166,7 +170,7 @@ export function AddClientDialog() {
             disabled={busy}
           />
           <div className="toolbar" style={{ marginTop: "0.75rem", justifyContent: "flex-end" }}>
-            <button type="button" onClick={close} disabled={busy}>
+            <button type="button" onClick={() => ref.current?.close()} disabled={busy}>
               {showResults ? "Done" : "Cancel"}
             </button>
             <button type="submit" className="primary" disabled={busy}>
@@ -194,7 +198,11 @@ export function AddClientDialog() {
                     <td>{r.coreId}</td>
                     <td>{r.slug ? <a href={`/clients/${r.slug}`}>{r.name ?? r.slug}</a> : <span className="muted">—</span>}</td>
                     <td>
-                      <span className={STATUS_BADGE[r.status]}>{STATUS_LABEL[r.status]}</span>
+                      <span className={r.status === "exists" && r.built.length > 0 ? "badge active" : STATUS_BADGE[r.status]}>
+                        {r.status === "exists" && r.built.length > 0
+                          ? "Already here — runbook built"
+                          : STATUS_LABEL[r.status]}
+                      </span>
                       {/* The badge already says it for invalid/not_found — only a real failure has
                           anything to add. */}
                       {r.error && r.status === "error" && <div className="note danger">{r.error}</div>}
@@ -211,7 +219,6 @@ export function AddClientDialog() {
                         r.built.map((b) => (
                           <div key={b.action} className="note">
                             {b.action}: {b.kb} · {b.sections} section{b.sections === 1 ? "" : "s"}
-                            {!b.confident && " ⚠"}
                           </div>
                         ))
                       )}

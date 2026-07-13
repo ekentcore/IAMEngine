@@ -21,22 +21,41 @@ tolerated). `CORE1269`, `core1269` and `1269` all normalize to `CORE1269`.
 
 Per id, in order:
 
-1. **Already known** — a `Client` row with that `coreId`, or with the `serviceNowSysId`
-   the id resolves to, means the client is in the system. Report it as `exists` with a
-   link. Nothing is written. (A rebuild would replace existing runbook sections and could
-   discard operator edits; a re-import must never do that silently.)
-2. **Resolve** — `fetchSnAccountByCoreId`. No match in ServiceNow → `not_found`.
-3. **Create** — `repo.createFromSn` (idempotent on `serviceNowSysId`), slug derived from
-   the CORE id (`core1269`), plus a `client.create` audit row with `source: "import"`.
-4. **Discover KBs** — see below. Zero found → the client still exists; the row carries a
+1. **Resolve** — `fetchSnAccountByCoreId`. No match in ServiceNow → `not_found`. An account
+   without a `sys_id` is an error: every downstream key hangs off it.
+2. **Already known?** — three lookups, because a client can predate any one of them: its
+   `coreId`, the `serviceNowSysId` the account resolves to (roster-synced rows may carry no
+   CORE id), and — for a profile-seeded row that has *neither* — its `primaryDomain`.
+   Skipping the domain check is how you get two `Client` rows for one company, with the
+   original holding the systems, credentials and case history. Only a domain that maps to
+   exactly one client counts; an ambiguous one falls through to create, because mis-linking
+   is worse than a new row. This is the rule `syncClientsFromSn` already follows.
+3. **Create or adopt** — a new client: `repo.createFromSn` (idempotent on `serviceNowSysId`),
+   slug from the CORE id (`core1269`), plus a `client.create` audit row with
+   `source: "import"`. An existing one: stamp the ServiceNow keys onto it (never over a
+   field a human edited — `editedFields`) and carry on to the build.
+4. **Link the parent** — `createFromSn` does not set `parentId` (the roster sync links
+   parents in a second pass, since a child can arrive before its parent). Without this an
+   imported child's cases plan *zero steps* while the UI claims it inherits the parent's
+   systems.
+5. **Discover KBs** — see below. Zero found → the client still exists; the row carries a
    warning and the operator builds it by hand.
-5. **Build** — for each action found: `fetchKbArticle` → `extractRunbookAI` (heuristic
-   parse as fallback) → `saveRunbook`, which recreates the `RunbookSection` rows and
-   auto-creates the missing `ClientSystem` rows from catalog defaults.
+6. **Build the actions that have no runbook** — `fetchKbArticle` → `extractRunbookAI`
+   (heuristic parse as fallback) → `saveRunbook`, which recreates the `RunbookSection` rows
+   and auto-creates the missing `ClientSystem` rows from catalog defaults.
 
-A failure in 4 or 5 does not roll back 3. The client is created; the failure lands as a
-warning on that id's result row. Import is resumable by re-running: an already-created
-client reports `exists`, and its build can be finished from the client page.
+**What "already in the system" does and does not protect.** `saveRunbook` *replaces* an
+action's sections, so an action that already has a runbook is never rebuilt — that is the
+promise, and it is what protects an operator's edits. But refusing to touch the *client*
+would make this feature a no-op for almost the entire fleet: opening the clients list runs
+`syncIfStale`, so nearly every in-scope client already exists as a **bare roster row** — no
+runbook, no systems, cases that plan zero steps. Those bare rows are exactly the problem
+this feature exists to solve. So an existing client's **empty** actions are built, and its
+**populated** ones are left strictly alone.
+
+A failure at 5 or 6 does not roll back 3. The client is created and *named on the result
+row* (an anonymous "Failed" would hide a client that now exists), and the failure lands as
+a warning. Re-running finishes the job — the empty actions are still empty, so they build.
 
 ## KB discovery
 
@@ -58,13 +77,26 @@ them, so type cannot discriminate. Titles of the real guides vary in shape:
 
 So discovery scores candidates rather than pattern-matching one title:
 
+- Ask ServiceNow only for the *boarding* articles in the domain
+  (`short_descriptionLIKEboard`). A big client's domain holds hundreds of rows — every
+  article, times every revision — enough to push the guide past any row limit. "board"
+  catches Onboarding / Offboarding / Off-Boarding / New Onboard alike; the odd
+  Dashboard/Keyboard hit is dropped by the scoring anyway.
 - Reject titles that look like an uploaded file (`.docx`, `.pdf`, `.xlsx`, `.msg`, …).
 - Classify by which of onboard/offboard the title mentions (a title mentioning both, or
   neither, is not a candidate for either action).
 - Score: contains "guide" (strong), lives in the client's own KB base rather than the
-  shared "Co-Managed IT" base, `latest`, `published`, most recently updated.
+  shared "Co-Managed IT" base, `latest`, `published`, most recently updated. Keep only the
+  best row per KB number — `kb_knowledge` stores every revision as its own row.
 - Best-scoring candidate per action wins; the others are returned so the UI can say a
   choice was made among several.
+
+**A pick that isn't a guide is not imported.** Century Equity has no onboarding guide at
+all — only an "Offboard User Request" form. Saving that as the runbook would create
+`ClientSystem` rows out of whatever the extractor made of the form's prose, and a live case
+would then dispatch jobs against systems the client may not even own. So a low-confidence
+pick (no "guide" in the title) is *named on the result row for a human to review*, not
+saved. The client page's Fetch button takes it from there.
 
 Published articles are queried first; if an action has no published candidate, unpublished
 ones are considered (some clients' only onboarding guide is not the published revision —

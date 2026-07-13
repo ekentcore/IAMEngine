@@ -73,6 +73,10 @@ function actionOf(title: string): "onboard" | "offboard" | null {
 
 export function scoreKbCandidates(rows: KbRow[]): KbDiscovery {
   const candidates: KbCandidate[] = [];
+  // kb_knowledge keeps every REVISION as its own row under the same number, so one guide can appear
+  // many times. Keep the best row per number (the sort below settles which) — otherwise a heavily
+  // revised article crowds the candidate list with copies of itself.
+  const bestByNumber = new Map<string, KbCandidate>();
 
   for (const r of rows) {
     const title = (r.short_description?.display_value ?? r.short_description?.value ?? "").trim();
@@ -97,8 +101,13 @@ export function scoreKbCandidates(rows: KbRow[]): KbDiscovery {
     if (latest) score += 2;
     if (published) score += 1;
 
-    candidates.push({ number, title, action, score, confident: isGuide, latest, published, updatedAt });
+    const c: KbCandidate = { number, title, action, score, confident: isGuide, latest, published, updatedAt };
+    const seen = bestByNumber.get(number);
+    if (!seen || c.score > seen.score || (c.score === seen.score && c.updatedAt > seen.updatedAt)) {
+      bestByNumber.set(number, c);
+    }
   }
+  candidates.push(...bestByNumber.values());
 
   // Best-first: score, then recency as the tie-break (SN's datetime format sorts lexicographically).
   candidates.sort((a, b) => b.score - a.score || b.updatedAt.localeCompare(a.updatedAt));
@@ -134,8 +143,13 @@ export async function findClientKbs(
   if (!/^[0-9a-f]{32}$/i.test(domainSysId)) return EMPTY;
   assertConfig(config);
 
-  const base = `sys_domain=${domainSysId}^ORDERBYDESCsys_updated_on`;
-  const published = await query(config, `sys_domain=${domainSysId}^workflow_state=published^ORDERBYDESCsys_updated_on`, fetcher);
+  // Ask ServiceNow for the boarding articles rather than the whole domain. A big client's domain
+  // holds hundreds of rows (every article, times every revision) — enough to push the guide past any
+  // row limit we set. "board" catches Onboarding / Offboarding / Off-Boarding / New Onboard alike;
+  // the handful of Dashboard/Keyboard false hits are dropped by the title scoring anyway.
+  const scope = `sys_domain=${domainSysId}^short_descriptionLIKEboard`;
+  const base = `${scope}^ORDERBYDESCsys_updated_on`;
+  const published = await query(config, `${scope}^workflow_state=published^ORDERBYDESCsys_updated_on`, fetcher);
   const first = scoreKbCandidates(published);
   if (first.onboard && first.offboard) return first;
 
