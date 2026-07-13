@@ -36,6 +36,12 @@ export type BrokeredCredential = {
   expiresInSeconds: number;
   label?: string; // Delinea secret name (a human label) — never the secret value
   note?: string;
+  // A CURRENT one-time password minted by Delinea (only when the caller asked for it, and only when
+  // the secret has one-time-password enabled). Lives ~30s — the runner requests it at the moment it
+  // needs it (right before a browser login), never at claim time. The SEED is never brokered.
+  otpCode?: string;
+  otpRemainingSeconds?: number;
+  otpError?: string; // why no code (e.g. OTP not enabled on the secret) — actionable, never secret
   // The resolved secret VALUE (Username/Password/Server/...), pushed down so the runner doesn't
   // need its own Delinea creds. Sensitive: returned over TLS to the owning agent, never logged or
   // persisted. Absent when the app can't resolve (Delinea not configured) — then `note` explains.

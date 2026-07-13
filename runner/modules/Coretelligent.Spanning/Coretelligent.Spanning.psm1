@@ -424,6 +424,17 @@ function Invoke-CtgSpanningForceSync {
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
         $Secret
+        ,
+        # PREFERRED: @{ url; token; agentId; secretName } — the app endpoint the browser flow calls to
+        # mint a Delinea one-time password AT THE MFA PROMPT. A TOTP code lives ~30s; browser launch +
+        # portal load + the SSO hop routinely exceed that, so any code fetched before the browser
+        # starts is stale on arrival. Passed through to the flow, never invoked here.
+        [hashtable]$OtpRequest
+        ,
+        # LEGACY: closure returning @{ Code; RemainingSeconds } from Delinea, invoked here (pre-mint,
+        # subject to the staleness above). Used only when -OtpRequest is absent; kept so tests can
+        # drive the MFA path without a vault and older dispatch wiring keeps working.
+        [scriptblock]$OtpProvider
     )
     $actions = [System.Collections.Generic.List[string]]::new()
     $email   = $User.UserPrincipalName
@@ -447,12 +458,28 @@ function Invoke-CtgSpanningForceSync {
         return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
 
-    # Optional authenticator seed: when the console enforces app/TOTP MFA, the flow generates the code
-    # from this base32 seed to complete the login headless. Absent → the flow bails clearly on any MFA.
+    # MFA. PREFERRED: hand the flow an OTP REQUEST SPEC so the sidecar mints the Delinea code at the
+    # moment the MFA box is visible — Delinea holds the authenticator seed (one-time password enabled
+    # on the secret) and the seed never reaches us. LEGACY: pre-mint via -OtpProvider (stale-prone).
+    $otpCode = $null
+    if (-not $OtpRequest -and $OtpProvider) {
+        $otp = & $OtpProvider
+        if ($otp -and $otp.Code) {
+            $otpCode = [string]$otp.Code
+            $actions.Add("fetched a one-time password from Delinea ($($otp.RemainingSeconds)s valid)")
+        }
+    }
+    if ($OtpRequest) { $actions.Add("one-time password will be minted by Delinea at the MFA prompt") }
+    # LEGACY fallback: a TOTPSeed field on the secret. Storing a PERMANENT seed where a 30-second code
+    # would do is strictly worse — prefer enabling One-Time Password on the Delinea secret instead.
+    # Passed alongside the request spec: the flow only reaches for it when no code can be minted.
     $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest -and -not $otpCode) { $actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
 
     $params = @{ email = $email }
-    if ($totpSeed) { $params['totpSeed'] = $totpSeed }
+    if ($OtpRequest) { $params['otp']      = $OtpRequest }
+    if ($otpCode)    { $params['otpCode']  = $otpCode }
+    if ($totpSeed)   { $params['totpSeed'] = $totpSeed }
     $flowInput = @{ username = $username; password = $password; params = $params }
     $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput
 

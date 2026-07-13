@@ -10,6 +10,7 @@
 
 BeforeAll {
     Import-Module "$PSScriptRoot/../modules/Coretelligent.Spanning/Coretelligent.Spanning.psm1" -Force
+    Import-Module "$PSScriptRoot/../modules/Coretelligent.Browser/Coretelligent.Browser.psm1" -Force
 }
 
 Describe 'Invoke-CtgSpanningOnboarding' {
@@ -220,5 +221,76 @@ Describe 'Confirm-CtgSpanning' {
         $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ to = 'Archive' } }
         $r = Confirm-CtgSpanning -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config -Action 'offboard'
         $r.ok | Should -BeTrue
+    }
+}
+
+Describe 'Invoke-CtgSpanningForceSync — MFA source' {
+    BeforeEach {
+        $script:captured = $null
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = 'sync triggered'; error = $null; evidence = $null; retryAfterMinutes = $null }
+        }
+        $script:secret = [pscustomobject]@{
+            Fields = @{ PortalUsername = 'admin@x.com'; PortalPassword = 'pw' }
+        }
+        $script:user = [pscustomobject]@{ UserPrincipalName = 'new.user@x.com' }
+    }
+
+    It 'passes the Delinea-minted CODE to the flow and never a seed' {
+        $provider = { [pscustomobject]@{ Code = '123456'; RemainingSeconds = 27 } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpProvider $provider
+        $r.Status | Should -Be 'ok'
+        $script:captured.params.otpCode | Should -Be '123456'
+        $script:captured.params.ContainsKey('totpSeed') | Should -BeFalse
+    }
+
+    It 'falls back to a stored seed only when Delinea has no one-time password' {
+        $script:secret.Fields['TOTPSeed'] = 'JBSWY3DPEHPK3PXP'
+        $provider = { $null }   # Delinea could not mint a code
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpProvider $provider
+        $r.Status | Should -Be 'ok'
+        $script:captured.params.totpSeed | Should -Be 'JBSWY3DPEHPK3PXP'
+        $script:captured.params.ContainsKey('otpCode') | Should -BeFalse
+        ($r.Actions -join ' ') | Should -Match 'enable One-Time Password'   # nudges to the better path
+    }
+}
+
+Describe 'Invoke-CtgSpanningForceSync — in-flow OTP minting' {
+    BeforeEach {
+        $script:captured = $null
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = 'sync triggered'; error = $null; evidence = $null; retryAfterMinutes = $null }
+        }
+        $script:secret = [pscustomobject]@{
+            Fields = @{ PortalUsername = 'admin@x.com'; PortalPassword = 'pw' }
+        }
+        $script:user = [pscustomobject]@{ UserPrincipalName = 'new.user@x.com' }
+    }
+
+    It 'passes the OTP request spec through so the FLOW mints at the MFA prompt (no pre-mint)' {
+        $providerInvoked = $false
+        $provider = { $script:providerInvoked = $true; [pscustomobject]@{ Code = '999999'; RemainingSeconds = 29 } }
+        $req = @{ url = 'https://app/api/jobs/j1/credential'; token = 't'; agentId = 'a1'; secretName = 'spanning' }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpRequest $req -OtpProvider $provider
+        $r.Status | Should -Be 'ok'
+        $script:captured.params.otp.url | Should -Be 'https://app/api/jobs/j1/credential'
+        $script:captured.params.otp.secretName | Should -Be 'spanning'
+        $script:captured.params.ContainsKey('otpCode') | Should -BeFalse   # nothing pre-minted
+        $providerInvoked | Should -BeFalse                                  # provider skipped entirely
+        ($r.Actions -join ' ') | Should -Match 'minted by Delinea at the MFA prompt'
+    }
+
+    It 'still ships the stored seed alongside the request spec as the flow-side last resort' {
+        $script:secret.Fields['TOTPSeed'] = 'JBSWY3DPEHPK3PXP'
+        $req = @{ url = 'https://app/api/jobs/j1/credential'; token = 't'; agentId = 'a1'; secretName = 'spanning' }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpRequest $req
+        $script:captured.params.otp | Should -Not -BeNullOrEmpty
+        $script:captured.params.totpSeed | Should -Be 'JBSWY3DPEHPK3PXP'
+        # no WARN nag when the preferred path is wired — the seed is just the fallback
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN using a stored TOTP seed'
     }
 }

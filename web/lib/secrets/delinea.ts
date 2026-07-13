@@ -191,6 +191,60 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
   }
 }
 
+// --- One-time password (TOTP) ------------------------------------------------------------------
+// Secret Server HOLDS the authenticator seed when "one-time password" is enabled on the secret /
+// template, and mints the current code on demand. So we never store a seed in a custom field and
+// never handle one: we ask for a 30-second code at the moment it's needed.
+//
+//   GET /api/v1/one-time-password-code/{secretId}
+//   -> { "0": { code: "123456", remainingSeconds: 11, durationSeconds: 30 } }
+//
+// Keyed by index (a secret can carry several OTP fields); we take the first.
+export type OneTimePassword = { ok: boolean; code?: string; remainingSeconds?: number; durationSeconds?: number; error?: string };
+
+// A code with 3s left is useless to a browser login that still has to reach the MFA box. When the
+// window is nearly over, WAIT for the next one so the caller always gets a near-full-length code.
+const OTP_MIN_SECONDS = 12;
+
+export async function getOneTimePasswordCode(
+  cfg: DelineaConfig,
+  externalId: string,
+  fetcher: Fetcher = defaultFetcher,
+  token?: string,
+  opts: { waitForFresh?: boolean; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<OneTimePassword> {
+  if (!secretIsSet(externalId)) return { ok: false, error: "not set" };
+  if (!delineaConfigured(cfg)) return { ok: false, error: "Delinea not configured (set DELINEA_* on the app)" };
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  try {
+    const accessToken = token ?? (await getDelineaToken(cfg, fetcher));
+    const fetchOnce = async (): Promise<OneTimePassword> => {
+      const res = await fetcher(`${cfg.baseUrl}/api/v1/one-time-password-code/${encodeURIComponent(externalId)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      // 404 = this secret has no one-time password configured. That's a SETUP answer, not an error:
+      // enable One-Time Password on the secret (paste the authenticator seed there once).
+      if (res.status === 404) return { ok: false, error: "no one-time password is configured on this Delinea secret — enable it on the secret (Security > One-Time Password) and paste the authenticator seed there" };
+      if (res.status === 401 || res.status === 403) return { ok: false, error: "access denied reading the one-time password — grant this account Read on the secret" };
+      if (!res.ok) return { ok: false, error: `Delinea ${res.status}` };
+      const body = (await res.json().catch(() => null)) as Record<string, { code?: string; remainingSeconds?: number; durationSeconds?: number }> | null;
+      const first = body && typeof body === "object" ? Object.values(body)[0] : null;
+      if (!first?.code) return { ok: false, error: "Delinea returned no one-time password code" };
+      return { ok: true, code: first.code, remainingSeconds: first.remainingSeconds, durationSeconds: first.durationSeconds };
+    };
+
+    let otp = await fetchOnce();
+    if (otp.ok && (opts.waitForFresh ?? true) && typeof otp.remainingSeconds === "number" && otp.remainingSeconds < OTP_MIN_SECONDS) {
+      await sleep((otp.remainingSeconds + 1) * 1000);
+      const fresh = await fetchOnce();
+      if (fresh.ok) otp = fresh;
+    }
+    return otp;
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // --- Folder access introspection (the Delinea self-check) ---------------------------------------
 // Proves the app's account can READ (and, for the write path, CREATE IN) a client's folder without
 // ever touching a secret value. Secret Server's folder-permission surface varies by version, so the

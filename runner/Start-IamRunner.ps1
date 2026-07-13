@@ -986,7 +986,13 @@ foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-rese
 # One executor serves both lanes (a force-sync can ride an onboard or an offboard case). Withheld from
 # agents that don't report the 'browser' capability (see $script:RunnerCapabilities below).
 $DISPATCH['spanning-force-sync'] = @{
-    Onboard = { param($job, $creds) Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] }
+    # OtpRequest is a REQUEST SPEC the browser flow itself calls when the MFA box is actually visible,
+    # so the 30-second Delinea-minted code can't go stale in transit (browser launch + portal load +
+    # the SSO hop routinely outlive a TOTP window). The seed stays in Delinea; we only ever hold a code.
+    Onboard = { param($job, $creds)
+        Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = 'spanning' }
+    }
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
 
@@ -1419,6 +1425,28 @@ function Invoke-CtgAdDiscovery {
     catch {
         Write-Warning "AD discovery failed: $($_.Exception.Message)"
     }
+}
+
+# Ask the app for a CURRENT one-time password for this job's secret. Delinea holds the authenticator
+# seed (one-time-password enabled on the secret) and mints the code; the SEED is never sent to us.
+# NOTE: this is the PRE-MINT variant — anything fetched here still has to survive until the consumer
+# uses it. Browser flows must NOT use this (browser launch + SSO outlive a 30s code): they get an
+# -OtpRequest spec and mint at the MFA prompt instead. Kept for non-browser MFA needs and tests.
+function Get-JobOtp {
+    param($JobId, $SecretName)
+    try {
+        $ref = Invoke-AppApi POST "/api/jobs/$JobId/credential" @{ agentId = $AgentId; secretName = $SecretName; otp = $true }
+    } catch {
+        Write-CtgLog "could not fetch a one-time password from the app: $($_.Exception.Message)" 'WARN'
+        return $null
+    }
+    $code = [string](Get-CtgProp $ref 'otpCode')
+    if (-not $code) {
+        $why = [string](Get-CtgProp $ref 'otpError')
+        if ($why) { Write-CtgLog "no one-time password available: $why" 'WARN' }
+        return $null
+    }
+    [pscustomobject]@{ Code = $code; RemainingSeconds = (Get-CtgProp $ref 'otpRemainingSeconds') }
 }
 
 # Field-name SYNONYMS for the two values every brokered credential reduces to.
