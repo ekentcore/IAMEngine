@@ -237,7 +237,9 @@ export async function getOneTimePasswordCode(
     if (otp.ok && (opts.waitForFresh ?? true) && typeof otp.remainingSeconds === "number" && otp.remainingSeconds < OTP_MIN_SECONDS) {
       await sleep((otp.remainingSeconds + 1) * 1000);
       const fresh = await fetchOnce();
-      if (fresh.ok) otp = fresh;
+      // The original code is now guaranteed dead (we just slept past its window) — a failed
+      // refetch must surface as a failure, never hand back the expired code as ok.
+      otp = fresh.ok ? fresh : { ok: false, error: `the current code was about to expire and refreshing it failed: ${fresh.error ?? "unknown error"}` };
     }
     return otp;
   } catch (e) {

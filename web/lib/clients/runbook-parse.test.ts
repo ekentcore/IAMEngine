@@ -125,3 +125,21 @@ test("a modeled-system bare line missing from a stale TOC still opens a section"
   assert.deepEqual(secs.map((s) => s.systemKey), ["m365", "zoom", "knowbe4"]);
   assert.deepEqual(secs[2].steps, ["Add the user to the DCG Users group."]);
 });
+
+test("a short colon-header added after a stale TOC still opens a section", () => {
+  const text = [
+    "Table of Contents",
+    "- Microsoft 365",
+    "",
+    "Microsoft 365",
+    "Create the new user:",   // long colon-line: stays a step inside the section
+    "- Add User",
+    "",
+    "Case Resolution:",        // short colon-line missing from the TOC: its own section
+    "- Close the ticket.",
+  ].join("\n");
+  const secs = parseRunbookText(text);
+  assert.deepEqual(secs.map((s) => s.title), ["Microsoft 365", "Case Resolution"]);
+  assert.match(secs[0].steps.join("\n"), /Create the new user/);
+  assert.equal(secs[1].systemKey, "case-resolution");
+});

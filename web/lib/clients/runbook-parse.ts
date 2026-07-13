@@ -41,9 +41,12 @@ function headerTitle(line: string, next: string | undefined, toc?: Set<string>):
   if (stepText(line)) return null; // it's a step, not a header
   if (toc?.size) {
     if (toc.has(normTitle(t))) return t.replace(/:$/, "").trim();
-    // TOCs go stale — a section added later (e.g. KnowBe4) may be missing from the list. A very
-    // short bare line naming a modeled system is still a header, not a step of the prior section.
-    if (t.split(/\s+/).length <= 4 && !/[.:]$/.test(t) && headerToSystemKey(t)) return t;
+    // TOCs go stale — a section added later may be missing from the list. Two escape hatches:
+    // a very short bare line naming a modeled system ("KnowBe4"), and a very short colon-line
+    // ("Case Resolution:") — long colon-lines stay steps ("Create the new user:" splits nothing).
+    const words = t.split(/\s+/).length;
+    if (words <= 4 && !/\.$/.test(t) && headerToSystemKey(t)) return t.replace(/:$/, "").trim();
+    if (t.endsWith(":") && words <= 3) return t.replace(/:$/, "").trim();
     return null;
   }
   const words = t.split(/\s+/).length;

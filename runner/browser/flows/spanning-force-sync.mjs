@@ -107,8 +107,11 @@ async function handleSecondFactor(page, shot, mfa, log) {
 
     // Next code to try, freshest source first. The pre-minted code is single-use for retry purposes
     // (if it was stale once it stays stale); minting and the seed can produce a new code each try.
+    // A RETRY must submit a DIFFERENT code: within one 30s TOTP window Delinea (and a local seed)
+    // return the byte-identical code that was just rejected, so wait out the window — up to ~30s in
+    // 8s hops — until the produced code actually changes.
     let preMintedUsed = false;
-    const nextCode = async () => {
+    const produce = async () => {
       if (mfa.otpReq) { const c = await mintOtp(mfa.otpReq, log); if (c) return { code: c, source: "delinea" }; }
       if (mfa.otpCode && !preMintedUsed) { preMintedUsed = true; return { code: String(mfa.otpCode), source: "delinea" }; }
       if (mfa.totpSeed) {
@@ -117,18 +120,30 @@ async function handleSecondFactor(page, shot, mfa, log) {
       }
       return null;
     };
+    const nextCode = async (rejected) => {
+      let next = await produce();
+      for (let hop = 0; hop < 4 && next?.code && rejected && next.code === rejected; hop++) {
+        log("fresh code is still the rejected one (same TOTP window) — waiting for the next window");
+        await page.waitForTimeout(8000);
+        next = await produce();
+      }
+      if (next?.code && rejected && next.code === rejected) return null; // window never rolled — nothing new to try
+      return next;
+    };
 
     // One retry: a code can legitimately die between mint and submit (window rollover) — get a
     // fresh one and try again before declaring the MFA setup broken.
     let lastSource = null;
+    let lastCode = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const next = await nextCode();
+      const next = await nextCode(lastCode);
       if (next?.err) return { bail: { ok: false, error: next.err, evidence: await shot("totp-error") } };
       if (!next) {
         if (attempt > 0) break; // had a code, it was rejected, and no source can mint another
         return { bail: { ok: false, error: "the login requires MFA but no code was available — enable One-Time Password on the Spanning secret in Delinea (paste the authenticator seed there once); the runner then fetches a fresh code at the MFA prompt. Or trigger the sync manually.", evidence: await shot("mfa-no-code") } };
       }
       lastSource = next.source;
+      lastCode = next.code;
       log(attempt === 0 ? "entering the one-time code" : "code rejected — retrying once with a fresh code"); // the code is never logged
       await otp.fill(next.code);
       await page.locator(SELECTORS.otpSubmit).first().click().catch(() => {});

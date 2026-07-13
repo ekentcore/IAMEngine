@@ -1234,7 +1234,16 @@ function Repair-CtgMissingModule {
                 Sort-Object Version -Descending | Select-Object -First 1
             if ($auth) { $reqVer = $auth.Version }
         }
-        if ($reqVer) { Install-Module $mod -RequiredVersion $reqVer -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+        if ($reqVer) {
+            # The pinned version may not exist for this submodule (older set; unlisted release) —
+            # fall back to the gallery latest rather than failing the self-heal permanently. The
+            # startup skew guard then aligns the rest of the set upward on the next boot.
+            try { Install-Module $mod -RequiredVersion $reqVer -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+            catch {
+                Write-Warning "self-heal: $mod has no version $reqVer — installing latest instead (the skew guard re-aligns at next start)"
+                Install-Module $mod -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop
+            }
+        }
         else { Install-Module $mod -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
         Import-Module $mod -Force -ErrorAction Stop
         return $mod

@@ -89,3 +89,19 @@ test("does not retry when the extract is in line with the heuristic", async () =
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete env[k]; else env[k] = v; }
   }
 });
+
+test("trusts the model for catalog keys with no name rules (mdm/avd/notify)", withAzure(
+  { sections: [{ title: "Intune enrollment", systemKey: "mdm", steps: ["Enroll the device in Intune."] }] },
+  async () => {
+    const out = await extractRunbookAI("Intune enrollment\n- Enroll", "onboard");
+    assert.equal(out![0].systemKey, "mdm");
+  }
+));
+
+test("keeps the model's key when the title matches a broader rule but the section names the key", withAzure(
+  { sections: [{ title: "Microsoft 365 / Entra app assignments", systemKey: "entra", steps: ["Assign enterprise apps in Entra."] }] },
+  async () => {
+    const out = await extractRunbookAI("Microsoft 365 / Entra app assignments\n- Assign", "onboard");
+    assert.equal(out![0].systemKey, "entra");
+  }
+));
