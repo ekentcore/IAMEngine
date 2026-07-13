@@ -1,7 +1,9 @@
 // POST /api/jobs/{id}/complete — { done: boolean }. Operator marks a MANUAL or SKIPPED step as
 // done (or unmarks it), so a case whose only remaining work is manual/checklist can reach
 // "completed". Marking sets the job succeeded (flagged manualCompletion so it can be undone);
-// unmarking reverts to its natural state (manual jobs -> manual, skipped api jobs -> skipped).
+// unmarking restores the step's recorded prior state (incl. a failed step's error text — steps
+// force-completed by the whole-case complete route land back on failed/pending, not "skipped"),
+// falling back to the mode's natural state for rows flagged before priorStatus existed.
 // Recomputes the case status afterward.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
@@ -9,6 +11,9 @@ import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
+import { manualCompletionFlip } from "@/lib/cases/sn-completion";
+
+const RESTORABLE = ["pending", "manual", "skipped", "failed"] as const;
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +25,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   const job = await db.job.findUnique({
     where: { id: params.id },
-    select: { id: true, mode: true, status: true, caseRequestId: true, result: true },
+    select: { id: true, mode: true, status: true, caseRequestId: true, result: true, error: true },
   });
   if (!job) return NextResponse.json({ error: "unknown job" }, { status: 404 });
 
@@ -30,20 +35,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     if (!["manual", "skipped"].includes(job.status)) {
       return NextResponse.json({ error: `only a manual or skipped step can be marked complete (this one is ${job.status})` }, { status: 409 });
     }
-    await db.job.update({
-      where: { id: job.id },
-      data: { status: "succeeded", result: { ...result, manualCompletion: true } as Prisma.InputJsonValue, error: null, finishedAt: new Date() },
-    });
+    await db.job.update({ where: { id: job.id }, data: manualCompletionFlip(job, new Date()) });
   } else {
     if (!result.manualCompletion) {
       return NextResponse.json({ error: "only a manually-completed step can be unmarked" }, { status: 409 });
     }
-    const revert = job.mode === "manual" ? "manual" : "skipped";
+    const revert = (RESTORABLE as readonly string[]).includes(result.priorStatus as string)
+      ? (result.priorStatus as (typeof RESTORABLE)[number])
+      : job.mode === "manual" ? "manual" : "skipped";
+    const priorError = typeof result.priorError === "string" ? result.priorError : null;
     const rest = { ...result };
     delete rest.manualCompletion;
+    delete rest.priorStatus;
+    delete rest.priorError;
     await db.job.update({
       where: { id: job.id },
-      data: { status: revert, result: Object.keys(rest).length ? (rest as Prisma.InputJsonValue) : Prisma.DbNull, finishedAt: null },
+      data: { status: revert, result: Object.keys(rest).length ? (rest as Prisma.InputJsonValue) : Prisma.DbNull, error: priorError, finishedAt: null },
     });
   }
 
