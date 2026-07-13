@@ -18,6 +18,10 @@ export type SnAccount = {
   // Account hierarchy: children inherit the parent's modeled onboarding when they have none.
   // SN's field is `account_parent` (NOT `parent`).
   account_parent?: SnFieldValue;
+  // The account's ServiceNow domain — display_value is the path ("TOP/Acme, Inc."), value the
+  // domain's sys_id. The client's KB articles carry the same domain; it is the only link between
+  // an account and its runbooks (see kb-discovery.ts).
+  sys_domain?: SnFieldValue;
 };
 
 export type SnListResponse<T> = { result: T[] };
