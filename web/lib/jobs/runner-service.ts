@@ -13,6 +13,7 @@ import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken, getOneTimePasswordCode } from "../secrets/delinea";
 import { checkFieldShape } from "../secrets/field-requirements";
+import { classifyDelineaError, credFailure, type CredFailure } from "./cred-failure";
 import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
@@ -686,8 +687,17 @@ export function makeRunnerService(db: PrismaClient) {
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
       if (job.status !== "dispatched" && job.status !== "running") throw new HttpError(409, `job is ${job.status}; credentials only brokered for in-progress jobs`);
+      // WHY a broker attempt failed, stamped on the Job so the run outcome can carry the structured
+      // reason (recordResult copies it) — remediation is then scriptable off `code` + secretName.
+      // Best-effort: stamping must never mask the real error. Cleared again on a clean broker.
+      const stamp = async (cf: CredFailure | null) => {
+        try { await db.job.update({ where: { id: jobId }, data: { credFailure: cf === null ? Prisma.DbNull : (cf as unknown as Prisma.InputJsonValue) } }); } catch { /* non-fatal */ }
+      };
       const allowed = req(job).secretNames ?? [];
-      if (!allowed.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
+      if (!allowed.includes(secretName)) {
+        await stamp(credFailure("not_authorized", secretName, `secret ${secretName} is not authorized for this job`));
+        throw new HttpError(403, `secret ${secretName} is not authorized for this job`);
+      }
       const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: job.case.clientId, name: secretName } }, select: { provider: true, externalId: true } });
       // Child accounts that run their parent's runbook also inherit the parent's Delinea references —
       // looked up only when the child has none of its own (the override/own ref take precedence).
@@ -697,8 +707,14 @@ export function makeRunnerService(db: PrismaClient) {
         : null;
       // A per-case override wins over the child's own ref, which wins over the parent's; all Delinea ids.
       const { externalId, source } = effectiveExternalId(secretName, job.case.secretOverrides, clientSecret?.externalId ?? null, parentSecret?.externalId ?? null);
-      if (source === "not_needed") throw new HttpError(409, `secret '${secretName}' is marked not needed (handled as a manual step) — no credential to broker`);
-      if (!externalId) throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client or override it on the case)`);
+      if (source === "not_needed") {
+        await stamp(credFailure("not_needed", secretName, "the secret is marked not-needed (manual step), yet the executor requested it"));
+        throw new HttpError(409, `secret '${secretName}' is marked not needed (handled as a manual step) — no credential to broker`);
+      }
+      if (!externalId) {
+        await stamp(credFailure("reference_missing", secretName, "no Delinea reference wired on the client, its parent, or a case override"));
+        throw new HttpError(404, `no usable secret reference '${secretName}' (set it on the client or override it on the case)`);
+      }
       // Overrides only replace the reference id, not the provider — every reference is a Delinea id.
       const secret = { provider: clientSecret?.provider ?? parentSecret?.provider ?? "delinea", externalId, source };
 
@@ -713,11 +729,17 @@ export function makeRunnerService(db: PrismaClient) {
       let note: string | undefined = "Delinea not configured on the app — set DELINEA_* so the app can resolve and push the credential to the runner";
       if (delineaConfigured(cfg)) {
         const resolved = await resolveSecretFields(cfg, secret.externalId);
-        if (!resolved.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${resolved.error ?? "unknown error"}`);
+        if (!resolved.ok) {
+          const why = resolved.error ?? "unknown error";
+          await stamp(credFailure(classifyDelineaError(why), secretName, why, { externalId: secret.externalId, source: secret.source }));
+          throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${why}`);
+        }
         brokered = true;
         label = resolved.label;
         fields = resolved.fields;
         note = undefined;
+      } else {
+        await stamp(credFailure("delinea_not_configured", secretName, "the app has no Delinea credentials — nothing can be resolved or pushed down"));
       }
       // One-time password, ON REQUEST only. Delinea holds the authenticator seed (one-time-password
       // enabled on the secret) and mints the current code; we never store or broker the SEED. The
@@ -733,6 +755,13 @@ export function makeRunnerService(db: PrismaClient) {
           if (otp.ok) { otpCode = otp.code; otpRemainingSeconds = otp.remainingSeconds; }
           else otpError = otp.error;
         }
+      }
+      if (withOtp && otpError) {
+        await stamp(credFailure("otp_unavailable", secretName, otpError, { externalId: secret.externalId, source: secret.source }));
+      } else if (brokered) {
+        // clean broker — clear any stale stamp from an earlier failed attempt so a later, unrelated
+        // job failure isn't mislabeled as a credential problem
+        await stamp(null);
       }
       // Audit records metadata ONLY — the field NAMES, never their values (and never the OTP).
       await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "job.credential", jobId, clientId: job.case.clientId, detail: { secretName, brokered, source: secret.source, fieldNames: fields ? Object.keys(fields) : [], ...(withOtp ? { otp: otpCode ? "minted" : `unavailable: ${otpError}` } : {}) } } });
@@ -1023,7 +1052,7 @@ export function makeRunnerService(db: PrismaClient) {
     // Record a job result, advance the case, audit, and queue a work note. The posting agent
     // must own the job; a repeat of the same terminal result is an idempotent no-op.
     async recordResult(jobId: string, agentId: string, input: ResultInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
-      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, singleRun: true, request: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true, restricted: true, notifyOverride: true } } } } } });
+      const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, assignedAgentId: true, singleRun: true, request: true, credFailure: true, case: { select: { clientId: true, serviceNowCaseNumber: true, action: true, client: { select: { name: true, restricted: true, notifyOverride: true } } } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
@@ -1168,6 +1197,11 @@ export function makeRunnerService(db: PrismaClient) {
             verdict, status, messages,
             error: input.error ?? null,
             validateOnly: Boolean(req(job).validateOnly),
+            // The broker's structured "why the credential failed" rides along on problem rows only —
+            // /runs and remediation scripts key off credFailure.code instead of parsing error text.
+            ...(job.credFailure && (verdict === "failed" || verdict === "warning")
+              ? { credFailure: job.credFailure as Prisma.InputJsonValue }
+              : {}),
             fingerprint,
             resolvedAt: prior?.resolvedAt ?? null,
             resolvedBy: prior?.resolvedBy ?? null,
