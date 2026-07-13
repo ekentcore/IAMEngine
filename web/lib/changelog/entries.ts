@@ -12,6 +12,37 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "spanning-otp-broker",
+    date: "2026-07-13",
+    title: "Spanning force-sync: Delinea-minted MFA codes (PR #24, runner 1.45.0)",
+    items: [
+      "The Spanning sync login now gets its MFA code minted by Delinea at the exact moment the prompt appears - no authenticator seed is ever stored or handled outside the vault",
+      "One automatic retry with a fresh code when a code expires mid-login",
+      "Legacy stored-seed secrets keep working as a fallback, with a nudge to enable One-Time Password on the Delinea secret",
+    ],
+  },
+  {
+    id: "runner-graph-skew-guard",
+    date: "2026-07-13",
+    title: "Runner: Microsoft.Graph version-skew self-repair (PR #30, runner 1.44.0)",
+    items: [
+      "Runners that died at startup with 'Assembly with same name is already loaded' (mixed Microsoft.Graph module versions) now realign themselves automatically before loading",
+      "Self-healed Graph module installs are pinned to the host's existing version instead of grabbing the newest - the drift source",
+      "The troubleshoot script flags a mixed Graph set with the exact fix",
+    ],
+  },
+  {
+    id: "kb-fetch-pipeline",
+    date: "2026-07-13",
+    title: "KB fetch: faithful steps + systems wired on save (PR #29)",
+    items: [
+      "Group and DL addresses in a KB now survive the AI parse (no more [user]@domain placeholders in runbook steps)",
+      "Saving a runbook creates any modeled systems the client is missing - a KB-sourced client is no longer left with steps but zero systems",
+      "New 'Sync systems from runbook' button on the client page to re-wire after a KB edit",
+      "Table-of-contents style KBs parse correctly without AI, and the AI extract retries when it drops sections",
+    ],
+  },
+  {
     id: "changelog-page",
     date: "2026-07-13",
     title: "Change log page + send to chat",
