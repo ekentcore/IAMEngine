@@ -46,6 +46,9 @@ function fakeDb(childRow: ReturnType<typeof child>, parentRow: ReturnType<typeof
         writes.skipDuplicates.push(a.skipDuplicates === true);
       },
     },
+    // clientForPlanning also reads the client's (and parent's) secrets to find the ones marked
+    // NOT_NEEDED — those systems plan as manual steps. These fixtures wire none.
+    secret: { findMany: async () => [] },
     $transaction: async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]),
   };
   return { db: db as unknown as PrismaClient, writes };

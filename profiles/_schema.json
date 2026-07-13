@@ -387,6 +387,7 @@
         "secrets":     { "type": "array", "items": { "type": "string" }, "description": "One or more keys into the top-level secrets map (1Password needs login + security key)." },
         "dependsOn":   { "type": "array", "items": { "type": "string" }, "default": [] },
         "stopOnError": { "type": "boolean", "default": false },
+        "runLast":     { "type": "boolean", "default": false, "description": "Planner hint: this system implicitly depends on every other active system in the case (e.g. the offboard notification email)." },
         "onboard":     { "$ref": "#/$defs/lane" },
         "offboard":    { "$ref": "#/$defs/lane" }
       },

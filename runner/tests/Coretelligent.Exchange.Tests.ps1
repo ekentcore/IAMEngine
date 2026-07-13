@@ -257,6 +257,35 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'no manager on the case'
     }
+
+    It "uses the intake's managerName (a NAME, not an address) when the directory link is gone — INC0859438" {
+        # The real failure: the AD offboard step had already CLEARED the manager link, so every
+        # directory lookup came back empty — while the case form named the manager all along.
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-User -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Manager = '' } }   # link cleared
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter -match 'Elizabeth McPhillips' } -MockWith {
+            [pscustomobject]@{ PrimarySmtpAddress = 'emcphillips@core.tech' }
+        }
+        $u = [pscustomobject]@{ UserPrincipalName = 'ahoule@core.tech'; managerName = 'Elizabeth McPhillips' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'emcphillips@core.tech' -and @($AccessRights) -contains 'FullAccess' }
+        ($r.Actions -join ' ') | Should -Match "resolved manager 'Elizabeth McPhillips' from the case -> emcphillips@core.tech"
+    }
+
+    It 'never guesses when a manager NAME matches several mailboxes' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-User -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Manager = '' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith {
+            @([pscustomobject]@{ PrimarySmtpAddress = 'jsmith@core.tech' }, [pscustomobject]@{ PrimarySmtpAddress = 'jsmith2@core.tech' })
+        }
+        $u = [pscustomobject]@{ UserPrincipalName = 'ahoule@core.tech'; managerName = 'John Smith' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match "names manager 'John Smith' but no single matching mailbox"
+    }
 }
 
 Describe 'Connect-CtgExchange' {

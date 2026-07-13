@@ -204,3 +204,33 @@ test("ad-consistency-check is onboard-only and needs AD + cloud", () => {
   const adOnly = [sys({ systemKey: "active-directory" }), sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] })];
   assert.equal(planCase(adOnly, "onboard", {}).some((j) => j.systemKey === "ad-consistency-check"), false);
 });
+
+test("a system whose every secret is 'not needed' plans as a manual step, not a failing api job", () => {
+  const systems = [
+    sys({ systemKey: "duo", secretNames: ["duo"], offboardWhen: "always" }),
+    sys({ systemKey: "zoom", secretNames: ["zoom"], offboardWhen: "always" }),
+  ];
+  const jobs = planCase(systems, "offboard", {}, undefined, new Set(["duo"]));
+  const duo = jobs.find((j) => j.systemKey === "duo")!;
+  const zoom = jobs.find((j) => j.systemKey === "zoom")!;
+  assert.equal(duo.mode, "manual", "no credential to broker → a human does it");
+  assert.equal(zoom.mode, "api", "a wired secret still runs automatically");
+});
+
+test("a 'not needed' step never gates the case on approval", () => {
+  const systems = [sys({ systemKey: "sentinelone", secretNames: ["sentinelone"], offboardWhen: "always", requiresApproval: true })];
+  const jobs = planCase(systems, "offboard", {}, undefined, new Set(["sentinelone"]));
+  assert.equal(jobs[0].mode, "manual");
+  assert.equal(jobs[0].requiresApproval, false, "doing the manual step IS the approval");
+});
+
+test("a system with a mix of wired and not-needed secrets still runs as api", () => {
+  const systems = [sys({ systemKey: "exchange", secretNames: ["exchange-onprem", "m365-admin"], offboardWhen: "always" })];
+  const jobs = planCase(systems, "offboard", {}, undefined, new Set(["exchange-onprem"]));
+  assert.equal(jobs[0].mode, "api", "one real credential is enough to automate");
+});
+
+test("a system with no secrets at all is unaffected by the not-needed rule", () => {
+  const systems = [sys({ systemKey: "case-resolution", mode: "api", secretNames: [], offboardWhen: "always" })];
+  assert.equal(planCase(systems, "offboard", {}, undefined, new Set(["duo"]))[0].mode, "api");
+});

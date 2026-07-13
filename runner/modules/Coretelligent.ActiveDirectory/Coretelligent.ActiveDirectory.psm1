@@ -355,11 +355,11 @@ function Invoke-CtgADOffboarding {
     # carry only the name). Exactly-one match is authoritative; 0/many -> stop with a clear note.
     $existing = $null
     if (-not [string]::IsNullOrWhiteSpace($sam)) {
-        $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection
+        $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Manager -ErrorAction SilentlyContinue @AdConnection
     }
     if (-not $existing -and $displayName) {
         $dnEsc = $displayName -replace "'", "''"   # escape quotes so "Sean O'Brien" can't break the AD filter
-        $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties MemberOf, DistinguishedName -ErrorAction SilentlyContinue @AdConnection)
+        $byName = @(Get-ADUser -Filter "DisplayName -eq '$dnEsc'" -Properties MemberOf, DistinguishedName, Manager -ErrorAction SilentlyContinue @AdConnection)
         if ($byName.Count -eq 1) {
             $existing = $byName[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName')
             $actions.Add("resolved offboard target by display name '$displayName' -> $sam")
@@ -488,9 +488,35 @@ function Invoke-CtgADOffboarding {
     }
 
     # 4. Remove manager --------------------------------------------------------
+    # Capture WHO the manager is BEFORE clearing the link. Two reasons: the run report should name the
+    # person (not just "cleared manager"), and the Exchange step grants that manager Full Access to the
+    # converted shared mailbox. Exchange normally runs first and reads the live link — but when it runs
+    # AFTER this step (a re-run, or a first attempt that failed) the link is already gone and the
+    # delegate is silently skipped. Returned as `Manager`, which the app hands to Exchange on claim.
+    $managerInfo = $null
+    $mgrDn = [string](Get-CtgProp $existing 'Manager')
+    if ($mgrDn) {
+        try {
+            $m = Get-ADUser -Identity $mgrDn -Properties DisplayName, EmailAddress, UserPrincipalName -ErrorAction Stop @AdConnection
+            $managerInfo = @{
+                Name              = [string]((Get-CtgProp $m 'DisplayName') ?? (Get-CtgProp $m 'Name'))
+                Email             = [string]((Get-CtgProp $m 'EmailAddress') ?? (Get-CtgProp $m 'UserPrincipalName'))
+                DistinguishedName = $mgrDn
+            }
+        }
+        catch {
+            # The DN is still worth reporting even if the manager object can't be read.
+            $managerInfo = @{ Name = $null; Email = $null; DistinguishedName = $mgrDn }
+        }
+    }
     if ($PSCmdlet.ShouldProcess($sam, "Clear manager")) {
         Set-ADUser -Identity $sam -Clear manager @AdConnection
-        $actions.Add("cleared manager")
+        $who =
+            if ($managerInfo -and $managerInfo.Name -and $managerInfo.Email) { ": $($managerInfo.Name) <$($managerInfo.Email)>" }
+            elseif ($managerInfo -and $managerInfo.Name) { ": $($managerInfo.Name)" }
+            elseif ($managerInfo) { ": $($managerInfo.DistinguishedName)" }
+            else { " (none set)" }
+        $actions.Add("cleared manager$who")
     }
 
     # 4b. Offboard attributes from the rules (config.offboardAttributes) — e.g. description. AFTER the
@@ -558,7 +584,11 @@ function Invoke-CtgADOffboarding {
 
     [pscustomobject]@{
         System='active-directory'; Status='ok'; Sam=$sam
-        Evidence=@{ Groups = $groupNames; Computer = $computerInfo; ProtectedGroups = @($protectedFound) }
+        # Manager: the link this step CLEARED. The app reads it off the result and hands it to the
+        # Exchange step (Full Access on the shared mailbox); it's evidence too, so the run report can
+        # name the person whose access was removed.
+        Manager=$managerInfo
+        Evidence=@{ Groups = $groupNames; Computer = $computerInfo; ProtectedGroups = @($protectedFound); Manager = $managerInfo }
         Actions=$actions.ToArray()
     }
 }
