@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchKbArticle } from "./kb";
+import { fetchKbArticle, htmlToText } from "./kb";
 
 const cfg = { instanceUrl: "https://x.example.com", username: "u", password: "p" } as never;
 const row = (text: string, opts: { latest?: string; state?: string }) => ({
@@ -43,4 +43,26 @@ test("fetchKbArticle falls back to published when no latest flag, else the first
 
 test("fetchKbArticle returns null when no rows", async () => {
   assert.equal(await fetchKbArticle(cfg, "KB0017271", fetcherReturning([])), null);
+});
+
+test("htmlToText joins an li bullet with content that lands on the following line", () => {
+  // ServiceNow nests blocks inside list items (<li>\n<p>text</p></li>) — decoded naively that
+  // leaves an orphan "- " line and the text below it, which the runbook parser turns into junk
+  // "-" steps (and the password redactor into a spurious [redacted]).
+  const html = "<ul><li>\n<p>Find out what mobile phone the user will receive.</p>\n</li><li>\n<p>If it is a spare, confirm assets.</p></li></ul>";
+  const t = htmlToText(html);
+  assert.match(t, /^- Find out what mobile phone/m);
+  assert.match(t, /^- If it is a spare/m);
+  assert.doesNotMatch(t, /^-[ \t]*$/m, "no orphan dash lines");
+});
+
+test("htmlToText does not glue two adjacent bullets together", () => {
+  const t = htmlToText("<ul><li></li>\n<li>real item</li></ul>");
+  assert.doesNotMatch(t, /- - /);
+});
+
+test("htmlToText drops inline style/script blocks entirely", () => {
+  const t = htmlToText("<style>body { color: red; }</style><h2>ServiceNow</h2><p>step</p><script>var x=1;</script>");
+  assert.doesNotMatch(t, /color: red|var x/);
+  assert.match(t, /ServiceNow/);
 });

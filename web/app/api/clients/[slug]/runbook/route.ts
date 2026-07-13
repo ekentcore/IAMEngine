@@ -67,5 +67,5 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
 
   const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined, kbArticle);
   if (!res) return NextResponse.json({ error: "client not found" }, { status: 404 });
-  return NextResponse.json({ count: res.count, sections: res.sections, usedAI: Boolean(aiSections) });
+  return NextResponse.json({ count: res.count, sections: res.sections, usedAI: Boolean(aiSections), createdSystems: res.createdSystems });
 }
