@@ -53,6 +53,21 @@ test("audience 'both' sends to both sides, de-duplicated when a pair shares one 
   assert.deepEqual(posts.map((p) => p.url).sort(), ["https://slack/default", "https://teams/shared"]);
 });
 
+test("audience 'both' with overlapping email lists emails each address exactly once", async () => {
+  const s = settings({
+    teams: { default: { enabled: false, webhookUrl: "" }, restricted: { enabled: false, webhookUrl: "" } },
+    slack: { default: { enabled: false, webhookUrl: "" }, restricted: { enabled: false, webhookUrl: "" } },
+    email: {
+      default: { enabled: true, recipients: ["team-dl@core.tech", "lead@core.tech"] },
+      restricted: { enabled: true, recipients: ["Team-DL@core.tech"] }, // overlap (case-insensitive)
+    },
+  });
+  // sendEmail short-circuits before any fetch when NOTIFY_GRAPH_* is unset, so inspect the results:
+  // the restricted side's only recipient was already emailed -> exactly ONE email task runs.
+  const results = await sendAnnouncement(s, "both", EVENT);
+  assert.equal(results.filter((r) => r.channel === "email").length, 1);
+});
+
 test("no configured destinations -> empty results, no requests", async () => {
   const s = normalizeSettings({ enabled: true, channels: {} });
   const results = await sendAnnouncement(s, "both", EVENT);

@@ -177,10 +177,11 @@ export async function sendAnnouncement(settings: NotificationSettings, audience:
       }
     }
     for (const recips of resolveEmailDests(ch.email, restricted)) {
-      const dedup = [...recips].sort().join(",").toLowerCase();
-      if (seenRecips.has(dedup)) continue;
-      seenRecips.add(dedup);
-      tasks.push(sendEmail(recips, e).then((r) => ({ channel: "email" as const, ...r })));
+      // Per-RECIPIENT dedup, not per-list: overlapping default/restricted lists must not
+      // double-email the shared addresses when the audience is "both".
+      const fresh = recips.filter((r) => !seenRecips.has(r.toLowerCase()));
+      fresh.forEach((r) => seenRecips.add(r.toLowerCase()));
+      if (fresh.length) tasks.push(sendEmail(fresh, e).then((r) => ({ channel: "email" as const, ...r })));
     }
   }
   return Promise.all(tasks);

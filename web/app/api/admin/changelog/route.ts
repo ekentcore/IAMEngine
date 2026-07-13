@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { ROLE_RANK } from "@/lib/auth/permissions";
+import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
@@ -17,6 +18,11 @@ const COMMENT_MAX = 2000;
 export async function POST(req: Request) {
   const g = await guard("settings.manage");
   if (g.res) return g.res;
+  // Sends post to REAL customer chat channels, so unlike read-only admin surfaces this endpoint
+  // refuses the auth-off synthetic system admin — a real signed-in operator is required.
+  if (g.user.system) {
+    return NextResponse.json({ error: "sign in required to send announcements" }, { status: 403 });
+  }
   if (ROLE_RANK[g.user.role] < ROLE_RANK.global_admin) {
     return NextResponse.json({ error: "global admin or above required" }, { status: 403 });
   }
@@ -40,12 +46,8 @@ export async function POST(req: Request) {
     detail,
   });
 
-  await db.auditLog.create({
-    data: {
-      actor: g.user.email ?? "ui",
-      action: "changelog.sent",
-      detail: { entryId: entry.id, audience, withComment: Boolean(comment), results },
-    },
-  });
+  // recordAudit swallows its own errors — the announcement already went out, so an audit blip must
+  // not 500 this response (the operator would re-send and double-post to the client chats).
+  await recordAudit("changelog.sent", { user: g.user, detail: { entryId: entry.id, audience, withComment: Boolean(comment), results } });
   return NextResponse.json({ results });
 }

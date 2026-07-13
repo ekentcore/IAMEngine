@@ -31,7 +31,9 @@ function SendPanel({ entry, onClose }: { entry: ChangelogEntry; onClose: () => v
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ entryId: entry.id, audience, comment: comment.trim() || undefined }),
       });
-      const data = (await res.json()) as { results?: ChannelResult[]; error?: string };
+      // Parse defensively BEFORE the ok-check: a 500/502 may be an HTML error page, and a JSON
+      // parse throw here would mask the real status with "Unexpected token <".
+      const data = (await res.json().catch(() => ({}))) as { results?: ChannelResult[]; error?: string };
       if (!res.ok) { setError(data.error ?? `HTTP ${res.status}`); return; }
       setResults(data.results ?? []);
     } catch (err) {
