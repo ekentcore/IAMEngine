@@ -155,6 +155,37 @@ export async function sendToChannels(settings: NotificationSettings, e: Notifica
   return Promise.all(tasks);
 }
 
+// Manual announcement (change-log "Send to chat"): fan out ONE message to the chosen side(s) of every
+// configured channel pair. audience "all" = each channel's default destination, "restricted" = its
+// restricted destination, "both" = both sides. Bypasses the master switch and event toggles (an
+// explicit operator action, like a test send) and ignores per-client overrides (announcements are
+// global). De-duped across sides so "both" can't double-post when a pair shares one webhook/list.
+export type AnnouncementAudience = "all" | "restricted" | "both";
+export async function sendAnnouncement(settings: NotificationSettings, audience: AnnouncementAudience, e: NotificationEvent): Promise<ChannelResult[]> {
+  const sides = audience === "both" ? [false, true] : [audience === "restricted"];
+  const ch = settings.channels;
+  const tasks: Promise<ChannelResult>[] = [];
+  const seenHooks = new Set<string>(); // keyed channel:url — the same URL reused on another channel still sends
+  const seenRecips = new Set<string>();
+  for (const restricted of sides) {
+    for (const key of ["teams", "slack", "zoom"] as const) {
+      for (const d of resolveWebhookDests(ch[key], restricted)) {
+        const dedup = `${key}:${d.webhookUrl}`;
+        if (seenHooks.has(dedup)) continue;
+        seenHooks.add(dedup);
+        tasks.push((key === "zoom" ? sendZoom(d.webhookUrl, d.token ?? "", e) : sendWebhook(d.webhookUrl, e)).then((r) => ({ channel: key, ...r })));
+      }
+    }
+    for (const recips of resolveEmailDests(ch.email, restricted)) {
+      const dedup = [...recips].sort().join(",").toLowerCase();
+      if (seenRecips.has(dedup)) continue;
+      seenRecips.add(dedup);
+      tasks.push(sendEmail(recips, e).then((r) => ({ channel: "email" as const, ...r })));
+    }
+  }
+  return Promise.all(tasks);
+}
+
 // Send a test to ONE destination (used by the per-destination "Test" buttons). Uses the values passed
 // from the form so an operator can verify before saving.
 export function sendTest(channel: NotifChannel, dest: { webhookUrl?: string; token?: string; recipients?: string[] }, e: NotificationEvent): Promise<SendResult> {

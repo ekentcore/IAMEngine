@@ -18,6 +18,7 @@ export const V2_ROUTES: Record<string, string> = {
   "/health/connections": "/health/connections/v2",
   "/settings": "/settings/v2",
   "/account": "/account/v2",
+  "/changelog": "/changelog/v2",
 };
 
 // reverse: v2 route -> canonical base.
