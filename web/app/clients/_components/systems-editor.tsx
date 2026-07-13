@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { CATALOG } from "@/lib/generator/system-map";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
-type Mode = "api" | "browser" | "manual";
+type Mode = "api" | "browser" | "manual" | "scim";
 type Row = {
   systemKey: string;
   mode: Mode;
@@ -27,7 +27,7 @@ const BACKBONES = [
   { v: "ad_standalone", label: "AD standalone" },
 ];
 const LANES: Lane[] = ["always", "on_request", "by_persona", "never"];
-const MODES: Mode[] = ["api", "browser", "manual"];
+const MODES: Mode[] = ["api", "browser", "manual", "scim"];
 // Color the lane selects so onboard/offboard participation is scannable at a glance: green = runs,
 // amber = only on request, grey = off. (Flat tints, no gradients — matches the host design system.)
 const LANE_STYLE: Record<Lane, CSSProperties> = {

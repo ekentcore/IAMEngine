@@ -9,7 +9,7 @@ import type { EditableSystem } from "@/lib/clients/types";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 const LANES = ["always", "on_request", "never", "by_persona"];
-const MODES = ["api", "browser", "manual"];
+const MODES = ["api", "browser", "manual", "scim"];
 
 // Coerce an untrusted object into a valid EditableSystem (or null to drop it).
 function sanitize(s: unknown): EditableSystem | null {

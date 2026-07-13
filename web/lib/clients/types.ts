@@ -34,7 +34,7 @@ export type ClientListItem = {
 // One system as edited in the UI (full lanes + config). Lane values are the DB enum form.
 export type EditableSystem = {
   systemKey: string;
-  mode: "api" | "browser" | "manual";
+  mode: "api" | "browser" | "manual" | "scim";
   onboardWhen: "always" | "on_request" | "never" | "by_persona";
   offboardWhen: "always" | "on_request" | "never" | "by_persona";
   dependsOn: string[];
