@@ -60,6 +60,21 @@ function snData(c: NormalizedSnClient) {
   };
 }
 
+// The secret references a client's jobs can actually broker: its own, plus the PARENT's for any
+// name it hasn't wired itself (the child's own always wins). Mirrors the dispatch-time fallback in
+// runner-service / case-secrets-repo, so readiness can't call a child "not set up" over credentials
+// the runner would have resolved from the parent.
+function brokerableSecrets(
+  byClient: Map<string, Map<string, string | null>>,
+  clientId: string,
+  parentId: string | null
+): Map<string, string | null> {
+  const own = byClient.get(clientId) ?? new Map<string, string | null>();
+  const fromParent = parentId ? byClient.get(parentId) : undefined;
+  if (!fromParent || fromParent.size === 0) return own;
+  return new Map([...fromParent, ...own]); // own entries overwrite the parent's
+}
+
 export function makeClientRepository(db: PrismaClient) {
   return {
     // `scope` (default unrestricted) limits the list to the operator's visible clients — see
@@ -101,9 +116,15 @@ export function makeClientRepository(db: PrismaClient) {
       // Readiness inputs, batched across all listed clients (no per-row queries): the client's wired
       // secret references + the latest connection-test outcome per system.
       const ids = rows.map((r) => r.id);
+      // A child's jobs broker the PARENT's secrets for any name it hasn't wired itself (see
+      // runner-service / case-secrets-repo). Pull the parents' secrets too — including parents that
+      // aren't in the listed rows (out of scope) — so readiness reflects what dispatch will actually
+      // resolve, instead of flagging a working child as "not set up".
+      const parentIds = [...new Set(rows.map((r) => r.parentId).filter((id): id is string => Boolean(id)))];
+      const secretIds = [...new Set([...ids, ...parentIds])];
       const [secretRows, testRows, setupRows] = ids.length
         ? await Promise.all([
-            db.secret.findMany({ where: { clientId: { in: ids } }, select: { clientId: true, name: true, externalId: true } }),
+            db.secret.findMany({ where: { clientId: { in: secretIds } }, select: { clientId: true, name: true, externalId: true } }),
             db.connectionTest.findMany({
               where: { clientId: { in: ids } },
               select: { clientId: true, systemKey: true, status: true, fieldsOk: true, rights: true, finishedAt: true },
@@ -175,7 +196,7 @@ export function makeClientRepository(db: PrismaClient) {
           systems: r.systems
             .filter((s) => s.mode === "api" && s.secretNames.length > 0 && (s.onboardWhen !== "never" || s.offboardWhen !== "never"))
             .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
-          secretExternalIds: secretsByClient.get(r.id) ?? new Map(),
+          secretExternalIds: brokerableSecrets(secretsByClient, r.id, r.parentId),
           testBySystem: testsByClient.get(r.id) ?? new Map(),
           setupBySystem: setupByClient.get(r.id),
           preflightBySystem: preflightByClient.get(r.id),
@@ -191,8 +212,11 @@ export function makeClientRepository(db: PrismaClient) {
         where: { slug },
         select: {
           id: true,
+          parentId: true,
           systems: { select: { systemKey: true, mode: true, onboardWhen: true, offboardWhen: true, secretNames: true } },
           secrets: { select: { name: true, externalId: true } },
+          // Same parent-secret fallback dispatch uses — see brokerableSecrets.
+          parent: { select: { secrets: { select: { name: true, externalId: true } } } },
         },
       });
       if (!c) return null;
@@ -215,7 +239,10 @@ export function makeClientRepository(db: PrismaClient) {
         systems: c.systems
           .filter((s) => s.mode === "api" && s.secretNames.length > 0 && (s.onboardWhen !== "never" || s.offboardWhen !== "never"))
           .map((s) => ({ systemKey: s.systemKey, secretNames: s.secretNames })),
-        secretExternalIds: new Map(c.secrets.map((s) => [s.name, s.externalId])),
+        secretExternalIds: new Map([
+          ...(c.parent?.secrets ?? []).map((s) => [s.name, s.externalId] as const),
+          ...c.secrets.map((s) => [s.name, s.externalId] as const), // the child's own win
+        ]),
         testBySystem,
         setupBySystem: new Map(setupRows.map((s) => [s.systemKey, { startedAt: s.startedAt, attestedAt: s.attestedAt }])),
         preflightBySystem,
@@ -354,8 +381,16 @@ export function makeClientRepository(db: PrismaClient) {
     // Materialize the parent's modeling onto the child — exactly what clientForPlanning inherits:
     // the ClientSystem rows plus identity/personas/globals/locations WHERE THE CHILD HAS NONE.
     // Used when breaking inheritance with "keep a copy" so the operator can then edit the steps
-    // that differ. Idempotent: systems the child already has (by systemKey) are left alone.
-    async copyParentModeling(slug: string): Promise<{ ok: true; copied: number } | { ok: false; reason: string }> {
+    // that differ.
+    //
+    // Only ever copies onto a child that has NO systems of its own — a child with its own systems
+    // never inherited anything (clientForPlanning only falls back when systems.length === 0), so
+    // merging the parent's extra systems in would silently add steps that run against the parent's
+    // tenant. `nothing_to_copy` is a soft outcome, not a failure: there's simply no modeling to
+    // carry over, and the caller still breaks the link.
+    async copyParentModeling(
+      slug: string
+    ): Promise<{ ok: true; copied: number } | { ok: false; code: "not_found" | "no_parent" | "has_own_systems" | "nothing_to_copy" }> {
       const c = await db.client.findUnique({
         where: { slug },
         select: {
@@ -363,8 +398,9 @@ export function makeClientRepository(db: PrismaClient) {
           systems: { select: { systemKey: true } },
         },
       });
-      if (!c) return { ok: false, reason: "client not found" };
-      if (!c.parentId) return { ok: false, reason: "client has no parent" };
+      if (!c) return { ok: false, code: "not_found" };
+      if (!c.parentId) return { ok: false, code: "no_parent" };
+      if (c.systems.length > 0) return { ok: false, code: "has_own_systems" };
       const p = await db.client.findUnique({
         where: { id: c.parentId },
         select: {
@@ -377,22 +413,21 @@ export function makeClientRepository(db: PrismaClient) {
           },
         },
       });
-      if (!p || p.systems.length === 0) return { ok: false, reason: "the parent has no modeled systems to copy" };
-      const have = new Set(c.systems.map((s) => s.systemKey));
-      const toCopy = p.systems.filter((s) => !have.has(s.systemKey));
+      if (!p || p.systems.length === 0) return { ok: false, code: "nothing_to_copy" };
       const identityData: Record<string, unknown> = {};
       for (const k of ["identity", "personas", "globals", "globalsOffboard", "locations"] as const) {
         if (c[k] == null && p[k] != null) identityData[k] = p[k] as Prisma.InputJsonValue;
       }
+      // skipDuplicates: a double-submitted copy would otherwise trip @@unique([clientId, systemKey])
+      // and 500 after the first one already landed.
       await db.$transaction([
-        ...(toCopy.length
-          ? [db.clientSystem.createMany({
-              data: toCopy.map((s) => ({ ...s, config: (s.config ?? Prisma.DbNull) as Prisma.InputJsonValue, clientId: c.id })),
-            })]
-          : []),
+        db.clientSystem.createMany({
+          data: p.systems.map((s) => ({ ...s, config: (s.config ?? Prisma.DbNull) as Prisma.InputJsonValue, clientId: c.id })),
+          skipDuplicates: true,
+        }),
         ...(Object.keys(identityData).length ? [db.client.update({ where: { id: c.id }, data: identityData })] : []),
       ]);
-      return { ok: true, copied: toCopy.length };
+      return { ok: true, copied: p.systems.length };
     },
     // Per-client notification override (per-channel object, or null to clear). Shape sanitized by the
     // API route via parseClientOverride before it lands here.

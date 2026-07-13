@@ -25,7 +25,11 @@ export default async function ConfigReviewPage() {
     db.client.findMany({
       where: { archivedAt: null, id: clientIdWhere(scope) },
       orderBy: { name: "asc" },
-      select: { id: true, slug: true, name: true, primaryDomain: true, emailDomain: true, identity: true, editedFields: true, parentId: true, inheritParentSystems: true },
+      select: {
+        id: true, slug: true, name: true, primaryDomain: true, emailDomain: true, identity: true,
+        editedFields: true, parentId: true, inheritParentSystems: true,
+        _count: { select: { systems: true } },
+      },
     }),
     db.runbookSection.findMany({ select: { clientId: true, action: true, systemKey: true, status: true, kbArticle: true } }),
   ]);
@@ -55,8 +59,10 @@ export default async function ConfigReviewPage() {
       systems: [...(r?.systems ?? [])].sort(),
       unmodeled: r?.unmodeled ?? 0,
       kbs: [...(r?.kbs ?? [])].sort(),
-      // A child that broke its parent link is on its own — its missing runbook is a real gap again.
-      hasParent: Boolean(c.parentId) && c.inheritParentSystems,
+      // "Covered elsewhere", i.e. a missing runbook here isn't a real gap: the client either still
+      // inherits a parent's modeling, or has modeled systems of its own (e.g. a child that broke the
+      // link keeping a copy — fully modeled, but with no RunbookSection rows of its own).
+      hasParent: (Boolean(c.parentId) && c.inheritParentSystems) || c._count.systems > 0,
     };
   });
 

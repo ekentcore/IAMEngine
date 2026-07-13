@@ -17,31 +17,34 @@ const PARENT_SYSTEMS = [
 function child(overrides: Record<string, unknown> = {}) {
   return {
     id: "child1", name: "Child", slug: "child", primaryDomain: "child.com",
-    emailDomain: null, emailDomainLocked: false, serviceNowSysId: null,
+    emailDomain: null, emailDomainLocked: false, serviceNowSysId: null, engineOptOut: false,
     identity: null, personas: null, globals: null, globalsOffboard: null, locations: null,
     systems: [] as unknown[], parentId: "parent1", inheritParentSystems: true,
     ...overrides,
   };
 }
 
-function parent() {
+function parent(systems: unknown[] = PARENT_SYSTEMS) {
   return {
     identity: { usernamePatterns: ["{first}@{domain}"] }, personas: null, globals: null,
-    globalsOffboard: null, locations: null, systems: PARENT_SYSTEMS,
+    globalsOffboard: null, locations: null, systems,
   };
 }
 
 // Fake db serving client.findUnique by slug (the child) or id (the parent), and recording writes.
-function fakeDb(childRow: ReturnType<typeof child>) {
-  const writes: { createMany: unknown[]; update: unknown[] } = { createMany: [], update: [] };
+function fakeDb(childRow: ReturnType<typeof child>, parentRow: ReturnType<typeof parent> = parent()) {
+  const writes: { createMany: unknown[]; update: unknown[]; skipDuplicates: boolean[] } = { createMany: [], update: [], skipDuplicates: [] };
   const db = {
     client: {
       findUnique: async (a: { where: { slug?: string; id?: string } }) =>
-        a.where.slug ? childRow : a.where.id === "parent1" ? parent() : null,
+        a.where.slug ? childRow : a.where.id === "parent1" ? parentRow : null,
       update: async (a: { data: unknown }) => { writes.update.push(a.data); },
     },
     clientSystem: {
-      createMany: async (a: { data: unknown[] }) => { writes.createMany.push(...a.data); },
+      createMany: async (a: { data: unknown[]; skipDuplicates?: boolean }) => {
+        writes.createMany.push(...a.data);
+        writes.skipDuplicates.push(a.skipDuplicates === true);
+      },
     },
     // clientForPlanning also reads the client's (and parent's) secrets to find the ones marked
     // NOT_NEEDED — those systems plan as manual steps. These fixtures wire none.
@@ -81,19 +84,31 @@ test("copyParentModeling copies the parent's systems + null modeling onto the ch
   assert.equal("personas" in data, false); // parent's personas is null — nothing to fill
 });
 
-test("copyParentModeling skips systems the child already has and keeps its own modeling", async () => {
-  const { db, writes } = fakeDb(child({
-    systems: [{ systemKey: "m365" }],
-    identity: { usernamePatterns: ["{f}{last}@{domain}"] },
-  }));
+test("copyParentModeling inserts with skipDuplicates so a double-submit can't 500", async () => {
+  const { db, writes } = fakeDb(child());
+  await makeClientRepository(db).copyParentModeling("child");
+  assert.deepEqual(writes.skipDuplicates, [true]);
+});
+
+// A child with its OWN systems never inherited anything, so copying the parent's in would add
+// steps that run against the parent's tenant. Refuse — the caller still breaks the link.
+test("copyParentModeling refuses to merge onto a child that already has its own systems", async () => {
+  const { db, writes } = fakeDb(child({ systems: [{ systemKey: "google" }] }));
   const r = await makeClientRepository(db).copyParentModeling("child");
-  assert.deepEqual(r, { ok: true, copied: 0 });
+  assert.deepEqual(r, { ok: false, code: "has_own_systems" });
   assert.equal(writes.createMany.length, 0);
-  assert.equal(writes.update.length, 0); // child's identity wins — nothing copied over it
+  assert.equal(writes.update.length, 0);
+});
+
+test("copyParentModeling reports nothing_to_copy when the parent has no systems", async () => {
+  const { db, writes } = fakeDb(child(), parent([]));
+  const r = await makeClientRepository(db).copyParentModeling("child");
+  assert.deepEqual(r, { ok: false, code: "nothing_to_copy" });
+  assert.equal(writes.createMany.length, 0);
 });
 
 test("copyParentModeling refuses when there is no parent", async () => {
   const { db } = fakeDb(child({ parentId: null }));
   const r = await makeClientRepository(db).copyParentModeling("child");
-  assert.deepEqual(r, { ok: false, reason: "client has no parent" });
+  assert.deepEqual(r, { ok: false, code: "no_parent" });
 });
