@@ -6,7 +6,7 @@ import { deriveIdentity } from "../servicenow/intake-mapper";
 import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
 import type { ResolveClient } from "../clients/email-domain";
-import { resolvePlannedConfigs } from "../profiles/plan-resolve";
+import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resolve";
 import { resolveUnknownsWithAI } from "./ai-resolve";
 
 export type PlanOutcome = {
@@ -62,7 +62,8 @@ export async function createAndPlanCase(
   }
 
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
-  const planned = resolvePlannedConfigs(client, payload, input.action, planCase(client.systems, input.action, payload));
+  const planned = resolvePlannedConfigs(client, payload, input.action,
+    planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action)));
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 

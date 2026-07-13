@@ -18,7 +18,7 @@ const SECTION_TITLE: Record<string, string> = {
 export const systemTitle = (key: string) => SECTION_TITLE[key] ?? key;
 const title = systemTitle;
 const laneText = (when: string) =>
-  when === "always" ? "Always" : when === "on_request" ? "On request" : "Not applicable";
+  when === "always" ? "Always" : when === "on_request" ? "On request" : when === "by_persona" ? "By persona" : "Not applicable";
 
 // Build per-system step lines for the chosen action, skipping "never" lanes.
 type Section = { key: string; name: string; mode: string; onboard: string; offboard: string; config: unknown };

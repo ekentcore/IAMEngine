@@ -11,7 +11,7 @@ const INTAKE_FIELDS = [
   "number", "short_description", "subcategory", "account", "company", "opened_by",
   "contact_time_zone", "u_new_contact", "u_new_contact_time_zone", "u_not_listed", "u_new_or_existing",
   // onboarding — person
-  "u_first", "u_last", "u_mi", "u_start_date", "u_employment_type", "u_other_employment_type",
+  "u_first", "u_last", "u_mi", "u_nickname", "u_start_date", "u_employment_type", "u_other_employment_type",
   "u_is_this_a_re_hire", "u_title", "u_department", "u_manager_name", "u_office_location",
   "u_personal_email", "u_personal_phone", "u_home_address", "u_is_their_primary_workspace_wfh",
   "u_will_this_individual_have_direct_reports", "u_who_are_direct_reports",

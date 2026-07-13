@@ -10,6 +10,22 @@ import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = { personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown };
 
+// System keys the selected persona pulls in — feeds planCase's by_persona lane gate. Onboard: the
+// persona's `systems` keys. Offboard: the UNION of `systems` + `offboardSystems`, so whatever a
+// persona granted at onboard gets cleaned up even without an explicit offboard fragment. Selection
+// goes through buildPlanContext, the same path as config resolution (and the persona-override hook),
+// so inclusion and config can never disagree about which persona applies.
+export function personaSystemKeys(client: PlanClient, payload: Record<string, unknown>, action: string): ReadonlySet<string> {
+  const personas = (client.personas ?? null) as Record<string, unknown> | null;
+  if (!personas) return new Set();
+  const { persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
+  if (!persona) return new Set();
+  const def = persona.def as { systems?: Record<string, unknown>; offboardSystems?: Record<string, unknown> };
+  const keys = Object.keys(def.systems ?? {});
+  if (action === "offboard") keys.push(...Object.keys(def.offboardSystems ?? {}));
+  return new Set(keys);
+}
+
 // Directory systems whose groups can be mirrored from a reference user (the runner resolves the
 // reference user's live memberOf at execution time and unions it in). AD/entra mirror on-prem +
 // synced groups; m365 mirrors the reference user's CLOUD-only Entra groups (cloud licensing groups,
