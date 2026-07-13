@@ -94,7 +94,10 @@ export function planCase(
   action: Action,
   payload: Record<string, unknown>,
   // System keys the selected persona pulls in — gates by_persona lanes only (see personaSystemKeys).
-  personaSystems?: ReadonlySet<string>
+  personaSystems?: ReadonlySet<string>,
+  // Secret names the client marked "not needed" (the NOT_NEEDED sentinel). A system whose every
+  // required secret is marked so is done by hand — planned as a manual step, not an api job.
+  notNeededSecrets?: ReadonlySet<string>
 ): PlannedJob[] {
   const active = systems.filter((s) => included(s, action, payload, personaSystems));
   // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
@@ -183,16 +186,23 @@ export function planCase(
     // reversible containment) so every offboard step carries a classification; onboard is unclassified.
     const intent: StepIntent | null = cfg?.intent?.[action] ?? (action === "offboard" ? "disable" : null);
     const destructive = intent === "destructive";
+    // "Not needed" secrets = the system has no credential to broker because a human does this step
+    // (the same rule readiness.ts calls notNeeded). Plan it as a MANUAL checklist item: left as an
+    // api job it would dispatch, fail at the credential broker (409 "marked not needed"), and take
+    // the case down with it. A real credential appearing later flips it straight back to api.
+    const noCredNeeded =
+      s.mode === "api" && s.secretNames.length > 0 && s.secretNames.every((n) => notNeededSecrets?.has(n) ?? false);
+    const mode: Mode = noCredNeeded ? "manual" : s.mode;
     return {
       systemKey: s.systemKey,
       sequence: i,
-      mode: s.mode,
+      mode,
       dependsOn: depsOf(s),
       intent,
       // Approval gates only auto-executing API steps. A manual/browser step is done by a human, so
       // the act of doing it IS the approval — it must never put the case in "needs approval".
       // A DESTRUCTIVE step ALWAYS requires approval (and evidence below) — it can't be turned off.
-      requiresApproval: s.mode === "api" ? (destructive || (ra ? Boolean(ra[action]) : s.requiresApproval)) : false,
+      requiresApproval: mode === "api" ? (destructive || (ra ? Boolean(ra[action]) : s.requiresApproval)) : false,
       // Destructive steps ALWAYS snapshot state first ("save the settings so we can redo it").
       captureEvidence: destructive || (ce ? Boolean(ce[action]) : s.captureEvidence),
       // SentinelOne's offboard resolves the user's machines from their Entra registered devices, so it

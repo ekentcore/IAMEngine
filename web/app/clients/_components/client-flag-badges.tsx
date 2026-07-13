@@ -6,12 +6,14 @@
 export function ClientFlagBadges({
   intakeSource,
   restricted,
+  engineOptOut,
   name,
   canRestrict,
   onPatch,
 }: {
   intakeSource: string;
   restricted: boolean;
+  engineOptOut: boolean;
   name: string;
   canRestrict: boolean;
   onPatch: (action: string, payload: Record<string, unknown>) => void;
@@ -30,6 +32,28 @@ export function ClientFlagBadges({
       >
         {intakeSource === "incident" ? "internal" : "external"}
       </span>
+      {/* "Do not use engine" — shown only when set (flip it on from the client detail page).
+          The intake sweep skips this client's ServiceNow cases entirely. */}
+      {engineOptOut && (
+        <>
+          {" "}
+          <span
+            className="badge"
+            role="button"
+            tabIndex={0}
+            title="Do not use engine: this client's ServiceNow cases are NOT imported (intake sweep skips them). Click to resume importing."
+            onClick={() => {
+              // Clearing this re-opens the client to the intake sweep — confirm, like the restricted
+              // badge does, so a misclick in a dense table can't silently start importing its cases.
+              if (!confirm(`Resume using the engine for ${name}? Its open ServiceNow tickets will be imported and planned on the next intake sweep.`)) return;
+              onPatch("set-engine-opt-out", { engineOptOut: false });
+            }}
+            style={{ cursor: "pointer", color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }}
+          >
+            ⛔ no engine
+          </span>
+        </>
+      )}
       {/* Restricted (internal-only) flag — SUPER ADMIN ONLY (the option is hidden from everyone
           else; the route enforces it server-side too). Restricting hides the client from every
           operator not granted it. */}

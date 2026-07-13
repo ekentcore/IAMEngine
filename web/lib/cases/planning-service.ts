@@ -17,6 +17,16 @@ export type PlanOutcome = {
   approvalCount: number;
 };
 
+// Thrown when a case is created for a client marked "do not use engine". Enforced HERE, at the one
+// layer every creation path funnels through (SN import, the intake sweep, and the "New case" form),
+// so no caller can plan a case for a client the engine is supposed to leave alone.
+export class EngineOptOutError extends Error {
+  constructor(public readonly clientSlug: string) {
+    super(`this client is marked "do not use engine" — the engine doesn't create cases for it`);
+    this.name = "EngineOptOutError";
+  }
+}
+
 // Derive the case's post-planning status from the planned jobs.
 export function deriveStatus(jobs: PlannedJob[]): CaseStatus {
   if (jobs.some((j) => j.requiresApproval)) return "needs_approval";
@@ -34,6 +44,7 @@ export async function createAndPlanCase(
 ): Promise<PlanOutcome> {
   const client = await repo.clientForPlanning(input.clientSlug);
   if (!client) throw new Error(`client not found: ${input.clientSlug}`);
+  if (client.engineOptOut) throw new EngineOptOutError(input.clientSlug);
 
   // For onboarding, derive the user's identity (UPN/SamAccountName/work email) from the client's
   // username pattern + EMAIL domain so the runner modules receive ready-to-use fields. Prefer the
@@ -63,7 +74,8 @@ export async function createAndPlanCase(
 
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
   const planned = resolvePlannedConfigs(client, payload, input.action,
-    planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action)));
+    planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
+      new Set(client.notNeededSecrets)));
   const status = deriveStatus(planned);
   const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
 

@@ -17,6 +17,11 @@ export type RunbookItemVM = {
   kbNum: string | null;
   code: string | null; // intended-automation PowerShell preview
   artifacts: Artifact[]; // email templates / linked files
+  // A system that RUNS in this lane but has no section in the KB doc (wired in the systems editor
+  // or a profile, e.g. a runbook that came from a script rather than an article). It executes on a
+  // real case, so the runbook must show it rather than pretend the doc is the whole procedure.
+  unlisted?: boolean;
+  when?: string | null; // non-"always" lane gate, e.g. "on request" / "by persona"
 };
 
 export function RunbookView({ items, slug }: { items: RunbookItemVM[]; slug: string }) {
@@ -72,10 +77,17 @@ function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; s
         <span className={`badge ${auto ? "automated" : "human"}`}>{badge}</span> {title}
         {emails.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· ✉ email</span>}
         {attachments.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· 📎 file</span>}
+        {it.when && <span className="note" style={{ marginLeft: 6 }}>· {it.when}</span>}
         {it.after.length > 0 && <span className="note" style={{ marginLeft: 6 }}>· after: {it.after.join(", ")}</span>}
+        {it.unlisted && <span className="note" style={{ marginLeft: 6 }}>· not in the KB doc</span>}
       </summary>
       <div style={{ margin: "0.4rem 0 0.6rem" }}>
-        {it.steps.length === 0 ? (
+        {it.unlisted ? (
+          <p className="note" style={{ marginLeft: "1rem" }}>
+            Modeled in the systems editor, not written up in the KB article — it still runs on every case.
+            Add a section to the runbook to document it.
+          </p>
+        ) : it.steps.length === 0 ? (
           <p className="note" style={{ marginLeft: "1rem" }}>(no step text — see the KB article)</p>
         ) : (
           it.steps.map((step, i) => {

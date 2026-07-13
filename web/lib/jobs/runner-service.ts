@@ -603,6 +603,29 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // Offboard manager hand-off: exchange grants the departing user's MANAGER Full Access to the
+      // converted shared mailbox (delegateManagerFullAccess). It normally runs first and reads the live
+      // directory link — but if it runs AFTER active-directory (a re-run, or a first attempt that
+      // failed), AD has already CLEARED that link and the delegate would be silently skipped. The AD
+      // step captures the manager it cleared; inject that address so exchange can still grant access.
+      const exchangeOffboardCaseIds = [
+        ...new Set(claimed.filter((j) => j.systemKey === "exchange" && j.case.action === "offboard").map((j) => j.caseRequestId)),
+      ];
+      const managerByCase = new Map<string, string>();
+      if (exchangeOffboardCaseIds.length > 0) {
+        const adJobs = await db.job.findMany({
+          where: { caseRequestId: { in: exchangeOffboardCaseIds }, systemKey: "active-directory", status: "succeeded" },
+          select: { caseRequestId: true, result: true },
+        });
+        for (const a of adJobs) {
+          // The runner emits PascalCase result keys (Manager.Email); tolerate lowercase too.
+          const res = (a.result ?? {}) as { Manager?: unknown; manager?: unknown };
+          const m = (res.Manager ?? res.manager) as { Email?: unknown; email?: unknown } | null;
+          const addr = m?.Email ?? m?.email;
+          if (typeof addr === "string" && addr.includes("@")) managerByCase.set(a.caseRequestId, addr);
+        }
+      }
+
       // AD consistency check (Design D, detect-only): inject the Entra object's anchor data (from the
       // m365 result) so the on-prem agent can compare it to the AD source anchor without cloud creds.
       const checkCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-consistency-check").map((j) => j.caseRequestId))];
@@ -657,11 +680,19 @@ export function makeRunnerService(db: PrismaClient) {
         if (PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey) && j.oneTimePassword) {
           config = { ...((config as Record<string, unknown> | null) ?? {}), newPassword: j.oneTimePassword };
         }
+        const casePayload = (j.case.payload ?? {}) as Record<string, unknown>;
+        // Only fill a manager the intake didn't already carry — an operator-supplied address wins.
+        const capturedManager =
+          j.systemKey === "exchange" && j.case.action === "offboard" && !casePayload.managerEmail
+            ? managerByCase.get(j.caseRequestId)
+            : undefined;
         const payload =
           j.systemKey === "ad-email-writeback"
-            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
+            ? { ...casePayload, writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
             : j.systemKey === "ad-consistency-check"
-            ? { ...((j.case.payload ?? {}) as Record<string, unknown>), cloudObject: cloudByCase.get(j.caseRequestId) ?? { immutableId: null, syncEnabled: null, userId: null } }
+            ? { ...casePayload, cloudObject: cloudByCase.get(j.caseRequestId) ?? { immutableId: null, syncEnabled: null, userId: null } }
+            : capturedManager
+            ? { ...casePayload, managerEmail: capturedManager }
             : j.case.payload;
         return {
           id: j.id,

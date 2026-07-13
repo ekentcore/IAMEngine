@@ -87,6 +87,8 @@ async function upsertSecretsAndSystems(clientId: string, p: any): Promise<void> 
         dependsOn: { onboard: s.onboard?.dependsOn, offboard: s.offboard?.dependsOn },
         requiresApproval: { onboard: Boolean(s.onboard?.requiresApproval), offboard: Boolean(s.offboard?.requiresApproval) },
         captureEvidence: { onboard: Boolean(s.onboard?.captureEvidence), offboard: Boolean(s.offboard?.captureEvidence) },
+        // planner hint (orchestrator): runLast systems implicitly depend on every other active system
+        ...(s.runLast ? { runLast: true } : {}),
       },
     };
     await prisma.clientSystem.upsert({

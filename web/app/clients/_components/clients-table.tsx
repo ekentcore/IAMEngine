@@ -280,6 +280,7 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 <ClientFlagBadges
                   intakeSource={c.intakeSource}
                   restricted={c.restricted}
+                  engineOptOut={c.engineOptOut}
                   name={c.name}
                   canRestrict={canRestrict}
                   onPatch={(action, payload) => saveCell(c.slug, action, payload)}
