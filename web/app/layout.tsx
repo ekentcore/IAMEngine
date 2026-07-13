@@ -12,7 +12,7 @@ import { FeatureRequestButton } from "./_components/feature-request-button";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { ImpersonationBanner } from "./_components/impersonation-banner";
 import { authEnabled, getActingContext } from "@/lib/auth/current-user";
-import { can } from "@/lib/auth/permissions";
+import { can, ROLE_RANK } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
 
@@ -60,12 +60,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
               showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
               showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
+              showChangelog={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.global_admin)}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
               <MobileNav
                 showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
                 showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
                 showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
+                showChangelog={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.global_admin)}
               />
               {(!authEnabled() || !!user) && <FeatureRequestButton />}
               <ThemeToggle dark={theme === "dark"} />

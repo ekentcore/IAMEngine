@@ -49,6 +49,32 @@ export async function setAgentEnabled(id: string, enabled: boolean) {
   }
 }
 
+// Rename an agent / re-point a client-network agent at its client. Also the recovery path for an
+// agent row recreated after data loss: the runner keeps polling with its baked-in id, so fixing
+// the row here re-links it — no reinstall on the host.
+export async function updateAgentIdentity(id: string, input: { name: string; clientSlug: string | null }) {
+  try {
+    await requirePermission("agent.manage");
+    const name = input.name.trim();
+    if (!name) return { ok: false as const, error: "name is required" };
+    const agent = await db.agent.findUnique({ where: { id }, select: { scope: true } });
+    if (!agent) return { ok: false as const, error: "unknown agent" };
+    let clientId: string | null = null;
+    if (agent.scope === "client_network") {
+      const slug = input.clientSlug?.trim() || null;
+      if (!slug) return { ok: false as const, error: "pick a client for a client-network runner" };
+      const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
+      if (!client) return { ok: false as const, error: "unknown client" };
+      clientId = client.id;
+    }
+    await db.agent.update({ where: { id }, data: { name, clientId } });
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
 async function agentOp(fn: () => Promise<unknown>) {
   try {
     await requirePermission("agent.manage");

@@ -16,7 +16,7 @@
 // repeats until the system recovers. Manual tests update the snapshot but never notify (the
 // operator is watching the panel).
 import type { PrismaClient } from "@prisma/client";
-import { getAppSetting, setAppSetting } from "../settings";
+import { claimAppSetting, getAppSetting, setAppSetting } from "../settings";
 import { fireNotification } from "../notifications/sender";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings, parseClientOverride } from "../notifications/types";
 
@@ -109,7 +109,7 @@ export async function sweepConnTests(
   const claimed: ConnSweepSetting = inProgress
     ? s
     : { ...s, lastStartedAt: now().toISOString(), cursorClientId: "" };
-  const won = await claimSetting(db, raw, claimed);
+  const won = await claimAppSetting(db, CONN_SWEEP_KEY, raw, claimed);
   if (!won) return;
 
   // One batch of clients per tick, resuming from the cursor.
@@ -147,30 +147,6 @@ export async function sweepConnTests(
   };
   await setAppSetting(db, CONN_SWEEP_KEY, next);
   await flushConnNotifications(db, now()).catch(() => {});
-}
-
-// Conditional claim: update the setting row only if it still holds the value we read. AppSetting
-// stores JSON, so "still equals what we read" is checked by re-reading inside a transaction.
-async function claimSetting(db: PrismaClient, expected: unknown, next: ConnSweepSetting): Promise<boolean> {
-  try {
-    return await db.$transaction(async (tx) => {
-      const row = await tx.appSetting.findUnique({ where: { key: CONN_SWEEP_KEY }, select: { value: true } });
-      // AppSetting.value is JSON-as-TEXT (see lib/settings.ts). Parse it before comparing, or we'd
-      // stringify a raw string on one side and an object on the other — they'd never match and the
-      // claim would always fail (the sweep would never run).
-      let current: unknown = null;
-      if (row) { try { current = JSON.parse(row.value); } catch { current = null; } }
-      if (JSON.stringify(current) !== JSON.stringify(expected ?? null)) return false; // someone else moved it
-      await tx.appSetting.upsert({
-        where: { key: CONN_SWEEP_KEY },
-        update: { value: next as never },
-        create: { key: CONN_SWEEP_KEY, value: next as never },
-      });
-      return true;
-    });
-  } catch {
-    return false;
-  }
 }
 
 // Flush pending new-failure notifications (individual vs digest) and credential-expiry alerts.

@@ -15,6 +15,7 @@ import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDeline
 import { checkFieldShape } from "../secrets/field-requirements";
 import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
+import { sweepDbBackup } from "./db-backup";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
@@ -258,6 +259,9 @@ export function makeRunnerService(db: PrismaClient) {
       // durable AppSetting throttle, one client batch per tick). Reuses the operator enqueue path.
       const svc = this;
       void sweepConnTests(db, { enqueueClient: (slug) => svc.requestConnectionTests(slug) }).catch(() => {});
+      // Same pulse: the nightly pg_dump database backup (default ON; durable AppSetting throttle,
+      // one run per night after the configured local hour). See lib/jobs/db-backup.ts.
+      void sweepDbBackup(db).catch(() => {});
       return { ok: true, enabled: agent.enabled, update, restart, discover };
     },
 

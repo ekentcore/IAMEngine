@@ -103,6 +103,14 @@ const HEADER_RULES: Array<[RegExp, string]> = [
   [/logic ?monitor/, "logicmonitor"],
 ];
 
+// Does this text mention the given system by ITS OWN name rules? Used to reject an LLM section
+// mapping when neither the title nor the steps ever name the product (a near-miss hallucination,
+// e.g. a Dashlane section mapped to "1password").
+export function textMentionsSystem(key: string, text: string): boolean {
+  const s = text.toLowerCase();
+  return HEADER_RULES.some(([re, k]) => k === key && re.test(s));
+}
+
 // Map a raw runbook header to a system key, or null if it isn't a modeled system.
 export function headerToSystemKey(header: string): string | null {
   const s = header.toLowerCase().replace(/^\s*\d+[.)]\s*/, "").trim();

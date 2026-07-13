@@ -25,8 +25,10 @@ test("templateEnvKey normalizes a secret name to an env key", () => {
 
 test("defaultFieldMap seeds label -> slug from the field requirements", () => {
   const m = defaultFieldMap("m365-admin");
-  assert.equal(m["admin username"], "username");
-  assert.equal(m["admin password"], "password");
+  // The labels name BOTH spellings of the app-registration credential (Delinea's two templates call
+  // the same pair Username/Password and appID/Secret); the slug is still the canonical first synonym.
+  assert.equal(m["admin username / app id"], "username");
+  assert.equal(m["admin password / client secret"], "password");
   assert.equal(m["tenant id / domain"], "tenantid");
   // Unknown secret -> empty map (no rule, no warning).
   assert.deepEqual(defaultFieldMap("nope"), {});
@@ -40,7 +42,7 @@ test("templateFor reads a per-key env id and merges the default field map", () =
   const t = templateFor("m365-admin", { DELINEA_TEMPLATE_M365_ADMIN: "6001" });
   assert.ok(t);
   assert.equal(t!.templateId, 6001);
-  assert.equal(t!.fieldMap["admin username"], "username");
+  assert.equal(t!.fieldMap["admin username / app id"], "username");
 });
 
 test("templateFor reads DELINEA_TEMPLATE_MAP (bare id and object form) and applies fieldMap overrides", () => {

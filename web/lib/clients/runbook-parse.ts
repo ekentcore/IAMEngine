@@ -25,18 +25,49 @@ function stepText(line: string): { indent: number; text: string } | null {
   return { indent: Math.floor(m[1].length / 2), text: m[2] };
 }
 
+const normTitle = (s: string) => s.trim().replace(/:$/, "").toLowerCase();
+
 // A header is markdown (#), bold (**…**), a short line ending with ":", or a short non-step line
 // immediately followed by a step (so "Active Directory\n- create user" treats the first as a header).
-function headerTitle(line: string, next: string | undefined): string | null {
+// When the document declared its sections up front (a Table of Contents — see scanToc), that list is
+// authoritative: bare lines matching a TOC entry are the ONLY non-markdown headers, so a section
+// header followed by prose ("Mimecast\n\nLogin to the console…") is recognized, and short
+// colon-lines inside a section ("Create the new user:") stay steps instead of splitting it.
+function headerTitle(line: string, next: string | undefined, toc?: Set<string>): string | null {
   const t = line.trim();
   if (!t) return null;
   let m = MD_HEADER_RE.exec(t) ?? BOLD_HEADER_RE.exec(t);
   if (m) return m[1].replace(/:$/, "").trim();
   if (stepText(line)) return null; // it's a step, not a header
+  if (toc?.size) {
+    if (toc.has(normTitle(t))) return t.replace(/:$/, "").trim();
+    // TOCs go stale — a section added later (e.g. KnowBe4) may be missing from the list. A very
+    // short bare line naming a modeled system is still a header, not a step of the prior section.
+    if (t.split(/\s+/).length <= 4 && !/[.:]$/.test(t) && headerToSystemKey(t)) return t;
+    return null;
+  }
   const words = t.split(/\s+/).length;
   if (t.endsWith(":") && words <= 10) return t.replace(/:$/, "").trim();
   if (words <= 8 && next !== undefined && stepText(next)) return t; // bare title before a bullet
   return null;
+}
+
+// Find a "Table of Contents" bullet list (the standard ServiceNow KB opener): its entries name the
+// document's real sections. Returns the entry titles (normalized) and the line range of the whole
+// TOC block so the parser can skip it — the TOC itself is navigation, not a section.
+function scanToc(lines: string[]): { titles: Set<string>; start: number; end: number } | null {
+  const at = lines.findIndex((l) => /^table of contents:?$/i.test(l.trim()));
+  if (at === -1) return null;
+  const titles = new Set<string>();
+  let end = at + 1;
+  for (let j = at + 1; j < lines.length; j++) {
+    if (!lines[j].trim()) continue; // blank lines inside the list are fine
+    const st = stepText(lines[j]);
+    if (!st) break; // first non-bullet line ends the TOC
+    titles.add(normTitle(st.text));
+    end = j + 1;
+  }
+  return titles.size ? { titles, start: at, end } : null;
 }
 
 // Guess whether a KB article is an onboarding or offboarding runbook, so the editor can auto-pick
@@ -60,6 +91,7 @@ export function detectKbAction(title: string, text: string): "onboard" | "offboa
 
 export function parseRunbookText(text: string): ParsedSection[] {
   const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
+  const toc = scanToc(lines);
   const sections: ParsedSection[] = [];
   let cur: ParsedSection | null = null;
   const open = (title: string) => {
@@ -69,9 +101,10 @@ export function parseRunbookText(text: string): ParsedSection[] {
   };
 
   for (let i = 0; i < lines.length; i++) {
+    if (toc && i >= toc.start && i < toc.end) continue; // the TOC block is navigation, not content
     const line = lines[i];
     if (!line.trim()) continue;
-    const title = headerTitle(line, lines.slice(i + 1).find((l) => l.trim() !== ""));
+    const title = headerTitle(line, lines.slice(i + 1).find((l) => l.trim() !== ""), toc?.titles);
     if (title) { open(title); continue; }
     const step = stepText(line);
     const text = step ? "  ".repeat(step.indent) + step.text : line.trim(); // prose line → a step

@@ -17,13 +17,14 @@ const ITEMS: ReadonlyArray<readonly [string, string]> = [
   ["/health", "Health"],
 ];
 
-export function MobileNav({ showUsers = false, showAudit = false, showSettings = false }: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean }) {
+export function MobileNav({ showUsers = false, showAudit = false, showSettings = false, showChangelog = false }: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean }) {
   const [open, setOpen] = useState(false);
   const path = usePathname() ?? "";
   const items: ReadonlyArray<readonly [string, string]> = [
     ...ITEMS,
     ...(showAudit ? ([["/audit", "Audit"]] as const) : []),
     ...(showUsers ? ([["/users", "Users"]] as const) : []),
+    ...(showChangelog ? ([["/changelog", "Change log"]] as const) : []),
     ...(showSettings ? ([["/settings", "Settings"]] as const) : []),
   ];
   return (
