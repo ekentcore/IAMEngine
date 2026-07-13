@@ -66,3 +66,45 @@ test("saveRunbook never touches existing rows", async () => {
   assert.deepEqual(res!.createdSystems, []);
   assert.equal(created.length, 0);
 });
+
+test("syncSystemsFromRunbook wires systems the saved runbook references but the client lacks", async () => {
+  const { syncSystemsFromRunbook } = await import("./runbook-repo");
+  const created: Array<Record<string, unknown>> = [];
+  const tx = {
+    clientSystem: {
+      findMany: async () => [{ systemKey: "m365" }],
+      create: async ({ data }: { data: Record<string, unknown> }) => { created.push(data); return data; },
+    },
+    systemCatalog: { findMany: async ({ where }: { where: { key: { in: string[] } } }) => where.key.in.map((k) => ({ key: k })) },
+  };
+  const db = {
+    client: { findUnique: async () => ({ id: "c1" }) },
+    runbookSection: {
+      // onboard names m365+mimecast, offboard names exchange — union minus existing m365
+      findMany: async () => [{ systemKey: "m365" }, { systemKey: "mimecast" }, { systemKey: "exchange" }],
+    },
+    $transaction: async (fn: (t: typeof tx) => Promise<string[]>) => fn(tx),
+    auditLog: { create: async () => ({}) },
+  } as never;
+  const res = await syncSystemsFromRunbook(db, "core1269");
+  assert.deepEqual(res!.createdSystems, ["mimecast", "exchange"]);
+  assert.equal(created.length, 2);
+});
+
+test("syncSystemsFromRunbook is a no-op when systems already match", async () => {
+  const { syncSystemsFromRunbook } = await import("./runbook-repo");
+  let audits = 0;
+  const tx = {
+    clientSystem: { findMany: async () => [{ systemKey: "m365" }], create: async () => { throw new Error("must not create"); } },
+    systemCatalog: { findMany: async ({ where }: { where: { key: { in: string[] } } }) => where.key.in.map((k) => ({ key: k })) },
+  };
+  const db = {
+    client: { findUnique: async () => ({ id: "c1" }) },
+    runbookSection: { findMany: async () => [{ systemKey: "m365" }] },
+    $transaction: async (fn: (t: typeof tx) => Promise<string[]>) => fn(tx),
+    auditLog: { create: async () => { audits++; return {}; } },
+  } as never;
+  const res = await syncSystemsFromRunbook(db, "x");
+  assert.deepEqual(res!.createdSystems, []);
+  assert.equal(audits, 0, "no audit noise for a no-op");
+});

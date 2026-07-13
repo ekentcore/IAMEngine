@@ -7,6 +7,70 @@ import { CATALOG } from "../generator/system-map";
 const laneToDb = (l: string | null): Lifecycle =>
   l === "always" ? "always" : l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : "never";
 
+// The transaction-scoped subset of PrismaClient the system sync touches (also satisfied by tx).
+type SystemsDb = {
+  clientSystem: {
+    findMany(args: { where: { clientId: string }; select: { systemKey: true } }): Promise<{ systemKey: string }[]>;
+    create(args: { data: Record<string, unknown> }): Promise<unknown>;
+  };
+  systemCatalog: {
+    findMany(args: { where: { key: { in: string[] } }; select: { key: true } }): Promise<{ key: string }[]>;
+  };
+};
+
+// Create a ClientSystem row (catalog defaults) for each wanted key the client doesn't have yet.
+// Existing rows are never modified or removed: the runbook names systems; the systems editor stays
+// authoritative for lanes/config/secrets. Returns the keys actually created.
+export async function createMissingSystems(tx: SystemsDb, clientId: string, wantedKeys: string[]): Promise<string[]> {
+  const wanted = [...new Set(wantedKeys.filter((k) => CATALOG[k]))];
+  if (!wanted.length) return [];
+  const have = new Set((await tx.clientSystem.findMany({ where: { clientId }, select: { systemKey: true } })).map((r) => r.systemKey));
+  // guard against catalog drift: ClientSystem.systemKey is an FK to SystemCatalog — one unknown
+  // key must not roll back the whole save
+  const inCatalog = new Set(
+    (await tx.systemCatalog.findMany({ where: { key: { in: wanted } }, select: { key: true } })).map((r) => r.key)
+  );
+  const missing = wanted.filter((k) => !have.has(k) && inCatalog.has(k));
+  const willHave = new Set([...have, ...missing]);
+  for (const key of missing) {
+    const c = CATALOG[key];
+    await tx.clientSystem.create({
+      data: {
+        clientId,
+        systemKey: key,
+        mode: c.mode,
+        onboardWhen: laneToDb(c.onboard),
+        offboardWhen: laneToDb(c.offboard),
+        // only deps the client will actually have — a dep on an absent system stalls planning
+        dependsOn: (c.dependsOn ?? []).filter((d) => willHave.has(d)),
+        secretNames: c.secret ? [c.secret] : [],
+      },
+    });
+  }
+  return missing;
+}
+
+// On-demand re-sync for the client page's "Sync systems from runbook" button: wire any modeled
+// system the SAVED runbook (either action) references but the client lacks. Same non-destructive
+// semantics as the save-time sync.
+export async function syncSystemsFromRunbook(db: PrismaClient, slug: string): Promise<{ createdSystems: string[] } | null> {
+  const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
+  if (!client) return null;
+  const sections = await db.runbookSection.findMany({
+    where: { clientId: client.id, NOT: { systemKey: null } },
+    select: { systemKey: true },
+  });
+  const createdSystems = await db.$transaction((tx) =>
+    createMissingSystems(tx, client.id, sections.map((s) => s.systemKey!).filter(Boolean))
+  );
+  if (createdSystems.length) {
+    await db.auditLog.create({
+      data: { actor: "ui", action: "client.systems.sync_from_runbook", clientId: client.id, detail: { createdSystems } },
+    });
+  }
+  return { createdSystems };
+}
+
 export async function saveRunbook(
   db: PrismaClient,
   slug: string,
@@ -46,37 +110,10 @@ export async function saveRunbook(
     // Keep the editor's promise ("Save to update the runbook + systems"): a section mapped to a
     // modeled system the client doesn't have yet gets a ClientSystem row with catalog defaults —
     // a KB-sourced client (no seed profile) is otherwise left with a runbook but zero systems,
-    // and its cases plan no steps. Existing rows are never modified or removed here: the runbook
-    // names systems; the systems editor stays authoritative for lanes/config/secrets.
-    const wanted = [...new Set(sections.map((s) => s.systemKey).filter((k): k is string => Boolean(k && CATALOG[k])))];
-    if (wanted.length) {
-      const have = new Set(
-        (await tx.clientSystem.findMany({ where: { clientId: client.id }, select: { systemKey: true } })).map((r) => r.systemKey)
-      );
-      // guard against catalog drift: ClientSystem.systemKey is an FK to SystemCatalog — one
-      // unknown key must not roll back the whole save
-      const inCatalog = new Set(
-        (await tx.systemCatalog.findMany({ where: { key: { in: wanted } }, select: { key: true } })).map((r) => r.key)
-      );
-      const missing = wanted.filter((k) => !have.has(k) && inCatalog.has(k));
-      const willHave = new Set([...have, ...missing]);
-      for (const key of missing) {
-        const c = CATALOG[key];
-        await tx.clientSystem.create({
-          data: {
-            clientId: client.id,
-            systemKey: key,
-            mode: c.mode,
-            onboardWhen: laneToDb(c.onboard),
-            offboardWhen: laneToDb(c.offboard),
-            // only deps the client will actually have — a dep on an absent system stalls planning
-            dependsOn: (c.dependsOn ?? []).filter((d) => willHave.has(d)),
-            secretNames: c.secret ? [c.secret] : [],
-          },
-        });
-        createdSystems.push(key);
-      }
-    }
+    // and its cases plan no steps.
+    createdSystems.push(
+      ...(await createMissingSystems(tx, client.id, sections.map((s) => s.systemKey).filter((k): k is string => Boolean(k))))
+    );
   });
   await db.auditLog.create({
     data: {
