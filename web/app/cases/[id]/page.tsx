@@ -15,6 +15,7 @@ import { PlaybookView } from "../_components/playbook-view";
 import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
 import { ReplanButton } from "../_components/replan-button";
+import { CaseDomainSelect } from "../_components/case-domain-select";
 import { RescanButton } from "../_components/rescan-button";
 import { RevealPasswordButton } from "../_components/reveal-password-button";
 import { HardMatchButton } from "../_components/hard-match-button";
@@ -90,6 +91,21 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // The case's effective date string — the ScheduleButton computes its suggested time from this in
   // the BROWSER (so "08:00" / "+5 min" land in the operator's timezone, not the server's).
   const effectiveDate = caseEffectiveDate(c.action, c.payload, c.subject);
+
+  // Multi-domain clients: the domains this case may onboard under + the persisted per-case pick.
+  const domainRow = c.action === "onboard"
+    ? await db.caseRequest.findUnique({
+        where: { id: c.id },
+        select: { emailDomainOverride: true, client: { select: { domains: true, emailDomain: true, primaryDomain: true } } },
+      })
+    : null;
+  const domainInfo = domainRow
+    ? {
+        options: [...new Set([...(domainRow.client.domains ?? []), domainRow.client.emailDomain, domainRow.client.primaryDomain].filter((d): d is string => Boolean(d)).map((d) => d.toLowerCase()))],
+        defaultDomain: (domainRow.client.emailDomain ?? domainRow.client.primaryDomain ?? null)?.toLowerCase() ?? null,
+        override: domainRow.emailDomainOverride,
+      }
+    : null;
   // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
   // has been dispatched yet → offer the operator-confirmed "Link" action.
   const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
@@ -118,6 +134,15 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             <ScheduleButton caseId={c.id} action={c.action} scheduledForIso={scheduledForIso} effectiveDate={effectiveDate} />
           )}
           <PauseButton caseId={c.id} paused={paused} />
+          {c.action === "onboard" && domainInfo && (
+            <CaseDomainSelect
+              caseId={c.id}
+              options={domainInfo.options}
+              defaultDomain={domainInfo.defaultDomain}
+              override={domainInfo.override}
+              started={started}
+            />
+          )}
           <ReplanButton caseId={c.id} canReplan={true} started={started} />
         </div>
       </div>

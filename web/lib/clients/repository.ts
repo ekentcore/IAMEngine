@@ -398,6 +398,13 @@ export function makeClientRepository(db: PrismaClient) {
       await db.client.update({ where: { id: clientId }, data: { emailDomain } });
     },
 
+    // Curated list of email domains offered as per-case choices (the default stays emailDomain /
+    // primaryDomain). Sync never touches this list — create seeds [primaryDomain], operators and
+    // the M365 tenant pull curate it from there.
+    async setDomains(slug: string, domains: string[]) {
+      return db.client.update({ where: { slug }, data: { domains } });
+    },
+
     // Human curation: set (or clear) the email domain and its lock. A locked value is authoritative
     // — the contact-derivation won't overwrite it.
     async setCuratedEmailDomain(slug: string, emailDomain: string | null, lock: boolean) {

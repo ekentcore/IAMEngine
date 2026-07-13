@@ -347,6 +347,9 @@ model CaseRequest {
   // broker prefers these over the client's default reference — for a one-off cred or to fill one the
   // client hasn't set. Still a REFERENCE only (a Delinea id), never a value.
   secretOverrides      Json?
+  // Operator-chosen email domain for THIS case (a multi-domain client's non-default domain).
+  // Consulted by replan as precedence tier 1 (see resolveEmailDomain); null = client default.
+  emailDomainOverride  String?
   // Set once the post-onboard verification sweep (re-run of every step's read-only validator) has
   // completed — so it auto-runs exactly once before the case is considered done, and case-resolution.
   verifiedAt           DateTime?

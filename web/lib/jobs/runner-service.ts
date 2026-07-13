@@ -366,10 +366,19 @@ export function makeRunnerService(db: PrismaClient) {
       // Bounded: re-queue once, then FAIL — so a deterministically-hanging step (e.g. a stuck Exchange
       // mirror) can't loop forever; the case fails and an operator re-plans (or uses Stop).
       const progressCutoff = new Date(Date.now() - PROGRESS_STALE_MS);
+      // A clock-skewed writer (seen after a runner-host recovery) can stamp progressAt HOURS in the
+      // future — such a job never ages past the cutoff and wedges forever. Anything claiming to be
+      // from the future (beyond small skew slack) is just as dead as anything stale.
+      const futureSkew = new Date(Date.now() + 10 * 60 * 1000);
       const wedged = await db.job.findMany({
         where: {
           status: "running",
-          OR: [{ progressAt: { lt: progressCutoff } }, { progressAt: null, startedAt: { lt: progressCutoff } }],
+          OR: [
+            { progressAt: { lt: progressCutoff } },
+            { progressAt: { gt: futureSkew } },
+            { progressAt: null, startedAt: { lt: progressCutoff } },
+            { progressAt: null, startedAt: { gt: futureSkew } },
+          ],
         },
         select: { id: true, request: true, caseRequestId: true, systemKey: true, case: { select: { serviceNowCaseNumber: true, client: { select: { name: true, restricted: true, notifyOverride: true } } } } },
       });
@@ -1046,6 +1055,20 @@ export function makeRunnerService(db: PrismaClient) {
       await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date(), oneTimePassword: null } });
       const caseStatus = await refreshCaseStatus(db, job.caseRequestId);
       await db.auditLog.create({ data: { actor, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
+      // Operator stops bypass recordResult (the runner never posts a result), so without this the
+      // stopped step never reaches the /runs log. Never fatal to the stop itself.
+      try {
+        const full = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { serviceNowCaseNumber: true, action: true, clientId: true, client: { select: { name: true } } } });
+        if (full) {
+          const error = `stopped by ${who} — the step was not progressing`;
+          const fingerprint = outcomeFingerprint({ caseRequestId: job.caseRequestId, systemKey: job.systemKey, verdict: "failed", messages: [], error });
+          await db.runOutcome.create({ data: {
+            caseRequestId: job.caseRequestId, caseNumber: full.serviceNowCaseNumber ?? job.caseRequestId, action: full.action,
+            clientId: full.clientId, clientName: full.client.name, systemKey: job.systemKey,
+            verdict: "failed", status: "failed", messages: [], error, fingerprint,
+          } });
+        }
+      } catch { /* outcome logging must not fail the stop */ }
       return { jobId, status: "failed", caseStatus };
     },
 
