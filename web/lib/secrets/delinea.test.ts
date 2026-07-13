@@ -310,3 +310,14 @@ test("getOneTimePasswordCode: unset reference short-circuits without calling Del
   assert.equal(r.ok, false);
   assert.equal(called, false);
 });
+
+test("getOneTimePasswordCode: never returns the expired code when the freshness refetch fails", async () => {
+  const { f } = otpFetcher([
+    { body: { "0": { code: "111111", remainingSeconds: 3, durationSeconds: 30 } } },
+    { status: 503 }, // refetch after the sleep fails
+  ]);
+  const r = await getOneTimePasswordCode(cfg, "47165", f, undefined, { sleep: async () => {} });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, undefined);
+  assert.match(r.error ?? "", /about to expire.*refreshing/i);
+});

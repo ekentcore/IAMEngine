@@ -66,3 +66,12 @@ test("htmlToText drops inline style/script blocks entirely", () => {
   assert.doesNotMatch(t, /color: red|var x/);
   assert.match(t, /ServiceNow/);
 });
+
+test("htmlToText does not glue the next section's header onto an empty trailing bullet", () => {
+  // An empty <li> at the end of a list, then the next section as a plain-line header: the header
+  // must survive as its own line (gluing it makes the whole section vanish from the runbook).
+  const t = htmlToText("<ul><li>last real item</li><li></li></ul><p>Mimecast</p><ul><li>login to console</li></ul>");
+  assert.match(t, /^Mimecast$/m);
+  assert.doesNotMatch(t, /- Mimecast/);
+  assert.doesNotMatch(t, /^-[ \t]*$/m, "empty bullets are dropped");
+});

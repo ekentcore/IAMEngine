@@ -8,10 +8,20 @@ const laneToDb = (l: string | null): Lifecycle =>
   l === "always" ? "always" : l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : "never";
 
 // The transaction-scoped subset of PrismaClient the system sync touches (also satisfied by tx).
+type NewSystemRow = {
+  clientId: string;
+  systemKey: string;
+  mode: "api" | "browser" | "manual";
+  onboardWhen: Lifecycle;
+  offboardWhen: Lifecycle;
+  dependsOn: string[];
+  secretNames: string[];
+};
+
 type SystemsDb = {
   clientSystem: {
     findMany(args: { where: { clientId: string }; select: { systemKey: true } }): Promise<{ systemKey: string }[]>;
-    create(args: { data: Record<string, unknown> }): Promise<unknown>;
+    createMany(args: { data: NewSystemRow[]; skipDuplicates: boolean }): Promise<unknown>;
   };
   systemCatalog: {
     findMany(args: { where: { key: { in: string[] } }; select: { key: true } }): Promise<{ key: string }[]>;
@@ -32,19 +42,26 @@ export async function createMissingSystems(tx: SystemsDb, clientId: string, want
   );
   const missing = wanted.filter((k) => !have.has(k) && inCatalog.has(k));
   const willHave = new Set([...have, ...missing]);
-  for (const key of missing) {
-    const c = CATALOG[key];
-    await tx.clientSystem.create({
-      data: {
-        clientId,
-        systemKey: key,
-        mode: c.mode,
-        onboardWhen: laneToDb(c.onboard),
-        offboardWhen: laneToDb(c.offboard),
-        // only deps the client will actually have — a dep on an absent system stalls planning
-        dependsOn: (c.dependsOn ?? []).filter((d) => willHave.has(d)),
-        secretNames: c.secret ? [c.secret] : [],
-      },
+  // ONE createMany with skipDuplicates (INSERT … ON CONFLICT DO NOTHING): two concurrent syncs for
+  // the same client (a save racing the "Sync systems from runbook" button) must not trip the
+  // (clientId, systemKey) unique constraint — a failed statement would abort the whole save
+  // transaction and lose the operator's edited sections.
+  if (missing.length) {
+    await tx.clientSystem.createMany({
+      data: missing.map((key) => {
+        const c = CATALOG[key];
+        return {
+          clientId,
+          systemKey: key,
+          mode: c.mode,
+          onboardWhen: laneToDb(c.onboard),
+          offboardWhen: laneToDb(c.offboard),
+          // only deps the client will actually have — a dep on an absent system stalls planning
+          dependsOn: (c.dependsOn ?? []).filter((d) => willHave.has(d)),
+          secretNames: c.secret ? [c.secret] : [],
+        };
+      }),
+      skipDuplicates: true,
     });
   }
   return missing;

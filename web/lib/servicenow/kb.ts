@@ -17,7 +17,7 @@ export function htmlToText(html: string): string {
     // pages of CSS "steps" and starves the AI extractor's input window
     .replace(/<style[\s\S]*?<\/style>/gi, "\n")
     .replace(/<script[\s\S]*?<\/script>/gi, "\n")
-    .replace(/<(br|\/p|\/div|\/h[1-6]|\/tr|\/li)[^>]*>/gi, "\n")
+    .replace(/<(br|\/p|\/div|\/h[1-6]|\/tr|\/li|\/ul|\/ol)[^>]*>/gi, "\n")
     .replace(/<li[^>]*>/gi, "- ")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
@@ -32,9 +32,13 @@ export function htmlToText(html: string): string {
     .replace(/&#x([0-9a-f]{1,6});/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/\r/g, "")
     // ServiceNow nests blocks inside list items (<li>\n<p>text</p></li>), which decodes to an
-    // orphan "- " line with its text on the next line — rejoin them so a bullet is one line.
-    // (Not when the next line is itself a bullet: an empty <li> must not swallow its sibling.)
-    .replace(/(^|\n)([ \t]*)-[ \t]*(?:\n[ \t]*)+(?=[^-\s])/g, "$1$2- ")
+    // orphan "- " line with its text on the NEXT line — rejoin them so a bullet is one line.
+    // ONE newline only: across a blank line the following text is the next section's header, not
+    // this bullet's content (an empty <li> before a header must not swallow the header). Nor when
+    // the next line is itself a bullet (an empty <li> must not swallow its sibling).
+    .replace(/(^|\n)([ \t]*)-[ \t]*\n[ \t]*(?=[^-\s])/g, "$1$2- ")
+    // any bullet still empty after the rejoin was a genuinely empty <li> — drop the noise line
+    .replace(/(^|\n)[ \t]*-[ \t]*(?=\n|$)/g, "$1")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

@@ -4,9 +4,13 @@
 
 // emails: the local part matters — a naming-convention TEMPLATE ("FirstName.LastName", "{first}.{last}",
 // "[user]") is documentation, not PII, and must survive; anything else is masked.
-// The local-part class includes [ ] { } < > so bracketed/braced placeholders match (and are kept).
+// The local-part class includes [ ] { } < > so bracketed/braced placeholders match. A local part
+// counts as a template only for template WORDS or a BALANCED bracket pair — a stray leading "<"
+// from the common "Jane Doe <jane.doe@x.com>" form is a real address and must still mask.
 const EMAIL_RE = /(?<![\w.%+\-@])([A-Za-z0-9._%+\-[\]{}<>]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g;
-const TEMPLATE_LOCAL_RE = /first|last|initial|middle|\buser\b|[[\]{}<>]/i;
+const TEMPLATE_WORD_RE = /first|last|initial|middle|\buser\b/i;
+const BALANCED_BRACKET_RE = /\[[^\][]*\]|\{[^{}]*\}|<[^<>]*>/;
+const isTemplateLocal = (local: string) => TEMPLATE_WORD_RE.test(local) || BALANCED_BRACKET_RE.test(local);
 
 export function redact(text: string): string {
   if (!text) return text;
@@ -15,9 +19,9 @@ export function redact(text: string): string {
   t = t.replace(/https?:\/\/\S*(?:secretservercloud|secretserver|delinea)\S*/gi, "[secret reference removed]");
   // explicit password values: "Password: hunter2" -> keep the label, drop the value.
   // The (?!\[) lookahead leaves an already-inserted [secret reference removed] placeholder alone.
-  // The value must contain a word character — "passwords:" followed by a lone bullet dash on the
-  // next line (a list of password steps, common in KBs) is not a password value.
-  t = t.replace(/(\bpasswords?\b\s*[:=]\s*)((?!\[)(?=[^\s,;]*[A-Za-z0-9])[^\s,;]+)/gi, "$1[redacted]");
+  // A lone bullet marker is NOT a value — "passwords:" followed by "- step…" on the next line is a
+  // list of password steps, common in KBs. Everything else (including symbols-only values) redacts.
+  t = t.replace(/(\bpasswords?\b\s*[:=]\s*)((?!\[)(?!(?:[-*•+>]|\d+[.)])(?:\s|$))[^\s,;]+)/gi, "$1[redacted]");
   // SSNs (before phones: same digit shapes shouldn't collide, but be explicit)
   t = t.replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[ssn]");
   // US phone numbers
@@ -27,7 +31,7 @@ export function redact(text: string): string {
   // "[FirstName].[LastName]", "{first}.{last}", "[user]"). Those are documentation, not PII, and the
   // runbook is unreadable if they're collapsed to "[user]". Real names ("felix.kessler") still mask.
   t = t.replace(EMAIL_RE, (_full, local: string, domain: string) =>
-    TEMPLATE_LOCAL_RE.test(local) ? `${local}@${domain}` : `[user]@${domain}`
+    isTemplateLocal(local) ? `${local}@${domain}` : `[user]@${domain}`
   );
   return t;
 }
@@ -42,7 +46,7 @@ export function maskEmailsReversible(text: string): { masked: string; restore: (
   const placeholders = new Map<string, string>(); // original email -> placeholder
   let n = 0;
   const masked = (text ?? "").replace(EMAIL_RE, (full, local: string, domain: string) => {
-    if (TEMPLATE_LOCAL_RE.test(local)) return full; // templates stay readable as-is
+    if (isTemplateLocal(local)) return full; // templates stay readable as-is
     let p = placeholders.get(full);
     if (!p) {
       p = `[u${++n}]@${domain}`;

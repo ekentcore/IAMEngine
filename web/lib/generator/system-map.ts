@@ -111,6 +111,12 @@ export function textMentionsSystem(key: string, text: string): boolean {
   return HEADER_RULES.some(([re, k]) => k === key && re.test(s));
 }
 
+// Some catalog keys (mdm, avd, notify) have NO name rules — for those, textMentionsSystem can never
+// return true, so a "does the text substantiate this key?" check must not be applied to them.
+export function systemHasNameRules(key: string): boolean {
+  return HEADER_RULES.some(([, k]) => k === key);
+}
+
 // Map a raw runbook header to a system key, or null if it isn't a modeled system.
 export function headerToSystemKey(header: string): string | null {
   const s = header.toLowerCase().replace(/^\s*\d+[.)]\s*/, "").trim();

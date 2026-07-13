@@ -3,7 +3,7 @@
 // which the heuristic mis-parses. This asks Azure OpenAI to return clean, ordered sections each
 // mapped to a known system key. Returns null when Azure isn't configured or the call fails, so the
 // caller can fall back to the heuristic parser.
-import { CATALOG, headerToSystemKey, textMentionsSystem } from "../generator/system-map";
+import { CATALOG, headerToSystemKey, systemHasNameRules, textMentionsSystem } from "../generator/system-map";
 import { azureChatJson, azureConfigFromEnv, azureConfigured } from "../generator/llm";
 import { parseRunbookText, type ParsedSection } from "./runbook-parse";
 
@@ -59,12 +59,17 @@ Return STRICT JSON of the form: {"sections":[{"title":"Microsoft 365","systemKey
       ? sec.steps.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.replace(/\s+$/, ""))
       : [];
     // The model sometimes maps an unlisted product to its nearest listed competitor (Dashlane ->
-    // "1password"). Trust the header rules over the model when they disagree, and drop a mapping
-    // the section never substantiates — neither title nor steps naming the product.
-    if (systemKey) {
+    // "1password"). Sanity-check its key against the section text — but only for keys that HAVE
+    // name rules (mdm/avd/notify don't; for those the model is the only signal, so trust it):
+    //  - title matches a DIFFERENT rule and nothing substantiates the model's key -> the rule wins
+    //    (a "KnowBe4" title keyed to zoom); if the section DOES name the model's key, keep it (a
+    //    "Microsoft 365 / Entra app assignments" section correctly keyed to entra).
+    //  - no rule matches the title and nothing substantiates the key -> near-miss hallucination.
+    if (systemKey && systemHasNameRules(systemKey)) {
       const fromTitle = headerToSystemKey(title);
-      if (fromTitle && fromTitle !== systemKey) systemKey = fromTitle;
-      else if (!fromTitle && !textMentionsSystem(systemKey, `${title}\n${steps.join("\n")}`)) systemKey = null;
+      const substantiated = textMentionsSystem(systemKey, `${title}\n${steps.join("\n")}`);
+      if (fromTitle && fromTitle !== systemKey && !substantiated) systemKey = fromTitle;
+      else if (!fromTitle && !substantiated) systemKey = null;
     }
     sections.push({ seq: sections.length, systemKey, title, status: systemKey ? "automated" : "unmodeled", steps });
   }

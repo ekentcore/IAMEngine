@@ -13,7 +13,7 @@ function fakeDb(existingSystems: string[]) {
     },
     clientSystem: {
       findMany: async () => existingSystems.map((k) => ({ systemKey: k })),
-      create: async ({ data }: { data: Record<string, unknown> }) => { created.push(data); return data; },
+      createMany: async ({ data }: { data: Record<string, unknown>[] }) => { created.push(...data); return { count: data.length }; },
     },
     systemCatalog: {
       findMany: async ({ where }: { where: { key: { in: string[] } } }) => where.key.in.map((k) => ({ key: k })),
@@ -73,7 +73,7 @@ test("syncSystemsFromRunbook wires systems the saved runbook references but the 
   const tx = {
     clientSystem: {
       findMany: async () => [{ systemKey: "m365" }],
-      create: async ({ data }: { data: Record<string, unknown> }) => { created.push(data); return data; },
+      createMany: async ({ data }: { data: Record<string, unknown>[] }) => { created.push(...data); return { count: data.length }; },
     },
     systemCatalog: { findMany: async ({ where }: { where: { key: { in: string[] } } }) => where.key.in.map((k) => ({ key: k })) },
   };
@@ -95,7 +95,7 @@ test("syncSystemsFromRunbook is a no-op when systems already match", async () =>
   const { syncSystemsFromRunbook } = await import("./runbook-repo");
   let audits = 0;
   const tx = {
-    clientSystem: { findMany: async () => [{ systemKey: "m365" }], create: async () => { throw new Error("must not create"); } },
+    clientSystem: { findMany: async () => [{ systemKey: "m365" }], createMany: async () => { throw new Error("must not create"); } },
     systemCatalog: { findMany: async ({ where }: { where: { key: { in: string[] } } }) => where.key.in.map((k) => ({ key: k })) },
   };
   const db = {

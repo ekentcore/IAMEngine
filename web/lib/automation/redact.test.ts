@@ -73,3 +73,20 @@ test("maskEmailsReversible round-trips real addresses and leaves templates alone
   // masked text survives a redact() pass untouched (bracketed placeholders are templates)
   assert.equal(redact(masked), masked);
 });
+
+test("a stray angle bracket does not make a real address a template (Jane Doe <jane.doe@x>)", () => {
+  const t = redact("Forward mail to Jane Doe <jane.doe@client.com> after offboard");
+  assert.doesNotMatch(t, /jane\.doe/);
+  assert.match(t, /\[user\]@client\.com/);
+  const { masked } = maskEmailsReversible("Forward mail to Jane Doe <jane.doe@client.com>");
+  assert.doesNotMatch(masked, /jane\.doe/);
+  // balanced-bracket templates still survive both paths
+  assert.equal(redact("use <first>.<last>@acme.com"), "use <first>.<last>@acme.com");
+  assert.match(maskEmailsReversible("send to DCG@dcg.co").masked, /\[u1\]@dcg\.co/);
+});
+
+test("symbols-only password values still redact; bullet markers after 'passwords:' do not", () => {
+  assert.match(redact("Password: $#!%&*-"), /Password:\s*\[redacted\]/i);
+  const t = redact("account passwords:\n- Update Azure AD password");
+  assert.doesNotMatch(t, /\[redacted\]/);
+});
