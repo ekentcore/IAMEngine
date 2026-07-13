@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -250,6 +250,33 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
   const localRestartRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
+
+  // Edit an agent's identity: rename, and re-point a client-network agent at its client. Also the
+  // recovery path for an agent row recreated after data loss — the runner keeps polling with its
+  // baked-in id, so fixing the row here re-links it without touching the host.
+  const [editAgent, setEditAgent] = useState<AgentVM | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editClient, setEditClient] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const editRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (editAgent) editRef.current?.showModal(); else editRef.current?.close(); }, [editAgent]);
+  function openEdit(a: AgentVM) {
+    setEditName(a.name); setEditClient(a.clientSlug ?? ""); setEditError(null); setEditAgent(a);
+  }
+  async function saveEdit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!editAgent) return;
+    setEditBusy(true); setEditError(null);
+    const res = await updateAgentIdentity(editAgent.id, {
+      name: editName,
+      clientSlug: editAgent.scope === "client_network" ? editClient || null : null,
+    });
+    setEditBusy(false);
+    if (!res.ok) { setEditError(res.error); return; }
+    setEditAgent(null);
+    router.refresh();
+  }
 
   // Arrived from the global "Update all" banner: the updates were just queued elsewhere, so the data
   // we navigated in with can be stale (the client router cache). Force one server refetch so the
@@ -498,6 +525,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
+                    <button onClick={() => openEdit(a)} title="Rename this runner or point it at a different client">Edit</button>
                     <button onClick={() => setInstallAgent(a)} title="Get the one-line install/run command for this runner">Install</button>
                     <button onClick={() => toggle(a.id, !a.enabled)} disabled={toggling === a.id}>{a.enabled ? "Disable" : "Enable"}</button>
                     <button onClick={() => setTroubleshootAgent(a)} title="Get a diagnostic command for a runner that never comes online (pre-build / update stuck on queued)">Troubleshoot</button>
@@ -590,6 +618,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
                       shows every button inline). */}
                   <ActionsMenu items={[
+                    { label: "Edit", onClick: () => openEdit(a) },
                     { label: "Install", onClick: () => setInstallAgent(a) },
                     { label: a.enabled ? "Disable" : "Enable", disabled: toggling === a.id, onClick: () => toggle(a.id, !a.enabled) },
                     { label: "Troubleshoot", onClick: () => setTroubleshootAgent(a) },
@@ -782,6 +811,37 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               <button className="primary" onClick={() => setInstallAgent(null)}>Done</button>
             </div>
           </div>
+        )}
+      </dialog>
+
+      {/* Edit agent: rename + (client-network) re-point at a client. */}
+      <dialog ref={editRef} onClose={() => setEditAgent(null)} style={{ maxWidth: 480 }}>
+        {editAgent && (
+          <form onSubmit={saveEdit}>
+            <div className="row-between">
+              <h2>Edit agent</h2>
+              <button type="button" onClick={() => setEditAgent(null)} aria-label="Close">×</button>
+            </div>
+            <label style={{ display: "block", marginTop: "0.5rem" }}>Name
+              <input value={editName} onChange={(e) => setEditName(e.target.value)} required style={{ width: "100%" }} />
+            </label>
+            {editAgent.scope === "client_network" ? (
+              <label style={{ display: "block", marginTop: "0.5rem" }}>Client
+                <select value={editClient} onChange={(e) => setEditClient(e.target.value)} required style={{ width: "100%" }}>
+                  <option value="">— pick a client —</option>
+                  {clients.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+                </select>
+              </label>
+            ) : (
+              <p className="note">A central runner serves all clients — only the name is editable.</p>
+            )}
+            {editError && <p className="note danger">{editError}</p>}
+            <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+              <span className="grow" />
+              <button type="button" onClick={() => setEditAgent(null)}>Cancel</button>
+              <button className="primary" disabled={editBusy}>{editBusy ? "Saving…" : "Save"}</button>
+            </div>
+          </form>
         )}
       </dialog>
 

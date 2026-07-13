@@ -21,8 +21,11 @@ export const dynamic = "force-dynamic";
 
 // download=true adds a Content-Disposition attachment so a browser saves the file (named so the run
 // command below matches) rather than rendering it inline; the `irm | iex` path leaves it inline.
+// The BOM is load-bearing: the run command downloads this to a FILE and Windows PowerShell 5.1
+// reads a BOM-less .ps1 as ANSI, so the script's em-dashes decode to garbage that breaks parsing
+// ("Missing closing '}'"). The BOM makes 5.1 (and pwsh 7) decode the file as UTF-8.
 const ps = (s: string, download = false) =>
-  new Response(s, {
+  new Response("\uFEFF" + s, {
     status: 200,
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
