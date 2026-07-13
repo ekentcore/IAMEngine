@@ -90,6 +90,7 @@ export function makeCaseRepository(db: PrismaClient) {
       | {
           id: string; name: string; slug: string; primaryDomain: string;
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
+          engineOptOut: boolean;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
         }
       | null
@@ -98,7 +99,7 @@ export function makeCaseRepository(db: PrismaClient) {
         where: { slug },
         select: {
           id: true, name: true, slug: true, primaryDomain: true,
-          emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
+          emailDomain: true, emailDomainLocked: true, serviceNowSysId: true, engineOptOut: true,
           identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
           parentId: true, inheritParentSystems: true,
         },

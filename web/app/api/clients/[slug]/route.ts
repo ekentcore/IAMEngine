@@ -205,8 +205,13 @@ export async function PATCH(req: Request, { params }: Ctx) {
     let copied = 0;
     if (!body.inherit && body.copy === true) {
       const r = await repo.copyParentModeling(params.slug);
-      if (!r.ok) return NextResponse.json({ error: r.reason }, { status: 422 });
-      copied = r.copied;
+      // Nothing to carry over (the parent isn't modeled, or the child already has its own systems)
+      // is NOT a reason to refuse the break — otherwise the flag never flips and the badge sticks on
+      // "inherits". Only a genuinely broken request (missing client/parent) is an error.
+      if (!r.ok && (r.code === "not_found" || r.code === "no_parent")) {
+        return NextResponse.json({ error: r.code === "not_found" ? "client not found" : "this client has no parent to inherit from" }, { status: 422 });
+      }
+      copied = r.ok ? r.copied : 0;
     }
     const client = await repo.setInheritParentSystems(params.slug, body.inherit);
     await repo.writeAudit({

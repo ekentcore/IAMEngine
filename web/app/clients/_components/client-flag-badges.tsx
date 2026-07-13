@@ -42,7 +42,12 @@ export function ClientFlagBadges({
             role="button"
             tabIndex={0}
             title="Do not use engine: this client's ServiceNow cases are NOT imported (intake sweep skips them). Click to resume importing."
-            onClick={() => onPatch("set-engine-opt-out", { engineOptOut: false })}
+            onClick={() => {
+              // Clearing this re-opens the client to the intake sweep — confirm, like the restricted
+              // badge does, so a misclick in a dense table can't silently start importing its cases.
+              if (!confirm(`Resume using the engine for ${name}? Its open ServiceNow tickets will be imported and planned on the next intake sweep.`)) return;
+              onPatch("set-engine-opt-out", { engineOptOut: false });
+            }}
             style={{ cursor: "pointer", color: "var(--err-fg)", borderColor: "var(--err-bg)", background: "var(--err-bg)" }}
           >
             ⛔ no engine

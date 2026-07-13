@@ -91,9 +91,14 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const canRestrict = await currentIsSuperAdmin(); // only super admins see/flip the restricted control
   // Does this client have its own (client-network) agent? Drives the "run cloud on own agent" hint.
   const hasClientAgent = (await db.agent.count({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null } })) > 0;
-  // SN account hierarchy: the parent's name for the inheritance control (child clients only).
+  // SN account hierarchy: the parent, for the inheritance control + the "inherits the parent's
+  // runbook" banner. One query serves both (the banner needs the system count, the control needs
+  // to know whether there's anything to copy).
   const parent = client.parentId
-    ? await db.client.findUnique({ where: { id: client.parentId }, select: { name: true } })
+    ? await db.client.findUnique({
+        where: { id: client.parentId },
+        select: { slug: true, name: true, _count: { select: { systems: true } } },
+      })
     : null;
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
@@ -131,10 +136,10 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   const cloudGroupsMeta = { count: cloudGroupList.length, discoveredAt: typeof cloudGroups.discoveredAt === "string" ? cloudGroups.discoveredAt : null };
 
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
-  // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled.
-  const parentInfo = client.systems.length === 0
-    ? (await db.client.findUnique({ where: { id: client.id }, select: { parent: { select: { slug: true, name: true, _count: { select: { systems: true } } } } } }))?.parent ?? null
-    : null;
+  // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled — but
+  // ONLY while the link is intact: a child that broke it plans from its own systems, so claiming
+  // the parent's runbook covers it would be a lie (its cases would plan zero jobs).
+  const parentInfo = client.systems.length === 0 && client.inheritParentSystems ? parent : null;
 
   const runbook = await db.runbookSection.findMany({
     where: { clientId: client.id },
@@ -206,6 +211,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
               parentName={parent.name}
               inherit={client.inheritParentSystems}
               ownSystemCount={client.systems.length}
+              parentSystemCount={parent._count.systems}
             />
           )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
