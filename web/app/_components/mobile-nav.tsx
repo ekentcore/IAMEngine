@@ -13,6 +13,7 @@ const ITEMS: ReadonlyArray<readonly [string, string]> = [
   ["/runs", "Run log"],
   ["/agents", "Agents"],
   ["/modules", "Modules"],
+  ["/help", "Help"],
   ["/health", "Health"],
 ];
 

@@ -1840,7 +1840,7 @@ $script:BrowserInstallJob = $null
 if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -eq '1') {
     Write-Host "Browser sidecar: install disabled (IAM_RUNNER_NO_BROWSER_INSTALL=1) — browser jobs are withheld from this agent." -ForegroundColor DarkGray
 }
-elseif (-not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+elseif (-not (Test-CtgBrowserAvailable) -and (Resolve-CtgNodeTool 'node')) {
     Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium in the BACKGROUND (the runner keeps polling)…" -ForegroundColor Yellow
     try {
         $script:BrowserModulePath = (Get-Module Coretelligent.Browser).Path
