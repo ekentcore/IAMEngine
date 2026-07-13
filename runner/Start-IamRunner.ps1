@@ -1829,12 +1829,29 @@ $script:RunnerCapabilities = @(
 # Self-heal the browser sidecar ONCE at startup (mirrors the RSAT block above). Capabilities are
 # computed here, once per process, and the claim gate WITHHOLDS browser jobs from agents not reporting
 # 'browser' — so a lazy first-use install could never happen (the agent would never receive the job).
-# Installing here, before the probe below, lets the agent advertise 'browser' from its first heartbeat.
-# Gated on node being present (can't install Playwright without it) and the sidecar not already ready;
-# opt out with IAM_RUNNER_NO_BROWSER_INSTALL=1. Best-effort — a failure just withholds browser jobs.
-if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -ne '1' -and -not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium (one-time)…" -ForegroundColor Yellow
-    try { [void](Install-CtgBrowser) } catch { Write-Warning "browser sidecar install failed: $($_.Exception.Message) — force-sync jobs will be withheld until it's installed" }
+# The install (npm install + a ~170MB Chromium download) MUST NOT run inline: it takes minutes on a
+# cold host and, on one with no egress to npmjs.org / the Playwright CDN, blocks until its timeout.
+# Inline, that delays the FIRST heartbeat — the agent goes silent, the app shows it stuck "updating",
+# and an operator debugs a phantom install/auth problem. So: kick it off in the BACKGROUND, heartbeat
+# immediately, and start advertising 'browser' on a later beat once it finishes (the poll loop's
+# capability refresh below). Opt out with IAM_RUNNER_NO_BROWSER_INSTALL=1 — the installer sets that
+# for client-network agents, which have no business running headless Chromium on a DC.
+$script:BrowserInstallJob = $null
+if ($env:IAM_RUNNER_NO_BROWSER_INSTALL -eq '1') {
+    Write-Host "Browser sidecar: install disabled (IAM_RUNNER_NO_BROWSER_INSTALL=1) — browser jobs are withheld from this agent." -ForegroundColor DarkGray
+}
+elseif (-not (Test-CtgBrowserAvailable) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Host "Browser sidecar not fully installed — installing Playwright + Chromium in the BACKGROUND (the runner keeps polling)…" -ForegroundColor Yellow
+    try {
+        $script:BrowserModulePath = (Get-Module Coretelligent.Browser).Path
+        $script:BrowserInstallJob = Start-Job -Name 'ctg-browser-install' -ScriptBlock {
+            param($m)
+            Import-Module $m -Force
+            [bool](Install-CtgBrowser)
+        } -ArgumentList $script:BrowserModulePath
+    } catch {
+        Write-Warning "browser sidecar: could not start the background install: $($_.Exception.Message) — browser jobs will be withheld"
+    }
 }
 # Browser automation is a CROSS-CUTTING capability (not an on-prem system): report 'browser' when the
 # Node/Playwright sidecar is installed on this host, so the app's claim gate hands browser jobs (e.g.
@@ -1891,6 +1908,24 @@ while ($true) {
             }
         }
     } catch { }
+    # Capability refresh: the browser sidecar installs in the BACKGROUND (see startup), so 'browser'
+    # isn't known at first heartbeat. When that job finishes, re-probe once and fold the capability in
+    # so the NEXT heartbeat advertises it and the app's gate starts routing browser jobs here.
+    if ($script:BrowserInstallJob) {
+        $st = $script:BrowserInstallJob.State
+        if ($st -in @('Completed', 'Failed', 'Stopped')) {
+            try { Receive-Job -Job $script:BrowserInstallJob -ErrorAction SilentlyContinue | Out-Null } catch { }
+            try { Remove-Job -Job $script:BrowserInstallJob -Force -ErrorAction SilentlyContinue } catch { }
+            $script:BrowserInstallJob = $null
+            if (Test-CtgBrowserAvailable) {
+                if ($script:RunnerCapabilities -notcontains 'browser') { $script:RunnerCapabilities += 'browser' }
+                $script:RunnerCapabilitiesJson = ($script:RunnerCapabilities | ConvertTo-Json -Compress -AsArray)
+                Write-Host "Browser sidecar ready — now advertising 'browser' ($script:RunnerCapabilitiesJson)" -ForegroundColor Green
+            } else {
+                Write-Warning "browser sidecar install did not complete (no egress to npmjs.org / the Playwright CDN?) — browser jobs stay withheld from this agent. Set IAM_RUNNER_NO_BROWSER_INSTALL=1 to stop retrying."
+            }
+        }
+    }
     try {
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson }
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }

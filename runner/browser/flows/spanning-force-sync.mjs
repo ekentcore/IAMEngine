@@ -6,18 +6,21 @@
 // last-resort browser flow exists (see runner/modules/Coretelligent.Spanning: onboarding otherwise
 // returns RetryAfterMinutes and waits for Spanning to discover the user on its own).
 //
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// VERIFY against the real portal. The exact login URL, the DOM selectors, and the location of the
-// "sync / scan for new users" control are UNKNOWN without a live Spanning admin console. Everything
-// in the SELECTORS block below is a best-guess placeholder. When a real portal is available:
-//   1. confirm SPANNING_PORTAL_URL (the admin login, NOT the o365-api-* API host),
-//   2. capture the real selectors (record with `npx playwright codegen <portal-url>`),
-//   3. confirm whether the sync completes synchronously or is queued (drives SYNC_IS_ASYNC below),
-//   4. confirm the second-factor type: app/TOTP is completed from a seed on the secret (input.params
-//      .totpSeed); push / number-matching / SMS can't be automated and the flow hard-stops on them.
-// Until then this flow degrades safely: if login or the sync control can't be found it returns a
-// structured { ok:false, error, evidence:<screenshot> } instead of throwing or claiming success.
-// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// VERIFIED against the live console (2026-07-12), including a HAR capture of a real sync:
+//   * login: SPANNING_PORTAL_URL -> "Log In with Microsoft" -> M365 SSO. Confirmed working.
+//   * MFA: the code is minted by DELINEA (one-time password enabled on the secret) and fetched when
+//     the prompt appears — no TOTP seed is stored or handled by us. Push / number-matching / SMS
+//     still cannot be automated; the flow hard-stops on those with a screenshot.
+//   * SYNC: clicking "Sync" in the console fires exactly ONE state-changing request —
+//       POST https://o365-us.spanningbackup.com/api/sync   body {}
+//         -> 200 {"id":<jobId>,"tenant_id":…,"status":"PENDING"}
+//       GET  /api/tenantCache/<jobId>    (the console then just polls this)
+//     So we REPLAY that call from inside the logged-in page instead of hunting for a button. There
+//     are deliberately no sync selectors any more: a button can be redesigned away, the endpoint is
+//     what the button actually does. The page's own session is used (same-origin fetch with
+//     credentials), so no token is ever extracted.
+// The sync is ASYNC: a still-PENDING job is reported as "started" (not a failure) with
+// retryAfterMinutes, and the Spanning onboarding step re-checks the user on its own retry.
 
 // The Spanning Backup for Microsoft 365 admin console (verified from spanning.com/login → the "Log In
 // with Microsoft 365" destination). It lands on a provider chooser (Microsoft / KaseyaOne); clicking
@@ -36,6 +39,9 @@ import { totp } from "../lib/totp.mjs";
 
 // VERIFY the post-login (sync-control) selectors against the real console DOM; the login path below
 // is confirmed against o365.spanningbackup.com/login.html → Microsoft 365 SSO.
+// How long we'll watch the sync job before handing back to the app's own retry (it's async).
+const POLL_MS = 45_000;
+
 const SELECTORS = {
   // The console's provider chooser: pick Microsoft 365 (vs KaseyaOne), which redirects to MS SSO.
   microsoftLogin: 'a:has-text("Log In with Microsoft"), a:has-text("Sign in with Microsoft"), button:has-text("Log In with Microsoft"), a:has-text("Microsoft 365")',
@@ -43,9 +49,6 @@ const SELECTORS = {
   username: 'input[type="email"], input[name="loginfmt"], input[name="username"], input#i0116, input#email',
   password: 'input[type="password"], input[name="passwd"], input[name="password"], input#i0118, input#password',
   submit: '#idSIButton9, input[type="submit"], button[type="submit"], button:has-text("Sign in"), button:has-text("Next"), button:has-text("Log in")',
-  // The directory-sync / "scan for new users" trigger, and a confirmation the sync started.
-  syncButton: 'button:has-text("Sync"), button:has-text("Scan for new users"), a:has-text("Sync now"), [data-action="sync-users"]',
-  syncConfirmation: 'text=/sync (started|queued|initiated|in progress|complete)/i',
   // A TOTP/authenticator CODE-entry field. If present and a seed is on the secret, we generate and
   // enter the code (M365's is input[name="otc"]).
   otpInput: 'input[autocomplete="one-time-code"], input[name="otc"], input[name="otp"], input[name="code"], input[id*="otc" i], input[id*="otp" i]',
@@ -161,24 +164,83 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     return { ok: false, error: `Spanning portal login failed: ${e?.message ?? e}`, evidence: await shot("login-error") };
   }
 
-  // 3. Trigger the directory/user sync ("scan for new users").
+  // 3. Trigger the sync — by REPLAYING the console's own API call, not by hunting for a button.
+  //
+  // Captured from a real session (HAR): clicking "Sync now" in the console fires exactly one
+  // state-changing request, and then the UI just polls it:
+  //
+  //   POST https://o365-us.spanningbackup.com/api/sync      body: {}
+  //     -> 200 {"id":17849871,"tenant_id":15529,"ts":"…","status":"PENDING"}
+  //   GET  /api/tenantCache/{id}                            (poll until status leaves PENDING)
+  //
+  // We issue it from INSIDE the logged-in page (page.evaluate -> same-origin fetch), so the session
+  // cookie / JWT the console already holds is sent automatically — we never extract or handle a
+  // token. This is why there are no sync SELECTORS any more: a DOM button can be redesigned away,
+  // this endpoint is what the button actually does.
   try {
-    const syncBtn = page.locator(SELECTORS.syncButton).first();
-    if (!(await syncBtn.isVisible().catch(() => false))) {
-      return { ok: false, error: "logged in, but could not find the Spanning directory-sync control ('scan for new users') — VERIFY the portal navigation + selectors against the real console", evidence: await shot("no-sync-button") };
+    // The API is on the REGIONAL host (o365-us…), which is where the console lands after login.
+    // Be explicit rather than assuming: same-origin fetch requires us to be ON that origin.
+    const origin = new URL(page.url()).origin;
+    if (!/spanningbackup\.com$/.test(new URL(origin).hostname)) {
+      return { ok: false, error: `after login the page is on ${origin}, not a Spanning console origin — cannot fire the sync from here`, evidence: await shot("wrong-origin") };
     }
-    log("clicking the Spanning directory-sync control");
-    await syncBtn.click();
-    // Best-effort confirmation the sync kicked off.
-    const confirmed = await page.locator(SELECTORS.syncConfirmation).first().isVisible({ timeout: 8000 }).catch(() => false);
 
-    const message = confirmed
-      ? `triggered a Spanning directory sync${email ? ` (to discover ${email})` : ""}`
-      : `clicked the Spanning sync control${email ? ` (to discover ${email})` : ""} — no explicit confirmation text found (VERIFY the confirmation selector)`;
+    log(`triggering the Spanning sync (POST ${origin}/api/sync)`);
+    const fired = await page.evaluate(async () => {
+      const r = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        credentials: "include",
+      });
+      let body = null;
+      try { body = await r.json(); } catch { body = null; }
+      return { status: r.status, body };
+    });
 
-    // Async sync: tell the app to re-check the user shortly so the Spanning onboarding step can
-    // confirm the license once the user is discovered.
-    return { ok: true, message, evidence: null, ...(SYNC_IS_ASYNC ? { retryAfterMinutes: RETRY_AFTER_MINUTES } : {}) };
+    if (fired.status === 401 || fired.status === 403) {
+      return { ok: false, error: `the Spanning console rejected the sync call (HTTP ${fired.status}) — the signed-in account may not be a Spanning admin`, evidence: await shot("sync-denied") };
+    }
+    if (fired.status < 200 || fired.status >= 300) {
+      return { ok: false, error: `POST /api/sync returned HTTP ${fired.status}`, evidence: await shot("sync-failed") };
+    }
+
+    const jobId = fired.body && fired.body.id;
+    const started = fired.body && fired.body.status;
+    log(`sync accepted (id=${jobId ?? "?"} status=${started ?? "?"})`);
+
+    // Poll the same endpoint the console polls. The sync is ASYNC — PENDING can persist well past a
+    // sensible wait — so a still-pending job is NOT a failure: we've done our job by kicking it off,
+    // and the Spanning onboarding step re-checks the user on its own retry.
+    let finalStatus = started ?? "PENDING";
+    if (jobId) {
+      const deadline = Date.now() + POLL_MS;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(3000);
+        const p = await page.evaluate(async (id) => {
+          const r = await fetch(`/api/tenantCache/${id}`, { credentials: "include" });
+          try { return await r.json(); } catch { return null; }
+        }, jobId);
+        if (p && p.status) {
+          finalStatus = p.status;
+          if (String(p.status).toUpperCase() !== "PENDING") break;
+        }
+      }
+    }
+
+    const done = String(finalStatus).toUpperCase() !== "PENDING";
+    const message = done
+      ? `Spanning sync completed (status ${finalStatus})${email ? ` — ${email} should now be discoverable` : ""}`
+      : `Spanning sync started (id ${jobId ?? "?"}, still ${finalStatus})${email ? ` — ${email} will appear once it finishes` : ""}`;
+
+    // Still pending -> ask the app to re-check shortly, so the onboarding step can confirm the
+    // license once Spanning has actually discovered the user.
+    return {
+      ok: true,
+      message,
+      evidence: await shot("sync-triggered"),
+      ...(done ? {} : { retryAfterMinutes: RETRY_AFTER_MINUTES }),
+    };
   } catch (e) {
     return { ok: false, error: `failed to trigger the Spanning sync: ${e?.message ?? e}`, evidence: await shot("sync-error") };
   }
