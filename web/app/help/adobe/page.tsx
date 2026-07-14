@@ -22,9 +22,17 @@ export default function AdobeSetupPage() {
         <b>How it authenticates</b>
         <p style={{ margin: "0.4rem 0 0" }}>
           OAuth <b>Server-to-Server</b> (UMAPI v2). The <code>adobe</code> secret holds
-          {" "}<b>username = Client ID</b>, <b>password = Client Secret</b>, plus an <code>OrgId</code> field
-          {" "}(your <code>…@AdobeOrg</code> id). The runner gets a token from Adobe IMS and sends
-          {" "}<code>X-Api-Key = client id</code> on every call.
+          {" "}<b>username = Client ID</b>, <b>password = Client Secret</b>, plus your
+          {" "}<b>organization id</b> (<code>…@AdobeOrg</code>) — which goes in <code>accountid</code>,
+          {" "}since the <b>Automation - API</b> template has no <code>OrgId</code> field. The runner gets a
+          {" "}token from Adobe IMS and sends <code>X-Api-Key = client id</code> on every call.
+        </p>
+        <p style={{ margin: "0.4rem 0 0" }}>
+          You do <b>not</b> store an access token (the runner mints a short-lived one per connect), the
+          {" "}scopes (fixed: <code>openid,AdobeID,user_management_sdk</code>), or a technical-account
+          {" "}id/email — those belong to Adobe&apos;s <b>deprecated Service Account (JWT)</b> flow. If your
+          {" "}credential came with a technical account id and a private key, it was created as the wrong
+          {" "}integration type: make a new <b>OAuth Server-to-Server</b> credential.
         </p>
       </div>
 
@@ -47,9 +55,9 @@ export default function AdobeSetupPage() {
       <p className="note"><b>Delinea template: Automation - API</b> — fill the fields below (field names are matched leniently, so any template that carries them works).</p>
       <table>
         <tbody>
-          <tr><th style={{ width: 160 }}>Username</th><td>the <b>Client ID</b></td></tr>
-          <tr><th>Password</th><td>the <b>Client Secret</b></td></tr>
-          <tr><th>OrgId</th><td>your organization id, <code>XXXXXXXXXXXX@AdobeOrg</code></td></tr>
+          <tr><th style={{ width: 160 }}>Username</th><td>the <b>Client ID</b> (or a <code>clientID</code> field)</td></tr>
+          <tr><th>Password</th><td>the <b>Client Secret</b> (or a <code>ClientSecret</code> field)</td></tr>
+          <tr><th>accountid</th><td>your organization id, <code>XXXXXXXXXXXX@AdobeOrg</code>. The stock template has no <code>OrgId</code> field, so it goes here — an <code>OrgId</code> field is still honoured if your secret has one.</td></tr>
         </tbody>
       </table>
 

@@ -197,8 +197,13 @@ function Get-CtgProp {
 # script (build-id + bundle walks skip *.log), rotating at 5 MB. Pull a line from here when
 # reporting an issue — it has the timestamp, job id and full error the console may have scrolled.
 $script:CtgLogPath = Join-Path $PSScriptRoot 'runner.log'
+# Message is FIRST positionally: `Write-CtgLog "..." 'WARN'` is how every call site here reads, and
+# with $Level first that bound the message to $Level and died on its ValidateSet — a terminating
+# error raised from inside the very catch blocks that were trying to warn. Named calls
+# (-Level/-Message) are unaffected by the order.
 function Write-CtgLog {
-    param([ValidateSet('ERROR', 'WARN', 'INFO')][string]$Level = 'INFO', [Parameter(Mandatory)][string]$Message)
+    param([Parameter(Mandatory, Position = 0)][string]$Message,
+          [Parameter(Position = 1)][ValidateSet('ERROR', 'WARN', 'INFO')][string]$Level = 'INFO')
     try {
         if ((Test-Path $script:CtgLogPath) -and (Get-Item $script:CtgLogPath).Length -gt 5MB) {
             Move-Item $script:CtgLogPath "$($script:CtgLogPath).1" -Force
@@ -528,6 +533,67 @@ function Use-CtgSlackSecret {
     if ($baseUrl) { Connect-CtgSlack -Token $token -BaseUrl $baseUrl } else { Connect-CtgSlack -Token $token }
 }
 
+# Point the Adobe module at this job's brokered secret. Adobe UMAPI v2 uses an OAuth
+# Server-to-Server app: Username = Client ID, Password = Client Secret, plus the organization id
+# (XXXXXXXXXXXX@AdobeOrg), which every call needs in the URL path.
+#
+# The org id has no natural home in Delinea's stock templates — "Automation - API" has clientID /
+# ClientSecret / accountid / apiURL and NO OrgId field — so in practice it lands in `accountid`.
+# We therefore find it by the SHAPE OF ITS VALUE first (an Adobe org id always ends @AdobeOrg), which
+# works whatever the field is called, and only fall back to a name list. That's the same
+# match-on-value idiom used for the m365 app-id-vs-UPN check and the AD doc-link-vs-server check:
+# a field NAME is a convention an operator can get wrong; the value's format is not.
+#
+# Scopes are NOT read from the secret (they're fixed: openid,AdobeID,user_management_sdk) and neither
+# is an access token (the module mints a short-lived one per connect). A technical-account id/email
+# belongs to Adobe's DEPRECATED Service Account (JWT) flow and is never used here — if a secret
+# carries one, the credential was created as the wrong integration type.
+function Use-CtgAdobeSecret {
+    param($Job, $Creds)
+    $s = $Creds['adobe']
+    if (-not $s) { throw "the job did not broker an 'adobe' secret — list 'adobe' in the client's adobe system secrets" }
+    $f = $s.Fields
+    $pick = { param($names) foreach ($k in $names) { if ($f.ContainsKey($k) -and $f[$k]) { return [string]$f[$k] } } $null }
+
+    # 1. By value shape — any field holding something that ends @AdobeOrg IS the org id.
+    $orgId = $null
+    foreach ($k in $f.Keys) {
+        $v = ([string]$f[$k]).Trim()
+        if ($v -match '@AdobeOrg\s*$') { $orgId = $v; break }
+    }
+    # 2. By name — including accountid, which is where the stock template puts it.
+    $orgNames = @('OrgId', 'OrgID', 'Org ID', 'Org', 'OrganizationId', 'OrganizationID', 'Organization ID',
+                  'accountid', 'AccountId', 'AccountID', 'Account ID', 'Account')
+    if (-not $orgId) { $orgId = & $pick $orgNames }
+
+    $clientId     = & $pick @('ClientId', 'ClientID', 'Client ID')
+    $clientSecret = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'ApiKey', 'Key')
+    if (-not $clientId -and $s.Credential -and $s.Credential.UserName) { $clientId = [string]$s.Credential.UserName }
+    if (-not $clientId -and $s.Username) { $clientId = [string]$s.Username }
+    if (-not $clientSecret -and $s.Credential -and $s.Credential.Password) { $clientSecret = ConvertFrom-SecureString $s.Credential.Password -AsPlainText }
+    if (-not $clientSecret) { $clientSecret = & $pick @('Password') }
+
+    # Trim copy-paste whitespace — a stray newline in the id/secret surfaces as Adobe's opaque
+    # invalid_client, and a stray space in the org id as a 403 on a URL that "looks right".
+    $orgId = ([string]$orgId).Trim(); $clientId = ([string]$clientId).Trim(); $clientSecret = ([string]$clientSecret).Trim()
+
+    # Fail actionably: name what we looked for AND what the secret actually has, so the fix is obvious.
+    if (-not $clientId -or -not $clientSecret) {
+        throw "the 'adobe' secret needs an OAuth Server-to-Server app — Username = Client ID, Password = Client Secret. The secret has: $(@($f.Keys) -join ', '). See /help/adobe."
+    }
+    if (-not $orgId) {
+        throw "the 'adobe' secret has no organization id — looked for a value ending @AdobeOrg in any field, then the fields $($orgNames -join ', '); the secret has: $(@($f.Keys) -join ', '). Put the org id (XXXXXXXXXXXX@AdobeOrg) in accountid (the 'Automation - API' template has no OrgId field). See /help/adobe."
+    }
+    # Found by name but the value doesn't look like an org id — warn, don't block: Adobe owns this
+    # format and could change it. The UMAPI call will reject it clearly enough if we're wrong.
+    if ($orgId -notmatch '@AdobeOrg\s*$') {
+        Write-CtgLog "adobe: org id '$orgId' does not end @AdobeOrg — if UMAPI returns 403, check the org id in the Adobe Admin Console." 'WARN'
+    }
+
+    $cred = [pscredential]::new($clientId, (ConvertTo-SecureString $clientSecret -AsPlainText -Force))
+    Connect-CtgAdobe -Credential $cred -OrgId $orgId
+}
+
 function Use-CtgZoomSecret {
     param($Job, $Creds)
     $s = $Creds['zoom']
@@ -847,7 +913,7 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgZoom -User $job.payload -Config $job.config -Action $job.action }
     }
     'adobe' = @{
-        Connect  = { param($job, $creds) Connect-CtgAdobe -Credential $creds['adobe'].Credential -OrgId $creds['adobe'].Fields['OrgId'] }
+        Connect  = { param($job, $creds) Use-CtgAdobeSecret -Job $job -Creds $creds }
         Onboard  = { param($job, $creds) Invoke-CtgAdobeOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgAdobeOffboarding -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgAdobe -User $job.payload -Config $job.config -Action $job.action }

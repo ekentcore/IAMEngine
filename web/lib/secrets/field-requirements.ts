@@ -40,6 +40,21 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "username", anyOf: ["Username"] },
     { label: "password", anyOf: ["Password"] },
   ],
+  // Adobe UMAPI v2 (OAuth Server-to-Server): Client ID + Client Secret + the organization id.
+  // Synonyms MIRROR the runner's Use-CtgAdobeSecret pick lists. The org id has no home in Delinea's
+  // stock "Automation - API" template (clientID / ClientSecret / accountid / apiURL — no OrgId), so
+  // `accountid` is where it actually lives; the runner also finds it by value shape (…@AdobeOrg) in
+  // any field, but this check is name-based, so the name list has to include accountid or a
+  // correctly-wired secret would read as "missing a field" here.
+  //
+  // NOT required and deliberately absent: an access token (the runner mints a short-lived one per
+  // connect), the scopes (fixed: openid,AdobeID,user_management_sdk), and a technical-account
+  // id/email (those belong to Adobe's deprecated Service Account JWT flow, which this does not use).
+  adobe: [
+    { label: "client id", anyOf: ["ClientId", "ClientID", "Client ID", "Username"] },
+    { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key", "Password"] },
+    { label: "org id (…@AdobeOrg)", anyOf: ["OrgId", "OrgID", "Org ID", "Org", "OrganizationId", "OrganizationID", "Organization ID", "accountid", "AccountId", "AccountID", "Account ID", "Account"] },
+  ],
   // Mimecast API 2.0 application: client id + client secret.
   mimecast: [
     { label: "client id", anyOf: ["ClientID", "ClientId", "Client ID", "AppId", "Application ID", "Username"] },
