@@ -439,22 +439,47 @@ function Invoke-CtgSpanningForceSync {
     $actions = [System.Collections.Generic.List[string]]::new()
     $email   = $User.UserPrincipalName
 
-    # Portal-login fields first, then fall back to the SAME API-credential synonyms Use-CtgSpanningSecret
-    # accepts (incl. the spaced variants "Client ID" / "Access Token" / "API Key") so a secret that
-    # authenticates the API lane also resolves here — the two pickers must not diverge.
-    $username = Get-CtgSpanningSecretField $Secret @('PortalUsername', 'AdminUser', 'Username', 'User', 'Email', 'ClientID', 'ClientId', 'Client ID', 'Domain', 'AccountID', 'AccountId', 'Account', 'Tenant')
-    $password = Get-CtgSpanningSecretField $Secret @('PortalPassword', 'AdminPassword', 'Password', 'Secret', 'ClientSecret', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Token', 'Key')
-    # Fall back to the pscredential the broker resolved (Username/Password slots) if the fields above
-    # weren't populated by name.
-    if ((-not $username -or -not $password)) {
+    # The force-sync signs in to the Spanning ADMIN CONSOLE, which is Microsoft 365 SSO — so it needs a
+    # real M365 USER login (an email + that account's password).
+    #
+    # It must NOT fall back to the API credential. A Spanning API clientId/accessToken is not an M365
+    # identity: handing it to Microsoft SSO cannot succeed, produces an unexplained "bad password"
+    # (the diagnostic script refuses this for exactly that reason), and repeated automated attempts
+    # with a wrong password are how you get an account locked out. If no portal login is brokered we
+    # say so plainly and leave the sync to a human — a WARN, never a case failure.
+    # Portal fields first, then the generic Username/Password PAIR (a perfectly normal place to keep a
+    # portal login). What we must never do is read the API-CREDENTIAL names — ClientID / Access Token /
+    # API Key / ClientSecret — which is what previously let a Spanning API key be typed into Microsoft's
+    # sign-in box: it can't authenticate, and repeated attempts are how the admin account gets locked.
+    #
+    # Sources are taken as PAIRS, never mixed: a portal username must not end up beside a password
+    # picked from somewhere else. The email check below is the backstop — an API clientId isn't an email.
+    $username = Get-CtgSpanningSecretField $Secret @('PortalUsername', 'AdminUser', 'AdminEmail')
+    $password = Get-CtgSpanningSecretField $Secret @('PortalPassword', 'AdminPassword')
+    if (-not $username -and -not $password) {
+        $username = Get-CtgSpanningSecretField $Secret @('Username', 'User', 'Email')
+        $password = Get-CtgSpanningSecretField $Secret @('Password')
+    }
+    # A pscredential is a username+password pair by construction — a legitimate portal-login shape.
+    if (-not $username -and -not $password) {
         $cred = Get-CtgProp $Secret 'Credential'
         if ($cred) {
-            if (-not $username) { $username = $cred.UserName }
-            if (-not $password) { try { $password = $cred.GetNetworkCredential().Password } catch { } }
+            $username = $cred.UserName
+            try { $password = $cred.GetNetworkCredential().Password } catch { }
         }
     }
     if (-not $username -or -not $password) {
-        $actions.Add("WARN could not force a Spanning sync for $email — no portal username/password brokered on the Spanning secret. Trigger the sync manually in the Spanning admin console.")
+        $actions.Add("WARN could not force a Spanning sync for $email — the Spanning secret has no PORTAL login. Add PortalUsername (an M365 admin's email) + PortalPassword to the Delinea secret, and enable One-Time Password on it for the MFA prompt. The API clientId/token CANNOT be used to sign in to the console. Trigger the sync manually meanwhile.")
+        return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
+    }
+    # An M365 sign-in name is an email/UPN. Anything else is almost certainly an API clientId that got
+    # dropped into a portal slot — refuse it rather than burn a failed sign-in against the account.
+    #
+    # The rejected VALUE is never echoed: by this guard's own premise it is credential material out of
+    # Delinea, and every action here lands in an AuditLog row and a ServiceNow work note (CLAUDE.md:
+    # secrets never live in the app). Naming the field is enough for an operator to fix it.
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        $actions.Add("WARN could not force a Spanning sync for $email — the brokered portal username is not an email/UPN, so it cannot be an M365 sign-in (an API clientId in the PortalUsername slot?). Set PortalUsername on the Delinea secret to an M365 admin's email address. The value is not repeated here because it may be credential material.")
         return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
 
@@ -481,7 +506,12 @@ function Invoke-CtgSpanningForceSync {
     if ($otpCode)    { $params['otpCode']  = $otpCode }
     if ($totpSeed)   { $params['totpSeed'] = $totpSeed }
     $flowInput = @{ username = $username; password = $password; params = $params }
-    $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput
+    # -TimeoutSeconds 420, NOT the 180s default: the flow polls the async sync for up to 2 minutes on
+    # top of browser launch + the Microsoft SSO hop + MFA (which can itself wait out a TOTP window) +
+    # the redirect back. At the default the child would be KILLED mid-poll and a sync that actually
+    # fired would come back as a failure with no retryAfterMinutes — worse than not polling at all.
+    # See the INVARIANT note on pollMs() in flows/spanning-force-sync.mjs; keep the two in step.
+    $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput -TimeoutSeconds 420
 
     if ($res.ok) {
         $msg = if ($res.message) { $res.message } else { "triggered a Spanning directory sync for $email" }

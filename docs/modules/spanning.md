@@ -39,5 +39,7 @@ returns `RetryAfterMinutes` and waits. To make Spanning scan **now**, an ad-hoc 
 job drives the Spanning admin portal via the Playwright sidecar (`Invoke-CtgSpanningForceSync` →
 `Invoke-CtgBrowserFlow -Flow 'spanning-force-sync'`). Dispatched from the Spanning step in the run
 report (`↻ force Spanning sync`), gated on the runner's `browser` capability. See
-[docs/BROWSER_AUTOMATION.md](../BROWSER_AUTOMATION.md) — the portal URL + selectors still need
-verification against a real login.
+[docs/BROWSER_AUTOMATION.md](../BROWSER_AUTOMATION.md). The login chain and the sync endpoint are
+verified (and end-to-end tested); the flow needs a PORTAL login on the Delinea secret —
+`PortalUsername` (an M365 admin email) + `PortalPassword`, with One-Time Password enabled for the MFA
+prompt. The API clientId/token cannot sign in to the console and is explicitly refused.

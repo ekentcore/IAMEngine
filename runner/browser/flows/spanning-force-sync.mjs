@@ -27,20 +27,62 @@
 // "Log In with Microsoft" hands off to Microsoft 365 SSO. The API base (o365-api-{region}…) is a
 // SEPARATE credential and not used here. (Google console is spanningbackup.com/app/, Salesforce
 // sf.spanningbackup.com — not handled by this M365 flow.)
-const SPANNING_PORTAL_URL = process.env.SPANNING_PORTAL_URL || "https://o365.spanningbackup.com/login.html";
+const DEFAULT_PORTAL_URL = "https://o365.spanningbackup.com/login.html";
+// Read at CALL time, not module-load time: a module-level const captures whatever the environment held
+// when the file was first imported, which makes the URL impossible to override per-run (and silently
+// sent a test harness at the real production portal). Regional consoles (o365-us / o365-eu …) are set
+// through this same variable.
+const portalUrl = () => process.env.SPANNING_PORTAL_URL || DEFAULT_PORTAL_URL;
 
-// If the portal reports the sync as "queued / started" rather than "finished", we ask the app to
-// re-check the user shortly (the Spanning onboarding step re-runs and confirms the license). VERIFY
-// whether the portal exposes a completion signal; until then assume async + a short recheck window.
+// The origin we must be on before firing the console's own authenticated API call.
+//
+// The trust anchor is a CONSTANT, deliberately not derived from SPANNING_PORTAL_URL: deriving it from
+// the value being validated means the check can never reject a misconfigured — or hostile — portal
+// URL, and this gate is what stops an authenticated, same-origin, credentialed POST being sent to
+// somewhere it shouldn't. Regional consoles (o365-us / o365-eu …) are all under this domain, so a
+// legitimate override still passes.
+//
+// Matching is on the registrable domain with an explicit label boundary, so neither
+// "evilspanningbackup.com" (suffix confusion) nor "spanningbackup.com.evil.com" (prefix confusion)
+// can pass.
+const TRUSTED_PORTAL_DOMAIN = "spanningbackup.com";
+
+// Test harnesses serve a stand-in console on localhost. That is an explicit, opt-in escape hatch —
+// never something a misconfigured env var can trip into by accident.
+const allowUntrustedOrigin = () => process.env.SPANNING_ALLOW_ANY_ORIGIN === "1";
+
+const onPortalOrigin = (href) => {
+  try {
+    const h = new URL(href).hostname.toLowerCase();
+    if (allowUntrustedOrigin()) return true;
+    return h === TRUSTED_PORTAL_DOMAIN || h.endsWith(`.${TRUSTED_PORTAL_DOMAIN}`);
+  } catch { return false; }
+};
+
+// The sync is asynchronous: /api/sync returns a job id with status PENDING and the console polls
+// /api/tenantCache/{id} (both confirmed from the captured HAR). A still-PENDING job is reported as
+// "started" with a recheck window, not as a failure.
 const SYNC_IS_ASYNC = true;
 const RETRY_AFTER_MINUTES = 10;
 
 import { totp } from "../lib/totp.mjs";
 
-// VERIFY the post-login (sync-control) selectors against the real console DOM; the login path below
-// is confirmed against o365.spanningbackup.com/login.html → Microsoft 365 SSO.
+// There are no post-login "sync-control" SELECTORS to verify any more: the sync is fired by replaying
+// the console's own /api/sync call (below), which is what the button does. The login path is confirmed
+// against o365.spanningbackup.com/login.html → Microsoft 365 SSO.
 // How long we'll watch the sync job before handing back to the app's own retry (it's async).
-const POLL_MS = 45_000;
+//
+// The captured HAR of a real console sync shows the job still PENDING after 2+ minutes, so the old
+// 45s window could never observe a completion. But the poll CANNOT simply be widened to match: this
+// flow runs as a child process that Invoke-CtgBrowserFlow KILLS at -TimeoutSeconds, and a killed
+// process never prints its JSON line — so a sync that actually fired would be reported to the
+// operator as a failed one, losing retryAfterMinutes and the re-check with it. That is strictly worse
+// than a short poll.
+//
+// INVARIANT: (browser launch + SSO + MFA + KMSI + redirect) + pollMs() must stay comfortably under
+// the -TimeoutSeconds that Coretelligent.Spanning passes to Invoke-CtgBrowserFlow (currently 420s,
+// raised from the 180s default for exactly this reason). Keep these two in step.
+const pollMs = () => Number(process.env.SPANNING_POLL_MS) || 120_000;
 
 const SELECTORS = {
   // The console's provider chooser: pick Microsoft 365 (vs KaseyaOne), which redirects to MS SSO.
@@ -64,6 +106,13 @@ const SELECTORS = {
 // that, so any code fetched before page-load is dead on arrival. otpReq = { url, token, agentId,
 // secretName } (the job credential endpoint the runner already uses). Returns the code or null;
 // the code itself is NEVER logged.
+// Blank the one-time-code box before any evidence screenshot on a failure path. Unlike a password
+// field (rendered as dots), the MFA input is a plain text/tel box — the Delinea-minted code is
+// legible in the screenshot pixels, and evidence is attached to the case and kept. Best-effort.
+async function scrubOtpField(page) {
+  try { await page.locator(SELECTORS.otpInput).first().fill(""); } catch { /* field gone/navigated — nothing to scrub */ }
+}
+
 async function mintOtp(otpReq, log) {
   if (!otpReq?.url) return null;
   try {
@@ -155,8 +204,10 @@ async function handleSecondFactor(page, shot, mfa, log) {
     const hint = lastSource === "seed"
       ? "check the seed on the Spanning secret and that the automation account uses app/TOTP MFA (not push/SMS)"
       : "the account's MFA may not be the authenticator this Delinea secret holds (re-pair the authenticator into the secret's One-Time Password)";
+    await scrubOtpField(page);
     return { bail: { ok: false, error: `the one-time code was rejected — ${hint}.`, evidence: await shot("otp-rejected") } };
   } catch (e) {
+    await scrubOtpField(page);
     return { bail: { ok: false, error: `second-factor handling failed: ${e?.message ?? e}`, evidence: await shot("mfa-error") } };
   }
 }
@@ -180,8 +231,9 @@ export default async function spanningForceSync({ page, shot, input, log }) {
 
   // 1. Navigate to the console, then pick "Log In with Microsoft" to hand off to Microsoft 365 SSO.
   try {
-    log(`navigating to the Spanning admin console (${SPANNING_PORTAL_URL})`);
-    await page.goto(SPANNING_PORTAL_URL, { waitUntil: "domcontentloaded" });
+    const url = portalUrl();
+    log(`navigating to the Spanning admin console (${url})`);
+    await page.goto(url, { waitUntil: "domcontentloaded" });
     const msBtn = page.locator(SELECTORS.microsoftLogin).first();
     if (await msBtn.isVisible().catch(() => false)) {
       log('selecting "Log In with Microsoft"');
@@ -190,7 +242,7 @@ export default async function spanningForceSync({ page, shot, input, log }) {
       await page.waitForTimeout(2000);
     }
   } catch (e) {
-    return { ok: false, error: `could not reach the Spanning console (${SPANNING_PORTAL_URL}) — VERIFY the URL: ${e?.message ?? e}`, evidence: await shot("nav") };
+    return { ok: false, error: `could not reach the Spanning console (${portalUrl()}): ${e?.message ?? e}`, evidence: await shot("nav") };
   }
 
   // 2. Login (username + password), then clear a second factor if present. A TOTP/app code is
@@ -228,6 +280,49 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     const mfa = await handleSecondFactor(page, shot, mfaSources, log);
     if (mfa.bail) return mfa.bail;
 
+    // A surfaced Microsoft error (bad password, locked account, blocked by Conditional Access) is far
+    // more useful to an operator than "still on the login page".
+    //
+    // This MUST run BEFORE the KMSI click below. Microsoft re-renders the sign-in form on its error
+    // page, so clicking first would re-submit the password — burning a second failed attempt against
+    // the admin account (halving the Entra smart-lockout runway, the very risk this change exists to
+    // remove) and navigating away before the error could be read.
+    //
+    // Only Microsoft's OWN error ids, and only when actually visible with text: generic selectors like
+    // `.alert-error` match empty placeholder nodes and would turn a benign banner into a hard failure.
+    const errBox = page.locator("#passwordError, #usernameError, #idSpan_SAOTCC_Error_OTC, #service_exception_message").first();
+    const msError = (await errBox.isVisible().catch(() => false))
+      ? await errBox.innerText().catch(() => null)
+      : null;
+    if (msError && msError.trim()) {
+      return { ok: false, error: `Microsoft rejected the sign-in: ${msError.trim().split("\n")[0]}`, evidence: await shot("ms-signin-error") };
+    }
+
+    // Microsoft's "Stay signed in?" (KMSI) interstitial sits BETWEEN a successful MFA and the redirect
+    // back to the app. Left unanswered, the browser parks on login.microsoftonline.com and the sync
+    // below bails with "wrong-origin" — i.e. a fully successful sign-in reported as a failure.
+    //
+    // Identify it by the PAGE, not by a button id: #idSIButton9 is Microsoft's GENERIC submit id (it's
+    // "Next" on the username page, "Sign in" on the password page, "Yes" here), and a bare
+    // `button:has-text("Yes")` would happily match something else entirely — including the console's
+    // own buttons once we're back on it. We require the KMSI form itself to be present, then click its
+    // button. Either answer is fine; "Yes" also persists device trust for the profile.
+    const kmsiForm = page.locator('form[name="hiddenform"], #kmsiForm, :has-text("Stay signed in?")');
+    const kmsiBtn = page.locator('#idSIButton9:visible, #idBtn_Back:visible').first();
+    const onKmsi =
+      (await page.locator('input[name="DontShowAgain"], #KmsiCheckboxField').count().catch(() => 0)) > 0 ||
+      (await kmsiForm.filter({ hasText: /stay signed in\?/i }).count().catch(() => 0)) > 0;
+    if (onKmsi && (await kmsiBtn.isVisible().catch(() => false))) {
+      log('answering Microsoft\'s "Stay signed in?" prompt');
+      await kmsiBtn.click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+    }
+
+    // Wait for the redirect BACK to the Spanning console rather than guessing with a fixed sleep — the
+    // hand-off through Microsoft SSO takes as long as it takes, and a short sleep is what made this
+    // read as "wrong origin" before.
+    await page.waitForURL((u) => onPortalOrigin(String(u)), { timeout: 60_000 }).catch(() => {});
+
     // Still on a password field after submit ⇒ the login was rejected (or the selectors are wrong).
     if (await pwField.isVisible().catch(() => false)) {
       return { ok: false, error: "Spanning portal login did not succeed (still on the login page) — check the brokered portal credentials, or VERIFY the login selectors", evidence: await shot("login-failed") };
@@ -253,7 +348,7 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     // The API is on the REGIONAL host (o365-us…), which is where the console lands after login.
     // Be explicit rather than assuming: same-origin fetch requires us to be ON that origin.
     const origin = new URL(page.url()).origin;
-    if (!/spanningbackup\.com$/.test(new URL(origin).hostname)) {
+    if (!onPortalOrigin(origin)) {
       return { ok: false, error: `after login the page is on ${origin}, not a Spanning console origin — cannot fire the sync from here`, evidence: await shot("wrong-origin") };
     }
 
@@ -286,7 +381,7 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     // and the Spanning onboarding step re-checks the user on its own retry.
     let finalStatus = started ?? "PENDING";
     if (jobId) {
-      const deadline = Date.now() + POLL_MS;
+      const deadline = Date.now() + pollMs();
       while (Date.now() < deadline) {
         await page.waitForTimeout(3000);
         const p = await page.evaluate(async (id) => {

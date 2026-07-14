@@ -57,22 +57,37 @@ secret + config, `singleRun` so it can run on a completed/paused case.
   clear message so the operator syncs by hand (or switches the automation account to app/TOTP MFA).
   The seed and the generated code are never logged.
 
-## ⚠ Needs verification against a real portal
+## Spanning force-sync: what is verified, and what YOU must configure
 
-The Spanning **portal login URL** and **DOM selectors** in `flows/spanning-force-sync.mjs` are
-best-guess placeholders, in clearly-labelled constants (`SPANNING_PORTAL_URL`, `SELECTORS`) marked
-`VERIFY against the real portal`. The flow degrades safely until verified (structured failure +
-screenshot, never a false success). To finalize, on a live Spanning admin console:
+**Verified against the live console** (and covered by an end-to-end test that drives the real flow
+against a fake Microsoft-SSO portal — `flows/spanning-force-sync.test.mjs`):
 
-1. Confirm `SPANNING_PORTAL_URL` (the admin login — **not** the `o365-api-*` API host).
-2. Capture the real selectors (e.g. `npx playwright codegen <portal-url>`).
-3. Confirm whether the sync completes synchronously or is queued (drives `SYNC_IS_ASYNC` /
-   `RETRY_AFTER_MINUTES`).
-4. Confirm which **credential** the portal accepts — the API secret stores clientId/clientSecret; the
-   admin console login may need a different (O365 admin) credential on the Spanning secret.
-5. Confirm the **second-factor type**. If it's app/TOTP, add the authenticator **seed** to the Spanning
-   secret (`TOTP` / `OTP Seed` field) and the flow clears it automatically. If it's push/number-match/
-   SMS, unattended automation isn't possible — use a TOTP-based automation account or sync manually.
+- The login chain: `SPANNING_PORTAL_URL` → "Log In with Microsoft" → Microsoft 365 SSO → the
+  "Stay signed in?" (KMSI) interstitial → redirect back to the console.
+- The sync itself. Clicking "Sync" in the console fires exactly one state-changing request, captured
+  in a real HAR: `POST /api/sync {}` → `200 {id, status:"PENDING"}`, then the UI polls
+  `GET /api/tenantCache/{id}`. The flow **replays that call from inside the logged-in page**, so
+  there are no sync selectors to rot — and no token is ever extracted (same-origin fetch reuses the
+  page's own session).
+- The sync is **async**: still `PENDING` after the poll window is reported as *started*, with a
+  recheck window — not as a failure, and never as a false success.
+
+**The one thing it needs from you: the Spanning Delinea secret must carry a PORTAL login.**
+
+1. `PortalUsername` — an **M365 admin's email address**, and `PortalPassword` — that account's
+   password. The console is Microsoft 365 SSO, so it needs a real M365 identity. The Spanning **API**
+   credential (`clientId` / `accessToken`) **cannot** sign in to the console: it is not an M365
+   identity, it produces an unexplained bad-password error, and repeated automated attempts are how
+   the account gets locked. The executor now refuses to try (a WARN, never a case failure), and also
+   refuses a username that isn't an email — that is almost always an API clientId in the wrong slot.
+2. **Enable One-Time Password on that Delinea secret.** The MFA code is minted by Delinea *at the
+   moment the prompt appears* — the authenticator seed never leaves the vault. Without it, the flow
+   stops at the MFA screen with a screenshot (which is exactly where every attempt died before).
+3. The second factor must be **app/TOTP**. Push / number-matching / SMS / phone-call cannot be
+   automated headless; the flow hard-stops on those with a clear message so an operator syncs by hand.
+
+Regional consoles (`o365-us`, `o365-eu`, …) are set through `SPANNING_PORTAL_URL`; the origin check
+follows whatever you configure rather than a hardcoded host.
 
 ## Adding a new flow
 

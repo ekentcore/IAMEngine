@@ -238,6 +238,27 @@ Describe 'Invoke-CtgSpanningForceSync — MFA source' {
         $script:user = [pscustomobject]@{ UserPrincipalName = 'new.user@x.com' }
     }
 
+    # The console is Microsoft 365 SSO, so it needs a real M365 USER login. The Spanning API
+    # clientId/accessToken is not an M365 identity: it cannot authenticate, produces an unexplained
+    # bad-password error, and repeated automated attempts are how an account gets locked out.
+    It 'refuses to sign in with the Spanning API credential (never launches the browser)' {
+        $apiOnly = [pscustomobject]@{ Fields = @{ ClientID = 'abc123-clientid'; 'Access Token' = 'tok_live_xyz' } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $apiOnly
+        $r.Status | Should -Be 'ok'   # a WARN, never a case failure
+        ($r.Actions -join ' ') | Should -Match 'no PORTAL login'
+        ($r.Actions -join ' ') | Should -Match 'API clientId/token CANNOT be used'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+
+    # An API clientId dropped into a Username slot would otherwise be typed at the Microsoft sign-in box.
+    It 'refuses a portal username that is not an email/UPN' {
+        $notEmail = [pscustomobject]@{ Fields = @{ PortalUsername = 'abc123-clientid'; PortalPassword = 'pw' } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $notEmail
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'is not an email/UPN'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+
     It 'passes the Delinea-minted CODE to the flow and never a seed' {
         $provider = { [pscustomobject]@{ Code = '123456'; RemainingSeconds = 27 } }
         $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $script:secret -OtpProvider $provider

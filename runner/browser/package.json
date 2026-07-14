@@ -11,7 +11,8 @@
     "run-flow": "./run-flow.mjs"
   },
   "scripts": {
-    "install-browser": "playwright install chromium"
+    "install-browser": "playwright install chromium",
+    "test": "node --test flows/*.test.mjs lib/*.test.mjs"
   },
   "dependencies": {
     "@playwright/test": "^1.48.0"
