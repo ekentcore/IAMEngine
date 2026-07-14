@@ -19,6 +19,14 @@ export function secretHelp(name: string, systems: string[]): SecretHelp | null {
   if (name === "spanning") {
     return { kind: "API key", href: "/help/spanning" };
   }
+  if (name === "spanning-portal") {
+    // OPTIONAL — only force-sync needs it. The console is M365 SSO, so this is an admin SIGN-IN, not
+    // the API key; the guide's step 4 is the one that matters (and the TOTP requirement).
+    return { kind: "optional — M365 admin sign-in for force sync", href: "/help/spanning" };
+  }
+  if (name === "slack") {
+    return { kind: "SCIM token (admin scope, Business+ plan)", href: "/help/slack" };
+  }
   if (name === "1password") {
     return { kind: "admin account for the op CLI (api method only)", href: "/help/1password" };
   }
