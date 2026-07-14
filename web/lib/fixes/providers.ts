@@ -45,6 +45,28 @@ export function normalizeApiVersion(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+// The origin (scheme://host:port) a provider's calls are sent to — the security-relevant part of a
+// baseUrl. null when it can't be parsed.
+function originOf(baseUrl: unknown): string | null {
+  if (typeof baseUrl !== "string") return null;
+  try {
+    return new URL(baseUrl.trim()).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// Would this edit send the stored key to a DIFFERENT host? That — not any URL edit — is what must
+// be proven by re-entering the key, since exfiltration requires a host the attacker controls. A
+// path-only change (e.g. swapping an Azure deployment) keeps the key on the same host.
+// FAILS CLOSED: if either URL is unparseable we cannot prove the host is unchanged, so we say yes.
+export function keyDestinationChanged(before: string, after: unknown): boolean {
+  const a = originOf(before);
+  const b = originOf(after);
+  if (a === null || b === null) return true;
+  return a !== b;
+}
+
 // Make `id` the sole default (or clear the flag). Wrapped in a transaction so two concurrent
 // saves can't leave zero or two defaults.
 export async function setDefaultFlag(db: PrismaClient, id: string, isDefault: boolean): Promise<void> {

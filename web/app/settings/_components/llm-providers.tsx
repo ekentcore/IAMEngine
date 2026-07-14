@@ -1,15 +1,51 @@
 "use client";
 
 // Settings → LLM providers: the fix lane's provider registry. Presets one-click-fill Claude /
-// OpenAI / OpenRouter / Azure AI / Hugging Face; any OpenAI-compatible endpoint works with a
-// custom base URL. The API key is write-only — the server only ever returns its last 4 chars.
-// (The eye toggle reveals only what YOU just typed into the box, never the stored key.)
+// OpenAI / OpenRouter / Azure AI / Hugging Face; any OpenAI-compatible endpoint works via Custom.
+//
+// The form is SHAPE-aware (see ProviderShape). Azure names its endpoint in three parts — resource,
+// deployment, api-version — so it gets a field for each and the base URL is derived. Everything
+// else asks for a raw base URL + model. "Advanced" drops any provider down to the raw form.
+//
+// The API key is write-only — the server only ever returns its last 4 chars. The eye reveals only
+// what YOU just typed into the box, never the stored key.
 import { useState } from "react";
-import { ADAPTERS, LLM_PROVIDER_PRESETS, chatCompletionsUrl, type LlmAdapter } from "@/lib/fixes/provider-presets";
+import {
+  ADAPTERS,
+  LLM_PROVIDER_PRESETS,
+  azureBaseUrl,
+  azureDeploymentProblem,
+  azureEndpointProblem,
+  chatCompletionsUrl,
+  parseAzureBaseUrl,
+  type LlmAdapter,
+  type ProviderShape,
+} from "@/lib/fixes/provider-presets";
 import type { MaskedLlmProvider } from "@/lib/fixes/providers";
 
-type FormState = { name: string; adapter: LlmAdapter; baseUrl: string; model: string; apiVersion: string; apiKey: string };
-const EMPTY: FormState = { name: "", adapter: "openai-compatible", baseUrl: "", model: "", apiVersion: "", apiKey: "" };
+type FormState = {
+  shape: ProviderShape;
+  name: string;
+  adapter: LlmAdapter;
+  baseUrl: string; // generic shape
+  model: string; // generic shape
+  endpoint: string; // azure shape
+  deployment: string; // azure shape
+  apiVersion: string;
+  apiKey: string;
+};
+
+const EMPTY: FormState = {
+  shape: "generic",
+  name: "",
+  adapter: "openai-compatible",
+  baseUrl: "",
+  model: "",
+  endpoint: "",
+  deployment: "",
+  apiVersion: "",
+  apiKey: "",
+};
 
 type TestState = { line: string; tone: "pending" | "ok" | "err"; asked?: string; answer?: string };
 
@@ -24,6 +60,33 @@ function EyeIcon({ off }: { off: boolean }) {
       {off && <path d="M3 3l18 18" />}
     </svg>
   );
+}
+
+// The wire values a form state resolves to. Azure derives them; generic passes them through.
+function resolved(form: FormState): { adapter: LlmAdapter; baseUrl: string; model: string } {
+  if (form.shape === "azure") {
+    return {
+      adapter: "openai-compatible",
+      baseUrl: azureBaseUrl(form.endpoint, form.deployment),
+      // In Azure the deployment picks the model; send it as the model too so the body agrees.
+      model: form.deployment.trim(),
+    };
+  }
+  return { adapter: form.adapter, baseUrl: form.baseUrl.trim(), model: form.model.trim() };
+}
+
+// What still needs filling in before Save can be pressed. null = good to go.
+function formProblem(form: FormState, editing: boolean): string | null {
+  if (!form.name.trim()) return "name is required";
+  if (form.shape === "azure") {
+    const problem = azureEndpointProblem(form.endpoint) ?? azureDeploymentProblem(form.deployment);
+    if (problem) return problem;
+  } else {
+    if (!form.baseUrl.trim()) return "base URL is required";
+    if (!form.model.trim()) return "model is required";
+  }
+  if (!editing && !form.apiKey.trim()) return "the API key is required";
+  return null;
 }
 
 export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
@@ -48,15 +111,18 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
   }
 
   async function save() {
+    const problem = formProblem(form, !!editingId);
+    if (problem) { setErr(problem); return; }
     setBusy(true); setErr(null);
     try {
+      const wire = resolved(form);
       const payload = {
         name: form.name,
-        adapter: form.adapter,
-        baseUrl: form.baseUrl,
-        model: form.model,
+        adapter: wire.adapter,
+        baseUrl: wire.baseUrl,
+        model: wire.model,
         // Always sent, so clearing the box clears the pinned version server-side.
-        apiVersion: form.adapter === "openai-compatible" ? form.apiVersion : "",
+        apiVersion: wire.adapter === "openai-compatible" ? form.apiVersion : "",
         ...(form.apiKey.trim() ? { apiKey: form.apiKey } : {}),
       };
       const res = editingId
@@ -118,16 +184,56 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
     }));
   }
 
+  // Re-open a stored provider in the shape it was written in: an Azure deployment URL parses back
+  // into its parts, anything else opens raw.
   function startEdit(p: MaskedLlmProvider) {
+    const azure = p.adapter === "openai-compatible" ? parseAzureBaseUrl(p.baseUrl) : null;
     setEditingId(p.id);
-    setForm({ name: p.name, adapter: p.adapter as LlmAdapter, baseUrl: p.baseUrl, model: p.model, apiVersion: p.apiVersion ?? "", apiKey: "" });
+    setForm({
+      ...EMPTY,
+      shape: azure ? "azure" : "generic",
+      name: p.name,
+      adapter: p.adapter as LlmAdapter,
+      baseUrl: azure ? "" : p.baseUrl,
+      model: azure ? "" : p.model,
+      endpoint: azure?.endpoint ?? "",
+      deployment: azure?.deployment ?? "",
+      apiVersion: p.apiVersion ?? "",
+      apiKey: "",
+    });
     setOpen(true);
     setShowKey(false);
     setErr(null);
   }
 
+  function applyPreset(key: string) {
+    const p = LLM_PROVIDER_PRESETS.find((x) => x.key === key);
+    if (!p) return;
+    setErr(null);
+    setForm((f) => ({
+      ...f,
+      shape: p.shape,
+      name: p.name === "Custom" ? f.name : p.name,
+      adapter: p.adapter,
+      apiVersion: p.apiVersion ?? "",
+      // For the azure shape the preset's baseUrl/model ARE the endpoint/deployment.
+      baseUrl: p.shape === "azure" ? "" : p.baseUrl,
+      model: p.shape === "azure" ? "" : p.model,
+      endpoint: p.shape === "azure" ? p.baseUrl : "",
+      deployment: p.shape === "azure" ? p.model : "",
+    }));
+  }
+
+  // Drop to the raw-URL form, carrying whatever the shaped form had built.
+  function toAdvanced() {
+    const wire = resolved(form);
+    setForm((f) => ({ ...f, shape: "generic", adapter: wire.adapter, baseUrl: wire.baseUrl, model: wire.model }));
+  }
+
+  const wire = resolved(form);
   const preset = LLM_PROVIDER_PRESETS.find((x) => x.name === form.name);
   const toneColor = (t: TestState["tone"]) => (t === "ok" ? "var(--ok-fg, #15803d)" : t === "err" ? "var(--err-fg, #b91c1c)" : undefined);
+  const saveProblem = formProblem(form, !!editingId);
 
   return (
     <section style={{ marginTop: "2.5rem" }}>
@@ -152,6 +258,7 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
           <tbody>
             {providers.map((p) => {
               const res = testResult[p.id];
+              const azure = parseAzureBaseUrl(p.baseUrl);
               return (
                 <tr key={p.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top" }}>
                   <td style={{ padding: "4px 8px" }}>
@@ -160,8 +267,8 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
                   <td style={{ padding: "4px 8px" }}><b>{p.name}</b></td>
                   <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>{p.adapter}</td>
                   <td style={{ padding: "4px 8px", overflowWrap: "anywhere" }}>
-                    {p.model}
-                    <span className="note" style={{ display: "block", fontSize: 11, overflowWrap: "anywhere" }}>{p.baseUrl}</span>
+                    {azure ? `${azure.deployment} (deployment)` : p.model}
+                    <span className="note" style={{ display: "block", fontSize: 11, overflowWrap: "anywhere" }}>{azure ? azure.endpoint : p.baseUrl}</span>
                     {p.apiVersion && <span className="note" style={{ display: "block", fontSize: 11 }}>api-version {p.apiVersion}</span>}
                   </td>
                   <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{p.apiKeyMasked}</td>
@@ -222,29 +329,52 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
             <span className="note" style={{ alignSelf: "center" }}>Presets:</span>
             {LLM_PROVIDER_PRESETS.map((x) => (
-              <button key={x.key} type="button" style={{ fontSize: 12 }}
-                onClick={() => set({ name: x.name, adapter: x.adapter, baseUrl: x.baseUrl, model: x.model, apiVersion: x.apiVersion ?? "" })}>
+              <button key={x.key} type="button" style={{ fontSize: 12 }} onClick={() => applyPreset(x.key)}>
                 {x.name}
               </button>
             ))}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: "6px 10px", alignItems: "center", fontSize: 13 }}>
-            <label htmlFor="llm-name">Name</label>
-            <input id="llm-name" value={form.name} onChange={(e) => set({ name: e.target.value })} style={inputStyle} placeholder="Claude" />
-            <label htmlFor="llm-adapter">Adapter</label>
-            <select id="llm-adapter" value={form.adapter} onChange={(e) => set({ adapter: e.target.value as LlmAdapter })} style={inputStyle}>
-              {ADAPTERS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-            </select>
-            <label htmlFor="llm-baseurl">Base URL</label>
-            <input id="llm-baseurl" value={form.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} style={inputStyle} placeholder="https://api.anthropic.com" />
-            <label htmlFor="llm-model">Model</label>
-            <input id="llm-model" value={form.model} onChange={(e) => set({ model: e.target.value })} style={inputStyle} placeholder="claude-sonnet-5" />
 
-            {/* Anthropic pins its version in a header, not a query param — this field is Azure's. */}
-            {form.adapter === "openai-compatible" && (
+          <div style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: "6px 10px", alignItems: "center", fontSize: 13 }}>
+            <label htmlFor="llm-name">Name</label>
+            <input id="llm-name" value={form.name} onChange={(e) => set({ name: e.target.value })} style={inputStyle} placeholder="Azure AI" />
+
+            {form.shape === "azure" ? (
               <>
+                <label htmlFor="llm-endpoint">Resource endpoint</label>
+                <input id="llm-endpoint" value={form.endpoint} onChange={(e) => set({ endpoint: e.target.value })} style={inputStyle} placeholder="https://my-resource.openai.azure.com" />
+
+                <label htmlFor="llm-deployment">Deployment</label>
+                <input id="llm-deployment" value={form.deployment} onChange={(e) => set({ deployment: e.target.value })} style={inputStyle} placeholder="gpt-4o-mini" />
+
+                <span />
+                <span className="note" style={{ fontSize: 11 }}>
+                  The deployment name from the Azure portal — this is what selects the model. Change it to point at a different one.
+                </span>
+
                 <label htmlFor="llm-apiversion">API version</label>
-                <input id="llm-apiversion" value={form.apiVersion} onChange={(e) => set({ apiVersion: e.target.value })} style={inputStyle} placeholder="Azure only — e.g. 2024-10-21 (leave blank otherwise)" />
+                <input id="llm-apiversion" value={form.apiVersion} onChange={(e) => set({ apiVersion: e.target.value })} style={inputStyle} placeholder="2025-01-01-preview" />
+              </>
+            ) : (
+              <>
+                <label htmlFor="llm-adapter">Adapter</label>
+                <select id="llm-adapter" value={form.adapter} onChange={(e) => set({ adapter: e.target.value as LlmAdapter })} style={inputStyle}>
+                  {ADAPTERS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+                </select>
+
+                <label htmlFor="llm-baseurl">Base URL</label>
+                <input id="llm-baseurl" value={form.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} style={inputStyle} placeholder="https://api.anthropic.com" />
+
+                <label htmlFor="llm-model">Model</label>
+                <input id="llm-model" value={form.model} onChange={(e) => set({ model: e.target.value })} style={inputStyle} placeholder="claude-sonnet-5" />
+
+                {/* Anthropic pins its version in a header, not a query param. */}
+                {form.adapter === "openai-compatible" && (
+                  <>
+                    <label htmlFor="llm-apiversion">API version</label>
+                    <input id="llm-apiversion" value={form.apiVersion} onChange={(e) => set({ apiVersion: e.target.value })} style={inputStyle} placeholder="optional — Azure needs one, others don't" />
+                  </>
+                )}
               </>
             )}
 
@@ -273,15 +403,22 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
             </div>
           </div>
 
-          {form.adapter === "openai-compatible" && form.baseUrl.trim() && (
+          {wire.adapter === "openai-compatible" && wire.baseUrl && (
             <p className="note" style={{ marginTop: 6, fontSize: 11, overflowWrap: "anywhere" }}>
-              Calls: {chatCompletionsUrl(form.baseUrl.trim(), form.apiVersion)}
+              Calls: {chatCompletionsUrl(wire.baseUrl, form.apiVersion)}
             </p>
           )}
-          {preset && <p className="note" style={{ marginTop: 6, fontSize: 11 }}>Key: {preset.keyHint}</p>}
+          {preset?.keyHint && <p className="note" style={{ marginTop: 6, fontSize: 11 }}>Key: {preset.keyHint}</p>}
+          {form.shape === "azure" && (
+            <p style={{ marginTop: 6 }}>
+              <button type="button" onClick={toAdvanced} style={{ fontSize: 11 }}>
+                Advanced — edit the raw URL instead
+              </button>
+            </p>
+          )}
 
           <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-            <button type="button" onClick={save} disabled={busy || !form.name.trim() || !form.baseUrl.trim() || !form.model.trim() || (!editingId && !form.apiKey.trim())} style={{ fontWeight: 600 }}>
+            <button type="button" onClick={save} disabled={busy || !!saveProblem} title={saveProblem ?? undefined} style={{ fontWeight: 600 }}>
               {busy ? "Saving…" : editingId ? "Save changes" : "Add provider"}
             </button>
             <button type="button" onClick={() => { setOpen(false); setEditingId(null); setForm(EMPTY); setErr(null); setShowKey(false); }} disabled={busy}>Cancel</button>

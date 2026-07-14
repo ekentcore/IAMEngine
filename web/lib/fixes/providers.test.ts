@@ -2,8 +2,15 @@
 // endpoints need, its validation, and pulling the answer out of either wire format.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { apiVersionProblem, chatCompletionsUrl } from "./provider-presets";
-import { answerFromResponse, normalizeApiVersion, providerInputProblem } from "./providers";
+import {
+  apiVersionProblem,
+  azureBaseUrl,
+  azureDeploymentProblem,
+  azureEndpointProblem,
+  chatCompletionsUrl,
+  parseAzureBaseUrl,
+} from "./provider-presets";
+import { answerFromResponse, keyDestinationChanged, normalizeApiVersion, providerInputProblem } from "./providers";
 
 test("chatCompletionsUrl omits api-version when none is pinned", () => {
   assert.equal(chatCompletionsUrl("https://api.openai.com/v1", null), "https://api.openai.com/v1/chat/completions");
@@ -67,4 +74,108 @@ test("answerFromResponse returns empty string on a malformed body rather than th
   assert.equal(answerFromResponse("openai-compatible", null), "");
   assert.equal(answerFromResponse("anthropic", {}), "");
   assert.equal(answerFromResponse("openai-compatible", { choices: [] }), "");
+});
+
+// ── Azure form shape: endpoint + deployment <-> the single stored baseUrl ─────
+
+test("azureBaseUrl builds the deployments path from the two parts", () => {
+  assert.equal(
+    azureBaseUrl("https://coregpt4.openai.azure.com", "gpt-4o-mini"),
+    "https://coregpt4.openai.azure.com/openai/deployments/gpt-4o-mini"
+  );
+});
+
+test("azureBaseUrl tolerates trailing/leading slashes on either part", () => {
+  assert.equal(
+    azureBaseUrl("https://acme.openai.azure.com///", "/gpt-4o/"),
+    "https://acme.openai.azure.com/openai/deployments/gpt-4o"
+  );
+});
+
+test("azureBaseUrl returns empty when a part is missing (Save stays disabled)", () => {
+  assert.equal(azureBaseUrl("", "gpt-4o"), "");
+  assert.equal(azureBaseUrl("https://acme.openai.azure.com", ""), "");
+});
+
+test("parseAzureBaseUrl round-trips what azureBaseUrl builds", () => {
+  const built = azureBaseUrl("https://coregpt4.openai.azure.com", "gpt-4o-mini");
+  assert.deepEqual(parseAzureBaseUrl(built), { endpoint: "https://coregpt4.openai.azure.com", deployment: "gpt-4o-mini" });
+});
+
+test("parseAzureBaseUrl round-trips a deployment name needing URL encoding", () => {
+  const built = azureBaseUrl("https://acme.openai.azure.com", "gpt 4o");
+  assert.equal(built, "https://acme.openai.azure.com/openai/deployments/gpt%204o");
+  assert.deepEqual(parseAzureBaseUrl(built), { endpoint: "https://acme.openai.azure.com", deployment: "gpt 4o" });
+});
+
+test("parseAzureBaseUrl returns null for non-Azure-deployment URLs, so they open in the raw form", () => {
+  assert.equal(parseAzureBaseUrl("https://api.openai.com/v1"), null);
+  assert.equal(parseAzureBaseUrl("https://acme.openai.azure.com/openai/v1"), null);
+  assert.equal(parseAzureBaseUrl("https://acme.openai.azure.com"), null); // the broken bare shape
+  assert.equal(parseAzureBaseUrl(""), null);
+});
+
+test("parseAzureBaseUrl survives a malformed percent-escape rather than throwing", () => {
+  assert.deepEqual(parseAzureBaseUrl("https://acme.openai.azure.com/openai/deployments/100%"), {
+    endpoint: "https://acme.openai.azure.com",
+    deployment: "100%",
+  });
+});
+
+test("azureEndpointProblem rejects a URL that already has the deployment path baked in", () => {
+  assert.equal(azureEndpointProblem("https://acme.openai.azure.com"), null);
+  assert.equal(azureEndpointProblem("https://acme.openai.azure.com/"), null);
+  assert.ok(azureEndpointProblem("https://acme.openai.azure.com/openai/deployments/gpt-4o"));
+  assert.ok(azureEndpointProblem(""));
+  assert.ok(azureEndpointProblem("not-a-url"));
+});
+
+test("azureDeploymentProblem rejects names that would break the path", () => {
+  assert.equal(azureDeploymentProblem("gpt-4o-mini"), null);
+  assert.ok(azureDeploymentProblem(""));
+  assert.ok(azureDeploymentProblem("a/b"));
+  assert.ok(azureDeploymentProblem("has space")); // \s is rejected
+});
+
+// The full Azure round-trip the form relies on: build -> store -> parse back into the same fields.
+test("an Azure provider survives a save/edit round-trip through the stored baseUrl", () => {
+  const endpoint = "https://coregpt4.openai.azure.com";
+  const deployment = "gpt-4o-mini";
+  const stored = azureBaseUrl(endpoint, deployment);
+  assert.equal(providerInputProblem({ name: "Azure AI", adapter: "openai-compatible", baseUrl: stored, model: deployment, apiVersion: "2025-01-01-preview" }), null);
+  assert.deepEqual(parseAzureBaseUrl(stored), { endpoint, deployment });
+  assert.equal(
+    chatCompletionsUrl(stored, "2025-01-01-preview"),
+    "https://coregpt4.openai.azure.com/openai/deployments/gpt-4o-mini/chat/completions?api-version=2025-01-01-preview"
+  );
+});
+
+// ── The re-enter-the-key guard: gated on the HOST, not the whole URL ──────────
+
+test("keyDestinationChanged: swapping an Azure deployment (path only) does NOT demand the key", () => {
+  const before = "https://coregpt4.openai.azure.com/openai/deployments/gpt-4o-mini";
+  const after = "https://coregpt4.openai.azure.com/openai/deployments/gpt-4o";
+  assert.equal(keyDestinationChanged(before, after), false);
+});
+
+test("keyDestinationChanged: repointing at another host DOES demand the key", () => {
+  const before = "https://coregpt4.openai.azure.com/openai/deployments/gpt-4o-mini";
+  assert.equal(keyDestinationChanged(before, "https://evil.example.com/openai/deployments/gpt-4o-mini"), true);
+  // a sneakier one: attacker host as a subdomain-looking suffix
+  assert.equal(keyDestinationChanged(before, "https://coregpt4.openai.azure.com.evil.example.com/x"), true);
+});
+
+test("keyDestinationChanged: scheme or port changes count as a different host", () => {
+  assert.equal(keyDestinationChanged("https://acme.openai.azure.com", "http://acme.openai.azure.com"), true);
+  assert.equal(keyDestinationChanged("https://acme.openai.azure.com", "https://acme.openai.azure.com:8443"), true);
+});
+
+test("keyDestinationChanged: fails CLOSED on an unparseable URL", () => {
+  assert.equal(keyDestinationChanged("https://acme.openai.azure.com", "not-a-url"), true);
+  assert.equal(keyDestinationChanged("garbage", "garbage"), true); // identical but unprovable → still demand it
+  assert.equal(keyDestinationChanged("https://acme.openai.azure.com", null), true);
+});
+
+test("keyDestinationChanged: host comparison ignores case and a trailing slash", () => {
+  assert.equal(keyDestinationChanged("https://ACME.openai.azure.com", "https://acme.openai.azure.com/"), false);
 });

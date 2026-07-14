@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
-import { normalizeApiVersion, providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
+import { keyDestinationChanged, normalizeApiVersion, providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
 import type { LlmAdapter } from "@/lib/fixes/provider-presets";
 
 export const dynamic = "force-dynamic";
@@ -36,13 +36,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const apiKey = typeof body.apiKey === "string" && body.apiKey.trim() ? body.apiKey.trim() : null;
   if (apiKey && apiKey.length > 500) return NextResponse.json({ error: "apiKey too long" }, { status: 422 });
 
-  // The stored key is write-only (the UI never sees it). If the endpoint the key is sent to changes
-  // — baseUrl or adapter — require re-entering the key: otherwise repointing baseUrl to an
-  // attacker host and hitting /test would exfiltrate the existing key. Changing where a secret is
-  // sent must be proven by whoever holds the secret.
-  const endpointChanged = (merged.baseUrl as string).trim() !== existing.baseUrl || merged.adapter !== existing.adapter;
-  if (endpointChanged && !apiKey) {
-    return NextResponse.json({ error: "re-enter the API key to change the base URL or adapter" }, { status: 422 });
+  // The stored key is write-only (the UI never sees it). If the HOST the key gets sent to changes,
+  // require re-entering it: otherwise repointing baseUrl at an attacker host and hitting /test would
+  // exfiltrate the existing key. Sending a secret somewhere new must be proven by whoever holds it.
+  //
+  // The boundary is the ORIGIN, not the whole URL. Exfiltration needs a host the attacker controls,
+  // so a path-only change can't leak the key — and Azure encodes the deployment IN the path, so
+  // gating on the full URL would force a key re-entry every time an operator switched model. An
+  // unparseable URL fails closed.
+  const destinationChanged = keyDestinationChanged(existing.baseUrl, merged.baseUrl) || merged.adapter !== existing.adapter;
+  if (destinationChanged && !apiKey) {
+    return NextResponse.json({ error: "re-enter the API key to change the host or adapter" }, { status: 422 });
   }
 
   const updated = await db.llmProvider.update({
