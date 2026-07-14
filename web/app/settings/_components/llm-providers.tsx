@@ -48,6 +48,7 @@ const EMPTY: FormState = {
 };
 
 type TestState = { line: string; tone: "pending" | "ok" | "err"; asked?: string; answer?: string };
+type AzureDeployment = { name: string; model: string; status: string };
 
 const inputStyle = { fontSize: 13, padding: "4px 8px", width: "100%" } as const;
 
@@ -100,8 +101,50 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
   const [testResult, setTestResult] = useState<Record<string, TestState>>({});
   const [askId, setAskId] = useState<string | null>(null); // provider whose ask box is open
   const [question, setQuestion] = useState("");
+  // Azure deployments, fetched on demand so the operator picks a real name instead of typing one.
+  const [deployments, setDeployments] = useState<AzureDeployment[] | null>(null);
+  const [loadingDeployments, setLoadingDeployments] = useState(false);
+  const [deploymentsErr, setDeploymentsErr] = useState<string | null>(null);
+  const [typeDeployment, setTypeDeployment] = useState(false); // escape hatch: type it by hand
 
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
+
+  // Ask Azure what's deployed on the endpoint currently in the form. Uses the key typed into the
+  // form if there is one; otherwise the server may fall back to the stored key — but only for the
+  // provider's own host (it refuses, and asks for the key, if the endpoint was repointed).
+  async function loadDeployments() {
+    setLoadingDeployments(true);
+    setDeploymentsErr(null);
+    try {
+      const r = await fetch("/api/admin/llm-providers/azure-deployments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: form.endpoint.trim(),
+          ...(form.apiKey.trim() ? { apiKey: form.apiKey } : {}),
+          ...(editingId ? { providerId: editingId } : {}),
+        }),
+      });
+      const data = (await r.json().catch(() => ({}))) as { deployments?: AzureDeployment[]; error?: string };
+      if (!r.ok) {
+        setDeploymentsErr(data.error ?? `failed (${r.status})`);
+        return;
+      }
+      const list = data.deployments ?? [];
+      setDeployments(list);
+      setTypeDeployment(false);
+      if (!list.length) setDeploymentsErr("Azure reports no deployments on this resource.");
+      // Nothing chosen yet? Pick the first healthy one so the form is immediately valid.
+      if (list.length && !form.deployment) {
+        const first = list.find((d) => d.status === "succeeded") ?? list[0];
+        set({ deployment: first.name });
+      }
+    } catch (e) {
+      setDeploymentsErr(e instanceof Error ? e.message : "request failed");
+    } finally {
+      setLoadingDeployments(false);
+    }
+  }
 
   async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Record<string, unknown> }> {
     const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -131,7 +174,7 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
       if (!res.ok) return;
       const p = res.data.provider as MaskedLlmProvider;
       setProviders((list) => (editingId ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p]));
-      setForm(EMPTY); setEditingId(null); setOpen(false); setShowKey(false);
+      setForm(EMPTY); setEditingId(null); setOpen(false); setShowKey(false); setDeployments(null); setDeploymentsErr(null); setTypeDeployment(false);
     } finally {
       setBusy(false);
     }
@@ -204,12 +247,14 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
     setOpen(true);
     setShowKey(false);
     setErr(null);
+    setDeployments(null); setDeploymentsErr(null); setTypeDeployment(false); // a list fetched for another provider must not linger
   }
 
   function applyPreset(key: string) {
     const p = LLM_PROVIDER_PRESETS.find((x) => x.key === key);
     if (!p) return;
     setErr(null);
+    setDeployments(null); setDeploymentsErr(null); setTypeDeployment(false);
     setForm((f) => ({
       ...f,
       shape: p.shape,
@@ -272,33 +317,43 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
                     {p.apiVersion && <span className="note" style={{ display: "block", fontSize: 11 }}>api-version {p.apiVersion}</span>}
                   </td>
                   <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{p.apiKeyMasked}</td>
-                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap", textAlign: "right" }}>
-                    <button type="button" onClick={() => test(p)} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>Test</button>
-                    <button type="button" onClick={() => { setAskId(askId === p.id ? null : p.id); setQuestion(""); }} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>
-                      {askId === p.id ? "Close" : "Ask…"}
-                    </button>
-                    <button type="button" onClick={() => startEdit(p)} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>Edit</button>
-                    <button type="button" onClick={() => remove(p)} disabled={busy} style={{ fontSize: 12, color: "var(--err-fg, #b91c1c)" }}>Remove</button>
+                  <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                    {/* One wrapping row for every action, so "Send question" sits with the rest
+                        instead of hanging off the table when the ask box is open. */}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
+                      <button type="button" onClick={() => test(p)} disabled={busy} style={{ fontSize: 12 }}>Test</button>
+                      <button type="button" onClick={() => { setAskId(askId === p.id ? null : p.id); setQuestion(""); }} disabled={busy} style={{ fontSize: 12 }}>
+                        {askId === p.id ? "Close" : "Ask…"}
+                      </button>
+                      {askId === p.id && (
+                        <button type="button" onClick={() => test(p, question)} disabled={busy || !question.trim() || res?.tone === "pending"} style={{ fontSize: 12, fontWeight: 600 }}>
+                          Send question
+                        </button>
+                      )}
+                      <button type="button" onClick={() => startEdit(p)} disabled={busy} style={{ fontSize: 12 }}>Edit</button>
+                      <button type="button" onClick={() => remove(p)} disabled={busy} style={{ fontSize: 12, color: "var(--err-fg, #b91c1c)" }}>Remove</button>
+                    </div>
 
                     {askId === p.id && (
-                      <div style={{ marginTop: 6, textAlign: "left", maxWidth: 360, marginLeft: "auto" }}>
+                      <div style={{ marginTop: 6, textAlign: "left" }}>
                         <textarea
                           value={question}
                           onChange={(e) => setQuestion(e.target.value)}
                           rows={2}
                           maxLength={2000}
                           placeholder="Ask this model anything — e.g. “which model are you?”"
-                          style={{ ...inputStyle, resize: "vertical" }}
+                          style={{ ...inputStyle, resize: "vertical", boxSizing: "border-box" }}
                           aria-label={`Question to send to ${p.name}`}
+                          onKeyDown={(e) => {
+                            // ⌘/Ctrl+Enter sends, matching the button above.
+                            if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && question.trim() && !busy) test(p, question);
+                          }}
                         />
-                        <button type="button" onClick={() => test(p, question)} disabled={busy || !question.trim() || res?.tone === "pending"} style={{ fontSize: 12, marginTop: 4 }}>
-                          Send question
-                        </button>
                       </div>
                     )}
 
                     {res && (
-                      <div style={{ marginTop: 4, textAlign: "left", maxWidth: 360, marginLeft: "auto" }}>
+                      <div style={{ marginTop: 4, textAlign: "left" }}>
                         <span className="note" style={{ display: "block", fontSize: 11, whiteSpace: "normal", overflowWrap: "anywhere", color: toneColor(res.tone) }}>
                           {res.line}
                         </span>
@@ -319,7 +374,7 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
       )}
 
       {!open && (
-        <button type="button" onClick={() => { setOpen(true); setEditingId(null); setForm(EMPTY); setErr(null); setShowKey(false); }} style={{ fontSize: 13 }}>
+        <button type="button" onClick={() => { setOpen(true); setEditingId(null); setForm(EMPTY); setErr(null); setShowKey(false); setDeployments(null); setDeploymentsErr(null); setTypeDeployment(false); }} style={{ fontSize: 13 }}>
           + Add provider
         </button>
       )}
@@ -345,11 +400,46 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
                 <input id="llm-endpoint" value={form.endpoint} onChange={(e) => set({ endpoint: e.target.value })} style={inputStyle} placeholder="https://my-resource.openai.azure.com" />
 
                 <label htmlFor="llm-deployment">Deployment</label>
-                <input id="llm-deployment" value={form.deployment} onChange={(e) => set({ deployment: e.target.value })} style={inputStyle} placeholder="gpt-4o-mini" />
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {deployments?.length && !typeDeployment ? (
+                    <select id="llm-deployment" value={form.deployment} onChange={(e) => set({ deployment: e.target.value })} style={inputStyle}>
+                      {/* Keep whatever is already saved selectable even if Azure no longer lists it. */}
+                      {form.deployment && !deployments.some((d) => d.name === form.deployment) && (
+                        <option value={form.deployment}>{form.deployment} (not currently deployed)</option>
+                      )}
+                      {deployments.map((d) => (
+                        <option key={d.name} value={d.name}>
+                          {d.name}
+                          {d.model && d.model !== d.name ? ` — ${d.model}` : ""}
+                          {d.status && d.status !== "succeeded" ? ` ⚠ ${d.status}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input id="llm-deployment" value={form.deployment} onChange={(e) => set({ deployment: e.target.value })} style={inputStyle} placeholder="gpt-4o-mini" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={loadDeployments}
+                    disabled={loadingDeployments || !!azureEndpointProblem(form.endpoint) || (!form.apiKey.trim() && !editingId)}
+                    title={!form.apiKey.trim() && !editingId ? "enter the API key first" : "ask Azure which deployments exist"}
+                    style={{ fontSize: 12, whiteSpace: "nowrap" }}
+                  >
+                    {loadingDeployments ? "Loading…" : deployments ? "Refresh" : "Load deployments"}
+                  </button>
+                </div>
 
                 <span />
                 <span className="note" style={{ fontSize: 11 }}>
-                  The deployment name from the Azure portal — this is what selects the model. Change it to point at a different one.
+                  The deployment name from the Azure portal — this is what selects the model.{" "}
+                  {deployments?.length && !typeDeployment ? (
+                    <button type="button" onClick={() => setTypeDeployment(true)} style={{ fontSize: 11 }}>type it manually</button>
+                  ) : deployments?.length ? (
+                    <button type="button" onClick={() => setTypeDeployment(false)} style={{ fontSize: 11 }}>choose from the list</button>
+                  ) : (
+                    <>Load them to pick from a list.</>
+                  )}
+                  {deploymentsErr && <span style={{ display: "block", color: "var(--err-fg, #b91c1c)" }}>{deploymentsErr}</span>}
                 </span>
 
                 <label htmlFor="llm-apiversion">API version</label>
@@ -421,7 +511,7 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
             <button type="button" onClick={save} disabled={busy || !!saveProblem} title={saveProblem ?? undefined} style={{ fontWeight: 600 }}>
               {busy ? "Saving…" : editingId ? "Save changes" : "Add provider"}
             </button>
-            <button type="button" onClick={() => { setOpen(false); setEditingId(null); setForm(EMPTY); setErr(null); setShowKey(false); }} disabled={busy}>Cancel</button>
+            <button type="button" onClick={() => { setOpen(false); setEditingId(null); setForm(EMPTY); setErr(null); setShowKey(false); setDeployments(null); setDeploymentsErr(null); setTypeDeployment(false); }} disabled={busy}>Cancel</button>
             {err && <span className="note" style={{ color: "var(--err-fg, #b91c1c)" }}>{err}</span>}
           </div>
         </div>

@@ -1,6 +1,7 @@
 // Minimal Azure OpenAI chat client for the generator's enrichment pass. JSON mode only.
 // Reads AZURE_OPENAI_* from process.env (loaded from env.env by the CLI).
 import { maskEmailsReversible, redact } from "../automation/redact";
+import { chatWithAdaptation } from "../fixes/chat-request";
 
 export type AzureConfig = {
   endpoint: string;
@@ -38,24 +39,28 @@ export async function azureChatJson(
   // addresses intact instead of a lossy [user]@domain. redact() still scrubs everything else.
   const { masked, restore } = maskEmailsReversible(user);
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api-key": c.apiKey },
-      body: JSON.stringify({
+    // temperature: 0 and max_tokens are BOTH rejected by some models (gpt-5.6-luna refuses both;
+    // gpt-5.4 refuses max_tokens only). chatWithAdaptation asks, reads the complaint, and retries
+    // with what the model will accept — so pointing this at a gpt-5 deployment just works.
+    const attempt = await chatWithAdaptation(
+      url,
+      { "Content-Type": "application/json", "api-key": c.apiKey },
+      {
+        model: c.deployment,
         messages: [
           { role: "system", content: system },
           // redact secrets/PII from user-supplied content before it leaves the boundary
           { role: "user", content: redact(masked) },
         ],
-        temperature: 0,
-        max_tokens: maxTokens,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content;
+        maxTokens,
+        temperature: 0, // dropped automatically for models that only allow the default
+        extra: { response_format: { type: "json_object" } },
+      },
+      { timeoutMs: 90_000 }
+    );
+    if (!attempt.ok) return null;
+    const data = attempt.json as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data?.choices?.[0]?.message?.content;
     if (!content) return null;
     return JSON.parse(restore(content)) as Record<string, unknown>;
   } catch {

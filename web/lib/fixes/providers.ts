@@ -3,6 +3,7 @@
 // key never leaves the server — every read path goes through toMasked().
 import type { LlmProvider, PrismaClient } from "@prisma/client";
 import { apiVersionProblem, chatCompletionsUrl, maskKey, type LlmAdapter } from "./provider-presets";
+import { chatWithAdaptation } from "./chat-request";
 
 export type MaskedLlmProvider = {
   id: string;
@@ -79,6 +80,7 @@ export async function setDefaultFlag(db: PrismaClient, id: string, isDefault: bo
 export const TEST_PROMPT_MAX = 2000;
 const ANSWER_MAX_TOKENS = 400; // enough for a real answer; still a cheap probe
 const ANSWER_CHARS_MAX = 4000;
+const EMPTY_REPLY = "(the model returned an empty reply)";
 
 // Pull the assistant's reply out of either wire format.
 export function answerFromResponse(adapter: string, json: unknown): string {
@@ -93,43 +95,64 @@ export function answerFromResponse(adapter: string, json: unknown): string {
   return (text ?? "").trim().slice(0, ANSWER_CHARS_MAX);
 }
 
-// Connectivity test. With no question it stays a 1-token "ping" — proves endpoint + key + model
-// resolve, nothing more. Given a question, it asks that instead and returns the model's answer, so
-// an operator can confirm the provider is actually wired to the model they think it is.
+// Connectivity test. With no question it's a cheap ping — proves endpoint + key + model resolve,
+// nothing more. Given a question, it asks that instead and returns the model's answer, so an
+// operator can confirm the provider is actually wired to the model they think it is.
 // The key never leaves the server; only the question travels from the browser.
+//
+// For openai-compatible providers the body ADAPTS to the model (see chat-request.ts): gpt-5 rejects
+// max_tokens, and gpt-5.6-luna additionally rejects temperature. We guess, and if the model objects,
+// we do what it says and retry — so a new model works without a code change.
 export async function testProvider(
   p: Pick<LlmProvider, "name" | "adapter" | "baseUrl" | "model" | "apiVersion" | "apiKey">,
   question?: string
 ): Promise<{ ok: boolean; detail: string; answer?: string; asked?: string }> {
   const asked = typeof question === "string" ? question.trim().slice(0, TEST_PROMPT_MAX) : "";
   const prompt = asked || "ping";
-  const maxTokens = asked ? ANSWER_MAX_TOKENS : 1;
   const base = p.baseUrl.replace(/\/+$/, "");
-  const req: { url: string; headers: Record<string, string>; body: unknown } =
-    p.adapter === "anthropic"
-      ? {
-          url: `${base}/v1/messages`,
-          headers: { "content-type": "application/json", "x-api-key": p.apiKey, "anthropic-version": "2023-06-01" },
-          body: { model: p.model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] },
-        }
-      : {
-          // ?api-version= is appended when the provider pins one — required by Azure's classic
-          // deployments path, optional on its /openai/v1 surface.
-          url: chatCompletionsUrl(p.baseUrl, p.apiVersion),
-          // Bearer covers OpenAI/OpenRouter/HF; api-key covers Azure's OpenAI-compatible endpoint.
-          headers: { "content-type": "application/json", authorization: `Bearer ${p.apiKey}`, "api-key": p.apiKey },
-          body: { model: p.model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] },
-        };
+
   try {
-    const res = await fetch(req.url, { method: "POST", headers: req.headers, body: JSON.stringify(req.body), signal: AbortSignal.timeout(asked ? 60_000 : 20_000) });
-    if (!res.ok) {
-      const text = (await res.text().catch(() => "")).slice(0, 400);
-      return { ok: false, detail: `${res.status} ${res.statusText}${text ? ` — ${text}` : ""}` };
+    if (p.adapter === "anthropic") {
+      // Anthropic's contract is stable: max_tokens, always required.
+      const res = await fetch(`${base}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": p.apiKey, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: p.model, max_tokens: asked ? ANSWER_MAX_TOKENS : 1, messages: [{ role: "user", content: prompt }] }),
+        signal: AbortSignal.timeout(asked ? 60_000 : 20_000),
+      });
+      if (!res.ok) {
+        const text = (await res.text().catch(() => "")).slice(0, 400);
+        return { ok: false, detail: `${res.status} ${res.statusText}${text ? ` — ${text}` : ""}` };
+      }
+      if (!asked) return { ok: true, detail: `${p.name}: ok (${p.model})` };
+      const answer = answerFromResponse(p.adapter, await res.json().catch(() => null));
+      return { ok: true, detail: `${p.name}: ok (${p.model})`, answer: answer || EMPTY_REPLY, asked };
+    }
+
+    // ?api-version= is appended when the provider pins one — required by Azure's classic
+    // deployments path, optional on its /openai/v1 surface.
+    const url = chatCompletionsUrl(p.baseUrl, p.apiVersion);
+    const attempt = await chatWithAdaptation(
+      url,
+      // Bearer covers OpenAI/OpenRouter/HF; api-key covers Azure's OpenAI-compatible endpoint.
+      { "content-type": "application/json", authorization: `Bearer ${p.apiKey}`, "api-key": p.apiKey },
+      {
+        model: p.model,
+        messages: [{ role: "user", content: prompt }],
+        // A reasoning model needs room to think even to say "pong" — a 1-token cap is a hard 400,
+        // not a truncated reply. tokenBudget() raises the floor for those models automatically.
+        maxTokens: asked ? ANSWER_MAX_TOKENS : 1,
+      },
+      { timeoutMs: asked ? 90_000 : 30_000 }
+    );
+
+    if (!attempt.ok) {
+      const err = (attempt.json as { error?: { message?: string } })?.error?.message;
+      return { ok: false, detail: `${attempt.status}${err ? ` — ${err}` : attempt.errorText ? ` — ${attempt.errorText}` : ""}` };
     }
     if (!asked) return { ok: true, detail: `${p.name}: ok (${p.model})` };
-    const json = await res.json().catch(() => null);
-    const answer = answerFromResponse(p.adapter, json);
-    return { ok: true, detail: `${p.name}: ok (${p.model})`, answer: answer || "(the model returned an empty reply)", asked };
+    const answer = answerFromResponse(p.adapter, attempt.json);
+    return { ok: true, detail: `${p.name}: ok (${p.model})`, answer: answer || EMPTY_REPLY, asked };
   } catch (e) {
     return { ok: false, detail: e instanceof Error ? e.message : "request failed" };
   }
