@@ -21,9 +21,11 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings (v2)" };
 
 export default async function SettingsV2Page() {
+  let canHide = true; // auth disabled (dev) acts as super_admin
   if (authEnabled()) {
     const me = await getCurrentUser();
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
+    canHide = can(me.role, "feature_request.hide");
   }
   // independent single-row reads — fetch in parallel, not as five serial round trips
   const [rawSettings, featureRequests, autoFix, llmProviders, dbBackup] = await Promise.all([
@@ -54,7 +56,7 @@ export default async function SettingsV2Page() {
         declined, a note) to keep the queue honest — everyone can watch progress on the{" "}
         <a href="/feature-requests">requests board</a>.
       </p>
-      <FeatureRequestsAdmin initial={featureRequests} />
+      <FeatureRequestsAdmin initial={featureRequests} canHide={canHide} />
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
       <DbBackupCard initial={dbBackup} />

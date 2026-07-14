@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
+import { toFeatureRequestRow } from "@/lib/feature-requests/serialize";
 
 export async function POST(req: Request) {
   const _g = await guardAuth(); if (_g.res) return _g.res;
@@ -38,12 +39,13 @@ export async function POST(req: Request) {
       authorEmail: _g.user.system ? null : _g.user.email,
     },
   });
-  await recordAudit("feature_request.create", { user: _g.user, detail: { id: created.id, title, page } });
-  return NextResponse.json(created, { status: 201 });
+  await recordAudit("feature_request.create", { user: _g.user, detail: { id: created.id, number: created.number, title, page } });
+  return NextResponse.json(toFeatureRequestRow(created), { status: 201 });
 }
 
 export async function GET() {
   const _g = await guard("settings.manage"); if (_g.res) return _g.res;
-  const requests = await db.featureRequest.findMany({ orderBy: { createdAt: "desc" } });
-  return NextResponse.json(requests);
+  const requests = await db.featureRequest.findMany({ orderBy: { number: "desc" } });
+  const now = new Date();
+  return NextResponse.json(requests.map((r) => toFeatureRequestRow(r, now)));
 }

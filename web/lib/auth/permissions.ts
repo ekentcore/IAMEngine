@@ -15,11 +15,13 @@ export type Permission =
   | "agent.manage" // enroll / enable / trash / update runners
   | "user.manage" // create users, set roles, reset passwords
   | "settings.manage"
+  | "feature_request.hide" // hide an implemented request early, or grant it another 7 days on the board
   | "audit.view";
 
 export const ALL_PERMISSIONS: Permission[] = [
   "case.view", "case.import", "case.plan", "case.dispatch", "case.approve_destructive", "case.schedule",
-  "client.edit_systems", "client.edit_secrets", "agent.manage", "user.manage", "settings.manage", "audit.view",
+  "client.edit_systems", "client.edit_secrets", "agent.manage", "user.manage", "settings.manage",
+  "feature_request.hide", "audit.view",
 ];
 
 const CASE_OPS: Permission[] = ["case.view", "case.import", "case.plan", "case.dispatch", "case.schedule"];
@@ -103,5 +105,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "agent.manage": "Manage runners (agents)",
   "user.manage": "Manage users & roles",
   "settings.manage": "Manage settings",
+  "feature_request.hide": "Hide / restore completed feature requests",
   "audit.view": "View the audit log",
 };

@@ -684,16 +684,22 @@ model Session {
 // triages via /settings. authorUserId is a plain id (no FK) — like Session.impersonatingUserId —
 // so a deleted author never blocks or cascades a request.
 model FeatureRequest {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
+  number         Int       @unique @default(autoincrement()) // the ticket number operators quote — rendered #0000001
   title          String
   body           String
   page           String // pathname the request was filed from
-  status         String   @default("new") // new | planned | building | done | declined
+  status         String    @default("new") // new | planned | building | done | declined
   resolutionNote String?
+  // The moment the request drops off the board into the collapsed Completed table. Null = on the
+  // board. Hidden is DERIVED (hideAt <= now), never a stored flag, so the 7-day timer needs no cron:
+  // flipping to "done" arms it at now+7d, and feature_request.hide holders can set it to now (hide
+  // sooner) or push it to now+7d again (unhide for another 7 days).
+  hideAt         DateTime?
   authorUserId   String?
   authorEmail    String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([createdAt])
 }
