@@ -164,3 +164,78 @@ Describe 'Get-CtgMimecastProfile (fail classification)' {
         { Get-CtgMimecastProfile -Email 'x@y.com' } | Should -Throw '*not permitted to read*'
     }
 }
+
+Describe 'Invoke-CtgMimecastApi (transient retry)' {
+    # These tests exercise the HTTP seam ITSELF (the other Describes mock it away), so they mock
+    # Invoke-RestMethod. A real Mimecast 504 ("GatewayTimeout: Connection to service has timed out")
+    # failed a whole onboard step, because only 401 was ever retried.
+    BeforeEach {
+        InModuleScope Coretelligent.Mimecast {
+            $script:MimecastToken   = 'test-token'
+            $script:MimecastBaseUrl = 'https://api.services.mimecast.com'
+            $script:MimecastCredential = $null
+        }
+        Mock Start-Sleep -ModuleName Coretelligent.Mimecast -MockWith { }
+        $global:McCalls = 0
+    }
+    AfterEach {
+        Remove-Variable -Name McCalls -Scope Global -ErrorAction SilentlyContinue
+        Remove-Variable -Name McStatus -Scope Global -ErrorAction SilentlyContinue
+        Remove-Variable -Name McFailFor -Scope Global -ErrorAction SilentlyContinue
+    }
+    # The mock body runs in the MODULE's session state, so it can't see test-scope helpers/vars —
+    # hence $global: for the call counter and the status to raise.
+
+    It 'retries a 504 and succeeds once the gateway recovers' {
+        $global:McStatus = 504
+        $global:McFailFor = 2   # fail the first two attempts, then recover
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Mimecast -MockWith {
+            $global:McCalls++
+            if ($global:McCalls -le $global:McFailFor) {
+                $r = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$global:McStatus)
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $($global:McStatus)", $r)
+            }
+            [pscustomobject]@{ fail = @(); data = @([pscustomobject]@{ emailAddress = 'jdoe@drakestar.com' }) }
+        }
+        $r = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = 'jdoe@drakestar.com' }
+        $global:McCalls | Should -Be 3
+        $r[0].emailAddress | Should -Be 'jdoe@drakestar.com'
+    }
+
+    It 'retries a throttled 429 too' {
+        $global:McStatus = 429
+        $global:McFailFor = 1
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Mimecast -MockWith {
+            $global:McCalls++
+            if ($global:McCalls -le $global:McFailFor) {
+                $r = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$global:McStatus)
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $($global:McStatus)", $r)
+            }
+            [pscustomobject]@{ fail = @(); data = @() }
+        }
+        { Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{} } | Should -Not -Throw
+        $global:McCalls | Should -Be 2
+    }
+
+    It 'gives up after 4 attempts and reports the status (a gateway that never recovers still fails)' {
+        $global:McStatus = 504
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Mimecast -MockWith {
+            $global:McCalls++
+            $r = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$global:McStatus)
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $($global:McStatus)", $r)
+        }
+        { Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{} } | Should -Throw '*HTTP 504*'
+        $global:McCalls | Should -Be 4
+    }
+
+    It 'does NOT retry a 500 — it can mean the request was processed and then blew up' {
+        $global:McStatus = 500
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Mimecast -MockWith {
+            $global:McCalls++
+            $r = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$global:McStatus)
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new("HTTP $($global:McStatus)", $r)
+        }
+        { Invoke-CtgMimecastApi -Path '/api/user/create-user' -Data @{} } | Should -Throw '*HTTP 500*'
+        $global:McCalls | Should -Be 1
+    }
+}

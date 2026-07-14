@@ -76,9 +76,14 @@ Describe 'Invoke-CtgSpanningOnboarding' {
 Describe 'Invoke-CtgSpanningOffboarding' {
     BeforeEach { InModuleScope Coretelligent.Spanning { $script:SpanningUserRouteBroken = $false } }
     It 'retains backups and swaps the user to the ARCHIVE license' {
+        # Stateful: the tier only reads back as Archive AFTER the assign lands — the executor now proves
+        # the swap with a re-read, so a mock that always says isArchive=false is the FAILED-swap case
+        # (covered below), not this one.
+        $global:SpanArchived = $false
         Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
             param($Method, $Path, $Body)
-            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $global:SpanArchived; isDeleted = $false } }
+            if ($Path -eq '/users/assign' -and $Body.licenseType -eq 'ARCHIVE') { $global:SpanArchived = $true }
             return [pscustomobject]@{ licensed = $true }
         }
         $config = [pscustomobject]@{ afterMailboxConvertAndLicenseRemoval = $true; swapLicense = [pscustomobject]@{ from = 'Shared Mailbox'; to = 'Archive' }; procureIfUnavailable = $true }
@@ -86,7 +91,28 @@ Describe 'Invoke-CtgSpanningOffboarding' {
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/assign' -and $Body.licenseType -eq 'ARCHIVE' -and $Body.userPrincipalNames -contains 'jdoe@medipost.com' } -Times 1
         Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match 'unassign' } -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'retaining existing backups'
-        ($r.Actions -join ' ') | Should -Match 'Archive'
+        ($r.Actions -join ' ') | Should -Match 'swapped Spanning license'
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'
+        Remove-Variable -Name SpanArchived -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'WARNs (and never claims success) when the ARCHIVE swap is a no-op — the leaver is still on a billable Standard seat' {
+        # Kaseya cannot convert Standard -> Archive: /users/assign is a no-op and the tier never changes.
+        # This used to return a clean success while leaving the user backing up on a paid seat.
+        Mock Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ email = 'jdoe@medipost.com'; assigned = $true; isArchive = $false; isDeleted = $false } }
+            return [pscustomobject]@{ licensed = $false }   # vendor: "already had a license" == the swap did NOT happen
+        }
+        $config = [pscustomobject]@{ swapLicense = [pscustomobject]@{ from = 'Standard'; to = 'Archive' } }
+        $r = Invoke-CtgSpanningOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }) -Config $config
+        ($r.Actions -join ' ') | Should -Match 'WARN Spanning license NOT swapped'
+        ($r.Actions -join ' ') | Should -Match 'still on a billable STANDARD seat'
+        ($r.Actions -join ' ') | Should -Match 'Activate Archived'      # the manual instruction for the engineer
+        ($r.Actions -join ' ') | Should -Not -Match 'swapped Spanning license:'
+        # The backups must never be unassigned to force the tier (Kaseya: deactivating can delete data).
+        Should -Invoke Invoke-CtgSpanningApi -ModuleName Coretelligent.Spanning -ParameterFilter { $Path -match 'unassign' } -Times 0 -Exactly
+        $r.Status | Should -Be 'ok'   # the offboard itself still succeeded; this is a warning, not a failure
     }
 
     It 'is idempotent — no swap when already on the Archive license (legacy archived field still read)' {

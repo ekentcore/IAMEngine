@@ -2,8 +2,14 @@
 // reopen its case so the claim loop dispatches it. Shared by the run report's re-run button and
 // the procurement watcher (PC case resolved -> re-run the license assignment automatically).
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { carriedRetryMarker, type AutoRetryMarker } from "./auto-retry";
 
-export async function requeueJob(db: PrismaClient, jobId: string, actor: string): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+export async function requeueJob(
+  db: PrismaClient,
+  jobId: string,
+  actor: string,
+  opts: { carryRetryCount?: boolean } = {},
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
   const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, mode: true, status: true, caseRequestId: true, request: true } });
   if (!job) return { ok: false, error: "unknown job", status: 404 };
   if (job.mode !== "api") return { ok: false, error: "only automated (api) jobs can be re-run", status: 422 };
@@ -16,7 +22,18 @@ export async function requeueJob(db: PrismaClient, jobId: string, actor: string)
   // stale actions never refresh.
   const req = { ...((job.request ?? {}) as Record<string, unknown>) };
   delete req.validateOnly;
-  delete req.autoRetry; // the fresh run re-decides whether another wait is needed
+  // The auto-retry SCHEDULE always goes (the fresh run re-decides whether another wait is needed),
+  // but for an automatic retry the ATTEMPT COUNT has to survive the requeue — recordResult reads it
+  // back to enforce the attempt cap. Dropping the whole marker here reset the count to 0 on every
+  // requeue, so `count < MAX` was always true and a never-syncing user retried every 15 minutes
+  // FOREVER (the DB shows count:1 after dozens of retries). An operator-driven re-run deliberately
+  // does NOT carry it: a human stepping in starts the budget over.
+  const prevRetry = (req.autoRetry ?? null) as AutoRetryMarker | null;
+  delete req.autoRetry;
+  if (opts.carryRetryCount) {
+    const carried = carriedRetryMarker(prevRetry, Date.now());
+    if (carried) req.autoRetry = carried;
+  }
 
   await db.job.update({
     where: { id: job.id },

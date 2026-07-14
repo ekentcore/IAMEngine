@@ -517,14 +517,20 @@ export function makeCaseRepository(db: PrismaClient) {
       const warnJobs = completedIds.length
         ? await db.job.findMany({
             where: { caseRequestId: { in: completedIds }, status: "succeeded" },
-            select: { caseRequestId: true, systemKey: true, result: true, validation: true },
+            select: { caseRequestId: true, systemKey: true, result: true, validation: true, request: true },
           })
         : [];
       // A completed case is only "green done" when no step carries a warning (a WARN action or a
       // missed validation) — same definition as the run report (jobWarningLines). The list shows
       // completed-with-warnings cases in orange with these lines on hover.
+      //
+      // A step with a scheduled auto-retry is EXCLUDED: it's waiting on a vendor-side directory sync
+      // (Spanning/Mimecast discovering a new M365 user) and its validation miss is expected until the
+      // sync lands. The run report already shows it as "retrying" (run-report.ts) — painting the case
+      // orange here contradicted that, for a step that resolves itself.
       const warningsByCase = new Map<string, string[]>();
       for (const j of warnJobs) {
+        if (((j.request ?? {}) as { autoRetry?: { at?: number } }).autoRetry?.at) continue;
         const lines = jobWarningLines(j.result, j.validation).map((w) => `${nameByKey.get(j.systemKey) ?? j.systemKey}: ${w}`);
         if (lines.length) warningsByCase.set(j.caseRequestId, [...(warningsByCase.get(j.caseRequestId) ?? []), ...lines]);
       }

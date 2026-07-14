@@ -320,13 +320,25 @@ function Invoke-CtgSpanningOffboarding {
         try {
             $resp = Set-CtgSpanningLicense -Email $email -LicenseType $type
             $from = if ($swap) { [string](Get-CtgProp $swap 'from') } else { 'Standard' }
-            # The vendor docs leave a tier swap ambiguous: assign returns licensed=false when the user
-            # "already had a license", which may mean the tier was NOT converted. Report what the API
-            # said; the validation read-back checks the archived flag and will flag a real miss.
-            if (((Get-CtgProp $resp 'licensed') ?? (Get-CtgProp $resp 'assigned')) -eq $false) {
-                $actions.Add("requested Spanning license swap $from -> $to; Spanning reported licensed=false (user already had a license) — the validation read-back confirms whether the tier actually changed")
+            $reported = ((Get-CtgProp $resp 'licensed') ?? (Get-CtgProp $resp 'assigned'))
+            # PROVE the swap instead of assuming it. Kaseya's API cannot CONVERT a Standard license to
+            # an Archive one — "Standard licenses cannot be converted to archived licenses" — so an
+            # /users/assign {licenseType:ARCHIVE} against a user who already holds Standard is a no-op,
+            # and licensed=false is exactly how the vendor says so. This code used to log a reassuring
+            # "the read-back will confirm it" line and return Status=ok, so every Spanning offboard
+            # reported success while quietly leaving the leaver on a BILLABLE, still-backing-up seat.
+            # Re-read the tier and tell the truth about what we find.
+            $after = Find-CtgSpanningUser -Email $email
+            if ($after -and (Test-CtgSpanningArchived $after)) {
+                $actions.Add("swapped Spanning license: $from -> $to (kept an archive seat for retention)")
             }
-            else { $actions.Add("swapped Spanning license: $from -> $to (kept an archive seat for retention)") }
+            else {
+                # The backups are safe (nothing here deletes them) — but the seat is still Standard.
+                # Deliberately NOT auto-unassigning to force it: Kaseya warns that deactivating a
+                # license can lead to backup data deletion, and the whole point of this step is
+                # retention. So: say it plainly and hand it to a human, rather than claim success.
+                $actions.Add("WARN Spanning license NOT swapped to $to for $email — the user is still on a billable STANDARD seat (Spanning reported licensed=$reported and the read-back still shows Standard). Kaseya's API cannot convert Standard -> Archive. The backups are retained and safe. ARCHIVE IT BY HAND: Spanning admin console -> Manage Licenses -> select $email -> Activate Archived. Then re-run this step to confirm.")
+            }
         }
         catch {
             if ((Get-CtgProp $Config 'procureIfUnavailable') -and (Test-CtgSpanningSeatError $_.Exception.Message)) {

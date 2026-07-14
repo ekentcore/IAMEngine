@@ -92,7 +92,9 @@ function Invoke-CtgMimecastApi {
         Body        = (@{ data = $items } | ConvertTo-Json -Depth 8)
     }
     $resp = $null
-    foreach ($attempt in 1, 2) {
+    $maxAttempts = 4
+    $reminted = $false
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         try { $resp = Invoke-RestMethod @p; break }
         catch {
             $status = $null
@@ -100,9 +102,24 @@ function Invoke-CtgMimecastApi {
             $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { ([string]$_.ErrorDetails.Message).Trim() } else { $null }
             # Bearer tokens last ~30 min — on token_expired/401, re-mint from the stored credential
             # and retry ONCE instead of failing a long-running job mid-flight.
-            if ($attempt -eq 1 -and $script:MimecastCredential -and ($status -eq 401 -or $detail -match 'token_expired')) {
+            if (-not $reminted -and $script:MimecastCredential -and ($status -eq 401 -or $detail -match 'token_expired')) {
+                $reminted = $true
                 Connect-CtgMimecast -Credential $script:MimecastCredential -BaseUrl $script:MimecastBaseUrl
                 $p.Headers = @{ Authorization = "Bearer $script:MimecastToken"; Accept = 'application/json' }
+                continue
+            }
+            # Mimecast's gateway sheds load with 502/503/504 (e.g. "GatewayTimeout: Connection to service
+            # has timed out") and throttles with 429. These say nothing about the request itself — only
+            # 401 was retried before, so a single gateway blip failed the whole onboard step. Back off and
+            # retry; the executors are idempotent (they check state before changing it), so a repeat is
+            # safe. 500 is NOT retried: it can mean the request was processed and then blew up.
+            $transient = ($status -in 429, 502, 503, 504) -or ($detail -match 'GatewayTimeout|BadGateway|ServiceUnavailable|timed out|throttl')
+            if ($transient -and $attempt -lt $maxAttempts) {
+                $delay = [int][Math]::Min(8, [Math]::Pow(2, $attempt))  # 2, 4, 8s
+                if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) {
+                    Send-CtgProgress "Mimecast is busy (HTTP $status) — retrying in ${delay}s ($($attempt + 1)/$maxAttempts)"
+                }
+                Start-Sleep -Seconds $delay
                 continue
             }
             if ($detail -and $detail.Length -gt 400) { $detail = $detail.Substring(0, 400) + '…' }

@@ -264,7 +264,9 @@ function Invoke-CtgM365Write {
         try { return (& $Operation) }
         catch {
             $msg = "$($_.Exception.Message)"
-            $transient = $msg -match 'ConcurrencyViolation|concurrent requests|TooManyRequests|throttl|\b429\b|\b503\b|ServiceUnavailable|temporarily'
+            # Gateway errors (502/504) are transient too: Graph behind a busy gateway times out the
+            # request, not the write. They were missing here, so a gateway blip failed the whole step.
+            $transient = $msg -match 'ConcurrencyViolation|concurrent requests|TooManyRequests|throttl|\b429\b|\b502\b|\b503\b|\b504\b|ServiceUnavailable|GatewayTimeout|BadGateway|timed out|temporarily'
             if (-not $transient -or $attempt -ge $MaxAttempts) { throw }
             $delay = [int][Math]::Min(8, [Math]::Pow(2, $attempt))  # 2, 4, 8s
             if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress "tenant busy (concurrent/throttled) — retrying in ${delay}s ($($attempt + 1)/$MaxAttempts)" }
@@ -608,6 +610,7 @@ function Invoke-CtgM365Onboarding {
     $existing = $null
     $chosenUpn = $null
     $adopt = $false
+    $createdFresh = $false
     $targetName = ([string]$User.DisplayName).Trim()
     # A nicknamed hire's DisplayName carries the nickname ("Bill Smith"); a rehire's existing account
     # was created from the LEGAL name ("William Smith"). Accept either as the same-person signal.
@@ -621,7 +624,7 @@ function Invoke-CtgM365Onboarding {
     foreach ($cand in $candidates) {
         # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
         # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
-        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'OnPremisesExtensionAttributes')
+        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes')
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
         # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
         # extensionAttributes at all.
@@ -693,6 +696,7 @@ function Invoke-CtgM365Onboarding {
             try {
                 $created = Invoke-CtgM365Write { New-MgUser @params }
                 $userId = $created.Id
+                $createdFresh = $true
                 $actions.Add("created user $upn" + $(if (-not $params.ContainsKey('JobTitle')) { " (no job title)" } else { "" }))
             }
             catch {
@@ -707,6 +711,22 @@ function Invoke-CtgM365Onboarding {
                 if (-not $found) { throw }
                 $userId = $found.Id
                 $actions.Add("user already exists ($upn) — confirmed by UPN, continuing to licensing/groups")
+            }
+        }
+    }
+
+    # 1a-bis. An account we did NOT create can be DISABLED — a rehire's old account almost always is,
+    # and an ADOPTED same-name account frequently is. Only the create path sets AccountEnabled (it's in
+    # $params above), so adopting one used to leave a user who cannot sign in while the step reported
+    # success: the validator flagged "AccountEnabled" and nothing ever acted on it. Enable it here,
+    # idempotently (re-read, and write only when it's actually disabled), so a re-run is a no-op.
+    if ($userId -and -not $createdFresh) {
+        $cur = Resolve-CtgM365User -Upn $upn -Property @('Id', 'AccountEnabled')
+        if ($cur -and (Get-CtgProp $cur 'AccountEnabled') -eq $false) {
+            if ($PSCmdlet.ShouldProcess($upn, "Enable the existing (disabled) account")) {
+                Invoke-CtgM365Write { Update-MgUser -UserId $userId -AccountEnabled:$true -ErrorAction Stop }
+                $actions.Add("enabled $upn — the existing account was disabled (rehire/adopted account)")
+                Write-CtgM365Step "enabled $upn (it was disabled)"
             }
         }
     }
@@ -1255,7 +1275,11 @@ function Invoke-CtgM365Offboarding {
                 # Start-IamRunner.ps1). We deliberately do NOT rethrow: a genuinely missing permission
                 # would then fail the offboard outright on every tenant that hasn't granted it, and
                 # stripping MFA is a hardening step, not a prerequisite for the rest of the teardown.
-                if ($msg -match 'Authorization_RequestDenied|Forbidden|403|Insufficient privileges') {
+                # Graph reports this denial in more than one shape: classic 'Authorization_RequestDenied',
+                # and (as seen on the authenticationMethods endpoints) '[accessDenied] : Request
+                # Authorization failed'. Matching only the first sent the operator to the generic
+                # "could not read MFA methods" line below, which never names the permission to grant.
+                if ($msg -match 'Authorization_RequestDenied|accessDenied|Request Authorization failed|Forbidden|403|Insufficient privileges') {
                     $actions.Add("WARN MFA methods NOT removed — the user's second factors are STILL REGISTERED. Either the app registration lacks UserAuthenticationMethod.ReadWrite.All (grant it in Entra -> API permissions; see /help/cloud-auth), or it was granted after this runner last connected and the cached Graph token predates the consent — in that case restart the runner (or re-run this step after it reconnects) and it will succeed.")
                 }
                 # The auth-method cmdlets live in Microsoft.Graph.Identity.SignIns. If that module isn't on

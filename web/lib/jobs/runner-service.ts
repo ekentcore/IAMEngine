@@ -32,6 +32,7 @@ import { parseClientOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
+import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -1309,20 +1310,28 @@ export function makeRunnerService(db: PrismaClient) {
       // runs for the normal cascade AND for an ad-hoc singleRun action whose result says "queued, not
       // done" (the force-sync's promised re-poll) — but NOT for a plain "run this step only" of a
       // normal step, which intentionally doesn't reschedule.
+      // Set when THIS result scheduled another wait: the step is benignly "retrying", not broken, so
+      // it must not raise a chat alert or a run-log warning line (see the notify + outcome blocks
+      // below). An EXHAUSTED retry is the opposite — the wait is over and it never resolved, so it
+      // falls through as a normal warning and the operator finally sees it.
+      let retryScheduled = false;
       if (status === "succeeded" && !req(job).validateOnly && (!job.singleRun || isAdhoc)) {
         const marker = (input.result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
         const mins = Number(marker.RetryAfterMinutes ?? marker.retryAfterMinutes ?? 0);
         const reqJson = { ...(job.request as Record<string, unknown> ?? {}) };
-        const prev = (reqJson.autoRetry ?? null) as { count?: number; firstAt?: number } | null;
-        if (mins > 0 && (prev?.count ?? 0) < 16) {
-          reqJson.autoRetry = { at: Date.now() + mins * 60_000, count: (prev?.count ?? 0) + 1, firstAt: prev?.firstAt ?? Date.now() };
+        const decision = decideAutoRetry((reqJson.autoRetry ?? null) as AutoRetryMarker | null, mins, Date.now());
+        if (decision.kind === "scheduled") {
+          reqJson.autoRetry = decision.marker;
           await db.job.update({ where: { id: jobId }, data: { request: reqJson as Prisma.InputJsonValue } });
-        } else if (prev) {
+          retryScheduled = true;
+        } else if (decision.kind !== "none") {
           delete reqJson.autoRetry;
           await db.job.update({ where: { id: jobId }, data: { request: reqJson as Prisma.InputJsonValue } });
-          if (mins === 0) {
-            await db.auditLog.create({ data: { actor: "system:auto-retry", action: "job.autoretry.resolved", jobId, caseRequestId: job.caseRequestId, detail: { attempts: prev.count ?? 0, elapsedMinutes: prev.firstAt ? Math.round((Date.now() - prev.firstAt) / 60_000) : null } } });
-          }
+          // "exhausted" = we gave up: the vendor never caught up. Usually because the upstream work
+          // never really landed (an M365 user created UNLICENSED has no mailbox, so Spanning/Mimecast
+          // will never discover them — waiting longer cannot help). It now falls through as a warning.
+          const action = decision.kind === "resolved" ? "job.autoretry.resolved" : "job.autoretry.exhausted";
+          await db.auditLog.create({ data: { actor: "system:auto-retry", action, jobId, caseRequestId: job.caseRequestId, detail: { attempts: decision.attempts, elapsedMinutes: decision.elapsedMinutes } } });
         }
       }
 
@@ -1414,8 +1423,11 @@ export function makeRunnerService(db: PrismaClient) {
         const at = new Date().toISOString();
         if (status === "failed") {
           await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
-        } else if (verdict === "warning") {
+        } else if (verdict === "warning" && !retryScheduled) {
           // Succeeded, but the read-back didn't confirm the change. Surfaced on /runs — now in chat too.
+          // NOT while a retry is scheduled: the step is deliberately waiting on a vendor sync it told us
+          // to wait for, so its "miss" is expected. Alerting there cried wolf every 15 minutes for a
+          // step that self-heals. If the retries run out, the wait is over and this fires for real.
           await fireNotification({ event: "stepWarning", title: `Step warning: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: messages.length ? messages.join("\n") : "The step reported success but its validation read-back did not confirm the change.", url });
         }
         // Case-level alerts only make sense off the normal cascade (a single-step re-run doesn't
@@ -1432,7 +1444,13 @@ export function makeRunnerService(db: PrismaClient) {
       // Append-only outcome log: capture this run's success/warning/error per module, with the case
       // number + client + messages, so module problems can be tracked across cases (a re-run
       // overwrites the Job, but each result still lands here). Never fatal to result recording.
-      try {
+      //
+      // A step that scheduled its own retry writes NO row: it is waiting on a vendor sync, exactly as
+      // designed, and the run report already shows it as "retrying" (run-report.ts). Logging it filled
+      // /runs with "validation missed: <vendor> user present" lines for steps that were about to fix
+      // themselves — one per attempt, every 15 minutes. When the retries are exhausted the wait is
+      // over, retryScheduled is false, and the (now genuine) warning is logged.
+      if (!retryScheduled) try {
         const fingerprint = outcomeFingerprint({ caseRequestId: job.caseRequestId, systemKey: job.systemKey, verdict, messages, error: input.error ?? null });
         // If this exact line for this case was already marked "Fixed", inherit that resolution so a
         // re-run of an already-handled noise line doesn't reappear (a genuinely new error has a new

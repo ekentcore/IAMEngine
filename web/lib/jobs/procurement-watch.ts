@@ -74,7 +74,9 @@ export async function sweepAutoRetries(db: PrismaClient): Promise<void> {
     select: { id: true },
   });
   for (const j of due) {
-    const out = await requeueJob(db, j.id, "system:auto-retry");
+    // carryRetryCount: this is the SAME wait continuing, so the attempt budget must carry over —
+    // otherwise the cap never bites and a user the vendor will never discover retries forever.
+    const out = await requeueJob(db, j.id, "system:auto-retry", { carryRetryCount: true });
     if (!out.ok) continue; // mid-flight (operator re-ran) — the fresh run re-decides anyway
     await db.auditLog.create({ data: { actor: "system:auto-retry", action: "job.autoretry.requeued", jobId: j.id } });
   }

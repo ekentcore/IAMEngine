@@ -131,6 +131,42 @@ Describe 'Invoke-CtgM365Onboarding' {
         ($r.Actions -join ' ') | Should -Match 'operator chose ADOPT'
     }
 
+    It 'ENABLES an adopted account that is disabled (a rehire whose old account was disabled)' {
+        # The bug this pins: adopting stamped the marker and moved on, but only the CREATE path ever
+        # set AccountEnabled. A rehire's old account is disabled, so the onboard reported success while
+        # leaving a user who could not sign in (validation flagged "AccountEnabled" and nothing acted).
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') {
+                return [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; AccountEnabled = $false; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } }
+            }
+            return $null
+        }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy = 'adopt' }) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $AccountEnabled -eq $true } -Times 1
+        ($r.Actions -join ' ') | Should -Match 'enabled jdoe@x.com'
+    }
+
+    It 'does NOT re-enable an adopted account that is already enabled (idempotent)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') {
+                return [pscustomobject]@{ Id = 'uid-jane'; DisplayName = 'Jane Doe'; AccountEnabled = $true; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } }
+            }
+            return $null
+        }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy = 'adopt' }) -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $AccountEnabled -eq $true } -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Not -Match 'enabled jdoe@x.com'
+    }
+
     It 'uses the fallback when the primary UPN is taken by a DIFFERENT person (different name, no marker)' {
         # jdoe@x.com exists as "John Smith" with no marker -> NOT our user -> create with the fallback.
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
