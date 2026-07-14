@@ -5,8 +5,15 @@
 Identity-state and MFA/session control. Shares the Graph module and `m365-admin` secret.
 
 ### Auth
-Secret: `m365-admin`. Scopes add `Directory.ReadWrite.All`, `Application.ReadWrite.All`,
-`UserAuthenticationMethod.ReadWrite.All` (for MFA/session revocation).
+Secret: `m365-admin` — the same app registration as `m365`. Adds
+`UserAuthenticationMethod.ReadWrite.All` (MFA factor removal + session revocation on offboard).
+
+We deliberately do NOT hold `Application.ReadWrite.All` or `AppRoleAssignment.ReadWrite.All`:
+together they let an app grant itself further permissions, which is a self-escalation path to
+tenant admin. Adding a Graph permission stays a manual act by a client's Global Admin. Nothing
+in this module needs them — enterprise-app *assignment* removal on offboard works from
+`User.ReadWrite.All` + `Group.ReadWrite.All`. See `web/app/help/cloud-auth`, which is the
+client-facing source of truth for the consent list.
 
 ### Onboard lane
 `on-request`/`always` depending on client. Add MFA email/phone if the backbone requires it;
