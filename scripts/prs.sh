@@ -5,6 +5,9 @@
 #   ./scripts/prs.sh 56         merge PR 56 (squash, delete the branch, un-draft it first if needed)
 #   ./scripts/prs.sh 56 --yes   skip the confirmation prompt
 #   ./scripts/prs.sh --tidy     show which finished Claude worktrees can be retired (--yes to do it)
+#   ./scripts/prs.sh --tidy --stale
+#                               also retire LOCKED worktrees left behind by dead sessions — only when
+#                               clean, fully merged, and no process is inside them (--yes to do it)
 #
 # Merging only ever touches GitHub. It does NOT touch the database — after a merge that ships a
 # migration you still have to run `npx prisma migrate deploy` from web/ yourself (see the end).
@@ -21,12 +24,25 @@ PR="${1:-}"
 # them by 2026-07-14). Each one keeps a branch checked out, which is what makes `gh pr merge
 # --delete-branch` fail with "cannot delete branch X used by worktree at ...". This clears the ones
 # that are genuinely finished, and refuses to touch anything else:
-#   - LOCKED   -> another session may still be using it. Never touched.
+#   - IN USE   -> a process is inside the directory (lsof). LIVE session. Never touched, ever.
+#   - LOCKED   -> a session created it. On its own this does NOT mean a session is still running — a
+#                 dead session leaves it locked forever — so --stale will retire one when it is also
+#                 clean, merged and not in use. Without --stale, left alone.
 #   - DIRTY    -> uncommitted work. Never touched.
 #   - UNMERGED -> commits not on main yet. Never touched (a squash-merge still counts as merged,
 #                 because we compare the TREE, not the commits).
 if [[ "$PR" == "--tidy" ]]; then
-  DO_IT="${2:-}"
+  # --stale also retires LOCKED worktrees, but only when they are provably abandoned. "Locked" just
+  # means a session created it; it says nothing about whether that session is still alive, so a dead
+  # session's worktree stays locked forever and plain --tidy skips it for good (13 had accumulated).
+  # The honest liveness test is whether a process is actually IN the directory (lsof), not the lock —
+  # and it must ALSO be clean and fully merged, so nothing can be lost either way.
+  STALE=""
+  DO_IT=""
+  for arg in "${@:2}"; do
+    [[ "$arg" == "--stale" ]] && STALE="yes"
+    [[ "$arg" == "--yes" ]] && DO_IT="--yes"
+  done
   git fetch -q origin main
   KEPT=0; GONE=0
   # -P is GNU-only; read the porcelain and pair up path/branch/locked ourselves.
@@ -42,8 +58,16 @@ if [[ "$PR" == "--tidy" ]]; then
     [[ -z "$branch" ]] && continue
     short="${branch#refs/heads/}"
 
-    if [[ -n "$locked" ]]; then
-      echo "  keep   $short  (locked — another session may be using it)"; KEPT=$((KEPT+1)); continue
+    # A worktree with a process actually inside it is LIVE — never touch it, locked or not. This is the
+    # only reliable signal; the lock flag only tells you a session created it, not that one is running.
+    # `|| true`: lsof exits NON-ZERO when it finds nothing, which under `set -e -o pipefail` would kill
+    # the script at this assignment — i.e. it would die on exactly the worktrees we want to retire.
+    IN_USE=$({ lsof +D "$path" 2>/dev/null || true; } | tail -n +2 | wc -l | tr -d ' ')
+    if [[ "${IN_USE:-0}" != "0" ]]; then
+      echo "  keep   $short  (IN USE — a session is working in it right now)"; KEPT=$((KEPT+1)); continue
+    fi
+    if [[ -n "$locked" && -z "$STALE" ]]; then
+      echo "  keep   $short  (locked — pass --stale to retire it if its work is merged)"; KEPT=$((KEPT+1)); continue
     fi
     if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
       echo "  keep   $short  (uncommitted changes)"; KEPT=$((KEPT+1)); continue
@@ -58,17 +82,20 @@ if [[ "$PR" == "--tidy" ]]; then
     fi
 
     if [[ "$DO_IT" == "--yes" ]]; then
+      # A locked worktree needs --force to come out. Safe HERE and only here: we have already proved it
+      # is clean, fully merged, and that no process is inside it.
+      git worktree unlock "$path" >/dev/null 2>&1 || true
       git worktree remove "$path" 2>/dev/null || git worktree remove --force "$path"
       git branch -D "$short" >/dev/null 2>&1 || true
       echo "  gone   $short"
     else
-      echo "  would remove   $short  ($path)"
+      echo "  would remove   $short  ($path)${locked:+  [locked, but abandoned]}"
     fi
     GONE=$((GONE+1))
   done
   git worktree prune
   echo
-  [[ "$DO_IT" == "--yes" ]] || echo "dry run — re-run with:  $0 --tidy --yes"
+  [[ "$DO_IT" == "--yes" ]] || echo "dry run — re-run with:  $0 --tidy${STALE:+ --stale} --yes"
   exit 0
 fi
 
