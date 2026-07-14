@@ -67,9 +67,15 @@ export function shouldStandBy(myPriority: number, onlinePeerPriorities: number[]
   return onlinePeerPriorities.some((p) => p < myPriority);
 }
 
+// The case badge. Callers MUST populate JobLite.accepted (see acceptedKeysFor) — an accepted failure
+// that arrives here unflagged pins the case at "failed" forever, because accepting an outcome never
+// touches Job.status and nothing else re-derives it.
 export function deriveCaseStatus(all: JobLite[]): CaseStatus {
   const jobs = all.filter((j) => !adhoc(j));
-  if (jobs.some((j) => j.status === "failed")) return "failed";
+  // A failure the operator ACCEPTED ("ignore warning — mark complete") is satisfied, exactly as the
+  // dependency gate treats it (blockingJobs) and as the run report renders it (verified). Counting it
+  // as a failure here is what made the cases list read "failed" on a case whose every step reads green.
+  if (jobs.some((j) => j.status === "failed" && !j.accepted)) return "failed";
   const openApi = jobs.filter((j) => j.mode === "api" && OPEN.includes(j.status));
   if (openApi.length > 0) {
     // if the only api work left is approval-gated (and not yet approved), surface that

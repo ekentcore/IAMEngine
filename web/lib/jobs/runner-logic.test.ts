@@ -29,6 +29,23 @@ test("deriveCaseStatus: any failed -> failed", () => {
   assert.equal(deriveCaseStatus([j({ status: "succeeded" }), j({ status: "failed" })]), "failed");
 });
 
+test("deriveCaseStatus: a failure the operator ACCEPTED doesn't fail the case", () => {
+  // "Ignore" on a failed step resolves its run-log outcome; the run report already shows it verified.
+  // The case badge must agree, or the list reads "failed" on a case whose every step reads green.
+  assert.equal(deriveCaseStatus([j({ status: "succeeded" }), j({ status: "failed", accepted: true })]), "completed");
+});
+
+test("deriveCaseStatus: an accepted failure alongside a real one still fails the case", () => {
+  assert.equal(
+    deriveCaseStatus([j({ id: "duo", status: "failed", accepted: true }), j({ id: "m365", status: "failed" })]),
+    "failed"
+  );
+});
+
+test("deriveCaseStatus: an accepted failure doesn't mask still-open api work", () => {
+  assert.equal(deriveCaseStatus([j({ status: "failed", accepted: true }), j({ status: "pending" })]), "running");
+});
+
 test("deriveCaseStatus: api work still pending -> running", () => {
   assert.equal(deriveCaseStatus([j({ status: "succeeded" }), j({ status: "pending" })]), "running");
 });

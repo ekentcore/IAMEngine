@@ -402,10 +402,22 @@ export function makeCaseRepository(db: PrismaClient) {
             where: { caseRequestId: caseId },
             select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
           });
+          // A kept job may be a failure the operator ACCEPTED ("ignore") — it must not drag the
+          // replanned case back to "failed" (see deriveCaseStatus / acceptedKeysFor).
+          const acceptedKeys = new Set(
+            (await tx.runOutcome.findMany({
+              where: { caseRequestId: caseId, status: "failed", resolvedAt: { not: null } },
+              select: { systemKey: true },
+            })).map((o) => o.systemKey)
+          );
           const st = deriveCaseStatus(
             all.map((j) => {
               const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
-              return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
+              return {
+                id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status,
+                requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved),
+                accepted: j.status === "failed" && acceptedKeys.has(j.systemKey),
+              };
             })
           );
           await tx.caseRequest.update({ where: { id: caseId }, data: { status: st } });

@@ -67,6 +67,28 @@ export function missingRequiredSecrets(
   return missing;
 }
 
+// Every required secret resolves to the NOT_NEEDED sentinel — the system is handled by hand, so there
+// is nothing for the broker to hand a runner. planCase already plans such a system as a manual
+// checklist item (orchestrator: noCredNeeded), but a job planned while a real credential still existed
+// and marked not-needed AFTERWARDS is already sitting in the queue as an api step: it gets claimed
+// (missingRequiredSecrets counts not-needed as satisfied), dispatched, and dies at the broker with a
+// 409 — failing the whole case over a step a human was always going to do. The claim gate uses this to
+// demote such a job to the manual checklist item it should have been.
+// A MISSING secret is deliberately not "not needed": that step is blocked pending wiring, not manual.
+export function allSecretsNotNeeded(
+  secretNames: string[] | undefined,
+  overrides: unknown,
+  clientSecretByName: Map<string, string | null>,
+  parentSecretByName?: Map<string, string | null>
+): boolean {
+  const names = secretNames ?? [];
+  if (names.length === 0) return false;
+  return names.every(
+    (name) =>
+      effectiveExternalId(name, overrides, clientSecretByName.get(name) ?? null, parentSecretByName?.get(name) ?? null).source === "not_needed"
+  );
+}
+
 // The reference the broker should use for a secret on this case: a case override wins over the
 // client default; null when neither is set (the step can't run until it's filled).
 // Precedence: a case OVERRIDE wins, then the CHILD client's own reference, then (for a child account

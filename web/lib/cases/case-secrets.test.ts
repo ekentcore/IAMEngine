@@ -1,6 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { serverHintFromLabel, stepRunsOn, systemIsOnPrem, effectiveExternalId, missingRequiredSecrets } from "./case-secrets";
+import { serverHintFromLabel, stepRunsOn, systemIsOnPrem, effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded } from "./case-secrets";
+
+test("allSecretsNotNeeded: every required secret marked NOT_NEEDED -> the step is done by hand", () => {
+  const client = new Map<string, string | null>([["duo", "NOT_NEEDED"], ["logicmonitor", "NOT_NEEDED"], ["m365-admin", "55502"]]);
+  assert.equal(allSecretsNotNeeded(["duo"], {}, client), true);
+  assert.equal(allSecretsNotNeeded(["duo", "logicmonitor"], {}, client), true);
+  // a single real credential means there IS something to broker -> still an api step
+  assert.equal(allSecretsNotNeeded(["duo", "m365-admin"], {}, client), false);
+  // an unwired (missing) secret is a blocked step, NOT a manual one — don't swallow it
+  assert.equal(allSecretsNotNeeded(["duo", "egnyte"], {}, client), false);
+  // no required secrets at all: not a "not needed" step, just a credential-free one
+  assert.equal(allSecretsNotNeeded([], {}, client), false);
+  assert.equal(allSecretsNotNeeded(undefined, {}, client), false);
+});
+
+test("allSecretsNotNeeded: a case override supplying a real ref beats the client's NOT_NEEDED", () => {
+  const client = new Map<string, string | null>([["duo", "NOT_NEEDED"]]);
+  assert.equal(allSecretsNotNeeded(["duo"], { duo: "9001" }, client), false);
+  // ...and an override marking it not-needed for THIS case flips a wired secret to manual
+  assert.equal(allSecretsNotNeeded(["m365-admin"], { "m365-admin": "NOT_NEEDED" }, new Map([["m365-admin", "55502"]])), true);
+});
 
 test("missingRequiredSecrets: flags names with no usable reference (case override > client default)", () => {
   const clientSecrets = new Map<string, string | null>([["ad-dc", "55501"], ["m365-admin", "REPLACE_ME"], ["mimecast", null]]);

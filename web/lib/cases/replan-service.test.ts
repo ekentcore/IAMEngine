@@ -36,6 +36,9 @@ function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
           findMany: async () => keptJobs,
         },
         caseRequest: { findUnique: async () => caseRow, update: async () => { calls.update++; } },
+        // The incremental path checks which kept failures the operator ACCEPTED ("ignore") so they
+        // don't drag the replanned case back to "failed". No fixture accepts one.
+        runOutcome: { findMany: async () => [] },
       }),
   };
   return { db: db as unknown as PrismaClient, calls, created, updated };

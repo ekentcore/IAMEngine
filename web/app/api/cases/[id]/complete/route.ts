@@ -52,10 +52,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         where: { caseRequestId: c.id },
         select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
       });
+      // A failure the operator ACCEPTED ("ignore") must not re-fail the case here — confirm-complete on
+      // a case with an accepted failure would otherwise drag it straight back to "failed".
+      const acceptedKeys = new Set(
+        (await tx.runOutcome.findMany({
+          where: { caseRequestId: c.id, status: "failed", resolvedAt: { not: null } },
+          select: { systemKey: true },
+        })).map((o) => o.systemKey)
+      );
       const derived = deriveCaseStatus(
         jobs.map((j) => {
           const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
-          return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
+          return {
+            id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status,
+            requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved),
+            accepted: j.status === "failed" && acceptedKeys.has(j.systemKey),
+          };
         })
       );
       await tx.caseRequest.update({ where: { id: c.id }, data: { status: derived } });

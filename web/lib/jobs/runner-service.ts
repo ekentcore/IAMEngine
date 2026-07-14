@@ -1,7 +1,7 @@
 // Runner coordination: enrollment, heartbeat, atomic claim, credential broker, result +
 // case advance. Factory-style over PrismaClient, mirroring lib/clients/repository.ts.
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
-import type { AgentScope, CaseStatus, PrismaClient } from "@prisma/client";
+import type { AgentScope, CaseStatus, JobStatus, Mode, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite, type SetupGatePolicy } from "./runner-logic";
 import { getAppSetting } from "../settings";
@@ -18,7 +18,7 @@ import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { wiredOptionalSecrets } from "../secrets/auxiliary";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
-import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
+import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
 import { generateInitialPassword } from "../auth/password";
@@ -118,12 +118,40 @@ const LEASE_MS = 10 * 60 * 1000;
 const PROGRESS_STALE_MS = 20 * 60 * 1000;
 const MAX_PROGRESS_RECLAIMS = 1; // re-queue a wedged job once; if it wedges again, FAIL it (don't loop)
 
-// Re-derive a case's status from its jobs and persist it; on failure, cancel the still-pending jobs
-// (their dependency gate can never open behind a failed predecessor). Shared by the wedged-job reclaim
-// and the operator Stop so they advance the case exactly like a real job result does.
-async function refreshCaseStatus(db: PrismaClient, caseRequestId: string) {
+// systemKeys on this case whose FAILED run the operator ACCEPTED ("ignore warning — mark complete",
+// which resolves the run-log outcome). The claim gate builds the same set inline for the dependency
+// gate; the run report reads it to render the step verified.
+export async function acceptedKeysFor(db: PrismaClient, caseRequestId: string): Promise<Set<string>> {
+  const rows = await db.runOutcome.findMany({
+    where: { caseRequestId, status: "failed", resolvedAt: { not: null } },
+    select: { systemKey: true },
+  });
+  return new Set(rows.map((r) => r.systemKey));
+}
+
+type CaseJobRow = { id: string; systemKey: string; sequence: number; mode: Mode; status: JobStatus; request: Prisma.JsonValue };
+
+// The ONE place a case's badge is derived from the database — so no caller can forget the
+// accepted-failure overlay and pin a case at "failed" whose every step reads green on the case page.
+async function caseStatusFrom(db: PrismaClient, caseRequestId: string): Promise<{ caseJobs: CaseJobRow[]; caseStatus: CaseStatus }> {
   const caseJobs = await db.job.findMany({ where: { caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
-  const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+  const accepted = await acceptedKeysFor(db, caseRequestId);
+  const caseStatus = deriveCaseStatus(
+    caseJobs.map((j) => ({
+      id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status,
+      requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved),
+      accepted: j.status === "failed" && accepted.has(j.systemKey),
+    }))
+  );
+  return { caseJobs, caseStatus };
+}
+
+// Re-derive a case's status from its jobs and persist it; on failure, cancel the still-pending jobs
+// (their dependency gate can never open behind a failed predecessor). Shared by the wedged-job reclaim,
+// the operator Stop, and accepting/un-accepting a failure, so they all advance the case exactly like a
+// real job result does.
+export async function refreshCaseStatus(db: PrismaClient, caseRequestId: string) {
+  const { caseStatus } = await caseStatusFrom(db, caseRequestId);
   if (caseStatus === "failed") {
     await db.job.updateMany({ where: { caseRequestId, status: "pending" }, data: { status: "skipped" } });
   }
@@ -599,6 +627,7 @@ export function makeRunnerService(db: PrismaClient) {
       }
 
       const eligible: string[] = [];
+      const notNeeded: { id: string; caseRequestId: string; clientId: string; systemKey: string; singleRun: boolean }[] = [];
       for (const c of candidates) {
         // A single-step job bypasses the dependency gate AND the terminal/paused-case exclusion
         // (it's an explicit, operator-confirmed run), but still honors the approval gate below and
@@ -608,20 +637,31 @@ export function makeRunnerService(db: PrismaClient) {
           ? !(lj.requiresApproval && !lj.approved)
           : isClaimable(lj, byCase.get(c.caseRequestId) ?? [], c.case.status);
         if (!claimable) continue;
+        const meta = caseMetaById.get(c.caseRequestId);
+        const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
+        const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
+        // EVERY required secret is marked not-needed: this system is done by hand, so there is nothing
+        // to broker. planCase would have planned it as a manual checklist item; this job was planned
+        // while a credential still existed and marked not-needed afterwards. Dispatching it means a
+        // guaranteed 409 at the credential broker, which FAILS the step and takes the whole case down
+        // over work a human was always going to do. Demote it to the checklist item it should be.
+        // Checked before host affinity so whichever agent polls first demotes it, even one that could
+        // not have run the step itself.
+        if (meta && allSecretsNotNeeded(req(c).secretNames, meta.secretOverrides, clientMap, parentMap)) {
+          notNeeded.push({ id: c.id, caseRequestId: c.caseRequestId, clientId: meta.clientId, systemKey: c.systemKey, singleRun: c.singleRun });
+          continue;
+        }
         // Host affinity — the on-prem / cloud split:
         //  - the CENTRAL runner can't run an on-prem step (only a hybrid case's exchange reaches here);
         //  - a CLIENT-network agent (on-prem box, e.g. a DC) can't run a CLOUD step — it doesn't have the
         //    Microsoft.Graph / EXO modules — so cloud steps go to the central runner, which does.
         // A client that pins cloud to its own agent (runCloudOnOwnAgent) is the exception on both sides.
         // Without this, an on-prem client agent grabs an M365 job it can't run ("Get-MgSubscribedSku not recognized").
-        const meta = caseMetaById.get(c.caseRequestId);
         const onPrem = systemIsOnPrem(c.systemKey, hybridCases.has(c.caseRequestId));
         if (!agent.clientId && onPrem) continue;                                             // central: skip on-prem
         if (agent.clientId && !onPrem && !meta?.client?.runCloudOnOwnAgent) continue;        // client agent: skip cloud -> central
         // Own-agent affinity: central runner leaves a pinned client's cloud jobs for that client's agent.
         if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId)) continue;
-        const clientMap = (meta && secretsByClient.get(meta.clientId)) ?? new Map<string, string | null>();
-        const parentMap = meta?.client?.parentId ? secretsByClient.get(meta.client.parentId) : undefined;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
         // Setup-state gate (enforce mode only): withhold a job whose system's latest conn-test
         // failed, unless attested. singleRun bypasses (an explicit operator-confirmed run).
@@ -633,6 +673,40 @@ export function makeRunnerService(db: PrismaClient) {
         eligible.push(c.id);
         if (eligible.length >= batchSize) break;
       }
+
+      // Demote the not-needed jobs to manual checklist items (never dispatched, never 409'd). The note
+      // tells the operator what to do by hand; the case then reads "needs manual", not "failed".
+      for (const n of notNeeded) {
+        const job = candidates.find((c) => c.id === n.id)!;
+        const r = req(job) as Record<string, unknown>;
+        const cfg = (r.config && typeof r.config === "object" ? (r.config as Record<string, unknown>) : {}) as Record<string, unknown>;
+        const notes = Array.isArray(cfg.notes) ? cfg.notes.filter((x): x is string => typeof x === "string") : [];
+        const note = `${n.systemKey} is handled by hand for this client — its credential is marked "not needed", so there is nothing for the engine to connect with. Do this step manually, then tick it off.`;
+        // Guard on status:pending so two agents polling at once can't both demote it — the loser's
+        // update matches nothing and only the winner writes the audit line.
+        const demoted = await db.job.updateMany({
+          where: { id: n.id, status: "pending" },
+          data: {
+            mode: "manual",
+            status: "manual",
+            request: { ...r, config: { ...cfg, notes: [...notes, note] } } as Prisma.InputJsonValue,
+          },
+        });
+        if (demoted.count === 0) continue; // raced to another status — leave it alone
+        await db.auditLog.create({
+          data: {
+            actor: "system", action: "job.demote_manual", jobId: n.id, caseRequestId: n.caseRequestId, clientId: n.clientId,
+            detail: { systemKey: n.systemKey, reason: "every required secret is marked not-needed — no credential to broker" },
+          },
+        });
+      }
+      // Advance the case — but NEVER off the back of a singleRun job. "Run this step only" is an
+      // out-of-band operator action that deliberately leaves the case status alone (see run-single, and
+      // the same guard in recordResult): cascading here would reopen a COMPLETED case as "needs_manual"
+      // just because someone single-ran a step whose credential is marked not-needed.
+      const cascade = new Set(notNeeded.filter((n) => !n.singleRun).map((n) => n.caseRequestId));
+      for (const caseId of cascade) await refreshCaseStatus(db, caseId);
+
       if (eligible.length === 0) return [];
 
       // atomic: only rows still pending flip; a racing agent's updateMany skips already-claimed rows.
@@ -1343,8 +1417,9 @@ export function makeRunnerService(db: PrismaClient) {
         const cs = await db.caseRequest.findUnique({ where: { id: job.caseRequestId }, select: { status: true } });
         caseStatus = cs?.status ?? "unknown";
       } else {
-      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
-      caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      const derived = await caseStatusFrom(db, job.caseRequestId);
+      const caseJobs = derived.caseJobs;
+      caseStatus = derived.caseStatus;
       // On case failure, cancel the still-pending jobs so they aren't orphaned forever
       // (their dependency gate could never open behind a failed predecessor anyway).
       if (caseStatus === "failed") {
@@ -1508,8 +1583,7 @@ export function makeRunnerService(db: PrismaClient) {
       if (job.status !== "pending") throw new HttpError(409, `job is ${job.status}; only a pending job can be approved`);
 
       await db.job.update({ where: { id: jobId }, data: { request: { ...r, approved: true } as Prisma.InputJsonValue } });
-      const caseJobs = await db.job.findMany({ where: { caseRequestId: job.caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
-      const caseStatus = deriveCaseStatus(caseJobs.map((j) => ({ id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(req(j).requiresApproval), approved: Boolean(req(j).approved) })));
+      const { caseStatus } = await caseStatusFrom(db, job.caseRequestId);
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
       await db.auditLog.create({ data: { actor: approvedBy, action: "job.approve", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { approvedBy } } });
       return { jobId, caseStatus };

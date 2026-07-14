@@ -49,6 +49,7 @@ const EXPLICIT: Record<string, string> = {
   "job.credential": "Step Credential Brokered",
   "job.approve": "Step Approved",
   "job.rerun": "Step Re-run",
+  "job.demote_manual": "Step Made Manual (no credential needed)",
   "job.run_single": "Single Step Run",
   "job.stop": "Step Stopped",
   "job.lease.reclaim": "Step Lease Reclaimed",

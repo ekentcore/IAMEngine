@@ -11,6 +11,7 @@ import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
+import { acceptedKeysFor } from "@/lib/jobs/runner-service";
 import { manualCompletionFlip } from "@/lib/cases/sn-completion";
 
 const RESTORABLE = ["pending", "manual", "skipped", "failed"] as const;
@@ -59,10 +60,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     where: { caseRequestId: job.caseRequestId },
     select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
   });
+  // A failure the operator ACCEPTED ("ignore") must not re-fail the case here — without this, ticking
+  // off any manual step on a case with an accepted failure drags it straight back to "failed".
+  const accepted = await acceptedKeysFor(db, job.caseRequestId);
   const derived = deriveCaseStatus(
     caseJobs.map((j) => {
       const r = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean };
-      return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved) };
+      return {
+        id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status,
+        requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved),
+        accepted: j.status === "failed" && accepted.has(j.systemKey),
+      };
     })
   );
   // deriveCaseStatus never returns "queued"/"planning"; don't promote a not-yet-started case to
