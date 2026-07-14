@@ -6,6 +6,7 @@ import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
+import { autoOffboardScheduleAt, offboardTargetResolved } from "./schedule";
 import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
@@ -273,10 +274,30 @@ export function makeCaseRepository(db: PrismaClient) {
       if (actionChanged) changed.push("action");
       if ((c.subject ?? null) !== (intake.subject ?? null)) changed.push("subject");
 
+      // The auto-schedule was derived from the OLD payload's termination instant. A rescan is exactly
+      // the moment that instant can change — HR pushes a termination out a week, or the ticket flips
+      // to an onboard. Leaving the stale scheduledFor in place would fire the offboard on the
+      // ORIGINAL date and tear down an account for someone who is still employed. So recompute it
+      // from the refreshed intake, and drop it entirely if the refreshed intake no longer earns one.
+      const c2 = await db.caseRequest.findUnique({ where: { id: caseId }, select: { pausedReason: true } });
+      const stillScheduledHold = c2?.pausedReason === "scheduled";
+      const rescheduled =
+        stillScheduledHold && intake.action === "offboard" && offboardTargetResolved(intake.payload)
+          ? autoOffboardScheduleAt(intake.payload, new Date())
+          : null;
+
       await db.caseRequest.update({
         where: { id: caseId },
         // verifiedAt is cleared: the plan no longer reflects the (now-refreshed) intake until re-planned.
-        data: { action: intake.action, payload: intake.payload as Prisma.InputJsonValue, subject: intake.subject, verifiedAt: null },
+        data: {
+          action: intake.action,
+          payload: intake.payload as Prisma.InputJsonValue,
+          subject: intake.subject,
+          verifiedAt: null,
+          ...(stillScheduledHold
+            ? { scheduledFor: rescheduled, scheduledBy: rescheduled ? "system:intake" : null }
+            : {}),
+        },
       });
       return { ok: true, changed, clientId: c.clientId, actionChanged };
     },
@@ -387,10 +408,25 @@ export function makeCaseRepository(db: PrismaClient) {
     // Hold / release a case. reason "needs_info" auto-holds an imported case whose intake had
     // unknowns to fill; "scheduled" auto-holds an offboard on import (it may be future-dated);
     // "operator" is a manual pause. Passing null releases the hold.
-    async setHold(caseId: string, reason: "needs_info" | "scheduled" | "review" | "operator" | null): Promise<void> {
+    // `scheduledFor` turns a "scheduled" hold into one the sweep will actually RELEASE
+    // (sweepScheduledCases matches pausedReason="scheduled" AND scheduledFor <= now). A scheduled
+    // hold with no scheduledFor — which is what every auto-imported offboard used to get — just sits
+    // there until a human resumes it. Passing null keeps that (hold, but no auto-release).
+    async setHold(
+      caseId: string,
+      reason: "needs_info" | "scheduled" | "review" | "operator" | null,
+      scheduledFor: Date | null = null
+    ): Promise<void> {
       await db.caseRequest.update({
         where: { id: caseId },
-        data: { pausedAt: reason ? new Date() : null, pausedReason: reason },
+        data: {
+          pausedAt: reason ? new Date() : null,
+          pausedReason: reason,
+          scheduledFor: reason === "scheduled" ? scheduledFor : null,
+          // scheduledBy is a snapshot of WHO scheduled it; the engine's own schedules are attributed
+          // to the intake rather than to an operator (the audit row carries the full provenance).
+          scheduledBy: reason === "scheduled" && scheduledFor ? "system:intake" : null,
+        },
       });
     },
 

@@ -8,6 +8,7 @@ import type { NewCaseInput } from "./types";
 import type { ResolveClient } from "../clients/email-domain";
 import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resolve";
 import { resolveUnknownsWithAI } from "./ai-resolve";
+import { autoOffboardScheduleAt, offboardTargetResolved } from "./schedule";
 
 export type PlanOutcome = {
   caseId: string;
@@ -86,11 +87,42 @@ export async function createAndPlanCase(
   //   - scheduled:  an offboard that may be future-dated — resume when the offboard date arrives.
   //   - review:     anything else (a ready onboard) — a generic "review & run" hold.
   // A dry-run preview is exempt — the operator wants to see it run read-only now.
+  let scheduledFor: Date | null = null;
   const unknownFields = Array.isArray((payload as { unknownFields?: unknown }).unknownFields) ? (payload as { unknownFields: unknown[] }).unknownFields : [];
   if (input.action === "onboard" && unknownFields.length > 0) {
     await repo.setHold(caseId, "needs_info");
   } else if (!input.dryRun) {
-    await repo.setHold(caseId, input.action === "offboard" ? "scheduled" : "review");
+    if (input.action === "offboard") {
+      // An offboard whose intake carries a real termination INSTANT (u_end_date with a time) releases
+      // itself 5 minutes after it — the sweep (sweepScheduledCases) clears the hold when it comes due.
+      //
+      // But auto-release removes the human who used to eyeball every offboard before it ran, so it is
+      // gated on the intake naming WHO is leaving. `needs_info` only ever applied to onboards, so an
+      // offboard with an unresolved target (a "not listed" user, or a reference ServiceNow couldn't
+      // resolve) would otherwise fire its destructive steps against a blank identity with nobody
+      // watching. No target => no schedule: it stays a plain hold, exactly as before.
+      //
+      // A date-only / midnight / backdated / mis-keyed u_end_date also yields no instant — same
+      // outcome, it waits for a human. See autoOffboardScheduleAt.
+      const at = offboardTargetResolved(payload as Record<string, unknown>)
+        ? autoOffboardScheduleAt(payload as Record<string, unknown>, new Date())
+        : null;
+      await repo.setHold(caseId, "scheduled", at);
+      scheduledFor = at;
+      if (at) {
+        // The engine scheduled this on its own — record it as its own audit event, not just a field
+        // buried in the plan detail, so "why did this case release itself at 5:05pm?" is answerable.
+        await repo.writeAudit({
+          actor,
+          action: "case.schedule.set",
+          clientId: client.id,
+          caseRequestId: caseId,
+          detail: { scheduledFor: at.toISOString(), source: "servicenow:u_end_date", offboardAt: (payload as Record<string, unknown>).offboardAt ?? null },
+        });
+      }
+    } else {
+      await repo.setHold(caseId, "review");
+    }
   }
 
   await repo.writeAudit({
@@ -105,6 +137,9 @@ export async function createAndPlanCase(
       approval: planned.filter((j) => j.requiresApproval).length,
       status,
       serviceNowCaseNumber: input.serviceNowCaseNumber ?? null,
+      // The auto-schedule is a decision the engine made on its own — record the exact instant it
+      // will fire so an operator can see (and audit) why a case released itself at 5:05pm.
+      ...(scheduledFor ? { scheduledFor: scheduledFor.toISOString() } : {}),
     },
   });
 

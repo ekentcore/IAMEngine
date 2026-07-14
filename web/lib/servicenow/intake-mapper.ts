@@ -38,6 +38,37 @@ const trimmed = (s: string | null): string | null => (s ? s.trim() : null);
 // SN datetimes come as "2026-06-15 19:34:29"; keep the date.
 const dateOnly = (s: string | null): string | null => (s ? s.split(" ")[0] : null);
 
+// A ServiceNow glide_date_time as an ABSOLUTE INSTANT (ISO, UTC).
+//
+// This is the one field where a timezone mistake silently offboards someone at the wrong hour, so be
+// explicit about why this is safe: we read `.value` (see val()), and for a glide_date_time ServiceNow
+// always returns `.value` in UTC — "2026-07-20 17:00:00" means 17:00 UTC. The sibling `.display_value`
+// is rendered in the TIMEZONE OF THE INTEGRATION USER's SN profile, so it would silently shift if
+// anyone edited that account. We never parse display_value for scheduling.
+//
+// Returns null when the field carries no USABLE time, because then there is no instant to schedule
+// against and inventing one (local midnight? 5pm whose time?) is exactly the guess that gets this
+// wrong. Callers fall back to holding the case for a human. "No usable time" means either:
+//
+//   - a glide_date with no time at all ("2026-07-20"); or
+//   - a time of exactly 00:00:00. A ServiceNow date-picker that the requester never gave a time to
+//     stores midnight, and midnight is NOT a termination time anyone means: scheduling off it fires
+//     at 00:05 UTC, which in the Americas is the EVENING BEFORE the person's last working day — we'd
+//     cut their access mid-shift, a day early. A genuine midnight termination is vanishingly rare and
+//     merely gets held for a human, which is the safe way to be wrong.
+const utcInstant = (s: string | null): string | null => {
+  if (!s) return null;
+  // Anchored end-to-end: a trailing timezone offset ("2026-07-20T17:00:00+05:30") must NOT be quietly
+  // dropped and the value read as UTC — that would shift the fire time by the offset. If SN ever sends
+  // one, we decline to guess.
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?Z?$/.exec(s.trim());
+  if (!m) return null; // date-only, offset-bearing, or unparseable — no precise instant
+  const [h, mi, sec] = [+m[4], +m[5], m[6] ? +m[6] : 0];
+  if (h === 0 && mi === 0 && sec === 0) return null; // midnight = "no time was given"
+  const at = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], h, mi, sec));
+  return Number.isNaN(at.getTime()) ? null : at.toISOString();
+};
+
 // Reference / glide_list fields hold sys_ids in `value` but readable names in `display_value`
 // (SN joins lists with ", "). Always surface the names, as an array.
 const dispList = (r: SnUserMgmtRecord, k: string): string[] => {
@@ -229,6 +260,9 @@ function offboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     department: val(r, "u_department"),
     roles: dispList(r, "u_role_s"),
     dateOfOffboarding: dateOnly(val(r, "u_end_date")),
+    // The same field as an absolute instant (UTC), when it carries a time — this is what the
+    // auto-schedule fires against. dateOfOffboarding stays date-only for display/back-compat.
+    offboardAt: utcInstant(val(r, "u_end_date")),
     timezone: val(r, "contact_time_zone"),
     employeeAware: bool(r, "u_is_employee_aware_they_are_being_offboarded"),
     collectCellPhone: bool(r, "u_collect_cell_phone"),

@@ -152,6 +152,14 @@ function offboardPayload(r: SnIncidentRecord): Record<string, unknown> {
     department: orNull(vd(r, "u_department")),
     // Canonical field name (matches intake-mapper + what repository/labels/toolbar read) so the
     // offboarding date renders on the case and the "scheduled" hold has a date to resume on.
+    //
+    // Deliberately NO `offboardAt` here, so an incident-sourced offboard is never AUTO-scheduled.
+    // On a UM case, u_end_date is a glide_date_time whose `.value` ServiceNow guarantees to be UTC —
+    // that guarantee is what makes firing off it safe. These are record-producer VARIABLES: free-form
+    // strings captured in whatever format/timezone the requester's form used, with no such guarantee.
+    // Reading one as UTC could be hours out, and being hours out means cutting someone's access while
+    // they're still working. Incident offboards therefore stay held for a human, who can schedule the
+    // case by hand on the case page.
     dateOfOffboarding: orNull(firstVar(r, ["u_last_day", "u_end_date", "u_termination_date"])),
     managerName: orNull(firstVar(r, ["u_manager"], true)),
     computerName: orNull(firstVar(r, ["u_computer_name", "u_computer"])),
