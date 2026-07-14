@@ -177,3 +177,13 @@ test("openai adapter: url/headers/body wire format + response parsing (incl. mal
   assert.deepEqual(parsed.toolCalls[0], { id: "c2", name: "no_fix", args: { reason: "env" } });
   assert.deepEqual(parsed.toolCalls[1].args, {}); // malformed JSON args → empty, not a crash
 });
+
+test("openAiAdapter.url: pins ?api-version= when the provider sets one (Azure), omits it otherwise", () => {
+  // Azure's classic deployments path REQUIRES api-version; its /openai/v1 path defaults to "v1".
+  const azure = { ...PROVIDER_O, baseUrl: "https://acme.openai.azure.com/openai/deployments/gpt4o", apiVersion: "2024-10-21" };
+  assert.equal(openAiAdapter.url(azure), "https://acme.openai.azure.com/openai/deployments/gpt4o/chat/completions?api-version=2024-10-21");
+  // OpenAI / OpenRouter / HF have no version: null, "" and absent must all drop the param.
+  assert.equal(openAiAdapter.url({ ...PROVIDER_O, apiVersion: null }), "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(openAiAdapter.url({ ...PROVIDER_O, apiVersion: "" }), "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(openAiAdapter.url(PROVIDER_O), "https://openrouter.ai/api/v1/chat/completions");
+});

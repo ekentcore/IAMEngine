@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
-import { listProvidersMasked, providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
+import { listProvidersMasked, normalizeApiVersion, providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
 import type { LlmAdapter } from "@/lib/fixes/provider-presets";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   const g = await guard("settings.manage");
   if (g.res) return g.res;
 
-  let body: { name?: unknown; adapter?: unknown; baseUrl?: unknown; model?: unknown; apiKey?: unknown; isDefault?: unknown };
+  let body: { name?: unknown; adapter?: unknown; baseUrl?: unknown; model?: unknown; apiVersion?: unknown; apiKey?: unknown; isDefault?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -38,6 +38,7 @@ export async function POST(req: Request) {
       adapter: body.adapter as LlmAdapter,
       baseUrl: (body.baseUrl as string).trim(),
       model: (body.model as string).trim(),
+      apiVersion: normalizeApiVersion(body.apiVersion),
       apiKey,
       // The very first provider is the default regardless — the fix lane needs one.
       isDefault: count === 0 || body.isDefault === true,
@@ -45,6 +46,6 @@ export async function POST(req: Request) {
   });
   if (created.isDefault) await setDefaultFlag(db, created.id, true);
 
-  await recordAudit("settings.llmprovider.create", { user: g.user, detail: { id: created.id, name: created.name, adapter: created.adapter, model: created.model } });
+  await recordAudit("settings.llmprovider.create", { user: g.user, detail: { id: created.id, name: created.name, adapter: created.adapter, model: created.model, apiVersion: created.apiVersion } });
   return NextResponse.json({ provider: toMasked(created) }, { status: 201 });
 }

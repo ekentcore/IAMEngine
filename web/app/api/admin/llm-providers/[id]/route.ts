@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
-import { providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
+import { normalizeApiVersion, providerInputProblem, setDefaultFlag, toMasked } from "@/lib/fixes/providers";
 import type { LlmAdapter } from "@/lib/fixes/provider-presets";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +17,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const existing = await db.llmProvider.findUnique({ where: { id: params.id } });
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  let body: { name?: unknown; adapter?: unknown; baseUrl?: unknown; model?: unknown; apiKey?: unknown; isDefault?: unknown };
+  let body: { name?: unknown; adapter?: unknown; baseUrl?: unknown; model?: unknown; apiVersion?: unknown; apiKey?: unknown; isDefault?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -28,6 +28,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     adapter: body.adapter ?? existing.adapter,
     baseUrl: body.baseUrl ?? existing.baseUrl,
     model: body.model ?? existing.model,
+    // "" is a real value here: it clears the pinned version. Only an absent key falls back.
+    apiVersion: body.apiVersion ?? existing.apiVersion,
   };
   const problem = providerInputProblem(merged);
   if (problem) return NextResponse.json({ error: problem }, { status: 422 });
@@ -50,6 +52,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       adapter: merged.adapter as LlmAdapter,
       baseUrl: (merged.baseUrl as string).trim(),
       model: (merged.model as string).trim(),
+      apiVersion: normalizeApiVersion(merged.apiVersion),
       ...(apiKey ? { apiKey } : {}),
     },
   });
@@ -58,7 +61,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     updated.isDefault = body.isDefault;
   }
 
-  await recordAudit("settings.llmprovider.update", { user: g.user, detail: { id: updated.id, name: updated.name, adapter: updated.adapter, model: updated.model, baseUrl: updated.baseUrl, keyRotated: !!apiKey } });
+  await recordAudit("settings.llmprovider.update", { user: g.user, detail: { id: updated.id, name: updated.name, adapter: updated.adapter, model: updated.model, baseUrl: updated.baseUrl, apiVersion: updated.apiVersion, keyRotated: !!apiKey } });
   return NextResponse.json({ provider: toMasked(updated) });
 }
 

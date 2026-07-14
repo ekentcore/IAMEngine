@@ -545,15 +545,19 @@ model FixTask {
 // exception to the "secrets only in Delinea" rule for CLIENT credentials. The key never leaves
 // the server — every API response masks it to its last 4 characters.
 model LlmProvider {
-  id        String   @id @default(cuid())
-  name      String // display name, e.g. "Claude", "OpenRouter"
-  adapter   String // "anthropic" | "openai-compatible"
-  baseUrl   String // e.g. https://api.anthropic.com, https://openrouter.ai/api/v1
-  model     String // e.g. claude-sonnet-5, gpt-4o, meta-llama/Llama-3.3-70B-Instruct
-  apiKey    String // server-side only; masked in all API responses
-  isDefault Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  name       String // display name, e.g. "Claude", "OpenRouter"
+  adapter    String // "anthropic" | "openai-compatible"
+  baseUrl    String // e.g. https://api.anthropic.com, https://openrouter.ai/api/v1
+  model      String // e.g. claude-sonnet-5, gpt-4o, meta-llama/Llama-3.3-70B-Instruct
+  apiKey     String // server-side only; masked in all API responses
+  // Optional ?api-version= query appended to openai-compatible calls. Azure's classic
+  // /openai/deployments/{id} path REQUIRES it; its newer /openai/v1 path defaults to "v1" and
+  // takes "preview" to opt into preview features. Null/empty for OpenAI, OpenRouter, HF.
+  apiVersion String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 // ── Auth: operators, their roles, and live sessions ──────────────────────────

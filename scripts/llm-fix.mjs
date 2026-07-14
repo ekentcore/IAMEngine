@@ -192,9 +192,21 @@ export const anthropicAdapter = {
   },
 };
 
+/**
+ * The chat/completions URL, with ?api-version= appended when the provider pins one. Azure's classic
+ * /openai/deployments/{id} path requires it; /openai/v1 defaults to "v1". Mirrors
+ * chatCompletionsUrl() in web/lib/fixes/provider-presets.ts — change both together.
+ * @param {string} baseUrl @param {string|null|undefined} apiVersion
+ */
+export function chatCompletionsUrl(baseUrl, apiVersion) {
+  const base = baseUrl.replace(/\/+$/, "");
+  const version = (apiVersion ?? "").trim();
+  return version ? `${base}/chat/completions?api-version=${encodeURIComponent(version)}` : `${base}/chat/completions`;
+}
+
 /** OpenAI-compatible chat/completions adapter (OpenAI, OpenRouter, Azure AI, Hugging Face…). */
 export const openAiAdapter = {
-  url: (p) => `${p.baseUrl.replace(/\/+$/, "")}/chat/completions`,
+  url: (p) => chatCompletionsUrl(p.baseUrl, p.apiVersion),
   // Bearer covers OpenAI/OpenRouter/HF; Azure's OpenAI-compatible /openai/v1 endpoint accepts
   // api-key — send both so one registry entry works everywhere.
   headers: (p) => ({ "content-type": "application/json", authorization: `Bearer ${p.apiKey}`, "api-key": p.apiKey }),
