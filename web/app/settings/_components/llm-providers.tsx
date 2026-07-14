@@ -272,33 +272,43 @@ export function LlmProviders({ initial }: { initial: MaskedLlmProvider[] }) {
                     {p.apiVersion && <span className="note" style={{ display: "block", fontSize: 11 }}>api-version {p.apiVersion}</span>}
                   </td>
                   <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{p.apiKeyMasked}</td>
-                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap", textAlign: "right" }}>
-                    <button type="button" onClick={() => test(p)} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>Test</button>
-                    <button type="button" onClick={() => { setAskId(askId === p.id ? null : p.id); setQuestion(""); }} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>
-                      {askId === p.id ? "Close" : "Ask…"}
-                    </button>
-                    <button type="button" onClick={() => startEdit(p)} disabled={busy} style={{ fontSize: 12, marginRight: 4 }}>Edit</button>
-                    <button type="button" onClick={() => remove(p)} disabled={busy} style={{ fontSize: 12, color: "var(--err-fg, #b91c1c)" }}>Remove</button>
+                  <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                    {/* One wrapping row for every action, so "Send question" sits with the rest
+                        instead of hanging off the table when the ask box is open. */}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
+                      <button type="button" onClick={() => test(p)} disabled={busy} style={{ fontSize: 12 }}>Test</button>
+                      <button type="button" onClick={() => { setAskId(askId === p.id ? null : p.id); setQuestion(""); }} disabled={busy} style={{ fontSize: 12 }}>
+                        {askId === p.id ? "Close" : "Ask…"}
+                      </button>
+                      {askId === p.id && (
+                        <button type="button" onClick={() => test(p, question)} disabled={busy || !question.trim() || res?.tone === "pending"} style={{ fontSize: 12, fontWeight: 600 }}>
+                          Send question
+                        </button>
+                      )}
+                      <button type="button" onClick={() => startEdit(p)} disabled={busy} style={{ fontSize: 12 }}>Edit</button>
+                      <button type="button" onClick={() => remove(p)} disabled={busy} style={{ fontSize: 12, color: "var(--err-fg, #b91c1c)" }}>Remove</button>
+                    </div>
 
                     {askId === p.id && (
-                      <div style={{ marginTop: 6, textAlign: "left", maxWidth: 360, marginLeft: "auto" }}>
+                      <div style={{ marginTop: 6, textAlign: "left" }}>
                         <textarea
                           value={question}
                           onChange={(e) => setQuestion(e.target.value)}
                           rows={2}
                           maxLength={2000}
                           placeholder="Ask this model anything — e.g. “which model are you?”"
-                          style={{ ...inputStyle, resize: "vertical" }}
+                          style={{ ...inputStyle, resize: "vertical", boxSizing: "border-box" }}
                           aria-label={`Question to send to ${p.name}`}
+                          onKeyDown={(e) => {
+                            // ⌘/Ctrl+Enter sends, matching the button above.
+                            if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && question.trim() && !busy) test(p, question);
+                          }}
                         />
-                        <button type="button" onClick={() => test(p, question)} disabled={busy || !question.trim() || res?.tone === "pending"} style={{ fontSize: 12, marginTop: 4 }}>
-                          Send question
-                        </button>
                       </div>
                     )}
 
                     {res && (
-                      <div style={{ marginTop: 4, textAlign: "left", maxWidth: 360, marginLeft: "auto" }}>
+                      <div style={{ marginTop: 4, textAlign: "left" }}>
                         <span className="note" style={{ display: "block", fontSize: 11, whiteSpace: "normal", overflowWrap: "anywhere", color: toneColor(res.tone) }}>
                           {res.line}
                         </span>
