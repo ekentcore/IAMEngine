@@ -42,6 +42,20 @@ export function formatChangelogWhen(entry: ChangelogEntry): string {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "offboard-target-picker",
+    date: "2026-07-14",
+    time: "15:15",
+    title: "When we can't tell WHICH Parth Shah to offboard, we now ask you instead of guessing (or quietly doing nothing)",
+    items: [
+      "Until now, if the name on the ticket matched two people the step said 'ok' and did nothing, and if it matched nobody it said 'user not found - nothing to offboard'. Both went GREEN. A case could reach 'completed' with the leaver's account still live and signed in",
+      "Now the step stops, the case is held, and the run report shows you the actual people it found - name, email, job title, department, and whether the account is still enabled - so you pick the right one. Nothing is touched until you do",
+      "It handles the misspelling case too, which is the common one: ServiceNow says 'Parth Shah', the directory says 'Parth K. Shah', and an exact search finds nobody. Rather than give up, the module searches again on each part of the name and offers you the near-matches. There's also a box to type a UPN by hand if the person isn't in the list",
+      "Your pick is saved on the CASE, not the step - every system resolves the leaver from the same place - so one choice unblocks 365, Exchange, AD, Slack, Duo and the rest at once. The whole case then re-runs from the top, so a step that already quietly no-op'd against the unknown user gets done properly",
+      "Deliberate: a single near-match still asks. Auto-picking a fuzzy match is exactly how you offboard the wrong person, and that one doesn't undo. An EXACT single match still runs straight through, so nothing slows down on the normal path",
+      "Who picked whom is audited (case.offboard_target.select) - choosing who gets locked out is a decision that deserves a name against it",
+    ],
+  },
+  {
     id: "chat-alerts-warnings-and-master-switch",
     date: "2026-07-14",
     time: "14:15",
@@ -52,6 +66,19 @@ export const CHANGELOG: ChangelogEntry[] = [
       "A failed single-step re-run sent nothing. Re-running one broken step is the normal way an operator retries, so its failure going silent was the worst case. Step-level alerts (failed and warning) now fire for single-step re-runs too; case-level alerts still only fire off a full run, where a case status actually means something",
       "Webhook URLs and Zoom tokens are now trimmed. The saved restricted-room Zoom token had a leading space, which Zoom would reject as a bad Authorization header - a room that was configured but could never have received anything",
       "Per-client overrides ('also send to this client's own room' / 'send there instead') were correct all along, but were gated behind the same three gaps - so they now work for warnings and single-step re-runs too. Verified end to end: 'also' hits both rooms, 'instead' hits only the client's, and a restricted client's override never leaks to the all-clients room",
+    ],
+  },
+  {
+    id: "offboard-identity-resolution",
+    date: "2026-07-14",
+    time: "13:30",
+    title: "Offboards were failing (and, worse, quietly doing nothing) because the leaver was only ever a name",
+    items: [
+      "An offboard case reached the runner carrying the departing person as a NAME ('Parth Shah') and nothing else - no email, no UPN. The 365 step died on it with 'The property UserPrincipalName cannot be found on this object' (UM0029766). 15 of the 24 runner modules had the identical bug on their offboard path, so the same case would have failed again at Exchange, AD, Spanning, Slack, Duo, Mimecast, Adobe, Google, Egnyte, Perimeter81, KnowBe4, LogicMonitor, HubSpot and Jira",
+      "ServiceNow now resolves the leaver's actual EMAIL from the contact record on the ticket (the same lookup already used for the manager and the mirror user), so every offboard step matches on an email instead of guessing at a display name that is often spelled differently in 365 than in ServiceNow",
+      "The nastier half of this: Active Directory and Exchange did NOT crash - they looked for a field the case never had, found nothing, and reported the step as 'ok, no user identity on the case' while the account stayed live. An offboard that reports success without disabling anything is the worst way for this to fail, so a step that cannot identify WHO to offboard now fails loudly instead of going green",
+      "The verify pass had the same bug and it was the more dangerous one: the validators run on the same payload, so they crashed too - and where they did not crash, a blank email matched nobody, which reads as 'already gone' and would have rubber-stamped an offboard nobody performed. Unresolvable is now an explicit fail, never a pass",
+      "Existing 365 / Exchange / AD cases run without being re-imported (they fall back to the name on the ticket and resolve it against the live directory). The email-keyed SaaS steps - Slack, Duo, Adobe, Spanning and the rest - can only match on an email, so a case that predates this change needs a re-import (or the email set on the case) before those steps will run",
     ],
   },
   {

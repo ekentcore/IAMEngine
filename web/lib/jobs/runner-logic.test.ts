@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite } from "./runner-logic";
+import { offboardCandidatesOf, offboardCandidateQuery } from "./runner-service";
 
 function j(over: Partial<JobLite>): JobLite {
   return { id: "j", systemKey: over.id ?? "j", sequence: 0, mode: "api", status: "pending", requiresApproval: false, ...over };
@@ -161,4 +162,25 @@ test("setupGateBlocks: default policy never blocks; enforce blocks only failing-
   assert.equal(setupGateBlocks({ test: "untested", attested: false }, on).block, false); // never strand legacy clients
   assert.equal(setupGateBlocks({ test: "unknown", attested: false }, on).block, false);
   assert.equal(setupGateBlocks({ test: "ok", attested: false }, on).block, false);
+});
+
+// --- offboard-target candidates ------------------------------------------------------------------
+// A candidate with no UPN is unusable: the operator could pick it and we still wouldn't know who they
+// meant, so it must never reach the picker.
+test("offboardCandidatesOf: parses PascalCase + camelCase, drops candidates with no UPN", () => {
+  assert.equal(offboardCandidatesOf(null).length, 0);
+  assert.equal(offboardCandidatesOf({ Actions: [] }).length, 0);
+  const pascal = offboardCandidatesOf({ Candidates: [{ id: "1", upn: "a@x.com", displayName: "A" }, { id: "2", displayName: "no upn" }] });
+  assert.equal(pascal.length, 1);
+  assert.equal(pascal[0].upn, "a@x.com");
+  const camel = offboardCandidatesOf({ candidates: [{ upn: "b@x.com", displayName: "B", samAccountName: "b" }] });
+  assert.equal(camel.length, 1);
+  assert.equal(camel[0].samAccountName, "b");
+  assert.equal(camel[0].id, "b@x.com"); // falls back to the UPN when the directory gave no id
+});
+
+test("offboardCandidateQuery: the name we searched for, or null", () => {
+  assert.equal(offboardCandidateQuery({ CandidateQuery: "Parth Shah" }), "Parth Shah");
+  assert.equal(offboardCandidateQuery({ candidateQuery: "" }), null);
+  assert.equal(offboardCandidateQuery({}), null);
 });

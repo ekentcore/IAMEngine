@@ -298,6 +298,89 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r.Upn | Should -Be 'jpark@x.com'
     }
 
+    # The REAL shape of a ServiceNow UM offboard payload: the leaver is carried as `userToOffboard`
+    # (a display name) and there is NO UserPrincipalName/DisplayName property at all. Under
+    # StrictMode a bare $User.UserPrincipalName on that object THROWS ("The property
+    # 'UserPrincipalName' cannot be found on this object") — the UM0029766 failure.
+    It 'resolves a UM-shaped payload that carries only userToOffboard' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-7'; UserPrincipalName = 'pshah@x.com'; AccountEnabled = $true } }
+        $um = [pscustomobject]@{ userToOffboard = 'Parth Shah'; dateOfOffboarding = '2026-07-14'; collectComputer = $true }
+        $r = Invoke-CtgM365Offboarding -User $um -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Upn | Should -Be 'pshah@x.com'
+        ($r.Actions -join ' ') | Should -Match "resolved offboard target by display name 'Parth Shah'"
+    }
+
+    # The email ServiceNow resolves from the contact record is a CLAIM, not a fact: it can be an alias
+    # (p.shah@x.com) rather than the Entra UPN (pshah@x.com). The executor falls through to the
+    # display-name search when it doesn't resolve — and Resolve-CtgM365Upn (what the VALIDATOR uses)
+    # must reach the same user, or the validator "misses" the person the executor just offboarded.
+    It 'validator resolver falls back to the name when the case email is not a real UPN' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-7'; UserPrincipalName = 'pshah@x.com' } }
+        $um = [pscustomobject]@{ userToOffboard = 'Parth Shah'; email = 'p.shah@x.com' }
+        InModuleScope Coretelligent.M365 -Parameters @{ U = $um } { param($U) Resolve-CtgM365Upn -User $U } | Should -Be 'pshah@x.com'
+    }
+
+    # When the intake resolved the leaver's contact email, match on it — an email is stable across
+    # ServiceNow and 365, a display name is not ("James (Jim) Goodmiller" vs "Jim Goodmiller").
+    It 'prefers the payload email over the display name' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-8'; UserPrincipalName = 'pshah@x.com'; AccountEnabled = $true } }
+        $um = [pscustomobject]@{ userToOffboard = 'Parth Shah'; email = 'pshah@x.com' }
+        $r = Invoke-CtgM365Offboarding -User $um -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Upn | Should -Be 'pshah@x.com'
+        Should -Invoke Get-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Filter -match 'displayName eq' }
+    }
+
+    # A contact reference whose display value IS the email (SNOW does this) must be treated as a UPN,
+    # not searched for as a display name.
+    It 'treats an email-shaped userToOffboard as the UPN' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-8'; UserPrincipalName = 'pshah@x.com'; AccountEnabled = $true } }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ userToOffboard = 'pshah@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Upn | Should -Be 'pshah@x.com'
+        Should -Invoke Get-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Filter -match 'displayName eq' }
+    }
+
+    # A case with NOTHING to identify the leaver used to come back green ("user not found — nothing to
+    # offboard") while the account stayed live. There is no worse outcome for an offboard than that.
+    It 'fails loudly when the case carries no identifier at all' {
+        { Invoke-CtgM365Offboarding -User ([pscustomobject]@{ collectComputer = $true }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10 } |
+            Should -Throw -ExpectedMessage '*no UPN, email or name*'
+    }
+
+    # "Parth Shah" on the ticket, "Parth K. Shah" in the directory: the exact search finds nobody, so
+    # searching exactly again can never help. Broaden, and hand the humans a shortlist to pick from —
+    # rather than reporting "user not found — nothing to offboard" while the account stays live.
+    It 'offers candidates (does not no-op) when the name matches nobody exactly' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { @() }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'startswith' } -MockWith {
+            @([pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'pshah@x.com'; DisplayName = 'Parth K. Shah'; JobTitle = 'Analyst'; Department = 'Sales'; AccountEnabled = $true; Mail = 'pshah@x.com' })
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ userToOffboard = 'Parth Shah' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Candidates.Count | Should -BeGreaterThan 0
+        $r.Candidates[0].upn | Should -Be 'pshah@x.com'
+        $r.CandidateReason | Should -Be 'no-match'
+        $r.CandidateQuery | Should -Be 'Parth Shah'
+        # NOTHING may be touched while we don't know who the person is.
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'returns the matching users as candidates when the display name is ambiguous' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'a'; UserPrincipalName = 'a@x.com'; DisplayName = 'Parth Shah'; AccountEnabled = $true }
+                [pscustomobject]@{ Id = 'b'; UserPrincipalName = 'b@x.com'; DisplayName = 'Parth Shah'; AccountEnabled = $false }
+            )
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ userToOffboard = 'Parth Shah' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.CandidateReason | Should -Be 'ambiguous'
+        $r.Candidates.Count | Should -Be 2
+        @($r.Candidates.upn) | Should -Contain 'b@x.com'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
     It 'stops (no action) when more than one user matches the display name' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { @([pscustomobject]@{ Id = 'a'; UserPrincipalName = 'a@x.com' }, [pscustomobject]@{ Id = 'b'; UserPrincipalName = 'b@x.com' }) }

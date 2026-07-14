@@ -37,6 +37,56 @@ type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidenc
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
 
+// The offboard-target shortlist an executor returns when it cannot tell WHICH person to offboard —
+// result.Candidates (PowerShell) / result.candidates. See recordResult: a result carrying these is a
+// DECISION, never a success. Shape mirrors the runner's: { id, upn, displayName, ... }.
+export type OffboardCandidate = {
+  id: string; upn: string; displayName: string; jobTitle?: string; department?: string;
+  enabled?: boolean; mail?: string; samAccountName?: string; source?: string;
+};
+
+export function offboardCandidatesOf(result: unknown): OffboardCandidate[] {
+  if (!result || typeof result !== "object") return [];
+  const r = result as Record<string, unknown>;
+  const raw = r.Candidates ?? r.candidates;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => (c ?? {}) as Record<string, unknown>)
+    // A candidate with no identifier is unusable — the operator could pick it and we'd still not know who they meant.
+    .filter((c) => typeof c.upn === "string" && c.upn.length > 0)
+    .map((c) => ({
+      id: String(c.id ?? c.upn),
+      upn: String(c.upn),
+      displayName: String(c.displayName ?? c.upn),
+      jobTitle: c.jobTitle ? String(c.jobTitle) : undefined,
+      department: c.department ? String(c.department) : undefined,
+      enabled: typeof c.enabled === "boolean" ? c.enabled : undefined,
+      mail: c.mail ? String(c.mail) : undefined,
+      samAccountName: c.samAccountName ? String(c.samAccountName) : undefined,
+      source: c.source ? String(c.source) : undefined,
+    }));
+}
+
+// The name we searched for (what ServiceNow gave us) — shown to the operator so they can see WHY we
+// couldn't resolve it ("we looked for 'Parth Shah'; the directory has 'Parth K. Shah'").
+export function offboardCandidateQuery(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  const q = r.CandidateQuery ?? r.candidateQuery;
+  return typeof q === "string" && q ? q : null;
+}
+
+// Same marker convention as the username-collision decision, so the UI can key off the error text.
+function offboardDecisionError(result: unknown, count: number): string {
+  const r = (result ?? {}) as Record<string, unknown>;
+  const reason = String(r.CandidateReason ?? r.candidateReason ?? "ambiguous");
+  const query = offboardCandidateQuery(result) ?? "the name on the ticket";
+  const why = reason === "no-match"
+    ? `no exact match for "${query}"`
+    : `${count} users match "${query}"`;
+  return `DECISION_NEEDED:offboard_target | ${why} — pick the user to offboard, then the case re-runs from the start. Nothing was changed.`;
+}
+
 // One shape for every ConnectionTest row, whichever path enqueued it — otherwise the fleet sweep and
 // the per-client button disagree about what a system needs, and a probe reports "no portal secret
 // wired" for a client that has one. REQUIRED secrets come from the system; OPTIONAL ones are attached
@@ -1167,7 +1217,17 @@ export function makeRunnerService(db: PrismaClient) {
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
 
-      const status = input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
+      // OFFBOARD TARGET AMBIGUITY. An executor that cannot tell WHICH person to offboard (the name on
+      // the ticket matched several users, or none) returns the shortlist it found rather than acting.
+      // Such a result must NEVER be recorded as a success: it used to come back 'ok' with a WARN, which
+      // let the case march to "completed" with the account still live. Force it to a decision: the step
+      // fails with a DECISION_NEEDED marker (the same convention the username-collision flow uses), and
+      // the case is HELD so an operator picks the right user and re-runs. The candidates ride along in
+      // Job.result for the picker to render.
+      const candidates = offboardCandidatesOf(input.result);
+      const needsTargetDecision = input.status === "succeeded" && candidates.length > 0 && job.case.action === "offboard";
+
+      const status = needsTargetDecision ? "failed" : input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
       if (job.status !== "dispatched" && job.status !== "running") {
         // idempotent: a lost-ack retry of the same outcome succeeds; a conflicting re-post 409s.
         if (job.status === status) {
@@ -1180,7 +1240,9 @@ export function makeRunnerService(db: PrismaClient) {
       await db.job.update({
         where: { id: jobId },
         data: {
-          status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined, error: input.error ?? null, finishedAt: new Date(), singleRun: false,
+          status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined,
+          error: needsTargetDecision ? offboardDecisionError(input.result, candidates.length) : (input.error ?? null),
+          finishedAt: new Date(), singleRun: false,
           // A password reset that didn't land never shows its value — wipe it so a plaintext that was
           // never set on the account can't linger (a succeeded reset keeps it until the one-time reveal).
           ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && status !== "succeeded" ? { oneTimePassword: null } : {}),
@@ -1255,6 +1317,20 @@ export function makeRunnerService(db: PrismaClient) {
       }
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus as CaseStatus } });
       } // end normal (non-single-step) cascade
+
+      // HOLD the case on an unresolved offboard target. This is the ONE place a runner RESULT can pause
+      // a case (everything else that holds does so at import/plan time) — without it the operator would
+      // have to notice a failed step, rather than the case telling them it needs a decision. Held even
+      // for a single-step run: whoever picks the user is choosing who gets locked out.
+      if (needsTargetDecision) {
+        await db.caseRequest.update({
+          where: { id: job.caseRequestId },
+          data: { pausedAt: new Date(), pausedReason: "needs_info", scheduledFor: null },
+        });
+        await db.auditLog.create({
+          data: { actor: "system", action: "case.offboard_target.ambiguous", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey, candidates: candidates.length, query: offboardCandidateQuery(input.result) } },
+        });
+      }
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: job.singleRun ? "job.result.single" : "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
 

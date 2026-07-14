@@ -102,6 +102,31 @@ test("deriveAction prefers the coded subcategory value over display text", () =>
   assert.equal(normalizeIntake(fallback).action, "offboard");
 });
 
+test("offboard payload carries the leaver's resolved email + displayName, not just a name", () => {
+  // fetchUserManagementCase resolves the u_new_contact reference to the contact's email and stashes it
+  // under "__email:u_new_contact". Without these fields the runner modules have nothing but a name.
+  const p = normalizeIntake(
+    rec({
+      number: "UM0029766",
+      subcategory: "30100",
+      u_new_contact: ["sys-id-1", "Parth Shah"],
+      "__email:u_new_contact": "pshah@example.com",
+    })
+  ).payload;
+  assert.equal(p.userToOffboard, "Parth Shah");
+  assert.equal(p.displayName, "Parth Shah");
+  assert.equal(p.email, "pshah@example.com");
+  assert.equal(p.userPrincipalName, "pshah@example.com");
+});
+
+test("offboard payload without a resolvable contact email still carries the name", () => {
+  const p = normalizeIntake(rec({ number: "UM1", subcategory: "30100", u_new_contact: ["sys-id-2", "Parth Shah"] })).payload;
+  assert.equal(p.userToOffboard, "Parth Shah");
+  assert.equal(p.displayName, "Parth Shah");
+  assert.equal(p.email, null);
+  assert.equal(p.userPrincipalName, null);
+});
+
 test("applyUsernamePattern supports the profile tokens and lowercases the local part", () => {
   const vals = { first: "Jane", last: "Van Doe", mi: "Q", domain: "61commodities.com" };
   assert.equal(applyUsernamePattern("{first}{last}@{domain}", vals), "janevandoe@61commodities.com");

@@ -469,14 +469,82 @@ function Resolve-CtgM365User {
 # user — a validator that resolved differently would always "miss" and trigger the re-run loop.
 function Resolve-CtgM365Upn {
     param([pscustomobject]$User)
-    $upn = [string]$User.UserPrincipalName
-    if (-not [string]::IsNullOrWhiteSpace($upn)) { return $upn }
-    $dn = [string](Get-CtgProp $User 'DisplayName')
+    # Same StrictMode-safe chain as the executor (Invoke-CtgM365Offboarding) — these two MUST resolve the
+    # same user. A ServiceNow UM offboard payload carries the leaver only as `userToOffboard`, with no
+    # UserPrincipalName property at all, and a dot-read of an absent property throws under StrictMode.
+    $firstOf = { param($Names) @($Names | ForEach-Object { Get-CtgProp $User $_ }) | Where-Object { $_ } | Select-Object -First 1 }
+    $upn = [string](& $firstOf @('UserPrincipalName', 'email', 'workEmail'))
+    $dn = [string](& $firstOf @('DisplayName', 'userToOffboard'))
+    if (-not $upn -and $dn -match '@') {
+        $upn = $dn
+        $dn = ''
+    }
+    # The UPN on the case is a CLAIM, not a fact — the email ServiceNow resolved from the contact record
+    # can be an alias/proxy address (p.shah@x.com) rather than the Entra UPN (pshah@x.com). Confirm it
+    # against Graph and fall through to the display-name search when it doesn't resolve, exactly as the
+    # executor does: a validator that returned an unverified UPN would "miss" the user the executor
+    # actually offboarded and re-dispatch the step forever.
+    if (-not [string]::IsNullOrWhiteSpace($upn)) {
+        # A Graph FAILURE here must not quietly change WHO we resolve — only a clean "no such user"
+        # answer may demote the case's UPN to the name search. On any error, trust the case and let the
+        # caller's own lookup surface the real problem.
+        try {
+            $byUpn = Get-MgUser -Filter "userPrincipalName eq '$($upn -replace "'", "''")'" -ErrorAction Stop
+            if ($byUpn) { return $upn }
+        }
+        catch { return $upn }
+    }
     if (-not $dn) { return '' }
     $dnEsc = $dn -replace "'", "''"   # escape quotes so a name like "Sean O'Brien" can't break the OData filter
     $byName = @(Get-MgUser -Filter "displayName eq '$dnEsc'" -All -ErrorAction SilentlyContinue)
     if ($byName.Count -eq 1) { return [string]((Get-CtgProp $byName[0] 'UserPrincipalName') ?? '') }
     return ''
+}
+
+# Candidates to offer a human when we CANNOT resolve the offboard target ourselves — either the name
+# matched nobody ("Parth Shah" in ServiceNow vs "Parth K. Shah" in Entra) or it matched several people.
+# We broaden deliberately: exact-name failure means the name we were given is not the name in the
+# directory, so an exact search can only fail again. Each token of the name is tried as a prefix against
+# displayName / surname / givenName / mail, and the union (deduped, capped) comes back for the operator
+# to choose from. Returns @() when the tenant genuinely has nobody close — the caller then says so
+# rather than pretending it offboarded someone.
+function Get-CtgM365OffboardCandidates {
+    param([string]$Name, [int]$Limit = 10)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return @() }
+    $props = @('Id', 'UserPrincipalName', 'DisplayName', 'JobTitle', 'Department', 'AccountEnabled', 'Mail')
+    $tokens = @($Name -split '\s+' | Where-Object { $_.Length -ge 2 })
+    $found = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($t in $tokens) {
+        $esc = $t -replace "'", "''"
+        foreach ($field in @('displayName', 'surname', 'givenName', 'mail')) {
+            # A Graph failure on ONE probe must not lose the candidates the others found.
+            try { $hits = @(Get-MgUser -Filter "startswith($field,'$esc')" -Property $props -Top $Limit -ErrorAction Stop) }
+            catch { continue }
+            foreach ($u in $hits) {
+                $id = [string](Get-CtgProp $u 'Id')
+                if ($id -and $seen.Add($id)) {
+                    $found.Add([pscustomobject]@{
+                        id          = $id
+                        upn         = [string](Get-CtgProp $u 'UserPrincipalName')
+                        displayName = [string](Get-CtgProp $u 'DisplayName')
+                        jobTitle    = [string](Get-CtgProp $u 'JobTitle')
+                        department  = [string](Get-CtgProp $u 'Department')
+                        enabled     = [bool](Get-CtgProp $u 'AccountEnabled')
+                        mail        = [string](Get-CtgProp $u 'Mail')
+                        source      = 'm365'
+                    })
+                }
+            }
+        }
+    }
+    # Best first: the more of the requested name a candidate's display name contains, the likelier it's
+    # them. ($cand pins the candidate — the inner Where-Object rebinds $_ to the token.)
+    $scored = $found | Sort-Object -Property @{
+        Expression = { $cand = $_; @($tokens | Where-Object { $cand.displayName -match [regex]::Escape($_) }).Count }
+        Descending = $true
+    }, displayName
+    @($scored | Select-Object -First $Limit)
 }
 
 function Get-CtgM365UserDevices {
@@ -989,8 +1057,24 @@ function Invoke-CtgM365Offboarding {
     )
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $upn = [string]$User.UserPrincipalName
-    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    # An offboard payload is NOT run through deriveIdentity (it identifies an EXISTING user), so it may
+    # carry no UPN property AT ALL — a ServiceNow UM intake gives us `userToOffboard`. Under StrictMode
+    # a dot-notation read of an absent property throws, so every read here goes through Get-CtgProp and
+    # takes the first NON-EMPTY value (a present-but-blank UPN must still fall through to the name).
+    $firstOf = { param($Names) @($Names | ForEach-Object { Get-CtgProp $User $_ }) | Where-Object { $_ } | Select-Object -First 1 }
+    $upn = [string](& $firstOf @('UserPrincipalName', 'email', 'workEmail'))
+    $displayName = [string](& $firstOf @('DisplayName', 'userToOffboard'))
+    # ServiceNow hands back the contact's EMAIL as the display value on some forms. An "@" means we're
+    # holding an identifier, not a person's name — match on it instead of searching displayName for it.
+    if (-not $upn -and $displayName -match '@') {
+        $upn = $displayName
+        $displayName = ''
+    }
+    # NO identifier at all: we cannot even look the person up. Fail loudly rather than return 'ok' —
+    # a green offboard step for an account nobody touched is the worst outcome available here.
+    if (-not $upn -and -not $displayName) {
+        throw "m365: the case carries no UPN, email or name for the user to offboard — set the offboard target on the case, then re-run."
+    }
 
     # Resolve the existing user: by UPN when the case carries one, else by DISPLAY NAME against the
     # directory (offboard intakes often have only the name). A display-name search that matches exactly
@@ -1005,11 +1089,41 @@ function Invoke-CtgM365Offboarding {
             $actions.Add("resolved offboard target by display name '$displayName' -> $(Get-CtgProp $existing 'UserPrincipalName')")
         }
         elseif ($byName.Count -gt 1) {
-            return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("WARN $($byName.Count) users match display name '$displayName' — set the exact UPN on the case to disambiguate. Nothing done."); Evidence = @{ Groups = @(); Devices = @() } }
+            # SEVERAL people share this name. Never guess — hand the humans the shortlist and stop.
+            $cands = @($byName | ForEach-Object {
+                [pscustomobject]@{
+                    id = [string](Get-CtgProp $_ 'Id'); upn = [string](Get-CtgProp $_ 'UserPrincipalName')
+                    displayName = [string](Get-CtgProp $_ 'DisplayName'); jobTitle = [string](Get-CtgProp $_ 'JobTitle')
+                    department = [string](Get-CtgProp $_ 'Department'); enabled = [bool](Get-CtgProp $_ 'AccountEnabled')
+                    mail = [string](Get-CtgProp $_ 'Mail'); source = 'm365'
+                }
+            })
+            return [pscustomobject]@{
+                System = 'm365'; Status = 'ok'; Upn = $upn
+                Actions = @("WARN $($byName.Count) users match display name '$displayName' — pick the right one on the case. Nothing done.")
+                Candidates = $cands
+                CandidateQuery = $displayName
+                CandidateReason = 'ambiguous'
+                Evidence = @{ Groups = @(); Devices = @() }
+            }
         }
     }
     if (-not $existing) {
+        # Nobody matched. The name we were given is not the name in the directory ("Parth Shah" vs
+        # "Parth K. Shah"), so searching for it again will never help. Broaden, and let a human choose —
+        # rather than report "nothing to offboard" and leave the account live.
         $who = if ($upn) { $upn } else { $displayName }
+        $cands = @(Get-CtgM365OffboardCandidates -Name $displayName)
+        if ($cands.Count -gt 0) {
+            return [pscustomobject]@{
+                System = 'm365'; Status = 'ok'; Upn = $upn
+                Actions = @("WARN no exact match for '$who' — $($cands.Count) similar user(s) found; pick the right one on the case. Nothing done.")
+                Candidates = $cands
+                CandidateQuery = $who
+                CandidateReason = 'no-match'
+                Evidence = @{ Groups = @(); Devices = @() }
+            }
+        }
         return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Upn = $upn; Actions = @("user not found ($who) — nothing to offboard"); Evidence = @{ Groups = @(); Devices = @() } }
     }
     $userId = $existing.Id

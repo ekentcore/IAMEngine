@@ -85,7 +85,13 @@ function Invoke-CtgJiraOffboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = [string]((Get-CtgProp $User 'WorkEmail') ?? $User.UserPrincipalName)
+    # `?? $User.UserPrincipalName` was NOT StrictMode-safe: ?? evaluates its right operand precisely
+    # when the left is null, which is exactly the case an offboard payload hits (a ServiceNow UM intake
+    # carries `userToOffboard`, no UPN property at all) — so the dot-read threw. Every read goes through
+    # Get-CtgProp; take the first EMAIL-shaped identifier, since a bare display name would report a
+    # false "not found" success on an offboard.
+    $email = [string](@('WorkEmail', 'UserPrincipalName', 'email', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { throw "jira: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
     $found = Get-CtgJiraUser -Email $email
     if (-not $found) { return [pscustomobject]@{ System = 'jira'; Status = 'ok'; Actions = @("Jira user not found ($email)") } }
     $acctId = [string](Get-CtgProp $found 'accountId')
@@ -99,7 +105,12 @@ function Invoke-CtgJiraOffboarding {
 function Confirm-CtgJira {
     [CmdletBinding()]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config, [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action)
-    $email = [string]((Get-CtgProp $User 'WorkEmail') ?? $User.UserPrincipalName)
+    # Same StrictMode-safe chain as the executor (`?? $User.UserPrincipalName` threw: ?? evaluates its
+    # right operand exactly when the left is null, which is the offboard case). Unresolvable is NOT a
+    # pass: with no email the lookup finds nobody, which reads as "already removed" and would
+    # rubber-stamp an offboard that nobody performed.
+    $email = [string](@('WorkEmail', 'UserPrincipalName', 'email', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'no email/UPN on the case to verify against'; expected = $true; actual = $false; pass = $false }) } }
     $u = Get-CtgJiraUser -Email $email
     $checks = [System.Collections.Generic.List[hashtable]]::new()
     if ($Action -eq 'onboard') {

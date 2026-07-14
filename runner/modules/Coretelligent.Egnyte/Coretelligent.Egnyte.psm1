@@ -176,7 +176,12 @@ function Invoke-CtgEgnyteOffboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    # StrictMode-safe identity read: an offboard payload may carry no UserPrincipalName property at all
+    # (a ServiceNow UM intake carries `userToOffboard`), and a dot-read of an absent property throws.
+    # Only an email-shaped identifier can find the user here — a bare display name would report a false
+    # "not found" success on an offboard, so no email is an error, not a silent no-op.
+    $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { throw "egnyte: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
 
     $found = Find-CtgEgnyteUser -Email $email
     if (-not $found) {
@@ -215,7 +220,13 @@ function Confirm-CtgEgnyte {
         [Parameter(Mandatory)][pscustomobject]$Config,
         [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
     )
-    $found = Find-CtgEgnyteUser -Email $User.UserPrincipalName
+    # Same StrictMode-safe chain as the executor — the validator MUST resolve the SAME user, and an
+    # offboard payload may carry no UserPrincipalName property at all. Unresolvable is NOT a pass: with
+    # no email the lookup below finds nobody, which reads as "already gone" and would rubber-stamp an
+    # offboard that nobody performed.
+    $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'no email/UPN on the case to verify against'; expected = $true; actual = $false; pass = $false }) } }
+    $found = Find-CtgEgnyteUser -Email $email
 
     if ($Action -eq 'offboard') {
         $inactive = (-not $found) -or ((Get-CtgProp $found 'active') -eq $false)

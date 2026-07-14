@@ -36,14 +36,57 @@ function Write-CtgStep([string]$Message) {
 # Get-Recipient (exactly-one match wins; 0/many -> Upn '').
 function Resolve-CtgExchangeTarget {
     param([pscustomobject]$User)
-    $upn = [string]$User.UserPrincipalName
+    # Every read goes through Get-CtgProp: an offboard payload is not identity-derived and a ServiceNow
+    # UM intake carries the leaver ONLY as `userToOffboard` — no UserPrincipalName property at all, and
+    # under StrictMode a dot-read of an absent property throws. `userToOffboard` is the last link in BOTH
+    # chains (it holds an email when the SNOW contact resolved one, else the display name), otherwise
+    # this resolves to nothing and the offboard silently no-ops.
+    $firstOf = { param($Names) @($Names | ForEach-Object { Get-CtgProp $User $_ }) | Where-Object { $_ } | Select-Object -First 1 }
+    $upn = [string](& $firstOf @('UserPrincipalName', 'email', 'WorkEmail'))
+    $dn = [string](& $firstOf @('DisplayName', 'userToOffboard'))
+    if ([string]::IsNullOrWhiteSpace($upn) -and $dn -match '@') { $upn = $dn; $dn = '' }   # an email in the name slot IS the identity
     if (-not [string]::IsNullOrWhiteSpace($upn)) { return @{ Upn = $upn; MatchCount = 1; DisplayName = '' } }
-    $dn = [string](Get-CtgProp $User 'DisplayName')
     if (-not $dn) { return @{ Upn = ''; MatchCount = 0; DisplayName = '' } }
     $safe = $dn -replace "'", "''"   # escape quotes so a name like "Sean O'Brien" can't break the OPATH filter
     $rcpt = @(Get-Recipient -Filter "DisplayName -eq '$safe'" -ErrorAction SilentlyContinue)
     $u = if ($rcpt.Count -eq 1) { [string]((Get-CtgProp $rcpt[0] 'PrimarySmtpAddress') ?? (Get-CtgProp $rcpt[0] 'WindowsLiveID') ?? (Get-CtgProp $rcpt[0] 'Identity')) } else { '' }
     return @{ Upn = $u; MatchCount = $rcpt.Count; DisplayName = $dn }
+}
+
+# Candidates to offer a human when the name on the ticket matches NO recipient (or several). An exact
+# DisplayName search has already failed, so repeating it cannot help: each token of the name is tried as
+# a wildcard against DisplayName / Name, and the union comes back for the operator to pick from. @()
+# when nothing is close.
+function Get-CtgExchangeOffboardCandidates {
+    param([string]$Name, [int]$Limit = 10)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return @() }
+    $tokens = @($Name -split '\s+' | Where-Object { $_.Length -ge 2 })
+    $found = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($t in $tokens) {
+        $esc = $t -replace "'", "''"
+        foreach ($field in @('DisplayName', 'Name')) {
+            # A failing probe must not lose the candidates the other probes found.
+            try { $hits = @(Get-Recipient -Filter "$field -like '*$esc*'" -ResultSize $Limit -ErrorAction Stop) }
+            catch { continue }
+            foreach ($r in $hits) {
+                $addr = [string]((Get-CtgProp $r 'PrimarySmtpAddress') ?? (Get-CtgProp $r 'WindowsLiveID') ?? (Get-CtgProp $r 'Identity'))
+                if ($addr -and $seen.Add($addr)) {
+                    $found.Add([pscustomobject]@{
+                        id          = $addr
+                        upn         = $addr
+                        displayName = [string](Get-CtgProp $r 'DisplayName')
+                        jobTitle    = [string](Get-CtgProp $r 'Title')
+                        department  = [string](Get-CtgProp $r 'Department')
+                        mail        = $addr
+                        enabled     = $true   # Get-Recipient doesn't carry sign-in state; the m365 lane does
+                        source      = 'exchange'
+                    })
+                }
+            }
+        }
+    }
+    @($found | Select-Object -First $Limit)
 }
 
 # Resolve the departing user's MANAGER to a primary SMTP address, trying the authoritative sources in
@@ -589,16 +632,41 @@ function Invoke-CtgExchangeOffboarding {
         [scriptblock]$TriggerSync
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    Write-CtgStep "offboard exchange: resolving target (UPN on case = '$([string]$User.UserPrincipalName)', display name = '$([string](Get-CtgProp $User 'DisplayName'))')"
+    Write-CtgStep "offboard exchange: resolving target (UPN on case = '$([string](Get-CtgProp $User 'UserPrincipalName'))', display name = '$([string]((Get-CtgProp $User 'DisplayName') ?? (Get-CtgProp $User 'userToOffboard')))')"
     $resolved = Resolve-CtgExchangeTarget $User
     $upn = [string]$resolved.Upn
     if ($resolved.MatchCount -gt 1) {
+        # SEVERAL recipients share this name. Never guess whose mailbox to convert — offer the shortlist.
         Write-CtgStep "$($resolved.MatchCount) recipients match '$($resolved.DisplayName)' — ambiguous, stopping"
-        $actions.Add("WARN $($resolved.MatchCount) recipients match display name '$($resolved.DisplayName)' — set the exact UPN on the case. Nothing done.")
-        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0; Actions = $actions.ToArray() }
+        $actions.Add("WARN $($resolved.MatchCount) recipients match display name '$($resolved.DisplayName)' — pick the right one on the case. Nothing done.")
+        return [pscustomobject]@{
+            System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0
+            Actions = $actions.ToArray()
+            Candidates = @(Get-CtgExchangeOffboardCandidates -Name $resolved.DisplayName)
+            CandidateQuery = [string]$resolved.DisplayName
+            CandidateReason = 'ambiguous'
+        }
+    }
+    # NO identifier at all on the case (not even a name to search on): we could not look the person up.
+    # This used to return Status='ok' — a GREEN offboard step for a mailbox nobody touched. Fail loudly.
+    if ([string]::IsNullOrWhiteSpace($upn) -and -not $resolved.DisplayName) {
+        throw "exchange: the case carries no UPN, email or name for the user to offboard — set the offboard target on the case, then re-run."
     }
     if ([string]::IsNullOrWhiteSpace($upn)) {
-        Write-CtgStep "no user identity resolved — stopping (nothing done)"
+        # The name on the ticket matches no recipient. Broaden and let a human choose rather than report
+        # "nothing done" on a mailbox that is still live.
+        Write-CtgStep "no exact recipient for '$($resolved.DisplayName)' — offering candidates"
+        $cands = @(Get-CtgExchangeOffboardCandidates -Name $resolved.DisplayName)
+        if ($cands.Count -gt 0) {
+            $actions.Add("WARN no exact match for '$($resolved.DisplayName)' — $($cands.Count) similar recipient(s) found; pick the right one on the case. Nothing done.")
+            return [pscustomobject]@{
+                System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0
+                Actions = $actions.ToArray()
+                Candidates = $cands
+                CandidateQuery = [string]$resolved.DisplayName
+                CandidateReason = 'no-match'
+            }
+        }
         $actions.Add("WARN no user identity on the case (no UPN, and no display-name match) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
         return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
     }

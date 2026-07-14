@@ -90,7 +90,12 @@ function Invoke-CtgPerimeter81Offboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    # StrictMode-safe identity read: an offboard payload may carry no UserPrincipalName property at all
+    # (a ServiceNow UM intake carries `userToOffboard`), and a dot-read of an absent property throws.
+    # Only an email-shaped identifier can find the user here — a bare display name would report a false
+    # "not found" success on an offboard, so no email is an error, not a silent no-op.
+    $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { throw "perimeter81: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
     $found = Find-CtgP81User -Email $email
 
     if (-not $found) {
@@ -119,7 +124,13 @@ function Confirm-CtgPerimeter81 {
         [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action
     )
     if ($Action -eq 'offboard') {
-        $found = Find-CtgP81User -Email $User.UserPrincipalName
+        # Same StrictMode-safe chain as the executor — the validator MUST resolve the SAME user, and an
+        # offboard payload may carry no UserPrincipalName property at all. Unresolvable is NOT a pass:
+        # with no email the lookup finds nobody, which reads as "absent" and would rubber-stamp an
+        # offboard that nobody performed.
+        $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+        if (-not $email) { return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'no email/UPN on the case to verify against'; expected = $true; actual = $false; pass = $false }) } }
+        $found = Find-CtgP81User -Email $email
         $check = @{ name = 'Perimeter 81 user absent'; expected = $true; actual = [bool](-not $found); pass = [bool](-not $found) }
         return [pscustomobject]@{ ok = $check.pass; checks = @($check) }
     }

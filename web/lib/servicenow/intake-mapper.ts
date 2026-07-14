@@ -249,8 +249,19 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
 }
 
 function offboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
+  const name = disp(r, "u_new_contact") ?? [trimmed(val(r, "u_first")), trimmed(val(r, "u_last"))].filter(Boolean).join(" ");
+  // u_new_contact is a customer_contact REFERENCE — resolve it to the leaver's email (fetchUserManagementCase
+  // stashes it under __email:). The executors identify the existing user by UPN/email first and only fall back
+  // to a display-name search, so handing them a real email is the difference between an exact match and a
+  // guess ("Parth Shah" in SNOW vs "Parth K. Shah" in 365). Null when the contact carried no email — the
+  // display-name fallback still covers that.
+  const email = contactEmail(r, "u_new_contact");
   return {
-    userToOffboard: disp(r, "u_new_contact") ?? [trimmed(val(r, "u_first")), trimmed(val(r, "u_last"))].filter(Boolean).join(" "),
+    userToOffboard: name,
+    // Canonical identity fields the Coretelligent.* modules read on the offboard path.
+    displayName: name || null,
+    email,
+    userPrincipalName: email,
     notListedUser: bool(r, "u_not_listed"),
     // Persona context (when the offboard form carries it): lets by-persona OFFBOARD lanes and
     // persona offboardSystems resolve which systems the leaver's role granted. Null when absent —

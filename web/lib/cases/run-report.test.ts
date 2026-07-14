@@ -136,3 +136,38 @@ test("jobOutcome: a passed validation but missed check still reads as warning", 
   assert.equal(o.verdict, "warning");
   assert.match(o.messages[0], /validation missed: group: TEAMDCG/);
 });
+
+// --- offboard target ambiguity: the executor couldn't tell WHICH person to offboard -------------
+// The shortlist must reach the run report, or the operator has nothing to pick from and the step is
+// just a mysterious failure.
+test("a step's offboard candidates are surfaced for the picker", () => {
+  const r = buildRunReport(input({
+    action: "offboard",
+    payload: { userToOffboard: "Parth Shah" },
+    jobs: [{
+      systemKey: "m365", sequence: 0, mode: "api", status: "failed", request: {},
+      result: {
+        Actions: ["WARN no exact match for 'Parth Shah' — 2 similar user(s) found; pick the right one on the case. Nothing done."],
+        Candidates: [
+          { id: "1", upn: "pshah@acme.com", displayName: "Parth K. Shah", jobTitle: "Analyst", department: "Sales", enabled: true },
+          { id: "2", upn: "pshah3@acme.com", displayName: "Parthiv Shah", enabled: false },
+        ],
+        CandidateQuery: "Parth Shah",
+        CandidateReason: "no-match",
+      },
+      validation: null, error: "DECISION_NEEDED:offboard_target | no exact match", startedAt: null, finishedAt: null,
+    }],
+    names: new Map([["m365", "Microsoft 365"]]),
+  }));
+  const step = r.steps[0];
+  assert.equal(step.offboardCandidates?.reason, "no-match");
+  assert.equal(step.offboardCandidates?.query, "Parth Shah");
+  assert.equal(step.offboardCandidates?.candidates.length, 2);
+  assert.equal(step.offboardCandidates?.candidates[0].displayName, "Parth K. Shah");
+  assert.equal(step.offboardCandidates?.candidates[1].enabled, false);
+});
+
+test("a clean step carries no candidate picker", () => {
+  const r = buildRunReport(input());
+  assert.equal(r.steps[0].offboardCandidates, null);
+});

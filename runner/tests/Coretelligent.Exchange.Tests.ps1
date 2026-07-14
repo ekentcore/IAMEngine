@@ -138,10 +138,11 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'MailUser'
     }
 
-    It 'returns a clear message (no crash) when the case has no user identity' {
-        $r = Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{} })
-        $r.Status | Should -Be 'ok'
-        ($r.Actions -join ' ') | Should -Match 'no user identity'
+    # This used to return Status='ok' — a GREEN offboard step for a mailbox nobody touched. An offboard
+    # that cannot even identify whose mailbox to convert must fail loudly, and must still touch nothing.
+    It 'fails loudly (touching nothing) when the case has no user identity' {
+        { Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{ convertToShared = [pscustomobject]@{} }) } |
+            Should -Throw -ExpectedMessage '*no UPN, email or name*'
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly
     }
 

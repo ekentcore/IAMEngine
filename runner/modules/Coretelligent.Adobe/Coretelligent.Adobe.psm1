@@ -92,7 +92,13 @@ function Invoke-CtgAdobeOffboarding {
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    $email = $User.UserPrincipalName
+    # An offboard payload is NOT identity-derived: a ServiceNow UM intake carries the leaver as
+    # `userToOffboard` and may have no UserPrincipalName property AT ALL — and under StrictMode a
+    # dot-read of an absent property throws. Go through Get-CtgProp and take the first EMAIL-shaped
+    # identifier: Adobe is keyed by email, so a bare display name would "not find" the user and report
+    # a false success on an offboard. No email at all is an error worth surfacing, not a silent no-op.
+    $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { throw "adobe: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
 
     if ($PSCmdlet.ShouldProcess($email, "Remove from Adobe organization")) {
         $cmd = @(@{ user = $email; do = @(@{ removeFromOrg = @{} }) })
@@ -135,7 +141,12 @@ function Confirm-CtgAdobe {
     )
     $checks = [System.Collections.Generic.List[object]]::new()
     $add = { param($name, $expected, $actual) $checks.Add(@{ name = $name; expected = $expected; actual = $actual; pass = ($expected -eq $actual) }) }
-    $email = $User.UserPrincipalName
+    # Same StrictMode-safe chain as the executor — the validator MUST resolve the SAME user, and an
+    # offboard payload may carry no UserPrincipalName property at all. Unresolvable is NOT a pass: with
+    # no email the lookup below finds nobody, which reads as "already gone" and would rubber-stamp an
+    # offboard that nobody performed.
+    $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $email) { return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'no email/UPN on the case to verify against'; expected = $true; actual = $false; pass = $false }) } }
     $u = Get-CtgAdobeUser -Email $email
 
     if ($Action -eq 'onboard') {

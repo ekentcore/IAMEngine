@@ -102,6 +102,21 @@ Describe 'Confirm-CtgSlack' {
         (Confirm-CtgSlack -User ([pscustomobject]@{ UserPrincipalName = 'a@x.com' }) -Config ([pscustomobject]@{}) -Action 'offboard').ok | Should -BeFalse
     }
 
+    # The validator gets the SAME payload as the executor — a UM offboard case has no UserPrincipalName
+    # property at all. It used to throw under StrictMode; and simply not-throwing is not enough, because
+    # a blank email finds nobody, which the offboard branch reads as "never had Slack" and PASSES.
+    It 'offboard: resolves a UM-shaped payload (userToOffboard) rather than throwing' {
+        Mock Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -MockWith { [pscustomobject]@{ Resources = @([pscustomobject]@{ id = 'W1'; active = $false }) } }
+        (Confirm-CtgSlack -User ([pscustomobject]@{ userToOffboard = 'a@x.com' }) -Config ([pscustomobject]@{}) -Action 'offboard').ok | Should -BeTrue
+    }
+
+    It 'offboard: FAILS (does not rubber-stamp) when the case carries no email to verify against' {
+        Mock Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -MockWith { [pscustomobject]@{ Resources = @() } }
+        $r = Confirm-CtgSlack -User ([pscustomobject]@{ userToOffboard = 'Parth Shah' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeFalse
+        $r.checks[0].name | Should -Match 'no email/UPN'
+    }
+
     It 'onboard: fails when no account exists' {
         Mock Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -MockWith { [pscustomobject]@{ Resources = @() } }
         (Confirm-CtgSlack -User ([pscustomobject]@{ UserPrincipalName = 'a@x.com' }) -Config ([pscustomobject]@{}) -Action 'onboard').ok | Should -BeFalse

@@ -10,6 +10,7 @@ import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "
 import { parseCapabilities, agentCanRun } from "../runner/capabilities";
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
+import { offboardCandidatesOf, offboardCandidateQuery, type OffboardCandidate } from "../jobs/runner-service";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying" | "retrying";
 
@@ -43,6 +44,11 @@ export type RunReportStep = {
   // When an M365 license couldn't be assigned for lack of seats, the tenant's license inventory
   // (owned SKUs + free seat counts) so the operator can pick another and re-run. null otherwise.
   licenseOptions: { skuId: string; skuPartNumber: string; name: string; available: number; enabled: number; consumed: number }[] | null;
+  // OFFBOARD only: the executor could not tell WHICH person to offboard — the ticket's name matched
+  // several users, or none — so it returned the shortlist it found instead of acting. The operator
+  // picks one; the pick lands on the CASE payload (every system resolves the leaver from there) and the
+  // case re-runs from the top. null when the target resolved cleanly.
+  offboardCandidates: { query: string | null; reason: string; candidates: OffboardCandidate[] } | null;
   // Offboard step classification: "disable" = reversible containment (auto-runnable later),
   // "destructive" = deletes data (always approval-gated + evidence-snapshotted). null = unclassified.
   intent: "disable" | "destructive" | null;
@@ -166,6 +172,19 @@ function licenseOptionsOf(result: unknown): RunReportStep["licenseOptions"] {
       consumed: Number(o.consumed ?? 0),
     }));
   return opts.length ? opts : null;
+}
+
+// The offboard-target shortlist a step returned when it couldn't resolve the leaver (result.Candidates),
+// or null. Mirrors licenseOptionsOf: the runner already put the data in the result — we just shape it.
+function offboardCandidatesFor(result: unknown): RunReportStep["offboardCandidates"] {
+  const candidates = offboardCandidatesOf(result);
+  if (!candidates.length) return null;
+  const r = (result ?? {}) as Record<string, unknown>;
+  return {
+    query: offboardCandidateQuery(result),
+    reason: String(r.CandidateReason ?? r.candidateReason ?? "ambiguous"),
+    candidates,
+  };
 }
 
 // The license(s) the M365 onboard step is expected to assign: the ticket's explicit product licenses
@@ -336,6 +355,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       manualCompleted,
       pendingReason,
       licenseOptions: licenseOptionsOf(j.result),
+      offboardCandidates: offboardCandidatesFor(j.result),
       autoRetry: autoRetryData,
       intent: req.intent ?? null,
       expectedLicenses: expectedLicensesFor(j, input.action, input.payload),

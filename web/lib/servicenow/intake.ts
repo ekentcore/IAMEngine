@@ -44,11 +44,11 @@ const INTAKE_FIELDS = [
 const TABLE = "/api/now/table/sn_customerservice_user_management";
 const CONTACT_TABLE = "/api/now/table/customer_contact";
 
-// Reference fields whose contact email we look up so the runner can match the mirror user / manager
-// by EMAIL (stable across ServiceNow & 365) rather than a display name that's often spelled
-// differently (e.g. "James (Jim) Goodmiller" in SNOW vs "Jim Goodmiller" in 365). The resolved email
-// is stashed on the record under "__email:<field>" for normalizeIntake to read.
-const CONTACT_REF_FIELDS = ["u_manager_name", "u_mirror_existing_user", "u_forward_email_to"] as const;
+// Reference fields whose contact email we look up so the runner can match the mirror user / manager /
+// the LEAVER (u_new_contact) by EMAIL (stable across ServiceNow & 365) rather than a display name
+// that's often spelled differently (e.g. "James (Jim) Goodmiller" in SNOW vs "Jim Goodmiller" in 365).
+// The resolved email is stashed on the record under "__email:<field>" for normalizeIntake to read.
+const CONTACT_REF_FIELDS = ["u_manager_name", "u_mirror_existing_user", "u_forward_email_to", "u_new_contact"] as const;
 
 // Resolve a set of customer_contact sys_ids -> their email. Best-effort: any failure (table not
 // readable, a sys_id that isn't a customer_contact) just yields no email, and the caller falls back

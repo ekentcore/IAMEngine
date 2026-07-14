@@ -196,6 +196,71 @@ function LicensePicker({ jobId, options, refresh, onWait, waiting }: { jobId: st
   );
 }
 
+// The executor could not tell WHICH person to offboard — the ticket's name matched several people, or
+// nobody. Rather than guess (offboarding the wrong person is not undoable) it returns the shortlist it
+// found and stops. The operator picks; the pick goes on the CASE payload, so every system resolves the
+// same person, and the whole case re-runs from the top so no step is missed.
+function OffboardTargetPicker({ caseId, data, refresh }: { caseId: string; data: NonNullable<RunReport["steps"][number]["offboardCandidates"]>; refresh: () => Promise<void> | void }) {
+  const [sel, setSel] = useState<string | null>(null);
+  const [manual, setManual] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const picked = data.candidates.find((c) => c.upn === sel) ?? null;
+  const upn = showManual ? manual.trim() : (picked?.upn ?? "");
+  const headline = data.reason === "no-match"
+    ? <>No exact match for <b>{data.query ?? "the name on the ticket"}</b> — pick the person to offboard:</>
+    : <>Several users match <b>{data.query ?? "the name on the ticket"}</b> — pick the person to offboard:</>;
+
+  return (
+    <div className="note" style={{ marginTop: 4, border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
+      <div style={{ fontWeight: 600, color: "#991b1b" }}>{headline}</div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>Nothing has been changed. The whole case re-runs against whoever you pick.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0.4rem 0" }}>
+        {data.candidates.map((c) => (
+          <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, color: "var(--fg)", fontSize: 12 }}>
+            <input type="radio" name={`offboard-target-${caseId}`} style={{ width: "auto" }}
+              checked={!showManual && sel === c.upn}
+              onChange={() => { setShowManual(false); setSel(c.upn); }} />
+            <span style={{ fontWeight: 600 }}>{c.displayName}</span>
+            <span className="muted">{c.upn}</span>
+            {c.jobTitle && <span className="muted">· {c.jobTitle}</span>}
+            {c.department && <span className="muted">· {c.department}</span>}
+            <span style={{ marginLeft: "auto", color: c.enabled === false ? "#b91c1c" : "#15803d", fontWeight: 600 }}>
+              {c.enabled === false ? "disabled" : "enabled"}
+            </span>
+          </label>
+        ))}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, color: "var(--fg)", fontSize: 12 }}>
+          <input type="radio" name={`offboard-target-${caseId}`} style={{ width: "auto" }} checked={showManual} onChange={() => { setShowManual(true); setSel(null); }} />
+          <span>None of these —</span>
+          <input type="text" placeholder="enter their UPN / email" value={manual} disabled={!showManual}
+            onChange={(e) => setManual(e.target.value)} style={{ fontSize: 12, padding: "1px 4px", width: 220 }} />
+        </label>
+      </div>
+      {err && <div style={{ color: "#b91c1c" }}>{err}</div>}
+      <div className="toolbar" style={{ marginTop: 4 }}>
+        <button className="primary" style={{ fontSize: 12 }} disabled={busy || !upn}
+          onClick={async () => {
+            setBusy(true); setErr(null);
+            try {
+              const r = await fetch(`/api/cases/${caseId}/offboard-target`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ upn, displayName: picked?.displayName, samAccountName: picked?.samAccountName, mail: picked?.mail }),
+              });
+              if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+              await refresh();
+            } catch (e) { setErr((e as Error).message); }
+            finally { setBusy(false); }
+          }}>
+          {busy ? "Starting…" : "Offboard this user & re-run case"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // When the runner can't tell a re-run from a same-name stranger, it pauses the step with a
 // DECISION_NEEDED error. The operator decides here: Adopt (it's this person — a re-run) writes
 // the choice to the m365 job and re-runs; Different person uses a new username (a fallback).
@@ -906,6 +971,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 </div>
               )}
               {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} waiting={waiting.has(step.seq)} onWait={() => setWaiting((s) => new Set(s).add(step.seq))} />}
+              {step.offboardCandidates && <OffboardTargetPicker caseId={report.caseId} data={step.offboardCandidates} refresh={refresh} />}
               <ProcurementWatchRow step={step} refresh={refresh} forceShow={waiting.has(step.seq)} />
               {step.phaseTrail.length > 0 && (
                 <div style={{ marginTop: "0.4rem" }}>

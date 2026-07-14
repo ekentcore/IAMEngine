@@ -109,7 +109,12 @@ function Invoke-CtgKnowBe4Offboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
     $actions = [System.Collections.Generic.List[string]]::new()
-    $userName = [string]$User.UserPrincipalName
+    # StrictMode-safe identity read: an offboard payload may carry no UserPrincipalName property at all
+    # (a ServiceNow UM intake carries `userToOffboard`), and a dot-read of an absent property throws.
+    # Only an email-shaped identifier can find the user here — a bare display name would report a false
+    # "not found" success on an offboard, so no email is an error, not a silent no-op.
+    $userName = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $userName) { throw "knowbe4: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
     $found = Get-CtgKnowBe4User -UserName $userName
     if (-not $found) { return [pscustomobject]@{ System = 'knowbe4'; Status = 'ok'; Actions = @("KnowBe4 user not found ($userName)") } }
     if ((Get-CtgProp $found 'active') -eq $false) { $actions.Add("already deactivated: $userName") }
@@ -124,7 +129,12 @@ function Invoke-CtgKnowBe4Offboarding {
 function Confirm-CtgKnowBe4 {
     [CmdletBinding()]
     param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config, [Parameter(Mandatory)][ValidateSet('onboard', 'offboard')][string]$Action)
-    $userName = [string]$User.UserPrincipalName
+    # Same StrictMode-safe chain as the executor — the validator MUST resolve the SAME user, and an
+    # offboard payload may carry no UserPrincipalName property at all. Unresolvable is NOT a pass: with
+    # no email the lookup below finds nobody, which reads as "already gone" and would rubber-stamp an
+    # offboard that nobody performed.
+    $userName = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
+    if (-not $userName) { return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'no email/UPN on the case to verify against'; expected = $true; actual = $false; pass = $false }) } }
     $u = Get-CtgKnowBe4User -UserName $userName
     $active = [bool]($u -and (Get-CtgProp $u 'active'))
     $checks = [System.Collections.Generic.List[hashtable]]::new()

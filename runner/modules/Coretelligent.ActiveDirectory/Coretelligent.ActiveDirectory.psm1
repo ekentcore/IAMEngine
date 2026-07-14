@@ -339,6 +339,52 @@ function Test-CtgADProtectedGroup {
     return ($pattern -and $dn -and ($dn -like $pattern))
 }
 
+# Shape AD user objects into the candidate rows the app's picker renders. Kept in ONE place so the
+# ambiguous branch and the no-match branch can never disagree about the shape.
+function ConvertTo-CtgAdCandidate {
+    param($Users)
+    @($Users | ForEach-Object {
+        [pscustomobject]@{
+            id                = [string](Get-CtgProp $_ 'DistinguishedName')
+            upn               = [string](Get-CtgProp $_ 'UserPrincipalName')
+            samAccountName    = [string](Get-CtgProp $_ 'SamAccountName')
+            displayName       = [string](Get-CtgProp $_ 'DisplayName')
+            jobTitle          = [string](Get-CtgProp $_ 'Title')
+            department        = [string](Get-CtgProp $_ 'Department')
+            enabled           = [bool](Get-CtgProp $_ 'Enabled')
+            mail              = [string](Get-CtgProp $_ 'EmailAddress')
+            distinguishedName = [string](Get-CtgProp $_ 'DistinguishedName')
+            source            = 'active-directory'
+        }
+    })
+}
+
+# Candidates to offer a human when the name on the ticket matches NOBODY in AD. An exact search already
+# failed, so searching exactly again cannot help: each token of the name is tried as a PREFIX against
+# DisplayName / Surname / GivenName / SamAccountName, and the union comes back for the operator to pick
+# from. @() when nobody is close.
+function Get-CtgAdOffboardCandidates {
+    param([string]$Name, [hashtable]$AdConnection = @{}, [int]$Limit = 10)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return @() }
+    $props = @('SamAccountName', 'UserPrincipalName', 'DisplayName', 'Title', 'Department', 'Enabled', 'EmailAddress', 'DistinguishedName')
+    $tokens = @($Name -split '\s+' | Where-Object { $_.Length -ge 2 })
+    $found = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($t in $tokens) {
+        $esc = $t -replace "'", "''"
+        foreach ($field in @('DisplayName', 'Surname', 'GivenName', 'SamAccountName')) {
+            # One failing probe (a field a schema doesn't index) must not lose what the others found.
+            try { $hits = @(Get-ADUser -Filter "$field -like '$esc*'" -Properties $props -ErrorAction Stop @AdConnection) }
+            catch { continue }
+            foreach ($u in $hits) {
+                $dn = [string](Get-CtgProp $u 'DistinguishedName')
+                if ($dn -and $seen.Add($dn)) { $found.Add($u) }
+            }
+        }
+    }
+    @(ConvertTo-CtgAdCandidate (@($found) | Select-Object -First $Limit))
+}
+
 function Invoke-CtgADOffboarding {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -349,13 +395,32 @@ function Invoke-CtgADOffboarding {
     $actions = [System.Collections.Generic.List[string]]::new()
     # StrictMode-safe: the incident offboard payload may have no SamAccountName property at all.
     $sam = [string](Get-CtgProp $User 'SamAccountName')
-    $displayName = [string](Get-CtgProp $User 'DisplayName')
+    # `userToOffboard` is the last link in the name chain: a ServiceNow UM intake carries the leaver
+    # ONLY under that key, so without it this resolves to nothing and the offboard silently no-ops
+    # (reporting "no user identity on the case" while the account stays live).
+    $displayName = [string]((Get-CtgProp $User 'DisplayName') ?? (Get-CtgProp $User 'userToOffboard'))
+    # An email in the name slot (SNOW resolves the contact reference to one) identifies the user
+    # directly — match it against the UPN rather than searching AD for a display name shaped like an email.
+    $upnHint = [string]((Get-CtgProp $User 'UserPrincipalName') ?? (Get-CtgProp $User 'email'))
+    if (-not $upnHint -and $displayName -match '@') {
+        $upnHint = $displayName
+        $displayName = ''
+    }
 
-    # Resolve by SamAccountName when present, else by DISPLAY NAME against AD (offboard intakes often
-    # carry only the name). Exactly-one match is authoritative; 0/many -> stop with a clear note.
+    # Resolve by SamAccountName when present, then by UPN/email (exact, and what a ServiceNow contact
+    # reference resolves to), else by DISPLAY NAME against AD (offboard intakes often carry only the
+    # name). Exactly-one match is authoritative; 0/many -> stop with a clear note.
     $existing = $null
     if (-not [string]::IsNullOrWhiteSpace($sam)) {
         $existing = Get-ADUser -Identity $sam -Properties MemberOf, DistinguishedName, Manager -ErrorAction SilentlyContinue @AdConnection
+    }
+    if (-not $existing -and $upnHint) {
+        $upnEsc = $upnHint -replace "'", "''"
+        $byUpn = @(Get-ADUser -Filter "UserPrincipalName -eq '$upnEsc'" -Properties MemberOf, DistinguishedName, Manager -ErrorAction SilentlyContinue @AdConnection)
+        if ($byUpn.Count -eq 1) {
+            $existing = $byUpn[0]; $sam = [string](Get-CtgProp $existing 'SamAccountName')
+            $actions.Add("resolved offboard target by UPN '$upnHint' -> $sam")
+        }
     }
     if (-not $existing -and $displayName) {
         $dnEsc = $displayName -replace "'", "''"   # escape quotes so "Sean O'Brien" can't break the AD filter
@@ -365,14 +430,40 @@ function Invoke-CtgADOffboarding {
             $actions.Add("resolved offboard target by display name '$displayName' -> $sam")
         }
         elseif ($byName.Count -gt 1) {
-            return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN $($byName.Count) AD users match display name '$displayName' — set the exact account on the case. Nothing done."); Evidence=@{ Groups=@() } }
+            # SEVERAL people share this name. Never guess — hand the humans the shortlist and stop.
+            return [pscustomobject]@{
+                System='active-directory'; Status='ok'; Sam=$sam
+                Actions=@("WARN $($byName.Count) AD users match display name '$displayName' — pick the right one on the case. Nothing done.")
+                Candidates = @(ConvertTo-CtgAdCandidate $byName)
+                CandidateQuery = $displayName
+                CandidateReason = 'ambiguous'
+                Evidence=@{ Groups=@() }
+            }
         }
     }
-    if ([string]::IsNullOrWhiteSpace($sam) -and -not $existing) {
-        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("WARN no user identity on the case (no SamAccountName, and no display-name match) — set the offboard target on the case, then re-run. Nothing done."); Evidence=@{ Groups=@() } }
+    # NO identifier at all on the case: we could not even look the person up. This used to return
+    # Status='ok' — a GREEN offboard step for an account that is still enabled, which is the worst way
+    # for this to fail. Fail loudly instead.
+    if (-not $sam -and -not $upnHint -and -not $displayName) {
+        throw "active-directory: the case carries no SamAccountName, UPN, email or name for the user to offboard — set the offboard target on the case, then re-run."
     }
     if (-not $existing) {
-        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("user not found ($(if($sam){$sam}else{$displayName}))"); Evidence=@{ Groups=@() } }
+        # Nobody matched. The name on the ticket is not the name in AD ("Parth Shah" vs "Parth K. Shah"),
+        # so re-searching for it exactly can only fail again. Broaden and let a human choose, rather than
+        # report "user not found" and leave the account enabled.
+        $who = if ($sam) { $sam } else { $displayName }
+        $cands = @(Get-CtgAdOffboardCandidates -Name $displayName -AdConnection $AdConnection)
+        if ($cands.Count -gt 0) {
+            return [pscustomobject]@{
+                System='active-directory'; Status='ok'; Sam=$sam
+                Actions=@("WARN no exact match for '$who' — $($cands.Count) similar AD user(s) found; pick the right one on the case. Nothing done.")
+                Candidates = $cands
+                CandidateQuery = $who
+                CandidateReason = 'no-match'
+                Evidence=@{ Groups=@() }
+            }
+        }
+        return [pscustomobject]@{ System='active-directory'; Status='ok'; Sam=$sam; Actions=@("user not found ($who)"); Evidence=@{ Groups=@() } }
     }
     $guardrails = @(Get-CtgProp $Config 'guardrails')
 

@@ -295,11 +295,36 @@ Describe 'Invoke-CtgADOffboarding' {
         ($r.Actions -join ' ') | Should -Match "computer 'GONE-PC' not found"
     }
 
-    It 'returns a clear message (no crash) when the case has no user identity' {
-        $r = Invoke-CtgADOffboarding -User ([pscustomobject]@{ SamAccountName = '' }) -Config ([pscustomobject]@{ disableAccount = $true })
-        $r.Status | Should -Be 'ok'
-        ($r.Actions -join ' ') | Should -Match 'no user identity'
+    # This used to return Status='ok' — a GREEN offboard step for an account still enabled. An offboard
+    # that cannot even identify who to disable must fail loudly, and must still touch nothing.
+    It 'fails loudly (touching nothing) when the case has no user identity' {
+        { Invoke-CtgADOffboarding -User ([pscustomobject]@{ SamAccountName = '' }) -Config ([pscustomobject]@{ disableAccount = $true }) } |
+            Should -Throw -ExpectedMessage '*no SamAccountName, UPN, email or name*'
         Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    # The UM payload shape: only `userToOffboard`. It must resolve by name, not no-op.
+    # The name on the ticket is not the name in AD. Offer a shortlist instead of reporting "user not
+    # found" on an account that is still enabled.
+    It 'offers candidates (does not no-op) when the name matches no AD user exactly' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter -match 'DisplayName -eq' } -MockWith { @() }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter -match '-like' } -MockWith {
+            @([pscustomobject]@{ SamAccountName = 'pshah'; UserPrincipalName = 'pshah@x.com'; DisplayName = 'Parth K. Shah'; Title = 'Analyst'; Department = 'Sales'; Enabled = $true; EmailAddress = 'pshah@x.com'; DistinguishedName = 'CN=Parth K. Shah,OU=Users,DC=x,DC=com' })
+        }
+        $r = Invoke-CtgADOffboarding -User ([pscustomobject]@{ userToOffboard = 'Parth Shah' }) -Config ([pscustomobject]@{ disableAccount = $true })
+        $r.CandidateReason | Should -Be 'no-match'
+        $r.Candidates[0].samAccountName | Should -Be 'pshah'
+        $r.Candidates[0].upn | Should -Be 'pshah@x.com'
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 0 -Exactly
+    }
+
+    It 'resolves a UM-shaped payload (userToOffboard only) by display name' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Filter -match 'DisplayName' } -MockWith {
+            [pscustomobject]@{ SamAccountName = 'pshah'; DistinguishedName = 'CN=Parth Shah,OU=Users,DC=x,DC=com'; MemberOf = @(); Manager = $null }
+        }
+        $r = Invoke-CtgADOffboarding -User ([pscustomobject]@{ userToOffboard = 'Parth Shah' }) -Config ([pscustomobject]@{ disableAccount = $true })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match "resolved offboard target by display name 'Parth Shah'"
     }
 
     It 'resolves the offboard target by display name when the case has no SamAccountName' {
