@@ -1754,6 +1754,17 @@ $CONNTEST_PROBE['google-workspace'] = { param($job, $creds)
     $script:ConnTestRights = @($scopes | ForEach-Object {
         @{ op = "scope $((($_ -split '/')[-1]))"; ok = $true; detail = 'authorized via domain-wide delegation (token minted with this scope)' }
     })
+    # Connect-CtgGoogle ASKS for admin.directory.user.security and falls back without it, so a
+    # connected session does NOT imply the domain authorized it. Report its absence explicitly —
+    # otherwise every scope row is green while offboarding silently cannot revoke a leaver's
+    # sessions/refresh tokens, and the operator has no way to see that from here.
+    $securityScope = 'https://www.googleapis.com/auth/admin.directory.user.security'
+    if ($scopes.Count -and ($scopes -notcontains $securityScope)) {
+        $script:ConnTestRights += @{
+            op = 'scope admin.directory.user.security'; ok = $false
+            detail = 'NOT authorized — offboarding cannot sign a leaver out (their sessions and refresh tokens survive the suspend). Add this scope in Admin Console -> Security -> API controls -> Domain-wide delegation.'
+        }
+    }
     if ($scopes.Count -eq 0) { $script:ConnTestRights = @(@{ op = 'verify delegation scopes'; ok = $null; detail = 'session did not record its scopes (token passed directly?)' }) }
     "google: users readable (delegation scopes verified: $($scopes.Count))"
 }

@@ -95,6 +95,51 @@ Describe 'Invoke-CtgGoogleOffboarding' {
         Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'PUT' -and $Body.suspended -eq $true } -Times 1
         Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'DELETE' -and $Path -like '/users/*' } -Times 0 -Exactly
     }
+
+    # Suspending blocks NEW sign-ins but does NOT invalidate tokens already issued — a phone with a
+    # live Gmail token keeps syncing. signOut is what actually revokes sessions + refresh tokens.
+    It 'signs the user out everywhere (revokes sessions + refresh tokens) after suspending' {
+        Mock Get-CtgGoogleSessionScopes -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            @('https://www.googleapis.com/auth/admin.directory.user', 'https://www.googleapis.com/auth/admin.directory.user.security')
+        }
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com' } }
+            return $null
+        }
+        $r = Invoke-CtgGoogleOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{})
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Method -eq 'POST' -and $Path -eq '/users/jdoe@brightonpark.com/signOut' } -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'signed out everywhere'
+    }
+
+    # Domain-wide delegation is all-or-nothing, so a domain that hasn't added the security scope is
+    # connected WITHOUT it. Don't fire a call Google will reject — say exactly what's missing.
+    It 'warns that tokens stay live when the domain has not authorized the security scope' {
+        Mock Get-CtgGoogleSessionScopes -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            @('https://www.googleapis.com/auth/admin.directory.user', 'https://www.googleapis.com/auth/admin.directory.group')
+        }
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com' } }
+            return $null
+        }
+        $r = Invoke-CtgGoogleOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'   # never fails the offboard
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Path -like '*/signOut' } -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'admin\.directory\.user\.security'
+        ($r.Actions -join ' ') | Should -Match 'STILL VALID'
+    }
+
+    It 'does not sign the user out when signOut is false' {
+        Mock Get-CtgGoogleSessionScopes -ModuleName Coretelligent.GoogleWorkspace -MockWith { @('https://www.googleapis.com/auth/admin.directory.user.security') }
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -like '/users/*') { return [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com' } }
+            return $null
+        }
+        Invoke-CtgGoogleOffboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{ signOut = $false }) | Out-Null
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter { $Path -like '*/signOut' } -Times 0 -Exactly
+    }
 }
 
 Describe 'Connect-CtgGoogle (service-account JWT)' {
@@ -119,6 +164,45 @@ Describe 'Connect-CtgGoogle (service-account JWT)' {
         $claims.sub   | Should -Be 'admin@legalsifter.com'   # impersonated admin (domain-wide delegation)
         $claims.aud   | Should -Be 'https://oauth2.googleapis.com/token'
         $claims.scope | Should -Match 'admin\.directory\.user'
+    }
+
+    # Domain-wide delegation is all-or-nothing: asking for a scope the domain hasn't authorized fails
+    # the WHOLE exchange. We ask for the offboard security scope, but a domain that hasn't added it
+    # must keep working exactly as before — so the mint retries with the legacy scope set.
+    It 'asks for the session-revoke scope, and falls back to the legacy scopes when the domain refuses it' {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+        $pem = $rsa.ExportPkcs8PrivateKeyPem()
+        $script:attempts = [System.Collections.Generic.List[string]]::new()
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            param($Method, $Uri, $ContentType, $Body)
+            $padFix = { param($x) $x.Replace('-', '+').Replace('_', '/').PadRight([math]::Ceiling($x.Length / 4) * 4, '=') }
+            $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((& $padFix (($Body.assertion -split '\.')[1])))) | ConvertFrom-Json
+            $script:attempts.Add($claims.scope)
+            if ($claims.scope -match 'user\.security') { throw 'unauthorized_client' }  # domain hasn't authorized it
+            [pscustomobject]@{ access_token = 'ya29.legacy'; expires_in = 3600 }
+        }
+        Connect-CtgGoogle -ClientEmail 'svc@x' -PrivateKey $pem -Impersonate 'admin@x.com'
+
+        $script:attempts.Count | Should -Be 2                       # tried WITH the scope, then without
+        $script:attempts[0] | Should -Match 'user\.security'
+        $script:attempts[1] | Should -Not -Match 'user\.security'
+        (Get-CtgGoogleSessionScopes) | Should -Not -Contain 'https://www.googleapis.com/auth/admin.directory.user.security'
+    }
+
+    # REGRESSION: a catch-all here meant ANY transient failure (503, DNS, TLS) silently downgraded the
+    # session to the legacy scopes. A domain that HAD authorized the security scope would then skip
+    # the offboard's signOut and be told to add a scope it already has — while the leaver's tokens
+    # stayed live. Only an authorization refusal may trigger the fallback.
+    It 'does NOT downgrade the scopes on a transient token-endpoint failure — it surfaces the error' {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+        $pem = $rsa.ExportPkcs8PrivateKeyPem()
+        $script:calls = 0
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            $script:calls++
+            throw 'The remote server returned an error: (503) Service Unavailable.'
+        }
+        { Connect-CtgGoogle -ClientEmail 'svc@x' -PrivateKey $pem -Impersonate 'admin@x.com' } | Should -Throw
+        $script:calls | Should -Be 1   # no silent retry-without-the-scope
     }
 
     It 'throws when the token endpoint returns no access_token' {

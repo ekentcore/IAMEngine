@@ -28,6 +28,14 @@ BeforeAll {
     function global:Get-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId) }
     function global:New-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId, $BodyParameter) }
     function global:Remove-MgUserAuthenticationTemporaryAccessPassMethod { param($UserId, $TemporaryAccessPassAuthenticationMethodId) }
+    # Offboard: strip the leaver's registered second factors.
+    function global:Get-MgUserAuthenticationMethod { param($UserId) }
+    function global:Remove-MgUserAuthenticationPhoneMethod { param($UserId, $PhoneAuthenticationMethodId) }
+    function global:Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod { param($UserId, $MicrosoftAuthenticatorAuthenticationMethodId) }
+    function global:Remove-MgUserAuthenticationFido2Method { param($UserId, $Fido2AuthenticationMethodId) }
+    function global:Remove-MgUserAuthenticationSoftwareOathMethod { param($UserId, $SoftwareOathAuthenticationMethodId) }
+    function global:Remove-MgUserAuthenticationWindowsHelloForBusinessMethod { param($UserId, $WindowsHelloForBusinessAuthenticationMethodId) }
+    function global:Remove-MgUserAuthenticationEmailMethod { param($UserId, $EmailAuthenticationMethodId) }
 
     Import-Module $ModulePath -Force
 
@@ -270,6 +278,16 @@ Describe 'Invoke-CtgM365Offboarding' {
             @([pscustomobject]@{ Id = 'dev-1'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.device'; displayName = 'LT-JDOE' } })
         }
         Mock Update-MgDevice -ModuleName Coretelligent.M365 -MockWith { }
+        # A typical leaver: a password (NOT removable via Graph) plus two live second factors.
+        Mock Get-MgUserAuthenticationMethod -ModuleName Coretelligent.M365 -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'pw-1';   AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.passwordAuthenticationMethod' } }
+                [pscustomobject]@{ Id = 'ph-1';   AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.phoneAuthenticationMethod' } }
+                [pscustomobject]@{ Id = 'auth-1'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod' } }
+            )
+        }
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -MockWith { }
     }
 
     It 'resolves the offboard target by display name when the case has no UPN' {
@@ -297,6 +315,69 @@ Describe 'Invoke-CtgM365Offboarding' {
     It 'does not revoke sessions when revokeSessions is false' {
         Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ revokeSessions = $false }) -MailboxSizeGB 10 | Out-Null
         Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    # Revoking sessions kills the account TODAY; the registered second factors would otherwise come
+    # back with it the moment someone re-enables the user (a rehire), and stay usable for SSPR.
+    It 'removes the registered MFA methods by default on offboard' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        Should -Invoke Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        Should -Invoke Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'removed 2 registered MFA method'
+        $r.Evidence.MfaMethods | Should -Contain 'phone'
+        $r.Evidence.MfaMethods | Should -Contain 'microsoftAuthenticator'
+    }
+
+    # The password method cannot be deleted through Graph — attempting it would error every offboard.
+    It 'never attempts to remove the password method' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Evidence.MfaMethods | Should -Not -Contain 'password'
+        ($r.Actions -join ' ') | Should -Not -Match 'no removal path'
+    }
+
+    It 'does not touch MFA methods when removeMfaMethods is false' {
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ removeMfaMethods = $false }) -MailboxSizeGB 10 | Out-Null
+        Should -Invoke Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    # REGRESSION: `continue` inside a switch branch only exits the SWITCH (a switch is itself a loop
+    # in PowerShell), so an unknown method type used to fall through and get recorded as removed —
+    # a false "we stripped this second factor" on the case evidence and the ServiceNow note.
+    It 'never claims to have removed an auth method it has no removal path for' {
+        Mock Get-MgUserAuthenticationMethod -ModuleName Coretelligent.M365 -MockWith {
+            @(
+                [pscustomobject]@{ Id = 'ph-1';  AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.phoneAuthenticationMethod' } }
+                # Graph keeps adding types (Mac Platform SSO, hardware OATH, QR-code PIN…)
+                [pscustomobject]@{ Id = 'plat-1'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.platformCredentialAuthenticationMethod' } }
+            )
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Evidence.MfaMethods | Should -Not -Contain 'platformCredential'
+        $r.Evidence.MfaMethods | Should -Contain 'phone'
+        ($r.Actions -join ' ') | Should -Match "removed 1 registered MFA method"
+        ($r.Actions -join ' ') | Should -Match "'platformCredential' has no removal path — STILL REGISTERED"
+        ($r.Actions -join ' ') | Should -Match '1 MFA method\(s\) are STILL REGISTERED'
+    }
+
+    # A failed removal must never be summarized as "nothing to remove" — that reads as "clean".
+    It 'reports methods left behind when every removal fails, instead of "no removable methods"' {
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith { throw 'Authorization_RequestDenied' }
+        Mock Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -MockWith { throw 'Authorization_RequestDenied' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Not -Match 'no removable MFA methods were registered'
+        ($r.Actions -join ' ') | Should -Match '2 MFA method\(s\) are STILL REGISTERED'
+        $r.Evidence.MfaMethods | Should -BeNullOrEmpty
+    }
+
+    # UserAuthenticationMethod.ReadWrite.All is a MANUAL per-tenant grant most tenants won't have.
+    # A 403 must not fail the offboard — but it must say loudly that the factors are still live.
+    It 'warns (and does not fail) when the tenant has not granted the MFA-method permission' {
+        Mock Get-MgUserAuthenticationMethod -ModuleName Coretelligent.M365 -MockWith { throw 'Authorization_RequestDenied: Insufficient privileges to complete the operation.' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'UserAuthenticationMethod.ReadWrite.All'
+        ($r.Actions -join ' ') | Should -Match 'STILL REGISTERED'
+        Should -Invoke Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -Times 0 -Exactly
     }
 
     It 'removes only CLOUD groups; routes on-prem-synced/mail-enabled/dynamic instead of erroring' {

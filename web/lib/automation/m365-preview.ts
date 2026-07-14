@@ -11,6 +11,10 @@ type M365Config = {
   blockSignIn?: boolean;
   removeLicense?: unknown;
   removeAllGroups?: boolean;
+  // Offboard hardening. Both default to ON — only an explicit `false` turns them off, so the preview
+  // must mirror that (`!== false`), not treat "absent" as "off".
+  revokeSessions?: boolean;
+  removeMfaMethods?: boolean;
 };
 
 type Identity = {
@@ -88,6 +92,17 @@ function offboard(config: M365Config, _identity: Identity, _domain: string, user
     "# block sign-in",
     `Update-MgUser -UserId $UserPrincipalName -AccountEnabled:$false`,
   ];
+  if (config.revokeSessions !== false) {
+    lines.push("", "# revoke active sessions (blocking sign-in does NOT invalidate tokens already issued)", `Revoke-MgUserSignInSession -UserId $UserPrincipalName`);
+  }
+  if (config.removeMfaMethods !== false) {
+    lines.push(
+      "",
+      "# remove the registered second factors (they go live again if the account is ever re-enabled,",
+      "# and stay usable for self-service password reset). The password method cannot be removed.",
+      `Get-MgUserAuthenticationMethod -UserId $UserPrincipalName | Where-Object { $_.AdditionalProperties['@odata.type'] -ne '#microsoft.graph.passwordAuthenticationMethod' } | ForEach-Object { <# Remove-MgUserAuthentication<Type>Method per method type #> }`
+    );
+  }
   if (config.removeAllGroups) {
     lines.push("", "# remove from all groups", `Get-MgUserMemberOf -UserId $UserPrincipalName | ForEach-Object { Remove-MgGroupMemberByRef -GroupId $_.Id -DirectoryObjectId (Get-MgUser -UserId $UserPrincipalName).Id }`);
   }

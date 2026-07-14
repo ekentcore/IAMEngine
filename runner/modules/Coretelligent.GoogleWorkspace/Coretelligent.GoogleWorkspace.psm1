@@ -12,6 +12,9 @@
 Set-StrictMode -Version Latest
 
 $script:GoogleApiUrl = 'https://admin.googleapis.com/admin/directory/v1'
+# Needed ONLY to sign a user out everywhere (revoke sessions + refresh tokens) on offboard. Kept
+# separate from the base scopes because domain-wide delegation is all-or-nothing — see Connect-CtgGoogle.
+$script:GoogleSecurityScope = 'https://www.googleapis.com/auth/admin.directory.user.security'
 $script:GoogleToken  = $null
 $script:GoogleScopes = @()
 
@@ -67,38 +70,78 @@ function Connect-CtgGoogle {
         return
     }
 
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $header = @{ alg = 'RS256'; typ = 'JWT' }
-    $claims = @{
-        iss   = $ClientEmail
-        sub   = $Impersonate                 # impersonated admin (domain-wide delegation)
-        scope = ($Scopes -join ' ')
-        aud   = 'https://oauth2.googleapis.com/token'
-        iat   = $now
-        exp   = $now + 3600
-    }
-    $enc = { param($o) ConvertTo-CtgBase64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
-    $signingInput = "$(& $enc $header).$(& $enc $claims)"
+    # Mint an access token for exactly $scopeList (signed JWT -> OAuth exchange).
+    $mint = {
+        param([string[]]$scopeList)
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $header = @{ alg = 'RS256'; typ = 'JWT' }
+        $claims = @{
+            iss   = $ClientEmail
+            sub   = $Impersonate                 # impersonated admin (domain-wide delegation)
+            scope = ($scopeList -join ' ')
+            aud   = 'https://oauth2.googleapis.com/token'
+            iat   = $now
+            exp   = $now + 3600
+        }
+        $enc = { param($o) ConvertTo-CtgBase64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
+        $signingInput = "$(& $enc $header).$(& $enc $claims)"
 
-    $rsa = [System.Security.Cryptography.RSA]::Create()
+        $rsa = [System.Security.Cryptography.RSA]::Create()
+        try {
+            $rsa.ImportFromPem($PrivateKey)      # service-account private_key is PKCS#8 PEM
+            $sigBytes = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signingInput),
+                [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        }
+        finally { $rsa.Dispose() }
+        $jwt = "$signingInput.$(ConvertTo-CtgBase64Url $sigBytes)"
+
+        $resp = Invoke-RestMethod -Method POST -Uri 'https://oauth2.googleapis.com/token' `
+            -ContentType 'application/x-www-form-urlencoded' `
+            -Body @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $jwt }
+        $t = Get-CtgProp $resp 'access_token'
+        if (-not $t) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
+        $t
+    }
+
+    # Domain-wide delegation is all-or-nothing per request: the exchange FAILS OUTRIGHT if any single
+    # requested scope isn't authorized for the service account's client ID. The offboard's "sign out
+    # everywhere" needs admin.directory.user.security, which existing domains have NOT authorized —
+    # so asking for it unconditionally would break every Google client until each one updated its
+    # delegation. Instead: ASK for it, and if the exchange is rejected, fall back to the scope set
+    # we've always used. A domain that adds the scope gets session revocation automatically; one that
+    # hasn't keeps working exactly as before (the offboard then warns that tokens stay live).
+    $withSecurity = @($Scopes)
+    if ($withSecurity -notcontains $script:GoogleSecurityScope) { $withSecurity += $script:GoogleSecurityScope }
     try {
-        $rsa.ImportFromPem($PrivateKey)      # service-account private_key is PKCS#8 PEM
-        $sigBytes = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signingInput),
-            [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $token = & $mint $withSecurity
+        $granted = $withSecurity
     }
-    finally { $rsa.Dispose() }
-    $jwt = "$signingInput.$(ConvertTo-CtgBase64Url $sigBytes)"
-
-    $resp = Invoke-RestMethod -Method POST -Uri 'https://oauth2.googleapis.com/token' `
-        -ContentType 'application/x-www-form-urlencoded' `
-        -Body @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $jwt }
-    $token = Get-CtgProp $resp 'access_token'
-    if (-not $token) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
+    catch {
+        # Fall back ONLY on an authorization refusal — i.e. Google telling us this service account
+        # isn't delegated that scope. A transient failure (503, DNS, TLS, socket) must NOT silently
+        # downgrade the session: a domain that HAS authorized the scope would then skip the offboard's
+        # signOut and be told to go add a scope it already has, while the leaver's tokens stay live.
+        $err = $_
+        $reason = [string]$err.Exception.Message
+        $status = $null
+        try { $status = [int]$err.Exception.Response.StatusCode.value__ } catch { }
+        $isScopeRefusal = ($reason -match 'unauthorized_client|invalid_scope|access_denied') -or ($status -in 400, 401, 403)
+        if (-not $isScopeRefusal) { throw }   # transient/real fault — surface it, don't paper over it
+        Write-Verbose "Google refused the $($script:GoogleSecurityScope) scope ($reason); retrying with the legacy scopes."
+        try {
+            $token = & $mint $Scopes
+            $granted = $Scopes
+        }
+        catch {
+            # The legacy scopes failed too — that's a genuinely broken service account/delegation.
+            # Surface BOTH: the second error alone would hide that we first tried the security scope.
+            throw "Google token exchange failed for both scope sets. With $($script:GoogleSecurityScope): $reason. Without it: $($_.Exception.Message)"
+        }
+    }
     $script:GoogleToken = $token
-    # Domain-wide delegation is all-or-nothing per request: the exchange FAILS if any requested
-    # scope isn't authorized for the service account's client ID. A minted token therefore proves
-    # every scope in $Scopes — record them so the connection test can report them as verified.
-    $script:GoogleScopes = @($Scopes)
+    # A minted token proves every scope it was minted with — record them so the connection test can
+    # report them as verified, and so the offboard knows whether signOut is available at all.
+    $script:GoogleScopes = @($granted)
     Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
 }
 
@@ -111,9 +154,12 @@ function Get-CtgGoogleSessionScopes {
 }
 
 function Invoke-CtgGoogleApi {
-    # Single HTTP seam (bearer auth). Mocked in tests. Returns $null on 404 (not found).
+    # Single HTTP seam (bearer auth). Mocked in tests. Returns $null on 404 (not found) — which is the
+    # right answer for a GET ("no such user"), but WRONG for an action POST: a 404 there would be
+    # indistinguishable from a successful empty 204 and would read as "it worked". -ThrowOn404 opts
+    # such calls out of the swallow.
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Path, $Body)
+    param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Path, $Body, [switch]$ThrowOn404)
     if (-not $script:GoogleToken) { throw "Call Connect-CtgGoogle first." }
     $p = @{
         Method      = $Method
@@ -124,7 +170,7 @@ function Invoke-CtgGoogleApi {
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { return Invoke-RestMethod @p }
     catch {
-        if ($_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
+        if (-not $ThrowOn404 -and $_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
         throw
     }
 }
@@ -294,6 +340,46 @@ function Invoke-CtgGoogleOffboarding {
     if ($PSCmdlet.ShouldProcess($email, "Suspend Google user")) {
         Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ suspended = $true } | Out-Null
         $actions.Add("suspended Google user: $email")
+    }
+
+    # 6. Sign the user out everywhere — revokes their SESSIONS and OAuth refresh tokens.
+    # Suspending blocks NEW sign-ins, but it does NOT invalidate tokens already issued: a phone with
+    # a live Gmail/Drive token can keep syncing after the suspend. signOut is the Google counterpart
+    # of Graph's revokeSignInSessions, so it runs AFTER the suspend (nothing can re-authenticate
+    # behind it). Needs the admin.directory.user.security scope in domain-wide delegation — one more
+    # scope than we used to ask for, so a domain that hasn't added it gets a 403. FAIL-SOFT: warn
+    # with the exact scope and say plainly that tokens are still live; never fail the offboard.
+    $missingScopeWarning = "WARN sessions NOT revoked — domain-wide delegation is missing the $($script:GoogleSecurityScope) scope (Admin Console -> Security -> API controls -> Domain-wide delegation). The user's existing sessions and refresh tokens are STILL VALID."
+    if ((Get-CtgProp $Config 'signOut') -ne $false) {
+        $sessionScopes = @(Get-CtgGoogleSessionScopes)
+        # Connect-CtgGoogle falls back to the legacy scope set when the domain hasn't authorized the
+        # security scope. Detect that here rather than firing a call we know Google will reject —
+        # ($sessionScopes is empty only when a raw token was passed in, so we can't tell: just try.)
+        if ($sessionScopes.Count -and ($sessionScopes -notcontains $script:GoogleSecurityScope)) {
+            $actions.Add($missingScopeWarning)
+        }
+        elseif ($PSCmdlet.ShouldProcess($email, "Sign out everywhere (revoke sessions + tokens)")) {
+            try {
+                # -ThrowOn404: Invoke-CtgGoogleApi's default contract turns a 404 into $null, which for a
+                # POST we'd have no way to tell from a successful 204 — and we'd then claim the sessions
+                # were revoked when the endpoint was never hit. A signOut 404 is a real failure.
+                Invoke-CtgGoogleApi -Method POST -Path "/users/$email/signOut" -ThrowOn404 | Out-Null
+                $actions.Add("signed out everywhere (sessions + refresh tokens revoked)")
+            }
+            catch {
+                $msg = $_.Exception.Message
+                $status = $null
+                try { $status = [int]$_.Exception.Response.StatusCode.value__ } catch { }
+                # 403 = the token is fine but lacks the scope (the delegation gap). 401 = the token
+                # itself was rejected — a different fault entirely; telling the admin to add a scope
+                # would send them down the wrong path.
+                if ($status -eq 403 -or $msg -match 'Forbidden|insufficient') { $actions.Add($missingScopeWarning) }
+                elseif ($status -eq 401 -or $msg -match 'Unauthorized|invalid_token') {
+                    $actions.Add("WARN sessions NOT revoked — Google rejected the access token (401). The user's sessions and refresh tokens are STILL VALID. Check the service account key and the impersonated super-admin.")
+                }
+                else { $actions.Add("WARN sessions NOT revoked (STILL VALID): $msg") }
+            }
+        }
     }
 
     [pscustomobject]@{

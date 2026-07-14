@@ -50,11 +50,18 @@ export default function GoogleSetupPage() {
         <li><b>Add new.</b> Paste the service account&rsquo;s numeric <b>Client ID</b> from step 1.</li>
         <li>For <b>OAuth scopes</b>, paste (comma-separated):</li>
       </ol>
-      <Code>{`https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.group,https://www.googleapis.com/auth/admin.directory.orgunit`}</Code>
+      <Code>{`https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/admin.directory.group,https://www.googleapis.com/auth/admin.directory.orgunit,https://www.googleapis.com/auth/admin.directory.user.security`}</Code>
       <p className="note">
-        These cover create-user, OU placement, and group membership (the onboard lane). Add
-        {" "}<code>https://www.googleapis.com/auth/admin.directory.user.security</code> /
-        {" "}<code>…/apps.licensing</code> later if you wire sign-in-cookie reset or license assignment. <b>Authorize.</b>
+        The first three cover create-user, OU placement, and group membership (the onboard lane). The fourth,
+        {" "}<code>admin.directory.user.security</code>, lets <b>offboarding sign the leaver out everywhere</b> —
+        suspending an account blocks new sign-ins but does <b>not</b> invalidate tokens already issued, so without
+        this scope a departing user&rsquo;s phone can keep syncing mail. <b>Authorize.</b>
+      </p>
+      <p className="note">
+        Delegation is <b>all-or-nothing per request</b>: a scope you haven&rsquo;t authorized fails the whole token
+        exchange. The runner therefore asks for the security scope and <b>falls back</b> to the first three if your
+        domain hasn&rsquo;t added it — everything keeps working, and the offboard just warns that the tokens are
+        still live until you paste the fourth scope here.
       </p>
       <p className="note">Pick a <b>super-admin email</b> the service account will impersonate (any active super-admin) — you&rsquo;ll store it as <code>Impersonate</code>.</p>
 

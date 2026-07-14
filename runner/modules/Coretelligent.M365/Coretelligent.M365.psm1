@@ -3,7 +3,9 @@
 # Coretelligent.M365
 # Shared system module — written once, reused by every client.
 # Depends on the Microsoft.Graph SDK. Required delegated/app scopes:
-#   User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All, Domain.Read.All (domain list)
+#   User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All, Domain.Read.All (domain list),
+#   UserAuthenticationMethod.ReadWrite.All (offboard: strip the leaver's registered MFA methods —
+#     optional; without it the offboard warns and leaves the second factors registered)
 #
 # Public surface:
 #   Connect-CtgM365            - establish a Graph session from a credential
@@ -1053,6 +1055,96 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
+    # 2c. Remove registered MFA / authentication methods ----
+    # Blocking sign-in + revoking sessions secures the account TODAY. But the person's registered
+    # SECOND FACTORS (phone, Authenticator, FIDO2, software OATH, Windows Hello) stay on the object:
+    # they go live again the moment the account is re-enabled — a rehire, or anyone who flips
+    # AccountEnabled back — and while registered they remain usable for self-service password reset.
+    # So strip them, recording WHICH KINDS were registered (types only — never the phone number) as
+    # evidence.
+    #
+    # Needs the UserAuthenticationMethod.ReadWrite.All app role, a MANUAL per-tenant grant (see
+    # /help/cloud-auth) that most tenants won't have yet. Graph answers 403 without it, so this block
+    # is FAIL-SOFT: it warns with the exact permission to add and never fails the offboard — but the
+    # warning says plainly that the factors are still registered, so it can't be read as success.
+    # The password method is not removable via Graph and is skipped by design.
+    $mfaRemoved = [System.Collections.Generic.List[string]]::new()
+    if ((Get-CtgProp $Config 'removeMfaMethods') -ne $false) {
+        if ($PSCmdlet.ShouldProcess($upn, "Remove registered MFA methods")) {
+            try {
+                # The authentication-method cmdlets ship in Microsoft.Graph.Identity.SignIns, which is
+                # NOT in this module's RequiredModules (listing it there would make the whole module
+                # fail to load on a host that lacks it). Load it on demand, exactly as the TAP path does.
+                Import-Module Microsoft.Graph.Identity.SignIns -ErrorAction SilentlyContinue
+                $methods = @(Get-MgUserAuthenticationMethod -UserId $userId -ErrorAction Stop)
+                $mfaLeft = 0   # candidates we could NOT remove — the security-relevant count
+                foreach ($m in $methods) {
+                    $odata = [string](Get-CtgProp $m.AdditionalProperties '@odata.type')
+                    if ($odata -eq '#microsoft.graph.passwordAuthenticationMethod') { continue } # not removable via Graph
+                    $short = ($odata -replace '^#microsoft\.graph\.', '') -replace 'AuthenticationMethod$', ''
+                    # if/elseif, NOT switch: `continue` inside a switch branch only leaves the SWITCH
+                    # (a switch is itself a loop in PowerShell), so an unknown method would fall
+                    # through and be recorded as removed — a false "we stripped it" on the case.
+                    try {
+                        if ($odata -eq '#microsoft.graph.phoneAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationPhoneMethod -UserId $userId -PhoneAuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $userId -MicrosoftAuthenticatorAuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.fido2AuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationFido2Method -UserId $userId -Fido2AuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.softwareOathAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $userId -SoftwareOathAuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $userId -WindowsHelloForBusinessAuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.emailAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationEmailMethod -UserId $userId -EmailAuthenticationMethodId $m.Id }
+                        }
+                        elseif ($odata -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
+                            Invoke-CtgM365Write { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $userId -TemporaryAccessPassAuthenticationMethodId $m.Id }
+                        }
+                        else {
+                            # e.g. platformCredential (Mac Platform SSO), hardwareOath, qrCodePin — Graph
+                            # keeps adding types. Never claim to have removed one we don't understand.
+                            $mfaLeft++
+                            $actions.Add("WARN auth method '$short' has no removal path — STILL REGISTERED")
+                            continue
+                        }
+                        $mfaRemoved.Add($short)
+                    }
+                    catch {
+                        $mfaLeft++
+                        $actions.Add("WARN could not remove the '$short' auth method (STILL REGISTERED): $($_.Exception.Message)")
+                    }
+                }
+                if ($mfaRemoved.Count) { $actions.Add("removed $($mfaRemoved.Count) registered MFA method(s): $($mfaRemoved -join ', ')") }
+                # "nothing to remove" is a SECURITY CLAIM — only make it when the enumeration really
+                # came back empty. If anything was left behind, say that instead.
+                if ($mfaLeft) { $actions.Add("WARN $mfaLeft MFA method(s) are STILL REGISTERED on this account") }
+                elseif (-not $mfaRemoved.Count) { $actions.Add("no removable MFA methods were registered") }
+            }
+            catch {
+                $msg = $_.Exception.Message
+                # A RequestDenied here has TWO possible causes and we cannot tell them apart from the
+                # error alone, so name both rather than sending the operator to "fix" a grant that is
+                # already in place: (a) the app role really is missing, or (b) it was granted recently
+                # and this runner is still holding an app-only token minted BEFORE consent (it connects
+                # once per tenant and reuses the token — see the stale-token self-heal in
+                # Start-IamRunner.ps1). We deliberately do NOT rethrow: a genuinely missing permission
+                # would then fail the offboard outright on every tenant that hasn't granted it, and
+                # stripping MFA is a hardening step, not a prerequisite for the rest of the teardown.
+                if ($msg -match 'Authorization_RequestDenied|Forbidden|403|Insufficient privileges') {
+                    $actions.Add("WARN MFA methods NOT removed — the user's second factors are STILL REGISTERED. Either the app registration lacks UserAuthenticationMethod.ReadWrite.All (grant it in Entra -> API permissions; see /help/cloud-auth), or it was granted after this runner last connected and the cached Graph token predates the consent — in that case restart the runner (or re-run this step after it reconnects) and it will succeed.")
+                }
+                else { $actions.Add("WARN could not read MFA methods — second factors may still be registered: $msg") }
+            }
+        }
+    }
+
     # 3. Remove from all groups (evidence already captured). Only CLOUD, non-mail, non-dynamic groups
     # can be modified via Graph — route the rest instead of erroring on them:
     #   - on-prem-synced groups are AD-mastered -> the active-directory step removes them
@@ -1159,7 +1251,9 @@ function Invoke-CtgM365Offboarding {
         Status   = 'ok'
         UserId   = $userId
         Upn      = $upn
-        Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence) }
+        # MfaMethods = the KINDS of second factor that were registered and removed (e.g. "phone",
+        # "microsoftAuthenticator"). Types only — a phone number is PII and never lands in evidence.
+        Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence); MfaMethods = @($mfaRemoved) }
         Actions  = $actions.ToArray()
     }
 }
