@@ -1258,9 +1258,16 @@ export function makeRunnerService(db: PrismaClient) {
 
       await db.auditLog.create({ data: { actor: `agent:${job.assignedAgentId ?? "unknown"}`, action: job.singleRun ? "job.result.single" : "job.result", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { status, error: input.error ?? null } } });
 
+      // The run-report verdict for THIS result: "failed", or "warning" when the step succeeded but its
+      // validation read-back missed. Computed once here and reused by both the notify block below and
+      // the outcome log — a warning is a real problem an operator must see, so it notifies too.
+      const { verdict, messages } = jobOutcome(status, input.result, input.validation, input.error ?? null);
+
       // Failure notifications — best-effort + awaited (the sender is timeout-bounded, so it can't hang
-      // the result path). Only the normal cascade produces a meaningful new case status.
-      if (!job.singleRun) {
+      // the result path). Step-level alerts (failed/warning) fire for single-step re-runs too — a re-run
+      // is the usual way an operator retries a broken step, and its failure must not go silent. Only the
+      // normal cascade produces a meaningful new CASE status, so case-level alerts stay gated on it.
+      {
         const caseNumber = job.case.serviceNowCaseNumber;
         const clientName = job.case.client?.name ?? null;
         const restricted = job.case.client?.restricted ?? false;
@@ -1278,11 +1285,18 @@ export function makeRunnerService(db: PrismaClient) {
         const at = new Date().toISOString();
         if (status === "failed") {
           await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
+        } else if (verdict === "warning") {
+          // Succeeded, but the read-back didn't confirm the change. Surfaced on /runs — now in chat too.
+          await fireNotification({ event: "stepWarning", title: `Step warning: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: messages.length ? messages.join("\n") : "The step reported success but its validation read-back did not confirm the change.", url });
         }
-        if (caseStatus === "failed") {
-          await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
-        } else if (caseStatus === "needs_approval") {
-          await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, actor, at, detail: "A destructive offboard step is waiting for approval.", url });
+        // Case-level alerts only make sense off the normal cascade (a single-step re-run doesn't
+        // recompute a meaningful case status).
+        if (!job.singleRun) {
+          if (caseStatus === "failed") {
+            await fireNotification({ event: "caseFailed", title: `Case failed: ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
+          } else if (caseStatus === "needs_approval") {
+            await fireNotification({ event: "needsApproval", title: `Case needs approval: ${who}`, caseNumber, clientName, restricted, override, actor, at, detail: "A destructive offboard step is waiting for approval.", url });
+          }
         }
       }
 
@@ -1290,7 +1304,6 @@ export function makeRunnerService(db: PrismaClient) {
       // number + client + messages, so module problems can be tracked across cases (a re-run
       // overwrites the Job, but each result still lands here). Never fatal to result recording.
       try {
-        const { verdict, messages } = jobOutcome(status, input.result, input.validation, input.error ?? null);
         const fingerprint = outcomeFingerprint({ caseRequestId: job.caseRequestId, systemKey: job.systemKey, verdict, messages, error: input.error ?? null });
         // If this exact line for this case was already marked "Fixed", inherit that resolution so a
         // re-run of an already-handled noise line doesn't reappear (a genuinely new error has a new

@@ -50,7 +50,7 @@ async function postJson(url: string, body: unknown): Promise<SendResult> {
 }
 
 // Teams + Slack incoming webhooks accept a simple { text } payload.
-export const sendWebhook = (webhookUrl: string, e: NotificationEvent): Promise<SendResult> => postJson(webhookUrl, { text: messageText(e) });
+export const sendWebhook = (webhookUrl: string, e: NotificationEvent): Promise<SendResult> => postJson(webhookUrl.trim(), { text: messageText(e) });
 
 // Zoom Team Chat's incoming webhook needs an `Authorization: <verificationToken>` header. It renders
 // REAL line breaks only via the structured card format (`content.head` + a `body` array with one
@@ -65,8 +65,10 @@ export function zoomBody(e: NotificationEvent): { content: { head: { text: strin
 
 export async function sendZoom(webhookUrl: string, token: string, e: NotificationEvent): Promise<SendResult> {
   try {
-    let url = webhookUrl;
-    try { const u = new URL(webhookUrl); u.searchParams.set("format", "full"); url = u.toString(); } catch { /* leave as-is if not a full URL */ }
+    const hook = webhookUrl.trim();
+    token = token.trim(); // a stray space here = a rejected Authorization header
+    let url = hook;
+    try { const u = new URL(hook); u.searchParams.set("format", "full"); url = u.toString(); } catch { /* leave as-is if not a full URL */ }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },

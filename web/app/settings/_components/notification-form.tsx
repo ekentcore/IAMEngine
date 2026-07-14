@@ -31,6 +31,12 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
 
   const edit = (fn: (d: NotificationSettings) => void) => setS((prev) => { const n = structuredClone(prev); fn(n); return n; });
 
+  // Any destination that would actually receive something if the master switch were on.
+  const anyDestConfigured = NOTIF_CHANNELS.some((c) => (["default", "restricted"] as NotifVariant[]).some((v) => {
+    const d = s.channels[c.key][v];
+    return d.enabled && (c.kind === "email" ? (d as EmailDest).recipients.length > 0 : Boolean((d as WebhookDest).webhookUrl));
+  }));
+
   async function save() {
     setBusy(true); setStatus("");
     try {
@@ -69,7 +75,7 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
         <button type="button" onClick={() => test(channel, variant)} disabled={r === "…"}>Test</button>
-        {r && r !== "…" && <span className="note">{r.ok ? "✓ delivered" : `✗ ${r.error ?? "failed"}`}</span>}
+        {r && r !== "…" && <span className="note">{r.ok ? (s.enabled ? "✓ delivered" : "✓ delivered — but notifications are OFF, so real alerts still won't send") : `✗ ${r.error ?? "failed"}`}</span>}
       </span>
     );
   }
@@ -80,6 +86,15 @@ export function NotificationForm({ initial }: { initial: NotificationSettings })
         <input type="checkbox" checked={s.enabled} onChange={(e) => edit((d) => { d.enabled = e.target.checked; })} />
         Failure notifications are {s.enabled ? "ON" : "off"}
       </label>
+      {!s.enabled && anyDestConfigured && (
+        // The trap this warning exists to close: "Test" bypasses the master switch, so a destination can
+        // test green while every real error and warning is silently dropped.
+        <p className="note" style={{ marginTop: "-0.9rem", fontWeight: 600 }} role="alert">
+          ⚠ You have destinations configured, but the master switch above is off — no errors or warnings are
+          being sent. Test still delivers, so a channel can look healthy while real alerts go nowhere. Turn it
+          on and Save.
+        </p>
+      )}
       <p className="note" style={{ marginTop: "-0.9rem" }}>
         Each channel has a destination for <strong>all clients</strong> and one for <strong>restricted clients</strong> (kept
         private). Test any destination on its own before saving. Per-client overrides live on each client&rsquo;s page.

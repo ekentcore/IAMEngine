@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { messageText, sendWebhook, sendZoom, sendTest, resolveWebhookDests, resolveEmailDests } from "./sender";
-import { normalizeSettings, parseClientOverride, type NotificationEvent } from "./types";
+import { normalizeSettings, parseClientOverride, DEFAULT_NOTIFICATIONS, NOTIF_EVENTS, type NotificationEvent } from "./types";
 
 const ev: NotificationEvent = {
   event: "caseFailed",
@@ -83,6 +83,28 @@ test("parseClientOverride: migrates the OLD flat zoom override + reads the NEW p
   const nw = parseClientOverride({ teams: { webhookUrl: "https://tm", mode: "also" }, email: { recipients: ["a@x.com"], mode: "only" } });
   assert.deepEqual(nw.teams, { mode: "also", webhookUrl: "https://tm", token: "" });
   assert.deepEqual(nw.email, { mode: "only", recipients: ["a@x.com"] });
+});
+
+test("stepWarning is a real, operator-toggleable event that defaults ON", () => {
+  // A job that SUCCEEDS with a failed validation read-back is a "warning" verdict. Without this event
+  // a warning can never reach a chat room, no matter how the channels are configured.
+  assert.equal(DEFAULT_NOTIFICATIONS.events.stepWarning, true);
+  assert.ok(NOTIF_EVENTS.some((e) => e.key === "stepWarning"), "stepWarning must be toggleable in Settings");
+});
+
+test("normalizeSettings trims whitespace around webhook URLs and Zoom tokens", () => {
+  // A pasted token/URL routinely carries a leading space; Zoom then rejects the Authorization header.
+  const s = normalizeSettings({
+    channels: { zoom: { default: { enabled: true, webhookUrl: " https://z/abc ", token: " k7kap69 " }, restricted: {} } },
+  });
+  assert.equal(s.channels.zoom.default.webhookUrl, "https://z/abc");
+  assert.equal(s.channels.zoom.default.token, "k7kap69");
+});
+
+test("parseClientOverride trims the client's own webhook URL / token / recipients", () => {
+  const ov = parseClientOverride({ zoom: { webhookUrl: " https://client-room ", token: " tok ", mode: "only" }, email: { recipients: [" a@x.com "], mode: "also" } });
+  assert.deepEqual(ov.zoom, { mode: "only", webhookUrl: "https://client-room", token: "tok" });
+  assert.deepEqual(ov.email, { mode: "also", recipients: ["a@x.com"] });
 });
 
 test("sendWebhook posts { text }", async () => {

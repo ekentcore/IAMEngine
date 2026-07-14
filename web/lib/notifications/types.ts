@@ -8,12 +8,15 @@ export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
 // "announcement" is manual-only (change-log sends): it never fires from triggers, bypasses the
 // master switch + event toggles like a test send, and deliberately has no NOTIF_EVENTS toggle row.
-export type NotifEvent = "caseFailed" | "stepFailed" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "announcement";
+export type NotifEvent = "caseFailed" | "stepFailed" | "stepWarning" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "announcement";
 export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "caseFailed", label: "Case failed" },
   { key: "stepFailed", label: "Step failed" },
+  // A step that SUCCEEDED but whose validation read-back missed (verdict "warning" on /runs). Without
+  // this, the warnings surfaced on the run report could never reach a chat room.
+  { key: "stepWarning", label: "Step warning (succeeded, but validation missed)" },
   { key: "autoStopped", label: "Auto-stopped (wedged)" },
   { key: "needsApproval", label: "Needs approval" },
   { key: "connTestFailed", label: "Connection test failed (scheduled sweep)" },
@@ -63,7 +66,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
     zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
     email: { default: emptyEmail(), restricted: emptyEmail() },
   },
-  events: { caseFailed: true, stepFailed: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, announcement: true },
+  events: { caseFailed: true, stepFailed: true, stepWarning: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, announcement: true },
   credExpiryDays: 30,
 };
 
@@ -82,13 +85,17 @@ export type NotificationEvent = {
   override?: ClientNotifyOverride | null; // this client's per-channel overrides (from the client page)
 };
 
+// Pasted webhook URLs and Zoom tokens routinely carry a stray leading/trailing space. A space in the
+// Zoom token means a rejected Authorization header, so trim on the way in AND out.
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
 function normWebhook(raw: unknown): WebhookDest {
   const o = (raw ?? {}) as { enabled?: unknown; webhookUrl?: unknown; token?: unknown };
-  return { enabled: Boolean(o.enabled), webhookUrl: typeof o.webhookUrl === "string" ? o.webhookUrl : "", token: typeof o.token === "string" ? o.token : "" };
+  return { enabled: Boolean(o.enabled), webhookUrl: str(o.webhookUrl), token: str(o.token) };
 }
 function normEmail(raw: unknown): EmailDest {
   const o = (raw ?? {}) as { enabled?: unknown; recipients?: unknown };
-  return { enabled: Boolean(o.enabled), recipients: Array.isArray(o.recipients) ? o.recipients.filter((x): x is string => typeof x === "string") : [] };
+  return { enabled: Boolean(o.enabled), recipients: Array.isArray(o.recipients) ? o.recipients.map(str).filter(Boolean) : [] };
 }
 // Accept BOTH the new nested { default, restricted } shape AND the old flat one (where the channel WAS
 // the default and a separate `restrictedRaw` — e.g. old `zoomRestricted` — held the restricted dest).
@@ -124,8 +131,8 @@ export function parseClientOverride(raw: unknown): ClientNotifyOverride {
   if (!raw || typeof raw !== "object") return {};
   const o = raw as Record<string, unknown> & { webhookUrl?: unknown; mode?: unknown; token?: unknown };
   // old flat zoom override
-  if (typeof o.webhookUrl === "string" && o.webhookUrl && (o.mode === "also" || o.mode === "only") && !o.zoom && !o.teams && !o.slack && !o.email) {
-    return { zoom: { mode: o.mode, webhookUrl: o.webhookUrl, token: typeof o.token === "string" ? o.token : "" } };
+  if (str(o.webhookUrl) && (o.mode === "also" || o.mode === "only") && !o.zoom && !o.teams && !o.slack && !o.email) {
+    return { zoom: { mode: o.mode, webhookUrl: str(o.webhookUrl), token: str(o.token) } };
   }
   const out: ClientNotifyOverride = {};
   for (const ch of ["teams", "slack", "zoom", "email"] as NotifChannel[]) {
@@ -133,10 +140,10 @@ export function parseClientOverride(raw: unknown): ClientNotifyOverride {
     if (!ov || typeof ov !== "object") continue;
     const mode = ov.mode === "only" ? "only" : "also";
     if (ch === "email") {
-      const recipients = Array.isArray(ov.recipients) ? ov.recipients.filter((x): x is string => typeof x === "string") : [];
+      const recipients = Array.isArray(ov.recipients) ? ov.recipients.map(str).filter(Boolean) : [];
       if (recipients.length) out.email = { mode, recipients };
-    } else if (typeof ov.webhookUrl === "string" && ov.webhookUrl) {
-      out[ch] = { mode, webhookUrl: ov.webhookUrl, token: typeof ov.token === "string" ? ov.token : "" };
+    } else if (str(ov.webhookUrl)) {
+      out[ch] = { mode, webhookUrl: str(ov.webhookUrl), token: str(ov.token) };
     }
   }
   return out;
