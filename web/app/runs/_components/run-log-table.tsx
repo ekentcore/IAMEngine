@@ -88,6 +88,26 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
     });
   }
 
+  // Copy every selected line's full text in one go — so a whole batch of failures can be pasted
+  // into a ticket/chat/Claude at once. Table order (not click order), one line per fingerprint,
+  // blank-line separated so multi-line messages stay readable.
+  const [copied, setCopied] = useState(false);
+  async function copySelected() {
+    const seen = new Set<string>();
+    const picked: string[] = [];
+    for (const r of rows) {
+      if (!sel.has(r.fingerprint) || seen.has(r.fingerprint)) continue;
+      seen.add(r.fingerprint);
+      picked.push(r.copyText);
+    }
+    const text = picked.join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { setErr("Clipboard blocked by the browser — copy is unavailable here."); }
+  }
+
   // v2: mark one line Fixed / reopen it (same fingerprint semantics as FixButton).
   function fixOne(r: RunLogRow) {
     setErr(null);
@@ -132,6 +152,9 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
       {sel.size > 0 && (
         <div className="toolbar" style={{ alignItems: "center", gap: 8, margin: "0.4rem 0" }}>
           <b>{sel.size} selected</b>
+          <button type="button" onClick={copySelected} title="Copy every selected line's message + error to the clipboard">
+            {copied ? "copied ✓" : `⧉ Copy ${sel.size}`}
+          </button>
           <button type="button" disabled={pending} onClick={fixSelected} style={{ color: "#111827", fontWeight: 600 }}>
             {pending ? "Fixing…" : `✓ Fix ${sel.size} selected`}
           </button>
