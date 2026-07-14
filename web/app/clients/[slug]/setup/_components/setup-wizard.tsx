@@ -104,26 +104,41 @@ export function SetupWizard({
   );
   const isVerified = useCallback((s: SetupStep) => connStatusFor(s) === "ok", [connStatusFor]);
 
-  const allWired = useMemo(() => steps.every((s) => isWired(s)), [steps, isWired]);
-  const pending = useMemo(() => steps.filter((s) => !isWired(s) && !state[s.secretName]?.skipped), [steps, isWired, state]);
+  // Does this step count toward "is this client set up?" An OPTIONAL credential (e.g. spanning-portal,
+  // which only unlocks Spanning's force-sync) does NOT — nothing requires it, so counting an untouched
+  // one would tell every Spanning client they're a credential short and make "All set" unreachable.
+  // It starts counting the moment the operator actually enters a reference: a credential you chose to
+  // add and got WRONG is worth blocking on, unlike one you never wanted.
+  const counts = useCallback(
+    (s: SetupStep): boolean => !s.optional || secretIsSet(state[s.secretName]?.externalId ?? s.externalId),
+    [state]
+  );
+  const counted = useMemo(() => steps.filter(counts), [steps, counts]);
 
-  // Active step: default to the first not-wired, not-manual step; the operator can jump via the rail.
+  const allWired = useMemo(() => counted.every((s) => isWired(s)), [counted, isWired]);
+  const pending = useMemo(() => counted.filter((s) => !isWired(s) && !state[s.secretName]?.skipped), [counted, isWired, state]);
+
+  // Active step: default to the first not-wired, not-manual step the client actually needs — never an
+  // untouched optional one, or the wizard would open on a credential nobody asked for.
   const [activeIdx, setActiveIdx] = useState(() => {
-    const i = steps.findIndex((s) => !s.wired && !s.notNeeded);
+    const i = steps.findIndex((s) => !s.wired && !s.notNeeded && !s.optional);
     return i === -1 ? 0 : i;
   });
   const active = steps[activeIdx];
 
-  const wiredCount = useMemo(() => steps.filter((s) => isWired(s)).length, [steps, isWired]);
-  const verifiedCount = useMemo(() => steps.filter((s) => isVerified(s) || (state[s.secretName]?.notNeeded ?? s.notNeeded)).length, [steps, isVerified, state]);
+  const wiredCount = useMemo(() => counted.filter((s) => isWired(s)).length, [counted, isWired]);
+  const verifiedCount = useMemo(() => counted.filter((s) => isVerified(s) || (state[s.secretName]?.notNeeded ?? s.notNeeded)).length, [counted, isVerified, state]);
 
   const patch = (name: string, p: Partial<StepState>) => setState((s) => ({ ...s, [name]: { ...s[name], ...p } }));
 
+  // "Next" walks the steps the client actually needs. An untouched optional credential is never
+  // auto-advanced to — it's reachable from the rail for anyone who wants it, and skipped otherwise.
   function goNext(fromIdx: number) {
+    const needs = (s: SetupStep) => counts(s) && !isWired(s) && !state[s.secretName]?.skipped;
     for (let i = fromIdx + 1; i < steps.length; i++) {
-      if (!isWired(steps[i]) && !state[steps[i].secretName]?.skipped) return setActiveIdx(i);
+      if (needs(steps[i])) return setActiveIdx(i);
     }
-    const first = steps.findIndex((s) => !isWired(s) && !state[s.secretName]?.skipped);
+    const first = steps.findIndex(needs);
     if (first !== -1) setActiveIdx(first);
   }
 
@@ -259,7 +274,7 @@ export function SetupWizard({
       <button onClick={runConnTests} disabled={connBusy} style={{ fontSize: 13 }}>
         {connBusy ? "Testing connections…" : "Run live connection tests"}
       </button>
-      <span className="note muted">{verifiedCount} of {steps.length} verified live</span>
+      <span className="note muted">{verifiedCount} of {counted.length} verified live</span>
       {connError && <span className="note danger">{connError}</span>}
     </div>
   );
@@ -269,18 +284,18 @@ export function SetupWizard({
       <p className="note"><Link href={`/clients/${slug}`}>← {clientName}</Link></p>
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <h1 style={{ marginBottom: 4 }}>Guided credential setup</h1>
-        <span className="note">{wiredCount} of {steps.length} credentials wired</span>
+        <span className="note">{wiredCount} of {counted.length} credentials wired</span>
       </div>
       <p className="note" style={{ marginTop: 0 }}>
         One credential at a time — map its Delinea reference and verify the app can read the right fields.
         Stores references only; the value stays in Delinea. A live connection test (needs the matching
         runner online) confirms each one end-to-end.
       </p>
-      <ProgressBar ready={wiredCount} total={steps.length} />
+      <ProgressBar ready={wiredCount} total={counted.length} />
       <div style={{ marginTop: 12 }}>{ConnControl}</div>
 
       {allWired ? (
-        <AllSet slug={slug} clientName={clientName} count={steps.length} verified={verifiedCount} connControl={ConnControl} />
+        <AllSet slug={slug} clientName={clientName} count={counted.length} verified={verifiedCount} connControl={ConnControl} />
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 220px) minmax(0, 1fr)", gap: 24, marginTop: 20, alignItems: "start" }}>
           <Rail steps={steps} activeIdx={activeIdx} isWired={isWired} isVerified={isVerified} state={state} onPick={setActiveIdx} />

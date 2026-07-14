@@ -10,6 +10,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
+import { wiredOptionalSecrets } from "@/lib/secrets/auxiliary";
 import { recordAudit } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
@@ -40,12 +41,20 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   // config just work. No cascade: singleRun + its own dependsOn:[] so it can run on a finished case.
   const srcReq = (src.request ?? {}) as Record<string, unknown>;
   const config = (srcReq.config ?? {}) as Record<string, unknown>;
+  // This job — and ONLY this job — signs in to the console, so it's where the portal secret is
+  // attached. It is added ONLY when the client has actually wired it: an unwired name here would make
+  // the job unclaimable (the claim gate treats every listed secret as required), so the operator would
+  // watch it hang instead of getting the module's "wire a spanning-portal secret" warning. Unwired, the
+  // job still runs, falls back to the API secret, and reports exactly what to fix.
+  const srcSecretNames = Array.isArray(srcReq.secretNames) ? (srcReq.secretNames as unknown[]).filter((n): n is string => typeof n === "string") : [];
+  const clientSecrets = await db.secret.findMany({ where: { clientId: src.case.clientId }, select: { name: true, externalId: true } });
+  const secretNames = [...new Set([...srcSecretNames, ...wiredOptionalSecrets("spanning", clientSecrets)])];
   const agg = await db.job.aggregate({ where: { caseRequestId: src.caseRequestId }, _max: { sequence: true } });
   const job = await db.job.create({
     data: {
       caseRequestId: src.caseRequestId, systemKey: SPANNING_FORCE_SYNC_KEY, mode: "api", sequence: (agg._max.sequence ?? 0) + 1,
       status: "pending", singleRun: true,
-      request: { secretNames: srcReq.secretNames ?? [], config, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
+      request: { secretNames, config, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
     },
     select: { id: true },
   });

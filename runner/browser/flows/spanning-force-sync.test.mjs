@@ -116,7 +116,7 @@ function makePortal({ kmsi = true, syncCompletesAfter = 1, badPassword = false }
 
 // `otp` (an OtpRequest spec) is what PRODUCTION dispatches — the flow mints the code from the app at
 // the MFA box. `otpCode` is the legacy pre-minted fallback. Default to the production path.
-async function runFlow(portalUrl, { otpCode = null, otpUrl = null, password = PASS, allowAnyOrigin = true } = {}) {
+async function runFlow(portalUrl, { otpCode = null, otpUrl = null, password = PASS, allowAnyOrigin = true, signInOnly = false } = {}) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const logs = [];
@@ -127,6 +127,7 @@ async function runFlow(portalUrl, { otpCode = null, otpUrl = null, password = PA
   if (allowAnyOrigin) process.env.SPANNING_ALLOW_ANY_ORIGIN = "1";
   else delete process.env.SPANNING_ALLOW_ANY_ORIGIN;
   const params = { email: "new.user@contoso.com" };
+  if (signInOnly) params.signInOnly = true;
   if (otpCode) params.otpCode = otpCode;
   if (otpUrl) params.otp = { url: otpUrl, token: "t", agentId: "a", secretName: "spanning" };
   try {
@@ -210,6 +211,44 @@ test("surfaces Microsoft's sign-in error without re-submitting the password", as
     assert.match(result.error, /incorrect/i);
     assert.ok(!logs.some((l) => /Stay signed in/i.test(l)), "must NOT mistake the error page for a KMSI prompt");
     assert.equal(state.syncCalls, 0, "must never fire the sync after a failed sign-in");
+  });
+});
+
+// The CONNECTION TEST (signInOnly): prove the console sign-in works — the whole M365 SSO chain, the
+// Delinea-minted MFA code, the KMSI interstitial, the origin gate — and then change NOTHING. It runs
+// this same flow rather than a bespoke copy so that what it verifies is what the force-sync will do;
+// the one thing it must never do is fire a real sync at a client's tenant.
+test("signInOnly proves the console login end to end and fires no sync", async () => {
+  await withPortal({}, async (url, state) => {
+    const { result } = await runFlow(url, { otpUrl: `${url}/otp`, signInOnly: true });
+    assert.equal(result.ok, true, `sign-in check failed: ${result.error}`);
+    assert.equal(state.otpMints, 1, "the MFA code must still be minted — that's a thing the test exists to prove");
+    assert.equal(state.sawCode, CODE, "the minted code must reach the Microsoft prompt");
+    assert.equal(state.signedIn, true, "must actually reach the console");
+    assert.equal(state.syncCalls, 0, "a CONNECTION TEST must never trigger a real sync");
+    assert.match(result.message, /signed in/i);
+  });
+});
+
+// A signInOnly run must still be held to the origin gate: reporting "console sign-in OK" after landing
+// somewhere that isn't Spanning would be a green light on a broken (or hostile) portal config.
+test("signInOnly still refuses an untrusted origin rather than reporting a good sign-in", async () => {
+  await withPortal({}, async (url, state) => {
+    const { result } = await runFlow(url, { otpUrl: `${url}/otp`, signInOnly: true, allowAnyOrigin: false });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /not a Spanning console origin/i);
+    assert.equal(state.syncCalls, 0);
+  });
+});
+
+// A bad password must fail the sign-in CHECK too — this is the failure the test exists to catch early,
+// and it must be reported as such rather than swallowed.
+test("signInOnly surfaces a rejected password instead of reporting success", async () => {
+  await withPortal({ badPassword: true }, async (url, state) => {
+    const { result } = await runFlow(url, { password: "wrong", otpUrl: `${url}/otp`, signInOnly: true });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Microsoft rejected the sign-in/i);
+    assert.equal(state.syncCalls, 0);
   });
 });
 

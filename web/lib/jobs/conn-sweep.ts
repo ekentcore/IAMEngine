@@ -86,7 +86,7 @@ export async function sweepConnTests(
   db: PrismaClient,
   deps: {
     // Injected so the sweep is testable and reuses the SAME enqueue path as the operator button.
-    enqueueClient: (clientSlug: string) => Promise<{ tests: { systemKey: string }[] }>;
+    enqueueClient: (clientSlug: string, source: "manual" | "sweep") => Promise<{ tests: { systemKey: string }[] }>;
     now?: () => Date;
   }
 ): Promise<void> {
@@ -126,10 +126,12 @@ export async function sweepConnTests(
     const busy = await db.connectionTest.count({ where: { clientId: c.id, status: { in: ["pending", "running"] } } });
     if (busy > 0) continue;
     try {
-      const out = await deps.enqueueClient(c.slug);
+      // Sweep-sourced rows notify on NEW failures; the operator button's don't. `source` is set AT
+      // CREATE (not patched afterwards): a row a runner claimed in the gap between the insert and a
+      // follow-up update would keep source="manual" and its failure would never raise a notification —
+      // the sweep would go quiet exactly when something broke.
+      const out = await deps.enqueueClient(c.slug, "sweep");
       tests += out.tests.length;
-      // Sweep-sourced rows notify on NEW failures; the operator button's don't.
-      await db.connectionTest.updateMany({ where: { clientId: c.id, status: "pending" }, data: { source: "sweep" } });
     } catch {
       // one bad client must not stall the fleet
     }

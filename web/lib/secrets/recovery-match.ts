@@ -58,6 +58,10 @@ const STALE = /\b(inactive|do not use|old|legacy|prior msp|decommission(ed)?|dis
 // A qualifier that marks a name as an automation/API credential rather than a human account.
 const API_QUALIFIER = /\b(api|automation|integration|svc|service account|iam)\b/i;
 
+// Wording that marks a Spanning secret as the CONSOLE sign-in (an M365 admin login driven in a
+// browser) rather than the API credential — the two are not interchangeable. See the token scan.
+const SPANNING_PORTAL = /\b(portal|console|browser|sso|sign[- ]?in|log[- ]?in|login)\b/i;
+
 // System token -> logical slot. Order matters only for reporting; every matching token is returned
 // and multi-token names are flagged ambiguous.
 const SYSTEM_TOKENS: Array<{ slot: string; token: RegExp }> = [
@@ -129,8 +133,21 @@ export function classifySecret(rec: SecretSearchRecord): Candidate[] {
   for (const { slot, token } of SYSTEM_TOKENS) {
     if (seen.has(slot)) continue;
     if (token.test(name)) {
+      // Spanning has TWO different credentials and they are NOT interchangeable: the API clientId/
+      // secret (licensing) and an M365 admin sign-in for the browser console (force-sync). A name like
+      // "Spanning Portal Login" would otherwise be autofilled into the API slot, where the runner would
+      // send that admin's EMAIL + PASSWORD to Spanning as clientId:clientSecret — every licensing call
+      // 401s, and a human would be hunting a "rotated" API key that never moved.
+      //
+      // But an API QUALIFIER wins over portal wording: "Spanning API Login" / "Spanning Integration
+      // Sign-in" are ordinary names for the API credential, and re-routing those would strand the API
+      // slot with no candidate at all AND autofill API material into the portal slot — both directions
+      // of the same mistake. Only unqualified portal wording re-routes.
+      const resolved = slot === "spanning" && SPANNING_PORTAL.test(name) && !API_QUALIFIER.test(name) ? "spanning-portal" : slot;
+      if (seen.has(resolved)) continue;
       seen.add(slot);
-      tokenHits.push({ slot });
+      seen.add(resolved);
+      tokenHits.push({ slot: resolved });
     }
   }
   // Ambiguity means TWO SPECIFIC PRODUCTS in one name ("Adobe / Zoom admin") — a real shared login

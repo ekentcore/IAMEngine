@@ -20,8 +20,13 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   // The existing "Test connections" button sends no body — whole-client semantics unchanged.
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const systemKey = typeof body?.systemKey === "string" && body.systemKey.trim() ? body.systemKey.trim() : undefined;
+  // { deep: true } additionally permits INTERACTIVE probes — today, signing in to a vendor's portal in
+  // a real browser. It must be asked for EXPLICITLY, never inferred from "a systemKey was supplied":
+  // save-and-test posts a systemKey for every system a changed secret touches, so editing the Spanning
+  // API token would otherwise fire a real M365 admin sign-in as a side effect of pressing Save.
+  const deep = body?.deep === true && Boolean(systemKey);
   try {
-    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey);
+    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey, "manual", deep);
     const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
     await recordAudit("conntest.request", { user: g.user, clientId: client?.id ?? null, detail: { systemKey: systemKey ?? "*", queued: out.tests.length } });
     return NextResponse.json(out);

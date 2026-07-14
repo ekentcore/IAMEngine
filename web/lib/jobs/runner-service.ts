@@ -15,6 +15,7 @@ import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDeline
 import { checkFieldShape } from "../secrets/field-requirements";
 import { classifyDelineaError, credFailure, type CredFailure } from "./cred-failure";
 import { testableSystems, type RightsRow } from "./conn-test-logic";
+import { wiredOptionalSecrets } from "../secrets/auxiliary";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
 import { effectiveExternalId, missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
@@ -35,6 +36,29 @@ import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
+
+// One shape for every ConnectionTest row, whichever path enqueued it — otherwise the fleet sweep and
+// the per-client button disagree about what a system needs, and a probe reports "no portal secret
+// wired" for a client that has one. REQUIRED secrets come from the system; OPTIONAL ones are attached
+// only when the client has actually wired them and are brokered best-effort by the runner.
+function connTestRow(
+  clientId: string,
+  s: { systemKey: string; secretNames: string[]; config: unknown; onPrem: boolean },
+  clientSecrets: { name: string; externalId: string | null }[],
+  source: "manual" | "sweep",
+  deep: boolean
+) {
+  return {
+    clientId,
+    systemKey: s.systemKey,
+    secretNames: s.secretNames,
+    optionalSecretNames: wiredOptionalSecrets(s.systemKey, clientSecrets).filter((n) => !s.secretNames.includes(n)),
+    config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined,
+    onPrem: s.onPrem,
+    source,
+    deep,
+  };
+}
 
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
@@ -259,7 +283,7 @@ export function makeRunnerService(db: PrismaClient) {
       // Same pulse: the scheduled credential-health sweep + expiry alerts (off unless enabled;
       // durable AppSetting throttle, one client batch per tick). Reuses the operator enqueue path.
       const svc = this;
-      void sweepConnTests(db, { enqueueClient: (slug) => svc.requestConnectionTests(slug) }).catch(() => {});
+      void sweepConnTests(db, { enqueueClient: (slug, source) => svc.requestConnectionTests(slug, undefined, source) }).catch(() => {});
       // Same pulse: the nightly pg_dump database backup (default ON; durable AppSetting throttle,
       // one run per night after the configured local hour). See lib/jobs/db-backup.ts.
       void sweepDbBackup(db).catch(() => {});
@@ -816,10 +840,13 @@ export function makeRunnerService(db: PrismaClient) {
     // Queue a fresh set of tests for a client (replaces any prior run). One row per api system that
     // actually connects to something (has a required secret). With a systemKey, retests ONLY that
     // system — its row is replaced and every other system's latest result survives.
-    async requestConnectionTests(clientSlug: string, systemKey?: string): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+    // deepAllowed: caller states whether an INTERACTIVE probe (a real vendor-portal sign-in) is wanted.
+    // Only the operator's explicit "test this one system" says yes — a save-and-test after editing a
+    // token, a whole-client run, the fleet button and the nightly sweep all say no. See ConnectionTest.deep.
+    async requestConnectionTests(clientSlug: string, systemKey?: string, source: "manual" | "sweep" = "manual", deepAllowed = false): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
-        select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
+        select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } }, secrets: { select: { name: true, externalId: true } } },
       });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
@@ -832,7 +859,9 @@ export function makeRunnerService(db: PrismaClient) {
       const specs = testableSystems(client.systems, hasAd, systemKey);
       await db.connectionTest.deleteMany({ where: { clientId: client.id, ...(systemKey ? { systemKey } : {}) } });
       if (specs.length === 0) return { tests: [] };
-      const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
+      // Retesting ONE system, by hand, is the only place a deep (interactive, browser) probe may run.
+      const deep = Boolean(systemKey) && deepAllowed;
+      const rows = specs.map((s) => connTestRow(client.id, s, client.secrets, source, deep));
       await db.connectionTest.createMany({ data: rows });
       // Stage 1 ("Fields"): the app's own Delinea resolve + field-shape check, persisted on the
       // rows. Best-effort — a preflight problem must never stop the runner stages from running.
@@ -848,7 +877,7 @@ export function makeRunnerService(db: PrismaClient) {
     async requestConnectionTestsForAll(): Promise<{ clients: number; tests: number; onPrem: number }> {
       const clients = await db.client.findMany({
         where: { status: "active", systems: { some: {} } },
-        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } } },
+        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } }, secrets: { select: { name: true, externalId: true } } },
       });
       let total = 0, onPrem = 0, withTests = 0;
       for (const client of clients) {
@@ -856,7 +885,9 @@ export function makeRunnerService(db: PrismaClient) {
         const specs = testableSystems(client.systems, hasAd);
         await db.connectionTest.deleteMany({ where: { clientId: client.id } });
         if (specs.length === 0) continue;
-        const rows = specs.map((s) => ({ clientId: client.id, systemKey: s.systemKey, secretNames: s.secretNames, config: (s.config ?? undefined) as Prisma.InputJsonValue | undefined, onPrem: s.onPrem }));
+        // Same row shape as the per-client path (optional secrets attached), but NEVER deep: a fleet
+        // run must not fire an interactive M365 sign-in once per client, however it was triggered.
+        const rows = specs.map((s) => connTestRow(client.id, s, client.secrets, "manual", false));
         await db.connectionTest.createMany({ data: rows });
         withTests++; total += rows.length; onPrem += rows.filter((r) => r.onPrem).length;
       }
@@ -885,7 +916,7 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomic claim, same scope rule as job claim: a central runner (no clientId) takes only cloud
     // tests; a client agent takes its own client's (cloud + on-prem).
-    async claimConnectionTests(agentId: string, max = 5): Promise<{ id: string; systemKey: string; secretNames: string[]; clientSlug: string; primaryDomain: string; config: unknown }[]> {
+    async claimConnectionTests(agentId: string, max = 5): Promise<{ id: string; systemKey: string; secretNames: string[]; clientSlug: string; primaryDomain: string; config: unknown; deep: boolean }[]> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, clientId: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) return [];
@@ -896,19 +927,32 @@ export function makeRunnerService(db: PrismaClient) {
       await db.connectionTest.updateMany({ where: { id: { in: ids }, status: "pending" }, data: { status: "running", assignedAgentId: agent.id, claimedAt: new Date() } });
       const claimed = await db.connectionTest.findMany({
         where: { id: { in: ids }, assignedAgentId: agent.id, status: "running" },
-        select: { id: true, systemKey: true, secretNames: true, config: true, client: { select: { slug: true, primaryDomain: true } } },
+        select: { id: true, systemKey: true, secretNames: true, optionalSecretNames: true, config: true, deep: true, client: { select: { slug: true, primaryDomain: true } } },
       });
-      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain, config: t.config ?? null }));
+      // `deep` travels to the runner so an interactive probe (a real browser sign-in) runs ONLY on a
+      // targeted single-system retest. There is deliberately no capability gate on the claim itself:
+      // withholding the test from a browser-less agent would take the ordinary API check down with it.
+      // The runner reports "browser not available on this agent" as an unverified rights row instead.
+      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, optionalSecretNames: t.optionalSecretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain, config: t.config ?? null, deep: t.deep }));
     },
 
     // Same push-down broker as a job, scoped to the test's own secretNames (no case overrides).
-    async brokerConnectionTestCredential(testId: string, agentId: string, secretName: string): Promise<BrokeredCredential> {
-      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { status: true, assignedAgentId: true, secretNames: true, clientId: true } });
+    // withOtp mints a CURRENT Delinea one-time password, mirroring the job path: a deep probe signs in
+    // to a vendor portal for real, and its MFA code must be minted AT the prompt (a 30s TOTP cannot
+    // survive browser launch + the SSO hop). The authenticator seed stays in the vault; we only ever
+    // hold a code. Authorization is unchanged — the secret must still be one of the test's own.
+    async brokerConnectionTestCredential(testId: string, agentId: string, secretName: string, withOtp = false): Promise<BrokeredCredential> {
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { status: true, assignedAgentId: true, secretNames: true, optionalSecretNames: true, deep: true, clientId: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
       await assertAgentEnabled(db, agentId);
       if (t.status !== "running") throw new HttpError(409, `connection test is ${t.status}; credentials only brokered while running`);
-      if (!t.secretNames.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this connection test`);
+      if (!t.secretNames.includes(secretName) && !t.optionalSecretNames.includes(secretName)) throw new HttpError(403, `secret ${secretName} is not authorized for this connection test`);
+      // Minting a live MFA code is only ever legitimate for an interactive probe, which only a deep
+      // test runs. Enforce that HERE rather than trusting the runner to ask nicely: a bug (or a
+      // compromised agent) must not be able to pull one-time passwords out of the vault on a routine
+      // sweep. This is the server's own check, independent of anything the caller claims.
+      if (withOtp && !t.deep) throw new HttpError(403, "a one-time password is only brokered for a deep (interactive) connection test");
       const clientSecret = await db.secret.findUnique({ where: { clientId_name: { clientId: t.clientId, name: secretName } }, select: { provider: true, externalId: true } });
       const { externalId, source } = effectiveExternalId(secretName, null, clientSecret?.externalId ?? null);
       if (source === "not_needed") throw new HttpError(409, `secret '${secretName}' is marked not needed (manual step) — nothing to test`);
@@ -921,8 +965,20 @@ export function makeRunnerService(db: PrismaClient) {
         if (!resolved.ok) throw new HttpError(502, `secret '${secretName}' is not resolvable in Delinea: ${resolved.error ?? "unknown error"}`);
         brokered = true; label = resolved.label; fields = resolved.fields; note = undefined;
       }
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.credential", clientId: t.clientId, detail: { secretName, brokered, fieldNames: fields ? Object.keys(fields) : [] } } });
-      return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields };
+      let otpCode: string | undefined;
+      let otpRemainingSeconds: number | undefined;
+      let otpError: string | undefined;
+      if (withOtp) {
+        if (!delineaConfigured(cfg)) otpError = "Delinea not configured on the app";
+        else {
+          const otp = await getOneTimePasswordCode(cfg, externalId);
+          if (otp.ok) { otpCode = otp.code; otpRemainingSeconds = otp.remainingSeconds; }
+          else otpError = otp.error;
+        }
+      }
+      // Metadata ONLY — field NAMES, never values, and never the OTP itself.
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.credential", clientId: t.clientId, detail: { secretName, brokered, fieldNames: fields ? Object.keys(fields) : [], ...(withOtp ? { otp: otpCode ? "minted" : `unavailable: ${otpError}` } : {}) } } });
+      return { provider: clientSecret?.provider ?? "delinea", externalId, secretName, brokered, expiresInSeconds: 300, label, note, fields, otpCode, otpRemainingSeconds, otpError };
     },
 
     async reportConnectionTest(

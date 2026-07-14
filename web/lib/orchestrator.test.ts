@@ -234,3 +234,16 @@ test("a system with no secrets at all is unaffected by the not-needed rule", () 
   const systems = [sys({ systemKey: "case-resolution", mode: "api", secretNames: [], offboardWhen: "always" })];
   assert.equal(planCase(systems, "offboard", {}, undefined, new Set(["duo"]))[0].mode, "api");
 });
+
+
+// REGRESSION: `spanning-portal` must NOT be attached to the Spanning licensing lanes. Every name in a
+// job's secretNames is REQUIRED — the claim gate skips a job with an unreferenced secret and the runner
+// brokers each name unconditionally — so appending an optional, mostly-unwired secret here would have
+// made Spanning licensing UNCLAIMABLE for the whole fleet. It belongs only on the force-sync job, and
+// only when the client has wired it (see lib/secrets/auxiliary.ts).
+test("spanning licensing jobs carry only the API secret — never the optional portal login", () => {
+  for (const action of ["onboard", "offboard"] as const) {
+    const jobs = planCase([sys({ systemKey: "spanning", secretNames: ["spanning"] })], action, {});
+    assert.deepEqual(jobs[0].secretNames, ["spanning"]);
+  }
+});

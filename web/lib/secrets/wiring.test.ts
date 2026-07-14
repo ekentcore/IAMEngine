@@ -52,3 +52,29 @@ test("deriveSecretRows returns rows sorted by name", () => {
   );
   assert.deepEqual(rows.map((r) => r.name), ["adobe", "m365-admin", "zoom"]);
 });
+
+// An optional secret (spanning-portal) is deliberately absent from ClientSystem.secretNames — listing
+// it there would make the system's jobs unclaimable until it was wired. So the wiring panel is the ONLY
+// place it can be offered; without a row here the capability is literally unreachable.
+test("an optional secret is offered as a row so it can be wired at all", () => {
+  const rows = deriveSecretRows([{ systemKey: "spanning", secretNames: ["spanning"] }], []);
+  const portal = rows.find((r) => r.name === "spanning-portal");
+  assert.ok(portal, "spanning-portal must be offered for a client with Spanning");
+  assert.equal(portal!.optional, true);
+  assert.deepEqual(portal!.referencedBy, ["spanning"]);
+  assert.equal(portal!.isSet, false);
+  // ...and the required one is unchanged and NOT optional.
+  const api = rows.find((r) => r.name === "spanning");
+  assert.equal(api!.optional, undefined);
+});
+
+test("a client with no Spanning system is not offered the portal secret", () => {
+  const rows = deriveSecretRows([{ systemKey: "mimecast", secretNames: ["mimecast"] }], []);
+  assert.equal(rows.some((r) => r.name === "spanning-portal"), false);
+});
+
+test("an optional secret explicitly wired to the system is a normal required row, not an extra", () => {
+  const rows = deriveSecretRows([{ systemKey: "spanning", secretNames: ["spanning", "spanning-portal"] }], []);
+  assert.equal(rows.filter((r) => r.name === "spanning-portal").length, 1);
+  assert.equal(rows.find((r) => r.name === "spanning-portal")!.optional, undefined);
+});

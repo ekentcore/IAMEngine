@@ -102,10 +102,14 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
   async function retest(systemKey: string) {
     setRetesting(systemKey); setError(null);
     try {
+      // deep: an operator explicitly testing ONE system is the only thing that may run an interactive
+      // probe (e.g. actually signing in to Spanning's console in a browser). Save-and-test and the
+      // whole-client / fleet runs deliberately don't — one scripted M365 sign-in per client per sweep
+      // is the burst that risk-based Conditional Access starts challenging.
       const r = await fetch(`/api/clients/${slug}/conn-test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemKey }),
+        body: JSON.stringify({ systemKey, deep: true }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }

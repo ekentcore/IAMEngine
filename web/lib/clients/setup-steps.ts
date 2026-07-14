@@ -38,9 +38,18 @@ export type SetupStep = {
   notNeeded: boolean;         // marked NOT_NEEDED — a manual step, nothing to connect to
   test: ConnTestState;        // aggregate live connection-test state across referencing systems
   ready: boolean;             // wired AND (not-needed OR every referencing system tested ok)
+  // OPTIONAL: this credential unlocks one EXTRA capability (e.g. spanning-portal -> Spanning's
+  // force-sync console sign-in) and nothing requires it. Offered so it CAN be wired, but a client that
+  // never wires it is completely set up. Callers must not count an unwired optional step against
+  // progress or completion — doing so tells every Spanning client they're a credential short forever.
+  optional: boolean;
   fieldRequirements: FieldReq[]; // the exact fields to collect for this credential
   help: SecretHelp | null;    // deep link to the vendor setup guide, when one exists
 };
+
+// Does this step count toward "is the client set up?" — an unwired OPTIONAL credential does not.
+// (Once wired, it does count: a broken credential you chose to add is worth surfacing.)
+export const stepCounts = (s: SetupStep): boolean => !s.optional || s.wired;
 
 // Roll several referencing systems' live test states into one for the credential: any failure wins,
 // then any untested, else ok. Empty (no credentialed system references it) reads as untested.
@@ -80,9 +89,12 @@ export function buildSetupSteps(rows: SecretRow[], readiness: ClientReadiness | 
     // credentialed system references it (nothing to live-test), a usable reference is enough.
     const ready = notNeeded ? wired : refSystems.length > 0 ? refSystems.every((s) => s.ready) : wired;
 
+    const optional = row.optional === true;
     const primaryGroup = systemKeys.map(groupForSystem).sort((a, b) => groupRank(a) - groupRank(b))[0] ?? null;
     const usedBy = systemNames.length > 0 ? systemNames.join(", ") : "no modeled system";
-    const purpose = `Credential for ${usedBy}${primaryGroup ? ` (${primaryGroup})` : ""}.`;
+    const purpose = optional
+      ? `Optional — an extra capability for ${usedBy}. Everything else works without it.`
+      : `Credential for ${usedBy}${primaryGroup ? ` (${primaryGroup})` : ""}.`;
 
     return {
       secretName: row.name,
@@ -96,6 +108,7 @@ export function buildSetupSteps(rows: SecretRow[], readiness: ClientReadiness | 
       notNeeded,
       test,
       ready,
+      optional,
       fieldRequirements: SECRET_FIELD_REQUIREMENTS[row.name] ?? [],
       help: secretHelp(row.name, row.referencedBy),
     };

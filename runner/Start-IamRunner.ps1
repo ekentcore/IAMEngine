@@ -990,8 +990,14 @@ $DISPATCH['spanning-force-sync'] = @{
     # so the 30-second Delinea-minted code can't go stale in transit (browser launch + portal load +
     # the SSO hop routinely outlive a TOTP window). The seed stays in Delinea; we only ever hold a code.
     Onboard = { param($job, $creds)
-        Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds['spanning'] `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = 'spanning' }
+        # The console is Microsoft 365 SSO, so this signs in with the client's PORTAL secret (an M365
+        # admin), NOT the Spanning API credential. Older clients wired only 'spanning' — fall back to it
+        # so they get the actionable "wire a spanning-portal secret" warning from the module rather than
+        # an opaque null-secret crash. The OTP MUST be minted from the SAME secret we sign in with:
+        # the one-time password is enrolled on the portal login, not on the API credential.
+        $secretName = if ($creds.ContainsKey('spanning-portal') -and $creds['spanning-portal']) { 'spanning-portal' } else { 'spanning' }
+        Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
@@ -1788,9 +1794,43 @@ $CONNTEST_PROBE['spanning']    = { param($job, $creds)
         elseif ($m -match 'HTTP 40[13]')     { @{ op = 'license assign/unassign'; ok = $false; detail = 'token cannot assign licenses (401/403) — generate the API token as a Spanning admin' } }
         else                                 { @{ op = 'license assign/unassign'; ok = $null;  detail = 'cannot verify without licensing a user — verify manually' } }
     }
-    $script:ConnTestRights = @(@{ op = 'read users'; ok = $true; detail = 'list read works' }, $assign)
+    $rights = [System.Collections.Generic.List[hashtable]]::new()
+    $rights.Add(@{ op = 'read users'; ok = $true; detail = 'list read works' })
+    $rights.Add($assign)
+    $script:ConnTestRights = @($rights)
     if ($assign.ok -eq $false) { throw "spanning: users readable, but $($assign.detail)" }
-    "spanning: users readable (sample returned $(@($users).Count))"
+    $detail = "spanning: users readable (sample returned $(@($users).Count))"
+
+    # The CONSOLE sign-in is a second, independent credential: the browser force-sync signs in to the
+    # Spanning admin console through Microsoft 365 SSO, which the API clientId/secret cannot do. It is
+    # brokered as its own 'spanning-portal' secret and is OPTIONAL — licensing (both lanes) is pure API,
+    # so a client that never force-syncs needs none of this and must stay green.
+    $portal = if ($creds.ContainsKey('spanning-portal')) { $creds['spanning-portal'] } else { $null }
+    if (-not $portal) {
+        # Say it in the DETAIL line, not as a rights row: a row with ok=$null would drag every Spanning
+        # client that only does licensing from "verified" to "unverified" — a fleet-wide false alarm for
+        # a capability they don't use. This is the honest middle: visible, not alarming.
+        return "$detail · no 'spanning-portal' secret wired, so force-sync is unavailable (licensing is unaffected)"
+    }
+    # A real sign-in is expensive and INTERACTIVE, so only a targeted single-system retest runs it —
+    # never a sweep, which would fire one M365 sign-in per client per run.
+    if (-not $job.deep) {
+        return "$detail · a 'spanning-portal' secret is wired; use Test on the Spanning system to verify the console sign-in"
+    }
+    if (-not (Test-CtgBrowserAvailable)) {
+        $rights.Add(@{ op = 'console sign-in (browser)'; ok = $null; detail = 'this agent has no browser runtime (Node/Playwright) — cannot verify the console sign-in from here' })
+        $script:ConnTestRights = @($rights)
+        return "$detail · console sign-in not checked (no browser runtime on this agent)"
+    }
+    # Mint the MFA code from the CONN-TEST credential endpoint, at the prompt (same contract as a job).
+    $otpReq = @{ url = "$AppUrl/api/runner/conn-tests/$($job.connTestId)/credential"; token = $ApiToken; agentId = $AgentId; secretName = 'spanning-portal' }
+    $signin = Test-CtgSpanningPortalLogin -Secret $portal -SecretName 'spanning-portal' -OtpRequest $otpReq
+    $rights.Add(@{ op = 'console sign-in (browser)'; ok = $signin.Ok; detail = [string]$signin.Detail })
+    $script:ConnTestRights = @($rights)
+    # A broken console sign-in must NOT fail the test: the API — which is all that licensing needs — is
+    # demonstrably fine. It surfaces as a red rights row, which is what "partial" is for.
+    if (-not $signin.Ok) { return "$detail · console sign-in FAILED: $($signin.Detail)" }
+    "$detail · console sign-in OK ($($signin.Detail))"
 }
 # Proofpoint Essentials: read the org's Azure sync settings (also proves the X-User/X-Password admin
 # auth + org-path domain). Reports whether sync is on, its frequency, and the last successful sync —
@@ -1835,7 +1875,10 @@ function Invoke-CtgConnectionTests {
         $script:ConnTestCredExpiresAt = $null   # a probe may set the credential's own expiry (ISO)
         # Pass the system's config so a Connect that reads it (e.g. exchange's onPremExchangeUri) works
         # in the test. It's the whole ClientSystem.config (onboard/offboard sub-objects), not a lane.
-        $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain } }
+        # connTestId + deep let a probe run an INTERACTIVE check (a real browser sign-in) and mint its
+        # MFA code from the conn-test credential endpoint. `deep` is true only when an operator retested
+        # this one system by hand — never on a sweep, which must not fire a real portal login per client.
+        $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain }; connTestId = $t.id; deep = [bool]$t.deep }
 
         try {
             $names = @(@($t.secretNames) | Where-Object { $_ })
@@ -1845,6 +1888,18 @@ function Invoke-CtgConnectionTests {
         catch {
             $accessOk = $false; $accessDetail = & $errLine $_ $creds
             $apiOk = $false; $apiDetail = 'skipped — secret not resolved from Delinea'
+        }
+
+        # OPTIONAL secrets (e.g. spanning-portal, the console sign-in behind force-sync) are brokered
+        # BEST-EFFORT, each in its own try: they back a capability the client may not use, so a missing
+        # or unresolvable one must NOT fail the test. Failing here would report the whole system red —
+        # and with the setup gate in enforce mode that would withhold its real jobs — because an extra,
+        # optional credential is broken. The probe sees the secret simply absent and says so.
+        if ($accessOk) {
+            foreach ($sn in @(@($t.optionalSecretNames) | Where-Object { $_ })) {
+                try { $creds[$sn] = Get-ConnTestCredential $t.id $sn }
+                catch { Write-CtgLog "conn-test: optional secret '$sn' could not be brokered — $($_.Exception.Message)" 'WARN' }
+            }
         }
 
         if ($accessOk) {

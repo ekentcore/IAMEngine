@@ -352,6 +352,16 @@ export default async function spanningForceSync({ page, shot, input, log }) {
       return { ok: false, error: `after login the page is on ${origin}, not a Spanning console origin — cannot fire the sync from here`, evidence: await shot("wrong-origin") };
     }
 
+    // CONNECTION TEST (signInOnly): everything above — Microsoft SSO, the password, the Delinea-minted
+    // MFA code, the "Stay signed in?" interstitial, and the origin gate — has now passed, which is the
+    // entire question the test asks. Stop here and change nothing: a test must not fire a real sync.
+    // It runs this same flow rather than a bespoke copy precisely so that what it proves is what the
+    // force-sync will actually do.
+    if (input?.params?.signInOnly) {
+      log(`signed in to the Spanning console at ${origin} (sign-in check only — no sync triggered)`);
+      return { ok: true, message: `signed in to the Spanning console at ${origin}` };
+    }
+
     log(`triggering the Spanning sync (POST ${origin}/api/sync)`);
     const fired = await page.evaluate(async () => {
       const r = await fetch("/api/sync", {

@@ -53,6 +53,27 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "api token", anyOf: ["ClientSecret", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Token", "Key", "Password"] },
     { label: "region or base url", anyOf: ["apiURL", "ApiUrl", "ApiURL", "BaseUrl", "Base URL", "Url", "URL", "Region"] },
   ],
+  // Spanning ADMIN CONSOLE sign-in — the credential the browser force-sync signs in WITH. The console
+  // is Microsoft 365 SSO, so this is an interactive M365 admin login (an email + that account's
+  // password), NOT the API clientId/secret above: handing an API key to Microsoft's sign-in box cannot
+  // authenticate, and repeated attempts walk a real admin account toward smart lockout (the runner
+  // refuses it outright — see Invoke-CtgSpanningForceSync).
+  //
+  // It is a SEPARATE secret from `spanning` on purpose. Licensing (both lanes) is pure API and never
+  // needs this, so a client without a portal login stays fully ready; and an M365 password can never
+  // end up in the API secret's Username/Password, where Use-CtgSpanningSecret would send it to Spanning
+  // as clientId:clientSecret and 401 every licensing call.
+  //
+  // MFA: enable One-Time Password on the Delinea secret — the runner mints the code AT the prompt, so
+  // the seed never leaves the vault. It must be a TOTP/software token; push or phone-call MFA can't be
+  // automated and the sign-in will simply time out at the prompt.
+  //
+  // Synonyms mirror the runner's pick order in Invoke-CtgSpanningForceSync (Portal* first, then the
+  // generic pair — on a dedicated secret the generic Username/Password are the natural fields).
+  "spanning-portal": [
+    { label: "M365 admin email", anyOf: ["Username", "PortalUsername", "AdminUser", "AdminEmail", "Email", "User"] },
+    { label: "that account's password", anyOf: ["Password", "PortalPassword", "AdminPassword"] },
+  ],
   // Proofpoint Essentials API: admin email + password (sent as X-User / X-Password). The org domain
   // for the /orgs/{domain} path is satisfied by a Domain field OR the client's primary domain.
   proofpoint: [

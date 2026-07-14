@@ -16,6 +16,10 @@ export type SecretRowVM = {
   provider: string;
   referencedBy: string[];
   isSet: boolean;
+  // OPTIONAL: unlocks one extra capability (spanning-portal -> Spanning's force-sync console sign-in)
+  // and nothing requires it. Offered so it CAN be wired; an unset one is not a gap, so it must never be
+  // tested as if it were (a red "✗ not set" here reads exactly like a genuinely missing credential).
+  optional?: boolean;
 };
 
 type TestState = { status: "idle" | "testing" | "ok" | "fail"; label?: string; error?: string; missingFields?: string[] };
@@ -234,6 +238,15 @@ export function SecretsPanel({
               <tr>
                 <td>
                   <code>{r.name}</code>
+                  {r.optional && (
+                    <span
+                      className="badge"
+                      style={{ marginLeft: 6, fontSize: 11 }}
+                      title="Optional — unlocks one extra capability. Everything else works without it, and leaving it unset is not a gap."
+                    >
+                      optional
+                    </span>
+                  )}
                   <SecretHelpLink name={r.name} systems={r.referencedBy} />
                 </td>
                 <td className="muted">
@@ -318,7 +331,15 @@ export function SecretsPanel({
         >
           Save & test
         </button>
-        <button onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED).map((r) => r.name))} disabled={!delineaConfigured}>Test all connections</button>
+        {/* Skip an OPTIONAL credential that was never wired: there is nothing to resolve, and Delinea
+            would answer "not set" — rendering the same red ✗ as a genuinely missing credential and
+            sending the operator hunting for a secret that is, by design, not required. */}
+        <button
+          onClick={() => test(rows.filter((r) => r.externalId !== NOT_NEEDED && !(r.optional && !r.isSet)).map((r) => r.name))}
+          disabled={!delineaConfigured}
+        >
+          Test all connections
+        </button>
         <button
           onClick={runSelfCheck}
           disabled={selfCheck === "checking"}

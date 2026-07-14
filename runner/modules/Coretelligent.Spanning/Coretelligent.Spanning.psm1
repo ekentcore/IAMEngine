@@ -398,6 +398,109 @@ function Get-CtgSpanningSecretField {
     return $null
 }
 
+function Resolve-CtgSpanningPortalLogin {
+    <#
+    .SYNOPSIS
+        The ONE place that decides what may be typed into Microsoft's sign-in box for the Spanning
+        admin console. Returns @{ Ok; Username; Password; Reason }.
+    .DESCRIPTION
+        Shared by the force-sync and by its connection test, deliberately: the test's whole value is
+        that it proves THE credential production will use, resolved THE way production resolves it. A
+        second, parallel implementation could go green on a credential the real sync then chokes on.
+
+        The console is Microsoft 365 SSO, so this must be a real M365 user login (an email + that
+        account's password). It must NOT fall back to the API credential: a Spanning clientId /
+        access-token is not an M365 identity, cannot authenticate, and repeated automated attempts with
+        a wrong password are how a real admin account gets locked out. So the API-credential field names
+        (ClientID / ClientSecret / Access Token / API Key) are never read here, and the email check is
+        the backstop — an API clientId is not an email.
+
+        Username and password are taken as a PAIR from one source, never mixed: a portal username must
+        not end up beside a password picked from somewhere else (that too is just a failed sign-in).
+    #>
+    param($Secret, [string]$SecretName = 'spanning-portal')
+
+    $username = Get-CtgSpanningSecretField $Secret @('PortalUsername', 'AdminUser', 'AdminEmail')
+    $password = Get-CtgSpanningSecretField $Secret @('PortalPassword', 'AdminPassword')
+    if (-not $username -and -not $password) {
+        # On a DEDICATED spanning-portal secret the generic pair is the natural place for the login —
+        # and it is unambiguous there, because that secret holds no API credential to confuse it with.
+        $username = Get-CtgSpanningSecretField $Secret @('Username', 'User', 'Email')
+        $password = Get-CtgSpanningSecretField $Secret @('Password')
+    }
+    # A pscredential is a username+password pair by construction — a legitimate portal-login shape.
+    if (-not $username -and -not $password) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) {
+            $username = $cred.UserName
+            try { $password = $cred.GetNetworkCredential().Password } catch { }
+        }
+    }
+
+    # Name the RIGHT fix for how this client is wired: no portal secret at all (we fell back to the API
+    # secret, which can never sign in) vs. a portal secret present but missing its username/password.
+    $fellBack = ($SecretName -eq 'spanning')
+    if (-not $username -or -not $password) {
+        $fix = if ($fellBack) {
+            "this client has no 'spanning-portal' secret, so the sign-in fell back to the API credential, which CANNOT sign in to the console. Wire a 'spanning-portal' secret (Username = an M365 admin's email, Password = that account's password)"
+        } else {
+            "the 'spanning-portal' secret has no Username/Password"
+        }
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "no portal login is available: $fix, and enable One-Time Password on it so Delinea can supply the MFA code. See /help/spanning." }
+    }
+    # The rejected VALUE is never echoed: by this guard's own premise it is credential material out of
+    # Delinea, and everything here lands in an AuditLog row and a ServiceNow work note (CLAUDE.md:
+    # secrets never live in the app). Naming the field is enough for an operator to fix it.
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        $why = if ($fellBack) {
+            "this client has no 'spanning-portal' secret, so the API credential was used and its clientId is not an email"
+        } else {
+            "the 'spanning-portal' secret's Username is not an email (an API clientId in the portal slot?)"
+        }
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "the brokered portal username is not an email/UPN, so it cannot be an M365 sign-in: $why. Set the 'spanning-portal' secret's Username to an M365 admin's email address. The value is not repeated here because it may be credential material." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $username; Password = $password; Reason = $null }
+}
+
+function Test-CtgSpanningPortalLogin {
+    <#
+    .SYNOPSIS
+        Connection test for the Spanning ADMIN CONSOLE sign-in: drives the real browser flow through
+        Microsoft SSO + MFA and stops once the console is reached. Triggers NO sync.
+    .DESCRIPTION
+        Returns @{ Ok; Detail }. Never throws — the caller reports it as one rights row, so a portal
+        problem can never fail the Spanning API (licensing) test that runs alongside it.
+
+        This is the only way to learn, BEFORE an onboarding needs it, that the console login is broken:
+        a wrong password, an MFA method Delinea can't mint (push/phone rather than a TOTP token),
+        Conditional Access blocking the agent's IP, or an admin with no Spanning console access. All
+        four are otherwise invisible until a real force-sync fails.
+
+        It runs the SAME flow file as the force-sync (signInOnly) so it can't drift from what production
+        does — a bespoke "test login" would prove only that the test's own code works.
+    #>
+    param($Secret, [string]$SecretName = 'spanning-portal', [hashtable]$OtpRequest)
+
+    $login = Resolve-CtgSpanningPortalLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) { return [pscustomobject]@{ Ok = $false; Detail = $login.Reason } }
+
+    $params = @{ signInOnly = $true }
+    if ($OtpRequest) { $params['otp'] = $OtpRequest }
+    # Carry the SAME MFA fallbacks the force-sync carries. A client still on a stored TOTP seed (rather
+    # than Delinea's one-time password) would otherwise fail the test while the real sync succeeds — a
+    # false red on a working setup, which is worse than no test at all.
+    $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    if ($totpSeed) { $params['totpSeed'] = $totpSeed }
+    $flowInput = @{ username = $login.Username; password = $login.Password; params = $params }
+    # Same budget as the force-sync's sign-in leg: browser launch + the SSO hop + an MFA wait.
+    $res = Invoke-CtgBrowserFlow -Flow 'spanning-force-sync' -InputObject $flowInput -TimeoutSeconds 240
+    if ($res -and $res.ok) {
+        return [pscustomobject]@{ Ok = $true; Detail = "signed in to the Spanning console via Microsoft 365 SSO as $($login.Username)" }
+    }
+    $err = if ($res -and $res.error) { [string]$res.error } else { 'the browser flow returned no result' }
+    [pscustomobject]@{ Ok = $false; Detail = $err }
+}
+
 function Invoke-CtgSpanningForceSync {
     <#
     .SYNOPSIS
@@ -416,14 +519,23 @@ function Invoke-CtgSpanningForceSync {
           portal failure /
           MFA required        -> a WARN action line (warning) — never a hard throw, since a convenience
                                   sync shouldn't fail the case; the operator can sync manually.
-        NOTE: the browser portal login may require a DIFFERENT credential than the API (the API secret
-        stores clientId/clientSecret). VERIFY which credential the real admin console accepts.
+        CREDENTIAL: the console is Microsoft 365 SSO, so this needs an INTERACTIVE M365 admin sign-in —
+        a different credential from the API's clientId/clientSecret. It is brokered as its own secret,
+        'spanning-portal' (see AUXILIARY_SECRETS in web/lib/orchestrator.ts), so that licensing (pure
+        API, both lanes) keeps working for clients that never wire a portal login. Splitting them also
+        removes the footgun of an M365 password sitting in the API secret's Username/Password fields,
+        where Use-CtgSpanningSecret would try to authenticate with it as clientId:clientSecret.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
         $Secret
+        ,
+        # Which brokered secret $Secret came from — used ONLY to make the "wire a portal login" guidance
+        # name the right Delinea entry. 'spanning' means we fell back to the API secret (a client wired
+        # before the portal secret existed), which cannot sign in — the guards below say so.
+        [string]$SecretName = 'spanning-portal'
         ,
         # PREFERRED: @{ url; token; agentId; secretName } — the app endpoint the browser flow calls to
         # mint a Delinea one-time password AT THE MFA PROMPT. A TOTP code lives ~30s; browser launch +
@@ -439,49 +551,13 @@ function Invoke-CtgSpanningForceSync {
     $actions = [System.Collections.Generic.List[string]]::new()
     $email   = $User.UserPrincipalName
 
-    # The force-sync signs in to the Spanning ADMIN CONSOLE, which is Microsoft 365 SSO — so it needs a
-    # real M365 USER login (an email + that account's password).
-    #
-    # It must NOT fall back to the API credential. A Spanning API clientId/accessToken is not an M365
-    # identity: handing it to Microsoft SSO cannot succeed, produces an unexplained "bad password"
-    # (the diagnostic script refuses this for exactly that reason), and repeated automated attempts
-    # with a wrong password are how you get an account locked out. If no portal login is brokered we
-    # say so plainly and leave the sync to a human — a WARN, never a case failure.
-    # Portal fields first, then the generic Username/Password PAIR (a perfectly normal place to keep a
-    # portal login). What we must never do is read the API-CREDENTIAL names — ClientID / Access Token /
-    # API Key / ClientSecret — which is what previously let a Spanning API key be typed into Microsoft's
-    # sign-in box: it can't authenticate, and repeated attempts are how the admin account gets locked.
-    #
-    # Sources are taken as PAIRS, never mixed: a portal username must not end up beside a password
-    # picked from somewhere else. The email check below is the backstop — an API clientId isn't an email.
-    $username = Get-CtgSpanningSecretField $Secret @('PortalUsername', 'AdminUser', 'AdminEmail')
-    $password = Get-CtgSpanningSecretField $Secret @('PortalPassword', 'AdminPassword')
-    if (-not $username -and -not $password) {
-        $username = Get-CtgSpanningSecretField $Secret @('Username', 'User', 'Email')
-        $password = Get-CtgSpanningSecretField $Secret @('Password')
-    }
-    # A pscredential is a username+password pair by construction — a legitimate portal-login shape.
-    if (-not $username -and -not $password) {
-        $cred = Get-CtgProp $Secret 'Credential'
-        if ($cred) {
-            $username = $cred.UserName
-            try { $password = $cred.GetNetworkCredential().Password } catch { }
-        }
-    }
-    if (-not $username -or -not $password) {
-        $actions.Add("WARN could not force a Spanning sync for $email — the Spanning secret has no PORTAL login. Add PortalUsername (an M365 admin's email) + PortalPassword to the Delinea secret, and enable One-Time Password on it for the MFA prompt. The API clientId/token CANNOT be used to sign in to the console. Trigger the sync manually meanwhile.")
+    $login = Resolve-CtgSpanningPortalLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) {
+        $actions.Add("WARN could not force a Spanning sync for $email — $($login.Reason) Trigger the sync manually meanwhile.")
         return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
     }
-    # An M365 sign-in name is an email/UPN. Anything else is almost certainly an API clientId that got
-    # dropped into a portal slot — refuse it rather than burn a failed sign-in against the account.
-    #
-    # The rejected VALUE is never echoed: by this guard's own premise it is credential material out of
-    # Delinea, and every action here lands in an AuditLog row and a ServiceNow work note (CLAUDE.md:
-    # secrets never live in the app). Naming the field is enough for an operator to fix it.
-    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
-        $actions.Add("WARN could not force a Spanning sync for $email — the brokered portal username is not an email/UPN, so it cannot be an M365 sign-in (an API clientId in the PortalUsername slot?). Set PortalUsername on the Delinea secret to an M365 admin's email address. The value is not repeated here because it may be credential material.")
-        return [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
-    }
+    $username = $login.Username
+    $password = $login.Password
 
     # MFA. PREFERRED: hand the flow an OTP REQUEST SPEC so the sidecar mints the Delinea code at the
     # moment the MFA box is visible — Delinea holds the authenticator seed (one-time password enabled
@@ -532,4 +608,4 @@ function Invoke-CtgSpanningForceSync {
     [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning, Get-CtgSpanningSecretField, Invoke-CtgSpanningForceSync
+Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning, Get-CtgSpanningSecretField, Invoke-CtgSpanningForceSync, Resolve-CtgSpanningPortalLogin, Test-CtgSpanningPortalLogin

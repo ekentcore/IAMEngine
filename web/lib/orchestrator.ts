@@ -206,8 +206,13 @@ export function planCase(
       // Destructive steps ALWAYS snapshot state first ("save the settings so we can redo it").
       captureEvidence: destructive || (ce ? Boolean(ce[action]) : s.captureEvidence),
       // SentinelOne's offboard resolves the user's machines from their Entra registered devices, so it
-      // also needs the m365-admin app brokered (catalog-wide, no per-client wiring). If the client has
-      // no m365-admin it simply isn't brokered and the runner falls back to config/payload machineName.
+      // also needs the m365-admin app brokered (catalog-wide, no per-client wiring).
+      //
+      // CAUTION before you copy this: every name here is treated as REQUIRED downstream — the claim
+      // gate skips a job with any unreferenced secret (runner-service missingRequiredSecrets) and the
+      // runner brokers each name unconditionally. So an OPTIONAL secret must never be appended here;
+      // it would make the step unclaimable for every client that hasn't wired it. See
+      // lib/secrets/auxiliary.ts, which attaches optional secrets only where they're actually wired.
       secretNames: s.systemKey === "sentinelone" && !s.secretNames.includes("m365-admin")
         ? [...s.secretNames, "m365-admin"]
         : s.secretNames,

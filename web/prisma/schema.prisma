@@ -329,8 +329,20 @@ model ConnectionTest {
   // passwordCredentials endDateTime). Null = unknown/unreadable.
   credExpiresAt   DateTime?
   source          String    @default("manual") // manual (operator button) | sweep (scheduled fleet run)
+  // Deep probes are allowed on this test: expensive/INTERACTIVE checks that a routine test must never
+  // do — today, signing in to a vendor portal in a real browser (Spanning's console, via M365 SSO).
+  // Set ONLY when an operator retests ONE system on ONE client, so it can't fan out: a nightly sweep
+  // or the fleet button would otherwise fire a real M365 sign-in per client per run, which floods the
+  // sign-in logs and is exactly the burst of scripted logins that risk-based Conditional Access
+  // challenges. Orthogonal to `source` on purpose — the fleet button is operator-initiated too.
+  deep            Boolean   @default(false)
   onPrem          Boolean   @default(false) // true -> only the client's agent claims it
-  secretNames     String[]  @default([]) // the system's required secrets, brokered at run time
+  secretNames     String[]  @default([]) // the system's REQUIRED secrets — a failure to resolve one fails the test
+  // Secrets for an optional capability (e.g. spanning-portal, the console sign-in behind force-sync).
+  // Brokered BEST-EFFORT: they're authorized for this test, but if one can't be resolved the test must
+  // still pass on the strength of the required ones — licensing doesn't care that force-sync is broken.
+  // Only ever populated with secrets the client has actually wired.
+  optionalSecretNames String[] @default([])
   config          Json? // the ClientSystem.config, so a conn-test Connect can read e.g. onPremExchangeUri
   requestedAt     DateTime  @default(now())
   claimedAt       DateTime?

@@ -70,7 +70,41 @@ export default function SpanningSetupPage() {
         <li>Click <b>Test</b> — it should resolve green. (Test only proves the app can read the secret, not that Spanning accepts it — the real check is the dry-run.)</li>
       </ul>
 
-      <h2>4. Verify</h2>
+      <h2>4. Optional: the console sign-in, for &ldquo;force sync&rdquo;</h2>
+      <p>
+        Spanning discovers new M365 users on <b>its own schedule</b>, so a just-created user often isn&rsquo;t there yet
+        when onboarding tries to license them. <b>Force sync</b> makes it look now — but Spanning&rsquo;s API has no sync
+        endpoint, so it is done by driving the admin console in a real browser.
+      </p>
+      <p>
+        The console is <b>Microsoft 365 SSO</b>, so it needs an <b>M365 admin sign-in</b> — an email and that
+        account&rsquo;s password. The API credential above <b>cannot</b> sign in to it (a clientId is not an M365
+        identity), so it lives in a <b>second, separate</b> Delinea secret wired as <code>spanning-portal</code>:
+      </p>
+      <ul>
+        <li><code>Username</code> — an M365 admin&rsquo;s <b>email address</b> (one with access to the Spanning console).</li>
+        <li><code>Password</code> — that account&rsquo;s password.</li>
+        <li>Enable <b>One-Time Password</b> on the secret. The runner mints the MFA code from Delinea <i>at the prompt</i>,
+          so the authenticator seed never leaves the vault. It must be a <b>TOTP / authenticator-app</b> method:
+          push notifications and phone calls cannot be automated, and the sign-in will simply time out.</li>
+      </ul>
+      <p className="note">
+        Do <b>not</b> put this login in the <code>spanning</code> API secret&rsquo;s Username/Password fields. The runner
+        would send it to Spanning as clientId:clientSecret and every licensing call would start failing with 401.
+      </p>
+      <p>
+        This is entirely <b>optional</b>: licensing (onboard and offboard) is pure API and works without it. A client with
+        no <code>spanning-portal</code> secret simply can&rsquo;t force a sync — the step says so and leaves it to a human.
+      </p>
+      <p>
+        To check it, use <b>Test</b> on the client&rsquo;s <b>Spanning</b> system. When a portal secret is wired, that test
+        signs in to the console for real — through Microsoft SSO and MFA — and triggers nothing. It reports as a
+        <b> console sign-in</b> row, which is how you catch a wrong password, an un-mintable MFA method, Conditional
+        Access blocking the runner, or an admin with no console access <i>before</i> an onboarding needs it. (Only this
+        targeted single-system Test does a real sign-in — the nightly sweep never does.)
+      </p>
+
+      <h2>5. Verify</h2>
       <ul>
         <li><b>Update the runner</b> so it has the Spanning module (Agents → Update, or the update script). Spanning is cloud, so the <b>central runner</b> runs this step.</li>
         <li>Run the <code>spanning</code> step <b>dry-run first</b>. A green dry-run confirms the domain, region and token are all correct.</li>

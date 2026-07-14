@@ -241,13 +241,34 @@ Describe 'Invoke-CtgSpanningForceSync — MFA source' {
     # The console is Microsoft 365 SSO, so it needs a real M365 USER login. The Spanning API
     # clientId/accessToken is not an M365 identity: it cannot authenticate, produces an unexplained
     # bad-password error, and repeated automated attempts are how an account gets locked out.
+    #
+    # A client wired before the portal secret existed brokers only 'spanning' (the API credential), and
+    # the dispatch falls back to it — so this is the path that MUST refuse, and it must name the fix.
     It 'refuses to sign in with the Spanning API credential (never launches the browser)' {
         $apiOnly = [pscustomobject]@{ Fields = @{ ClientID = 'abc123-clientid'; 'Access Token' = 'tok_live_xyz' } }
-        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $apiOnly
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $apiOnly -SecretName 'spanning'
         $r.Status | Should -Be 'ok'   # a WARN, never a case failure
-        ($r.Actions -join ' ') | Should -Match 'no PORTAL login'
-        ($r.Actions -join ' ') | Should -Match 'API clientId/token CANNOT be used'
+        ($r.Actions -join ' ') | Should -Match 'no portal login is available'
+        ($r.Actions -join ' ') | Should -Match "CANNOT sign in to the console"
+        ($r.Actions -join ' ') | Should -Match "spanning-portal"   # names the secret to wire
         Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+
+    # The dedicated portal secret exists but is empty — a different fix, so a different message.
+    It 'names the portal secret (not the API one) when the portal secret has no username/password' {
+        $empty = [pscustomobject]@{ Fields = @{ Region = 'US' } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $empty -SecretName 'spanning-portal'
+        ($r.Actions -join ' ') | Should -Match "the 'spanning-portal' secret has no Username/Password"
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+
+    # On a DEDICATED portal secret the generic Username/Password pair is the natural place for the login
+    # — and unambiguous there, since that secret holds no API credential to be confused with.
+    It 'accepts a generic Username/Password pair on the dedicated portal secret' {
+        $portal = [pscustomobject]@{ Fields = @{ Username = 'admin@x.com'; Password = 'pw' } }
+        $r = Invoke-CtgSpanningForceSync -User $script:user -Config ([pscustomobject]@{}) -Secret $portal -SecretName 'spanning-portal'
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 1 -Exactly
     }
 
     # An API clientId dropped into a Username slot would otherwise be typed at the Microsoft sign-in box.
@@ -313,5 +334,83 @@ Describe 'Invoke-CtgSpanningForceSync — in-flow OTP minting' {
         $script:captured.params.totpSeed | Should -Be 'JBSWY3DPEHPK3PXP'
         # no WARN nag when the preferred path is wired — the seed is just the fallback
         ($r.Actions -join ' ') | Should -Not -Match 'WARN using a stored TOTP seed'
+    }
+}
+
+# The connection test for the CONSOLE sign-in. Its value is entirely in being the same code path the
+# force-sync uses (so it can't go green on a credential the real sync would choke on) while changing
+# nothing at the client — hence signInOnly, and hence the "never fires a sync" assertions.
+Describe 'Test-CtgSpanningPortalLogin (console sign-in connection test)' {
+    BeforeEach {
+        $script:captured = $null
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject, $TimeoutSeconds)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = 'signed in to the Spanning console at https://o365-us.spanningbackup.com'; error = $null }
+        }
+        $script:portal = [pscustomobject]@{ Fields = @{ Username = 'admin@x.com'; Password = 'pw' } }
+    }
+
+    It 'signs in with signInOnly so the test can never trigger a real sync' {
+        $r = Test-CtgSpanningPortalLogin -Secret $script:portal -SecretName 'spanning-portal'
+        $r.Ok | Should -BeTrue
+        $script:captured.params.signInOnly | Should -BeTrue
+        # No target user: a sign-in check is about the ADMIN credential, not about any leaver/joiner.
+        $script:captured.params.ContainsKey('email') | Should -BeFalse
+        $r.Detail | Should -Match 'admin@x.com'
+    }
+
+    It 'mints the MFA code at the prompt (passes the OTP request spec, never a pre-minted code)' {
+        $otpReq = @{ url = 'https://app/api/runner/conn-tests/t1/credential'; token = 'tok'; agentId = 'a1'; secretName = 'spanning-portal' }
+        $r = Test-CtgSpanningPortalLogin -Secret $script:portal -SecretName 'spanning-portal' -OtpRequest $otpReq
+        $r.Ok | Should -BeTrue
+        $script:captured.params.otp.url | Should -Be 'https://app/api/runner/conn-tests/t1/credential'
+        $script:captured.params.ContainsKey('otpCode') | Should -BeFalse
+    }
+
+    # The API credential can't sign in to the console — and must not be typed at Microsoft's login box
+    # even by a TEST. A conn test that burned failed sign-ins would itself walk the account to lockout.
+    It 'refuses the API credential without ever launching the browser' {
+        $apiOnly = [pscustomobject]@{ Fields = @{ ClientID = 'abc123'; ClientSecret = 'shh' } }
+        $r = Test-CtgSpanningPortalLogin -Secret $apiOnly -SecretName 'spanning'
+        $r.Ok | Should -BeFalse
+        $r.Detail | Should -Match 'spanning-portal'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+
+    It 'reports a failed sign-in as a failed check rather than throwing' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            [pscustomobject]@{ ok = $false; error = 'Microsoft rejected the sign-in: your account or password is incorrect'; message = $null }
+        }
+        $r = Test-CtgSpanningPortalLogin -Secret $script:portal -SecretName 'spanning-portal'
+        $r.Ok | Should -BeFalse
+        $r.Detail | Should -Match 'password is incorrect'
+    }
+}
+
+# The single gate on what may be typed into Microsoft's sign-in box. Both the force-sync and its
+# connection test resolve the credential through here, so it is tested directly.
+Describe 'Resolve-CtgSpanningPortalLogin' {
+    It 'never reads the API-credential field names, even when they are the only fields present' {
+        $apiOnly = [pscustomobject]@{ Fields = @{ ClientID = 'abc'; ClientSecret = 'shh'; 'Access Token' = 'tok'; 'API Key' = 'k' } }
+        $r = Resolve-CtgSpanningPortalLogin -Secret $apiOnly -SecretName 'spanning-portal'
+        $r.Ok | Should -BeFalse
+        $r.Username | Should -BeNullOrEmpty
+        $r.Password | Should -BeNullOrEmpty
+    }
+
+    It 'never echoes the rejected value (it is credential material bound for the audit log)' {
+        $notEmail = [pscustomobject]@{ Fields = @{ Username = 'abc123-secret-clientid'; Password = 'pw' } }
+        $r = Resolve-CtgSpanningPortalLogin -Secret $notEmail -SecretName 'spanning-portal'
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Not -Match 'abc123-secret-clientid'
+    }
+
+    It 'prefers the explicit Portal* fields over the generic pair' {
+        $both = [pscustomobject]@{ Fields = @{ PortalUsername = 'portal@x.com'; PortalPassword = 'p1'; Username = 'other@x.com'; Password = 'p2' } }
+        $r = Resolve-CtgSpanningPortalLogin -Secret $both -SecretName 'spanning-portal'
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be 'portal@x.com'
+        $r.Password | Should -Be 'p1'
     }
 }

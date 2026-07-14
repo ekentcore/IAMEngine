@@ -180,3 +180,25 @@ test("candidatesBySlot groups a realistic folder correctly", () => {
   assert.equal(by.get("sentinelone")?.[0].record.id, 39539);
   assert.equal(by.has("ad-dc"), false);
 });
+
+// Spanning has TWO non-interchangeable credentials: the API clientId/secret (licensing) and an M365
+// admin sign-in for the browser console (force-sync). Autofilling a portal login into the API slot
+// would make the runner send that admin's email+password to Spanning as clientId:clientSecret — every
+// licensing call 401s, and the operator hunts a "rotated" API key that never moved.
+test("a Spanning PORTAL login does not get filed as the Spanning API credential", () => {
+  assert.deepEqual(slots("Spanning Portal Login"), ["spanning-portal:medium"]);
+  assert.deepEqual(slots("Spanning Console SSO"), ["spanning-portal:medium"]);
+  assert.deepEqual(slots("Spanning Browser Sign-in"), ["spanning-portal:medium"]);
+  // ...while the API credential is untouched, including the bare admin name (no portal wording).
+  assert.deepEqual(slots("Spanning API"), ["spanning:high"]);
+  assert.deepEqual(slots("Spanning O365"), ["spanning:medium"]);
+});
+
+// The other direction of the same mistake: an API/automation qualifier WINS over portal wording.
+// "Spanning API Login" is an ordinary name for the API credential — re-routing it would strand the
+// API slot with no candidate at all AND autofill API material into the portal slot.
+test("an API qualifier beats portal wording, so the API credential keeps its slot", () => {
+  assert.deepEqual(slots("Spanning API Login"), ["spanning:high"]);
+  assert.deepEqual(slots("Spanning Integration Sign-in"), ["spanning:high"]);
+  assert.deepEqual(slots("Spanning Automation Console"), ["spanning:high"]);
+});

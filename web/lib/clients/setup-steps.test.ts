@@ -63,3 +63,47 @@ test("NOT_NEEDED reads as a ready manual step", () => {
   assert.equal(steps[0].test, "not_needed");
   assert.equal(steps[0].ready, true);
 });
+
+// REGRESSION: an OPTIONAL credential (spanning-portal — it only unlocks Spanning's force-sync) must not
+// count against setup. It is deliberately absent from ClientSystem.secretNames, so `refSystems` is empty
+// and the old code fell through to `row.isSet` = false => wired:false, ready:false. That told EVERY
+// Spanning client they were one credential short, opened the wizard on a credential nobody asked for,
+// and made the "All set" screen unreachable — while readiness itself (correctly) said "ready".
+test("an unwired optional credential is flagged optional and never counted as a gap", () => {
+  const rows = [
+    row("m365-admin", "111", ["m365"]),
+    row("spanning", "222", ["spanning"]),
+    { ...row("spanning-portal", "", ["spanning"]), optional: true as const },
+  ];
+  const r = readiness(
+    [{ systemKey: "m365", secretNames: ["m365-admin"] }, { systemKey: "spanning", secretNames: ["spanning"] }],
+    { "m365-admin": "111", spanning: "222" },
+    { m365: "ok", spanning: "ok" }
+  );
+  const steps = buildSetupSteps(rows, r);
+  const portal = steps.find((s) => s.secretName === "spanning-portal")!;
+  assert.equal(portal.optional, true, "must be marked optional so the UI can exclude it");
+  assert.match(portal.purpose, /Optional/);
+  // The client is genuinely fully set up: readiness says so, and the counted steps agree.
+  assert.equal(r.tier, "ready");
+  const counted = steps.filter((s) => !s.optional || s.wired);
+  assert.equal(counted.length, 2, "the untouched optional credential must not be counted");
+  assert.equal(counted.every((s) => s.wired && s.ready), true, "'All set' must be reachable");
+  // Required credentials are unaffected.
+  assert.equal(steps.find((s) => s.secretName === "spanning")!.optional, false);
+});
+
+// Once an operator actually wires it, it counts again — a credential you chose to add and got wrong is
+// worth surfacing, unlike one you never wanted.
+test("a wired optional credential counts toward setup", () => {
+  const rows = [
+    row("spanning", "222", ["spanning"]),
+    { ...row("spanning-portal", "999", ["spanning"]), optional: true as const },
+  ];
+  const r = readiness([{ systemKey: "spanning", secretNames: ["spanning"] }], { spanning: "222" }, { spanning: "ok" });
+  const steps = buildSetupSteps(rows, r);
+  const portal = steps.find((s) => s.secretName === "spanning-portal")!;
+  assert.equal(portal.optional, true);
+  assert.equal(portal.wired, true);
+  assert.equal(steps.filter((s) => !s.optional || s.wired).length, 2);
+});
