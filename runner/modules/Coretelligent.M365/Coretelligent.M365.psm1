@@ -1053,7 +1053,11 @@ function Invoke-CtgM365Offboarding {
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
-        [double]$MailboxSizeGB = 0
+        [double]$MailboxSizeGB = 0,
+        # Which lane is running this — 'm365' or its 'entra' alias (the same executor serves both).
+        # A profile can name the step that owns the license removal (removeLicense.removedBy), so the
+        # executor has to know which one it currently IS.
+        [string]$SystemKey = 'm365'
     )
 
     $actions = [System.Collections.Generic.List[string]]::new()
@@ -1334,9 +1338,49 @@ function Invoke-CtgM365Offboarding {
     $removeLicense = Get-CtgProp $Config 'removeLicense'
     $mailbox = Get-CtgProp $Config 'mailbox'
     $threshold = if ($mailbox) { [double]((Get-CtgProp $mailbox 'sizeThresholdGB') ?? 50) } else { 50 }
-    if ($null -ne $removeLicense) {
+
+    # DEFER: a profile can say "not here — a LATER step removes it" (e.g. MarketScience's
+    # `removeLicense: { defer: true, removedBy: 'entra' }`, so the license goes after Exchange has
+    # converted the mailbox). This was silently ignored — the check below was `-ne $null`, and a
+    # {defer=true} object is not null, so the license came off HERE anyway, which is exactly what the
+    # profile was trying to prevent. Honour it, and say so on the report.
+    $deferred = $false
+    if ($null -ne $removeLicense -and $removeLicense -isnot [bool]) {
+        $removedBy = [string](Get-CtgProp $removeLicense 'removedBy')
+        if ((Get-CtgProp $removeLicense 'defer') -eq $true) { $deferred = $true }
+        # "removedBy: entra" on the m365 step (or vice-versa) means THIS step isn't the one to do it.
+        if ($removedBy -and $removedBy -ne $SystemKey) { $deferred = $true }
+    }
+
+    # The mailbox must be SHARED before its license is taken away. An unlicensed, unconverted mailbox is
+    # purged by Exchange after its 30-day grace — the leaver's mail is gone. The Exchange step reports
+    # whether it actually converted (config.mailboxConverted, handed down by the app at claim time); when
+    # it declined (mailbox over the threshold) we keep the license rather than orphan the mailbox.
+    # No Exchange step in the plan at all => the key is absent => cloud-only clients behave as before.
+    $convertedKnown = $null -ne (Get-CtgProp $Config 'mailboxConverted')
+    $converted = (Get-CtgProp $Config 'mailboxConverted') -eq $true
+    # The client HAS a mailbox conversion configured and it hasn't run yet — most profiles put the licence
+    # removal in a step that runs BEFORE Exchange. Rather than trust every client's ordering (it is data,
+    # and it drifts), refuse here: keep the licence, warn, and let the operator re-run once the mailbox is
+    # shared. This makes a mis-ordered profile SAFE instead of destructive.
+    $convertPending = (Get-CtgProp $Config 'mailboxConvertPending') -eq $true
+
+    if ($null -ne $removeLicense -and $deferred) {
+        $by = [string](Get-CtgProp $removeLicense 'removedBy')
+        $actions.Add("license kept here by design — it is removed $(if ($by) { "in the $by step" } else { 'in a later step' }), after the mailbox is converted to shared")
+    }
+    elseif ($null -ne $removeLicense) {
         if ($MailboxSizeGB -gt $threshold) {
-            $actions.Add("license kept — mailbox $MailboxSizeGB GB is over threshold ($threshold GB); remove after mailbox handling")
+            # WARN, not a quiet note: the seat is still being paid for and the mailbox still needs a
+            # decision (archive? keep licensed?). It must surface on the run report — and now in the
+            # chat room — so an engineer picks it up rather than it sitting green forever.
+            $actions.Add("WARN license KEPT — mailbox $MailboxSizeGB GB is over threshold ($threshold GB), so it cannot become a shared mailbox without one. Decide with the client: archive the mail and remove the license, or keep the license.")
+        }
+        elseif ($convertPending) {
+            $actions.Add("WARN license KEPT — this client converts the mailbox to shared and that step hasn't run yet. Removing the license first would let Exchange purge the mailbox after its 30-day grace. Re-run this step once the mailbox step is done, and the license comes off.")
+        }
+        elseif ($convertedKnown -and -not $converted) {
+            $actions.Add("WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides. Convert the mailbox (or archive the mail), then re-run this step.")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Remove directly-assigned licenses")) {
             $userObj = Get-MgUser -UserId $userId -Property 'LicenseAssignmentStates' -ErrorAction SilentlyContinue

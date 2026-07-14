@@ -552,6 +552,56 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r = Invoke-CtgM365Offboarding -User $user -Config $config -MailboxSizeGB 10
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly   # license removed
     }
+
+    # --- convert-to-shared BEFORE the license comes off --------------------------------------------
+    # Taking the license off a mailbox that was never converted to shared is destructive: Exchange
+    # purges an unlicensed, unconverted mailbox once its 30-day grace runs out. The Exchange step tells
+    # us whether it actually converted (config.mailboxConverted, injected by the app at claim time).
+    It 'KEEPS the license when the mailbox was not converted to shared' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'WARN license KEPT .* NOT converted to shared'   # WARN = it surfaces to a human
+    }
+
+    # The fleet-wide safety net: most profiles remove the licence in a step that runs BEFORE Exchange
+    # converts. Rather than trust 134 clients' orderings, refuse while a configured conversion is still
+    # pending — a mis-ordered profile becomes SAFE (licence kept + warning) instead of destructive.
+    It 'KEEPS the license while a configured mailbox conversion has not run yet' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailboxConvertPending = $true }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match "WARN license KEPT .* hasn't run yet"
+    }
+
+    It 'removes the license once the mailbox IS shared' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailboxConverted = $true }
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 | Out-Null
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
+
+    # A cloud-only client with no Exchange step never gets the key at all — it must behave as before.
+    It 'removes the license when there is no Exchange step to report a conversion' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{} }
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 | Out-Null
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
+
+    # --- defer: "not here — a later step removes it" -----------------------------------------------
+    # MarketScience's profile says exactly this, and it was IGNORED: {defer=$true} is not $null, so the
+    # old `-ne $null` check stripped the license in the very step the profile forbade.
+    It 'honours removeLicense.defer — the license is NOT removed in this step' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ defer = $true; removedBy = 'entra' } }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 -SystemKey 'm365'
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'removed in the entra step'
+    }
+
+    It 'removedBy names the step that DOES remove it — the entra lane proceeds' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ removedBy = 'entra' }; mailboxConverted = $true }
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 -SystemKey 'entra' | Out-Null
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
 }
 
 Describe 'Confirm-CtgM365' {

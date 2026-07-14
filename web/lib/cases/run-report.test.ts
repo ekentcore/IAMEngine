@@ -171,3 +171,27 @@ test("a clean step carries no candidate picker", () => {
   const r = buildRunReport(input());
   assert.equal(r.steps[0].offboardCandidates, null);
 });
+
+// A manual step has no runner result, so it used to render as a bare name with an empty body. Its
+// instruction lives in its config — and for the clients whose runbook FORBIDS removing the licence,
+// that note is the only thing distinguishing "deliberately left alone" from "the engine silently
+// failed to do it", which is exactly the bug this work exists to kill.
+test("a manual step surfaces its config note on the run report", () => {
+  const r = buildRunReport(input({
+    action: "offboard",
+    jobs: [{
+      systemKey: "license-review", sequence: 0, mode: "manual", status: "manual",
+      request: { config: { note: "License NOT removed — this is intentional. Runbook: \"Do NOT remove the license.\"" } },
+      result: null, validation: null, error: null, startedAt: null, finishedAt: null,
+    }],
+    names: new Map([["license-review", "License review"]]),
+  }));
+  assert.equal(r.steps[0].verdict, "manual");
+  assert.match(r.steps[0].actions[0], /intentional/);
+  assert.match(r.steps[0].actions[0], /Do NOT remove the license/);
+});
+
+test("an api step is unaffected by the manual-note path", () => {
+  const r = buildRunReport(input());
+  assert.deepEqual(r.steps[0].actions, ["created user jane.doe@acme.com"]);
+});

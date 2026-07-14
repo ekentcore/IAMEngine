@@ -849,7 +849,10 @@ $DISPATCH = @{
             }
             $r
         }
-        Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config }
+        # -MailboxSizeGB is what makes the executor's "keep the license on a big mailbox" rule work. It
+        # was never passed before, so it always defaulted to 0 and the rule could never fire. The app
+        # hands the size down from the Exchange step's result at claim time (config.mailboxSizeGB).
+        Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB ([double]((Get-CtgProp $job.config 'mailboxSizeGB') ?? 0)) }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
     'active-directory' = @{

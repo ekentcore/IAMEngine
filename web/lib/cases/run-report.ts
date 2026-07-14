@@ -138,6 +138,20 @@ function actionsOf(result: unknown): string[] {
   return Array.isArray(a) ? a.map(String) : [];
 }
 
+// A MANUAL step has no runner result, so it would otherwise render as an empty checklist line with
+// nothing but its name. Its instruction lives in the step's own config (`note`, or `notes[]`) — surface
+// that as the step's body, so a checklist item can actually say what the human is meant to do (or, as
+// with the clients whose runbook forbids removing the licence, why the engine deliberately did NOT).
+function manualNotesOf(request: unknown): string[] {
+  const cfg = ((request ?? {}) as { config?: unknown }).config;
+  if (!cfg || typeof cfg !== "object") return [];
+  const c = cfg as Record<string, unknown>;
+  const out: string[] = [];
+  if (typeof c.note === "string" && c.note.trim()) out.push(c.note.trim());
+  if (Array.isArray(c.notes)) out.push(...c.notes.filter((n): n is string => typeof n === "string" && n.trim().length > 0));
+  return out;
+}
+
 function normalizeValidation(v: unknown): RunReportStep["validation"] {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
@@ -344,7 +358,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       systemName: input.names.get(j.systemKey) ?? j.systemKey,
       status: j.status,
       verdict,
-      actions: actionsOf(j.result),
+      // A manual step has no result to report — show its instruction note instead of an empty line.
+      actions: j.mode === "manual" ? [...manualNotesOf(j.request), ...actionsOf(j.result)] : actionsOf(j.result),
       validation,
       error: j.error,
       finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,

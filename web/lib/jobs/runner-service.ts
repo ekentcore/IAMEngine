@@ -723,6 +723,47 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // MAILBOX HAND-OFF (offboard): the m365/entra executor is the one that removes the license, and it
+      // must NOT strip the license off a mailbox that was never converted to shared — Exchange purges an
+      // unlicensed, unconverted mailbox after its 30-day grace, which loses the leaver's mail outright.
+      // The Exchange step already computes the size and decides whether to convert; it just had nobody to
+      // tell. Hand both facts to the downstream license step:
+      //   mailboxSizeGB   — drives the executor's existing "keep the license over the threshold" rule,
+      //                     which until now was DEAD: -MailboxSizeGB was never passed, so it was always 0.
+      //   mailboxConverted— true only when the mailbox is actually shared now. The license removal is
+      //                     gated on it, so a skipped conversion keeps the license instead of orphaning it.
+      // Absent (Exchange hasn't run / isn't in the plan) => both undefined, and the executor keeps its
+      // old behaviour, so a cloud-only client with no Exchange step is unaffected.
+      const licenseCaseIds = [
+        ...new Set(claimed.filter((j) => (j.systemKey === "m365" || j.systemKey === "entra") && j.case.action === "offboard").map((j) => j.caseRequestId)),
+      ];
+      const mailboxByCase = new Map<string, { sizeGB: number | null; converted: boolean; convertPending: boolean }>();
+      if (licenseCaseIds.length > 0) {
+        // EVERY exchange job on these cases, not just the finished ones — because the dangerous case is
+        // the one that HASN'T run. Most clients' profiles put the licence removal in a step that runs
+        // BEFORE exchange converts the mailbox (regal, six-one, yuma…). Ordering is per-client data and
+        // will drift again; this guard does not depend on getting it right. If a conversion is CONFIGURED
+        // and hasn't succeeded yet, the licence stays put and the step says so.
+        const exJobs = await db.job.findMany({
+          where: { caseRequestId: { in: licenseCaseIds }, systemKey: "exchange" },
+          select: { caseRequestId: true, result: true, status: true, request: true },
+        });
+        for (const e of exJobs) {
+          const res = (e.result ?? {}) as Record<string, unknown>;
+          const raw = res.MailboxSizeGB ?? res.mailboxSizeGB;
+          const sizeGB = typeof raw === "number" ? raw : null;
+          // The executor reports the conversion in its action lines ("converted mailbox to shared…"), and
+          // says so explicitly when it declines ("over threshold … kept as a user mailbox").
+          const actions = (res.Actions ?? res.actions ?? []) as unknown[];
+          const lines = actions.filter((a): a is string => typeof a === "string");
+          const converted = lines.some((a) => /converted mailbox to shared|already a shared mailbox/i.test(a));
+          // Does this client even ask for a conversion? If not, there is nothing to wait for.
+          const exCfg = ((req(e).config ?? {}) as { convertToShared?: unknown }).convertToShared;
+          const convertPending = exCfg != null && e.status !== "succeeded";
+          mailboxByCase.set(e.caseRequestId, { sizeGB, converted, convertPending });
+        }
+      }
+
       // Generated INITIAL password (revealed once): for a "generate"-mode m365/entra onboard, generate
       // the password app-side so we can show it to the operator, store it on the case (revealed once,
       // then wiped), and inject it as the runner's initial password. Only when the runner WOULD generate
@@ -753,6 +794,18 @@ export function makeRunnerService(db: PrismaClient) {
         // re-claims (lease reclaim) until the reveal/failure wipes it; never persisted into request.
         if (PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey) && j.oneTimePassword) {
           config = { ...((config as Record<string, unknown> | null) ?? {}), newPassword: j.oneTimePassword };
+        }
+        // Mailbox facts from the Exchange step, so the license removal can honour "convert first".
+        const mbx = (j.systemKey === "m365" || j.systemKey === "entra") && j.case.action === "offboard"
+          ? mailboxByCase.get(j.caseRequestId)
+          : undefined;
+        if (mbx) {
+          config = {
+            ...((config as Record<string, unknown> | null) ?? {}),
+            ...(mbx.sizeGB !== null ? { mailboxSizeGB: mbx.sizeGB } : {}),
+            mailboxConverted: mbx.converted,
+            mailboxConvertPending: mbx.convertPending,
+          };
         }
         const casePayload = (j.case.payload ?? {}) as Record<string, unknown>;
         // Only fill a manager the intake didn't already carry — an operator-supplied address wins.
