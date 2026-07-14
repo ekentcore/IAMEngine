@@ -96,3 +96,43 @@ Describe 'self-heal Graph install pinning (script invariants)' {
         ($guard -lt $import) | Should -BeTrue -Because 'the repair must happen before Import-Module can die on the skew'
     }
 }
+
+# The gap that left every offboard warning "the term 'Get-MgUserAuthenticationMethod' is not
+# recognized" and the leaver's second factors still registered: the skew guard ALIGNS the submodules
+# that are present but never ADDS one that is absent, and the agent had been enrolled before
+# Identity.SignIns joined the installer's list. Nothing ever installed it.
+Describe 'Install-CtgMissingGraphModules' {
+    BeforeAll {
+        $m = [regex]::Match($script:Runner, '(?ms)^function Install-CtgMissingGraphModules \{.*?^\}')
+        $m.Success | Should -BeTrue -Because 'Start-IamRunner.ps1 must declare Install-CtgMissingGraphModules'
+        . ([scriptblock]::Create($m.Value))
+        # The required-module list is script-scoped in the runner; re-declare it the same way.
+        $req = [regex]::Match($script:Runner, '(?ms)^\$script:CtgRequiredGraphModules = @\(.*?^\)')
+        $req.Success | Should -BeTrue
+        . ([scriptblock]::Create($req.Value))
+    }
+
+    It 'installs a REQUIRED submodule that is absent, pinned to the Authentication version' {
+        Mock Get-Module -MockWith {
+            # Everything present EXCEPT Identity.SignIns — the real-world state of the failing agent.
+            if ($Name -eq 'Microsoft.Graph.Identity.SignIns') { return $null }
+            [pscustomobject]@{ Name = $Name; Version = [version]'2.38.0' }
+        }
+        Mock Install-Module -MockWith { }
+        Install-CtgMissingGraphModules
+        Should -Invoke Install-Module -Times 1 -Exactly -ParameterFilter { $Name -eq 'Microsoft.Graph.Identity.SignIns' -and $RequiredVersion -eq '2.38.0' }
+    }
+
+    It 'installs nothing when every required submodule is already present' {
+        Mock Get-Module -MockWith { [pscustomobject]@{ Name = $Name; Version = [version]'2.38.0' } }
+        Mock Install-Module -MockWith { }
+        Install-CtgMissingGraphModules
+        Should -Invoke Install-Module -Times 0 -Exactly
+    }
+
+    It 'requires Identity.SignIns — the module that provides the MFA cmdlets' {
+        # A regression guard: dropping this name silently reintroduces the "second factors still
+        # registered" warning on every offboard.
+        $script:CtgRequiredGraphModules | Should -Contain 'Microsoft.Graph.Identity.SignIns'
+    }
+}

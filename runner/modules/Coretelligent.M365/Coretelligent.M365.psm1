@@ -1254,6 +1254,14 @@ function Invoke-CtgM365Offboarding {
                 if ($msg -match 'Authorization_RequestDenied|Forbidden|403|Insufficient privileges') {
                     $actions.Add("WARN MFA methods NOT removed — the user's second factors are STILL REGISTERED. Either the app registration lacks UserAuthenticationMethod.ReadWrite.All (grant it in Entra -> API permissions; see /help/cloud-auth), or it was granted after this runner last connected and the cached Graph token predates the consent — in that case restart the runner (or re-run this step after it reconnects) and it will succeed.")
                 }
+                # The auth-method cmdlets live in Microsoft.Graph.Identity.SignIns. If that module isn't on
+                # the host, PowerShell reports a bare "the term X is not recognized", which reads like a
+                # typo rather than a missing dependency — say what it actually is, and what fixes it. The
+                # runner installs it at startup (Install-CtgMissingGraphModules), so a restart + re-run of
+                # this step removes the factors for real.
+                elseif ($msg -match "is not recognized as a name of a cmdlet|CommandNotFound") {
+                    $actions.Add("WARN MFA methods NOT removed — second factors are STILL REGISTERED. The Microsoft.Graph.Identity.SignIns module is missing on this agent (it provides Get-MgUserAuthenticationMethod). The runner installs it on startup — let it self-update/restart, then re-run this step and the factors will be removed.")
+                }
                 else { $actions.Add("WARN could not read MFA methods — second factors may still be registered: $msg") }
             }
         }

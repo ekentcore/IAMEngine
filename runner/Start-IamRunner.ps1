@@ -71,6 +71,56 @@ function Initialize-CtgGallery {
 # CurrentUser profile vs AllUsers). PowerShell resolves the HIGHEST version per submodule across
 # PSModulePath, so repair = install the set's max version for every lagging submodule. No deletes:
 # old copies may be file-locked by another process, and a higher version simply wins resolution.
+# The Graph submodules the executors actually call into. Keep in lockstep with the installer's list
+# (web/app/api/runner/install.ps1) — an agent enrolled BEFORE a name was added to that list never got
+# it, and nothing installed it afterwards: Repair-CtgGraphVersionSkew below only ALIGNS submodules that
+# are already present, it never adds a missing one. That gap is why offboards kept warning "the term
+# 'Get-MgUserAuthenticationMethod' is not recognized" (Identity.SignIns absent) and left the leaver's
+# second factors registered — on every run, forever, because the module's own catch downgraded the
+# CommandNotFound to a warning and so the runner's per-job self-heal never saw it.
+$script:CtgRequiredGraphModules = @(
+    'Microsoft.Graph.Authentication'                  # Connect-MgGraph — the anchor version everything pins to
+    'Microsoft.Graph.Users'                           # Get-MgUser / Update-MgUser
+    'Microsoft.Graph.Users.Actions'                   # Revoke-MgUserSignInSession
+    'Microsoft.Graph.Groups'                          # group membership
+    'Microsoft.Graph.Identity.SignIns'                # MFA methods (offboard) + Temporary Access Pass (onboard)
+    'Microsoft.Graph.Identity.DirectoryManagement'    # directory roles / org
+)
+
+# Install any REQUIRED Graph submodule that is missing, pinned to the version of the Authentication
+# module already on the host — mixing versions across submodules is what produces "Assembly with the
+# same name is already loaded", so a fresh install must join the set at its version, not the gallery's
+# latest. Best-effort per module: a host with no gallery access keeps working (the executors that need
+# the absent module still degrade to a warning), it just doesn't self-repair.
+function Install-CtgMissingGraphModules {
+    $missing = @($script:CtgRequiredGraphModules | Where-Object {
+        -not (Get-Module -ListAvailable -Name $_ -ErrorAction SilentlyContinue)
+    })
+    if (-not $missing) { return }
+
+    $auth = Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1
+    $pin = if ($auth) { $auth.Version.ToString() } else { $null }
+    Write-Warning ("Microsoft.Graph submodule(s) missing on this host: {0} — installing{1}" -f ($missing -join ', '), $(if ($pin) { " (pinned to $pin)" } else { '' }))
+    Initialize-CtgGallery
+    foreach ($m in $missing) {
+        try {
+            if ($pin) { Install-Module $m -RequiredVersion $pin -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+            else { Install-Module $m -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+            Write-Host "  installed $m$(if ($pin) { " $pin" })" -ForegroundColor Yellow
+        }
+        catch {
+            # The pinned version may not exist for this submodule — take the latest and let the skew
+            # repair below pull the whole set back into line.
+            try {
+                Install-Module $m -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop
+                Write-Host "  installed $m (latest — no $pin available)" -ForegroundColor Yellow
+            }
+            catch { Write-Warning "  could not install ${m}: $($_.Exception.Message)" }
+        }
+    }
+}
+
 function Repair-CtgGraphVersionSkew {
     $avail = Get-Module -ListAvailable -Name 'Microsoft.Graph.*' -ErrorAction SilentlyContinue
     if (-not $avail) { return }
@@ -90,6 +140,9 @@ function Repair-CtgGraphVersionSkew {
         }
     }
 }
+# Add what's missing FIRST, then align the whole set — a freshly installed submodule joins at the
+# pinned version, and anything that couldn't be pinned gets pulled into line by the skew repair.
+Install-CtgMissingGraphModules
 Repair-CtgGraphVersionSkew
 
 Import-Module "$PSScriptRoot/modules/Coretelligent.M365/Coretelligent.M365.psd1" -Force
