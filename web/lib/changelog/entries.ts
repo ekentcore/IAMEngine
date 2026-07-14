@@ -1,19 +1,62 @@
 // The build change log shown on /changelog (global admins and above) and shareable to the
 // configured chat channels. APPEND A NEW ENTRY (at the TOP) whenever a feature/fix ships —
 // the page renders this file directly, so the log updates with the deploy that ships the work.
-// Bullets are sent to chat verbatim as plain text: keep them one line each, no markdown.
+// Give every new entry a `time` (see below): several things ship in a day, and the time is what
+// tells them apart. Bullets are sent to chat verbatim as plain text: one line each, no markdown.
 export type ChangelogEntry = {
   id: string; // stable slug — the send API references entries by id
   date: string; // ISO date (YYYY-MM-DD) the work shipped; append "~" nowhere — use `approx` instead
+  // Local wall-clock ship time, HH:MM on a 15-minute boundary (:00/:15/:30/:45) — round DOWN to the
+  // quarter it landed in, so the log never claims a time that hasn't happened yet. Required on
+  // anything shipped from 2026-07-13 on; the older entries below that line predate the field.
+  time?: string;
   approx?: boolean; // true when the date is a best-effort reconstruction
   title: string;
   items: string[];
 };
 
+const QUARTER_HOUR = /^([01]\d|2[0-3]):(00|15|30|45)$/;
+
+export function isQuarterHour(time: string): boolean {
+  return QUARTER_HOUR.test(time);
+}
+
+// "22:45" -> "10:45 pm". A wall-clock string, never parsed as an instant, so it can't shift by a
+// time zone between the server that renders it and the browser that reads it. A malformed time is
+// echoed back verbatim rather than formatted: the tests reject one, but this string also goes out
+// to the customer chat channels, and a visible "16:3o" beats a confident "4:NaN pm".
+export function formatChangelogTime(time: string): string {
+  if (!isQuarterHour(time)) return time;
+  const [h, m] = time.split(":");
+  const hour = Number(h);
+  const twelve = hour % 12 === 0 ? 12 : hour % 12;
+  return `${twelve}:${m} ${hour < 12 ? "am" : "pm"}`;
+}
+
+// The one place "when did this ship" is rendered — the page and the chat message both call this, so
+// the two can't drift. Plain ASCII: the chat channels take it verbatim.
+export function formatChangelogWhen(entry: ChangelogEntry): string {
+  const when = entry.time ? `${entry.date} ${formatChangelogTime(entry.time)}` : entry.date;
+  return entry.approx ? `${when} (approx.)` : when;
+}
+
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "changelog-times",
+    date: "2026-07-13",
+    time: "23:00",
+    title: "Change log: the time it shipped, not just the day",
+    items: [
+      "Every entry now carries the time of day it shipped, to the quarter hour - on a day with eight ships, the date alone told you nothing about the order",
+      "The entries already in the log were backfilled from the commit that introduced each one, so the log now reads in true order; entries from before the log existed stay date-only rather than being given invented times",
+      "The time goes out with the entry when you send it to chat, on the same 'Shipped:' line",
+      "Two entries were dated a day late (2026-07-14, a UTC slip) and are now dated 2026-07-13, when they actually shipped",
+    ],
+  },
+  {
     id: "llm-provider-azure-form",
-    date: "2026-07-14",
+    date: "2026-07-13",
+    time: "22:45",
     title: "Azure AI providers are set up with Azure's own fields, and switching model no longer re-asks for the key",
     items: [
       "Picking the Azure AI preset now asks for what Azure actually gives you - resource endpoint, deployment, API version, key - instead of making you hand-assemble a base URL with the deployment buried in the path. That hand-assembly is how the previous provider ended up 404ing",
@@ -25,7 +68,8 @@ export const CHANGELOG: ChangelogEntry[] = [
   },
   {
     id: "llm-provider-api-version-and-ask",
-    date: "2026-07-14",
+    date: "2026-07-13",
+    time: "22:15",
     title: "LLM providers: an API version field for Azure, ask-it-a-question testing, and a reveal eye on the key",
     items: [
       "Settings - LLM providers now has an API version field. Azure's classic /openai/deployments/... endpoint REQUIRES ?api-version=, and there was no way to set one, so those endpoints could not be registered at all - the only Azure preset worked by pointing at the newer /openai/v1 path that defaults the version for you",
@@ -50,6 +94,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "offboard-revoke-mfa-and-sessions",
     date: "2026-07-13",
+    time: "21:45",
     title: "Offboarding security: strip the leaver's MFA methods, sign them out of Google (runner 1.49.0)",
     items: [
       "M365 offboard now removes the leaver's registered second factors (phone, Authenticator, FIDO2, software OATH, Windows Hello) - previously they stayed on the account and went live again the moment anyone re-enabled it, and stayed usable for self-service password reset",
@@ -61,6 +106,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "framework-systems-are-checklist-steps",
     date: "2026-07-13",
+    time: "19:45",
     title: "Case resolution + ServiceNow are checklist steps again (not fake API steps)",
     items: [
       "Case resolution was wired as an automated step on 129 clients, but no executor exists for it - every case dispatched a job that came straight back as 'skipped - no executor', and operators were hand-marking it done",
@@ -70,32 +116,9 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
-    id: "import-clients-by-coreid",
-    date: "2026-07-13",
-    title: "Add client: import by CORE id, built out from the KBs automatically",
-    items: [
-      "Paste one CORE id or a list of them into Add client - each is looked up in ServiceNow, created, and built out from its onboarding and offboarding KB articles (runbook sections plus the systems they imply) without anyone hunting for KB numbers",
-      "It also fills in clients you already have: a client the roster sync created as a bare row (no runbook, no systems, cases that plan no steps) gets built out, while any runbook that already exists is left strictly alone - a re-import never overwrites what you have edited",
-      "Results stream in one client at a time: a single import drops you on that client's page, a batch leaves a summary table showing what was built, what already existed, and what could not be found",
-      "A KB that does not look like a real runbook guide (a request form, say) is NOT imported - it is named on the row for you to review, rather than quietly becoming client config that a live case would run against",
-    ],
-  },
-  {
-    id: "engine-opt-out-hardening",
-    date: "2026-07-13",
-    title: "Hardening: 'do not use engine' + parent inheritance (PR #41)",
-    items: [
-      "A 'do not use engine' client's trashed cases now STAY trashed - previously every intake sweep un-trashed them because the check ran after the restore",
-      "The New case form now refuses an opted-out client too; the flag is enforced once at the case-creation layer, so no path can bypass it",
-      "Breaking a child's parent link with 'Keep a copy' no longer merges the parent's systems onto a child that already has its own",
-      "Breaking the link now always records, even when there's nothing to copy (the badge could get stuck on 'inherits')",
-      "A child that brokers its parent's credentials no longer shows a false 'not set up' badge - readiness now mirrors what dispatch actually resolves",
-      "The client page no longer claims 'inherits the parent's runbook' after the link is broken; clearing 'no engine' from the clients list now asks first",
-    ],
-  },
-  {
     id: "exchange-manager-name",
     date: "2026-07-13",
+    time: "16:45",
     title: "Offboard: Exchange now uses the manager the intake form names (runner 1.48.0)",
     items: [
       "The offboard form carries the manager as a NAME (\"managerName\"), which the Exchange step never read - it only understood email addresses, so it skipped the Full Access delegate even when the case named the manager",
@@ -106,6 +129,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "offboard-manager-notneeded-runbook",
     date: "2026-07-13",
+    time: "16:30",
     title: "Offboard: manager hand-off to Exchange, not-needed steps, full runbook (runner 1.47.0)",
     items: [
       "The Active Directory offboard step now names the manager it clears in the run report, instead of just saying \"cleared manager\"",
@@ -117,6 +141,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "coretelligent-post-reset-restore",
     date: "2026-07-13",
+    time: "16:30",
     title: "Coretelligent: post-reset restore (TAP, offboard wiring, Delinea creds)",
     items: [
       "The TAP (Temporary Access Pass) onboarding step and the full 12-system offboard wiring lost in the July 13 database reset are restored, now carried by the profile so a reseed keeps them",
@@ -126,8 +151,35 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    id: "import-clients-by-coreid",
+    date: "2026-07-13",
+    time: "16:30",
+    title: "Add client: import by CORE id, built out from the KBs automatically",
+    items: [
+      "Paste one CORE id or a list of them into Add client - each is looked up in ServiceNow, created, and built out from its onboarding and offboarding KB articles (runbook sections plus the systems they imply) without anyone hunting for KB numbers",
+      "It also fills in clients you already have: a client the roster sync created as a bare row (no runbook, no systems, cases that plan no steps) gets built out, while any runbook that already exists is left strictly alone - a re-import never overwrites what you have edited",
+      "Results stream in one client at a time: a single import drops you on that client's page, a batch leaves a summary table showing what was built, what already existed, and what could not be found",
+      "A KB that does not look like a real runbook guide (a request form, say) is NOT imported - it is named on the row for you to review, rather than quietly becoming client config that a live case would run against",
+    ],
+  },
+  {
+    id: "engine-opt-out-hardening",
+    date: "2026-07-13",
+    time: "16:30",
+    title: "Hardening: 'do not use engine' + parent inheritance (PR #41)",
+    items: [
+      "A 'do not use engine' client's trashed cases now STAY trashed - previously every intake sweep un-trashed them because the check ran after the restore",
+      "The New case form now refuses an opted-out client too; the flag is enforced once at the case-creation layer, so no path can bypass it",
+      "Breaking a child's parent link with 'Keep a copy' no longer merges the parent's systems onto a child that already has its own",
+      "Breaking the link now always records, even when there's nothing to copy (the badge could get stuck on 'inherits')",
+      "A child that brokers its parent's credentials no longer shows a false 'not set up' badge - readiness now mirrors what dispatch actually resolves",
+      "The client page no longer claims 'inherits the parent's runbook' after the link is broken; clearing 'no engine' from the clients list now asks first",
+    ],
+  },
+  {
     id: "engine-opt-out-parent-inheritance",
     date: "2026-07-13",
+    time: "16:00",
     title: "Per-client 'do not use engine' + breakable parent inheritance",
     items: [
       "New 'do not use engine' toggle on a client: the intake sweep and manual import skip its ServiceNow cases (reported as skipped, not failed) - cases already imported are kept",
@@ -138,6 +190,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "spanning-otp-broker",
     date: "2026-07-13",
+    time: "13:00",
     title: "Spanning force-sync: Delinea-minted MFA codes (PR #24, runner 1.45.0)",
     items: [
       "The Spanning sync login now gets its MFA code minted by Delinea at the exact moment the prompt appears - no authenticator seed is ever stored or handled outside the vault",
@@ -148,6 +201,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "runner-graph-skew-guard",
     date: "2026-07-13",
+    time: "13:00",
     title: "Runner: Microsoft.Graph version-skew self-repair (PR #30, runner 1.44.0)",
     items: [
       "Runners that died at startup with 'Assembly with same name is already loaded' (mixed Microsoft.Graph module versions) now realign themselves automatically before loading",
@@ -158,6 +212,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "kb-fetch-pipeline",
     date: "2026-07-13",
+    time: "13:00",
     title: "KB fetch: faithful steps + systems wired on save (PR #29)",
     items: [
       "Group and DL addresses in a KB now survive the AI parse (no more [user]@domain placeholders in runbook steps)",
@@ -168,7 +223,8 @@ export const CHANGELOG: ChangelogEntry[] = [
   },
   {
     id: "changelog-page",
-    date: "2026-07-13",
+    date: "2026-07-12",
+    time: "23:30",
     title: "Change log page + send to chat",
     items: [
       "New /changelog page (global admins and above): every shipped feature, newest first",

@@ -10,7 +10,7 @@ import { db } from "@/lib/db";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
 import { sendAnnouncement, type AnnouncementAudience } from "@/lib/notifications/sender";
-import { CHANGELOG } from "@/lib/changelog/entries";
+import { CHANGELOG, formatChangelogWhen } from "@/lib/changelog/entries";
 
 const AUDIENCES: AnnouncementAudience[] = ["all", "restricted", "both"];
 const COMMENT_MAX = 2000;
@@ -37,7 +37,7 @@ export async function POST(req: Request) {
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
   const detail = [
     ...(comment ? [comment, ""] : []),
-    `Shipped: ${entry.date}${entry.approx ? " (approx.)" : ""}`,
+    `Shipped: ${formatChangelogWhen(entry)}`,
     ...entry.items.map((it) => `• ${it}`),
   ].join("\n");
   const results = await sendAnnouncement(settings, audience, {

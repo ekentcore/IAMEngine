@@ -5,7 +5,7 @@
 // per-channel delivery results inline. The server composes the actual message from the entry id —
 // the client never supplies the content.
 import { useState } from "react";
-import type { ChangelogEntry } from "@/lib/changelog/entries";
+import { formatChangelogWhen, type ChangelogEntry } from "@/lib/changelog/entries";
 
 type Audience = "all" | "restricted" | "both";
 type ChannelResult = { channel: string; ok: boolean; error?: string };
@@ -91,7 +91,7 @@ export function ChangelogView({ entries }: { entries: ChangelogEntry[] }) {
           <div className="row-between" style={{ alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
             <b>{e.title}</b>
             <span style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-              <span className="note">{e.date}{e.approx ? " (approx.)" : ""}</span>
+              <span className="note">{formatChangelogWhen(e)}</span>
               <button style={{ fontSize: 12 }} onClick={() => setOpenId(openId === e.id ? null : e.id)}>
                 {openId === e.id ? "Cancel" : "Send to chat"}
               </button>
