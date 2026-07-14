@@ -96,7 +96,39 @@ export function autoOffboardScheduleAt(payload: Record<string, unknown>, now: Da
 // leaving must never run unattended: the destructive steps would fire against a blank or ambiguous
 // identity with nobody watching. (`needs_info` only gates onboards, so this is the offboard's own
 // version of that check — see planning-service.)
+// Who a schedule belongs to. This is a SECURITY BOUNDARY, not a label: a schedule attributed to the
+// engine may be recomputed from a refreshed ServiceNow intake, and one attributed to a human may NOT
+// (see repository.refreshCaseIntake). Keep it a constant so the two sides can't drift on a typo.
+export const AUTO_SCHEDULE_ACTOR = "system:intake";
+
+// May a ServiceNow rescan RECOMPUTE this case's scheduled time? Only if the engine set it.
+//
+// `pausedReason: "scheduled"` is written by BOTH the engine's auto-schedule and the operator's own
+// schedule button, so it cannot tell them apart on its own. `scheduledBy` is the provenance: the
+// engine's schedules are attributed to AUTO_SCHEDULE_ACTOR, a human's to their email.
+//
+// Why it matters: an operator who deliberately holds a leaver's access open for a handover, and whose
+// choice is then silently snapped back to the ServiceNow date by a routine rescan, gets an unattended
+// teardown days early — sessions revoked, MFA stripped, Slack deactivated — against someone who is
+// still employed. A human's decision outranks the ticket; the refreshed date is theirs to accept.
+// (null = legacy rows scheduled before provenance was recorded; treat as engine-owned.)
+export function engineOwnsSchedule(pausedReason: string | null, scheduledBy: string | null): boolean {
+  if (pausedReason !== "scheduled") return false;
+  return scheduledBy === AUTO_SCHEDULE_ACTOR || scheduledBy === null;
+}
+
 export function offboardTargetResolved(payload: Record<string, unknown>): boolean {
+  // "Not listed" means the requester TYPED a first/last name instead of picking a real ServiceNow
+  // contact — so `userToOffboard` is a non-empty *unverified string*, and a plain is-it-blank check
+  // waves it straight through. That string is not an identity: the M365, Zoom and xMatters offboard
+  // lanes resolve a leaver by DISPLAY NAME when there's no UPN (`displayName eq '…'`), so a typo, a
+  // half-remembered name, or a namesake resolves to a REAL, CURRENT employee — and this case would
+  // then auto-release on the u_end_date and disable them with nobody watching.
+  //
+  // A free-typed name is exactly the input a human has to confirm. It gets the ordinary review hold;
+  // it just never auto-schedules. (Before the auto-schedule existed, EVERY offboard waited for a
+  // human, so this preserves the review step precisely where it still matters.)
+  if (payload.notListedUser === true) return false;
   const named = (v: unknown) => typeof v === "string" && v.trim() !== "";
   return named(payload.userToOffboard) || named(payload.email) || named(payload.userPrincipalName);
 }

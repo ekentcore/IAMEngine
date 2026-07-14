@@ -93,10 +93,21 @@ function Find-CtgSlackUser {
         able to tell "no such person" from "a returning leaver whose account is switched off", which
         are opposite actions.
     #>
-    param([Parameter(Mandatory)][string]$Email)
+    # AllowEmptyString so an empty UPN reaches the guard below and gets the ACTIONABLE message ("fix the
+    # address on the case") instead of PowerShell's opaque "cannot bind argument ... empty string",
+    # which tells an operator nothing about where the bad data actually came from.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Email)
 
-    $esc = $Email -replace '"', '\"'
-    $resp = Invoke-CtgSlackScim -Method GET -Path '/Users' -Query @{ filter = "email eq ""$esc"""; count = 1 }
+    # Validate the SHAPE before it becomes part of a filter expression. The address originates in a
+    # ServiceNow form field, so it is not ours to trust: escaping alone is the wrong last line of
+    # defence (a trailing backslash would escape the closing quote and leave the filter unterminated),
+    # and an EMPTY value is worse than a malformed one — `email eq ""` matches nobody, so onboarding
+    # would sail past the "already exists?" check and create a Slack account with a blank username.
+    # An address that cannot be an address is a bad intake record, not something to go querying with.
+    if ($Email -notmatch '^[^@\s"\\]+@[^@\s"\\]+\.[^@\s"\\]+$') {
+        throw "'$Email' is not a usable email address — Slack members are matched by email. Fix the address on the case (this comes from the ServiceNow intake)."
+    }
+    $resp = Invoke-CtgSlackScim -Method GET -Path '/Users' -Query @{ filter = "email eq ""$Email"""; count = 1 }
     $resources = Get-CtgProp $resp 'Resources'
     if ($null -eq $resources) { return $null }
     $first = @($resources)[0]

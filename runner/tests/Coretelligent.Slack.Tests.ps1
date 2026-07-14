@@ -166,3 +166,32 @@ Describe 'Invoke-CtgSlackScim (the HTTP seam itself)' {
         { Invoke-CtgSlackScim -Method GET -Path '/Users' } | Should -Throw -ExpectedMessage '*Connect-CtgSlack*'
     }
 }
+
+# The email reaches us from a ServiceNow FORM FIELD and is then interpolated into a SCIM filter
+# expression. Validate its shape rather than trusting escaping: a trailing backslash would escape the
+# closing quote, and an EMPTY value is the dangerous one — `email eq ""` matches nobody, so onboarding
+# would sail past its "does this person already exist?" check and create an account with a blank name.
+Describe 'Find-CtgSlackUser — untrusted intake email' {
+    BeforeEach {
+        Mock Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -MockWith { [pscustomobject]@{ Resources = @() } }
+    }
+
+    It 'refuses a filter-breaking address instead of querying with it' {
+        foreach ($bad in @('a" or userName pr "', 'x\', 'no-at-sign', 'two@@x.com', 'has space@x.com')) {
+            { Find-CtgSlackUser -Email $bad } | Should -Throw -ExpectedMessage '*not a usable email address*'
+        }
+        Should -Invoke Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -Times 0 -Exactly
+    }
+
+    It 'refuses an EMPTY address rather than creating a blank-username account' {
+        { Invoke-CtgSlackOnboarding -User ([pscustomobject]@{ UserPrincipalName = '' }) -Config ([pscustomobject]@{}) } |
+            Should -Throw -ExpectedMessage '*not a usable email address*'
+        Should -Invoke Invoke-CtgSlackScim -ModuleName Coretelligent.Slack -ParameterFilter { $Method -eq 'POST' } -Times 0 -Exactly
+    }
+
+    It 'still accepts ordinary addresses (including plus-addressing and subdomains)' {
+        foreach ($ok in @('a.b@x.com', 'a+tag@sub.x.co.uk')) {
+            { Find-CtgSlackUser -Email $ok } | Should -Not -Throw
+        }
+    }
+}

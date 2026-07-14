@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoOffboardScheduleAt, offboardTargetResolved, AUTO_OFFBOARD_DELAY_MS, MAX_SCHEDULE_AHEAD_MS } from "./schedule";
+import { autoOffboardScheduleAt, offboardTargetResolved, engineOwnsSchedule, AUTO_SCHEDULE_ACTOR, AUTO_OFFBOARD_DELAY_MS, MAX_SCHEDULE_AHEAD_MS } from "./schedule";
 import { normalizeIntake } from "../servicenow/intake-mapper";
 
 // The whole risk in auto-scheduling an offboard is the TIMEZONE: fire an hour early and you cut
@@ -130,4 +130,52 @@ test("offboardTargetResolved gates the schedule on the intake naming who is leav
   assert.equal(offboardTargetResolved({}), false);
   assert.equal(offboardTargetResolved({ userToOffboard: "" }), false);
   assert.equal(offboardTargetResolved({ userToOffboard: "   " }), false);
+});
+
+// SECURITY: "not listed" means the requester TYPED a name instead of picking a real ServiceNow
+// contact. `userToOffboard` is then a non-empty *unverified string*, so a plain is-it-blank check
+// waves it through — and the M365/Zoom/xMatters offboard lanes resolve a leaver by DISPLAY NAME when
+// there's no UPN. A typo or a namesake therefore matches a REAL, CURRENT employee, and the case would
+// auto-release on the u_end_date and disable them unattended. A free-typed name must get a human.
+test("a 'not listed' (free-typed) offboard target never auto-schedules", () => {
+  assert.equal(
+    offboardTargetResolved({ userToOffboard: "Jane Smith", notListedUser: true }),
+    false,
+    "a typed name is not an identity — it must not auto-release a destructive offboard"
+  );
+  // Even with an email present, the not-listed flag means the requester didn't pick a real contact.
+  assert.equal(offboardTargetResolved({ userToOffboard: "Jane Smith", email: "j@x.com", notListedUser: true }), false);
+});
+
+test("an offboard against a real ServiceNow contact still auto-schedules", () => {
+  assert.equal(offboardTargetResolved({ userToOffboard: "Jane Smith", notListedUser: false }), true);
+  assert.equal(offboardTargetResolved({ userToOffboard: "Jane Smith" }), true); // flag absent = a resolved reference
+  assert.equal(offboardTargetResolved({ userPrincipalName: "jane@x.com" }), true);
+});
+
+test("a blank target still never auto-schedules", () => {
+  assert.equal(offboardTargetResolved({}), false);
+  assert.equal(offboardTargetResolved({ userToOffboard: "   " }), false);
+});
+
+// SECURITY: a ServiceNow rescan re-derives the scheduled time from the refreshed ticket. It must only
+// do that for a schedule the ENGINE set. `pausedReason: "scheduled"` is ALSO what the operator's own
+// schedule button writes, so keying on it alone would silently overwrite a human's deliberate choice —
+// e.g. an operator holding a leaver's access open for a handover — and snap the teardown back to the
+// original date. That is an unattended offboard, days early, against someone still employed.
+test("a rescan may recompute the ENGINE's own schedule", () => {
+  assert.equal(engineOwnsSchedule("scheduled", AUTO_SCHEDULE_ACTOR), true);
+  // Legacy rows predate the provenance field; treat as engine-owned.
+  assert.equal(engineOwnsSchedule("scheduled", null), true);
+});
+
+test("a rescan must NOT overwrite a schedule a human chose", () => {
+  assert.equal(engineOwnsSchedule("scheduled", "ops@core.tech"), false);
+  assert.equal(engineOwnsSchedule("scheduled", "someone.else@core.tech"), false);
+});
+
+test("a case that isn't on a scheduled hold is never rescheduled by a rescan", () => {
+  for (const reason of ["review", "needs_info", "creds", "operator", null]) {
+    assert.equal(engineOwnsSchedule(reason, AUTO_SCHEDULE_ACTOR), false, `pausedReason=${reason} must not be rescheduled`);
+  }
 });

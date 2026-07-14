@@ -6,7 +6,7 @@ import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
-import { autoOffboardScheduleAt, offboardTargetResolved } from "./schedule";
+import { autoOffboardScheduleAt, offboardTargetResolved, engineOwnsSchedule, AUTO_SCHEDULE_ACTOR } from "./schedule";
 import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
@@ -279,10 +279,19 @@ export function makeCaseRepository(db: PrismaClient) {
       // to an onboard. Leaving the stale scheduledFor in place would fire the offboard on the
       // ORIGINAL date and tear down an account for someone who is still employed. So recompute it
       // from the refreshed intake, and drop it entirely if the refreshed intake no longer earns one.
-      const c2 = await db.caseRequest.findUnique({ where: { id: caseId }, select: { pausedReason: true } });
-      const stillScheduledHold = c2?.pausedReason === "scheduled";
+      //
+      // ONLY recompute a schedule the ENGINE owns. `pausedReason: "scheduled"` is ALSO what the
+      // operator's own schedule button writes — so keying on it alone cannot tell "the engine derived
+      // this from u_end_date" from "a human deliberately picked a later time", and would silently
+      // overwrite the human's choice (rewriting the provenance to system:intake on the way out). An
+      // operator who holds a leaver's access open for a handover, and whose schedule is then snapped
+      // back to the original date by a routine rescan, gets an unattended teardown a week early — the
+      // exact failure this feature must never cause. `scheduledBy` is that provenance: recompute only
+      // when it is ours.
+      const c2 = await db.caseRequest.findUnique({ where: { id: caseId }, select: { pausedReason: true, scheduledBy: true } });
+      const engineOwnedSchedule = engineOwnsSchedule(c2?.pausedReason ?? null, c2?.scheduledBy ?? null);
       const rescheduled =
-        stillScheduledHold && intake.action === "offboard" && offboardTargetResolved(intake.payload)
+        engineOwnedSchedule && intake.action === "offboard" && offboardTargetResolved(intake.payload)
           ? autoOffboardScheduleAt(intake.payload, new Date())
           : null;
 
@@ -294,8 +303,8 @@ export function makeCaseRepository(db: PrismaClient) {
           payload: intake.payload as Prisma.InputJsonValue,
           subject: intake.subject,
           verifiedAt: null,
-          ...(stillScheduledHold
-            ? { scheduledFor: rescheduled, scheduledBy: rescheduled ? "system:intake" : null }
+          ...(engineOwnedSchedule
+            ? { scheduledFor: rescheduled, scheduledBy: rescheduled ? AUTO_SCHEDULE_ACTOR : null }
             : {}),
         },
       });
@@ -425,7 +434,7 @@ export function makeCaseRepository(db: PrismaClient) {
           scheduledFor: reason === "scheduled" ? scheduledFor : null,
           // scheduledBy is a snapshot of WHO scheduled it; the engine's own schedules are attributed
           // to the intake rather than to an operator (the audit row carries the full provenance).
-          scheduledBy: reason === "scheduled" && scheduledFor ? "system:intake" : null,
+          scheduledBy: reason === "scheduled" && scheduledFor ? AUTO_SCHEDULE_ACTOR : null,
         },
       });
     },
