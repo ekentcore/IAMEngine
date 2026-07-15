@@ -11,7 +11,7 @@ export const metadata = { title: "Run outcomes (v2)" };
 export default async function RunsV2Page({ searchParams }: { searchParams: RunsSearchParams }) {
   const data = await loadRunsPage(searchParams);
   if (!data) return null; // layout already redirects unauthenticated users to /login
-  const { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText, initialFixTasks } = data;
+  const { q, system, verdict, includeClean, includeResolved, summary, systems, rows, fixedRows, emptyText, initialFixTasks } = data;
 
   const open = rows.filter((r) => !r.done).length;
   const linkFor = (sys: string) => `/runs/v2?system=${encodeURIComponent(sys)}`;
@@ -72,7 +72,7 @@ export default async function RunsV2Page({ searchParams }: { searchParams: RunsS
         {(q || system || verdict || includeClean || includeResolved) && <Link href="/runs/v2" className="note">clear</Link>}
       </form>
 
-      <RunLogTable rows={rows} emptyText={emptyText} v2 initialFixTasks={initialFixTasks} />
+      <RunLogTable rows={rows} emptyText={emptyText} v2 initialFixTasks={initialFixTasks} fixedRows={fixedRows} />
     </main>
   );
 }

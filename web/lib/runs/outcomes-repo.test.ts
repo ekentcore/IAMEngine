@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { outcomeFingerprint, groupOutcomes, type OutcomeRow } from "./outcomes-repo";
+import { outcomeFingerprint, groupOutcomes, buildOutcomeWhere, type OutcomeRow } from "./outcomes-repo";
 
 const base = {
   caseRequestId: "case-1",
@@ -65,4 +65,22 @@ test("legacy rows without a fingerprint never collapse together", () => {
   const groups = groupOutcomes(rows);
   assert.equal(groups.length, 2);
   assert.ok(groups.every((g) => g.count === 1));
+});
+
+test("the default filter hides resolved lines (resolvedAt = null)", () => {
+  const where = buildOutcomeWhere({});
+  assert.equal(where.resolvedAt, null);
+  assert.deepEqual(where.verdict, { in: ["warning", "failed"] });
+});
+
+test("includeResolved drops the resolvedAt filter so both open and fixed lines return", () => {
+  const where = buildOutcomeWhere({ includeResolved: true });
+  assert.ok(!("resolvedAt" in where), "resolvedAt must not be constrained when includeResolved");
+});
+
+test("onlyResolved returns just the fixed lines — the always-on source for the v2 Fixed table", () => {
+  const where = buildOutcomeWhere({ onlyResolved: true });
+  assert.deepEqual(where.resolvedAt, { not: null });
+  // still scoped to real problem lines by default, not clean successes
+  assert.deepEqual(where.verdict, { in: ["warning", "failed"] });
 });

@@ -45,6 +45,7 @@ export async function resolveOutcomes(fingerprint: string): Promise<Result> {
     });
     await refreshTerminalCases([fingerprint]);
     revalidatePath("/runs");
+    revalidatePath("/runs/v2");
     return { ok: true, count: r.count };
   } catch (e) {
     return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
@@ -63,6 +64,7 @@ export async function resolveManyOutcomes(fingerprints: string[]): Promise<Resul
     });
     await refreshTerminalCases(fps);
     revalidatePath("/runs");
+    revalidatePath("/runs/v2");
     return { ok: true, count: r.count };
   } catch (e) {
     return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
@@ -79,6 +81,7 @@ export async function reopenOutcomes(fingerprint: string): Promise<Result> {
     });
     await refreshTerminalCases([fingerprint]); // un-accepting must put the failure back on the badge
     revalidatePath("/runs");
+    revalidatePath("/runs/v2");
     return { ok: true, count: r.count };
   } catch (e) {
     return { ok: false, error: e instanceof AuthError ? e.message : "failed" };

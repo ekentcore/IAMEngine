@@ -32,14 +32,18 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
 
   // Scope-gate to the operator's visible clients (the log carries clientId).
   const scope = await currentClientScope(db);
-  const [rawRows, summary, systems] = await Promise.all([
+  const [rawRows, rawFixed, summary, systems] = await Promise.all([
     listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, includeClean, includeResolved, scope }),
+    // The v2 "Fixed lines" section is fed from its OWN always-on resolved query — NOT from `rows`.
+    // Without this, marking a line Fixed sets resolvedAt, the default query then drops it, and the
+    // line vanishes instead of landing in the Fixed table (it only appeared with the "fixed" filter).
+    listOutcomes(db, { q: q || undefined, system: system || undefined, verdict: verdict || undefined, onlyResolved: true, scope, limit: 200 }),
     moduleIssueSummary(db, scope),
     outcomeSystems(db, scope),
   ]);
   // Collapse identical lines (same case + line) into one entry with an occurrence count, so the log
   // isn't a wall of repeats; "Fixed" then resolves every occurrence at once.
-  const rows: RunLogRow[] = groupOutcomes(rawRows).map((r) => ({
+  const toRows = (raw: typeof rawRows): RunLogRow[] => groupOutcomes(raw).map((r) => ({
     id: r.id,
     atLabel: fmtTime(r.at),
     count: r.count,
@@ -65,6 +69,8 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
       ...(r.credFailure ? [`credFailure: ${JSON.stringify(r.credFailure)}`] : []),
     ].filter(Boolean).join("\n"),
   }));
+  const rows = toRows(rawRows);
+  const fixedRows = toRows(rawFixed);
 
   const emptyText = `No ${includeResolved ? "" : "open "}outcomes${verdict || system || q ? " match the filter" : !includeClean ? " — no open errors or warnings 🎉" : " yet"}.`;
 
@@ -91,5 +97,5 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
     }
   }
 
-  return { q, system, verdict, includeClean, includeResolved, summary, systems, rows, emptyText, initialFixTasks };
+  return { q, system, verdict, includeClean, includeResolved, summary, systems, rows, fixedRows, emptyText, initialFixTasks };
 }

@@ -39,17 +39,23 @@ export type OutcomeFilter = {
   q?: string;            // matches case number / client / error / system
   includeClean?: boolean; // include verified / skipped / manual rows too
   includeResolved?: boolean; // include lines already marked "Fixed" (hidden by default)
+  onlyResolved?: boolean; // ONLY lines marked "Fixed" — the always-on feed for the v2 "Fixed lines"
+                          // section, so a just-fixed line shows there regardless of the "fixed" filter
   scope?: ClientScope;   // per-operator client visibility (null = unrestricted) — see lib/auth/client-scope
   limit?: number;
 };
 
-export async function listOutcomes(db: PrismaClient, f: OutcomeFilter): Promise<OutcomeRow[]> {
+// Build the Prisma `where` for the outcome log. Kept as a pure function so the load-bearing
+// resolved/clean filter logic is unit-testable without a DB. The resolved handling is the crux of
+// the Fixed-table feature: by default resolved lines are hidden; onlyResolved returns exactly them.
+export function buildOutcomeWhere(f: OutcomeFilter): Prisma.RunOutcomeWhereInput {
   const where: Prisma.RunOutcomeWhereInput = {};
   where.clientId = clientIdWhere(f.scope ?? null);
   if (f.system) where.systemKey = f.system;
   if (f.verdict) where.verdict = f.verdict;
   else if (!f.includeClean) where.verdict = { in: ["warning", "failed"] };
-  if (!f.includeResolved) where.resolvedAt = null;
+  if (f.onlyResolved) where.resolvedAt = { not: null };
+  else if (!f.includeResolved) where.resolvedAt = null;
   const q = f.q?.trim();
   if (q) {
     where.OR = [
@@ -59,7 +65,11 @@ export async function listOutcomes(db: PrismaClient, f: OutcomeFilter): Promise<
       { systemKey: { contains: q, mode: "insensitive" } },
     ];
   }
-  return db.runOutcome.findMany({ where, orderBy: { at: "desc" }, take: f.limit ?? 500 });
+  return where;
+}
+
+export async function listOutcomes(db: PrismaClient, f: OutcomeFilter): Promise<OutcomeRow[]> {
+  return db.runOutcome.findMany({ where: buildOutcomeWhere(f), orderBy: { at: "desc" }, take: f.limit ?? 500 });
 }
 
 // Collapse the rows into one entry per fingerprint (the same line for the same case), newest first,

@@ -67,7 +67,7 @@ const isFixable = (r: RunLogRow) => !r.done && (r.verdict === "warning" || r.ver
 // come OFF the main table into their own <details> below (mirrors the cases v2 completed-split).
 // Non-v2 rendering is unchanged. initialFixTasks: the latest fix-lane task per fingerprint,
 // server-seeded so proposals survive reloads and auto-filed tasks are visible without a click.
-export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { rows: RunLogRow[]; emptyText: string; v2?: boolean; initialFixTasks?: Record<string, FixTaskInfo> }) {
+export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixedRows }: { rows: RunLogRow[]; emptyText: string; v2?: boolean; initialFixTasks?: Record<string, FixTaskInfo>; fixedRows?: RunLogRow[] }) {
   const router = useRouter();
   const [sel, setSel] = useState<Set<string>>(new Set()); // selected fingerprints
   const [pending, start] = useTransition();
@@ -144,8 +144,11 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
   };
 
   // v2 splits the resolved lines out of the working table; non-v2 keeps them inline (dimmed).
+  // The Fixed section is fed by the loader's dedicated always-on resolved query (fixedRows prop), so a
+  // just-fixed line shows up there without the "fixed" filter. Fall back to filtering `rows` (older
+  // callers / non-v2 that don't pass the prop) to stay backward-compatible.
   const mainRows = v2 ? rows.filter((r) => !r.done) : rows;
-  const fixedRows = v2 ? rows.filter((r) => r.done) : [];
+  const resolvedRows = v2 ? (fixedRows ?? rows.filter((r) => r.done)) : [];
 
   return (
     <>
@@ -264,7 +267,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
       {v2 && (
         <details style={{ marginTop: "1.25rem" }}>
           <summary style={{ cursor: "pointer" }}>
-            <b>Fixed lines</b> <span className="note">({fixedRows.length}) — resolved; off the working list, kept here for reference</span>
+            <b>Fixed lines</b> <span className="note">({resolvedRows.length}) — resolved; off the working list, kept here for reference</span>
           </summary>
           <table style={{ marginTop: "0.5rem", width: "100%", tableLayout: "fixed", fontSize: 13, borderCollapse: "collapse" }}>
             <thead>
@@ -278,7 +281,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
               </tr>
             </thead>
             <tbody>
-              {fixedRows.map((r) => (
+              {resolvedRows.map((r) => (
                 <tr key={r.id} style={{ borderBottom: "1px solid var(--line-2, #f1f5f9)", verticalAlign: "top", opacity: 0.6 }}>
                   <td style={{ padding: "4px 8px", color: "var(--muted, #6b7280)" }}>
                     <span style={{ whiteSpace: "nowrap" }}>{r.atLabel}</span>
@@ -301,8 +304,8 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks }: { 
                   </td>
                 </tr>
               ))}
-              {fixedRows.length === 0 && (
-                <tr><td colSpan={6} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No fixed lines loaded — tick “show fixed” in the filter to include them.</td></tr>
+              {resolvedRows.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: "1rem 8px", color: "var(--muted, #6b7280)" }}>No fixed lines yet — mark an error “✓ Fixed” and it lands here.</td></tr>
               )}
             </tbody>
           </table>
