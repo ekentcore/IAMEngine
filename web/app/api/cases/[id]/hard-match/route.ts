@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { guard } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 
@@ -41,6 +42,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   if (c.status === "completed" || c.status === "failed") {
     await db.caseRequest.update({ where: { id: c.id }, data: { status: "running" } });
   }
-  await db.auditLog.create({ data: { actor: _g.user.email || "ui", action: "case.hard_match.dispatch", caseRequestId: c.id, detail: { jobId: job.id } } });
+  await recordAudit("case.hard_match.dispatch", { user: _g.user, caseRequestId: c.id, detail: { jobId: job.id } });
   return NextResponse.json({ ok: true, jobId: job.id });
 }

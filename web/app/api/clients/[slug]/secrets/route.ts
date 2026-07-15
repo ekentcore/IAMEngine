@@ -3,6 +3,7 @@
 // PUT  /api/clients/:slug/secrets — upsert the references (name -> id + label). Stores only refs.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -57,10 +58,12 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const wiring = await repo.secretsWiring(params.slug);
   if (!wiring) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  await repo.upsertSecrets(wiring.clientId, deduped);
+  const who = auditActor(_g.user, "ui");
+  await repo.upsertSecrets(wiring.clientId, deduped, who);
   // Audit names only — never the ids (references) or values.
   await repo.writeAudit({
-    actor: "ui",
+    actor: who.label,
+    userId: who.userId,
     action: "client.secrets.edit",
     clientId: wiring.clientId,
     detail: { secrets: deduped.map((e) => e.name) },

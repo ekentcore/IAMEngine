@@ -3,6 +3,7 @@
 // read-only). The on-screen + downloadable report is always available regardless.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { loadRunReport } from "@/lib/cases/run-report";
@@ -28,8 +29,8 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   const result = await postWorkNote(snConfigFromEnv(), rr.caseNumber, note);
   if (!result.ok) return NextResponse.json(result, { status: 502 });
 
-  await db.auditLog.create({
-    data: { actor: "ui", action: "servicenow.worknote.posted", caseRequestId: rr.caseId, detail: { caseNumber: rr.caseNumber, sysId: result.sysId } },
+  await recordAudit("servicenow.worknote.posted", {
+    user: _g.user, caseRequestId: rr.caseId, detail: { caseNumber: rr.caseNumber, sysId: result.sysId },
   });
   return NextResponse.json(result);
 }

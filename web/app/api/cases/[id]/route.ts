@@ -48,7 +48,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (body.action === "restore") {
     const res = await makeCaseRepository(db).restoreCase(params.id);
     if (!res.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
-    await db.auditLog.create({ data: { actor: "ui", action: "case.restore", clientId: res.clientId, detail: { caseId: params.id } } });
+    await recordAudit("case.restore", { user: _g.user, caseRequestId: params.id, clientId: res.clientId, detail: { caseId: params.id } });
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: 'action must be "set-dry-run" or "restore"' }, { status: 422 });
@@ -66,7 +66,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       if (res.reason === "not_trashed") return NextResponse.json({ error: "move the case to the trash before deleting it forever" }, { status: 409 });
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
-    await db.auditLog.create({ data: { actor: "ui", action: "case.delete_forever", clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } } });
+    await recordAudit("case.delete_forever", { user: _g.user, caseRequestId: params.id, clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } });
     return NextResponse.json({ ok: true });
   }
 
@@ -75,6 +75,6 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     if (res.reason === "not_found") return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ error: "a job is in flight — wait for it to finish (or re-plan) before removing" }, { status: 409 });
   }
-  await db.auditLog.create({ data: { actor: "ui", action: "case.trash", clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } } });
+  await recordAudit("case.trash", { user: _g.user, caseRequestId: params.id, clientId: res.clientId, detail: { caseId: params.id, subject: res.subject } });
   return NextResponse.json({ ok: true });
 }

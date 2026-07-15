@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { importByNumber } from "@/lib/cases/import-service";
-import { actorLabel } from "@/lib/auth/audit";
+import { auditActor } from "@/lib/auth/audit";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await importByNumber(db, body.number, actorLabel(_g.user, "ui:import"), { emailDomainOverride, dryRun: body.dryRun === true });
+    const result = await importByNumber(db, body.number, auditActor(_g.user, "ui:import"), { emailDomainOverride, dryRun: body.dryRun === true });
     if (!result.ok) {
       const status = result.code === "not_found" || result.code === "no_client" ? 404 : 422;
       return NextResponse.json({ error: result.error }, { status });

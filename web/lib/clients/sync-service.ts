@@ -2,6 +2,7 @@
 // update vs reconcile for each, and record the outcome. No HTTP, no env reads — pure
 // coordination over injected dependencies, so it is unit-testable with a mock repo.
 import type { NormalizedSnClient } from "../servicenow/mappers";
+import { resolveActor, type ActorInput } from "../auth/actor";
 import type { ClientRepository } from "./repository";
 import type { SyncResult } from "./types";
 
@@ -23,8 +24,10 @@ export function deriveSlug(c: NormalizedSnClient): string {
 export async function syncClientsFromSn(
   snClients: NormalizedSnClient[],
   repo: ClientRepository,
-  actor: string
+  // an operator (attributed) or a system label — the stale-check runs this as "system:auto"
+  actor: ActorInput
 ): Promise<SyncResult> {
+  const who = resolveActor(actor);
   const existing = await repo.indexExisting();
   const bySysId = new Map(existing.filter((e) => e.serviceNowSysId).map((e) => [e.serviceNowSysId!, e]));
   const usedSlugs = new Set(existing.map((e) => e.slug));
@@ -70,7 +73,8 @@ export async function syncClientsFromSn(
         bySysId.set(c.serviceNowSysId, byDom);
         result.reconciled++;
         await repo.writeAudit({
-          actor,
+          actor: who.actor,
+          userId: who.userId,
           action: "client.reconcile",
           clientId: byDom.id,
           detail: { serviceNowSysId: c.serviceNowSysId, coreId: c.coreId, byDomain: c.primaryDomain },
@@ -85,7 +89,8 @@ export async function syncClientsFromSn(
       const id = await repo.createFromSn(c, slug);
       result.created++;
       await repo.writeAudit({
-        actor,
+        actor: who.actor,
+        userId: who.userId,
         action: "client.create",
         clientId: id,
         detail: { serviceNowSysId: c.serviceNowSysId, coreId: c.coreId, source: "servicenow" },
@@ -104,7 +109,8 @@ export async function syncClientsFromSn(
   const parentsLinked = await repo.linkParentsBySysId(parentLinks);
 
   await repo.writeAudit({
-    actor,
+    actor: who.actor,
+    userId: who.userId,
     action: "servicenow.sync",
     detail: {
       total: result.total,

@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { actionLabel } from "@/lib/audit/action-labels";
 import { AuditFilters } from "../_components/audit-filters";
-import { loadAuditPage, fmtDetail, AUDIT_LIMIT, type AuditSearchParams } from "../_lib/loader";
+import { loadAuditPage, fmtDetail, fmtDetailLong, AUDIT_LIMIT, type AuditSearchParams } from "../_lib/loader";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Audit (v2)" };
@@ -42,7 +42,7 @@ export default async function AuditV2Page({ searchParams }: { searchParams: Audi
               <td>{r.user ? <span title={r.user.email}>{r.user.name || r.user.email}</span> : <span className="muted">{r.actor}</span>}</td>
               <td title={r.action}>{actionLabel(r.action)}</td>
               <td>{target(r)}</td>
-              <td className="note" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={fmtDetail(r.detail)}>{fmtDetail(r.detail)}</td>
+              <td className="note" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={fmtDetailLong(r.detail)}>{fmtDetail(r.detail)}</td>
             </tr>
           ))}
           {rows.length === 0 && <tr><td colSpan={5} className="empty-state">No events match these filters.</td></tr>}

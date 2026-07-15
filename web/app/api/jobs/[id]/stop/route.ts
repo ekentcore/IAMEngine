@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
-import { actorLabel } from "@/lib/auth/audit";
+import { auditActor } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
@@ -16,7 +16,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
   if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
-    const out = await makeRunnerService(db).stopJob(params.id, actorLabel(_g.user, "ui"));
+    const out = await makeRunnerService(db).stopJob(params.id, auditActor(_g.user, "ui"));
     return NextResponse.json({ ok: true, ...out });
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

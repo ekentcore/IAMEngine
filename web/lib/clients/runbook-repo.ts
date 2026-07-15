@@ -3,6 +3,8 @@
 import type { Action, Lifecycle, PrismaClient } from "@prisma/client";
 import { parseRunbookText, type ParsedSection } from "./runbook-parse";
 import { CATALOG } from "../generator/system-map";
+import { diffRunbookSections, summarizeRunbookDiff, toSectionRefs } from "./runbook-diff";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 const laneToDb = (l: string | null): Lifecycle =>
   l === "always" ? "always" : l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : "never";
@@ -70,7 +72,11 @@ export async function createMissingSystems(tx: SystemsDb, clientId: string, want
 // On-demand re-sync for the client page's "Sync systems from runbook" button: wire any modeled
 // system the SAVED runbook (either action) references but the client lacks. Same non-destructive
 // semantics as the save-time sync.
-export async function syncSystemsFromRunbook(db: PrismaClient, slug: string): Promise<{ createdSystems: string[] } | null> {
+export async function syncSystemsFromRunbook(
+  db: PrismaClient,
+  slug: string,
+  actor?: ActorInput
+): Promise<{ createdSystems: string[] } | null> {
   const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
   if (!client) return null;
   const sections = await db.runbookSection.findMany({
@@ -81,8 +87,15 @@ export async function syncSystemsFromRunbook(db: PrismaClient, slug: string): Pr
     createMissingSystems(tx, client.id, sections.map((s) => s.systemKey!).filter(Boolean))
   );
   if (createdSystems.length) {
+    const who = resolveActor(actor);
     await db.auditLog.create({
-      data: { actor: "ui", action: "client.systems.sync_from_runbook", clientId: client.id, detail: { createdSystems } },
+      data: {
+        actor: who.actor,
+        userId: who.userId,
+        action: "client.systems.sync_from_runbook",
+        clientId: client.id,
+        detail: { createdSystems },
+      },
     });
   }
   return { createdSystems };
@@ -94,11 +107,21 @@ export async function saveRunbook(
   action: Action,
   text: string,
   presetSections?: ParsedSection[], // AI-extracted sections; falls back to the heuristic parse when absent
-  kbArticle?: string // the source KB number (from a fetch/import); when omitted, the action's existing KB is preserved
+  kbArticle?: string, // the source KB number (from a fetch/import); when omitted, the action's existing KB is preserved
+  actor?: ActorInput // who is saving — an operator (attributed) or a system label like "system:kb-import"
 ): Promise<{ count: number; sections: ParsedSection[]; createdSystems: string[] } | null> {
   const client = await db.client.findUnique({ where: { slug }, select: { id: true } });
   if (!client) return null;
   const sections = (presetSections ?? parseRunbookText(text)).map((s, i) => ({ ...s, seq: i }));
+
+  // Snapshot BEFORE the delete-and-recreate below, so the audit row can say what actually changed.
+  // A runbook edit that silently drops a section is how a client quietly stops getting a system
+  // provisioned — "someone re-saved the runbook" is not an answer anyone can act on.
+  const prior = await db.runbookSection.findMany({
+    where: { clientId: client.id, action },
+    select: { seq: true, systemKey: true, title: true, status: true, steps: true },
+    orderBy: { seq: "asc" },
+  });
 
   // Stamp the KB number onto the recreated sections so the association survives a re-save. Explicit
   // kbArticle (from a fetch/import) wins; otherwise preserve whatever this action currently carries
@@ -132,12 +155,22 @@ export async function saveRunbook(
       ...(await createMissingSystems(tx, client.id, sections.map((s) => s.systemKey).filter((k): k is string => Boolean(k))))
     );
   });
+  const who = resolveActor(actor);
+  const diff = diffRunbookSections(toSectionRefs(prior), toSectionRefs(sections));
   await db.auditLog.create({
     data: {
-      actor: "ui",
+      actor: who.actor,
+      userId: who.userId,
       action: "client.runbook.set",
       clientId: client.id,
-      detail: { action, sections: sections.length, kbArticle: kb, ...(createdSystems.length ? { createdSystems } : {}) },
+      detail: {
+        action,
+        sections: sections.length,
+        kbArticle: kb,
+        ...(createdSystems.length ? { createdSystems } : {}),
+        summary: summarizeRunbookDiff(diff),
+        diff,
+      },
     },
   });
   return { count: sections.length, sections, createdSystems };

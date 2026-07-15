@@ -8,11 +8,13 @@ import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
+import { recordAudit, auditActor, type AuditActor } from "@/lib/auth/audit";
 import { runnerBuildId } from "@/lib/runner/bundle";
 
 // Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
 export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
-  try { await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
+  let me;
+  try { me = await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e) }; }
   const slug = input.clientSlug?.trim() || null; // trim — a stray space breaks the client lookup
   if (input.scope === "client_network" && !slug) {
     return { ok: false as const, error: "pick a client for a client-network runner" };
@@ -22,6 +24,10 @@ export async function createEnrollToken(input: { scope: AgentScope; clientSlug: 
     enrollSecret(),
     Date.now()
   );
+  // The later agent.enroll row is written when the runner calls in (actor "system"), so this is the only
+  // record of WHO authorized an enrollment. The token is a credential — never audit its value.
+  const client = slug ? await db.client.findUnique({ where: { slug }, select: { id: true } }) : null;
+  await recordAudit("agent.enroll_token.create", { user: me, clientId: client?.id ?? null, detail: { scope: input.scope, clientSlug: slug } });
   return { ok: true as const, token };
 }
 
@@ -40,8 +46,8 @@ export async function enrollAgent(input: { name: string; scope: AgentScope; clie
 
 export async function setAgentEnabled(id: string, enabled: boolean) {
   try {
-    await requirePermission("agent.manage");
-    await makeRunnerService(db).setEnabled(id, enabled);
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).setEnabled(id, enabled, auditActor(me, "ui"));
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
@@ -54,10 +60,10 @@ export async function setAgentEnabled(id: string, enabled: boolean) {
 // the row here re-links it — no reinstall on the host.
 export async function updateAgentIdentity(id: string, input: { name: string; clientSlug: string | null }) {
   try {
-    await requirePermission("agent.manage");
+    const me = await requirePermission("agent.manage");
     const name = input.name.trim();
     if (!name) return { ok: false as const, error: "name is required" };
-    const agent = await db.agent.findUnique({ where: { id }, select: { scope: true } });
+    const agent = await db.agent.findUnique({ where: { id }, select: { scope: true, name: true, clientId: true } });
     if (!agent) return { ok: false as const, error: "unknown agent" };
     let clientId: string | null = null;
     if (agent.scope === "client_network") {
@@ -68,6 +74,12 @@ export async function updateAgentIdentity(id: string, input: { name: string; cli
       clientId = client.id;
     }
     await db.agent.update({ where: { id }, data: { name, clientId } });
+    // Carries the PREVIOUS client too: a re-scope silently moves a runner (and its credentials) to
+    // another client's work, which is the change you'd most want to trace back to a person.
+    await recordAudit("agent.identity.set", {
+      user: me, clientId,
+      detail: { agentId: id, name, previousName: agent.name, fromClientId: agent.clientId, toClientId: clientId },
+    });
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
@@ -75,10 +87,10 @@ export async function updateAgentIdentity(id: string, input: { name: string; cli
   }
 }
 
-async function agentOp(fn: () => Promise<unknown>) {
+async function agentOp(fn: (actor: AuditActor) => Promise<unknown>) {
   try {
-    await requirePermission("agent.manage");
-    await fn();
+    const me = await requirePermission("agent.manage");
+    await fn(auditActor(me, "ui"));
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
@@ -89,7 +101,7 @@ async function agentOp(fn: () => Promise<unknown>) {
 export async function requestAgentUpdate(id: string) {
   try {
     const me = await requirePermission("agent.manage");
-    await makeRunnerService(db).requestUpdate(id, me.email);
+    await makeRunnerService(db).requestUpdate(id, auditActor(me, "ui"));
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
@@ -101,9 +113,11 @@ export async function requestAgentUpdate(id: string) {
 // of the same scope is online. Clamped to 1..999.
 export async function setAgentPriority(id: string, priority: number) {
   try {
-    await requirePermission("agent.manage");
+    const me = await requirePermission("agent.manage");
     const p = Math.max(1, Math.min(999, Math.round(Number(priority) || 100)));
+    const before = await db.agent.findUnique({ where: { id }, select: { priority: true } });
     await db.agent.update({ where: { id }, data: { priority: p } });
+    await recordAudit("agent.priority.set", { user: me, detail: { agentId: id, from: before?.priority ?? null, to: p } });
     revalidatePath("/agents");
     return { ok: true as const, priority: p };
   } catch (e) {
@@ -116,7 +130,7 @@ export async function setAgentPriority(id: string, priority: number) {
 export async function requestAgentRestart(id: string) {
   try {
     const me = await requirePermission("agent.manage");
-    await makeRunnerService(db).requestRestart(id, me.email);
+    await makeRunnerService(db).requestRestart(id, auditActor(me, "ui"));
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {
@@ -134,7 +148,7 @@ export async function requestAgentUpdates(ids: string[]) {
   let firstError: string | null = null;
   for (const id of ids) {
     try {
-      await svc.requestUpdate(id, me.email);
+      await svc.requestUpdate(id, auditActor(me, "ui"));
       queued++;
     } catch (e) {
       firstError ??= errMsg(e);
@@ -160,7 +174,7 @@ export async function updateAllOutdatedAgents() {
   let queued = 0;
   let firstError: string | null = null;
   for (const id of ids) {
-    try { await svc.requestUpdate(id, me.email); queued++; } catch (e) { firstError ??= errMsg(e); }
+    try { await svc.requestUpdate(id, auditActor(me, "ui")); queued++; } catch (e) { firstError ??= errMsg(e); }
   }
   revalidatePath("/agents");
   return firstError
@@ -168,6 +182,6 @@ export async function updateAllOutdatedAgents() {
     : { ok: true as const, queued };
 }
 
-export const trashAgent = (id: string) => agentOp(() => makeRunnerService(db).trashAgent(id));
-export const restoreAgent = (id: string) => agentOp(() => makeRunnerService(db).restoreAgent(id));
-export const deleteAgentForever = (id: string) => agentOp(() => makeRunnerService(db).deleteAgentForever(id));
+export const trashAgent = (id: string) => agentOp((who) => makeRunnerService(db).trashAgent(id, who));
+export const restoreAgent = (id: string) => agentOp((who) => makeRunnerService(db).restoreAgent(id, who));
+export const deleteAgentForever = (id: string) => agentOp((who) => makeRunnerService(db).deleteAgentForever(id, who));

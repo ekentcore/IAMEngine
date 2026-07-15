@@ -5,6 +5,7 @@
 // a typo must not mint an unverified UPN suffix.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor, recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
 import { replanCase } from "@/lib/cases/replan-service";
@@ -32,12 +33,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   await db.caseRequest.update({ where: { id: c.id }, data: { emailDomainOverride: domain } });
-  await db.auditLog.create({ data: { actor: "ui", action: "case.email_domain.set", caseRequestId: c.id, clientId: c.client.id, detail: { domain } } });
+  await recordAudit("case.email_domain.set", { user: _g.user, caseRequestId: c.id, clientId: c.client.id, detail: { domain } });
 
   // Apply immediately: replan re-derives the payload identity with the persisted override (or the
   // default when cleared) and rebuilds the planned jobs. Uses replan's own started/finished guards.
   try {
-    const res = await replanCase(db, c.id, "ui");
+    const res = await replanCase(db, c.id, auditActor(_g.user, "ui"));
     return NextResponse.json({ ok: true, domain, replanned: res });
   } catch (e) {
     return NextResponse.json({ error: `domain saved but re-plan failed: ${(e as Error).message}` }, { status: 409 });

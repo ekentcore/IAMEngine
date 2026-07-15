@@ -386,6 +386,15 @@ model CaseRequest {
   scheduledFor         DateTime?
   scheduledBy          String?
   createdAt            DateTime   @default(now())
+  // WHO opened this case, captured at creation. `createdBy` is the actor-label snapshot
+  // ("user:jane@core.tech" | "system:intake-poll") so it survives the user row being deleted;
+  // `createdByUserId` is the joinable FK, set only for a real signed-in operator. `createdSource`
+  // says HOW it was opened, so "which cases did a human hand-key?" is a column filter
+  // (createdSource = manual) rather than an archaeology dig through AuditLog.
+  createdBy            String?
+  createdByUserId      String?
+  createdByUser        User?      @relation("CaseCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdSource        CaseSource @default(manual)
   // ONE-TIME initial password for a "generate"-mode onboard: the app generates it at dispatch (so it
   // knows the value), injects it as the runner's initial password, and stores it here to reveal to the
   // operator EXACTLY ONCE (the reveal wipes it). Never logged / never in Job.result or audit.
@@ -398,6 +407,20 @@ model CaseRequest {
   @@index([deletedAt])
   @@index([clientId]) // client-network agents claim by case.clientId; client pages filter by it
   @@index([scheduledFor]) // the every-~minute sweepScheduledCases due-case query
+  @@index([createdByUserId]) // "what did this engineer open?"
+  @@index([createdSource, createdAt]) // "every hand-keyed case this week"
+}
+
+// How a case came to exist. `manual` = an operator hand-keyed it in the New case dialog (no
+// ServiceNow number); `servicenow` = an operator imported a specific ticket; `intake_poll` = the
+// background sweep pulled it in unattended; `sim` = the CLI simulator; `api` = anything else
+// programmatic. The default is `manual` because that's the only path a human drives directly.
+enum CaseSource {
+  manual
+  servicenow
+  intake_poll
+  sim
+  api
 }
 
 model Job {
@@ -628,6 +651,7 @@ model User {
   updatedAt        DateTime           @updatedAt
   sessions         Session[]
   auditLogs        AuditLog[]
+  createdCases     CaseRequest[]      @relation("CaseCreatedBy")
   clientAccess     UserClientAccess[]
 }
 

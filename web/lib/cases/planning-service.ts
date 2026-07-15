@@ -9,6 +9,7 @@ import type { ResolveClient } from "../clients/email-domain";
 import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resolve";
 import { resolveUnknownsWithAI } from "./ai-resolve";
 import { autoOffboardScheduleAt, offboardTargetResolved } from "./schedule";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type PlanOutcome = {
   caseId: string;
@@ -38,7 +39,9 @@ export function deriveStatus(jobs: PlannedJob[]): CaseStatus {
 export async function createAndPlanCase(
   repo: CaseRepository,
   input: NewCaseInput,
-  actor: string,
+  // An AuditActor (label + User FK) when an operator opened this; a bare string for genuine system
+  // callers ("system:intake-poll", "cli:sim"). A string can't carry a userId — that's the point.
+  actor: ActorInput,
   // Optional: resolve the email/UPN domain from the client's ServiceNow contacts (+ per-case
   // override). When omitted (e.g. manual cases) the cached emailDomain or website domain is used.
   opts?: { resolveDomain?: (client: ResolveClient) => Promise<string> }
@@ -78,7 +81,27 @@ export async function createAndPlanCase(
     planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
       new Set(client.notNeededSecrets)));
   const status = deriveStatus(planned);
-  const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status);
+  const who = resolveActor(actor);
+  const creator = { label: who.actor, userId: who.userId };
+  const caseId = await repo.createCaseWithJobs({ ...input, payload }, client.id, planned, status, creator);
+
+  // Creation is its own audit event, distinct from case.plan. Before this, "who opened this case?"
+  // could only be inferred from the case.plan row that happens to be written in the same breath —
+  // an inference that silently breaks the moment a case is created without being planned.
+  await repo.writeAudit({
+    actor: who.actor,
+    userId: who.userId,
+    action: "case.create",
+    clientId: client.id,
+    caseRequestId: caseId,
+    detail: {
+      action: input.action,
+      source: input.source ?? "manual",
+      serviceNowCaseNumber: input.serviceNowCaseNumber ?? null,
+      subject: input.subject ?? null,
+      dryRun: input.dryRun ?? false,
+    },
+  });
 
   // Every imported case is HELD on import — nothing auto-dispatches. An operator reviews it and
   // resumes to run (and is recorded as the case's "ran by"). The hold reason is the most specific
@@ -113,7 +136,8 @@ export async function createAndPlanCase(
         // The engine scheduled this on its own — record it as its own audit event, not just a field
         // buried in the plan detail, so "why did this case release itself at 5:05pm?" is answerable.
         await repo.writeAudit({
-          actor,
+          actor: who.actor,
+          userId: who.userId,
           action: "case.schedule.set",
           clientId: client.id,
           caseRequestId: caseId,
@@ -126,7 +150,8 @@ export async function createAndPlanCase(
   }
 
   await repo.writeAudit({
-    actor,
+    actor: who.actor,
+    userId: who.userId,
     action: "case.plan",
     clientId: client.id,
     caseRequestId: caseId,

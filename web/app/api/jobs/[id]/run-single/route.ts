@@ -6,7 +6,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { runSingleStep } from "@/lib/jobs/run-single";
-import { actorLabel } from "@/lib/auth/audit";
+import { auditActor } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   let force = false;
   try { force = Boolean((await req.json())?.force); } catch { /* empty body = not forced */ }
 
-  const out = await runSingleStep(db, params.id, actorLabel(_g.user, "ui"), force);
+  const out = await runSingleStep(db, params.id, auditActor(_g.user, "ui"), force);
   if (!out.ok) {
     return NextResponse.json({ error: out.error, blockedBy: out.blockedBy }, { status: out.status });
   }

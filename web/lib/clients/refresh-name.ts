@@ -4,10 +4,11 @@
 import type { PrismaClient } from "@prisma/client";
 import { snConfigFromEnv, fetchSnAccountById, fetchSnAccountByCoreId } from "../servicenow/gateway";
 import { normalizeAccount } from "../servicenow/mappers";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type RefreshNameResult = { ok: boolean; name?: string; previous?: string; changed?: boolean; reason?: string };
 
-export async function refreshClientName(db: PrismaClient, slug: string, actor = "ui"): Promise<RefreshNameResult> {
+export async function refreshClientName(db: PrismaClient, slug: string, actor: ActorInput = "ui"): Promise<RefreshNameResult> {
   const client = await db.client.findUnique({ where: { slug }, select: { id: true, name: true, serviceNowSysId: true, coreId: true } });
   if (!client) return { ok: false, reason: "client not found" };
 
@@ -33,7 +34,8 @@ export async function refreshClientName(db: PrismaClient, slug: string, actor = 
     return { ok: true, name: newName, changed: false };
   }
 
+  const who = resolveActor(actor);
   await db.client.update({ where: { id: client.id }, data: { name: newName, snLastSyncedAt: new Date(), ...backfillSysId } });
-  await db.auditLog.create({ data: { actor, action: "client.refresh_name", clientId: client.id, detail: { from: client.name, to: newName } } });
+  await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "client.refresh_name", clientId: client.id, detail: { from: client.name, to: newName } } });
   return { ok: true, name: newName, previous: client.name, changed: true };
 }

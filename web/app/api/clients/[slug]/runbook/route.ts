@@ -2,6 +2,7 @@
 // rows for clients with no ServiceNow KB. GET (?action=) previews the parse without saving.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -51,7 +52,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     // Preview: return the generated sections for review/edit in the Build dialog — don't persist. The
     // operator then saves the (possibly edited) sections back via the normal `sections` path below.
     if (body.preview) return NextResponse.json({ sections: generated, fromSystems: true });
-    const res = await saveRunbook(db, params.slug, body.action, "", generated);
+    const res = await saveRunbook(db, params.slug, body.action, "", generated, undefined, auditActor(_g.user, "ui"));
     return NextResponse.json({ count: res?.count ?? 0, sections: res?.sections ?? [], fromSystems: true });
   }
   const text = typeof body.text === "string" ? body.text : "";
@@ -68,7 +69,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     return NextResponse.json({ sections: edited ?? aiSections ?? parseRunbookText(text), usedAI: Boolean(aiSections) });
   }
 
-  const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined, kbArticle);
+  const res = await saveRunbook(db, params.slug, body.action, text, edited ?? aiSections ?? undefined, kbArticle, auditActor(_g.user, "ui"));
   if (!res) return NextResponse.json({ error: "client not found" }, { status: 404 });
   return NextResponse.json({ count: res.count, sections: res.sections, usedAI: Boolean(aiSections), createdSystems: res.createdSystems });
 }

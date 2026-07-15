@@ -3,6 +3,7 @@
 // change). Started cases re-plan incrementally; future cases plan fresh at creation anyway.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { replanCase } from "@/lib/cases/replan-service";
@@ -18,11 +19,12 @@ export async function POST(_req: Request, { params }: { params: { id?: string; s
     where: { clientId: client.id, deletedAt: null, status: { notIn: ["completed", "failed"] } },
     select: { id: true },
   });
+  const who = auditActor(_g.user, "ui:client-replan");
   let full = 0, incremental = 0;
   const errors: string[] = [];
   for (const c of open) {
     try {
-      const r = await replanCase(db, c.id, "ui:client-replan");
+      const r = await replanCase(db, c.id, who);
       if (r.ok) { if (r.mode === "incremental") incremental++; else full++; }
       else errors.push(r.error);
     } catch (e) {

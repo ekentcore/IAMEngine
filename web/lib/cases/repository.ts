@@ -4,6 +4,7 @@ import type { PrismaClient, ClientSystem, CaseStatus, Action } from "@prisma/cli
 import { Prisma } from "@prisma/client"; // value import — Prisma.DbNull is used at runtime
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
+import type { AuditActor } from "../auth/actor";
 import type { CaseDetail, CaseListItem, NewCaseInput, TrashedCaseItem } from "./types";
 import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job-status";
 import { autoOffboardScheduleAt, offboardTargetResolved, engineOwnsSchedule, AUTO_SCHEDULE_ACTOR } from "./schedule";
@@ -165,7 +166,10 @@ export function makeCaseRepository(db: PrismaClient) {
       input: NewCaseInput,
       clientId: string,
       planned: PlannedJob[],
-      status: CaseStatus
+      status: CaseStatus,
+      // WHO opened it. Written onto the row (not only into AuditLog) so the creator is a column the
+      // list can show and filter on, and so it survives even if the audit trail is pruned.
+      creator?: AuditActor
     ): Promise<string> {
       const created = await db.$transaction(async (tx) => {
         // A manual case (no ServiceNow number) gets an auto-assigned IAM number from the dedicated
@@ -185,6 +189,9 @@ export function makeCaseRepository(db: PrismaClient) {
             status,
             dryRun: input.dryRun ?? false,
             payload: input.payload as Prisma.InputJsonValue,
+            createdBy: creator?.label ?? null,
+            createdByUserId: creator?.userId ?? null,
+            createdSource: input.source ?? "manual",
           },
           select: { id: true },
         });
@@ -482,6 +489,7 @@ export function makeCaseRepository(db: PrismaClient) {
         select: {
           id: true, action: true, status: true, subject: true, pausedAt: true, pausedReason: true, scheduledFor: true,
           serviceNowCaseNumber: true, createdAt: true, clientId: true, payload: true, secretOverrides: true,
+          createdBy: true, createdSource: true,
           client: { select: { name: true, slug: true, parentId: true } },
           jobs: { select: { systemKey: true, sequence: true, status: true, mode: true, error: true, request: true, startedAt: true, finishedAt: true } },
         },
@@ -644,8 +652,15 @@ export function makeCaseRepository(db: PrismaClient) {
           serviceNowCaseNumber: r.serviceNowCaseNumber, createdAt: r.createdAt, effectiveDate, immediate,
           scheduledFor: r.scheduledFor,
           lastRunAt, ranBy: ranByCase.get(r.id) ?? null,
-          lastActionLabel: lastActionByCase.get(r.id)?.label ?? null,
+          // A hand-keyed case was CREATED, not "Imported" — the label is derived from case.plan,
+          // which fires for both paths, so the source is what tells them apart.
+          lastActionLabel:
+            lastActionByCase.get(r.id)?.label === "Imported" && r.createdSource === "manual"
+              ? "Created"
+              : (lastActionByCase.get(r.id)?.label ?? null),
           lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
+          createdBy: r.createdBy?.startsWith("user:") ? r.createdBy.slice(5) : (r.createdBy ?? null),
+          createdSource: r.createdSource,
           readiness, readinessMissing: planMissing,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,
           statusHint: needsInfo
@@ -782,6 +797,8 @@ export function makeCaseRepository(db: PrismaClient) {
       return {
         id: c.id, action: c.action, status: c.status, subject: c.subject, dryRun: c.dryRun,
         serviceNowCaseNumber: c.serviceNowCaseNumber, createdAt: c.createdAt,
+        createdBy: c.createdBy?.startsWith("user:") ? c.createdBy.slice(5) : (c.createdBy ?? null),
+        createdSource: c.createdSource,
         client: c.client,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         jobs: c.jobs.map((j) => {
@@ -804,6 +821,7 @@ export function makeCaseRepository(db: PrismaClient) {
       await db.auditLog.create({
         data: {
           actor: entry.actor,
+          userId: entry.userId ?? null,
           action: entry.action,
           clientId: entry.clientId ?? null,
           caseRequestId: entry.caseRequestId ?? null,

@@ -4,6 +4,7 @@
 // is auto-saved here. Falls out with an actionable error when the cred or permission is missing.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured } from "@/lib/secrets/delinea";
@@ -39,7 +40,7 @@ export async function POST(_req: Request, { params }: { params: { slug: string }
   const result = await listTenantDomains(tenant, appId, secret);
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: 502 });
 
-  await db.auditLog.create({ data: { actor: "ui", action: "client.domains.refresh", clientId: client.id, detail: { count: result.domains.length } } });
+  await recordAudit("client.domains.refresh", { user: _g.user, clientId: client.id, detail: { count: result.domains.length } });
   return NextResponse.json({
     domains: result.domains, // [{ name, isDefault, isVerified }]
     selected: client.domains, // what the client currently offers

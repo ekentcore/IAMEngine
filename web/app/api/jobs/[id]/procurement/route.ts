@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
+import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export async function POST(req: Request, { params }: Ctx) {
     create: { jobId: job.id, number },
     update: { number, state: "watching", note: null, lastCheckedAt: null },
   });
-  await db.auditLog.create({ data: { actor: "ui", action: "procurement.watch.set", jobId: job.id, caseRequestId: job.caseRequestId, detail: { number } } });
+  await recordAudit("procurement.watch.set", { user: _g.user, jobId: job.id, caseRequestId: job.caseRequestId, detail: { number } });
   return NextResponse.json({ ok: true, watch: { number: watch.number, state: watch.state } });
 }
 
@@ -43,7 +44,7 @@ export async function DELETE(_req: Request, { params }: Ctx) {
   if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const deleted = await db.procurementWatch.deleteMany({ where: { jobId: params.id } });
   if (deleted.count > 0) {
-    await db.auditLog.create({ data: { actor: "ui", action: "procurement.watch.clear", jobId: params.id } });
+    await recordAudit("procurement.watch.clear", { user: _g.user, jobId: params.id });
   }
   return NextResponse.json({ ok: true });
 }

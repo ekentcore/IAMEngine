@@ -1,6 +1,6 @@
 // Import a case from a ServiceNow User Management ticket: fetch -> normalize -> map to a
 // client in our roster -> plan. Idempotent on the SN case number.
-import type { PrismaClient } from "@prisma/client";
+import type { CaseSource, PrismaClient } from "@prisma/client";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { fetchUserManagementCase } from "../servicenow/intake";
 import { normalizeIntake, umIntakeAction, umSubcategoryLabel, type NormalizedIntake } from "../servicenow/intake-mapper";
@@ -9,10 +9,17 @@ import { normalizeIncidentIntake } from "../servicenow/incident-mapper";
 import { makeCaseRepository } from "./repository";
 import { createAndPlanCase, type PlanOutcome } from "./planning-service";
 import { makeEmailDomainResolver } from "./plan-domain";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type ImportResult =
   | { ok: true; outcome: PlanOutcome; caseNumber: string; alreadyImported?: boolean }
   | { ok: false; error: string; code: "not_found" | "no_client" | "duplicate" | "no_number" | "engine_opt_out" };
+
+// An operator clicking Import and the background sweep pull the SAME ticket through this service —
+// the actor is the only thing that separates them, so it's what decides the recorded source.
+function importSource(actor: ActorInput): CaseSource {
+  return resolveActor(actor).actor.startsWith("system:intake-poll") ? "intake_poll" : "servicenow";
+}
 
 // "Do not use engine": the client's SN cases are never imported (the intake sweep counts these as
 // skipped, a manual import surfaces the reason). Checked after client matching so an unknown client
@@ -49,7 +56,7 @@ async function existingCaseResult(db: PrismaClient, repo: ReturnType<typeof make
 export async function importCaseFromServiceNow(
   db: PrismaClient,
   number: string,
-  actor: string,
+  actor: ActorInput,
   opts?: { emailDomainOverride?: string; dryRun?: boolean }
 ): Promise<ImportResult> {
   const repo = makeCaseRepository(db);
@@ -97,6 +104,7 @@ export async function importCaseFromServiceNow(
       subject: intake.subject,
       payload: intake.payload,
       dryRun: opts?.dryRun ?? false,
+      source: importSource(actor),
     },
     actor,
     { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
@@ -110,7 +118,7 @@ export async function importCaseFromServiceNow(
 export async function importIncidentCase(
   db: PrismaClient,
   number: string,
-  actor: string,
+  actor: ActorInput,
   opts?: { emailDomainOverride?: string; dryRun?: boolean }
 ): Promise<ImportResult> {
   const repo = makeCaseRepository(db);
@@ -145,7 +153,7 @@ export async function importIncidentCase(
   const resolver = makeEmailDomainResolver(db);
   const outcome = await createAndPlanCase(
     repo,
-    { clientSlug: slug, action: intake.action, serviceNowCaseNumber: intake.caseNumber, subject: intake.subject, payload: intake.payload, dryRun: opts?.dryRun ?? false },
+    { clientSlug: slug, action: intake.action, serviceNowCaseNumber: intake.caseNumber, subject: intake.subject, payload: intake.payload, dryRun: opts?.dryRun ?? false, source: importSource(actor) },
     actor,
     { resolveDomain: (client) => resolver(client, opts?.emailDomainOverride).then((r) => r.domain) }
   );
@@ -171,7 +179,7 @@ export async function fetchNormalizedIntake(number: string): Promise<NormalizedI
 }
 
 // Route by number prefix: INCxxxxxxx -> internal incident; everything else (UM/CS) -> UM case.
-export function importByNumber(db: PrismaClient, number: string, actor: string, opts?: { emailDomainOverride?: string; dryRun?: boolean }): Promise<ImportResult> {
+export function importByNumber(db: PrismaClient, number: string, actor: ActorInput, opts?: { emailDomainOverride?: string; dryRun?: boolean }): Promise<ImportResult> {
   return /^inc/i.test(number.trim())
     ? importIncidentCase(db, number, actor, opts)
     : importCaseFromServiceNow(db, number, actor, opts);

@@ -3,11 +3,12 @@
 // the procurement watcher (PC case resolved -> re-run the license assignment automatically).
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { carriedRetryMarker, type AutoRetryMarker } from "./auto-retry";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export async function requeueJob(
   db: PrismaClient,
   jobId: string,
-  actor: string,
+  actor: ActorInput,
   opts: { carryRetryCount?: boolean } = {},
 ): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
   const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, mode: true, status: true, caseRequestId: true, request: true } });
@@ -44,6 +45,7 @@ export async function requeueJob(
   // Reopen the case so the claim loop (which skips failed/completed cases) can dispatch it. Also clear
   // verifiedAt so the auto-verify sweep runs again after this real re-run settles.
   await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: "queued", verifiedAt: null } });
-  await db.auditLog.create({ data: { actor, action: "job.rerun", jobId: job.id, caseRequestId: job.caseRequestId } });
+  const who = resolveActor(actor);
+  await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "job.rerun", jobId: job.id, caseRequestId: job.caseRequestId } });
   return { ok: true };
 }

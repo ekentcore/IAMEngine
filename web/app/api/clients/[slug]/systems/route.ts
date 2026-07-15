@@ -1,6 +1,7 @@
 // PUT /api/clients/:slug/systems — replace the client's system set (+ optional backbone).
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -55,8 +56,10 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const result = await repo.replaceSystems(params.slug, deduped, backbone);
   if (!result) return NextResponse.json({ error: "not found" }, { status: 404 });
 
+  const who = auditActor(_g.user, "ui");
   await repo.writeAudit({
-    actor: "ui",
+    actor: who.label,
+    userId: who.userId,
     action: "client.systems.edit",
     clientId: result.clientId,
     detail: { upserted: result.upserted, removed: result.removed, backbone: backbone ?? "unchanged" },

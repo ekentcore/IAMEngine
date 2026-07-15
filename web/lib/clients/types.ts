@@ -64,6 +64,9 @@ export type SyncResult = {
 
 export type AuditEntry = {
   actor: string;
+  // The User FK behind `actor`, when a real operator did this. Without it the row is only
+  // attributable by parsing the label, and the audit page's "filter by user" can't see it.
+  userId?: string | null;
   action: string;
   clientId?: string | null;
   caseRequestId?: string | null;

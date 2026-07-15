@@ -2,6 +2,7 @@
 // POST /api/clients  — manually add a client ("onboard a client").
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import type { Backbone } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -65,8 +66,10 @@ export async function POST(req: Request) {
 
   try {
     const client = await repo.createClient({ name, primaryDomain, backbone, coreId }, slug);
+    const who = auditActor(_g.user, "ui");
     await repo.writeAudit({
-      actor: "ui",
+      actor: who.label,
+      userId: who.userId,
       action: "client.add",
       clientId: client.id,
       detail: { name, primaryDomain, source: "manual" },

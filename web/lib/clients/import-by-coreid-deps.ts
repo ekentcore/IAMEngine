@@ -146,8 +146,8 @@ export function makeImportDeps(db: PrismaClient, scope: ClientScope = null): Imp
     findKbs: (domainSysId) => findClientKbs(cfg, domainSysId),
     fetchKb: (number) => fetchKbArticle(cfg, number),
     extract: (text, action) => extractRunbookAI(text, action as "onboard" | "offboard"),
-    saveRunbook: async (slug, action: Action, text, sections, kbNumber) => {
-      const res = await saveRunbook(db, slug, action, text, sections, kbNumber);
+    saveRunbook: async (slug, action: Action, text, sections, kbNumber, actor) => {
+      const res = await saveRunbook(db, slug, action, text, sections, kbNumber, actor);
       return res ? { count: res.count, createdSystems: res.createdSystems } : null;
     },
     writeAudit: (entry) => repo.writeAudit(entry),

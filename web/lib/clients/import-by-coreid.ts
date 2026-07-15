@@ -13,6 +13,7 @@ import type { KbArticle } from "../servicenow/kb";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import type { ParsedSection } from "./runbook-parse";
 import { normalizeAccount } from "../servicenow/mappers";
+import { resolveActor, type ActorInput } from "../auth/actor";
 import { deriveSlugFromParts } from "./sync-service";
 import { normalizeCoreId } from "./core-id";
 
@@ -61,9 +62,10 @@ export type ImportDeps = {
     action: Action,
     text: string,
     sections: ParsedSection[] | undefined,
-    kbNumber: string
+    kbNumber: string,
+    actor?: ActorInput // the operator running the import — the runbook-edit audit row names them
   ) => Promise<{ count: number; createdSystems: string[] } | null>;
-  writeAudit: (entry: { actor: string; action: string; clientId?: string; detail?: unknown }) => Promise<void>;
+  writeAudit: (entry: { actor: string; userId?: string | null; action: string; clientId?: string; detail?: unknown }) => Promise<void>;
 };
 
 export type BuiltAction = { action: Action; kb: string; title: string; sections: number };
@@ -100,7 +102,8 @@ export function sameCompany(a: string, b: string): boolean {
   return x !== "" && y !== "" && x === y;
 }
 
-export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, actor: string): Promise<ImportResult> {
+export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, actor: ActorInput): Promise<ImportResult> {
+  const who = resolveActor(actor);
   const coreId = normalizeCoreId(rawCoreId);
   if (!coreId) {
     return { coreId: rawCoreId.trim(), status: "invalid", built: [], createdSystems: [], warnings: [], error: "not a CORE id" };
@@ -192,7 +195,8 @@ export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, 
       if (!claim.ok) return { ...result, status: "error", error: claim.reason };
       if (claim.claimed) {
         await deps.writeAudit({
-          actor,
+          actor: who.actor,
+          userId: who.userId,
           action: "client.reconcile",
           clientId: existing.id,
           detail: { serviceNowSysId: account.serviceNowSysId, coreId, source: "import", matchedByDomain },
@@ -219,7 +223,7 @@ export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, 
         return result;
       }
 
-      await buildFromKbs(deps, raw, existing.slug, result, already);
+      await buildFromKbs(deps, raw, existing.slug, result, already, actor);
       return result;
     }
 
@@ -231,7 +235,8 @@ export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, 
     // against a named client, not as a phantom.
     result = { ...base, slug, name: account.name };
     await deps.writeAudit({
-      actor,
+      actor: who.actor,
+      userId: who.userId,
       action: "client.create",
       clientId,
       detail: { serviceNowSysId: account.serviceNowSysId, coreId, source: "import" },
@@ -241,7 +246,7 @@ export async function importClientByCoreId(deps: ImportDeps, rawCoreId: string, 
     // Everything below is best-effort enrichment: a KB that can't be fetched or parsed leaves a
     // warning on the row, not a half-created client. Re-running the import finishes the job — an
     // existing client's EMPTY actions still get built.
-    await buildFromKbs(deps, raw, slug, result, []);
+    await buildFromKbs(deps, raw, slug, result, [], actor);
     return result;
   } catch (err) {
     return { ...result, status: "error", error: err instanceof Error ? err.message : String(err) };
@@ -276,7 +281,8 @@ async function buildFromKbs(
   raw: SnAccount,
   slug: string,
   result: ImportResult,
-  skip: Action[]
+  skip: Action[],
+  actor?: ActorInput
 ): Promise<void> {
   const domain = raw.sys_domain?.value ?? "";
   const parentName = raw.account_parent?.display_value ?? null;
@@ -370,7 +376,7 @@ async function buildFromKbs(
       // configured or the call fails it returns null and saveRunbook falls back to the heuristic
       // parse of the same text.
       const sections = (await deps.extract(article.text, action)) ?? undefined;
-      const saved = await deps.saveRunbook(slug, action, article.text, sections, pick.number);
+      const saved = await deps.saveRunbook(slug, action, article.text, sections, pick.number, actor);
       if (!saved) {
         result.warnings.push(`could not save the ${action} runbook`);
         continue;

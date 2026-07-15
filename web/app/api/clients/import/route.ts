@@ -7,6 +7,7 @@
 // progressing or hung. Ids run sequentially: it keeps ServiceNow/Azure load flat and makes the
 // stream a readable progress log.
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { fleetWideAccess } from "@/lib/auth/fleet-access";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -25,7 +26,7 @@ export async function POST(req: Request) {
 
   const fleet = await fleetWideAccess(db, g.user.id);
   if (!fleet.ok) return NextResponse.json({ error: fleet.reason }, { status: 403 });
-  const actor = `ui:${g.user.email ?? g.user.id}`;
+  const actor = auditActor(g.user, `ui:${g.user.id}`);
 
   let body: { coreIds?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }

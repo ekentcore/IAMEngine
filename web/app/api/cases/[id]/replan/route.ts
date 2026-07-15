@@ -2,6 +2,7 @@
 // client's current systems, replacing the planned jobs. Pre-execution only.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { replanCase } from "@/lib/cases/replan-service";
@@ -26,7 +27,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     // no body / not JSON — re-plan without an override
   }
   try {
-    const res = await replanCase(db, params.id, "ui", override);
+    const res = await replanCase(db, params.id, auditActor(_g.user, "ui"), override);
     if (!res.ok) {
       const status = res.code === "not_found" ? 404 : 409;
       return NextResponse.json({ error: res.error, code: res.code }, { status });

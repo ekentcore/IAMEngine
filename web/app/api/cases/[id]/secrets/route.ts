@@ -2,6 +2,7 @@
 // PATCH /api/cases/:id/secrets         — { name, externalId } set (or clear with empty) a per-case override.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { caseSecretStatus, setCaseSecretOverride } from "@/lib/cases/case-secrets-repo";
@@ -42,8 +43,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
 
   await setCaseSecretOverride(db, params.id, name, externalId || null);
-  await db.auditLog.create({
-    data: { actor: "ui", action: externalId ? "case.secret.override.set" : "case.secret.override.clear", clientId: exists.clientId, detail: { caseId: params.id, secretName: name } },
+  await recordAudit(externalId ? "case.secret.override.set" : "case.secret.override.clear", {
+    user: _g.user, caseRequestId: params.id, clientId: exists.clientId, detail: { caseId: params.id, secretName: name },
   });
   const secrets = await caseSecretStatus(db, params.id);
   return NextResponse.json({ secrets });

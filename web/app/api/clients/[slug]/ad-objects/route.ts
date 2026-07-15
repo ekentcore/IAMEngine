@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
+import { auditActor } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
@@ -14,7 +15,7 @@ export async function POST(_req: Request, { params }: { params: { slug: string }
   // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
   if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
-    const res = await makeRunnerService(db).requestAdDiscovery(params.slug);
+    const res = await makeRunnerService(db).requestAdDiscovery(params.slug, auditActor(_g.user, "ui"));
     return NextResponse.json({ ok: true, ...res });
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

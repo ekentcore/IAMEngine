@@ -4,6 +4,7 @@
 // Resume to continue the normal run afterward.
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { blockingJobs, type JobLite } from "./runner-logic";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 type Result =
   | { ok: true; paused: boolean }
@@ -22,7 +23,7 @@ const TERMINAL = ["completed", "failed"];
 export async function runSingleStep(
   db: PrismaClient,
   jobId: string,
-  actor: string,
+  actor: ActorInput,
   force: boolean
 ): Promise<Result> {
   const job = await db.job.findUnique({
@@ -68,6 +69,7 @@ export async function runSingleStep(
       error: null, startedAt: null, finishedAt: null,
     },
   });
-  await db.auditLog.create({ data: { actor, action: "job.run_single", jobId: job.id, caseRequestId: job.caseRequestId, detail: { systemKey: job.systemKey, forced: force, pausedCase: paused } } });
+  const who = resolveActor(actor);
+  await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "job.run_single", jobId: job.id, caseRequestId: job.caseRequestId, detail: { systemKey: job.systemKey, forced: force, pausedCase: paused } } });
   return { ok: true, paused };
 }

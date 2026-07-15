@@ -11,7 +11,7 @@ import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { generateInitialPassword } from "@/lib/auth/password";
 import { PASSWORD_RESET_KEY } from "@/lib/jobs/password-reset";
-import { actorLabel } from "@/lib/auth/audit";
+import { recordAudit } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +51,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     select: { id: true },
   });
   // The audit records the dispatch, never the value.
-  await db.auditLog.create({ data: { actor: actorLabel(_g.user, "ui"), action: "job.password_reset.dispatch", jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey } } });
+  await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey } });
   return NextResponse.json({ ok: true, jobId: job.id });
 }

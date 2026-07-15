@@ -6,6 +6,7 @@
 // but ONLY field NAMES and missing-requirement LABELS are returned — values never leave the server.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -105,8 +106,10 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     })
   );
 
+  const who = auditActor(_g.user, "ui");
   await repo.writeAudit({
-    actor: "ui",
+    actor: who.label,
+    userId: who.userId,
     action: "client.secrets.test",
     clientId: wiring.clientId,
     detail: { tested: results.length, passed: results.filter((r) => r.ok).length },

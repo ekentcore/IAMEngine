@@ -15,11 +15,62 @@ export const AUDIT_LIMIT = 250;
 
 export type AuditSearchParams = { q?: string; action?: string; days?: string; user?: string };
 
+// Keys rendered by hand (or too bulky to dump inline) — kept out of the generic key=value pass.
+const SPECIAL_KEYS = new Set(["summary", "diff"]);
+
+// The one-line cell. A row carrying a `summary` (a runbook edit) leads with it; everything else
+// falls back to the generic key=value dump.
 export function fmtDetail(detail: unknown): string {
   if (!detail || typeof detail !== "object") return "";
-  return Object.entries(detail as Record<string, unknown>)
+  const d = detail as Record<string, unknown>;
+  const rest = Object.entries(d)
+    .filter(([k]) => !SPECIAL_KEYS.has(k))
     .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
     .join("  ");
+  return typeof d.summary === "string" ? [d.summary, rest].filter(Boolean).join(" — ") : rest;
+}
+
+type RunbookDiffDetail = {
+  added?: Array<{ title: string; systemKey: string | null; steps: number }>;
+  removed?: Array<{ title: string; systemKey: string | null; steps: number }>;
+  changed?: Array<{
+    title: string;
+    titleFrom?: string;
+    titleTo?: string;
+    statusFrom?: string;
+    statusTo?: string;
+    steps?: { added: string[]; removed: string[] };
+  }>;
+  reordered?: Array<{ title: string; from: number; to: number }>;
+};
+
+// The hover/expanded view. A runbook edit's diff is spelled out line by line — "someone re-saved the
+// runbook" is useless; "Jane deleted the Spanning section" is the thing you actually need to see.
+export function fmtDetailLong(detail: unknown): string {
+  if (!detail || typeof detail !== "object") return "";
+  const d = detail as Record<string, unknown>;
+  const lines: string[] = [];
+  if (typeof d.summary === "string") lines.push(d.summary);
+
+  const diff = d.diff as RunbookDiffDetail | undefined;
+  if (diff && typeof diff === "object") {
+    for (const s of diff.added ?? []) lines.push(`+ added section "${s.title}" (${s.steps} step${s.steps === 1 ? "" : "s"})`);
+    for (const s of diff.removed ?? []) lines.push(`− removed section "${s.title}" (${s.steps} step${s.steps === 1 ? "" : "s"})`);
+    for (const c of diff.changed ?? []) {
+      if (c.titleFrom && c.titleTo) lines.push(`~ renamed "${c.titleFrom}" → "${c.titleTo}"`);
+      if (c.statusFrom && c.statusTo) lines.push(`~ "${c.title}" status ${c.statusFrom} → ${c.statusTo}`);
+      for (const step of c.steps?.added ?? []) lines.push(`  + "${c.title}": added step "${step}"`);
+      for (const step of c.steps?.removed ?? []) lines.push(`  − "${c.title}": removed step "${step}"`);
+    }
+    for (const r of diff.reordered ?? []) lines.push(`~ moved "${r.title}" (${r.from} → ${r.to})`);
+  }
+
+  const rest = Object.entries(d)
+    .filter(([k]) => !SPECIAL_KEYS.has(k))
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join("  ");
+  if (rest) lines.push(rest);
+  return lines.join("\n");
 }
 
 export async function loadAuditPage(searchParams: AuditSearchParams) {

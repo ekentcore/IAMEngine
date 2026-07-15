@@ -12,12 +12,15 @@ import { deriveStatus, type PlanOutcome } from "./planning-service";
 import { CaseAlreadyStartedError } from "./job-status";
 import { makeEmailDomainResolver } from "./plan-domain";
 import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resolve";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type ReplanResult =
   | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean; mode: "full" | "incremental"; kept: number; added: number; rerun: number }
   | { ok: false; error: string; code: "not_found" | "already_started" };
 
-export async function replanCase(db: PrismaClient, caseId: string, actor: string, override?: string): Promise<ReplanResult> {
+// `actor` is an AuditActor (label + User FK) for an operator-driven re-plan; a bare string for the
+// system callers that also re-plan (they carry no userId, by design).
+export async function replanCase(db: PrismaClient, caseId: string, actor: ActorInput, override?: string): Promise<ReplanResult> {
   const repo = makeCaseRepository(db);
   const info = await repo.replanInputs(caseId);
   if (!info) return { ok: false, error: "case not found", code: "not_found" };
@@ -70,8 +73,9 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: string
     throw e;
   }
 
+  const who = resolveActor(actor);
   await repo.writeAudit({
-    actor, action: "case.replan", clientId: info.client.id, caseRequestId: caseId,
+    actor: who.actor, userId: who.userId, action: "case.replan", clientId: info.client.id, caseRequestId: caseId,
     detail: { refreshedFromServiceNow, action, jobs: planned.length, mode: result.mode, kept: result.kept, added: result.added, rerun: result.rerun },
   });
 

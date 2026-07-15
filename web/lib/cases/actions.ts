@@ -5,7 +5,7 @@
 // guard + caseInScope + 404 messaging around the call.
 import { Prisma } from "@prisma/client";
 import type { PrismaClient, CaseStatus, JobStatus, Mode } from "@prisma/client";
-import { recordAudit, actorLabel } from "@/lib/auth/audit";
+import { recordAudit, auditActor } from "@/lib/auth/audit";
 import type { ActingUser } from "@/lib/auth/guard";
 import { scopeAllows, type ClientScope } from "@/lib/auth/client-scope";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
@@ -40,7 +40,7 @@ export async function cancelCase(db: PrismaClient, id: string, user: ActingUser 
   const svc = makeRunnerService(db);
   let stopped = 0;
   for (const j of inflight) {
-    try { await svc.stopJob(j.id, actorLabel(user, "ui:cancel")); stopped++; } catch { /* already terminal / lost the race — ignore */ }
+    try { await svc.stopJob(j.id, auditActor(user, "ui:cancel")); stopped++; } catch { /* already terminal / lost the race — ignore */ }
   }
   await db.caseRequest.update({ where: { id }, data: { pausedAt: new Date(), pausedReason: "operator", scheduledFor: null, scheduledBy: null } });
   await recordAudit("case.cancel", { user, caseRequestId: id, clientId: c.clientId, detail: { stopped } });

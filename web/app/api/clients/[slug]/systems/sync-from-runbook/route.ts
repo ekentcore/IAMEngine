@@ -4,6 +4,7 @@
 // or after a KB/runbook edit.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { syncSystemsFromRunbook } from "@/lib/clients/runbook-repo";
@@ -14,7 +15,7 @@ export async function POST(_req: Request, { params }: { params: { slug: string }
   const _g = await guard("client.edit_systems"); if (_g.res) return _g.res;
   // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
   if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
-  const res = await syncSystemsFromRunbook(db, params.slug);
+  const res = await syncSystemsFromRunbook(db, params.slug, auditActor(_g.user, "ui"));
   if (!res) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(res);
 }

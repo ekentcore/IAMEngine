@@ -15,7 +15,7 @@ import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requeueJob } from "@/lib/jobs/requeue";
-import { recordAudit, actorLabel } from "@/lib/auth/audit";
+import { recordAudit, auditActor } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -63,7 +63,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // Re-run every automated step from the top. A step that reported "ok — user not found" is
   // `succeeded`, so requeueing only the failures would leave that system silently un-offboarded.
   const jobs = await db.job.findMany({ where: { caseRequestId: kase.id, mode: "api" }, select: { id: true } });
-  const actor = actorLabel(g.user, "ui:offboard-target");
+  const actor = auditActor(g.user, "ui:offboard-target");
   let requeued = 0;
   const skipped: string[] = [];
   for (const j of jobs) {

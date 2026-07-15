@@ -6,6 +6,7 @@
 // mutates state (consumes the one-time reveal), so it must not sit behind an auth-only guard.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { recordAudit } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 
@@ -20,6 +21,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const password = c.initialPassword;
   await db.caseRequest.update({ where: { id: params.id }, data: { initialPassword: null } }); // shown once → wipe
-  await db.auditLog.create({ data: { actor: _g.user.email || "ui", action: "case.password.reveal", caseRequestId: params.id } });
+  await recordAudit("case.password.reveal", { user: _g.user, caseRequestId: params.id });
   return NextResponse.json({ password });
 }

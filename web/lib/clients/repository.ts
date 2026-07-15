@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
 import { normalizeCoreId } from "./core-id";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
+import { resolveActor, type ActorInput } from "../auth/actor";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 import { computeClientReadiness, type ConnTestState, type ClientReadiness, type RightsState } from "./readiness";
 import { parseRights, summarizeRights } from "../jobs/conn-test-logic";
@@ -602,7 +603,13 @@ export function makeClientRepository(db: PrismaClient) {
     },
 
     // Upsert the client's Delinea references (name -> id + label). Stores only references.
-    async upsertSecrets(clientId: string, entries: { name: string; externalId: string; label?: string | null }[]): Promise<void> {
+    // `actor`: the operator whose edit invalidates the attestations cleared below — without it the
+    // clearing row lands as a bare "system" event nobody can trace back to a secret change.
+    async upsertSecrets(
+      clientId: string,
+      entries: { name: string; externalId: string; label?: string | null }[],
+      actor?: ActorInput
+    ): Promise<void> {
       // Which references actually CHANGE? A rights attestation describes a specific credential —
       // rewiring a secret invalidates it, so clear the attestation on every system that brokers a
       // changed name (the operator re-attests or the probe re-verifies against the new secret).
@@ -629,8 +636,9 @@ export function makeClientRepository(db: PrismaClient) {
           : []),
       ]);
       if (staleSystems.length) {
+        const who = resolveActor(actor, "system");
         await db.auditLog.create({
-          data: { actor: "system", action: "system.setup.attest.cleared", clientId, detail: { systems: staleSystems, reason: "secret reference changed" } },
+          data: { actor: who.actor, userId: who.userId, action: "system.setup.attest.cleared", clientId, detail: { systems: staleSystems, reason: "secret reference changed" } },
         }).catch(() => {});
       }
     },
@@ -639,8 +647,10 @@ export function makeClientRepository(db: PrismaClient) {
       await db.auditLog.create({
         data: {
           actor: entry.actor,
+          userId: entry.userId ?? null,
           action: entry.action,
           clientId: entry.clientId ?? null,
+          caseRequestId: entry.caseRequestId ?? null,
           detail: (entry.detail ?? undefined) as Prisma.InputJsonValue | undefined,
         },
       });

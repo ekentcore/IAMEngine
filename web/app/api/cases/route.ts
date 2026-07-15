@@ -6,7 +6,7 @@ import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
-import { actorLabel } from "@/lib/auth/audit";
+import { auditActor } from "@/lib/auth/audit";
 import { createAndPlanCase, EngineOptOutError } from "@/lib/cases/planning-service";
 
 export const dynamic = "force-dynamic";
@@ -50,8 +50,9 @@ export async function POST(req: Request) {
         serviceNowCaseNumber: typeof body.serviceNowCaseNumber === "string" ? body.serviceNowCaseNumber : null,
         payload,
         dryRun: body.dryRun === true,
+        source: "manual",
       },
-      actorLabel(_g.user, "ui:new-case")
+      auditActor(_g.user, "ui:new-case")
     );
     return NextResponse.json(outcome, { status: 201 });
   } catch (err) {

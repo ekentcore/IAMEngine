@@ -9,7 +9,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
-import { actorLabel } from "@/lib/auth/audit";
+import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 
@@ -42,6 +42,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   if (claimed.count !== 1) {
     return NextResponse.json({ error: "already revealed — a password is shown exactly once and can't be recalled" }, { status: 410 });
   }
-  await db.auditLog.create({ data: { actor: actorLabel(_g.user, "ui"), action: "job.password_reset.reveal", jobId: params.id, caseRequestId: job.caseRequestId, clientId: job.case.clientId } });
+  await recordAudit("job.password_reset.reveal", { user: _g.user, jobId: params.id, caseRequestId: job.caseRequestId, clientId: job.case.clientId });
   return NextResponse.json({ ready: true, password });
 }

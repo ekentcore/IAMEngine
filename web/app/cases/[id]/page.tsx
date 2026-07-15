@@ -8,6 +8,7 @@ import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { authEnabled, getActingContext } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { intakeLabel } from "@/lib/cases/intake-labels";
+import { CASE_SOURCE_LABEL } from "@/lib/cases/case-source";
 import { loadPlaybook } from "@/lib/cases/playbook";
 import { loadRunReport } from "@/lib/cases/run-report";
 import { writeBackEnabled } from "@/lib/servicenow/worknote";
@@ -124,6 +125,10 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <p className="note">
             <Link href={`/clients/${c.client.slug}`}>{c.client.name}</Link> · {c.action} ·{" "}
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
+          </p>
+          <p className="note">
+            {CASE_SOURCE_LABEL[c.createdSource]} {c.createdBy ? <>by <b>{c.createdBy}</b></> : <span className="muted">— creator not recorded</span>}
+            {" · "}{c.createdAt.toLocaleString()}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

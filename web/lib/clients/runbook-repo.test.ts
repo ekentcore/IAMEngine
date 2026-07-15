@@ -4,8 +4,9 @@ import { saveRunbook } from "./runbook-repo";
 import type { ParsedSection } from "./runbook-parse";
 
 // A minimal stand-in for PrismaClient capturing what saveRunbook writes.
-function fakeDb(existingSystems: string[]) {
+function fakeDb(existingSystems: string[], priorSections: Array<Record<string, unknown>> = []) {
   const created: Array<Record<string, unknown>> = [];
+  const audits: Array<Record<string, unknown>> = [];
   const tx = {
     runbookSection: {
       deleteMany: async () => ({ count: 0 }),
@@ -21,11 +22,11 @@ function fakeDb(existingSystems: string[]) {
   };
   const db = {
     client: { findUnique: async () => ({ id: "c1" }) },
-    runbookSection: { findFirst: async () => null },
+    runbookSection: { findFirst: async () => null, findMany: async () => priorSections },
     $transaction: async (fn: (t: typeof tx) => Promise<void>) => fn(tx),
-    auditLog: { create: async () => ({}) },
+    auditLog: { create: async ({ data }: { data: Record<string, unknown> }) => { audits.push(data); return {}; } },
   };
-  return { db: db as never, created };
+  return { db: db as never, created, audits };
 }
 
 const sec = (systemKey: string | null, title: string): ParsedSection =>
@@ -107,4 +108,61 @@ test("syncSystemsFromRunbook is a no-op when systems already match", async () =>
   const res = await syncSystemsFromRunbook(db, "x");
   assert.deepEqual(res!.createdSystems, []);
   assert.equal(audits, 0, "no audit noise for a no-op");
+});
+
+test("saveRunbook attributes the audit row to the operator who saved it", async () => {
+  const { db, audits } = fakeDb([]);
+  await saveRunbook(db, "x", "onboard", "", [sec("m365", "Microsoft 365")], undefined, {
+    label: "user:jane@core.tech",
+    userId: "u1",
+  });
+  const row = audits.find((a) => a.action === "client.runbook.set")!;
+  assert.equal(row.actor, "user:jane@core.tech");
+  assert.equal(row.userId, "u1", "the User FK must be set, not just the label");
+});
+
+test("saveRunbook with no actor falls back to 'ui' rather than throwing", async () => {
+  const { db, audits } = fakeDb([]);
+  await saveRunbook(db, "x", "onboard", "", [sec("m365", "M365")], undefined);
+  const row = audits.find((a) => a.action === "client.runbook.set")!;
+  assert.equal(row.actor, "ui");
+  assert.equal(row.userId, null);
+});
+
+test("saveRunbook records WHAT changed — a dropped section shows up as removed", async () => {
+  // The client had M365 + Spanning; the operator saves a runbook with Spanning deleted.
+  const prior = [
+    { seq: 0, systemKey: "m365", title: "Microsoft 365", status: "automated", steps: ["step"] },
+    { seq: 1, systemKey: "spanning", title: "Spanning", status: "automated", steps: ["Assign a licence"] },
+  ];
+  const { db, audits } = fakeDb(["m365", "spanning"], prior);
+  await saveRunbook(db, "x", "onboard", "", [sec("m365", "Microsoft 365")], undefined, {
+    label: "user:jane@core.tech",
+    userId: "u1",
+  });
+  const row = audits.find((a) => a.action === "client.runbook.set")!;
+  const detail = row.detail as { summary: string; diff: { removed: Array<{ systemKey: string | null }> } };
+  assert.equal(detail.diff.removed.length, 1);
+  assert.equal(detail.diff.removed[0].systemKey, "spanning");
+  assert.equal(detail.summary, "−1 section");
+});
+
+test("saveRunbook records an added step's text", async () => {
+  const prior = [{ seq: 0, systemKey: "ad", title: "AD", status: "automated", steps: ["Create the user"] }];
+  const { db, audits } = fakeDb(["ad"], prior);
+  const edited: ParsedSection = { seq: 0, systemKey: "ad", title: "AD", status: "automated", steps: ["Create the user", "Add to All Staff"] };
+  await saveRunbook(db, "x", "onboard", "", [edited], undefined, { label: "user:jane@core.tech", userId: "u1" });
+  const row = audits.find((a) => a.action === "client.runbook.set")!;
+  const detail = row.detail as { diff: { changed: Array<{ steps?: { added: string[] } }> } };
+  assert.deepEqual(detail.diff.changed[0].steps!.added, ["Add to All Staff"]);
+});
+
+test("a no-op re-save is recorded as such (audited, but visibly nothing changed)", async () => {
+  const prior = [{ seq: 0, systemKey: "m365", title: "Microsoft 365", status: "automated", steps: ["step"] }];
+  const { db, audits } = fakeDb(["m365"], prior);
+  await saveRunbook(db, "x", "onboard", "", [sec("m365", "Microsoft 365")], undefined);
+  const row = audits.find((a) => a.action === "client.runbook.set")!;
+  const detail = row.detail as { summary: string; diff: { noop: boolean } };
+  assert.equal(detail.diff.noop, true);
+  assert.equal(detail.summary, "no changes");
 });

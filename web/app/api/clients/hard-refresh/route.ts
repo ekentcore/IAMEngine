@@ -2,6 +2,7 @@
 // discarding their manual edits. Body: { slugs: string[] }.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { hardRefreshClients } from "@/lib/clients/hard-refresh";
 
@@ -23,7 +24,7 @@ export async function POST(req: Request) {
   const slugs = [...new Set((body.slugs as string[]).map((s) => s.trim()).filter(Boolean))].slice(0, MAX);
   if (slugs.length === 0) return NextResponse.json({ error: "no slugs given" }, { status: 422 });
 
-  const results = await hardRefreshClients(db, slugs, "ui:bulk");
+  const results = await hardRefreshClients(db, slugs, auditActor(_g.user, "ui:bulk"));
   return NextResponse.json({
     results,
     ok: results.filter((r) => r.ok).length,

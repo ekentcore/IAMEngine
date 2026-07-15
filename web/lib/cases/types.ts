@@ -1,5 +1,5 @@
 // Shared types for the cases domain (repository + planning + import + routes/UI).
-import type { Action, CaseStatus, JobStatus, Mode } from "@prisma/client";
+import type { Action, CaseSource, CaseStatus, JobStatus, Mode } from "@prisma/client";
 
 export type NewCaseInput = {
   clientSlug: string;
@@ -8,6 +8,9 @@ export type NewCaseInput = {
   subject?: string | null;
   payload: Record<string, unknown>;
   dryRun?: boolean; // plan jobs in -WhatIf (read-only) mode
+  // HOW the case was opened. Stored on the row so "which cases did a human hand-key?" is a filter,
+  // not an archaeology dig through AuditLog. Defaults to `manual` — the only path a human drives.
+  source?: CaseSource;
 };
 
 export type CaseListItem = {
@@ -51,6 +54,11 @@ export type CaseListItem = {
   // the actor wasn't a signed-in user (auth off).
   lastActionLabel: string | null;
   lastActionBy: string | null;
+  // WHO opened the case and HOW, read straight off the row (not inferred from the audit trail).
+  // createdBy is the operator's email when a signed-in engineer opened it, else the raw actor label
+  // ("system:intake-poll"). null only for rows predating this column.
+  createdBy: string | null;
+  createdSource: CaseSource;
   // Per-case run readiness — can this case's systems actually run? Based on whether the required
   // Delinea credentials are set for the systems in its plan: "ready" (all set), "partial" (some set),
   // "blocked" (none set), "none" (no credential-gated systems — e.g. all-manual). readinessMissing
@@ -89,6 +97,9 @@ export type CaseDetail = {
   dryRun: boolean;
   serviceNowCaseNumber: string | null;
   createdAt: Date;
+  // The operator's email when a signed-in engineer opened this case, else the raw actor label.
+  createdBy: string | null;
+  createdSource: CaseSource;
   client: { name: string; slug: string };
   payload: Record<string, unknown>;
   jobs: PlannedJobView[];

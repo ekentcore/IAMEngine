@@ -33,10 +33,15 @@ import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
 const req = (j: { request: unknown }): JobRequest => (j.request ?? {}) as JobRequest;
+
+// Agent.updateRequestedBy/restartRequestedBy are rendered verbatim on the Agents page ("by <x>"), so
+// they keep the bare email the column has always held — the "user:" label form belongs to AuditLog.
+const displayActor = (actor: string) => actor.replace(/^user:/, "");
 
 // The offboard-target shortlist an executor returns when it cannot tell WHICH person to offboard —
 // result.Candidates (PowerShell) / result.candidates. See recordResult: a result carrying these is a
@@ -252,39 +257,43 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     // Operator action: enable/disable an agent (a disabled agent can't claim/broker/post).
-    async setEnabled(agentId: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
+    async setEnabled(agentId: string, enabled: boolean, actor: ActorInput = "ui"): Promise<{ id: string; enabled: boolean }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       await db.agent.update({ where: { id: agentId }, data: { enabled } });
-      await db.auditLog.create({ data: { actor: "ui", action: enabled ? "agent.enable" : "agent.disable", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: enabled ? "agent.enable" : "agent.disable", detail: { agentId } } });
       return { id: agentId, enabled };
     },
 
     // Move a DISABLED agent to the trash (soft delete; restorable for TRASH_RETENTION_DAYS).
-    async trashAgent(agentId: string): Promise<{ id: string }> {
+    async trashAgent(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (agent.enabled) throw new HttpError(409, "disable the runner before moving it to the trash");
       if (agent.deletedAt) return { id: agentId }; // already trashed (idempotent)
       await db.agent.update({ where: { id: agentId }, data: { deletedAt: new Date() } });
-      await db.auditLog.create({ data: { actor: "ui", action: "agent.trash", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.trash", detail: { agentId } } });
       return { id: agentId };
     },
 
     // Restore a trashed agent — it comes back DISABLED (re-enable explicitly before use).
-    async restoreAgent(agentId: string): Promise<{ id: string }> {
+    async restoreAgent(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       await db.agent.update({ where: { id: agentId }, data: { deletedAt: null, enabled: false } });
-      await db.auditLog.create({ data: { actor: "ui", action: "agent.restore", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.restore", detail: { agentId } } });
       return { id: agentId };
     },
 
     // Permanently delete an agent (jobs keep their history; assignedAgentId is set null).
-    async deleteAgentForever(agentId: string): Promise<{ id: string }> {
+    async deleteAgentForever(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
-      await db.auditLog.create({ data: { actor: "ui", action: "agent.delete", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.delete", detail: { agentId } } });
       await db.agent.delete({ where: { id: agentId } });
       return { id: agentId };
     },
@@ -371,13 +380,14 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
     // the next client-network heartbeat for that client consumes it and runs discovery.
-    async requestAdDiscovery(clientSlug: string): Promise<{ clientId: string }> {
+    async requestAdDiscovery(clientSlug: string, actor: ActorInput = "ui"): Promise<{ clientId: string }> {
       const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
       if (!client) throw new HttpError(404, "unknown client");
       const agent = await db.agent.findFirst({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null }, select: { id: true } });
       if (!agent) throw new HttpError(409, "no enabled on-prem agent for this client to read its DC");
       await db.client.update({ where: { id: client.id }, data: { adDiscoverRequestedAt: new Date() } });
-      await db.auditLog.create({ data: { actor: "ui", action: "client.ad_discovery.request", clientId: client.id } });
+      const who = resolveActor(actor);
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "client.ad_discovery.request", clientId: client.id } });
       return { clientId: client.id };
     },
 
@@ -401,27 +411,29 @@ export function makeRunnerService(db: PrismaClient) {
     // actor = the operator who requested it (their email), recorded in the audit log AND stamped on
     // the agent (updateRequestedBy) so the Agents page can show WHO pushed the update. Defaults to
     // "ui" only when no identity is available (auth off).
-    async requestUpdate(agentId: string, actor = "ui"): Promise<{ id: string }> {
+    async requestUpdate(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // The UI hides Update for disabled/trashed agents, but the action is callable — guard here too:
       // a disabled agent won't heartbeat to consume the flag, so the request would just hang pending.
       if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting an update");
-      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: actor, updateDeliveredAt: null } });
-      await db.auditLog.create({ data: { actor, action: "agent.update_requested", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: displayActor(who.actor), updateDeliveredAt: null } });
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.update_requested", detail: { agentId } } });
       return { id: agentId };
     },
 
     // Operator action: ask the runner to RESTART (re-exec, no file pull) on its next heartbeat — clears
     // a wedged claim/work loop remotely. Needs a supervised runner to come back cleanly.
-    async requestRestart(agentId: string, actor = "ui"): Promise<{ id: string }> {
+    async requestRestart(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting a restart");
-      await db.agent.update({ where: { id: agentId }, data: { restartRequested: true, restartRequestedAt: new Date(), restartRequestedBy: actor, restartDeliveredAt: null } });
-      await db.auditLog.create({ data: { actor, action: "agent.restart_requested", detail: { agentId } } });
+      const who = resolveActor(actor);
+      await db.agent.update({ where: { id: agentId }, data: { restartRequested: true, restartRequestedAt: new Date(), restartRequestedBy: displayActor(who.actor), restartDeliveredAt: null } });
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.restart_requested", detail: { agentId } } });
       return { id: agentId };
     },
 
@@ -1308,18 +1320,19 @@ export function makeRunnerService(db: PrismaClient) {
     // Operator "Stop": abort an in-flight (or queued) step that looks wedged — mark it failed so the
     // case stops waiting on it (and its still-pending siblings are cancelled). A late result the runner
     // eventually posts is rejected by recordResult's terminal guard (409), so the Stop holds.
-    async stopJob(jobId: string, actor: string): Promise<{ jobId: string; status: string; caseStatus: string }> {
+    async stopJob(jobId: string, actor: ActorInput): Promise<{ jobId: string; status: string; caseStatus: string }> {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, systemKey: true, case: { select: { clientId: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       if (!["pending", "dispatched", "running"].includes(job.status)) {
         throw new HttpError(409, `job is ${job.status} — only an in-flight or queued step can be stopped`);
       }
-      const who = actor.startsWith("user:") ? actor.slice(5) : "an operator";
+      const by = resolveActor(actor);
+      const who = by.actor.startsWith("user:") ? by.actor.slice(5) : "an operator";
       // oneTimePassword: a stopped password reset may or may not have landed — the value is unverified,
       // so wipe it (same as a failed result); null is a no-op for every other job type.
       await db.job.update({ where: { id: jobId }, data: { status: "failed", error: `stopped by ${who} — the step was not progressing`, finishedAt: new Date(), oneTimePassword: null } });
       const caseStatus = await refreshCaseStatus(db, job.caseRequestId);
-      await db.auditLog.create({ data: { actor, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
+      await db.auditLog.create({ data: { actor: by.actor, userId: by.userId, action: "job.stop", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey } } });
       // Operator stops bypass recordResult (the runner never posts a result), so without this the
       // stopped step never reaches the /runs log. Never fatal to the stop itself.
       try {
@@ -1575,7 +1588,7 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Release an approval-gated job so it can be claimed. Gate is enforced here (server-side),
     // per CLAUDE.md: destructive steps need a recorded approval before dispatch.
-    async approveJob(jobId: string, approvedBy: string): Promise<{ jobId: string; caseStatus: string }> {
+    async approveJob(jobId: string, approvedBy: ActorInput): Promise<{ jobId: string; caseStatus: string }> {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, caseRequestId: true, request: true, case: { select: { clientId: true } } } });
       if (!job) throw new HttpError(404, "unknown job");
       const r = req(job);
@@ -1585,7 +1598,8 @@ export function makeRunnerService(db: PrismaClient) {
       await db.job.update({ where: { id: jobId }, data: { request: { ...r, approved: true } as Prisma.InputJsonValue } });
       const { caseStatus } = await caseStatusFrom(db, job.caseRequestId);
       await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
-      await db.auditLog.create({ data: { actor: approvedBy, action: "job.approve", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { approvedBy } } });
+      const by = resolveActor(approvedBy);
+      await db.auditLog.create({ data: { actor: by.actor, userId: by.userId, action: "job.approve", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { approvedBy: by.actor } } });
       return { jobId, caseStatus };
     },
   };

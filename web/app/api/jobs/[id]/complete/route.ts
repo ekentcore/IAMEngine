@@ -10,6 +10,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { recordAudit } from "@/lib/auth/audit";
 import { deriveCaseStatus } from "@/lib/jobs/runner-logic";
 import { acceptedKeysFor } from "@/lib/jobs/runner-service";
 import { manualCompletionFlip } from "@/lib/cases/sn-completion";
@@ -82,7 +83,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       ? current!.status
       : derived;
   await db.caseRequest.update({ where: { id: job.caseRequestId }, data: { status: caseStatus } });
-  await db.auditLog.create({ data: { actor: "ui", action: done ? "job.mark_complete" : "job.unmark_complete", jobId: job.id, caseRequestId: job.caseRequestId } });
+  await recordAudit(done ? "job.mark_complete" : "job.unmark_complete", { user: _g.user, jobId: job.id, caseRequestId: job.caseRequestId });
 
   return NextResponse.json({ ok: true, caseStatus });
 }

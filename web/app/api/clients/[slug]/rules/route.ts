@@ -2,6 +2,7 @@
 // PUT /api/clients/:slug/rules — { personas, globals } — validate every condition, then persist.
 import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
+import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -43,21 +44,22 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   const globalsOffboard = checked.value.globalsOffboard ?? existing.globalsOffboard ?? {};
   const client = await repo.setRules(params.slug, personas, globals, globalsOffboard);
   // Record the unconditionally-added global groups in the audit detail so a config-seeded
-  // privilege grant (e.g. an "always add Domain Admins" rule) is visible/attributable after the
-  // fact — the route has no operator identity yet (actor:"ui"), so the WHAT must be captured.
+  // privilege grant (e.g. an "always add Domain Admins" rule) is visible after the fact — the actor
+  // says who, the detail must say what.
   const alwaysGlobalGroups = Object.values((globals ?? {}) as Record<string, { groups?: unknown[] }>)
     .flatMap((f) => (Array.isArray(f?.groups) ? f.groups : []))
     .filter((g): g is string => typeof g === "string");
   // Summarize the OFFBOARD rules too, so a tampered offboard edit (a deliberately-thin removeGroups
-  // that leaves admin access, or a moveToOu to a privileged OU) is visible/attributable in the audit
-  // even without an operator identity.
+  // that leaves admin access, or a moveToOu to a privileged OU) is visible in the audit.
   const offboardSummary = Object.entries((globalsOffboard ?? {}) as Record<string, { groups?: unknown[]; ou?: unknown }>).map(([sys, f]) => ({
     sys,
     removeGroups: Array.isArray(f?.groups) ? f.groups.filter((g): g is string => typeof g === "string") : [],
     moveToOu: typeof f?.ou === "string" ? f.ou : undefined,
   }));
+  const who = auditActor(_g.user, "ui");
   await repo.writeAudit({
-    actor: _g.user.email || "ui", // the signed-in operator who edited the rules (was hardcoded "ui")
+    actor: who.label,
+    userId: who.userId,
     action: "client.rules.edit",
     clientId: client.id,
     detail: {

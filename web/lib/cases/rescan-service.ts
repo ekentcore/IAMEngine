@@ -5,12 +5,13 @@
 import type { PrismaClient } from "@prisma/client";
 import { fetchNormalizedIntake } from "./import-service";
 import { makeCaseRepository } from "./repository";
+import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type RescanResult =
   | { ok: true; changed: string[]; actionChanged: boolean; caseNumber: string }
   | { ok: false; error: string; code: "not_found" | "not_servicenow" | "gone_from_sn" | "action_flip_started" };
 
-export async function rescanCaseIntake(db: PrismaClient, caseId: string, actor: string): Promise<RescanResult> {
+export async function rescanCaseIntake(db: PrismaClient, caseId: string, actor: ActorInput): Promise<RescanResult> {
   const repo = makeCaseRepository(db);
   const info = await repo.replanInputs(caseId);
   if (!info) return { ok: false, error: "case not found", code: "not_found" };
@@ -31,8 +32,9 @@ export async function rescanCaseIntake(db: PrismaClient, caseId: string, actor: 
     return { ok: false, error: "case not found", code: "not_found" };
   }
 
+  const who = resolveActor(actor);
   await repo.writeAudit({
-    actor, action: "case.intake.rescan", clientId: res.clientId, caseRequestId: caseId,
+    actor: who.actor, userId: who.userId, action: "case.intake.rescan", clientId: res.clientId, caseRequestId: caseId,
     detail: { caseNumber: info.serviceNowCaseNumber, changed: res.changed, actionChanged: res.actionChanged },
   });
   return { ok: true, changed: res.changed, actionChanged: res.actionChanged, caseNumber: info.serviceNowCaseNumber };
