@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CATALOG } from "@/lib/generator/system-map";
+import { withOnboardOu } from "@/lib/clients/ad-folders";
+import { OuTreePicker } from "./ad-pickers";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual" | "scim";
@@ -15,6 +17,7 @@ type Row = {
   requiresApproval: boolean;
   captureEvidence: boolean;
   offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
+  onboardOu: string; // AD onboarding target DN (config.onboard.ou) — the field the runner actually uses
   secretNames: string[];
   configText: string; // JSON text; parsed on save
 };
@@ -47,6 +50,7 @@ const HELP = {
   intent: "How destructive this system's OFFBOARD step is. disable = reversible containment (lock the account, isolate the device, revoke sessions) — undoable, and a candidate for future automation. destructive = actually deletes data (e.g. delete a mailbox) — always requires operator approval AND snapshots state first so it's redoable.",
   secrets: "The Delinea secret references this system needs at run time (comma-separated names, e.g. m365-admin). Names only — never the values.",
   config: 'Per-lane JSON settings, nested under onboard / offboard. e.g. { "offboard": { "delete": true } }. Leave blank for defaults.',
+  onboardOu: "Where new AD accounts are created (config.onboard.ou). This is the value the runner uses — it overrides any OU set in Roles & rules. Type a full DN or 📁 Browse the folders discovered from the DC. Leave blank to create at the domain default. Refresh the folder list under Roles & rules → “Refresh AD objects from DC”.",
 };
 
 function Field({ label, help, children, grow }: { label: string; help: string; children: ReactNode; grow?: boolean }) {
@@ -87,6 +91,7 @@ function rowFromCatalog(key: string): Row {
     requiresApproval: false,
     captureEvidence: false,
     offboardIntent: "disable",
+    onboardOu: "",
     secretNames: c?.secret ? [c.secret] : [],
     configText: "",
   };
@@ -100,6 +105,10 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   const [name, setName] = useState("");
   const [backbone, setBackbone] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
+  // AD folders the agent discovered from the DC (client.adObjects.ous) — feeds the onboarding-OU tree
+  // picker on the active-directory row. `ouPickerRow` tracks which row has its Browse tree open.
+  const [adOus, setAdOus] = useState<string[]>([]);
+  const [ouPickerRow, setOuPickerRow] = useState<number | null>(null);
   const [addKey, setAddKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -128,6 +137,9 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       const c = await res.json();
       setName(c.name ?? s);
       setBackbone(c.backbone ?? "");
+      const ad = (c.adObjects ?? {}) as { ous?: unknown };
+      setAdOus(Array.isArray(ad.ous) ? (ad.ous as string[]) : []);
+      setOuPickerRow(null);
       setRows(
         (c.systems ?? []).map((sys: Record<string, unknown>) => ({
           systemKey: sys.systemKey,
@@ -139,6 +151,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
           offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
+          onboardOu: String((sys.config as { onboard?: { ou?: unknown } } | null)?.onboard?.ou ?? ""),
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
           configText: sys.config ? JSON.stringify(sys.config, null, 2) : "",
         }))
@@ -241,6 +254,10 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       if (config === null) config = {};
       const intent = { ...((config.intent as Record<string, unknown> | undefined) ?? {}), offboard: r.offboardIntent };
       config = { ...config, intent };
+      // The onboarding-OU control is authoritative for the AD create target: merge it into
+      // config.onboard.ou (the field the runner reads), so it wins over the raw JSON textarea — the
+      // same "structured control beats the blob" contract as offboardIntent above.
+      if (r.systemKey === "active-directory") config = withOnboardOu(config, r.onboardOu.trim());
       systems.push({ ...r, secretNames: r.secretNames, config });
     }
     try {
@@ -414,6 +431,25 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                     <textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder={'{ "offboard": { } }'} rows={2} style={{ width: "100%", minWidth: 260, fontFamily: "monospace", fontSize: 12 }} />
                   </Field>
                 </div>
+                {/* Row 3 — AD onboarding OU/folder picker (writes config.onboard.ou, the field the runner uses) */}
+                {r.systemKey === "active-directory" && (
+                  <div style={{ marginTop: "0.55rem", maxWidth: 520 }}>
+                    <Field label="Onboarding OU / folder" help={HELP.onboardOu} grow>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input value={r.onboardOu} onChange={(e) => update(i, { onboardOu: e.target.value })}
+                          placeholder="CN=Users,DC=… or OU=…,DC=…" style={{ flex: 1, minWidth: 240, fontFamily: "monospace", fontSize: 12 }} />
+                        <button type="button" onClick={() => setOuPickerRow(ouPickerRow === i ? null : i)}>
+                          {ouPickerRow === i ? "Close" : "📁 Browse"}
+                        </button>
+                      </div>
+                    </Field>
+                    {ouPickerRow === i && (
+                      <div style={{ marginTop: 6 }}>
+                        <OuTreePicker ous={adOus} onPick={(dn) => { update(i, { onboardOu: dn }); setOuPickerRow(null); }} />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {rows.length === 0 && <p className="muted" style={{ textAlign: "center", padding: "1rem", border: "1px dashed var(--line, #e5e7eb)", borderRadius: 10 }}>No systems. Add one above or use “Parse instructions”.</p>}

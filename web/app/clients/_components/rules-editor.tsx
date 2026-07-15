@@ -29,6 +29,9 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   const [action, setAction] = useState<"onboard" | "offboard">("onboard");
   const [systemKeys, setSystemKeys] = useState<string[]>([]);
   const [adObjects, setAdObjects] = useState<{ ous: string[]; groups: string[]; discoveredAt?: string }>({ ous: [], groups: [] });
+  // Per-system config.onboard.ou — the OU the runner actually uses. Drives the shadow warning that an
+  // OU set here (a persona/global fragment) is overridden by the system's own base OU at plan time.
+  const [systemOnboardOu, setSystemOnboardOu] = useState<Record<string, string>>({});
   const [cloudGroups, setCloudGroups] = useState<{ name: string; type?: string }[]>([]);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -54,6 +57,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         const cg = (d.cloudGroups ?? {}) as { groups?: { name: string; type?: string }[] };
         setGlobals(g); setGlobalsOffboard((d.globalsOffboard ?? {}) as Globals); setPersonas(p); setSystemKeys(keys);
         setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
+        setSystemOnboardOu((d.systemOnboardOu ?? {}) as Record<string, string>);
         setCloudGroups(Array.isArray(cg.groups) ? cg.groups.filter((x) => x && typeof x.name === "string") : []);
         setScope("globals");
         setActiveSystem(Object.keys(g)[0] ?? keys[0] ?? "active-directory");
@@ -258,7 +262,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
 
           {activeSystem ? (
-            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} action={action} slug={slug ?? ""} systemKey={activeSystem} />
+            <FragmentEditor key={`${scope}|${action}|${activeSystem}`} frag={fragment} onChange={setFragment} ous={adObjects.ous} groupOptions={[...new Set([...adObjects.groups, ...cloudGroups.map((g) => g.name)])]} action={action} slug={slug ?? ""} systemKey={activeSystem} shadowOu={action === "onboard" ? (systemOnboardOu[activeSystem] ?? "") : ""} />
           ) : (
             <p className="note" style={{ marginTop: 12 }}>Add a system to start adding rules.</p>
           )}
@@ -275,7 +279,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
 }
 
 // ---- one system's fragment: GROUP rules, OU rules, ATTRIBUTES ----
-function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, systemKey }: { frag: Fragment; onChange: (f: Fragment) => void; ous: string[]; groupOptions: string[]; action: "onboard" | "offboard"; slug: string; systemKey: string }) {
+function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, systemKey, shadowOu }: { frag: Fragment; onChange: (f: Fragment) => void; ous: string[]; groupOptions: string[]; action: "onboard" | "offboard"; slug: string; systemKey: string; shadowOu?: string }) {
   const [ouPick, setOuPick] = useState<number | null>(null);
   const off = action === "offboard";
   const L = {
@@ -339,6 +343,11 @@ function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, syste
       {/* OU */}
       <section>
         <h3 style={{ margin: "0 0 4px" }}>{L.ou} <span className="note">(first matching rule wins; a rule with no condition is the default)</span></h3>
+        {shadowOu && (
+          <p className="note" style={{ background: "#fef6e7", border: "1px solid #fde9c8", color: "#92400e", borderRadius: 4, padding: "4px 8px", marginBottom: 6 }}>
+            ⚠ The base OU set in <strong>Edit systems</strong> (<code style={{ fontSize: 11 }}>{shadowOu}</code>) overrides any OU rule here — the system’s own config wins at plan time. To change where accounts are created, edit it there.
+          </p>
+        )}
         {ouRows.length === 0 && <p className="note">No OU rule (uses the system default).</p>}
         {ouRows.map((row, i) => (
           <div key={i} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>

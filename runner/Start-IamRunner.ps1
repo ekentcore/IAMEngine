@@ -1746,15 +1746,23 @@ function Get-CtgBuildId {
 }
 
 function Invoke-CtgAdDiscovery {
-    # Operator clicked "Refresh AD objects": read the DC's OUs + groups (read-only; the agent's own
+    # Operator clicked "Refresh AD objects": read the DC's folders + groups (read-only; the agent's own
     # domain context can read the directory — no brokered credential needed) and report them back so
-    # the rules editor can offer real OU/group pickers instead of hand-typed DNs.
+    # the editors can offer real folder/group pickers instead of hand-typed DNs.
+    #
+    # "Folders" = every node a user can be created under: organizationalUnit (OU=…), container
+    # (CN=Users, CN=Computers, CN=Managed Service Accounts, …), builtinDomain (CN=Builtin) and the
+    # domainDNS root itself — so the picker shows the WHOLE tree, not just OUs. Get-ADOrganizationalUnit
+    # returns ONLY OUs, so a client whose users live in the default CN=Users container (no user OU) had
+    # nothing to pick; Get-ADObject over those classes fixes that. Reported in the `ous` field for
+    # backward compatibility (the app treats it as an arbitrary folder-DN list; the tree nests by DN).
     if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) { Write-Warning "AD discovery skipped — no ActiveDirectory module on this host"; return }
     try {
-        $ous = @(Get-ADOrganizationalUnit -Filter * -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
+        $folderFilter = '(|(objectClass=organizationalUnit)(objectClass=container)(objectClass=builtinDomain)(objectClass=domainDNS))'
+        $ous = @(Get-ADObject -LDAPFilter $folderFilter -ErrorAction Stop | Select-Object -ExpandProperty DistinguishedName)
         $groups = @(Get-ADGroup -Filter * -ErrorAction Stop | Select-Object -ExpandProperty Name)
         Invoke-AppApi POST '/api/agents/ad-objects' @{ agentId = $AgentId; ous = $ous; groups = $groups } | Out-Null
-        Write-Host "AD discovery: reported $($ous.Count) OUs, $($groups.Count) groups" -ForegroundColor Green
+        Write-Host "AD discovery: reported $($ous.Count) folders, $($groups.Count) groups" -ForegroundColor Green
     }
     catch {
         Write-Warning "AD discovery failed: $($_.Exception.Message)"
