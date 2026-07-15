@@ -1070,12 +1070,20 @@ function Get-CtgAdAccountSids {
         when nothing could be resolved (callers then report "verify manually").
     #>
     [CmdletBinding()]
-    param([hashtable]$AdConnection = @{}, $Creds)
+    # -SamAccountName names the account to evaluate OUTRIGHT, and wins over $Creds. The caller knows
+    # which identity the connection actually authenticates as, and since the runner may bind as SYSTEM
+    # (ambient, no credential) rather than the ad-dc account, reading the account out of $Creds here
+    # would audit the ACL of a principal the jobs never use. $Creds stays as the fallback so existing
+    # callers keep working.
+    param([hashtable]$AdConnection = @{}, $Creds, [string]$SamAccountName)
     $sam = $null
-    try {
-        $s = if ($Creds -is [System.Collections.IDictionary]) { $Creds['ad-dc'] } else { $null }
-        if ($s -and $s.Username) { $sam = ([string]$s.Username -split '[\\@]')[0]; if ([string]$s.Username -match '\\') { $sam = ([string]$s.Username -split '\\')[-1] } }
-    } catch { }
+    if ($SamAccountName) { $sam = $SamAccountName }
+    else {
+        try {
+            $s = if ($Creds -is [System.Collections.IDictionary]) { $Creds['ad-dc'] } else { $null }
+            if ($s -and $s.Username) { $sam = ([string]$s.Username -split '[\\@]')[0]; if ([string]$s.Username -match '\\') { $sam = ([string]$s.Username -split '\\')[-1] } }
+        } catch { }
+    }
     if (-not $sam) { return @() }
     $sids = [System.Collections.Generic.List[string]]::new()
     try {

@@ -103,19 +103,35 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "admin password (X-Password)", anyOf: ["X-Password", "Password", "AdminPassword", "Secret", "ApiKey", "API Key", "Token"] },
     { label: "org domain", anyOf: ["Domain", "OrgDomain", "Org", "Tenant"], orClientDomain: true },
   ],
-  // On-prem AD / directory-sync service account: username + password are required; the DC to bind to
-  // is OPTIONAL. The common topology is an agent running ON the domain controller, which authenticates
-  // in its ambient/local domain context — so New-CtgAdConnection (Start-IamRunner.ps1) OMITS -Server
-  // entirely and the AD cmdlets target the local DC. When a target IS wanted (an agent on a different
-  // in-network box), the "Active Directory Account" Delinea template has no Server field, so the runner
-  // reads the DC name from the Documentation Link field — the synonyms below mirror that exactly so the
-  // Test agrees with the runner. `optional` => a missing server field never flags as missing.
+  // On-prem AD / directory-sync service account. The common topology is an agent running ON the domain
+  // controller, where the runner authenticates as its OWN identity (SYSTEM = the directory's SYSTEM
+  // principal) and never uses this credential at all — New-CtgAdConnection (Start-IamRunner.ps1) tries
+  // ambient first there and keeps the credential only as a fallback. So username + password are still
+  // required (they carry the member-server topology, and are the fallback everywhere else), but two
+  // fields are optional:
+  //
+  //   server — the DC to bind to. Omitted entirely on a DC, where the cmdlets target the local domain.
+  //     The "Active Directory Account" Delinea template has no Server field, so the runner reads the DC
+  //     name from the Documentation Link field; the synonyms below mirror the runner exactly so the
+  //     Test agrees with it.
+  //   domain — what QUALIFIES a bare username. That template keeps the domain in its own field, so the
+  //     stored username is usually a bare sAMAccountName — and a bare name has no realm, so it cannot
+  //     get a Kerberos ticket, degrades to NTLM, and a DC with LDAP signing / channel binding enforced
+  //     refuses the bind. The runner qualifies it from this field. Listed (optional) so the Test SHOWS
+  //     the field exists: a username already written as DOMAIN\user or user@domain needs no Domain.
+  //
+  // `optional` => a missing field never flags as missing.
   "ad-dc": [
     { label: "username", anyOf: ["Username"] },
     { label: "password", anyOf: ["Password"] },
     {
       label: "domain controller (server)",
       anyOf: ["Server", "Host", "DomainController", "DC", "Documentation Link", "DocumentationLink", "Document Link", "DocLink"],
+      optional: true,
+    },
+    {
+      label: "domain (qualifies a bare username)",
+      anyOf: ["Domain", "DomainName", "NetBIOSName", "DNSDomainName", "FQDN"],
       optional: true,
     },
   ],

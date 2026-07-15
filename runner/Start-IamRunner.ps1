@@ -265,28 +265,163 @@ function Write-CtgLog {
     } catch { }  # logging must never break the runner
 }
 
-# Build the AD connection splat from the brokered ad-dc secret (Option 2): the AD module
-# authenticates as the ad-dc account (-Credential) against the DC named in its Fields (-Server),
-# so the runner's own process identity needs no AD rights. Empty when ad-dc isn't brokered (the
-# central runner / a host already running as a domain account).
+# --- How the runner authenticates to Active Directory ---------------------------------------------
+#
+# The runner installs as a SYSTEM scheduled task (install-task.ps1). ON A WRITABLE DOMAIN CONTROLLER —
+# where the agent nearly always lives — SYSTEM's network identity IS the directory's own SYSTEM
+# principal: full control, over a Kerberos-sealed channel, needing no credential at all. Attaching the
+# brokered -Credential from that host is what BREAKS it. Delinea's "Active Directory Account" template
+# keeps the domain in its own field, so the stored Username is usually a BARE sAMAccountName; a bare
+# name carries no realm, so SSPI can't get a Kerberos ticket for it, the connection degrades to NTLM,
+# and a DC with LDAP signing / channel binding enforced refuses the bind — surfacing as "Authentication
+# failed on the remote side", or LDAP 8 strongerAuthRequired ("the user has not been authenticated").
+# We were handing AD a strictly worse identity than the process already had. (Case UM0029763.)
+#
+# Two rules keep the fix from creating worse bugs than it fixes:
+#
+# 1. AMBIENT IS ONLY PREFERRED WHERE IT IS KNOWN-PRIVILEGED — SYSTEM, on a WRITABLE DC. It is not
+#    enough that a probe passes: Get-ADDomain is a READ, and every authenticated principal passes it.
+#    A member server's SYSTEM is only the machine account (reads the directory fine, cannot create a
+#    user); an RODC cannot be written at all; a task re-pointed at some domain service account has
+#    whatever rights it was given. Preferring ambient on a read probe in any of those cases would go
+#    green and then fail Access-Denied halfway through a case. So the preference is decided by what
+#    the host IS, and ambient is never a silent fallback for a credential that was refused — off a
+#    privileged DC we use the brokered account and FAIL LOUDLY if AD won't take it.
+#
+# 2. AT MOST ONE CREDENTIAL BIND PER CALL. Never probe several forms of the same password looking for
+#    one that sticks: every refused bind increments the account's badPwdCount, and ad-dc is a shared
+#    account (several clients reuse it for exchange-onprem/directory-sync), so a stale vault password
+#    would march it straight into a domain lockout. We derive ONE qualified username and try it once.
+
+function Test-CtgAdAmbientIsPrivileged {
+    # Is this process's own identity one we KNOW holds directory write rights — i.e. SYSTEM on a
+    # writable DC? Anything else ($false) means the brokered ad-dc account must lead.
+    if (-not $IsWindows) { return $false }
+    # SYSTEM specifically. install-task.ps1 registers the task as SYSTEM, but an operator may have
+    # re-pointed it at a service account, and we cannot assume anything about that account's rights.
+    try { if (-not [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { return $false } }
+    catch { return $false }
+    # Win32_ComputerSystem.DomainRole: 4 = backup DC, 5 = primary DC.
+    try { if (([int](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).DomainRole) -notin @(4, 5)) { return $false } }
+    catch { return $false }
+    # An RODC reports as a DC but holds no writable copy — writes route to a writable DC, where this
+    # host is just an unprivileged machine account. Best-effort: if we can't tell, assume writable.
+    try { if ((Get-ADDomainController -Identity $env:COMPUTERNAME -ErrorAction Stop).IsReadOnly) { return $false } }
+    catch { }
+    return $true
+}
+
+# The cheapest authenticated read there is. Returns $null when the splat authenticates, else the
+# failure message — so the caller can report exactly what the identity it tried was told.
+function Test-CtgAdConnection {
+    param([hashtable]$AdConnection = @{})
+    try { $null = Get-ADDomain @AdConnection -ErrorAction Stop; return $null }
+    catch { return [string]$_.Exception.Message }
+}
+
+# THE one credential to try for the brokered ad-dc account — never a ladder of variants (see rule 2).
+# A username that already carries a domain (DOMAIN\user or user@domain) is trusted verbatim. A bare one
+# is qualified from the secret's Domain field: a DNS domain goes in the UPN slot (user@dns.domain), a
+# NetBIOS name in the down-level slot (DOMAIN\user). With no Domain field there is nothing to qualify
+# with, so the bare name goes as-is — the same bind we've always made, no worse.
+function Get-CtgAdCredential {
+    param($Secret)
+    if (-not $Secret -or -not $Secret.Credential) { return $null }
+    $user = [string]$Secret.Credential.UserName
+    if (-not $user) { return $null }
+    if ($user -match '[\\@]') { return $Secret.Credential }
+    $fields = if ($Secret.Fields) { $Secret.Fields } else { @{} }
+    $dom = Select-CtgCredField $fields @('Domain', 'DomainName', 'NetBIOSName', 'DNSDomainName', 'FQDN')
+    if (-not $dom) { return $Secret.Credential }
+    $dom = ([string]$dom).Trim()
+    $qualified = if ($dom -like '*.*') { "$user@$dom" } else { "$dom\$user" }
+    return [pscredential]::new($qualified, $Secret.Credential.Password)
+}
+
+# The sAMAccountName inside DOMAIN\user / user@domain / user — what an ACL check resolves SIDs from.
+function Get-CtgSamFromUserName {
+    param([string]$UserName)
+    if (-not $UserName) { return $null }
+    if ($UserName -match '\\') { return ($UserName -split '\\')[-1] }
+    if ($UserName -match '@') { return ($UserName -split '@')[0] }
+    return $UserName
+}
+
+# Which identity New-CtgAdConnection last selected. The splat itself can't carry this (it is splatted
+# straight onto AD cmdlets, so a stray key would bind to a real parameter), and the connection test has
+# to evaluate the OU ACL of the account we ACTUALLY authenticate as — not whatever ad-dc happens to
+# hold. Same $script:-scope idiom as $script:ConnTestRights.
+$script:CtgAdIdentity = @{ kind = 'ambient'; sam = $null; label = "the agent's own identity" }
+
 function New-CtgAdConnection($creds) {
-    $ad = @{}
+    if (-not (Get-Command Get-ADDomain -ErrorAction SilentlyContinue)) {
+        throw "the ActiveDirectory PowerShell module is not loaded on this agent — install RSAT (Rsat.ActiveDirectory.DS-LDS.Tools) on the agent host, or route this client's AD steps to an agent that has it."
+    }
     $s = $creds['ad-dc']
-    if ($s) {
-        if ($s.Credential) { $ad.Credential = $s.Credential }
-        # DC to target (-Server). The "Active Directory Account" Delinea template has no Server
-        # field, so the DC name is stored in its "Documentation Link" field — accept that (and a few
-        # aliases). Ignore a value that looks like a URL (a genuine doc link) so it can't be mistaken
-        # for a server. Omit entirely when the agent is on the DC (cmdlets use the local domain).
-        $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return [string]$s.Fields[$k] } } $null }
-        $server = & $pick @('Server', 'DomainController')
+
+    # The DC to target (-Server). The "Active Directory Account" Delinea template has no Server field,
+    # so the DC name is stored in its "Documentation Link" field — accept that (and a few aliases; the
+    # list mirrors the app's ad-dc field-requirements so the secret Test agrees with the runner). Ignore
+    # a value that looks like a URL (a genuine doc link) so it can't be mistaken for a server. Omitted
+    # entirely when unset: the cmdlets then target the agent's own domain, which is what we want on a DC.
+    $base = @{}
+    if ($s -and $s.Fields) {
+        $server = Select-CtgCredField $s.Fields @('Server', 'Host', 'DomainController', 'DC')
         if (-not $server) {
-            $docLink = & $pick @('Documentation Link', 'DocumentationLink', 'Document Link', 'DocLink')
+            $docLink = Select-CtgCredField $s.Fields @('Documentation Link', 'DocumentationLink', 'Document Link', 'DocLink')
             if ($docLink -and $docLink -notmatch '^\s*https?://') { $server = $docLink }
         }
-        if ($server) { $ad.Server = ([string]$server).Trim() }
+        if ($server) { $base.Server = ([string]$server).Trim() }
     }
-    return $ad
+
+    $cred = Get-CtgAdCredential $s
+    $withCred = $null
+    if ($cred) { $withCred = $base.Clone(); $withCred.Credential = $cred }
+
+    $useAmbient = {
+        $script:CtgAdIdentity = @{ kind = 'ambient'; sam = $null; label = "the agent's own identity" }
+        $base
+    }
+    $useCred = {
+        $script:CtgAdIdentity = @{ kind = 'credential'; sam = (Get-CtgSamFromUserName $cred.UserName); label = "the brokered ad-dc account '$($cred.UserName)'" }
+        $withCred
+    }
+
+    if (Test-CtgAdAmbientIsPrivileged) {
+        # SYSTEM on a writable DC: the directory's own SYSTEM principal. This is the Brock Built shape.
+        $ambientErr = Test-CtgAdConnection $base
+        if (-not $ambientErr) { return & $useAmbient }
+        if (-not $cred) {
+            throw "Active Directory refused this agent's own identity (SYSTEM on this domain controller) — $ambientErr — and no ad-dc credential was brokered to fall back on. If the DC is simply unreachable this is not a credential problem; otherwise wire the ad-dc secret with a username and password."
+        }
+        $credErr = Test-CtgAdConnection $withCred
+        if (-not $credErr) {
+            Write-CtgLog "AD: this agent's own identity was refused ($ambientErr) — fell back to the brokered ad-dc account '$($cred.UserName)'" 'WARN'
+            return & $useCred
+        }
+        throw ("Active Directory refused both identities this agent can offer — as SYSTEM on this domain controller: $ambientErr; as the brokered ad-dc account '$($cred.UserName)': $credErr. " +
+            "If the DC is unreachable, neither message is about the credential. If they are authentication failures, note that a BARE ad-dc username cannot use Kerberos and a DC with LDAP signing / channel binding enforced rejects the NTLM fallback — store it DOMAIN-QUALIFIED (DOMAIN\user or user@domain), or add a Domain field for the runner to qualify it with.")
+    }
+
+    # Not a known-privileged host. Ambient here is the machine account (or an unknown service account):
+    # it can READ the directory but almost certainly cannot create a user — so it must NOT be a silent
+    # fallback for a credential AD refused. That would turn a clear auth error into a half-applied case.
+    if (-not $cred) {
+        # Nothing brokered, so the agent's own identity is all there is — the pre-existing behaviour for
+        # a client with no ad-dc secret wired.
+        $ambientErr = Test-CtgAdConnection $base
+        if ($ambientErr) {
+            throw "Active Directory refused this agent's own identity — $ambientErr — and no ad-dc credential was brokered. This agent is not a domain controller, so it has no privileged identity of its own: wire the client's ad-dc secret (a domain-qualified username + password), or install the agent on a DC."
+        }
+        return & $useAmbient
+    }
+    $credErr = Test-CtgAdConnection $withCred
+    if ($credErr) {
+        throw ("Active Directory refused the brokered ad-dc account '$($cred.UserName)' — $credErr. " +
+            "This agent is not a domain controller, so there is no privileged identity to fall back to (its machine account could read the directory but not write it, which would fail halfway through the case). " +
+            "If this is an authentication failure: a BARE username cannot use Kerberos and a DC with LDAP signing / channel binding enforced rejects the NTLM fallback — store it DOMAIN-QUALIFIED (DOMAIN\user or user@domain), or add a Domain field for the runner to qualify it with.")
+    }
+    return & $useCred
 }
 
 # Point the Spanning module at this job's brokered secret. The verified API authenticates with
@@ -1842,15 +1977,31 @@ $CONNTEST_PROBE = @{
             if ($v -and $v -match '(?i)dc=') { $ous += $v }
         }
         $ous = @($ous | Select-Object -Unique)
-        if ($ous.Count) {
-            $sids = Get-CtgAdAccountSids -AdConnection $c -Creds $creds
+        if ($ous.Count -and $script:CtgAdIdentity.kind -eq 'ambient') {
+            # We bind as the agent's OWN identity here, not the ad-dc account — so there is no service
+            # account whose OU ACL means anything. Evaluating ad-dc's ACL anyway would report on a
+            # principal the jobs never use: a false red when ad-dc was never delegated (SYSTEM always
+            # could), or the more dangerous false green in reverse.
+            if (Test-CtgAdAmbientIsPrivileged) {
+                $script:ConnTestRights = @(@{ op = 'create users in target OU'; ok = $true
+                        detail = 'the agent runs as SYSTEM on this domain controller — the directory''s own SYSTEM principal, full control. No ad-dc credential is used'
+                    })
+            }
+            else {
+                $script:ConnTestRights = @(@{ op = 'create users in target OU'; ok = $null
+                        detail = 'no ad-dc credential is wired, so the agent binds as its own machine account — verify manually that it can create users here, or wire the ad-dc secret'
+                    })
+            }
+        }
+        elseif ($ous.Count) {
+            $sids = Get-CtgAdAccountSids -AdConnection $c -SamAccountName $script:CtgAdIdentity.sam
             $rows = @()
             foreach ($ou in $ous) {
                 $rows += Test-CtgAdOuCreateUserRight -AdConnection $c -OuDn $ou -Sids $sids
             }
             $script:ConnTestRights = @($rows)
             $denied = @($rows | Where-Object { $_.ok -eq $false })
-            if ($denied.Count) { throw "domain: $($d.DNSRoot) — the account cannot create users in: $(@($denied | ForEach-Object { $_.op }) -join '; ')" }
+            if ($denied.Count) { throw "domain: $($d.DNSRoot) — $($script:CtgAdIdentity.label) cannot create users in: $(@($denied | ForEach-Object { $_.op }) -join '; ')" }
         }
         else {
             $script:ConnTestRights = @(@{ op = 'create users in target OU'; ok = $null; detail = 'no OU DN in this client''s config — set onboard.ou to verify the ACL' })
