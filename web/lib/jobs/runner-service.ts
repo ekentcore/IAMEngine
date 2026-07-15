@@ -20,7 +20,7 @@ import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
 import { AGENT_MIGRATION_KEY, migrateDecision, type AgentMigrationSetting } from "./agent-migration";
 import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
-import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
+import { parseCapabilities, onPremExclusions, browserExclusions, BROWSER_SYSTEMS } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
 import { generateInitialPassword } from "../auth/password";
 import { sweepProcurementWatches } from "./procurement-watch";
@@ -706,7 +706,11 @@ export function makeRunnerService(db: PrismaClient) {
         if (!agent.clientId && onPrem) continue;                                             // central: skip on-prem
         if (agent.clientId && !onPrem && !meta?.client?.runCloudOnOwnAgent) continue;        // client agent: skip cloud -> central
         // Own-agent affinity: central runner leaves a pinned client's cloud jobs for that client's agent.
-        if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId)) continue;
+        // EXCEPT browser jobs (spanning-force-sync): browser automation only exists on the central runner
+        // (a client's on-prem agent has no Node/Playwright and is withheld browser systems by the caps
+        // gate above), so pinning one to the own agent strands it — claimable by nobody, pending forever.
+        // Browser jobs are central-only; never pinned away from central.
+        if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId) && !BROWSER_SYSTEMS.includes(c.systemKey)) continue;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
         // Setup-state gate (enforce mode only): withhold a job whose system's latest conn-test
         // failed, unless attested. singleRun bypasses (an explicit operator-confirmed run).

@@ -7,7 +7,7 @@
 // DB loader (loadRunReport) gathers the inputs and a markdown renderer produces the export.
 import type { PrismaClient } from "@prisma/client";
 import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "./case-secrets";
-import { parseCapabilities, agentCanRun } from "../runner/capabilities";
+import { parseCapabilities, agentCanRun, BROWSER_SYSTEMS } from "../runner/capabilities";
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { offboardCandidatesOf, offboardCandidateQuery, type OffboardCandidate } from "../jobs/runner-service";
@@ -601,9 +601,14 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
         st.pendingReason = `blocked — credential not set: ${missing.join(", ")}. Fill it on the Credentials panel; the runner skips this step until it resolves.`;
         continue;
       }
+      // Browser jobs (spanning-force-sync) run ONLY on the central runner (Node/Playwright), so — unlike
+      // every other cloud job — they are NEVER pinned to a client's own agent, not even for a
+      // runCloudOnOwnAgent client. Mirror the claim rule (browser jobs are exempt from own-agent pinning)
+      // so the reason names the central runner instead of the client's browser-less on-prem agent.
+      const isBrowser = BROWSER_SYSTEMS.includes(st.systemKey);
       // Host affinity, same rule as the claim filter: on-prem systems (AD/Exchange/dir-sync) are
       // ONLY claimed by the client's own agent — a central runner being online doesn't help them.
-      const needsOwnAgent = systemIsOnPrem(st.systemKey, caseHasOnPremAd) || pinsToOwnAgent;
+      const needsOwnAgent = !isBrowser && (systemIsOnPrem(st.systemKey, caseHasOnPremAd) || pinsToOwnAgent);
       const eligible = onlineAgents.filter((a) => (needsOwnAgent ? a.clientId === c.client.id : a.clientId === null || a.clientId === c.client.id));
       if (eligible.length === 0) {
         st.pendingReason = needsOwnAgent
@@ -611,15 +616,23 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
           : "ready, but no runner is online to claim it — check the Agents page";
         continue;
       }
-      // Capability gate — mirrors the claim filter: an on-prem system is only claimable by an agent that
-      // REPORTS it can run it. If the client's agent is online but doesn't advertise this system (e.g. a DC
-      // whose ActiveDirectory/RSAT module didn't load), the app withholds the job — say so, instead of
-      // showing "about to start" for a step that will never be claimed. A legacy agent reports nothing →
-      // treated as capable, so this only fires for an agent actually reporting it can't run the system.
+      // Capability gate — mirrors the claim filter: a system is only claimable by an agent that REPORTS it
+      // can run it. On-prem systems need the reported on-prem capability; BROWSER systems need the
+      // 'browser' capability (Node/Playwright), which only the central runner has — so filter to it, or a
+      // client's browser-less agent (which polls constantly and would otherwise win the "claims it next"
+      // pick) gets named for a step it can never claim. A legacy agent reports nothing → treated as
+      // capable for on-prem, but browser is explicit-only (matches browserExclusions).
       const runnable = ALWAYS_ON_PREM_SYSTEMS.includes(st.systemKey)
         ? eligible.filter((a) => agentCanRun(st.systemKey, parseCapabilities(a.capabilities)))
+        : isBrowser
+        ? eligible.filter((a) => { const caps = parseCapabilities(a.capabilities); return !!caps && caps.includes("browser"); })
         : eligible;
       if (runnable.length === 0) {
+        if (isBrowser) {
+          // Only the central runner can run a browser job; if none with 'browser' is online, say exactly that.
+          st.pendingReason = "ready, but no browser-capable runner is online — Spanning force sync runs on the central runner (Node/Playwright); check the Agents page";
+          continue;
+        }
         const names = [...new Set(eligible.map((a) => a.name))].join(", ");
         // AD is the common case with specific remediation (RSAT); keep the advice keyed to the system so
         // it's never wrong if this ever fires for another on-prem system (e.g. a future addition).
