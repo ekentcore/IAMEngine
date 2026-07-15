@@ -14,12 +14,63 @@
 #                               also retire LOCKED worktrees left behind by dead sessions — only when
 #                               clean, fully merged, and no process is inside them (--yes to do it)
 #
-# Merging only ever touches GitHub. It does NOT touch the database — after a merge that ships a
-# migration you still have to run `npx prisma migrate deploy` from web/ yourself (see the end).
+# After a successful merge the script SYNCS THE LOCAL main checkout: it fast-forwards main and runs
+# `npm install` (in web/ and runner/browser/), so the next `next dev` compile can't die on a package
+# that landed in a merged PR but was never installed here — the "Module not found: Can't resolve
+# 'marked'" class of failure, which in dev cascades 500s across every route (heartbeat/claim included).
+# This is SAFE by construction: it only touches the main checkout when that checkout is on main AND
+# clean; otherwise it prints what to run by hand and changes nothing. Opt out for one run with
+# PRS_NO_SYNC=1. It still does NOT touch the database — after a merge that ships a migration you run
+# `npx prisma migrate deploy` from web/ yourself (see the end).
 set -euo pipefail
 
 command -v gh >/dev/null || { echo "gh CLI not found — brew install gh"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "gh not logged in — run: gh auth login"; exit 1; }
+
+# After a merge, bring the LOCAL main checkout in step with what just shipped: fast-forward main and
+# install any new dependencies. The pain this removes: a PR adds a dependency (e.g. `marked`), it lands
+# on main, someone pulls, but nobody runs `npm install` — then the dev server's next compile fails to
+# resolve the module and, because a resolution error takes down the whole dev module graph, every route
+# starts returning 500 (including /api/agents/heartbeat, so the fleet stalls too).
+#
+# Guarded so it can never surprise you: acts ONLY when the main checkout is on `main` and has no
+# uncommitted changes; otherwise it just prints the exact commands and touches nothing. `npm install`
+# is a near-noop when node_modules already matches the lockfile, so running it after every pull is
+# cheap and makes "a dep shipped but was never installed here" impossible. Opt out with PRS_NO_SYNC=1.
+sync_local_after_merge() {
+  [[ "${PRS_NO_SYNC:-}" == "1" ]] && { echo "sync: skipped (PRS_NO_SYNC=1)."; return 0; }
+  local root; root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [[ -z "$root" ]] && return 0
+  local branch; branch=$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+  if [[ "$branch" != "main" ]]; then
+    echo "sync: the checkout here is on '${branch:-a detached HEAD}', not main — not pulling. To refresh by hand:"
+    echo "        cd \"$root\" && git checkout main && git pull --ff-only && (cd web && npm install)"
+    return 0
+  fi
+  if [[ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]]; then
+    echo "sync: main has uncommitted changes — not pulling. Refresh once it's clean:"
+    echo "        cd \"$root\" && git pull --ff-only && (cd web && npm install)"
+    return 0
+  fi
+  echo "sync: fast-forwarding main…"
+  if ! git -C "$root" pull --ff-only -q; then
+    echo "sync: could not fast-forward main (diverged from origin?) — pull it by hand, then \`npm install\`."
+    return 0
+  fi
+  # Install deps wherever we ship a package.json. Unconditional after a pull: it's a fast no-op when
+  # nothing changed, and guarantees a freshly-merged dependency is actually present on disk.
+  local d
+  for d in web runner/browser; do
+    if [[ -f "$root/$d/package.json" ]]; then
+      echo "sync: npm install in ${d}…"
+      ( cd "$root/$d" && npm install --no-audit --no-fund >/dev/null ) \
+        && echo "sync: $d dependencies up to date." \
+        || echo "sync: npm install in $d FAILED — run \`(cd $d && npm install)\` by hand."
+    fi
+  done
+  echo "sync: local checkout is current. Restart the dev server to pick up app changes; a merged runner"
+  echo "      file is served from disk, so agents auto-update on their next heartbeat (no rebuild)."
+}
 
 PR="${1:-}"
 
@@ -160,7 +211,9 @@ if [[ "$PR" == "--all" ]]; then
     fi
 
     echo "──────── merging #$n ────────"
-    if "$0" "$n" --yes; then
+    # PRS_IN_ALL=1: the recursive single-PR call skips its own local sync so we don't pull+install once
+    # per merge — the whole batch is synced ONCE after the loop instead.
+    if PRS_IN_ALL=1 "$0" "$n" --yes; then
       MERGED="$MERGED #$n"
     else
       echo "  skip  #$n  (merge did not complete — left open)"
@@ -176,6 +229,12 @@ if [[ "$PR" == "--all" ]]; then
 
   echo "sweeping finished worktrees…"
   "$0" --tidy --stale --yes || true
+
+  # One local sync for the whole batch (the per-merge calls were suppressed via PRS_IN_ALL).
+  if [[ -n "$MERGED" ]]; then
+    echo
+    sync_local_after_merge
+  fi
 
   if [[ -n "$MIG_PRS" ]]; then
     cat <<NEXT
@@ -272,6 +331,14 @@ git worktree prune
 
 echo
 echo "merged."
+
+# Bring the local checkout in step (fast-forward main + npm install), unless this run is a --all batch,
+# which syncs once at the end instead of after every single merge.
+if [[ "${PRS_IN_ALL:-}" != "1" ]]; then
+  echo
+  sync_local_after_merge
+fi
+
 if [[ -n "$MIGRATIONS" ]]; then
   cat <<'NEXT'
 
