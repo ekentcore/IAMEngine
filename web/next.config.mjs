@@ -30,5 +30,9 @@ function loadRootEnv() {
 loadRootEnv();
 
 /** @type {import('next').NextConfig} */
-const nextConfig = {};
+const nextConfig = {
+  // Enable the server-startup hook (web/instrumentation.ts) — stable in Next 15, still flagged in
+  // 14.2. It logs the runner bundle version the app serves to agents on every boot.
+  experimental: { instrumentationHook: true },
+};
 export default nextConfig;
