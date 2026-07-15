@@ -88,6 +88,9 @@ export async function loadAgentsPage() {
       updateRequestedBy: a.updateRequestedBy ?? null,
       updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
       restartRequested: a.restartRequested,
+      restartRequestedAt: a.restartRequestedAt?.toISOString() ?? null,
+      restartRequestedBy: a.restartRequestedBy ?? null,
+      restartDeliveredAt: a.restartDeliveredAt?.toISOString() ?? null,
     };
   });
   const now = new Date();

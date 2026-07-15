@@ -32,6 +32,9 @@ export type AgentVM = {
   updateRequestedAt: string | null;
   updateRequestedBy: string | null;
   restartRequested: boolean;
+  restartRequestedAt: string | null;
+  restartRequestedBy: string | null;
+  restartDeliveredAt: string | null;
   updateDeliveredAt: string | null;
 };
 
@@ -85,6 +88,25 @@ function updateStatus(a: AgentVM): { label: string; color: string } | null {
     const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
     if (seen > del + 3000) return { label: `✓ updated${by} — runner back online on new code`, color: "var(--ok-fg)" };
     return { label: `↻ updating${by} — pulling files + restarting…`, color: "var(--info-fg)" };
+  }
+  return null;
+}
+
+// Live restart status from the lifecycle timestamps, mirroring updateStatus: queued (set, not yet
+// polled) -> restarting (the runner consumed it and is re-launching) -> restarted (its heartbeat came
+// back after delivery). A plain restart pulls no code, so "back online" keys off a heartbeat that
+// lands after delivery (lastSeenAt is server-stamped, so no runner-clock skew). Returns null once
+// nothing is in flight (or the delivery is >5 min stale). This is what makes a restart VISIBLE on the
+// row — the v2 Actions menu closes on click, so the in-menu "Restarting…" label alone is invisible.
+function restartStatus(a: AgentVM): { label: string; color: string } | null {
+  const by = a.restartRequestedBy ? ` (by ${a.restartRequestedBy})` : "";
+  if (a.restartRequested) return { label: `↻ restart queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
+  if (a.restartDeliveredAt) {
+    const del = new Date(a.restartDeliveredAt).getTime();
+    if (Date.now() - del > 5 * 60_000) return null;
+    const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+    if (seen > del + 3000) return { label: `✓ restarted${by} — runner back online`, color: "var(--ok-fg)" };
+    return { label: `↻ restarting${by} — re-launching…`, color: "var(--info-fg)" };
   }
   return null;
 }
@@ -299,7 +321,11 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   useEffect(() => {
     const fresh = (iso: string | null, ms: number) => !!iso && Date.now() - new Date(iso).getTime() < ms;
     const inFlight = agents.some(
-      (a) => (a.updateRequested && fresh(a.updateRequestedAt, 10 * 60_000)) || fresh(a.updateDeliveredAt, 5 * 60_000)
+      (a) =>
+        (a.updateRequested && fresh(a.updateRequestedAt, 10 * 60_000)) ||
+        fresh(a.updateDeliveredAt, 5 * 60_000) ||
+        (a.restartRequested && fresh(a.restartRequestedAt, 10 * 60_000)) ||
+        fresh(a.restartDeliveredAt, 5 * 60_000)
     );
     if (!inFlight) return;
     const t = setInterval(() => router.refresh(), 4000);
@@ -521,6 +547,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 <td>
                   {a.enabled ? "enabled" : <span className="muted">disabled</span>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
+                  {(() => { const r = restartStatus(a); return r ? <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div> : null; })()}
                 </td>
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
@@ -579,6 +606,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             const ls = lastSeen(a.lastSeenAt, nowMs);
             const upToDate = isUpToDate(a);
             const u = updateStatus(a);
+            const r = restartStatus(a);
             const stuck = stuckLabel(a, ls.online, nowMs);
             return (
               <tr key={a.id}>
@@ -613,6 +641,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   )}
                   {stuck && <div className="note" style={{ color: "var(--err-fg)" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{stuck}</div>}
                   {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
+                  {r && <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div>}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
