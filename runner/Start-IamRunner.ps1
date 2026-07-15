@@ -33,6 +33,8 @@ param(
 # The watchdog is lightweight and the -HealthCheck probe must be fast, so load it + resolve the
 # heartbeat path BEFORE the heavy automation modules. A health probe never loads the rest.
 Import-Module "$PSScriptRoot/lib/Coretelligent.Watchdog/Coretelligent.Watchdog.psm1" -Force
+# Pure -AppUrl rewrite helpers (Set-CtgAppUrlInArgString / Set-CtgAppUrlInPlist), used by Invoke-CtgMigrate.
+. (Join-Path $PSScriptRoot 'lib/CtgMigrate.ps1')
 if (-not $PSBoundParameters.ContainsKey('StallTimeoutSeconds') -and $env:RUNNER_STALL_TIMEOUT) { $StallTimeoutSeconds = [int]$env:RUNNER_STALL_TIMEOUT }
 $HeartbeatFile = Get-CtgHeartbeatPath -Explicit $HeartbeatFile -AgentId $AgentId
 if ($HealthCheck) {
@@ -1672,6 +1674,68 @@ function Restart-CtgRunner {
     Invoke-CtgRelaunch -Reason 'restart'
 }
 
+function Invoke-CtgMigrate {
+    # Operator moved the app to a new hostname (heartbeat migrate:{appUrl}). VERIFY we can reach the new
+    # URL, REWRITE our own supervisor entry (Scheduled Task / launchd plist / systemd unit) replacing
+    # -AppUrl (old URL removed, not appended), then relaunch on the new URL. On ANY failure: record it
+    # (reported on the next heartbeat) and DO NOT relaunch — a half-migrated agent must never loop. The
+    # verify de-risks removing the old URL up front: we only switch once the new host actually answers.
+    param([Parameter(Mandatory)][string]$NewAppUrl)
+    if ($NewAppUrl.TrimEnd('/') -ieq ([string]$AppUrl).TrimEnd('/')) { $script:LastMigrateError = $null; return }  # already there
+    Write-Host "migrate: requested move to $NewAppUrl — verifying reachability" -ForegroundColor Yellow
+
+    # 1) VERIFY: an authenticated GET of the manifest on the NEW host must succeed (same backend, our
+    #    existing token validates). Anything else → stay put and report.
+    try {
+        $H = @{ 'ngrok-skip-browser-warning' = 'true' }
+        if ($ApiToken) { $H['Authorization'] = "Bearer $ApiToken" }
+        $null = Invoke-RestMethod -Uri "$NewAppUrl/api/runner/manifest" -Headers $H -TimeoutSec 30 -ErrorAction Stop
+    } catch {
+        $script:LastMigrateError = "unreachable: $($_.Exception.Message)"
+        Write-Warning "migrate: new URL not reachable — staying on $AppUrl ($script:LastMigrateError)"
+        return
+    }
+
+    # 2) REWRITE the supervisor entry (old URL removed).
+    try {
+        if ($IsWindows) {
+            $task = Get-ScheduledTask -TaskName 'iam-runner' -ErrorAction Stop
+            $act = $task.Actions[0]
+            $newArgs = Set-CtgAppUrlInArgString -ArgString $act.Arguments -NewUrl $NewAppUrl
+            $newAction = New-ScheduledTaskAction -Execute $act.Execute -Argument $newArgs -WorkingDirectory $act.WorkingDirectory
+            Set-ScheduledTask -TaskName 'iam-runner' -Action $newAction -ErrorAction Stop | Out-Null
+        }
+        elseif ($IsMacOS) {
+            $plist = Join-Path $HOME 'Library/LaunchAgents/com.coretelligent.iam-runner.plist'
+            if (-not (Test-Path $plist)) { throw "launchd plist not found at $plist" }
+            $xml = [System.IO.File]::ReadAllText($plist)
+            [System.IO.File]::WriteAllText($plist, (Set-CtgAppUrlInPlist -PlistXml $xml -NewUrl $NewAppUrl))
+            & launchctl unload $plist 2>$null; & launchctl load $plist 2>$null
+        }
+        else {
+            $unit = '/etc/systemd/system/iam-runner.service'
+            if (-not (Test-Path $unit)) { throw "systemd unit not found at $unit" }
+            $lines = [System.IO.File]::ReadAllLines($unit)
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*ExecStart=') { $lines[$i] = Set-CtgAppUrlInArgString -ArgString $lines[$i] -NewUrl $NewAppUrl } }
+            [System.IO.File]::WriteAllLines($unit, $lines)
+            & systemctl daemon-reload 2>$null
+        }
+    } catch {
+        $script:LastMigrateError = "rewrite failed: $($_.Exception.Message)"
+        Write-Warning "migrate: could not rewrite the supervisor entry — staying on $AppUrl ($script:LastMigrateError)"
+        return
+    }
+
+    # 3) SWITCH: point this process (and every relaunch surface built from $AppUrl) at the new URL, then
+    #    relaunch. Supervised → exit (the rewritten entry brings us back on the new URL); unsupervised →
+    #    the self-spawn in Invoke-CtgRelaunch reads $script:AppUrl, now updated.
+    $script:LastMigrateError = $null
+    $script:AppUrl = $NewAppUrl
+    $global:CtgProgressUrl = $NewAppUrl
+    Write-Host "migrate: verified + supervisor rewritten — switching to $NewAppUrl" -ForegroundColor Green
+    Invoke-CtgRelaunch -Reason 'migrate'
+}
+
 function Protect-CtgSecretsInText {
     # Redact brokered secret VALUES out of free text (a failure message) before it's posted to the
     # app — Job.error is persisted and shown in the run report + ServiceNow work note + audit, and a
@@ -2356,6 +2420,9 @@ $script:RunnerSemver = try { (Get-Content -LiteralPath (Join-Path $PSScriptRoot 
 # This process's start time (ISO-8601 UTC), reported on every heartbeat so the Agents page can show
 # UPTIME (now - bootAt). Re-exec on update/restart is a new process, so uptime correctly resets then.
 $script:RunnerStartedAt = (Get-Date).ToUniversalTime().ToString("o")
+# Last app-URL migration failure (unreachable / rewrite failed). Reported on the heartbeat so the
+# Agents page can show it; cleared on a successful migrate. Defined here so the heartbeat ref is always set.
+$script:LastMigrateError = $null
 
 # On-prem CAPABILITY probe: which ALWAYS_ON_PREM system keys THIS host can actually execute — i.e. the
 # host-specific Coretelligent entry function is loaded (its dependency module imported above). Reported
@@ -2471,11 +2538,16 @@ while ($true) {
         }
     }
     try {
-        $hb = Invoke-AppApi POST '/api/agents/heartbeat' @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson }
+        # Report the app URL we're polling (so the app knows where each agent lives + can detect a
+        # completed migration) and any last migrate failure (surfaced on the Agents page).
+        $hbBody = @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson; appUrl = $AppUrl }
+        if ($script:LastMigrateError) { $hbBody['migrateError'] = $script:LastMigrateError }
+        $hb = Invoke-AppApi POST '/api/agents/heartbeat' $hbBody
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
         if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
+        if ($hb.migrate -and $hb.migrate.appUrl) { Invoke-CtgMigrate -NewAppUrl ([string]$hb.migrate.appUrl) }  # operator moved the app — verify + rewrite supervisor + switch
         # Send our build id so the app refuses to dispatch to a STALE runner (a half-landed update can
         # leave an old process alive; this stops it claiming jobs with old modules in memory).
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize; version = $script:RunnerBuild }

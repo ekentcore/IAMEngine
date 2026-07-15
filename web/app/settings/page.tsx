@@ -15,6 +15,8 @@ import { AutoFixToggle } from "./_components/auto-fix-toggle";
 import { LlmProviders } from "./_components/llm-providers";
 import { AgentAutoUpdateToggle } from "./_components/agent-auto-update-toggle";
 import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
+import { AgentMigrationSettings } from "./_components/agent-migration-settings";
+import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
 import { loadDbBackupStatus, loadFeatureRequests } from "./_lib/loader";
 import { DbBackupCard } from "./_components/db-backup-card";
 
@@ -29,13 +31,14 @@ export default async function SettingsPage() {
     canHide = can(me.role, "feature_request.hide");
   }
   // independent single-row reads — fetch in parallel, not as six serial round trips
-  const [rawSettings, featureRequests, autoFix, llmProviders, autoUpdate, dbBackup] = await Promise.all([
+  const [rawSettings, featureRequests, autoFix, llmProviders, autoUpdate, dbBackup, agentMigration] = await Promise.all([
     getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
     loadFeatureRequests(),
     getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
     listProvidersMasked(db),
     getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY),
     loadDbBackupStatus(),
+    getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY),
   ]);
   const settings = normalizeSettings(rawSettings);
   return (
@@ -57,6 +60,7 @@ export default async function SettingsPage() {
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
       <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
+      <AgentMigrationSettings initial={{ enabled: agentMigration?.enabled === true, targetUrl: agentMigration?.targetUrl ?? "" }} />
       <DbBackupCard initial={dbBackup} />
       <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
     </main>

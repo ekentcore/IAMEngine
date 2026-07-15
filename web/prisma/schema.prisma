@@ -276,6 +276,18 @@ model Agent {
   restartRequestedAt DateTime?
   restartRequestedBy String?
   restartDeliveredAt DateTime?
+  // Operator-driven app-URL migration. The agent reports its current base URL each heartbeat
+  // (currentAppUrl); a global target (AppSetting agent_migration) + this per-agent canary flag make
+  // the heartbeat return migrate:{appUrl}. The runner verifies the new URL, rewrites its own supervisor
+  // entry (old URL removed), and switches. migratedAt is stamped once the agent reports the new URL;
+  // migrateError carries the last failure the agent reported (unreachable / rewrite failed).
+  currentAppUrl      String?
+  migrateRequested   Boolean    @default(false)
+  migrateRequestedAt DateTime?
+  migrateRequestedBy String?
+  migrateDeliveredAt DateTime?
+  migratedAt         DateTime?
+  migrateError       String?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
   deletedAt          DateTime?
   jobs               Job[]

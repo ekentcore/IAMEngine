@@ -138,6 +138,19 @@ export async function requestAgentRestart(id: string) {
   }
 }
 
+// Ask this agent to move to the new app URL (the canary). Requires a global migration target set in
+// Settings; the runner verifies the new URL, rewrites its own scheduled task, and switches.
+export async function requestAgentMigrate(id: string) {
+  try {
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).requestMigrate(id, auditActor(me, "ui"));
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
 // Queue self-updates for several agents at once (Update selected / Update all). Per-agent failures
 // don't stop the rest; the first error is surfaced alongside how many actually queued.
 export async function requestAgentUpdates(ids: string[]) {

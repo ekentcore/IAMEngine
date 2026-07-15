@@ -18,6 +18,7 @@ import { testableSystems, type RightsRow } from "./conn-test-logic";
 import { wiredOptionalSecrets } from "../secrets/auxiliary";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
+import { AGENT_MIGRATION_KEY, migrateDecision, type AgentMigrationSetting } from "./agent-migration";
 import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions } from "../runner/capabilities";
 import { purgeCutoff } from "./agent-trash";
@@ -305,8 +306,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -354,6 +355,20 @@ export function makeRunnerService(db: PrismaClient) {
         const consumed = await db.client.updateMany({ where: { id: agent.clientId, adDiscoverRequestedAt: { not: null } }, data: { adDiscoverRequestedAt: null } });
         discover = consumed.count > 0;
       }
+      // App-URL migration: decide from the global target (AppSetting) + this agent's canary flag, using
+      // the URL the agent reports THIS heartbeat (falling back to its last-known). Only emit when the
+      // agent isn't already on the target — that's how it stops (convergence). The runner verifies the
+      // new URL, rewrites its own supervisor entry, and switches; we just tell it where to go.
+      const migrateSetting = await getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY);
+      const reportedUrl = appUrl ?? agent.currentAppUrl ?? null;
+      const decision = migrateDecision({ setting: migrateSetting, agentMigrateRequested: agent.enabled && agent.migrateRequested, reportedUrl });
+      let migrate: { appUrl: string } | null = null;
+      if (decision.migrate && decision.targetUrl) {
+        // Clear the one-shot canary flag on delivery (a fleet-enabled migration keeps re-emitting until
+        // the agent converges); stamp delivery so the UI can show "migrating…".
+        await db.agent.updateMany({ where: { id: agentId }, data: { migrateDeliveredAt: new Date(), ...(agent.migrateRequested ? { migrateRequested: false } : {}) } });
+        migrate = { appUrl: decision.targetUrl };
+      }
       // bootAt = the runner's reported process start (for the uptime display). Parse defensively; only
       // set it when a valid value is sent (older runners don't report it — keep whatever's stored).
       const boot = startedAt ? new Date(startedAt) : null;
@@ -361,7 +376,7 @@ export function makeRunnerService(db: PrismaClient) {
       // Persist reported on-prem capabilities only when the runner sent them (1.31+). A legacy runner
       // passes null → keep whatever's stored (stays null → treated as capable). An empty array IS a
       // report ("can run no on-prem system") and is persisted as [].
-      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}), ...(capabilities != null ? { capabilities: capabilities as Prisma.InputJsonValue } : {}) } });
+      await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}), ...(capabilities != null ? { capabilities: capabilities as Prisma.InputJsonValue } : {}), ...(appUrl ? { currentAppUrl: appUrl } : {}), ...(decision.converged ? { migratedAt: new Date(), migrateError: null, migrateRequested: false } : migrateError != null ? { migrateError } : {}) } });
       // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.
@@ -375,7 +390,7 @@ export function makeRunnerService(db: PrismaClient) {
       // Same pulse: the nightly pg_dump database backup (default ON; durable AppSetting throttle,
       // one run per night after the configured local hour). See lib/jobs/db-backup.ts.
       void sweepDbBackup(db).catch(() => {});
-      return { ok: true, enabled: agent.enabled, update, restart, discover };
+      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate };
     },
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
@@ -434,6 +449,24 @@ export function makeRunnerService(db: PrismaClient) {
       const who = resolveActor(actor);
       await db.agent.update({ where: { id: agentId }, data: { restartRequested: true, restartRequestedAt: new Date(), restartRequestedBy: displayActor(who.actor), restartDeliveredAt: null } });
       await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.restart_requested", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Operator action: move THIS agent to the new app URL (the canary). Requires a global target to be
+    // set (Settings → Agent domain migration) — the target is the single source of truth for WHERE to
+    // go; this flag just says "this agent, now". The next heartbeat returns migrate:{appUrl}; the runner
+    // verifies + rewrites its supervisor entry + switches. Reset migratedAt/migrateError so a re-migrate
+    // (e.g. after a fixed target) starts clean.
+    async requestMigrate(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
+      const setting = await getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY);
+      if (!setting?.targetUrl || !setting.targetUrl.trim()) throw new HttpError(409, "set the migration target URL in Settings before migrating an agent");
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
+      if (!agent.enabled) throw new HttpError(409, "enable the runner before migrating it");
+      const who = resolveActor(actor);
+      await db.agent.update({ where: { id: agentId }, data: { migrateRequested: true, migrateRequestedAt: new Date(), migrateRequestedBy: displayActor(who.actor), migrateDeliveredAt: null, migratedAt: null, migrateError: null } });
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.migrate_requested", detail: { agentId, targetUrl: setting.targetUrl } } });
       return { id: agentId };
     },
 

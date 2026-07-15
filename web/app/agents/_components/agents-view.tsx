@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
 
 export type AgentVM = {
   id: string;
@@ -36,6 +36,14 @@ export type AgentVM = {
   restartRequestedBy: string | null;
   restartDeliveredAt: string | null;
   updateDeliveredAt: string | null;
+  // App-URL migration: the base URL the agent last reported polling, plus the move lifecycle.
+  currentAppUrl: string | null;
+  migrateRequested: boolean;
+  migrateRequestedAt: string | null;
+  migrateRequestedBy: string | null;
+  migrateDeliveredAt: string | null;
+  migratedAt: string | null;
+  migrateError: string | null;
 };
 
 // Live self-update status from the lifecycle timestamps: queued (set, not yet polled) -> updating
@@ -107,6 +115,22 @@ function restartStatus(a: AgentVM): { label: string; color: string } | null {
     const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
     if (seen > del + 3000) return { label: `✓ restarted${by} — runner back online`, color: "var(--ok-fg)" };
     return { label: `↻ restarting${by} — re-launching…`, color: "var(--info-fg)" };
+  }
+  return null;
+}
+
+// Live app-URL migration status. failed (agent tried the new URL and couldn't verify/rewrite — stays
+// on the old one) -> migrated (its heartbeat came back reporting the new URL) -> queued (operator asked,
+// not yet polled) -> migrating (delivered, agent verifying+rewriting+relaunching). migratedAt/migrateError
+// are terminal-ish so they take precedence over the in-flight labels. Returns null when nothing's afoot.
+function migrateStatus(a: AgentVM): { label: string; color: string } | null {
+  const by = a.migrateRequestedBy ? ` (by ${a.migrateRequestedBy})` : "";
+  if (a.migrateError) return { label: `⚠ migration failed — ${a.migrateError} (still on the old URL)`, color: "var(--danger-fg, #b00)" };
+  if (a.migratedAt) return { label: `✓ migrated${by} — now on ${a.currentAppUrl ?? "the new URL"}`, color: "var(--ok-fg)" };
+  if (a.migrateRequested) return { label: `↻ migration queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
+  if (a.migrateDeliveredAt) {
+    if (Date.now() - new Date(a.migrateDeliveredAt).getTime() > 5 * 60_000) return null;
+    return { label: `↻ migrating${by} — verifying the new URL + rewriting the scheduled task…`, color: "var(--info-fg)" };
   }
   return null;
 }
@@ -325,7 +349,9 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
         (a.updateRequested && fresh(a.updateRequestedAt, 10 * 60_000)) ||
         fresh(a.updateDeliveredAt, 5 * 60_000) ||
         (a.restartRequested && fresh(a.restartRequestedAt, 10 * 60_000)) ||
-        fresh(a.restartDeliveredAt, 5 * 60_000)
+        fresh(a.restartDeliveredAt, 5 * 60_000) ||
+        (a.migrateRequested && fresh(a.migrateRequestedAt, 10 * 60_000)) ||
+        fresh(a.migrateDeliveredAt, 5 * 60_000)
     );
     if (!inFlight) return;
     const t = setInterval(() => router.refresh(), 4000);
@@ -546,8 +572,10 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 </td>
                 <td>
                   {a.enabled ? "enabled" : <span className="muted">disabled</span>}
+                  {a.currentAppUrl && <div className="note muted" style={{ marginTop: 2 }} title="the app URL this runner is polling">url: {a.currentAppUrl}</div>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
                   {(() => { const r = restartStatus(a); return r ? <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div> : null; })()}
+                  {(() => { const m = migrateStatus(a); return m ? <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div> : null; })()}
                 </td>
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
@@ -565,6 +593,11 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     {a.enabled && (
                       <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner.">
                         {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
+                      </button>
+                    )}
+                    {a.enabled && !a.migratedAt && (
+                      <button onClick={() => run(a.id, requestAgentMigrate)} disabled={toggling === a.id || a.migrateRequested} title="Move this runner to the new app URL (set the target in Settings first). It verifies the new URL, rewrites its own scheduled task, and switches — the old URL is removed once it reports in.">
+                        {toggling === a.id ? "…" : a.migrateRequested ? "Migrating…" : "Migrate"}
                       </button>
                     )}
                     {!a.enabled && (
@@ -607,6 +640,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             const upToDate = isUpToDate(a);
             const u = updateStatus(a);
             const r = restartStatus(a);
+            const m = migrateStatus(a);
             const stuck = stuckLabel(a, ls.online, nowMs);
             return (
               <tr key={a.id}>
@@ -640,8 +674,10 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     <div className="note muted" title={a.bootAt ? `up since ${a.bootAt}` : "uptime unknown"}>up {uptime(a.bootAt, nowMs)}</div>
                   )}
                   {stuck && <div className="note" style={{ color: "var(--err-fg)" }} title="No job progress for several minutes — the runner is wedged on a step. The watchdog restarts it at the stall timeout.">{stuck}</div>}
+                  {a.currentAppUrl && <div className="note muted" style={{ marginTop: 2 }} title="the app URL this runner is polling">url: {a.currentAppUrl}</div>}
                   {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
                   {r && <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div>}
+                  {m && <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div>}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
@@ -657,6 +693,9 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       : []),
                     ...(a.enabled
                       ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
+                      : []),
+                    ...(a.enabled && !a.migratedAt
+                      ? [{ label: a.migrateRequested ? "Migrating…" : "Migrate to new URL", disabled: toggling === a.id || a.migrateRequested, onClick: () => run(a.id, requestAgentMigrate) }]
                       : []),
                     ...(!a.enabled
                       ? [{ label: "Trash", danger: true, onClick: () => run(a.id, trashAgent) }]

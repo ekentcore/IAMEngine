@@ -8,7 +8,7 @@ import { parseCapabilities } from "@/lib/runner/capabilities";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
-  let body: { agentId?: unknown; version?: unknown; semver?: unknown; startedAt?: unknown; capabilities?: unknown };
+  let body: { agentId?: unknown; version?: unknown; semver?: unknown; startedAt?: unknown; capabilities?: unknown; appUrl?: unknown; migrateError?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -19,9 +19,11 @@ export async function POST(request: Request) {
   const semver = typeof body.semver === "string" ? body.semver : null;
   const startedAt = typeof body.startedAt === "string" ? body.startedAt : null;
   const capabilities = parseCapabilities(body.capabilities); // null = not reported (legacy runner)
+  const appUrl = typeof body.appUrl === "string" ? body.appUrl : null; // the base URL the agent is polling (1.62+)
+  const migrateError = typeof body.migrateError === "string" ? body.migrateError : null; // last migrate failure the agent hit
 
   try {
-    const out = await makeRunnerService(db).heartbeat(body.agentId, version, semver, startedAt, capabilities);
+    const out = await makeRunnerService(db).heartbeat(body.agentId, version, semver, startedAt, capabilities, appUrl, migrateError);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

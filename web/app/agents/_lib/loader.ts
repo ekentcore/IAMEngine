@@ -91,6 +91,13 @@ export async function loadAgentsPage() {
       restartRequestedAt: a.restartRequestedAt?.toISOString() ?? null,
       restartRequestedBy: a.restartRequestedBy ?? null,
       restartDeliveredAt: a.restartDeliveredAt?.toISOString() ?? null,
+      currentAppUrl: a.currentAppUrl ?? null,
+      migrateRequested: a.migrateRequested,
+      migrateRequestedAt: a.migrateRequestedAt?.toISOString() ?? null,
+      migrateRequestedBy: a.migrateRequestedBy ?? null,
+      migrateDeliveredAt: a.migrateDeliveredAt?.toISOString() ?? null,
+      migratedAt: a.migratedAt?.toISOString() ?? null,
+      migrateError: a.migrateError ?? null,
     };
   });
   const now = new Date();
