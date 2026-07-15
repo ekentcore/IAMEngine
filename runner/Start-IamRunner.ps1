@@ -217,6 +217,27 @@ if ($adReady) {
 } else {
     Write-Warning "ActiveDirectory module could not be loaded on this host — AD jobs will be withheld (this agent reports no 'active-directory' capability)."
 }
+# Self-heal the pinned EXO build if it's absent — mirrors Install-CtgMissingGraphModules above. Without
+# it, a host that only has the broken 3.10.0 (whose REST cmdlets call the removed
+# HttpResponseMessage.GetResponseHeader() on PS7.6) silently falls back to it and EVERY Exchange job
+# dies with "does not contain a method named 'GetResponseHeader'" — the failure puretech/core2104 hit.
+# Best-effort: a host with no gallery access keeps the warn-and-fall-back path below.
+function Install-CtgExoPin {
+    param([Parameter(Mandatory)][string]$Version)
+    $have = Get-Module -ListAvailable -Name ExchangeOnlineManagement -ErrorAction SilentlyContinue |
+        Where-Object { $_.Version -eq [version]$Version }
+    if ($have) { return }
+    Write-Warning "ExchangeOnlineManagement $Version (the PS7.6-safe pin) not installed — installing it so Exchange jobs don't fall back to a build that breaks on 'GetResponseHeader'."
+    Initialize-CtgGallery
+    try {
+        Install-Module ExchangeOnlineManagement -RequiredVersion $Version -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop
+        Write-Host "  installed ExchangeOnlineManagement $Version" -ForegroundColor Yellow
+    } catch {
+        Write-Warning "  could not install ExchangeOnlineManagement ${Version}: $($_.Exception.Message)"
+    }
+}
+# Pull the pin in before we resolve which build to load, so the healthy path below finds it present.
+Install-CtgExoPin -Version $ExoModuleVersion
 $exoAvail = Get-Module -ListAvailable ExchangeOnlineManagement
 if ($exoAvail) {
     # Load the pinned EXO version FIRST (before Coretelligent.Exchange's RequiredModules auto-picks the

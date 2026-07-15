@@ -68,6 +68,16 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    id: "exo-pin-selfheal",
+    date: "2026-07-15",
+    time: "12:00",
+    title: "Runner self-heals the Exchange Online module pin",
+    items: [
+      "Exchange jobs no longer fail with \"does not contain a method named 'GetResponseHeader'\" on hosts that only had the broken ExchangeOnlineManagement 3.10.0 (which puretech/core2104 hit)",
+      "The runner now installs the PS7.6-safe 3.9.2 pin at startup when it is missing, instead of warning and silently falling back to the broken build (runner 1.61.0)",
+    ],
+  },
+  {
     id: "optional-cred-empty-label",
     date: "2026-07-15",
     time: "11:00",
