@@ -7,8 +7,8 @@ import { canViewDocs, canViewAudience, canManageDocs } from "@/lib/docs/access";
 import { listDocumentsForRole, getDocumentDetail, versionRows } from "@/lib/docs/store";
 import { markdownToHtml } from "@/lib/docs/render";
 import { CHANGELOG } from "@/lib/changelog/entries";
-import { changelogSince } from "@/lib/docs/versioning";
-import { diffLines, collapseUnchanged, diffStats } from "@/lib/docs/diff";
+import { changelogSince, isSuspiciousShrink, compareVersions } from "@/lib/docs/versioning";
+import { diffLines, collapseUnchanged, diffStats, type DiffLine } from "@/lib/docs/diff";
 
 // The effective role for the request, after the view gate. Redirects out if not allowed.
 async function gateRole(): Promise<Role> {
@@ -38,7 +38,7 @@ export async function loadDoc(slug: string) {
   const rows = versionRows(detail.versions);
 
   // The draft-review payload is only assembled for a manager, and only when a draft exists.
-  let review = null as null | { version: string; changeNote: string; entriesConsidered: number; generatedByAi: boolean; shrunk: boolean; added: number; removed: number; diff: { type: string; text: string }[]; draftId: string };
+  let review = null as null | { version: string; changeNote: string; entriesConsidered: number; generatedByAi: boolean; shrunk: boolean; added: number; removed: number; diff: DiffLine[]; draftId: string };
   if (canManage && detail.draft) {
     const d = detail.draft;
     const full = diffLines(current?.markdown ?? "", d.markdown);
@@ -49,7 +49,7 @@ export async function loadDoc(slug: string) {
       changeNote: d.changeNote ?? "",
       entriesConsidered: changelogSince(CHANGELOG, current?.changelogThrough).length,
       generatedByAi: d.generatedByAi,
-      shrunk: d.markdown.length < (current?.markdown.length ?? 0) * 0.6,
+      shrunk: isSuspiciousShrink(current?.markdown, d.markdown),
       added: stats.added,
       removed: stats.removed,
       diff: collapseUnchanged(full),
@@ -58,6 +58,18 @@ export async function loadDoc(slug: string) {
 
   // How many change-log entries a fresh update would consider (shown on the Update button).
   const pendingEntries = changelogSince(CHANGELOG, current?.changelogThrough).length;
+
+  // Manager-only extra: the list of versions to redline against each other (published newest-first,
+  // with the pending draft on top). The provider name shown in the update modal is fetched lazily by
+  // the modal itself, so a plain doc view carries no extra provider query.
+  let versionOptions: { id: string; version: string; status: string }[] = [];
+  if (canManage) {
+    const published = detail.versions
+      .filter((v) => v.status === "published")
+      .sort((a, b) => compareVersions(b.version, a.version))
+      .map((v) => ({ id: v.id, version: v.version, status: v.status }));
+    versionOptions = detail.draft ? [{ id: detail.draft.id, version: detail.draft.version, status: "draft" }, ...published] : published;
+  }
 
   return {
     slug,
@@ -70,5 +82,6 @@ export async function loadDoc(slug: string) {
     hasDraft: !!detail.draft,
     review,
     pendingEntries,
+    versionOptions,
   };
 }

@@ -581,3 +581,28 @@ button.btn-quiet:hover:not(:disabled) { background: var(--bg-soft); }
 .doc-diff-add { background: color-mix(in srgb, var(--ok) 16%, transparent); display: block; }
 .doc-diff-del { background: color-mix(in srgb, var(--danger) 16%, transparent); display: block; }
 .doc-diff-gap { color: var(--muted); display: block; }
+
+.doc-compare { margin: 8px 0 14px; font-size: 13px; }
+.doc-compare > summary { color: var(--muted); }
+
+/* AI-update progress modal — a native <dialog> (Escape + focus-trap for free) */
+dialog.doc-modal {
+  width: 100%; max-width: 420px; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+  box-shadow: 0 10px 40px color-mix(in srgb, #000 30%, transparent);
+}
+dialog.doc-modal::backdrop { background: color-mix(in srgb, #000 45%, transparent); }
+.doc-steps { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.doc-step { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.doc-step-mark { width: 18px; display: inline-flex; align-items: center; justify-content: center; }
+.doc-step-idle { color: var(--muted); }
+.doc-step-idle .doc-step-mark { color: var(--muted); }
+.doc-step-active { color: var(--ink); font-weight: 500; }
+.doc-step-done .doc-step-mark { color: var(--ok); }
+.doc-modal-error { margin: 12px 0 0; font-size: 13px; color: var(--danger); }
+.doc-spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-top-color: var(--accent);
+  display: inline-block; animation: doc-spin 0.7s linear infinite;
+}
+@keyframes doc-spin { to { transform: rotate(360deg); } }

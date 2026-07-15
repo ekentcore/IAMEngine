@@ -6,6 +6,7 @@ import { loadDoc } from "../_lib/loader";
 import { AUDIENCE_LABEL } from "@/lib/docs/store";
 import { DownloadMenu } from "./_components/download-menu";
 import { ManagePanel } from "./_components/manage-panel";
+import { VersionCompare } from "./_components/version-compare";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,7 @@ export default async function DocPage({ params }: { params: { slug: string } }) 
       )}
 
       <div className="doc-section-label">Version history</div>
+      {d.canManage && d.versionOptions.length >= 2 && <VersionCompare slug={d.slug} options={d.versionOptions} />}
       <table className="doc-version-table">
         <thead>
           <tr><th>Version</th><th>Date</th><th>By</th><th>What changed</th></tr>

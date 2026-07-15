@@ -56,6 +56,26 @@ export function changelogForPrompt(entries: ChangelogEntry[]): string {
     .join("\n\n");
 }
 
+// ── Shrink guard ─────────────────────────────────────────────────────────────
+// A revised document (an AI draft or an uploaded copy) that comes back much shorter than the
+// current version has almost certainly lost content — a truncated model reply, or a bad Word
+// round-trip. We compute the retained ratio and treat anything below the threshold as suspicious:
+// the UI warns, and publishing is blocked server-side unless the reviewer explicitly overrides.
+export const SHRINK_THRESHOLD = 0.85;
+
+// proposed length ÷ current length. An empty/absent current has no baseline to shrink from, so it
+// returns 1 (never a shrink). Growth returns >1 and is always fine.
+export function retainedRatio(currentMarkdown: string | null | undefined, proposedMarkdown: string | null | undefined): number {
+  const cur = (currentMarkdown ?? "").length;
+  const next = (proposedMarkdown ?? "").length;
+  if (cur === 0) return 1;
+  return next / cur;
+}
+
+export function isSuspiciousShrink(currentMarkdown: string | null | undefined, proposedMarkdown: string | null | undefined): boolean {
+  return retainedRatio(currentMarkdown, proposedMarkdown) < SHRINK_THRESHOLD;
+}
+
 // ── Parsing the model's reply ────────────────────────────────────────────────
 // We ask the model to answer with a change note, then the full updated document between two
 // sentinels — NOT as JSON, because JSON-escaping a 40 KB markdown body (with its own quotes,

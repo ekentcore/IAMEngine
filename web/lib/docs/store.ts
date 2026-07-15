@@ -84,6 +84,7 @@ export async function createDraft(opts: {
   changelogThrough: string | null;
   createdById: string | null;
   createdByLabel: string;
+  generatedByAi?: boolean; // AI update = true (default); an uploaded copy = false
 }): Promise<{ draft?: DocumentVersion; error?: string }> {
   const doc = await db.document.findUnique({ where: { id: opts.documentId }, include: { versions: true } });
   if (!doc) return { error: "document not found" };
@@ -97,7 +98,7 @@ export async function createDraft(opts: {
       status: "draft",
       markdown: opts.markdown,
       changeNote: opts.changeNote,
-      generatedByAi: true,
+      generatedByAi: opts.generatedByAi ?? true,
       changelogThrough: opts.changelogThrough,
       createdById: opts.createdById,
       createdByLabel: opts.createdByLabel,

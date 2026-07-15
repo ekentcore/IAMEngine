@@ -7,6 +7,9 @@ import {
   changelogSince,
   newestDate,
   parseModelUpdate,
+  retainedRatio,
+  isSuspiciousShrink,
+  SHRINK_THRESHOLD,
   DOC_BEGIN,
   DOC_END,
   NOTE_PREFIX,
@@ -61,4 +64,20 @@ test("parseModelUpdate falls back to whole text when sentinels are missing", () 
   const out = parseModelUpdate("# Just a doc\n\nNo markers.");
   assert.equal(out.markdown, "# Just a doc\n\nNo markers.");
   assert.equal(out.changeNote, "");
+});
+
+test("retainedRatio is proposed/current length, safe on empty current", () => {
+  assert.equal(retainedRatio("abcd", "ab"), 0.5);
+  assert.equal(retainedRatio("abcd", "abcd"), 1);
+  assert.equal(retainedRatio("ab", "abcd"), 2); // growth is allowed to exceed 1
+  assert.equal(retainedRatio("", "anything"), 1); // no current baseline → not a shrink
+  assert.equal(retainedRatio("", ""), 1);
+});
+
+test("isSuspiciousShrink fires only below the threshold", () => {
+  const current = "x".repeat(1000);
+  assert.equal(isSuspiciousShrink(current, "x".repeat(840)), true); // 0.84 < 0.85
+  assert.equal(isSuspiciousShrink(current, "x".repeat(850)), false); // exactly at threshold is fine
+  assert.equal(isSuspiciousShrink(current, "x".repeat(1200)), false); // growth is never a shrink
+  assert.equal(SHRINK_THRESHOLD, 0.85);
 });
