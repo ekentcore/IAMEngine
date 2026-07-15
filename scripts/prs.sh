@@ -4,6 +4,11 @@
 #   ./scripts/prs.sh            list open PRs (number, title, draft/ready, CI, mergeable)
 #   ./scripts/prs.sh 56         merge PR 56 (squash, delete the branch, un-draft it first if needed)
 #   ./scripts/prs.sh 56 --yes   skip the confirmation prompt
+#   ./scripts/prs.sh --all      list every ready, non-conflicting PR that --all would merge (dry run)
+#   ./scripts/prs.sh --all --yes
+#                               merge them all oldest-first, skipping any that conflict (including ones
+#                               a preceding merge just broke), then sweep finished worktrees. Drafts
+#                               are left alone — a draft is work-in-progress on purpose.
 #   ./scripts/prs.sh --tidy     show which finished Claude worktrees can be retired (--yes to do it)
 #   ./scripts/prs.sh --tidy --stale
 #                               also retire LOCKED worktrees left behind by dead sessions — only when
@@ -96,6 +101,95 @@ if [[ "$PR" == "--tidy" ]]; then
   git worktree prune
   echo
   [[ "$DO_IT" == "--yes" ]] || echo "dry run — re-run with:  $0 --tidy${STALE:+ --stale} --yes"
+  exit 0
+fi
+
+# ./scripts/prs.sh --all — merge every ready, non-conflicting PR, oldest first, then tidy.
+#
+# "Ready" means NOT a draft (a draft is deliberately work-in-progress) and NOT already CONFLICTING.
+# The catch a hand-written `for` loop misses: every squash-merge moves main, so a PR that is mergeable
+# right now can be in conflict by the time its turn comes. So we re-check EACH PR's mergeability
+# immediately before merging it, and SKIP — never abort — the ones that have gone bad. Each merge just
+# recurses into this same script's single-PR path, so it inherits the un-draft, worktree-release and
+# migration handling for free.
+if [[ "$PR" == "--all" ]]; then
+  DO_IT=""
+  for arg in "${@:2}"; do [[ "$arg" == "--yes" ]] && DO_IT="--yes"; done
+  git fetch -q origin main
+
+  # Numbers of open PRs that are ready and not (yet) conflicting, oldest first. UNKNOWN is kept in —
+  # GitHub reports it while still computing mergeability, and the per-PR recheck below resolves it;
+  # only a firm CONFLICTING is excluded here. (Newline-separated; iterated with word-splitting, which
+  # keeps this working on the stock macOS bash 3.2 that has no `mapfile`.)
+  READY=$(gh pr list --state open --json number,isDraft,mergeable \
+    --jq 'map(select(.isDraft == false and .mergeable != "CONFLICTING")) | sort_by(.number) | .[].number')
+
+  if [[ -z "$READY" ]]; then
+    echo "No ready, non-conflicting PRs to merge (drafts and CONFLICTS are skipped — see: $0)."
+    exit 0
+  fi
+
+  echo "Ready, non-conflicting PRs (oldest first):"
+  gh pr list --state open --json number,title,isDraft,mergeable \
+    --jq 'map(select(.isDraft == false and .mergeable != "CONFLICTING")) | sort_by(.number) | .[] | "  #\(.number)  \(.title)"'
+  echo
+
+  if [[ "$DO_IT" != "--yes" ]]; then
+    echo "dry run — re-run with:  $0 --all --yes"
+    exit 0
+  fi
+
+  MERGED=""; SKIPPED=""; MIG_PRS=""
+  for n in $READY; do
+    # Re-check just-in-time: a preceding merge may have moved main and put this one into conflict.
+    # Right after a merge GitHub briefly reports UNKNOWN while it recomputes, so give it a few tries.
+    m="UNKNOWN"
+    for _ in 1 2 3 4 5; do
+      m=$(gh pr view "$n" --json mergeable -q .mergeable 2>/dev/null || echo UNKNOWN)
+      [[ "$m" == "UNKNOWN" ]] || break
+      sleep 2
+    done
+    if [[ "$m" == "CONFLICTING" ]]; then
+      echo "  skip  #$n  (now CONFLICTS — an earlier merge moved main; resolve it and re-run)"
+      SKIPPED="$SKIPPED #$n"; continue
+    fi
+
+    # Note a migration BEFORE merging, so the end-of-run summary can list every DB deploy still owed.
+    if gh pr diff "$n" --name-only 2>/dev/null | grep -q 'prisma/migrations/.*\.sql$'; then
+      MIG_PRS="$MIG_PRS #$n"
+    fi
+
+    echo "──────── merging #$n ────────"
+    if "$0" "$n" --yes; then
+      MERGED="$MERGED #$n"
+    else
+      echo "  skip  #$n  (merge did not complete — left open)"
+      SKIPPED="$SKIPPED #$n"
+    fi
+    echo
+  done
+
+  echo "════════ done ════════"
+  echo "merged: ${MERGED:- none}"
+  echo "skipped:${SKIPPED:- none}"
+  echo
+
+  echo "sweeping finished worktrees…"
+  "$0" --tidy --stale --yes || true
+
+  if [[ -n "$MIG_PRS" ]]; then
+    cat <<NEXT
+
+One or more merged PRs shipped a DB migration ($MIG_PRS). The database still needs them:
+
+  cd "\$(git rev-parse --show-toplevel)/web"
+  git checkout main && git pull
+  npx prisma migrate deploy    # forward-only. NEVER \`migrate dev\` — that resets the DB.
+  npx prisma generate
+
+Then restart the dev server so it picks up the regenerated client.
+NEXT
+  fi
   exit 0
 fi
 
