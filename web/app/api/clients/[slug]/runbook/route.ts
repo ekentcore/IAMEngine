@@ -48,6 +48,9 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     if (!client) return NextResponse.json({ error: "client not found" }, { status: 404 });
     const generated = sectionsFromSystems(client, body.action);
     if (!generated.length) return NextResponse.json({ error: `no systems participate in ${body.action} (set Onboard/Offboard on Edit systems first)` }, { status: 422 });
+    // Preview: return the generated sections for review/edit in the Build dialog — don't persist. The
+    // operator then saves the (possibly edited) sections back via the normal `sections` path below.
+    if (body.preview) return NextResponse.json({ sections: generated, fromSystems: true });
     const res = await saveRunbook(db, params.slug, body.action, "", generated);
     return NextResponse.json({ count: res?.count ?? 0, sections: res?.sections ?? [], fromSystems: true });
   }
