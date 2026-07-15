@@ -6,6 +6,7 @@
 // diagnosis plus every proposed edit (file, lines, before/after). Applying a reviewed proposal
 // opens a draft PR — a human always merges.
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { FixProposal } from "@/lib/fixes/fix-tasks";
 
 export type FixTaskInfo = {
@@ -28,6 +29,7 @@ type TaskResponse = { task?: { id: string; status: string; prUrl: string | null;
 // auto-fix-filed tasks are visible without anyone having clicked anything this session).
 export function useClaudeFixes(initial?: Record<string, FixTaskInfo>) {
   const [tasks, setTasks] = useState<Record<string, FixTaskInfo>>(initial ?? {});
+  const router = useRouter();
 
   // Poll the fingerprints with an in-flight task. 5s cadence; stops itself when nothing's active.
   useEffect(() => {
@@ -63,13 +65,21 @@ export function useClaudeFixes(initial?: Record<string, FixTaskInfo>) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fingerprint: fp, title, context: row.copyText }),
       });
-      if (r.ok || r.status === 409) return; // 409 = one's already in flight — the poll shows its real status
+      if (r.ok || r.status === 409) {
+        // Invalidate the client Router Cache for this route so navigating away and back re-fetches a
+        // server render that SEEDS this now-existing task (loader.ts). Without this, the cached RSC
+        // payload predates the task and the queued/running chip vanishes on return — every other
+        // mutation in the app refreshes for the same reason. 409 = one's already in flight; refresh
+        // too, so its real status seeds on return.
+        router.refresh();
+        return;
+      }
       const d = (await r.json().catch(() => ({}))) as { error?: string };
       setTasks((m) => ({ ...m, [fp]: { status: "error", error: d.error ?? `failed (${r.status})` } }));
     } catch {
       setTasks((m) => ({ ...m, [fp]: { status: "error", error: "request failed" } }));
     }
-  }, []);
+  }, [router]);
 
   // Apply a reviewed proposal (worktree → tsc/tests → draft PR) — the poll takes over from there.
   const apply = useCallback(async (fp: string, taskId: string): Promise<string | null> => {
@@ -79,8 +89,9 @@ export function useClaudeFixes(initial?: Record<string, FixTaskInfo>) {
       return d.error ?? `failed (${r.status})`;
     }
     setTasks((m) => ({ ...m, [fp]: { ...m[fp], status: "applying" } }));
+    router.refresh(); // keep the route's cached render in step with the new status (see start())
     return null;
-  }, []);
+  }, [router]);
 
   const dismiss = useCallback(async (fp: string, taskId: string): Promise<string | null> => {
     const r = await fetch(`/api/fix-tasks/${taskId}/dismiss`, { method: "POST" });
@@ -89,8 +100,9 @@ export function useClaudeFixes(initial?: Record<string, FixTaskInfo>) {
       return d.error ?? `failed (${r.status})`;
     }
     setTasks((m) => ({ ...m, [fp]: { ...m[fp], status: "dismissed" } }));
+    router.refresh(); // keep the route's cached render in step with the new status (see start())
     return null;
-  }, []);
+  }, [router]);
 
   return { tasks, start, apply, dismiss };
 }

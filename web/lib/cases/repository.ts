@@ -10,6 +10,7 @@ import { autoOffboardScheduleAt, offboardTargetResolved, engineOwnsSchedule, AUT
 import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
 import { jobWarningLines } from "./run-report";
+import { iamCaseNumber, needsIamNumber } from "./case-number";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
@@ -167,11 +168,19 @@ export function makeCaseRepository(db: PrismaClient) {
       status: CaseStatus
     ): Promise<string> {
       const created = await db.$transaction(async (tx) => {
+        // A manual case (no ServiceNow number) gets an auto-assigned IAM number from the dedicated
+        // sequence. nextval is atomic, so concurrent creates can't collide on the unique column; a
+        // rolled-back create just leaves a gap, which is fine (same as any sequence / autoincrement).
+        let caseNumber = input.serviceNowCaseNumber ?? null;
+        if (needsIamNumber(caseNumber)) {
+          const [row] = await tx.$queryRaw<{ nextval: bigint }[]>`SELECT nextval('"CaseRequest_iam_seq"') AS nextval`;
+          caseNumber = iamCaseNumber(Number(row.nextval));
+        }
         const c = await tx.caseRequest.create({
           data: {
             clientId,
             action: input.action,
-            serviceNowCaseNumber: input.serviceNowCaseNumber ?? null,
+            serviceNowCaseNumber: caseNumber,
             subject: input.subject ?? null,
             status,
             dryRun: input.dryRun ?? false,
