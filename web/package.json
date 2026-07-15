@@ -25,6 +25,8 @@
   },
   "dependencies": {
     "@prisma/client": "^5.18.0",
+    "docx": "^9.7.1",
+    "marked": "^18.0.6",
     "next": "^14.2.5",
     "node-forge": "^1.4.0",
     "react": "^18.3.1",

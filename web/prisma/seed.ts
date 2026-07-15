@@ -7,6 +7,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { parseRunbookText } from "../lib/clients/runbook-parse";
+import { seedDocuments } from "./seed-docs";
 
 const prisma = new PrismaClient();
 const PROFILES = join(process.cwd(), "..", "profiles");
@@ -221,6 +222,8 @@ async function main() {
     }
     console.log(`generated: ${enriched} enriched, ${curatedRb} curated (runbook only), ${nonV2} unknown-schema, ${unmatched} no roster match; ${runbook} runbook sections loaded`);
   }
+
+  await seedDocuments(prisma);
 }
 
 // Load <slug>.runbook.json (the full step-by-step, modeled + unmodeled) into RunbookSection.

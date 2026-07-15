@@ -607,6 +607,61 @@ model LlmProvider {
   updatedAt  DateTime @updatedAt
 }
 
+// ── Documents: the platform's own reference documents, versioned in-app ───────
+// The client overview, setup guide, security design, and internal reference. Each Document is a
+// slug + audience; its content is a chain of DocumentVersions (Markdown). The newest PUBLISHED
+// version is what the /docs page shows and what downloads (md/html/docx) render from. An "Update
+// with AI" run reads the change log since the last version and produces a DRAFT version an admin
+// reviews (diff + change note) before it publishes. Content is Markdown, never a secret — these
+// are our own docs, so they live in the app DB (unlike client credentials).
+
+// Who may see a document. Enforced server-side in lib/docs/access.ts, not just by hiding links.
+enum DocAudience {
+  client // client-facing (engineer and above may view/download)
+  internal // Coretelligent staff only (global_admin and above)
+}
+
+enum DocVersionStatus {
+  draft // an AI-proposed (or hand-authored) revision awaiting review; never shown/served publicly
+  published // the live content; the newest published version is the current one
+}
+
+model Document {
+  id        String            @id @default(cuid())
+  slug      String            @unique // stable url + download filename, e.g. "security-design"
+  title     String
+  audience  DocAudience       @default(client)
+  summary   String? // one-line blurb for the docs list
+  sortOrder Int               @default(0)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  versions  DocumentVersion[]
+}
+
+model DocumentVersion {
+  id         String           @id @default(cuid())
+  documentId String
+  document   Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version    String // "1.0", "1.1", "2.0" — unique within a document
+  status     DocVersionStatus @default(draft)
+  markdown   String
+  // What changed vs the version this was based on — shown in the on-document version table. For an
+  // AI draft this is the model's own summary of its edits; for the seed it's "Initial version".
+  changeNote String?
+  generatedByAi    Boolean   @default(false)
+  // ISO date (YYYY-MM-DD) of the newest change-log entry folded into this version, so the next AI
+  // update only considers entries newer than this and we never re-apply the same log twice.
+  changelogThrough String?
+  // Attribution snapshot (no FK: a version's provenance must survive the operator being deleted).
+  createdById    String? // User.id of the operator who created/published it, when known
+  createdByLabel String? // "Seed", or the operator's email — what the version table displays
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@unique([documentId, version])
+  @@index([documentId, status])
+}
+
 // ── Auth: operators, their roles, and live sessions ──────────────────────────
 // Role is a coarse bucket; lib/auth/permissions.ts maps each Role to a fine permission set, so
 // authorization is permission-based and roles stay easy to re-compose.
