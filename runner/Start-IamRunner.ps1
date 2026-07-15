@@ -353,6 +353,14 @@ function Get-CtgSamFromUserName {
 # hold. Same $script:-scope idiom as $script:ConnTestRights.
 $script:CtgAdIdentity = @{ kind = 'ambient'; sam = $null; label = "the agent's own identity" }
 
+# The brokered ad-dc PSCredential, or $null when it isn't brokered. ad-dc is now OPTIONAL (a DC agent
+# authenticates as ambient SYSTEM and never receives it), so callers must tolerate its absence rather
+# than deref $creds['ad-dc'].Credential blindly.
+function Get-CtgAdDcCredential($creds) {
+    $s = $creds['ad-dc']
+    if ($s) { $s.Credential } else { $null }
+}
+
 function New-CtgAdConnection($creds) {
     if (-not (Get-Command Get-ADDomain -ErrorAction SilentlyContinue)) {
         throw "the ActiveDirectory PowerShell module is not loaded on this agent — install RSAT (Rsat.ActiveDirectory.DS-LDS.Tools) on the agent host, or route this client's AD steps to an agent that has it."
@@ -1033,9 +1041,11 @@ $DISPATCH = @{
     'directory-sync' = @{
         # ad-dc credential lets the runner remote into the Entra Connect host (config.host) when the
         # ADSync module isn't on this agent's box (Model A: one DC runner remotes to Core-CCE-AzSync).
-        Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential ($creds['ad-dc']).Credential }
-        Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential ($creds['ad-dc']).Credential }
-        Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action -Credential ($creds['ad-dc']).Credential }
+        # ad-dc is OPTIONAL now (a DC agent runs ADSync locally, no credential), so it may not be
+        # brokered — take .Credential only when present, else $null (Invoke-/Confirm- run locally).
+        Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential (Get-CtgAdDcCredential $creds) }
+        Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential (Get-CtgAdDcCredential $creds) }
+        Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action -Credential (Get-CtgAdDcCredential $creds) }
     }
     'exchange' = @{
         # EXO app-only needs certificate auth (m365-admin carries the cert thumbprint). A hybrid

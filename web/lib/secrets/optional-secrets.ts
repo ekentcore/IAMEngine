@@ -22,6 +22,17 @@ export const OPTIONAL_SECRETS: Record<string, string[]> = {
   // toward smart lockout). Licensing — onboard AND offboard — is pure API and never needs this; only
   // the ad-hoc force-sync does. A client without it keeps working and simply can't force a sync.
   spanning: ["spanning-portal"],
+  // ad-dc is OPTIONAL for the on-prem Active Directory systems. On a domain controller — where the
+  // agent almost always runs — the runner authenticates as its own ambient SYSTEM identity (the
+  // directory's SYSTEM principal, PR #69) and needs NO credential; requiring ad-dc there only breaks
+  // things (a not-needed/empty ad-dc fails the up-front broker before the runner even runs). A wired
+  // ad-dc is still attached and used as the fallback (a member-server agent that genuinely needs it).
+  "active-directory": ["ad-dc"],
+  "directory-sync": ["ad-dc"],
+  "ad-email-writeback": ["ad-dc"],
+  "ad-consistency-check": ["ad-dc"],
+  "ad-hard-match": ["ad-dc"],
+  "ad-password-reset": ["ad-dc"],
 };
 
 export const ALL_OPTIONAL_SECRET_NAMES: ReadonlySet<string> = new Set(Object.values(OPTIONAL_SECRETS).flat());

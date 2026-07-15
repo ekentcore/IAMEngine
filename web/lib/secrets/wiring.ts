@@ -1,7 +1,7 @@
 // Pure helpers for the per-client secret wiring panel. The app stores only Delinea *references*
 // (a secret id), never values — see lib/secrets/delinea.ts for the preflight that resolves them.
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
-import { OPTIONAL_SECRETS } from "./optional-secrets";
+import { OPTIONAL_SECRETS, isOptionalSecret } from "./optional-secrets";
 
 // A secret reference is "set" once it carries a real Delinea id (not blank, not the REPLACE_ME
 // placeholder the profile generator emits, not the NOT_NEEDED manual-step sentinel). Get-CtgSecret
@@ -54,7 +54,10 @@ export function deriveSecretRows(systems: SystemRef[], existing: ExistingSecret[
     .map((name): SecretRow => {
       const e = byName.get(name);
       const externalId = e?.externalId ?? "";
-      const optional = optionalFor.has(name) && !referencedBy.has(name);
+      // Optional if the registry says so (e.g. ad-dc, which some AD systems still LIST in secretNames
+      // but which is never required — the planner strips it unless wired), or if it's only offered as
+      // an extra (spanning-portal, never in secretNames).
+      const optional = isOptionalSecret(name) || (optionalFor.has(name) && !referencedBy.has(name));
       return {
         name,
         externalId,

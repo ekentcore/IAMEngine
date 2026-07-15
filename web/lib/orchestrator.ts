@@ -1,6 +1,7 @@
 // Plans a CaseRequest into ordered Jobs. The brain's core logic.
 // See docs/DATA_MODEL.md ("Planning a case").
 import type { ClientSystem, Action, Mode } from "@prisma/client";
+import { OPTIONAL_SECRETS } from "./secrets/optional-secrets";
 
 // A step's INTENT — chiefly for offboarding. "disable" = reversible containment (lock the account,
 // isolate the device, revoke sessions); eventually safe to automate. "destructive" = actually deletes
@@ -97,7 +98,12 @@ export function planCase(
   personaSystems?: ReadonlySet<string>,
   // Secret names the client marked "not needed" (the NOT_NEEDED sentinel). A system whose every
   // required secret is marked so is done by hand — planned as a manual step, not an api job.
-  notNeededSecrets?: ReadonlySet<string>
+  notNeededSecrets?: ReadonlySet<string>,
+  // OPTIONAL secret names this client has actually WIRED (a real Delinea reference). An optional
+  // secret (e.g. ad-dc, which AD only needs off a domain controller — a DC agent authenticates as
+  // ambient SYSTEM) is stripped from a job's required secretNames UNLESS the client wired it, in
+  // which case it's kept so the runner brokers it as the fallback. Mirrors wiredOptionalSecrets.
+  wiredOptional?: ReadonlySet<string>
 ): PlannedJob[] {
   const active = systems.filter((s) => included(s, action, payload, personaSystems));
   // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
@@ -186,13 +192,25 @@ export function planCase(
     // reversible containment) so every offboard step carries a classification; onboard is unclassified.
     const intent: StepIntent | null = cfg?.intent?.[action] ?? (action === "offboard" ? "disable" : null);
     const destructive = intent === "destructive";
+    // OPTIONAL secrets for this system (e.g. ad-dc for AD): never REQUIRED, so they don't count toward
+    // the manual-step rule and are only kept in secretNames when the client actually wired them.
+    const optionalForSys = OPTIONAL_SECRETS[s.systemKey] ?? [];
+    const requiredNames = s.secretNames.filter((n) => !optionalForSys.includes(n));
     // "Not needed" secrets = the system has no credential to broker because a human does this step
     // (the same rule readiness.ts calls notNeeded). Plan it as a MANUAL checklist item: left as an
     // api job it would dispatch, fail at the credential broker (409 "marked not needed"), and take
-    // the case down with it. A real credential appearing later flips it straight back to api.
+    // the case down with it. A real credential appearing later flips it straight back to api. Only
+    // REQUIRED secrets count — a system whose only secret is optional (AD/ad-dc) runs api (ambient),
+    // NOT manual, even when that optional secret is marked not-needed.
     const noCredNeeded =
-      s.mode === "api" && s.secretNames.length > 0 && s.secretNames.every((n) => notNeededSecrets?.has(n) ?? false);
+      s.mode === "api" && requiredNames.length > 0 && requiredNames.every((n) => notNeededSecrets?.has(n) ?? false);
     const mode: Mode = noCredNeeded ? "manual" : s.mode;
+    // Required names plus any optional secret this system lists that the client HAS wired (kept so the
+    // runner brokers it as the fallback — e.g. a member-server AD agent that genuinely needs ad-dc).
+    const jobSecretNames = [
+      ...requiredNames,
+      ...optionalForSys.filter((n) => s.secretNames.includes(n) && (wiredOptional?.has(n) ?? false)),
+    ];
     return {
       systemKey: s.systemKey,
       sequence: i,
@@ -213,9 +231,9 @@ export function planCase(
       // runner brokers each name unconditionally. So an OPTIONAL secret must never be appended here;
       // it would make the step unclaimable for every client that hasn't wired it. See
       // lib/secrets/auxiliary.ts, which attaches optional secrets only where they're actually wired.
-      secretNames: s.systemKey === "sentinelone" && !s.secretNames.includes("m365-admin")
-        ? [...s.secretNames, "m365-admin"]
-        : s.secretNames,
+      secretNames: s.systemKey === "sentinelone" && !jobSecretNames.includes("m365-admin")
+        ? [...jobSecretNames, "m365-admin"]
+        : jobSecretNames,
       // The runner needs only this action's resolved config, not the whole blob.
       config: cfg ? (cfg[action] ?? null) : null,
     };

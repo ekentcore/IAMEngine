@@ -162,7 +162,7 @@ test("AD onboard injects ad-email-writeback after the cloud steps", () => {
   const wb = jobs.find((j) => j.systemKey === "ad-email-writeback");
   assert.ok(wb, "write-back step is injected");
   assert.equal(wb!.mode, "api");
-  assert.deepEqual(wb!.secretNames, ["ad-dc"]);
+  assert.deepEqual(wb!.secretNames, [], "ad-dc is optional — unwired here, so no required secret (runs ambient)");
   assert.equal(wb!.requiresApproval, false);
   const seq = (k: string) => jobs.find((j) => j.systemKey === k)!.sequence;
   assert.ok(seq("ad-email-writeback") > seq("m365"), "after m365");
@@ -189,7 +189,7 @@ test("AD onboard injects ad-consistency-check after the cloud step", () => {
   const chk = jobs.find((j) => j.systemKey === "ad-consistency-check");
   assert.ok(chk, "check step injected for a hybrid onboard");
   assert.equal(chk!.requiresApproval, false); // detect-only, never gates
-  assert.deepEqual(chk!.secretNames, ["ad-dc"]);
+  assert.deepEqual(chk!.secretNames, [], "ad-dc is optional — unwired here (runs ambient)");
   const seq = (k: string) => jobs.find((j) => j.systemKey === k)!.sequence;
   assert.ok(seq("ad-consistency-check") > seq("m365"), "runs after m365");
   // runs after the write-back too (both touch AD post-sync)
@@ -246,4 +246,41 @@ test("spanning licensing jobs carry only the API secret — never the optional p
     const jobs = planCase([sys({ systemKey: "spanning", secretNames: ["spanning"] })], action, {});
     assert.deepEqual(jobs[0].secretNames, ["spanning"]);
   }
+});
+
+// ad-dc is OPTIONAL for Active Directory: on a domain controller the runner authenticates as ambient
+// SYSTEM (PR #69) and needs no credential. So a client that hasn't wired ad-dc must still get an API
+// job (never brokered ad-dc up-front, never demoted to a manual step), while a client that HAS wired
+// it (a member-server agent that genuinely needs it) still carries it so the runner brokers the fallback.
+const AD = { systemKey: "active-directory", secretNames: ["ad-dc"], offboardWhen: "always" as const };
+
+test("ad-dc unwired: the AD job runs api with NO required secret (ambient SYSTEM)", () => {
+  const jobs = planCase([sys(AD)], "onboard", {});
+  assert.deepEqual(jobs[0].secretNames, [], "ad-dc must not be a required secret when unwired");
+  assert.equal(jobs[0].mode, "api", "AD still automates — it does not fall back to a manual step");
+});
+
+test("ad-dc marked not-needed: AD stays api and is NOT demoted to manual", () => {
+  // This is the exact regression: marking ad-dc 'not needed' used to force AD to a manual step.
+  const jobs = planCase([sys(AD)], "onboard", {}, undefined, new Set(["ad-dc"]));
+  assert.equal(jobs[0].mode, "api", "an optional not-needed secret must not demote the system to manual");
+  assert.deepEqual(jobs[0].secretNames, []);
+});
+
+test("ad-dc wired: the AD job carries it so the runner brokers the fallback (member server)", () => {
+  const jobs = planCase([sys(AD)], "onboard", {}, undefined, undefined, new Set(["ad-dc"]));
+  assert.deepEqual(jobs[0].secretNames, ["ad-dc"], "a wired ad-dc is attached for the member-server case");
+  assert.equal(jobs[0].mode, "api");
+});
+
+test("directory-sync gets the same optional-ad-dc treatment", () => {
+  const dirsync = { systemKey: "directory-sync", secretNames: ["ad-dc"], offboardWhen: "always" as const };
+  assert.deepEqual(planCase([sys(dirsync)], "offboard", {})[0].secretNames, []);
+  assert.deepEqual(planCase([sys(dirsync)], "offboard", {}, undefined, undefined, new Set(["ad-dc"]))[0].secretNames, ["ad-dc"]);
+});
+
+test("a required (non-optional) not-needed secret STILL demotes to manual — unchanged", () => {
+  // Guard: making ad-dc optional must not weaken the manual-step rule for genuinely required secrets.
+  const jobs = planCase([sys({ systemKey: "adobe", secretNames: ["adobe"], offboardWhen: "always" })], "offboard", {}, undefined, new Set(["adobe"]));
+  assert.equal(jobs[0].mode, "manual");
 });

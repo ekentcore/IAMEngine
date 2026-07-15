@@ -7,6 +7,7 @@
 //   no_systems  — the client has no credentialed API systems modeled (nothing to be ready for)
 // Manual/browser systems (no secret) don't gate creds readiness; on-prem AD is included like any other.
 import { NOT_NEEDED } from "../cases/case-secrets";
+import { isOptionalSecret } from "../secrets/optional-secrets";
 
 export type ReadinessTier = "ready" | "partial" | "not_set_up" | "no_systems";
 // "not_needed" = every required secret is the NOT_NEEDED sentinel — a manual-step system with nothing
@@ -106,11 +107,14 @@ function deriveSetupVector(opts: {
 
 export function computeClientReadiness(input: ReadinessInput): ClientReadiness {
   const systems: SystemReadiness[] = input.systems.map((s) => {
-    const missingSecrets = s.secretNames.filter((n) => !satisfied(n, input.secretExternalIds));
+    // Optional secrets (e.g. ad-dc — AD runs ambient SYSTEM on a DC without it) are never REQUIRED, so
+    // they don't gate readiness or trigger the manual-step rule, even when a ClientSystem still lists them.
+    const requiredNames = s.secretNames.filter((n) => !isOptionalSecret(n));
+    const missingSecrets = requiredNames.filter((n) => !satisfied(n, input.secretExternalIds));
     const wired = missingSecrets.length === 0;
     // A system whose EVERY required secret is marked NOT_NEEDED is a manual step — there's no live
     // connection to test, so it reads as "not needed" and is ready once wired (never "failed").
-    const notNeeded = s.secretNames.length > 0 && s.secretNames.every((n) => input.secretExternalIds.get(n) === NOT_NEEDED);
+    const notNeeded = requiredNames.length > 0 && requiredNames.every((n) => input.secretExternalIds.get(n) === NOT_NEEDED);
     const test: ConnTestState = notNeeded ? "not_needed" : (input.testBySystem.get(s.systemKey) ?? "untested");
     const setup = deriveSetupVector({
       wired,

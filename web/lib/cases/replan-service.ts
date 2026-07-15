@@ -60,7 +60,7 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
 
   const planned = resolvePlannedConfigs(info.client, payload, action,
     planCase(info.client.systems, action, payload, personaSystemKeys(info.client, payload, action),
-      new Set(info.client.notNeededSecrets)));
+      new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets)));
   const status = deriveStatus(planned);
   let result: { mode: "full" | "incremental"; kept: number; added: number; rerun: number };
   try {

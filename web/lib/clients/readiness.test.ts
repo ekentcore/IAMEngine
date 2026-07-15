@@ -27,16 +27,28 @@ test("not_set_up: nothing wired", () => {
 
 test("partial: core wired+ok but some missing/untested/failing", () => {
   const r = computeClientReadiness({
-    systems: [sys("m365", ["m365-admin"]), sys("mimecast", ["mimecast"]), sys("spanning", ["spanning"]), sys("active-directory", ["ad-dc"])],
-    secretExternalIds: new Map([["m365-admin", "111"], ["mimecast", "222"], ["spanning", "333"], ["ad-dc", ""]]),
+    systems: [sys("m365", ["m365-admin"]), sys("mimecast", ["mimecast"]), sys("spanning", ["spanning"]), sys("adobe", ["adobe"])],
+    secretExternalIds: new Map([["m365-admin", "111"], ["mimecast", "222"], ["spanning", "333"], ["adobe", ""]]),
     testBySystem: new Map([["m365", "ok"], ["mimecast", "fail"], ["spanning", "untested"]]),
   });
   assert.equal(r.tier, "partial");
   assert.equal(r.systemsReady, 1);       // only m365 wired+ok
   assert.match(r.summary, /1 of 4 ready/);
-  assert.match(r.summary, /1 missing creds/); // ad-dc
+  assert.match(r.summary, /1 missing creds/); // adobe (a genuinely-required secret)
   assert.match(r.summary, /1 untested/);      // spanning
   assert.match(r.summary, /1 failing/);       // mimecast
+});
+
+// ad-dc is OPTIONAL for AD (the agent runs ambient SYSTEM on a DC), so an unset ad-dc must NOT count
+// as a missing credential — the AD system reads as wired and merely untested, not "missing creds".
+test("an unset ad-dc does not make Active Directory read as missing creds (optional)", () => {
+  const r = computeClientReadiness({
+    systems: [sys("m365", ["m365-admin"]), sys("active-directory", ["ad-dc"])],
+    secretExternalIds: new Map([["m365-admin", "111"], ["ad-dc", ""]]),
+    testBySystem: new Map([["m365", "ok"], ["active-directory", "ok"]]),
+  });
+  assert.equal(r.systemsReady, 2, "AD is ready on ambient SYSTEM without ad-dc");
+  assert.doesNotMatch(r.summary, /missing creds/);
 });
 
 test("NOT_NEEDED counts as wired (manual-step module)", () => {

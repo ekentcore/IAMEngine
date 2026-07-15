@@ -10,6 +10,8 @@ import { STARTED_STATUSES, hasStartedJobs, CaseAlreadyStartedError } from "./job
 import { autoOffboardScheduleAt, offboardTargetResolved, engineOwnsSchedule, AUTO_SCHEDULE_ACTOR } from "./schedule";
 import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
+import { ALL_OPTIONAL_SECRET_NAMES } from "../secrets/optional-secrets";
+import { secretIsSet } from "../secrets/wiring";
 import { jobWarningLines } from "./run-report";
 import { iamCaseNumber, needsIamNumber } from "./case-number";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
@@ -89,7 +91,9 @@ export function buildCaseStatusHint(
 // is no credential to broker. The planner turns such a system into a manual checklist item instead of
 // an api job that would 409 at the broker. A child inherits the parent's marks for names it doesn't
 // set itself (same precedence as credential resolution in case-secrets).
-async function notNeededSecretNames(db: PrismaClient, clientId: string, parentId: string | null): Promise<string[]> {
+// The effective per-name externalId for a client (parent-inherited, child wins) — the shared basis for
+// both "which secrets are not-needed" and "which optional secrets are wired".
+async function effectiveSecretMap(db: PrismaClient, clientId: string, parentId: string | null): Promise<Map<string, string>> {
   const rows = await db.secret.findMany({
     where: { clientId: { in: parentId ? [clientId, parentId] : [clientId] } },
     select: { clientId: true, name: true, externalId: true },
@@ -97,7 +101,21 @@ async function notNeededSecretNames(db: PrismaClient, clientId: string, parentId
   const effective = new Map<string, string>();
   for (const r of rows) if (r.clientId !== clientId) effective.set(r.name, r.externalId); // parent first…
   for (const r of rows) if (r.clientId === clientId) effective.set(r.name, r.externalId); // …child wins
+  return effective;
+}
+
+async function notNeededSecretNames(db: PrismaClient, clientId: string, parentId: string | null): Promise<string[]> {
+  const effective = await effectiveSecretMap(db, clientId, parentId);
   return [...effective].filter(([, id]) => id === NOT_NEEDED).map(([name]) => name);
+}
+
+// OPTIONAL secret names this client has actually WIRED (a real Delinea reference — not blank / not the
+// not-needed sentinel). The planner keeps such a name in a job's secretNames so the runner brokers it;
+// an UNwired optional secret (e.g. ad-dc on a domain-controller agent) is simply omitted, so the AD
+// job runs api under ambient SYSTEM instead of failing the up-front broker.
+async function wiredOptionalSecretNames(db: PrismaClient, clientId: string, parentId: string | null): Promise<string[]> {
+  const effective = await effectiveSecretMap(db, clientId, parentId);
+  return [...effective].filter(([name, id]) => ALL_OPTIONAL_SECRET_NAMES.has(name) && secretIsSet(id)).map(([name]) => name);
 }
 
 export function makeCaseRepository(db: PrismaClient) {
@@ -111,6 +129,7 @@ export function makeCaseRepository(db: PrismaClient) {
           engineOptOut: boolean;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
           notNeededSecrets: string[];
+          wiredOptionalSecrets: string[];
         }
       | null
     > {
@@ -125,6 +144,7 @@ export function makeCaseRepository(db: PrismaClient) {
       });
       if (!c) return null;
       const notNeededSecrets = await notNeededSecretNames(db, c.id, c.parentId);
+      const wiredOptionalSecrets = await wiredOptionalSecretNames(db, c.id, c.parentId);
       // Account hierarchy: a child with NO modeled systems of its own plans with its PARENT's
       // runbook (e.g. CORE2181..89 inherit CORE1456). Systems come wholesale from the parent;
       // the modeling inputs fall back individually so anything the child HAS set still wins.
@@ -139,6 +159,7 @@ export function makeCaseRepository(db: PrismaClient) {
           return {
             ...c,
             notNeededSecrets,
+            wiredOptionalSecrets,
             systems: p.systems,
             identity: c.identity ?? p.identity,
             personas: c.personas ?? p.personas,
@@ -148,7 +169,7 @@ export function makeCaseRepository(db: PrismaClient) {
           };
         }
       }
-      return { ...c, notNeededSecrets };
+      return { ...c, notNeededSecrets, wiredOptionalSecrets };
     },
 
     async clientSysIdToSlug(serviceNowSysId: string): Promise<string | null> {
@@ -233,6 +254,7 @@ export function makeCaseRepository(db: PrismaClient) {
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
             identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
             notNeededSecrets: string[];
+            wiredOptionalSecrets: string[];
           }; started: boolean }
       | null
     > {
@@ -253,12 +275,13 @@ export function makeCaseRepository(db: PrismaClient) {
       });
       if (!c) return null;
       const notNeededSecrets = await notNeededSecretNames(db, c.client.id, c.client.parentId);
+      const wiredOptionalSecrets = await wiredOptionalSecretNames(db, c.client.id, c.client.parentId);
       return {
         serviceNowCaseNumber: c.serviceNowCaseNumber,
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         emailDomainOverride: c.emailDomainOverride,
-        client: { ...c.client, notNeededSecrets },
+        client: { ...c.client, notNeededSecrets, wiredOptionalSecrets },
         started: hasStartedJobs(c.jobs),
       };
     },

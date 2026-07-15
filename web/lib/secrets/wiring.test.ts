@@ -73,8 +73,17 @@ test("a client with no Spanning system is not offered the portal secret", () => 
   assert.equal(rows.some((r) => r.name === "spanning-portal"), false);
 });
 
-test("an optional secret explicitly wired to the system is a normal required row, not an extra", () => {
+test("a registry-optional secret is always optional, even when a system lists it in secretNames", () => {
+  // The planner strips registry-optional names from a job's required secretNames (attaching them only
+  // when wired), so the panel must show them optional too — listing one in secretNames does NOT make
+  // it required. The API secret alongside it stays required.
   const rows = deriveSecretRows([{ systemKey: "spanning", secretNames: ["spanning", "spanning-portal"] }], []);
   assert.equal(rows.filter((r) => r.name === "spanning-portal").length, 1);
-  assert.equal(rows.find((r) => r.name === "spanning-portal")!.optional, undefined);
+  assert.equal(rows.find((r) => r.name === "spanning-portal")!.optional, true);
+  assert.equal(rows.find((r) => r.name === "spanning")!.optional, undefined);
+});
+
+test("ad-dc shows as an OPTIONAL row on an AD client even though the system lists it", () => {
+  const rows = deriveSecretRows([{ systemKey: "active-directory", secretNames: ["ad-dc"] }], []);
+  assert.equal(rows.find((r) => r.name === "ad-dc")!.optional, true);
 });
