@@ -62,6 +62,14 @@ export type RunReportStep = {
   pendingReason: string | null;
 };
 
+// Ad-hoc systemKeys have no SystemCatalog row, so their step title would fall back to the raw key
+// ("spanning-force-sync"). Give them a human label here. Keep in sync with ADHOC_SYSTEM_KEYS. The view
+// (run-report-view) folds the "force Spanning sync" step in UNDER the Spanning step so it reads as a
+// sub-action of it rather than a bare, duplicated top-level warning.
+const ADHOC_STEP_LABELS: Record<string, string> = {
+  "spanning-force-sync": "Spanning force sync",
+};
+
 export type RunReport = {
   caseId: string;
   caseNumber: string | null;
@@ -355,7 +363,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         ? { number: j.procurementWatch.number, state: j.procurementWatch.state, note: j.procurementWatch.note ?? null, lastCheckedAt: j.procurementWatch.lastCheckedAt ? new Date(j.procurementWatch.lastCheckedAt).toISOString() : null }
         : null,
       systemKey: j.systemKey,
-      systemName: input.names.get(j.systemKey) ?? j.systemKey,
+      systemName: input.names.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
       status: j.status,
       verdict,
       // A manual step has no result to report — show its instruction note instead of an empty line.

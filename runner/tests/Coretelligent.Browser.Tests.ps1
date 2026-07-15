@@ -28,6 +28,24 @@ Describe 'Test-CtgBrowserAvailable' {
         Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $true } -ParameterFilter { $LiteralPath -like '*node*' }
         Resolve-CtgNodeTool 'node' | Should -Not -BeNullOrEmpty
     }
+
+    It 'returns $false when @playwright/test is a HOLLOW directory (missing package.json) even if Chromium is present' {
+        # The exact fleet-wide outage (2026-07-15): an interrupted npm install left node_modules/
+        # @playwright/test as an EMPTY dir. A bare @playwright directory-exists check passed, the agent
+        # advertised 'browser', and every flow then crashed at `import "@playwright/test"`. The gate must
+        # key off the package's own package.json, not the directory.
+        Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { '/usr/local/bin/node' } -ParameterFilter { $Name -eq 'node' }
+        Mock Test-CtgChromiumInstalled -ModuleName Coretelligent.Browser -MockWith { $true }
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $false } -ParameterFilter { $LiteralPath -like '*@playwright*' }
+        Test-CtgBrowserAvailable | Should -BeFalse
+    }
+
+    It 'returns $true when node, a real @playwright/test package.json, and Chromium are all present' {
+        Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { '/usr/local/bin/node' } -ParameterFilter { $Name -eq 'node' }
+        Mock Test-CtgChromiumInstalled -ModuleName Coretelligent.Browser -MockWith { $true }
+        Mock Test-Path -ModuleName Coretelligent.Browser -MockWith { $true } -ParameterFilter { $LiteralPath -like '*@playwright*test*package.json' }
+        Test-CtgBrowserAvailable | Should -BeTrue
+    }
 }
 
 Describe 'Install-CtgBrowser' {

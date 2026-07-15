@@ -5,7 +5,23 @@
 // never prints it.
 import os from "node:os";
 import path from "node:path";
-import { chromium } from "@playwright/test";
+
+// @playwright/test is imported LAZILY (inside launch), not at module load. A STATIC top-level import
+// of a package that is missing or half-installed — e.g. node_modules/@playwright/test present as an
+// empty directory after an interrupted `npm install` — throws during ESM linking, before ANY of our
+// code runs and before run-flow's try/catch or its uncaught-error handlers exist. That crashes node
+// with a bare "Node.js vX" banner and no result on stdout, which the PowerShell side can only report
+// as the opaque "produced no result". Deferring the import turns that into a catchable launch error
+// with an actionable message. (Root cause of the fleet-wide Spanning force-sync outage, 2026-07-15.)
+async function loadChromium() {
+  try {
+    const pw = await import("@playwright/test");
+    if (!pw?.chromium) throw new Error("@playwright/test loaded but exports no `chromium`");
+    return pw.chromium;
+  } catch (e) {
+    throw new Error(`Playwright is not installed on this host (@playwright/test could not be loaded) — run \`npm install\` in runner/browser, then \`npx playwright install chromium\`: ${e?.message ?? e}`);
+  }
+}
 
 // Conservative defaults — a portal login + one action shouldn't need more than this, and a runner
 // job that hangs on a wedged browser is worse than one that fails fast with a clear timeout.
@@ -15,6 +31,7 @@ export const DEFAULT_ACTION_TIMEOUT_MS = 20_000;
 // Launch a headless Chromium and hand back { browser, context, page } plus a `shot()` helper that
 // screenshots to a temp file (for evidence-on-failure). The caller MUST call close() in a finally.
 export async function launch({ navTimeoutMs = DEFAULT_NAV_TIMEOUT_MS, actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS } = {}) {
+  const chromium = await loadChromium();
   let browser;
   try {
     browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });

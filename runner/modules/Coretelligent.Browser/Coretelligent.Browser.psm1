@@ -67,22 +67,33 @@ function Test-CtgChromiumInstalled {
     }
 }
 
+# Is the @playwright/test dependency ACTUALLY installed (not just a leftover directory)? An interrupted
+# `npm install` can leave node_modules/@playwright/test as an EMPTY directory — enough for a bare
+# `Test-Path @playwright` to pass, but the package has no code, so run-flow.mjs's `import "@playwright/
+# test"` throws at ESM load and every browser job crashes before it can report why. Checking for the
+# package's own package.json is the cheap, reliable signal that the package's files are really there.
+# (This hollow-install state caused the 2026-07-15 fleet-wide Spanning force-sync outage.)
+function Test-CtgPlaywrightInstalled {
+    $pkg = Join-Path (Get-CtgBrowserRoot) 'node_modules/@playwright/test/package.json'
+    return (Test-Path -LiteralPath $pkg)
+}
+
 function Test-CtgBrowserAvailable {
     <#
     .SYNOPSIS
         Is the browser-automation sidecar usable on THIS host? True only when `node` is on PATH, the
-        sidecar's Playwright dependency is installed (runner/browser/node_modules/@playwright), AND the
-        Chromium browser binary is actually downloaded (`npx playwright install chromium` — a separate
-        step from `npm install`, so checked separately or the agent would advertise 'browser' and then
-        fail every launch). Reported to the app as the 'browser' capability so the claim gate withholds
-        browser jobs from agents that can't run them. Never throws.
+        sidecar's Playwright dependency is actually installed (node_modules/@playwright/test/package.json
+        — a bare directory left by an interrupted npm install does NOT count), AND the Chromium browser
+        binary is downloaded (`npx playwright install chromium` — a separate step from `npm install`, so
+        checked separately or the agent would advertise 'browser' and then fail every launch). Reported
+        to the app as the 'browser' capability so the claim gate withholds browser jobs from agents that
+        can't run them. Never throws.
     #>
     [CmdletBinding()]
     param()
     try {
         if (-not (Resolve-CtgNodeTool 'node')) { return $false }
-        $pw = Join-Path (Get-CtgBrowserRoot) 'node_modules/@playwright'
-        if (-not (Test-Path -LiteralPath $pw)) { return $false }
+        if (-not (Test-CtgPlaywrightInstalled)) { return $false }
         return (Test-CtgChromiumInstalled)
     } catch {
         return $false
@@ -157,8 +168,10 @@ function Install-CtgBrowser {
             return $false
         }
 
-        # 1. Dependencies (node_modules/@playwright) — skip if already present.
-        if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules/@playwright'))) {
+        # 1. Dependencies (node_modules/@playwright/test) — skip only if REALLY present. Guard on the
+        # package's package.json, not just the @playwright directory: a hollow dir from an interrupted
+        # install would otherwise be treated as "done" and never repaired, stranding the sidecar.
+        if (-not (Test-CtgPlaywrightInstalled)) {
             Write-Host "browser sidecar: installing npm dependencies in $root …" -ForegroundColor Yellow
             $r = Invoke-CtgNodeTool -Tool 'npm' -Arguments @('install', '--no-audit', '--no-fund') -WorkingDirectory $root -TimeoutSeconds $TimeoutSeconds
             if ($r.Code -ne 0) { Write-Warning "browser sidecar: npm install failed ($($r.Code)): $($r.Tail)"; return $false }

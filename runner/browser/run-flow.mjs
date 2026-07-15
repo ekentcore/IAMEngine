@@ -33,7 +33,10 @@ function log(msg) {
 
 // Print the single result line + set the exit code. Kept tolerant: a result is always emitted so the
 // PowerShell caller never has to interpret "no output" as anything but a crash.
+let emitted = false;
 function emit(result) {
+  if (emitted) return; // exactly one JSON result line — a late crash handler must not double-print
+  emitted = true;
   const out = {
     ok: Boolean(result?.ok),
     message: result?.message ?? null,
@@ -43,6 +46,23 @@ function emit(result) {
   };
   process.stdout.write(JSON.stringify(out) + "\n");
   process.exitCode = out.ok ? 0 : 1;
+}
+
+// Last-resort net for an error that escapes every try/catch below. The one that bit us: when the
+// headless Chromium subprocess dies mid-flow (crash / OOM), Playwright surfaces it as an UNHANDLED
+// rejection that isn't tied to any awaited call — so it slips past the flow's and main()'s try/catch,
+// and node would exit printing only "Node.js vX" with nothing on stdout (the opaque "produced no
+// result"). Catch both here and emit a structured result first, so the operator gets the real error.
+// If a normal result was already emitted, `emit` is a no-op and we just let the process wind down.
+for (const signal of ["uncaughtException", "unhandledRejection"]) {
+  process.on(signal, (err) => {
+    // If a result was already emitted (incl. a successful one), `emit` no-ops and we keep that exit
+    // code — a late benign rejection during cleanup must not turn a completed sync into a failure.
+    emit({ ok: false, error: `browser flow crashed (${signal}): ${err?.message ?? err}` });
+    // Flush stdout before exiting: a write to a pipe is async, and exiting immediately can drop it —
+    // the very failure mode we're guarding against. process.exit in the callback ensures the flush.
+    process.stdout.write("", () => process.exit(process.exitCode ?? 1));
+  });
 }
 
 async function main() {

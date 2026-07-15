@@ -8,7 +8,7 @@ import { ResolutionModal } from "./resolution-modal";
 import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-password-button";
 import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
-import { ADHOC_SYSTEM_KEYS } from "@/lib/jobs/adhoc";
+import { ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -720,10 +720,17 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
       </div>
 
       {report.steps.map((step) => {
+        // The ad-hoc "force Spanning sync" job is rendered nested UNDER the Spanning step (below), so
+        // skip it at the top level — it appears exactly once, as a child of Spanning, not as its own
+        // bare, duplicated line. Guard on a Spanning step actually being present so an orphan force-sync
+        // (no Spanning line to parent to) still shows rather than vanishing.
+        if (step.systemKey === SPANNING_FORCE_SYNC_KEY && report.steps.some((s) => s.systemKey === "spanning")) return null;
         const isOpen = open.has(step.seq);
         const hasDetail = step.actions.length > 0 || step.validation || step.error || step.phaseTrail.length > 0;
+        const spanningChildren = step.systemKey === "spanning" ? report.steps.filter((s) => s.systemKey === SPANNING_FORCE_SYNC_KEY) : [];
         return (
-          <details key={step.seq} open={isOpen} style={{ margin: "0.2rem 0" }}>
+          <React.Fragment key={step.seq}>
+          <details open={isOpen} style={{ margin: "0.2rem 0" }}>
             <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
@@ -988,6 +995,39 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               )}
             </div>
           </details>
+          {/* Force Spanning sync (ad-hoc browser job) folded in under the Spanning step — indented,
+              with a ↳ connector — so it reads as a sub-action of Spanning rather than a duplicated
+              top-level warning. There's a single one per case (the trigger re-queues it in place). */}
+          {spanningChildren.map((child) => {
+            const childOpen = open.has(child.seq);
+            const childHasDetail = child.actions.length > 0 || Boolean(child.error) || child.phaseTrail.length > 0;
+            return (
+              <details key={child.seq} open={childOpen} style={{ margin: "0 0 0.2rem 1.6rem" }}>
+                <summary onClick={(e) => { e.preventDefault(); if (childHasDetail) toggle(child.seq); }} style={{ cursor: childHasDetail ? "pointer" : "default" }}>
+                  <span className="note" style={{ marginRight: 6 }}>↳</span>
+                  <Badge verdict={child.verdict} /> {child.systemName}
+                  {child.autoRetry && (
+                    <span style={{ marginLeft: 8, fontSize: 12, color: "#1565c0" }} suppressHydrationWarning>
+                      next try {new Date(child.autoRetry.at).toLocaleTimeString()}
+                    </span>
+                  )}
+                </summary>
+                <div style={{ margin: "0.4rem 0 0.6rem 2.2rem" }}>
+                  {child.actions.length > 0 && (
+                    <ul className="muted" style={{ margin: "0.2rem 0 0" }}>
+                      {child.actions.map((a, i) => (
+                        <li key={i} suppressHydrationWarning style={/\bWARN\b/.test(a) ? { color: "#b45309", fontWeight: 500 } : undefined}>{a}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {child.error && (
+                    <div><pre style={{ ...PRE, color: "#b91c1c" }}>{child.error}</pre><CopyButton text={child.error} /></div>
+                  )}
+                </div>
+              </details>
+            );
+          })}
+          </React.Fragment>
         );
       })}
 
