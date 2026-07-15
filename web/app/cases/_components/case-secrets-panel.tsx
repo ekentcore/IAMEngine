@@ -17,6 +17,7 @@ type CaseSecret = {
   server: string | null;
   systems: string[];
   clientSystems: string[];
+  optional?: boolean;
 };
 type TestResult = { ok: boolean; label?: string; error?: string };
 
@@ -94,7 +95,14 @@ export function CaseSecretsPanel({ caseId }: { caseId: string }) {
             return (
               <tr key={s.name}>
                 <td>
-                  <div style={{ fontWeight: 500 }}>{s.name}</div>
+                  <div style={{ fontWeight: 500 }}>
+                    {s.name}
+                    {s.optional && !s.externalId && (
+                      <span className="muted" style={{ marginLeft: 6, fontSize: 11, fontWeight: 400 }} title="Optional — the client hasn't wired this, and that's not a gap. Everything works without it.">
+                        (optional)
+                      </span>
+                    )}
+                  </div>
                   <div className="muted" style={{ fontSize: 11 }}>{s.label ?? s.systems.join(", ")}</div>
                   {/* Guide variant keys on the CLIENT's wiring (exchange is offboard-only, so this
                       case's own job list would wrongly say cloud-only on an onboarding case). */}

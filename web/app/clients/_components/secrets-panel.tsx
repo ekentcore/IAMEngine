@@ -238,13 +238,13 @@ export function SecretsPanel({
               <tr>
                 <td>
                   <code>{r.name}</code>
-                  {r.optional && (
+                  {r.optional && !r.isSet && (
                     <span
-                      className="badge"
+                      className="muted"
                       style={{ marginLeft: 6, fontSize: 11 }}
                       title="Optional — unlocks one extra capability. Everything else works without it, and leaving it unset is not a gap."
                     >
-                      optional
+                      (optional)
                     </span>
                   )}
                   <SecretHelpLink name={r.name} systems={r.referencedBy} />

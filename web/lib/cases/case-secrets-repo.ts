@@ -3,6 +3,7 @@
 // Plus the setter for a per-case override. References only — never values.
 import type { PrismaClient } from "@prisma/client";
 import { effectiveExternalId, serverHintFromLabel, type SecretSource } from "./case-secrets";
+import { isOptionalSecret } from "@/lib/secrets/optional-secrets";
 
 export type CaseSecretStatus = {
   name: string;
@@ -19,6 +20,10 @@ export type CaseSecretStatus = {
   // having an exchange system wired to it, and exchange is offboard-only, so an onboarding case's
   // job list would wrongly say "cloud-only" for a hybrid client.
   clientSystems: string[];
+  // OPTIONAL: this secret unlocks an extra capability but nothing requires it, so an empty one (the
+  // client hasn't wired it) is not a gap. The UI renders a grey "(optional)" hint in that case so a
+  // blank optional ref doesn't read like a genuinely missing credential.
+  optional: boolean;
 };
 
 export async function caseSecretStatus(db: PrismaClient, caseId: string): Promise<CaseSecretStatus[] | null> {
@@ -84,6 +89,7 @@ export async function caseSecretStatus(db: PrismaClient, caseId: string): Promis
         server: serverHintFromLabel((eff.source === "parent" ? ps?.label : cs?.label)),
         systems: [...systems].sort(),
         clientSystems: [...(clientUsedBy.get(name) ?? systems)].sort(),
+        optional: isOptionalSecret(name),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
