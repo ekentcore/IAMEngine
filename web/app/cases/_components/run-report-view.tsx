@@ -10,6 +10,7 @@ import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 import { ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
 import { CopyButton } from "@/app/_components/copy-button";
+import { parseMailboxOversize, isDecisionMarker } from "@/lib/cases/decision-markers";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -258,6 +259,47 @@ function OffboardTargetPicker({ caseId, data, refresh }: { caseId: string; data:
           {busy ? "Starting…" : "Offboard this user & re-run case"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// A mailbox over the cap cannot become shared — past that size it needs a licence either way — so
+// reclaiming the seat and keeping the mail genuinely conflict, and neither is a safe default. The
+// runner asks instead of choosing, and this is the ask.
+//
+// Unlike CollisionDecision this reads the marker out of the step's ACTIONS, not its error, because
+// the step SUCCEEDED: sign-in is blocked, sessions revoked, groups removed. Only the licence is
+// unresolved. Failing the step to force a decision would throw away the record of the containment
+// that already happened — and the containment is the part that must not wait for anyone.
+function MailboxOversizeDecision({ caseId, jobId, actions, refresh }: { caseId: string; jobId: string; actions: string[]; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // Parsed by lib/cases/decision-markers, whose test pins the runner's exact emitted string — the
+  // only thing binding these two sides together.
+  const decision = parseMailboxOversize(actions);
+  if (!decision) return null;
+  const msg = decision.message;
+  const size = decision.sizeGB;
+  async function decide(policy: "remove" | "keep") {
+    setBusy(policy); setErr(null);
+    try {
+      const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mailboxOversizePolicy: policy }) });
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+      await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      await refresh();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
+  }
+  return (
+    <div style={{ border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
+      <div style={{ fontSize: 13, color: "#92400e" }}><b>Decision needed</b>{size ? <> — mailbox is <b>{size} GB</b></> : null}. {msg}</div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        {/* Neither is "primary": one costs money, the other destroys mail. Presenting a recommended
+            button would be making the client's call for them, which is the thing we stopped doing. */}
+        <button disabled={!!busy} onClick={() => decide("keep")}>{busy === "keep" ? "…" : "Keep the licence — retain the mail"}</button>
+        <button disabled={!!busy} onClick={() => decide("remove")}>{busy === "remove" ? "…" : "Remove the licence — the mail will be lost"}</button>
+      </div>
+      {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
     </div>
   );
 }
@@ -911,7 +953,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                     {/* This report polls live; an actively-running step appends to its action lines
                         (e.g. "username available: <upn>") between the server snapshot and hydration.
                         That benign churn is expected — suppress the hydration text-diff warning. */}
-                    {step.actions.map((a, i) => {
+                    {/* DECISION_NEEDED:* lines are a marker for the picker below, not prose — the
+                        runner emits a human-readable WARN alongside each one, which is what belongs
+                        in the log. Rendering the raw marker would just be the same thing twice, in
+                        machine syntax. */}
+                    {step.actions.filter((a) => !isDecisionMarker(a)).map((a, i) => {
                       // A "WARN …" action line renders orange so it stands out when scanning the log;
                       // a TAP line (with the passcode) renders in a highlighted, monospaced box so it's
                       // easy to spot and copy for the new hire.
@@ -965,6 +1011,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.error?.includes("DECISION_NEEDED:username_collision") && step.jobId && (
                 <CollisionDecision caseId={caseId} jobId={step.jobId} error={step.error} refresh={refresh} />
               )}
+              {/* Gated on the ACTIONS, not the error: this step succeeded — only the licence is
+                  unresolved. The component returns null when its marker isn't present. */}
+              {step.jobId && <MailboxOversizeDecision caseId={caseId} jobId={step.jobId} actions={step.actions} refresh={refresh} />}
               {step.autoRetry && (
                 <div className="note" style={{ marginTop: 4, color: "#8a6d00" }} suppressHydrationWarning>
                   ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page

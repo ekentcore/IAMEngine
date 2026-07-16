@@ -18,11 +18,29 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const g = await guard("case.dispatch"); if (g.res) return g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown };
+  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown; mailboxOversizePolicy?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
-  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { payload: true, jobs: { where: { systemKey: "m365" }, select: { id: true, request: true } } } });
+  // BOTH lanes: the M365 executor serves `m365` AND `entra` (entra is an alias of the same handler),
+  // and on most clients the LICENCE lives on the entra lane. Selecting only `m365` meant the loops
+  // below iterated zero jobs while still reporting ok — the operator's answer was accepted, the
+  // re-run fired, and the same decision came back, with nothing to show why.
+  const c = await db.caseRequest.findUnique({
+    where: { id: params.id },
+    select: { payload: true, jobs: { where: { systemKey: { in: ["m365", "entra"] } }, select: { id: true, systemKey: true, request: true } } },
+  });
   if (!c) return NextResponse.json({ error: "case not found" }, { status: 404 });
+
+  // Write a key onto every M365-executor job's stored config; the runner reads it at claim time.
+  // Returns how many it touched, so a caller can refuse to claim success over an empty loop.
+  const writeJobConfig = async (key: string, value: unknown) => {
+    for (const j of c.jobs) {
+      const reqJson = { ...((j.request ?? {}) as Record<string, unknown>) };
+      reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), [key]: value };
+      await db.job.update({ where: { id: j.id }, data: { request: reqJson as Prisma.InputJsonValue } });
+    }
+    return c.jobs.length;
+  };
 
   const payload = { ...((c.payload ?? {}) as Record<string, unknown>) };
   const changed: string[] = [];
@@ -30,12 +48,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   // Operator's answer to an ambiguous same-name account: 'adopt' (it's a re-run of this person) or
   // 'new' (a different person — use a fallback). Written to the m365 job config; the runner reads it.
   if (body.usernameCollisionPolicy === "adopt" || body.usernameCollisionPolicy === "new") {
-    for (const j of c.jobs) {
-      const reqJson = { ...((j.request ?? {}) as Record<string, unknown>) };
-      reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), usernameCollisionPolicy: body.usernameCollisionPolicy };
-      await db.job.update({ where: { id: j.id }, data: { request: reqJson as Prisma.InputJsonValue } });
-    }
+    const n = await writeJobConfig("usernameCollisionPolicy", body.usernameCollisionPolicy);
+    if (!n) return NextResponse.json({ error: "this case has no M365/Entra step to record the choice on" }, { status: 422 });
     changed.push(`collision:${body.usernameCollisionPolicy}`);
+  }
+
+  // Operator's answer to an over-the-cap mailbox: 'remove' (free the seat, accept that Exchange purges
+  // the mail after its 30-day grace) or 'keep' (retain the mail, keep paying). There is no safe
+  // default — past the cap the mailbox cannot become shared — so the runner asks and waits.
+  if (body.mailboxOversizePolicy === "remove" || body.mailboxOversizePolicy === "keep") {
+    const n = await writeJobConfig("mailboxOversizePolicy", body.mailboxOversizePolicy);
+    if (!n) return NextResponse.json({ error: "this case has no M365/Entra step to record the choice on" }, { status: 422 });
+    changed.push(`mailboxOversize:${body.mailboxOversizePolicy}`);
   }
 
   if (typeof body.userPrincipalName === "string" && body.userPrincipalName.trim()) {
@@ -53,11 +77,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   const licenses = strArr(body.licenses);
   if (licenses && c.jobs.length) {
-    for (const j of c.jobs) {
-      const reqJson = { ...((j.request ?? {}) as Record<string, unknown>) };
-      reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), licenses };
-      await db.job.update({ where: { id: j.id }, data: { request: reqJson as Prisma.InputJsonValue } });
-    }
+    await writeJobConfig("licenses", licenses);
     changed.push("licenses");
   }
 

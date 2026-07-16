@@ -41,7 +41,32 @@ const THRESHOLD_GB = 50;
 
 // --- what does this client's RUNBOOK actually ask for? -------------------------------------------
 const WANTS_LICENCE = /remove .{0,30}licen|licen.{0,30}remov|reclaim .{0,20}licen/i;
-const WANTS_SHARED = /shared mailbox|convert .{0,25}shared|to a shared/i;
+// Kept for reporting only — it no longer decides whether we convert. See CONVERT BY DEFAULT below.
+const MENTIONS_SHARED = /shared mailbox|convert .{0,25}shared|to a shared/i;
+
+// CONVERT BY DEFAULT (2026-07-16).
+//
+// Conversion used to be gated on the runbook MENTIONING a shared mailbox, on the principle of not
+// inventing policy for a client. But the licence lane was NOT gated the same way: `licenceLane` chose
+// `entra` whenever an entra lane and an exchange step both existed, regardless. So a client whose
+// runbook says "remove the licence" and never mentions a shared mailbox — Easterseals, and 54 others
+// — had its licence removal deferred behind a conversion that was never configured. The Entra step
+// then refuses to strip a licence off an unconverted mailbox (correctly: Exchange purges it after the
+// 30-day grace), and the licence is stranded FOREVER. Every offboard for those 55 ended with
+// "license KEPT", still billing — the exact cost this sweep exists to reclaim, in its worst form:
+// seat retained AND nothing converted.
+//
+// The deadlock has no good resolution at config level, because the two options are not symmetric:
+//   - convert, then remove   -> seat reclaimed AND the mail kept. A shared mailbox under 50GB needs
+//                              no licence, so this costs nothing.
+//   - remove without convert -> seat reclaimed, mail PURGED after 30 days. Irreversible.
+// A runbook that says "remove the licence" and stops is not choosing the second — it predates anyone
+// thinking about the mailbox at all. Doing exactly what it says destroys the leaver's mail.
+//
+// So: any client whose licence we remove now also converts, unless the client explicitly opts out via
+// `removeLicense.allowWithoutConvert` (see the runner's guard). Not inventing policy — choosing the
+// non-destructive reading of a runbook that didn't say, and leaving an explicit way to say otherwise.
+const CONVERT_BY_DEFAULT = true;
 
 // EXPLICIT POLICY, read off the runbooks by hand. A regex can't tell "remove the license" from
 // "do NOT remove the license" — and three clients say exactly that. Never let the sweep decide these.
@@ -92,13 +117,26 @@ for (const c of clients) {
   const policy = LICENCE_POLICY[c.slug] ?? null;
   // A hand-read "do NOT remove the licence" always beats the regex.
   const wantsLicence = policy?.mode === "never" ? false : (rb ? WANTS_LICENCE.test(rb) : false);
-  const wantsShared = rb ? WANTS_SHARED.test(rb) : false;
+  const mentionsShared = rb ? MENTIONS_SHARED.test(rb) : false;
+  // Convert whenever we take the licence off. A client that has explicitly opted out
+  // (removeLicense.allowWithoutConvert) keeps its own answer — the override exists to be respected,
+  // and a sweep that overwrote it would just re-break the client on its next run.
+  const optedOut = Boolean(
+    ((m365.config ?? {}).offboard ?? {}).removeLicense?.allowWithoutConvert ||
+    ((entra?.config ?? {}).offboard ?? {}).removeLicense?.allowWithoutConvert,
+  );
+  const wantsShared = optedOut ? false : (CONVERT_BY_DEFAULT ? wantsLicence : mentionsShared);
   const needsApproval = policy?.mode === "approval";
   const ob = (s) => ((s?.config ?? {}).offboard ?? null);
   const hasLicence = Boolean(ob(m365)?.removeLicense || ob(entra)?.removeLicense);
   const hasConvert = Boolean(ob(exchange)?.convertToShared);
 
   if (!wantsLicence && !wantsShared) continue;          // runbook asks for neither (or forbids it) — leave alone
+  // The defect this sweep created and now repairs: the licence may only move to the LATER lane when a
+  // conversion is actually configured to happen there. Deferring it behind a conversion that will
+  // never run is not caution, it is a deadlock — and it reads as caution in the log, which is why it
+  // went unnoticed across 55 clients. With convert-by-default the two now move together by
+  // construction; the guard stays so an opt-out client can never re-enter that state.
   // "Already correct" must ALSO mean no dependency cycle — exchange depending on entra while entra
   // depends on exchange deadlocks the plan, and that is not a state we may skip over.
   const cycle = Boolean(exchange && entra && exchange.dependsOn.includes("entra") && entra.dependsOn.includes("exchange"));
@@ -109,7 +147,11 @@ for (const c of clients) {
   // has no entra row, CREATE one rather than leave the licence on m365 (which runs first, and would
   // then warn on every single offboard forever).
   const needsEntraLane = wantsLicence && wantsShared && exchange && !entra;   // create OR re-enable
-  const licenceLane = (entra || needsEntraLane) && exchange ? "entra" : "m365";
+  // `wantsShared` is the load-bearing term here and its absence WAS the bug: this read
+  // `(entra || needsEntraLane) && exchange`, so a client with both lanes had its licence deferred to
+  // entra even when nothing would ever convert. If we are not converting, the licence must stay on
+  // m365, where the runtime guard can act on it — never parked behind a step that will never happen.
+  const licenceLane = wantsShared && (entra || needsEntraLane) && exchange ? "entra" : "m365";
   plan.push({
     client: c, m365, exchange, entra, entraRow, licenceLane, policy, needsApproval, needsEntraLane,
     wantsLicence, wantsShared, hasLicence, hasConvert,
@@ -117,6 +159,17 @@ for (const c of clients) {
     // Only left on m365 when there is no exchange step to order against at all.
     needsReorder: wantsShared && wantsLicence && !exchange,
   });
+}
+
+// The invariant this sweep got wrong once, asserted before it writes anything: a licence parked on a
+// LATER lane must have a conversion configured to happen there. Violating it strands the licence
+// forever, and — because the step's warning reads like ordinary caution — silently. Checked here
+// rather than trusted, since the whole class of bug is that nobody noticed for 55 clients.
+const stranded = plan.filter((p) => p.wantsLicence && p.licenceLane === "entra" && !p.wantsShared);
+if (stranded.length) {
+  console.error(`REFUSING TO WRITE — ${stranded.length} client(s) would defer the licence to entra with no conversion configured, which strands it forever:`);
+  for (const p of stranded) console.error(`  ${p.client.slug}  ${p.client.name}`);
+  process.exit(1);
 }
 
 console.log(`clients needing work: ${plan.length}\n`);

@@ -618,7 +618,10 @@ Describe 'Invoke-CtgM365Offboarding' {
         $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50; aboveThreshold = 'skip-convert-and-keep-e3' } }
         $r = Invoke-CtgM365Offboarding -User $user -Config $config -MailboxSizeGB 75
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly   # license kept
-        ($r.Actions -join ' ') | Should -Match 'over threshold'
+        # Unchanged behaviour, new wording: the licence still stays, and the run now ASKS instead of
+        # leaving a warning nobody owns. (The wording moved from "over threshold" to "over the N GB cap".)
+        ($r.Actions -join ' ') | Should -Match 'over the 50 GB cap'
+        ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_oversize'
     }
 
     It 'removes only DIRECTLY-assigned licenses and reports group-assigned ones' {
@@ -671,6 +674,65 @@ Describe 'Invoke-CtgM365Offboarding' {
         $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailboxConverted = $true }
         Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 | Out-Null
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
+
+    # --- over the cap: ASK, don't pick -------------------------------------------------------------
+    # Past the cap the mailbox CANNOT become shared (a mailbox that big needs a licence either way), so
+    # the two goals genuinely conflict: the seat costs money, the mail is unrecoverable. No default is
+    # right — it is the client's call.
+    It 'ASKS when the mailbox is over the cap, and keeps the license meanwhile' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 60
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_oversize \|.*sizeGB=60 \| thresholdGB=50'
+        ($r.Actions -join ' ') | Should -Match 'WARN license KEPT for now'
+    }
+
+    It 'removes the license when the operator answered "remove" on the oversize decision' {
+        # The trap: after the answer, the size branch no longer matches — so the NEXT guard
+        # ("was NOT converted") would catch it and keep the licence anyway, silently ignoring the
+        # answer. Every convert guard has to honour the same decision.
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }
+                                     mailboxConverted = $false; mailboxOversizePolicy = 'remove' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 60
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'WARN removing the license on a mailbox that was NOT converted.*an operator chose to remove it'
+        ($r.Actions -join ' ') | Should -Match 'PURGE this mailbox'
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'   # answered — never ask twice
+    }
+
+    It 'keeps the license, and stops asking, when the operator answered "keep"' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }
+                                     mailboxConverted = $false; mailboxOversizePolicy = 'keep' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 60
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'license KEPT by operator decision'
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN license KEPT for now'  # decided is not unresolved
+    }
+
+    # --- the per-client opt-out -------------------------------------------------------------------
+    It 'removes the license on an unconverted mailbox when the client allows it, and says the mail will go' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ allowWithoutConvert = $true }; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'this client is configured to allow it \(removeLicense.allowWithoutConvert\)'
+        ($r.Actions -join ' ') | Should -Match 'PURGE this mailbox'
+    }
+
+    It 'the opt-out also skips the still-pending convert guard' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ allowWithoutConvert = $true }; mailboxConvertPending = $true }
+        Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10 | Out-Null
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+    }
+
+    It 'the opt-out does NOT make a converted mailbox report a purge' {
+        # The warning is about mail that is actually going to be destroyed. On a mailbox that DID
+        # convert, printing it would be a lie that trains people to ignore the real one.
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ allowWithoutConvert = $true }; mailboxConverted = $true }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Not -Match 'PURGE this mailbox'
     }
 
     # A cloud-only client with no Exchange step never gets the key at all — it must behave as before.

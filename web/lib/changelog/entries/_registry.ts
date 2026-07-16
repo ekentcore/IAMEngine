@@ -47,6 +47,7 @@ export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-an
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";
 export { entry as offboardConvertBeforeLicense } from "./offboard-convert-before-license";
+export { entry as offboardConvertByDefault } from "./offboard-convert-by-default";
 export { entry as offboardIdentityResolution } from "./offboard-identity-resolution";
 export { entry as offboardLicenceFleetSweep } from "./offboard-licence-fleet-sweep";
 export { entry as offboardLicenseAfterSharedConvert } from "./offboard-license-after-shared-convert";
