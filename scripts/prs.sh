@@ -47,8 +47,12 @@ sync_local_after_merge() {
     echo "        cd \"$root\" && git checkout main && git pull --ff-only && (cd web && npm install)"
     return 0
   fi
-  if [[ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]]; then
-    echo "sync: main has uncommitted changes — not pulling. Refresh once it's clean:"
+  # Only TRACKED uncommitted changes block us — `--untracked-files=no` ignores untracked files (this
+  # repo always carries some, e.g. .claude/ and stray CSVs). A `git pull --ff-only` doesn't care about
+  # untracked files, so counting them as "dirty" wrongly skipped the pull + install on every merge —
+  # which is why a freshly-merged dependency (mammoth/turndown) never got installed here.
+  if [[ -n "$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    echo "sync: main has uncommitted (tracked) changes — not pulling. Refresh once it's clean:"
     echo "        cd \"$root\" && git pull --ff-only && (cd web && npm install)"
     return 0
   fi
