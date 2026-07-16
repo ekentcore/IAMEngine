@@ -67,6 +67,7 @@ export { entry as slackExecutorAndManualFlip } from "./slack-executor-and-manual
 export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-central-only";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
 export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
+export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";
 export { entry as systemsEditorKb } from "./systems-editor-kb";

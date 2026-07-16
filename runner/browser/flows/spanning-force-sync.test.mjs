@@ -69,8 +69,16 @@ function makePortal({ kmsi = true, syncCompletesAfter = 1, badPassword = false }
     const url = new URL(req.url, "http://x");
     const send = reply(res);
     if (url.pathname === "/ms/user") {
+      // Microsoft's sign-in is a SINGLE-PAGE app, and this page mirrors that shape deliberately: the
+      // password view is ALREADY in the document while the username step is on screen, parked in an
+      // `aria-hidden="true"` container with its input collapsed to a ~10x13 box (verified against the
+      // live login.microsoftonline.com, 2026-07-16). An earlier fake served the two views as separate
+      // pages, so the flow's `isVisible()` check on the password field looked correct here while it was
+      // broken in production — the bug lived in the exact gap between this fake and the real thing.
       return send(200, html(`<form action="/ms/pass" method="get">
-        <input type="email" name="loginfmt" id="i0116"><input type="submit" id="idSIButton9" value="Next"></form>`));
+        <input type="email" name="loginfmt" id="i0116"><input type="submit" id="idSIButton9" value="Next"></form>
+        <div aria-hidden="true"><input type="password" name="passwd" id="i0118"
+          style="width:10px;height:13px"></div>`));
     }
     if (url.pathname === "/ms/pass") {
       return send(200, html(`<form action="/ms/mfa" method="get">
@@ -162,6 +170,26 @@ test("signs in through Microsoft SSO, mints the MFA code, and fires the console'
     assert.equal(state.sawCode, CODE, "the minted code must reach the Microsoft prompt");
     assert.equal(state.syncCalls, 1, "POST /api/sync must be fired exactly once");
     assert.match(result.message, /completed/i);
+  });
+});
+
+// REGRESSION (UM0029840): the password box of Microsoft's pre-rendered, aria-hidden password view
+// reports `isVisible() === true` while the USERNAME step is still on screen — it has a real, if tiny,
+// 10x13 bounding box, which is all Playwright's isVisible() asks for. The flow therefore concluded the
+// password box was already up, SKIPPED the "Next" click, typed the password into the offscreen field,
+// and spent its one submit click on "Next" — landing on the password view with the password pre-filled
+// and never submitted. It then waited out the 60s redirect timeout and blamed the credentials
+// ("still on the login page") on a login whose password and MFA were both fine.
+//
+// The give-away in production was the evidence screenshot: the password sat TYPED in the box with no
+// Microsoft error next to it. A rejected password re-renders with #passwordError; an untouched,
+// pre-filled box means the form was never submitted at all.
+test("clicks through the username step instead of typing the password into Microsoft's hidden view", async () => {
+  await withPortal({}, async (url, state) => {
+    const { result } = await runFlow(url, { otpUrl: `${url}/otp` });
+    assert.equal(result.ok, true, `flow failed: ${result.error}`);
+    assert.doesNotMatch(String(result.error ?? ""), /still on the login page/i);
+    assert.equal(state.syncCalls, 1, "a good password must reach the console and fire the sync");
   });
 });
 

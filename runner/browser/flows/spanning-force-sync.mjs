@@ -101,6 +101,45 @@ const SELECTORS = {
   mfaChallenge: 'text=/verify your identity|enter (the )?code|authenticator|two-factor|2FA|one-time (code|passcode)/i',
 };
 
+// Is this field on the view the user is actually looking at?
+//
+// Microsoft's sign-in is a SINGLE-PAGE app: the username and password views are BOTH pre-rendered into
+// the same document, and the INACTIVE one is parked in an `aria-hidden="true"` container with its
+// inputs collapsed to a ~10x13 box. Playwright's isVisible() only asks for a non-empty box and no
+// visibility:hidden — a 10x13 box satisfies both — so the password field reports VISIBLE while the
+// username step is still on screen. (Verified against the live login.microsoftonline.com on
+// 2026-07-16: on the username view #i0118 is 10x13 inside aria-hidden and #idSIButton9 reads "Next";
+// after Next they swap — #i0118 becomes 348x36 and outside aria-hidden, the button becomes "Sign in".)
+//
+// Trusting isVisible() here is what broke the real console login (UM0029840): the flow decided the
+// password box was already up, SKIPPED the "Next" click, typed the password into the offscreen field,
+// then spent its ONE submit click on "Next" — arriving at the password view with the password
+// pre-filled but never submitted. No MFA prompt ever appeared (so the Delinea one-time password path
+// never ran), and 60s later it blamed the credentials with "still on the login page".
+//
+// Both signals are Microsoft's own and they flip together, so we require both: outside any aria-hidden
+// subtree, and a box wide enough to be a real input rather than the collapsed placeholder. Width alone
+// separates them cleanly (10px vs 348px); height does not (13px vs 36px is too close to a default
+// input's ~21px to be a safe discriminator).
+async function onActiveView(locator) {
+  if (!(await locator.isVisible().catch(() => false))) return false;
+  return await locator
+    .evaluate((el) => !el.closest('[aria-hidden="true"]') && el.getBoundingClientRect().width > 40)
+    .catch(() => false);
+}
+
+// Poll a condition instead of sleeping a fixed guess. Microsoft looks the account up before it will
+// render the password box, so the username step takes as long as it takes; a fixed sleep that expires
+// early lands back in the same "the field is there but not really" trap onActiveView exists to close.
+async function waitForCondition(page, cond, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await cond()) return true;
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(250);
+  }
+}
+
 // Mint a CURRENT one-time password from the app AT THE MFA BOX — not before the browser launched.
 // A TOTP code lives ~30s; browser start + portal load + the SSO hop routinely take longer than
 // that, so any code fetched before page-load is dead on arrival. otpReq = { url, token, agentId,
@@ -248,22 +287,22 @@ export default async function spanningForceSync({ page, shot, input, log }) {
   // 2. Login (username + password), then clear a second factor if present. A TOTP/app code is
   //    completed from the seed on the secret; push/number-matching/SMS is a clear hard stop.
   try {
+    const pwField = page.locator(SELECTORS.password).first();
     const userField = page.locator(SELECTORS.username).first();
-    if (await userField.isVisible().catch(() => false)) {
+    if (await onActiveView(userField)) {
       log("entering the portal username");
       await userField.fill(username);
       // Some portals split username/password across two steps (and Microsoft-federated tenants redirect
-      // to login.microsoftonline.com) — submit to advance if there is no password field yet.
-      const pwVisible = await page.locator(SELECTORS.password).first().isVisible().catch(() => false);
-      if (!pwVisible) {
+      // to login.microsoftonline.com) — submit to advance if the password box is not up yet. This asks
+      // onActiveView, NOT isVisible: Microsoft's password field is already in the DOM at this point.
+      if (!(await onActiveView(pwField))) {
         await page.locator(SELECTORS.submit).first().click().catch(() => {});
         await page.waitForLoadState("domcontentloaded").catch(() => {});
-        await page.waitForTimeout(1500);
+        await waitForCondition(page, () => onActiveView(pwField), 20_000);
       }
     }
 
-    const pwField = page.locator(SELECTORS.password).first();
-    if (!(await pwField.isVisible().catch(() => false))) {
+    if (!(await onActiveView(pwField))) {
       // No password field — could be an MFA-first / passwordless prompt. Let the second-factor handler
       // report precisely (push vs code vs unknown) instead of a generic "no password field".
       const mfa = await handleSecondFactor(page, shot, mfaSources, log);
@@ -323,8 +362,11 @@ export default async function spanningForceSync({ page, shot, input, log }) {
     // read as "wrong origin" before.
     await page.waitForURL((u) => onPortalOrigin(String(u)), { timeout: 60_000 }).catch(() => {});
 
-    // Still on a password field after submit ⇒ the login was rejected (or the selectors are wrong).
-    if (await pwField.isVisible().catch(() => false)) {
+    // Still on the ACTIVE password view after submit ⇒ the login was rejected (or the selectors are
+    // wrong). onActiveView, not isVisible: once Microsoft moves on to the MFA step it parks this same
+    // password field in its aria-hidden container, which isVisible() still calls visible — that would
+    // report a sign-in sitting at a legitimate MFA prompt as a failed login.
+    if (await onActiveView(pwField)) {
       return { ok: false, error: "Spanning portal login did not succeed (still on the login page) — check the brokered portal credentials, or VERIFY the login selectors", evidence: await shot("login-failed") };
     }
   } catch (e) {
