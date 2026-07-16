@@ -4,15 +4,28 @@
 #   ./scripts/prs.sh            list open PRs (number, title, draft/ready, CI, mergeable)
 #   ./scripts/prs.sh 56         merge PR 56 (squash, delete the branch, un-draft it first if needed)
 #   ./scripts/prs.sh 56 --yes   skip the confirmation prompt
-#   ./scripts/prs.sh --all      list every ready, non-conflicting PR that --all would merge (dry run)
+#   ./scripts/prs.sh --all      list every ready PR that --all would merge (dry run)
 #   ./scripts/prs.sh --all --yes
-#                               merge them all oldest-first, skipping any that conflict (including ones
-#                               a preceding merge just broke), then sweep finished worktrees. Drafts
-#                               are left alone — a draft is work-in-progress on purpose.
+#                               merge them all oldest-first, catching each up to main as its turn
+#                               comes, then sweep finished worktrees. Drafts are left alone — a draft
+#                               is work-in-progress on purpose.
 #   ./scripts/prs.sh --tidy     show which finished Claude worktrees can be retired (--yes to do it)
 #   ./scripts/prs.sh --tidy --stale
 #                               also retire LOCKED worktrees left behind by dead sessions — only when
 #                               clean, fully merged, and no process is inside them (--yes to do it)
+#
+# BEFORE merging, the script CATCHES THE PR'S BRANCH UP TO MAIN: it merges origin/main into the
+# branch locally and pushes. main moves while a PR is open, and GitHub then reports CONFLICTING and
+# refuses — where the old answer was "here are three commands, go do it yourself", on every such PR.
+# Most of those are not real disagreements; the two sides changed different things and git merges them
+# without a murmur. Nobody was asking git. Two things make the LOCAL merge matter, not just the merge:
+#   - .gitattributes merge drivers (e.g. `merge=union` on the changelog registry) are a LOCAL git
+#     feature. GitHub's merge ignores them, so a conflict git settles silently here is still a hard
+#     CONFLICTING there. This is the only place those drivers ever run.
+#   - a real conflict gets rolled back and handed to you with the file list, instead of a merge that
+#     half-happened on a server.
+# It never resolves a conflict for you, and never touches a worktree with uncommitted work. Opt out
+# with PRS_NO_BRANCH_SYNC=1.
 #
 # After a successful merge the script SYNCS THE LOCAL main checkout: it fast-forwards main and runs
 # `npm install` (in web/ and runner/browser/), so the next `next dev` compile can't die on a package
@@ -74,6 +87,94 @@ sync_local_after_merge() {
   done
   echo "sync: local checkout is current. Restart the dev server to pick up app changes; a merged runner"
   echo "      file is served from disk, so agents auto-update on their next heartbeat (no rebuild)."
+}
+
+# Bring the PR's branch up to date with main BEFORE asking GitHub to merge it.
+#
+# main moves while a PR is open. The moment the PR touches anything main also touched, GitHub reports
+# CONFLICTING and the merge fails — and the script's whole answer was "here are three commands, go do
+# it yourself", on every such PR. Most of those are not real disagreements: the two sides changed
+# different things and git merges them without a murmur. Only nobody was asking git.
+#
+# Doing the merge LOCALLY is not just a convenience — it is the only way our merge drivers run at all.
+# .gitattributes (`merge=union` on the changelog registry) is a LOCAL git feature: GitHub's
+# server-side merge ignores it completely, so a conflict git resolves silently here is still a hard
+# CONFLICTING there. Syncing locally and pushing is what makes those drivers do their job.
+#
+# Safe by construction. On a REAL conflict it aborts, leaves the branch byte-for-byte as it was, and
+# prints the files — it never resolves a conflict for you, because "both sides edited this line" needs
+# a human who knows which is right. It touches a worktree only when that worktree is clean. Opt out of
+# the whole thing with PRS_NO_BRANCH_SYNC=1.
+#
+# Returns non-zero when the merge cannot proceed, so the caller stops BEFORE un-drafting the PR.
+sync_branch_with_main() {
+  local branch="$1"
+  [[ "${PRS_NO_BRANCH_SYNC:-}" == "1" ]] && { echo "branch sync: skipped (PRS_NO_BRANCH_SYNC=1)."; return 0; }
+  [[ -z "$branch" ]] && return 0
+  git fetch -q origin main 2>/dev/null || { echo "branch sync: could not fetch origin/main — leaving the branch alone."; return 0; }
+
+  git rev-parse -q --verify "origin/$branch" >/dev/null 2>&1 || {
+    echo "branch sync: no origin/$branch to sync — leaving it alone."; return 0; }
+
+  # Nothing to do when the branch already contains main. This is the common case, so stay quiet.
+  if git merge-base --is-ancestor origin/main "origin/$branch" 2>/dev/null; then return 0; fi
+
+  echo "branch sync: '$branch' is behind main — merging origin/main into it here, not on GitHub"
+  echo "             (a local merge is also the only place .gitattributes merge drivers apply)"
+
+  # Do the whole thing in a throwaway worktree, DETACHED at ORIGIN's view of the branch, and push the
+  # result straight to the branch ref. Deliberately never touches a local branch or an existing
+  # worktree:
+  #   - the PR is what GitHub has. A local branch may be stale, or ahead with commits that were never
+  #     pushed and so aren't in the PR at all; merging from either would sync the wrong tree.
+  #   - a session's worktree is not ours to rewrite. Checking the branch out here would also fail
+  #     outright whenever a worktree already holds it, which is the normal case.
+  # The earlier version of this borrowed the branch and did `checkout -B "$branch" "origin/$branch"`
+  # to make it pushable — which force-resets the local branch and would DISCARD unpushed commits.
+  # Detached + `push HEAD:refs/heads/<branch>` needs no local branch to exist at all.
+  local tmp rc=0
+  tmp=$(mktemp -d) || { echo "branch sync: could not make a temp dir — skipping."; return 0; }
+  if ! git worktree add -q --detach "$tmp" "origin/$branch" 2>/dev/null; then
+    rm -rf "$tmp"; echo "branch sync: could not check out origin/$branch — leaving it alone."; return 0
+  fi
+
+  if git -C "$tmp" merge --no-edit -m "Merge origin/main into $branch (prs.sh: catch the PR up before merging)" origin/main >/dev/null 2>&1; then
+    echo "branch sync: merged cleanly — pushing"
+    if git -C "$tmp" push -q origin "HEAD:refs/heads/$branch" 2>/dev/null; then
+      echo "branch sync: '$branch' now contains main."
+      # GitHub needs a moment to recompute mergeability after the push; merging against a stale
+      # CONFLICTING verdict would fail for no reason at all.
+      local m
+      for _ in 1 2 3 4 5 6; do
+        m=$(gh pr view "$PR" --json mergeable -q .mergeable 2>/dev/null || echo UNKNOWN)
+        [[ "$m" == "UNKNOWN" ]] || break
+        sleep 2
+      done
+    else
+      echo "branch sync: push FAILED (no permission, or the branch moved under us) — by hand:"
+      echo "               gh pr checkout $PR && git fetch origin main && git merge origin/main && git push"
+      rc=1
+    fi
+  else
+    local conflicts; conflicts=$(git -C "$tmp" diff --name-only --diff-filter=U 2>/dev/null)
+    echo
+    echo "branch sync: main and this PR changed the same lines. Git can't resolve that, and neither"
+    echo "             should a script — it needs someone who knows which side is right."
+    echo "  conflicting:"
+    echo "$conflicts" | sed 's/^/    /'
+    echo "  resolve it with:"
+    echo "    gh pr checkout $PR && git fetch origin main && git merge origin/main"
+    echo "    # fix the files, then:  git commit && git push  — and re-run this script."
+    echo
+    echo "  (nothing was pushed — the branch on GitHub is exactly as it was)"
+    rc=1
+  fi
+
+  # The merge happened in a scratch worktree, so cleanup is the whole rollback: nothing was pushed on
+  # the failure path, and no branch or worktree of anyone's was ever written to.
+  git worktree remove --force "$tmp" 2>/dev/null || rm -rf "$tmp"
+  git worktree prune 2>/dev/null || true
+  return $rc
 }
 
 PR="${1:-}"
@@ -161,32 +262,33 @@ fi
 
 # ./scripts/prs.sh --all — merge every ready, non-conflicting PR, oldest first, then tidy.
 #
-# "Ready" means NOT a draft (a draft is deliberately work-in-progress) and NOT already CONFLICTING.
-# The catch a hand-written `for` loop misses: every squash-merge moves main, so a PR that is mergeable
-# right now can be in conflict by the time its turn comes. So we re-check EACH PR's mergeability
-# immediately before merging it, and SKIP — never abort — the ones that have gone bad. Each merge just
-# recurses into this same script's single-PR path, so it inherits the un-draft, worktree-release and
-# migration handling for free.
+# "Ready" means NOT a draft — a draft is deliberately work-in-progress. CONFLICTING PRs are now
+# INCLUDED rather than filtered out: each merge recurses into the single-PR path, which first merges
+# main into the branch locally, and most "conflicts" are just a stale branch that git reconciles
+# without help. One that genuinely disagrees with main fails that sync, returns non-zero, and is
+# skipped here exactly as before — so including them can only add merges, never break one.
+#
+# This also dissolves the catch a hand-written `for` loop misses: every squash-merge moves main, so a
+# PR that is mergeable now can be in conflict by the time its turn comes. That PR used to be skipped;
+# now its turn begins by catching it up to the main the previous merge just created.
 if [[ "$PR" == "--all" ]]; then
   DO_IT=""
   for arg in "${@:2}"; do [[ "$arg" == "--yes" ]] && DO_IT="--yes"; done
   git fetch -q origin main
 
-  # Numbers of open PRs that are ready and not (yet) conflicting, oldest first. UNKNOWN is kept in —
-  # GitHub reports it while still computing mergeability, and the per-PR recheck below resolves it;
-  # only a firm CONFLICTING is excluded here. (Newline-separated; iterated with word-splitting, which
+  # Every open, non-draft PR, oldest first. (Newline-separated; iterated with word-splitting, which
   # keeps this working on the stock macOS bash 3.2 that has no `mapfile`.)
-  READY=$(gh pr list --state open --json number,isDraft,mergeable \
-    --jq 'map(select(.isDraft == false and .mergeable != "CONFLICTING")) | sort_by(.number) | .[].number')
+  READY=$(gh pr list --state open --json number,isDraft \
+    --jq 'map(select(.isDraft == false)) | sort_by(.number) | .[].number')
 
   if [[ -z "$READY" ]]; then
-    echo "No ready, non-conflicting PRs to merge (drafts and CONFLICTS are skipped — see: $0)."
+    echo "No ready PRs to merge (drafts are left alone — see: $0)."
     exit 0
   fi
 
-  echo "Ready, non-conflicting PRs (oldest first):"
+  echo "Ready PRs (oldest first; any behind main are caught up first):"
   gh pr list --state open --json number,title,isDraft,mergeable \
-    --jq 'map(select(.isDraft == false and .mergeable != "CONFLICTING")) | sort_by(.number) | .[] | "  #\(.number)  \(.title)"'
+    --jq 'map(select(.isDraft == false)) | sort_by(.number) | .[] | "  #\(.number)  \(.title)\(if .mergeable == "CONFLICTING" then "   [behind main — will try to catch it up]" else "" end)"'
   echo
 
   if [[ "$DO_IT" != "--yes" ]]; then
@@ -196,18 +298,9 @@ if [[ "$PR" == "--all" ]]; then
 
   MERGED=""; SKIPPED=""; MIG_PRS=""
   for n in $READY; do
-    # Re-check just-in-time: a preceding merge may have moved main and put this one into conflict.
-    # Right after a merge GitHub briefly reports UNKNOWN while it recomputes, so give it a few tries.
-    m="UNKNOWN"
-    for _ in 1 2 3 4 5; do
-      m=$(gh pr view "$n" --json mergeable -q .mergeable 2>/dev/null || echo UNKNOWN)
-      [[ "$m" == "UNKNOWN" ]] || break
-      sleep 2
-    done
-    if [[ "$m" == "CONFLICTING" ]]; then
-      echo "  skip  #$n  (now CONFLICTS — an earlier merge moved main; resolve it and re-run)"
-      SKIPPED="$SKIPPED #$n"; continue
-    fi
+    # No mergeability pre-check any more: the single-PR path catches the branch up to main first, so a
+    # CONFLICTING verdict here would be answering a question we are about to change the answer to. A
+    # PR that truly disagrees with main fails that sync and lands in the skip below.
 
     # Note a migration BEFORE merging, so the end-of-run summary can list every DB deploy still owed.
     if gh pr diff "$n" --name-only 2>/dev/null | grep -q 'prisma/migrations/.*\.sql$'; then
@@ -220,7 +313,7 @@ if [[ "$PR" == "--all" ]]; then
     if PRS_IN_ALL=1 "$0" "$n" --yes; then
       MERGED="$MERGED #$n"
     else
-      echo "  skip  #$n  (merge did not complete — left open)"
+      echo "  skip  #$n  (left open — see the reason above; a real conflict needs a human)"
       SKIPPED="$SKIPPED #$n"
     fi
     echo
@@ -286,6 +379,13 @@ if [[ "${2:-}" != "--yes" ]]; then
   [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 0; }
 fi
 
+BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
+
+# Catch main up FIRST — before un-drafting, before retiring the worktree. A sync that can't finish
+# must leave the PR exactly as it found it (a PR left un-drafted by a merge that never happened is a
+# lie about its state), and its worktree still standing.
+sync_branch_with_main "$BRANCH" || exit 1
+
 # A draft cannot be merged — mark it ready first. Harmless if it already is.
 gh pr ready "$PR" >/dev/null 2>&1 || true
 
@@ -298,7 +398,6 @@ gh pr ready "$PR" >/dev/null 2>&1 || true
 #
 # The merge had already happened, so it was noise — but noise on every single merge. Retire the
 # worktree first and the delete just works.
-BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
 DELETE_BRANCH="--delete-branch"
 if [[ -n "$BRANCH" ]]; then
   # Which worktree (if any) has this branch checked out?
