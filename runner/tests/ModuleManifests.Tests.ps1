@@ -37,4 +37,16 @@ Describe 'module manifest <Name>' -ForEach $script:ModuleDirs {
         $stale = @($manifest | Where-Object { $_ -notin $defined })
         $stale | Should -BeNullOrEmpty -Because "FunctionsToExport names functions the module no longer defines: $($stale -join ', ')"
     }
+
+    It 'only lists functions Export-ModuleMember actually publishes' {
+        # The direction the other two miss — and the one runner 1.66.0 fell through, taking Exchange
+        # down fleet-wide. Disconnect-CtgExchange was in the manifest AND defined in the .psm1, so
+        # 'lists every Export-ModuleMember function' never considered it (it isn't an export) and
+        # 'only lists functions that exist' passed (it is defined). But the two lists are INTERSECTED,
+        # so it was published by neither, and the exchange lane died on "The term
+        # 'Disconnect-CtgExchange' is not recognized" BEFORE it could connect, for every client.
+        if (-not $exported.Count) { return }  # no Export-ModuleMember: the module publishes everything and the manifest filters — nothing to intersect
+        $unpublished = @($manifest | Where-Object { $_ -notin $exported })
+        $unpublished | Should -BeNullOrEmpty -Because "FunctionsToExport and Export-ModuleMember are INTERSECTED — the manifest names these but the module never publishes them, so callers get 'The term ... is not recognized': $($unpublished -join ', ')"
+    }
 }

@@ -1172,9 +1172,9 @@ $DISPATCH = @{
             # informational primaryDomain, which is exactly what sent JAMS to the wrong directory.
             # Best-effort: a client whose m365-admin can't drive Graph still falls back as before.
             [void](Connect-CtgGraphForJob $job $creds)
-            # Close any session left open before opening ours: EXO sessions stack rather than replace,
-            # so without this a fleet runner accumulates them until the service refuses new ones.
-            Disconnect-CtgExchange
+            # Connect-CtgExchange closes any existing session itself — that teardown lives inside the
+            # module so it can't fail to resolve, which is what an unguarded call from here did in
+            # 1.66.0 (it threw before we ever connected, breaking exchange for every client).
             Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $job $creds) @exoCert
             # On-prem session for BOTH lanes when the `exchange-onprem` secret is brokered: onboard
             # needs Enable-RemoteMailbox; a HYBRID offboard needs Set-RemoteMailbox -Type Shared

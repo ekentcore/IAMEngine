@@ -187,6 +187,11 @@ function Connect-CtgExchange {
         [string]$CertificateBase64,
         [string]$CertificatePassword
     )
+    # Close any session already open before opening ours. EXO sessions STACK rather than replace, and
+    # the service caps them, so a long-lived fleet runner that only ever connects eventually cannot
+    # connect at all. This lives HERE, not in the runner script: it's a call within this module, so it
+    # cannot fail to resolve the way a cross-file call can (see Disconnect-CtgExchange's note).
+    Disconnect-CtgExchange
     if ($CertificateBase64) {
         $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-exo-" + [guid]::NewGuid().ToString('N') + ".pfx")
         try {
@@ -213,6 +218,12 @@ function Connect-CtgExchange {
 
 function Disconnect-CtgExchange {
     # Close this process's Exchange Online session.
+    #
+    # MUST appear in BOTH this module's Export-ModuleMember AND the .psd1's FunctionsToExport — the
+    # two are INTERSECTED, so a name in only one is silently invisible to every caller. Shipping it in
+    # the .psd1 alone took Exchange down fleet-wide in 1.66.0: the connect lane called it, the name
+    # didn't resolve, and the step threw BEFORE connecting. ModuleExportParity.Tests.ps1 now fails the
+    # build on that drift for every module, in both directions.
     #
     # Connect-ExchangeOnline does NOT replace an existing session — sessions STACK, and the service
     # caps how many a principal may hold ("you've exceeded the maximum number of connections"). A
@@ -1002,4 +1013,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
