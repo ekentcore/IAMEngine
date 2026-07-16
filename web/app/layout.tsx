@@ -62,6 +62,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
               showChangelog={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.global_admin)}
               showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
+              showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
               <MobileNav
@@ -70,6 +71,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 showSettings={!authEnabled() || (!!user && can(user.role, "settings.manage"))}
                 showChangelog={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.global_admin)}
                 showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
+                showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
               />
               {(!authEnabled() || !!user) && <FeatureRequestButton />}
               <ThemeToggle dark={theme === "dark"} />

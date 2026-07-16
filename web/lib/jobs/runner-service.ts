@@ -1580,10 +1580,28 @@ export function makeRunnerService(db: PrismaClient) {
       // over, retryScheduled is false, and the (now genuine) warning is logged.
       if (!retryScheduled) try {
         const fingerprint = outcomeFingerprint({ caseRequestId: job.caseRequestId, systemKey: job.systemKey, verdict, messages, error: input.error ?? null });
-        // If this exact line for this case was already marked "Fixed", inherit that resolution so a
-        // re-run of an already-handled noise line doesn't reappear (a genuinely new error has a new
-        // fingerprint and won't match).
-        const prior = await db.runOutcome.findFirst({ where: { fingerprint, resolvedAt: { not: null } }, select: { resolvedAt: true, resolvedBy: true } });
+        // A NEW occurrence is never born resolved.
+        //
+        // This used to inherit a prior "Fixed" for the same fingerprint, so a re-run of an
+        // already-handled line wouldn't reappear. The reasoning was that "a genuinely new error has a
+        // new fingerprint and won't match" — but the inverse is the problem: an IDENTICAL fingerprint
+        // means the identical problem happened AGAIN, which is the one fact that proves it was not
+        // fixed. Inheriting hid exactly that. "Fixed" is a display action with no verification behind
+        // it, and this turned one click into a permanent silence: every future occurrence was born
+        // hidden and uncounted (outcomes-repo.ts:95), so the step could keep failing forever and
+        // /runs would never say so.
+        //
+        // UM0029796 is what this looked like: an operator marked entra's "MFA methods NOT removed" and
+        // "license KEPT" warnings Fixed at 21:00 while closing the case. Neither was fixed — the
+        // permission is still missing and the seat is still assigned — and any re-run would have been
+        // silently pre-resolved.
+        //
+        // Now a recurrence resurfaces, which is what makes "Fixed" honest: it dismisses what you have
+        // seen, and the problem coming back tells you the truth. This costs no noise — a step that is
+        // genuinely fixed stops emitting the message, which changes the fingerprint (it hashes the
+        // messages), so it simply never matches again. Steps waiting on their own retry are already
+        // excluded above and never reach here. Marking one line Fixed still resolves every EXISTING
+        // occurrence of that fingerprint; that dedupe of history is unchanged.
         await db.runOutcome.create({
           data: {
             caseRequestId: job.caseRequestId,
@@ -1601,8 +1619,6 @@ export function makeRunnerService(db: PrismaClient) {
               ? { credFailure: job.credFailure as Prisma.InputJsonValue }
               : {}),
             fingerprint,
-            resolvedAt: prior?.resolvedAt ?? null,
-            resolvedBy: prior?.resolvedBy ?? null,
           },
         });
       } catch { /* an outcome-log failure must never lose the job result */ }

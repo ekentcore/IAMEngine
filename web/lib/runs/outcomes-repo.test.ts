@@ -84,3 +84,21 @@ test("onlyResolved returns just the fixed lines — the always-on source for the
   // still scoped to real problem lines by default, not clean successes
   assert.deepEqual(where.verdict, { in: ["warning", "failed"] });
 });
+
+// The property the "a new occurrence is never born resolved" fix in runner-service.ts rests on.
+// That write used to inherit a prior "Fixed" for the same fingerprint, which meant one click silenced
+// every FUTURE occurrence too — so a step could keep failing forever and /runs would never say so
+// (resolved rows are hidden by default and excluded from the problem count). UM0029796: an operator
+// marked "MFA methods NOT removed" and "license KEPT" Fixed while closing the case; neither was fixed.
+test("an unchanged problem recurring fingerprints identically — which is proof it was NOT fixed", () => {
+  // Same case, same module, same message => same fingerprint. Inheriting a resolution across that
+  // hid the one fact that disproves the "Fixed": it happened again.
+  assert.equal(outcomeFingerprint(base), outcomeFingerprint({ ...base }));
+});
+
+test("a genuinely fixed step can never collide with its old fingerprint, so resurfacing costs no noise", () => {
+  // The fingerprint hashes verdict + messages. A step that actually got fixed stops emitting the
+  // warning, so its next row hashes differently and never matches the resolved one.
+  const fixed = { ...base, verdict: "verified", messages: [] as string[] };
+  assert.notEqual(outcomeFingerprint(base), outcomeFingerprint(fixed));
+});

@@ -19,11 +19,13 @@ type Item = readonly [string, string];
 
 // Reference + admin pages, grouped for the menu. Role-gated entries are filtered by the flags
 // the server layout passes down (the server stays the authority; this only hides links).
-export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean }): { label: string; items: Item[] }[] {
+export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean }): { label: string; items: Item[] }[] {
   const reference: Item[] = [
     ...(flags.showDocs ? ([["/docs", "Documents"]] as const) : []),
     ["/modules", "Modules"],
     ["/health", "Health"],
+    // Fleet sweeps over every client's M365 credential — same capability as wiring one.
+    ...(flags.showFleetAudit ? ([["/fleet-audit", "Fleet audits"]] as const) : []),
     ["/help", "Help"],
   ];
   const admin: Item[] = [
@@ -40,7 +42,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
 
 const isActive = (path: string, href: string) => path === href || path.startsWith(`${href}/`);
 
-export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean }) {
+export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean }) {
   const path = usePathname() ?? "";
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);

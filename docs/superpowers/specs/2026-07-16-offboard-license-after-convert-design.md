@@ -62,7 +62,11 @@ The planner also **silently discarded the fix the profiles had already written**
 ## Non-goals
 
 - **MFA removal / `UserAuthenticationMethod.ReadWrite.All`.** UM0029796 also warned that MFA methods
-  were not removed, because Apollon's app registration lacks that permission. Separate problem,
+  were not removed. **Correction (2026-07-16):** this spec originally said that was because Apollon's
+  app registration lacks that permission. It does not — `audit-m365-graph-perms.ts --client core2030`
+  reports `UserAuthenticationMethod.ReadWrite.All` as granted. The WARN names two possible causes and
+  only the second fits: the runner's cached Graph token predates the consent, so it must reconnect
+  (restart the agent, or re-run the step once it has) before MFA removal will work. Separate problem,
   addressed by the fleet permission-audit report. The step will legitimately keep warning until the
   grant is made.
 - **Backfilling already-leaked seats.** This fixes future offboards only. UM0029796's seat is still

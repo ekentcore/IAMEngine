@@ -802,3 +802,33 @@ model AppSetting {
   value     String
   updatedAt DateTime @default(now()) @updatedAt
 }
+
+// A fleet-wide M365 sweep and its findings.
+//
+// Two kinds, both answering a question the per-client UI cannot:
+//   permissions  — which app registrations are missing a Graph permission ("who needs
+//                  UserAuthenticationMethod.ReadWrite.All?"). Per-client gaps are already visible in
+//                  the connection-test panel; only a sweep can pivot them by permission.
+//   leaked_seats — disabled users still holding a licence, i.e. leavers we are still paying for.
+//
+// The findings are a JSON blob rather than a row-per-finding table on purpose: a run is a SNAPSHOT
+// (~200 clients, read whole and rendered whole), never queried across runs, and the two kinds have
+// nothing in common to normalise. See lib/audits/m365-audit.ts for the row shapes.
+//
+// Runs take minutes — a Delinea resolve plus several Graph reads per tenant — so this cannot happen
+// inside a page load: the sweep writes here and /audits reads the last finished run instantly.
+model FleetAudit {
+  id         String    @id @default(cuid())
+  kind       String // "permissions" | "leaked_seats"
+  status     String    @default("running") // running | done | failed
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  startedBy  String? // actor label snapshot ("user:jane@core.tech"), never a joinable FK
+  scanned    Int       @default(0) // clients completed so far — drives the progress line
+  total      Int       @default(0) // clients this run intends to visit
+  findings   Json? // AuditRow[] | LeakRow[] (by kind)
+  error      String?
+
+  // "the latest run of this kind" is the only query this table serves.
+  @@index([kind, startedAt])
+}

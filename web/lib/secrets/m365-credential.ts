@@ -91,6 +91,22 @@ export async function probeEntraClientCredentials(
   clientSecret: string,
   fetcher: typeof fetch = fetch
 ): Promise<EntraProbe> {
+  // The probe only reports a verdict, so drop the token the grant handed back.
+  const { token: _token, ...verdict } = await acquireGraphToken(tenant, appId, clientSecret, fetcher);
+  return verdict;
+}
+
+// The same grant, but keeps the access token — for callers that go on to READ from Graph (the fleet
+// permission audit, the leaked-seat scan). Separate function rather than an option on the probe so
+// the probe's contract stays "verdict only, never a credential or a token".
+export type GraphTokenResult = EntraProbe & { token?: string };
+
+export async function acquireGraphToken(
+  tenant: string,
+  appId: string,
+  clientSecret: string,
+  fetcher: typeof fetch = fetch
+): Promise<GraphTokenResult> {
   try {
     const body = new URLSearchParams({
       grant_type: "client_credentials",
@@ -104,7 +120,10 @@ export async function probeEntraClientCredentials(
       body: body.toString(),
       signal: AbortSignal.timeout(20_000),
     });
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      const d = (await res.json().catch(() => null)) as { access_token?: string } | null;
+      return { ok: true, token: d?.access_token };
+    }
     const d = (await res.json().catch(() => null)) as { error?: string; error_description?: string } | null;
     // error_description embeds the AADSTS code and echoes request ids/timestamps — pull just the code.
     const code = d?.error_description?.match(/AADSTS\d+/)?.[0] ?? d?.error ?? `HTTP ${res.status}`;
