@@ -11,6 +11,7 @@ import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
 import { ClaudeFixButton, ClaudeFixChip, FixReviewPanel, useClaudeFixes, type FixTaskInfo } from "./claude-fix";
 import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
+import { copyText, copyFailureHint } from "@/lib/clipboard";
 
 export type RunLogRow = {
   id: string;
@@ -101,11 +102,12 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
       picked.push(r.copyText);
     }
     const text = picked.join("\n\n");
-    try {
-      await navigator.clipboard.writeText(text);
+    // The helper falls back to execCommand on an insecure origin and RETURNS whether it worked;
+    // the old catch only fired on a throw, which an absent clipboard API never does.
+    if (await copyText(text)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch { setErr("Clipboard blocked by the browser — copy is unavailable here."); }
+    } else { setErr(copyFailureHint()); }
   }
 
   // v2: mark one line Fixed / reopen it (same fingerprint semantics as FixButton).
@@ -128,7 +130,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
   const rowMenu = (r: RunLogRow): ActionsMenuItem[] => {
     const t = fixTasks[r.fingerprint];
     return [
-      { label: "⧉ Copy", title: "Copy this line's message + error", onClick: () => { navigator.clipboard?.writeText(r.copyText); } },
+      { label: "⧉ Copy", title: "Copy this line's message + error", onClick: () => { void copyText(r.copyText).then((ok) => { if (!ok) setErr(copyFailureHint()); }); } },
       r.done
         ? { label: "↺ Reopen", title: "Reopen this line", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) }
         : { label: "✓ Fixed", title: r.count > 1 ? `Mark Fixed — clears all ${r.count} occurrences of this line for this case` : "Mark this line Fixed", disabled: pending || !r.fingerprint, onClick: () => fixOne(r) },

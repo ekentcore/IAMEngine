@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { CATALOG } from "@/lib/generator/system-map";
 import { withOnboardOu } from "@/lib/clients/ad-folders";
 import { OuTreePicker } from "./ad-pickers";
+import { copyText } from "@/lib/clipboard";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual" | "scim";
@@ -510,7 +511,7 @@ function CopyBox({ label, text }: { label: string; text: string }) {
     <div style={{ marginTop: "0.25rem" }}>
       <div className="row-between">
         <span className="note">{label}</span>
-        <button onClick={() => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>
+        <button onClick={() => { void copyText(text).then((ok) => setCopied(ok)); setTimeout(() => setCopied(false), 1200); }}>
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

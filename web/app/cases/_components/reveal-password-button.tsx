@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { CopyButton } from "@/app/_components/copy-button";
 
 export function RevealPasswordButton({ caseId }: { caseId: string }) {
   const router = useRouter();
@@ -35,7 +36,11 @@ export function RevealPasswordButton({ caseId }: { caseId: string }) {
           <p className="note" style={{ color: "#b3261e", marginTop: 0 }}>⚠ Shown once. Save it now — it can&rsquo;t be shown again. Give it to the new hire; they&rsquo;ll be prompted to change it at first sign-in.</p>
           <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0.6rem 0" }}>
             <code style={{ fontSize: 16, padding: "0.35rem 0.6rem", border: "1px solid var(--line)", borderRadius: 6, userSelect: "all" }}>{pw}</code>
-            <button onClick={() => navigator.clipboard?.writeText(pw)}>Copy</button>
+            {/* This password is shown ONCE and wiped on "I saved it". The old button was
+                `navigator.clipboard?.writeText(pw)` — on the LAN URL that is a silent no-op, so it
+                did nothing, said nothing, and the next click destroyed the only copy. A copy button
+                here must never imply success it didn't get. */}
+            <CopyButton text={pw} label="Copy" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.3rem 0.7rem" }} />
           </div>
           <div className="toolbar" style={{ justifyContent: "flex-end" }}>
             <button className="primary" onClick={() => { setPw(null); router.refresh(); }}>I saved it</button>

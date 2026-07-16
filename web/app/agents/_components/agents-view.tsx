@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
 import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
+import { CopyButton } from "@/app/_components/copy-button";
 
 export type AgentVM = {
   id: string;
@@ -770,7 +771,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             <textarea readOnly rows={3} style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
               value={install.command} onFocus={(e) => e.currentTarget.select()} />
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-              <button onClick={() => navigator.clipboard?.writeText(install.command)}>Copy command</button>
+              <CopyButton text={install.command} label="Copy command" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.25rem 0.6rem" }} />
               {/* Same installer as a saved file for shops that block `irm | iex`: save it, then run it
                   locally. `download` + attachment header name it install-iam-runner.ps1 to match the run line. */}
               <a className="button" href={`${origin}/api/runner/install.ps1?token=${install.token}&download=1`} download="install-iam-runner.ps1">Download install.ps1</a>
@@ -813,7 +814,7 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
                 <textarea readOnly rows={14} style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }} value={manual} onFocus={(e) => e.currentTarget.select()} />
                 <p className="note" style={{ marginTop: "0.4rem", color: "var(--muted)" }}>On a DC the ActiveDirectory module is already present; for the full chain a host also needs ExchangeOnlineManagement + Microsoft.Graph. AD/Exchange use the brokered secrets, so the host needs no special rights.</p>
                 <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-                  <button onClick={() => navigator.clipboard?.writeText(manual)}>Copy</button>
+                  <CopyButton text={manual} label="Copy" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.25rem 0.6rem" }} />
                   <span className="grow" />
                   <button className="primary" onClick={() => ref.current?.close()}>Done</button>
                 </div>
@@ -874,7 +875,7 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               <b>Add runner</b> instead (it registers a Scheduled Task).
             </p>
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-              <button onClick={() => navigator.clipboard?.writeText(installCommand(installAgent, origin))}>Copy command</button>
+              <CopyButton text={installCommand(installAgent, origin)} label="Copy command" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.25rem 0.6rem" }} />
               <span className="grow" />
               <button className="primary" onClick={() => setInstallAgent(null)}>Done</button>
             </div>
@@ -940,7 +941,7 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
               service started before the token landed — the fix is a <b>reboot</b> of the runner host.
             </p>
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-              <button onClick={() => navigator.clipboard?.writeText(troubleshootCommand(troubleshootAgent, origin))}>Copy command</button>
+              <CopyButton text={troubleshootCommand(troubleshootAgent, origin)} label="Copy command" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.25rem 0.6rem" }} />
               <span className="grow" />
               <button className="primary" onClick={() => setTroubleshootAgent(null)}>Done</button>
             </div>
@@ -982,7 +983,7 @@ pwsh C:\\iam-runner\\Start-IamRunner.ps1 -AppUrl "${origin}" -AgentId "${created
                 its supervisor relaunches it. A local restart re-runs the code already on disk — to get new code, use <b>Update</b>.
               </p>
               <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-                <button onClick={() => navigator.clipboard?.writeText(central ? mac : win)}>Copy {central ? "macOS" : "Windows"} command</button>
+                <CopyButton text={central ? mac : win} label={<>Copy {central ? "macOS" : "Windows"} command</>} copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.25rem 0.6rem" }} />
                 <span className="grow" />
                 <button className="primary" onClick={() => setLocalRestartAgent(null)}>Done</button>
               </div>

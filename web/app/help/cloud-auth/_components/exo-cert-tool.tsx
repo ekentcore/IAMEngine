@@ -6,13 +6,15 @@
 // no Finder, no private key left on disk.
 import { useState } from "react";
 import { generateExoCertAction } from "../cert-actions";
+import { copyText } from "@/lib/clipboard";
 
 type Cert = { cerPem: string; pfxBase64: string; password: string; thumbprintSha1: string; subject: string; notAfter: string };
 
 function CopyField({ label, value, mono = true, area = false }: { label: string; value: string; mono?: boolean; area?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    await navigator.clipboard.writeText(value);
+    const ok = await copyText(value);
+    if (!ok) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

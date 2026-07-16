@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { RunReport } from "@/lib/cases/run-report";
 import { buildResolutionNote } from "@/lib/cases/resolution-note";
+import { copyText } from "@/lib/clipboard";
 
 const ICON: Record<string, string> = {
   verified: "✓", warning: "⚠", failed: "✗", skipped: "–", manual: "✋",
@@ -82,7 +83,7 @@ export function ResolutionModal({ report, caseId, writeEnabled, open, onClose }:
       {posted && <p className="note" style={{ color: posted.startsWith("✓") ? "#15803d" : "#b91c1c", marginTop: 6 }}>{posted}</p>}
 
       <div className="dialog-actions">
-        <button onClick={() => { navigator.clipboard?.writeText(note); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>{copied ? "Copied ✓" : "Copy"}</button>
+        <button onClick={() => { void copyText(note).then((ok) => setCopied(ok)); setTimeout(() => setCopied(false), 1500); }}>{copied ? "Copied ✓" : "Copy"}</button>
         <button
           className="primary"
           disabled={!writeEnabled || busy}

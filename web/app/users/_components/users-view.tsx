@@ -6,6 +6,7 @@ import type { Role } from "@prisma/client";
 import { ROLE_LABELS, ROLE_DESCRIPTIONS, PERMISSION_LABELS, canResetPassword, canAssignRole } from "@/lib/auth/permissions";
 import { createUser, setUserRole, setUserStatus, resetUserPassword, approveAccessRequest, denyAccessRequest } from "../actions";
 import { ClientAccessEditor, accessSummary, type ClientLite, type AccessUser } from "./client-access-editor";
+import { CopyButton } from "@/app/_components/copy-button";
 
 type UserVM = {
   id: string; email: string; name: string | null; role: Role; status: string;
@@ -143,7 +144,8 @@ export function UsersView({ users, meRole, clients, meId, accessRequests = [], v
           <b>Password for {secret.email}</b> — shown once, copy it now:
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
             <code style={{ fontSize: 13 }}>{secret.password}</code>
-            <button style={{ fontSize: 12 }} onClick={() => navigator.clipboard?.writeText(secret.password)}>Copy</button>
+            {/* Shown once; "Dismiss" is the only other button. A copy that silently no-ops loses it. */}
+            <CopyButton text={secret.password} label="Copy" copiedLabel="Copied ✓" style={{ fontSize: 12 }} />
             <button style={{ fontSize: 12 }} onClick={() => setSecret(null)}>Dismiss</button>
           </div>
         </div>

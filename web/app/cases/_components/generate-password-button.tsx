@@ -7,6 +7,7 @@
 // offers a one-shot "reveal password" until it's shown.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { CopyButton } from "@/app/_components/copy-button";
 
 type RevealResponse = { ready?: boolean; status?: string; password?: string; error?: string };
 
@@ -60,7 +61,9 @@ function RevealDialog({ resetJobId, systemName, onClose }: { resetJobId: string;
           <p className="note" style={{ color: "#b3261e", marginTop: 0 }}>⚠ Shown once. Save it now — it can&rsquo;t be shown again. The user must change it at next sign-in.</p>
           <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0.6rem 0" }}>
             <code style={{ fontSize: 16, padding: "0.35rem 0.6rem", border: "1px solid var(--line)", borderRadius: 6, userSelect: "all" }}>{state.pw}</code>
-            <button onClick={() => navigator.clipboard?.writeText(state.pw!)}>Copy</button>
+            {/* Shown once and gone on "I saved it" — a copy that quietly did nothing (which is what
+                the old `navigator.clipboard?.` call did on the LAN URL) loses the password outright. */}
+            <CopyButton text={state.pw} label="Copy" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.3rem 0.7rem" }} />
           </div>
           <div className="toolbar" style={{ justifyContent: "flex-end" }}>
             <button className="primary" onClick={onClose}>I saved it</button>

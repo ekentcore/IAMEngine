@@ -4,6 +4,7 @@
 // One row per missing permission, expandable to the clients that need it, with the grant command.
 import { useState } from "react";
 import type { PermissionPivot } from "@/lib/audits/m365-audit";
+import { copyText } from "@/lib/clipboard";
 
 function grantCommand(role: string, roleId: string | undefined, resourceAppId: string): string | null {
   if (!roleId) return null;
@@ -64,7 +65,7 @@ export function PermissionPivotTable({
                     <pre style={{ fontSize: 11, background: "#f9fafb", padding: 8, borderRadius: 3, overflowX: "auto", margin: 0 }}>{cmd}</pre>
                     <button
                       style={{ marginTop: 6, fontSize: 11 }}
-                      onClick={() => { void navigator.clipboard.writeText(cmd); setCopied(p.role); setTimeout(() => setCopied(null), 1500); }}
+                      onClick={() => { void copyText(cmd).then((ok) => { if (ok) setCopied(p.role); }); setTimeout(() => setCopied(null), 1500); }}
                     >
                       {copied === p.role ? "copied" : "copy grant command"}
                     </button>

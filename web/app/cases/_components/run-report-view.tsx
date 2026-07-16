@@ -9,6 +9,7 @@ import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-pa
 import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 import { ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
+import { CopyButton } from "@/app/_components/copy-button";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -391,19 +392,11 @@ function NeedsInfoPanel({ caseId, info, refresh }: { caseId: string; info: NonNu
 }
 
 // One-click copy for error text — pasting a step's full error into chat/tickets shouldn't require
-// careful drag-selecting inside a scrollable <pre>.
-function CopyButton({ text, label = "Copy error", title = "Copy the full error text" }: { text: string; label?: string; title?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-      title={title}
-      style={{ fontSize: 11, padding: "1px 8px", marginTop: 3 }}
-    >
-      {copied ? "Copied ✓" : label}
-    </button>
-  );
-}
+// careful drag-selecting inside a scrollable <pre>. The local implementation this replaces did
+// `navigator.clipboard?.writeText(text); setCopied(true);` — which on a plain-HTTP LAN origin wrote
+// nothing and said "Copied ✓" anyway, so operators kept drag-selecting after all. @/app/_components
+// reports what actually happened; see lib/clipboard.ts.
+const REPORT_COPY_STYLE = { padding: "1px 8px", marginTop: 3 } as const;
 
 // The "expected X, got Y" tail for a check — but ONLY when it adds information. For a boolean check
 // the ✓/✗ already says pass/fail, so "(expected true, got false)" is just noise; show the detail
@@ -714,7 +707,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
             {busy === "verify" ? "verifying…" : "✓ Verify everything"}
           </button>
           <button onClick={refresh}>Refresh</button>
-          <CopyButton text={report.steps.map(stepLogText).join("\n\n")} label="Copy log" title="Copy the whole run report (all steps' actions, validation + progress) as text" />
+          <CopyButton text={report.steps.map(stepLogText).join("\n\n")} label="Copy log" title="Copy the whole run report (all steps' actions, validation + progress) as text" style={REPORT_COPY_STYLE} />
           <a href={`/api/cases/${caseId}/report?format=md`} download className="note">download .md →</a>
         </div>
       </div>
@@ -908,7 +901,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
             <div style={{ margin: "0.4rem 0 0.6rem 0.8rem" }}>
               {hasDetail && (
                 <div style={{ marginBottom: 4 }}>
-                  <CopyButton text={stepLogText(step)} label="Copy this step's log" title="Copy this step's actions, validation + progress as text" />
+                  <CopyButton text={stepLogText(step)} label="Copy this step's log" title="Copy this step's actions, validation + progress as text" style={REPORT_COPY_STYLE} />
                 </div>
               )}
               {step.actions.length > 0 && (
@@ -966,7 +959,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.error && (
                 <div>
                   <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>
-                  <CopyButton text={step.error} />
+                  <CopyButton text={step.error} label="Copy error" title="Copy the full error text" style={REPORT_COPY_STYLE} />
                 </div>
               )}
               {step.error?.includes("DECISION_NEEDED:username_collision") && step.jobId && (
@@ -1021,7 +1014,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                     </ul>
                   )}
                   {child.error && (
-                    <div><pre style={{ ...PRE, color: "#b91c1c" }}>{child.error}</pre><CopyButton text={child.error} /></div>
+                    <div><pre style={{ ...PRE, color: "#b91c1c" }}>{child.error}</pre><CopyButton text={child.error} label="Copy error" title="Copy the full error text" style={REPORT_COPY_STYLE} /></div>
                   )}
                 </div>
               </details>
