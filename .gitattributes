@@ -1,0 +1,14 @@
+# _registry.ts is a flat list of one-line re-exports whose ORDER CARRIES NO MEANING (the change log
+# is sorted by each entry's date+time in entries/index.ts, not by this file). Two PRs each adding a
+# line is the normal case and the lines are never the same, so taking BOTH sides is always the right
+# answer — which is exactly what a union merge does, with no human in the loop.
+#
+# Sorting the file by id already scatters insertions so most pairs don't collide at all; this catches
+# the rest. Together they close the last shared-line conflict in the changelog.
+#
+# Do NOT extend this to structured files. A union merge on the old entries.ts — a nested array of
+# objects — would have interleaved two entries' braces and produced TypeScript that doesn't compile;
+# git fuses the shared `{` and `},` and union would keep both halves of the fusion. Union is only
+# safe for a flat, append-only, order-independent list, which is the whole reason _registry.ts is
+# shaped like one.
+web/lib/changelog/entries/_registry.ts merge=union
