@@ -284,3 +284,74 @@ test("a required (non-optional) not-needed secret STILL demotes to manual — un
   const jobs = planCase([sys({ systemKey: "adobe", secretNames: ["adobe"], offboardWhen: "always" })], "offboard", {}, undefined, new Set(["adobe"]));
   assert.equal(jobs[0].mode, "manual");
 });
+
+// --- offboard ordering: the mailbox convert must precede licence removal ------------------------
+// Regression guards for the billable-seat leak seen on UM0029796 (Apollon Wealth). The identity
+// pipeline is an ONBOARD chain (create in AD -> sync -> cloud consumers, exchange last). Run on an
+// offboard it put `exchange` after entra/m365, so the licence step correctly refused to strip a
+// licence off an unconverted mailbox, warned "re-run once the mailbox step is done", and nothing
+// ever re-ran it. The seat stayed assigned forever.
+
+const adPipeline = () => [
+  sys({ systemKey: "active-directory" }),
+  sys({ systemKey: "directory-sync", dependsOn: ["active-directory"] }),
+  sys({ systemKey: "entra" }),
+  sys({ systemKey: "m365", dependsOn: ["directory-sync"] }),
+  // Inherited from the onboard lane, where a mailbox genuinely needs its licence first.
+  sys({ systemKey: "exchange", dependsOn: ["m365"] }),
+];
+
+test("offboard: exchange converts the mailbox BEFORE entra/m365 take the licence off", () => {
+  const keys = planCase(adPipeline(), "offboard", {}).map((j) => j.systemKey);
+  assert.ok(keys.indexOf("exchange") < keys.indexOf("entra"), `exchange must precede entra: ${keys}`);
+  assert.ok(keys.indexOf("exchange") < keys.indexOf("m365"), `exchange must precede m365: ${keys}`);
+  // ...and the on-prem origin invariant still holds.
+  assert.ok(keys.indexOf("active-directory") < keys.indexOf("directory-sync"));
+  assert.ok(keys.indexOf("directory-sync") < keys.indexOf("exchange"));
+});
+
+test("onboard is unchanged: create in AD, sync, then the cloud consumers with exchange last", () => {
+  // (an AD onboard also appends the injected ad-email-writeback / ad-consistency-check steps)
+  const keys = planCase(adPipeline(), "onboard", {})
+    .map((j) => j.systemKey)
+    .filter((k) => ["active-directory", "directory-sync", "entra", "m365", "exchange"].includes(k));
+  assert.deepEqual(keys, ["active-directory", "directory-sync", "entra", "m365", "exchange"]);
+});
+
+test("offboard: entra/m365 depend on exchange, and exchange never depends on them (no cycle)", () => {
+  const jobs = planCase(adPipeline(), "offboard", {});
+  const dep = (k: string) => jobs.find((j) => j.systemKey === k)!.dependsOn;
+  assert.ok(dep("entra").includes("exchange"));
+  assert.ok(dep("m365").includes("exchange"));
+  assert.equal(dep("exchange").some((d) => d === "entra" || d === "m365"), false);
+});
+
+test("offboard: a cloud-only client's declared 'exchange dependsOn m365' is reordered too", () => {
+  // The ~200 seeded clients carry this ordering in the DB, where a profile edit can't reach them.
+  const systems = [sys({ systemKey: "m365" }), sys({ systemKey: "exchange", dependsOn: ["m365"] })];
+  const keys = planCase(systems, "offboard", {}).map((j) => j.systemKey);
+  assert.deepEqual(keys, ["exchange", "m365"]);
+  // The same profile onboards in the original order — a mailbox needs its licence first.
+  assert.deepEqual(planCase(systems, "onboard", {}).map((j) => j.systemKey), ["m365", "exchange"]);
+});
+
+test("ad-standalone (an AD system but no directory-sync): the pipeline rewrite does not fire", () => {
+  // regal: AD runs file/print, 365 is provisioned separately with no sync — its profile says so
+  // outright. Keying the invariant on the AD system alone reversed its declared entra/m365 order and
+  // gated an entire cloud offboard behind an AD step the profile explicitly disclaims.
+  const systems = [
+    sys({ systemKey: "active-directory" }),
+    sys({ systemKey: "m365" }),
+    sys({ systemKey: "entra", dependsOn: ["m365"] }),
+  ];
+  const jobs = planCase(systems, "onboard", {});
+  const dep = (k: string) => jobs.find((j) => j.systemKey === k)!.dependsOn;
+  assert.deepEqual(dep("entra"), ["m365"]); // declared order preserved, not reversed
+  assert.deepEqual(dep("m365"), []); // not gated behind AD
+});
+
+test("offboard with no exchange system in the plan is unaffected", () => {
+  const systems = [sys({ systemKey: "m365" }), sys({ systemKey: "entra", dependsOn: ["m365"] })];
+  const jobs = planCase(systems, "offboard", {});
+  assert.deepEqual(jobs.find((j) => j.systemKey === "entra")!.dependsOn, ["m365"]);
+});

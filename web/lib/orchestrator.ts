@@ -48,17 +48,39 @@ const REQUEST_SIGNALS: Record<string, (payload: Record<string, unknown>, action:
 // order is ALWAYS create-in-AD -> directory-sync (push to the cloud) -> cloud consumers (entra / m365 /
 // exchange, which need the synced user to exist). We enforce it at plan time so a mis-wired client can't
 // deadlock — e.g. exchange waiting for a mailbox while the directory-sync that would create it is gated
-// behind exchange. No-op for cloud-native clients (no active-directory system) — their ordering differs.
-const IDENTITY_PIPELINE = ["active-directory", "directory-sync", "entra", "m365", "exchange"];
+// behind exchange.
+//
+// ONBOARD order. Offboarding is not the reverse of this chain, it is the reverse of its CLOUD half:
+// the mailbox has to be converted to shared while the account still holds its licence, so `exchange`
+// must run BEFORE the steps that strip the licence (entra / m365). Running the onboard chain on an
+// offboard is what left a paid seat on every AD-origin leaver: entra ran first, correctly refused to
+// remove a licence from an unconverted mailbox, warned "re-run once the mailbox step is done" — and
+// nothing ever re-ran it. See OFFBOARD_LICENCE_SYSTEMS below.
+const IDENTITY_PIPELINE_ONBOARD = ["active-directory", "directory-sync", "entra", "m365", "exchange"];
+const IDENTITY_PIPELINE_OFFBOARD = ["active-directory", "directory-sync", "exchange", "entra", "m365"];
+
+// The steps that take an M365 licence off. They must never run before `exchange` on an offboard.
+const OFFBOARD_LICENCE_SYSTEMS = ["entra", "m365"];
 
 // For an on-prem-origin client, the corrected dependencies for the pipeline systems: each keeps its
 // NON-pipeline deps (e.g. servicenow) but its pipeline-to-pipeline edges (forward OR reversed) are
 // replaced by the single chain edge to the previous ACTIVE pipeline system. Returns null (leave deps
 // untouched) when the client is cloud-native.
-function identityPipelineDeps(active: ClientSystem[], declaredOf: (s: ClientSystem) => string[]): Map<string, string[]> | null {
+function identityPipelineDeps(
+  active: ClientSystem[],
+  declaredOf: (s: ClientSystem) => string[],
+  action: Action
+): Map<string, string[]> | null {
   const activeKeys = new Set(active.map((s) => s.systemKey));
-  if (!activeKeys.has("active-directory")) return null;
-  const pipeActive = IDENTITY_PIPELINE.filter((k) => activeKeys.has(k));
+  // The invariant only exists where identity ORIGINATES on-prem and is PUSHED to the cloud — which is
+  // precisely the clients that have a directory-sync. Keying on the mere presence of an
+  // active-directory system swept up ad-standalone clients too (AD for file/print, 365 provisioned
+  // separately, no sync): their profiles state outright that 365 is independent of AD, and this
+  // rewrite silently reversed their declared entra/m365 order and gated an entire cloud offboard
+  // behind an AD step they explicitly disclaim. No sync, no on-prem origin, no rewrite.
+  if (!activeKeys.has("active-directory") || !activeKeys.has("directory-sync")) return null;
+  const pipeline = action === "offboard" ? IDENTITY_PIPELINE_OFFBOARD : IDENTITY_PIPELINE_ONBOARD;
+  const pipeActive = pipeline.filter((k) => activeKeys.has(k));
   const pipeSet = new Set(pipeActive);
   const byKey = new Map(active.map((s) => [s.systemKey, s]));
   const out = new Map<string, string[]>();
@@ -162,9 +184,23 @@ export function planCase(
   };
   // Enforce the on-prem identity flow (AD -> directory-sync -> cloud) for pipeline systems; other
   // systems keep their declared deps. This can't be reversed by bad data, so it's deadlock-proof.
-  const pipelineDeps = identityPipelineDeps(active, declaredOf);
+  const pipelineDeps = identityPipelineDeps(active, declaredOf, action);
+  // OFFBOARD safety invariant, for EVERY client — not just on-prem-origin ones. The mailbox must be
+  // converted to shared before its licence is removed: strip the licence off a mailbox that is still a
+  // UserMailbox and Exchange purges it after the 30-day grace. Most profiles declare the opposite
+  // (`exchange dependsOn m365`, inherited from the onboard lane where the mailbox needs a licence
+  // first), and the ~200 seeded clients carry that ordering in the database where a profile edit can't
+  // reach them. So make it structural: on an offboard, entra/m365 wait for exchange, and exchange
+  // drops any declared edge onto them — which is also what keeps the two rules from forming a cycle.
+  const convertBeforeLicence = action === "offboard" && byKey.has("exchange");
+  const offboardOrdered = (key: string, declared: string[]): string[] => {
+    if (!convertBeforeLicence) return declared;
+    if (OFFBOARD_LICENCE_SYSTEMS.includes(key)) return [...new Set([...declared, "exchange"])];
+    if (key === "exchange") return declared.filter((d) => !OFFBOARD_LICENCE_SYSTEMS.includes(d));
+    return declared;
+  };
   const depsOf = (s: ClientSystem): string[] => {
-    const declared = pipelineDeps?.get(s.systemKey) ?? declaredOf(s);
+    const declared = offboardOrdered(s.systemKey, pipelineDeps?.get(s.systemKey) ?? declaredOf(s));
     if (!runLast(s)) return declared;
     const everyoneElse = active.filter((o) => o.systemKey !== s.systemKey && !runLast(o)).map((o) => o.systemKey);
     return [...new Set([...declared, ...everyoneElse])];

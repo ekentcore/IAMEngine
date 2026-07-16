@@ -8,6 +8,7 @@ import { getAppSetting } from "../settings";
 
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
 export const SETUP_GATE_KEY = "setup_gate";
+import { isConvertConfirmed, isConvertStillComing } from "./mailbox-convert";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
@@ -880,10 +881,12 @@ export function makeRunnerService(db: PrismaClient) {
           // says so explicitly when it declines ("over threshold … kept as a user mailbox").
           const actions = (res.Actions ?? res.actions ?? []) as unknown[];
           const lines = actions.filter((a): a is string => typeof a === "string");
-          const converted = lines.some((a) => /converted mailbox to shared|already a shared mailbox/i.test(a));
+          // Only a conversion the runner CONFIRMED counts, and a convert is only "pending" while it
+          // can still actually happen. Both rules live in ./mailbox-convert, with the reasoning.
+          const converted = isConvertConfirmed(lines);
           // Does this client even ask for a conversion? If not, there is nothing to wait for.
           const exCfg = ((req(e).config ?? {}) as { convertToShared?: unknown }).convertToShared;
-          const convertPending = exCfg != null && e.status !== "succeeded";
+          const convertPending = isConvertStillComing(e.status, exCfg != null);
           mailboxByCase.set(e.caseRequestId, { sizeGB, converted, convertPending });
         }
       }

@@ -563,3 +563,90 @@ Describe 'Invoke-CtgExchangeNamedGroups' {
         ($acts -join ' ') | Should -Match 'on-prem-synced group'
     }
 }
+
+# --- convert-to-shared safety: unknown size, config intent, and the cloud read-back ---------------
+# Regression guards for the offboard licence path. The licence gate downstream keys off the action
+# lines these tests assert on, and removing a licence from a mailbox that is NOT really shared in the
+# cloud lets Exchange purge the mail after its 30-day grace.
+
+Describe 'Test-CtgConvertToShared' {
+    It 'reads the INTENT out of every profile shape, not the object''s existence' {
+        Test-CtgConvertToShared $null | Should -BeFalse
+        Test-CtgConvertToShared $true | Should -BeTrue
+        Test-CtgConvertToShared $false | Should -BeFalse
+        # a settings bag: its presence is the opt-in
+        Test-CtgConvertToShared ([pscustomobject]@{ skipIfMailboxOverGB = 50 }) | Should -BeTrue
+        # marketscience's shape — the one that exists specifically to say "don't"
+        Test-CtgConvertToShared ([pscustomobject]@{ value = $true; unless = 'instructed not to' }) | Should -BeTrue
+        Test-CtgConvertToShared ([pscustomobject]@{ value = $false; unless = 'instructed not to' }) | Should -BeFalse
+    }
+}
+
+Describe 'Get-CtgMailboxSizeGB' {
+    It 'returns $null (unknown) — never 0 — when the size cannot be read or parsed' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { $null }
+        Get-CtgMailboxSizeGB -Identity 'x@y.com' | Should -BeNullOrEmpty
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = 'Unlimited' } }
+        Get-CtgMailboxSizeGB -Identity 'x@y.com' | Should -BeNullOrEmpty
+        Get-CtgMailboxSizeGB -Identity '' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-CtgExchangeOffboarding convert safety' {
+    BeforeEach {
+        $script:user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com'; DisplayName = 'J Doe' }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { }
+    }
+
+    It 'does NOT convert when the mailbox size is unknown — an unreadable size is not a small one' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config $config
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        ($r.Actions -join ' ') | Should -Match 'WARN mailbox size UNKNOWN'
+        ($r.Actions -join ' ') | Should -Match 'WARN mailbox NOT converted'
+    }
+
+    It 'does NOT convert when the profile says value:false' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ value = $false; unless = 'instructed not to' } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config $config
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        ($r.Actions -join ' ') | Should -Not -Match 'converted mailbox to shared'
+    }
+
+    It 'hybrid: claims the convert only once the CLOUD reads SharedMailbox' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity = 'jdoe' } }
+        # cloud has caught up
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config ([pscustomobject]@{ convertToShared = $true })
+        ($r.Actions -join ' ') | Should -Match 'verified shared in the cloud'
+    }
+
+    It 'hybrid: WARNs and does NOT claim the convert while the cloud still reads UserMailbox' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity = 'jdoe' } }
+        # dirsync hasn't landed — the cloud object is still a user mailbox
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config ([pscustomobject]@{ convertToShared = $true })
+        Should -Invoke Set-RemoteMailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Type -eq 'Shared' }
+        ($r.Actions -join ' ') | Should -Match 'WARN convert submitted on-prem'
+        ($r.Actions -join ' ') | Should -Not -Match 'verified shared in the cloud'
+    }
+
+    It 'MailUser with no on-prem session: WARNs instead of throwing on Set-Mailbox' {
+        # No EXO mailbox AND no Get-RemoteMailbox object -> the old code called Set-Mailbox anyway,
+        # which throws "does not support recipients of this type" and aborted the whole step.
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $null }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config ([pscustomobject]@{ convertToShared = $true; removeDistributionGroups = $false })
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        ($r.Actions -join ' ') | Should -Match 'WARN mailbox NOT converted'
+    }
+}

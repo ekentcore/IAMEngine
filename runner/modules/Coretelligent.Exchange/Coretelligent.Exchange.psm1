@@ -229,18 +229,69 @@ function Connect-CtgExchangeOnPrem {
 }
 
 # Mailbox size in GB, parsed from Get-MailboxStatistics TotalItemSize ("75 GB (80,530,…bytes)").
+#
+# Returns $null when the size is UNKNOWN — no identity, the read failed (throttled/transient EXO
+# error), or TotalItemSize didn't parse. It must NOT return 0 for those: 0 is a real, meaningful
+# reading ("empty mailbox") that opens both 50 GB guards, so collapsing a failed read to 0 silently
+# tells the convert gate and the licence gate that a mailbox of unknown size is safely tiny. A 200 GB
+# mailbox whose size read throttles would then be converted to shared AND stripped of its licence,
+# leaving it 150 GB over Microsoft's 50 GB unlicensed-shared cap — locked and inaccessible.
+# Unknown is not zero. Callers must treat $null as "cannot prove it is under the threshold".
 function Get-CtgMailboxSizeGB {
     # Identity is intentionally NOT [Mandatory]: a Mandatory string param throws a hard
     # "Cannot bind argument to parameter 'Identity' because it is an empty string" on an empty value,
-    # which is an opaque crash. Return 0 for an empty/absent identity instead — the caller decides.
+    # which is an opaque crash. Return $null (unknown) for an empty/absent identity — the caller decides.
     [CmdletBinding()]
     param([string]$Identity)
-    if ([string]::IsNullOrWhiteSpace($Identity)) { return 0 }
+    if ([string]::IsNullOrWhiteSpace($Identity)) { return $null }
     $stats = Get-MailboxStatistics -Identity $Identity -ErrorAction SilentlyContinue
-    if (-not $stats) { return 0 }
+    if (-not $stats) { return $null }
     $m = [regex]::Match([string]$stats.TotalItemSize, '([\d,]+)\s*bytes')
     if ($m.Success) { return [math]::Round([double]($m.Groups[1].Value -replace ',', '') / 1GB, 2) }
-    return 0
+    return $null
+}
+
+# Does this client's config actually ask for a convert-to-shared?
+#
+# The profiles carry `convertToShared` in four different shapes, and only ONE of them is a plain flag:
+#   true                              (regal, yuma)      -> convert
+#   { skipIfMailboxOverGB: 50 }       (six-one)          -> convert, with an explicit threshold
+#   { value: true, unless: '…' }      (marketscience)    -> convert only when value is true
+#   mailbox: { convertToShared: … }   (six-one, nested)  -> resolved by the caller
+# A PSCustomObject is ALWAYS truthy in PowerShell, so testing the object told us "convert" even for
+# { value: false } — the one shape that exists specifically to say "don't". Read the intent, not the
+# object's existence. An object with no `value` field is a settings bag (skipIfMailboxOverGB), and its
+# presence IS the opt-in; only an explicit false turns it off.
+function Test-CtgConvertToShared {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)]$Config)
+    if ($null -eq $Config) { return $false }
+    if ($Config -is [bool]) { return [bool]$Config }
+    if ($Config -is [string]) { return -not ([string]::IsNullOrWhiteSpace($Config) -or $Config -match '^(?i:false|no|off|0)$') }
+    $value = Get-CtgProp $Config 'value'
+    if ($null -ne $value) {
+        if ($value -is [string]) { return -not ($value -match '^(?i:false|no|off|0)$') }
+        return [bool]$value
+    }
+    return $true
+}
+
+# Is the CLOUD mailbox actually a shared mailbox right now?
+#
+# The licence gate must never act on an on-prem convert that Entra Connect hasn't pushed yet: the
+# cloud object is still a UserMailbox, and removing its licence lets Exchange purge the mail after the
+# 30-day grace. Read the authoritative cloud state instead of inferring it. Uses Get-Mailbox
+# (Exchange.ManageAsApp — already required), so this adds no new permission.
+# Returns $false when it cannot be read: unverified is not converted.
+function Test-CtgCloudMailboxShared {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Upn)
+    try {
+        $mbx = Get-Mailbox -Identity $Upn -ErrorAction SilentlyContinue
+        if (-not $mbx) { return $false }
+        return ([string]$mbx.RecipientTypeDetails -eq 'SharedMailbox')
+    }
+    catch { return $false }
 }
 
 # Hybrid onboarding: enable the on-prem remote mailbox so Azure AD Connect provisions a mailbox in
@@ -673,7 +724,10 @@ function Invoke-CtgExchangeOffboarding {
     if ($resolved.DisplayName) { $actions.Add("resolved offboard target by display name '$($resolved.DisplayName)' -> $upn"); Write-CtgStep "resolved '$($resolved.DisplayName)' -> '$upn'" }
     Write-CtgStep "running: Get-MailboxStatistics -Identity '$upn' (mailbox size)"
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
-    $actions.Add("mailbox size: $sizeGB GB")
+    # $null = the read failed or didn't parse. Say so plainly rather than printing "0 GB", which reads
+    # as a fact and is exactly what the 50 GB guards below (and the licence gate) key off.
+    if ($null -eq $sizeGB) { $actions.Add("WARN mailbox size UNKNOWN — Get-MailboxStatistics returned nothing or an unparseable size. Treating it as over threshold: the mailbox is not converted and the licence stays.") }
+    else { $actions.Add("mailbox size: $sizeGB GB") }
 
     # Does the target have an EXO MAILBOX, or is it a MailUser (mailbox lives ON-PREM, EXO only holds a
     # mail-enabled pointer)? The EXO mailbox cmdlets below (Set-CASMailbox, Add/Get-MailboxPermission,
@@ -687,10 +741,21 @@ function Invoke-CtgExchangeOffboarding {
     }
 
     # 1. Convert to shared — unless over the threshold ------------------------
+    # `convertToShared` drifted into four shapes across profiles: $true, { skipIfMailboxOverGB: 50 },
+    # { value: true, unless: '…' }, and a nested mailbox.convertToShared. A bare `if ($cts)` tests the
+    # OBJECT, and every PSCustomObject is truthy — so { value: $false } ("the client asked us NOT to
+    # convert") converted the mailbox anyway. Read the intent out of whichever shape we were handed.
     $cts = Get-CtgProp $Config 'convertToShared'
-    if ($cts) {
+    if ($null -eq $cts) { $cts = Get-CtgProp (Get-CtgProp $Config 'mailbox') 'convertToShared' }
+    $wantConvert = Test-CtgConvertToShared $cts
+    if ($wantConvert) {
         $threshold = [double]((Get-CtgProp $cts 'skipIfMailboxOverGB') ?? 50)
-        if ($sizeGB -gt $threshold) {
+        # UNKNOWN size ($null) must not pass this gate. `$null -gt 50` is $false in PowerShell, so an
+        # un-negated comparison would treat an unreadable mailbox as safely small and convert it.
+        if ($null -eq $sizeGB) {
+            $actions.Add("WARN mailbox NOT converted — its size could not be read, so we cannot prove it is under the $threshold GB shared-mailbox cap. Re-run once Get-MailboxStatistics works; the licence stays until then.")
+        }
+        elseif ($sizeGB -gt $threshold) {
             $actions.Add("mailbox $sizeGB GB over threshold ($threshold GB) — kept as a user mailbox; license stays")
         }
         else {
@@ -706,12 +771,35 @@ function Invoke-CtgExchangeOffboarding {
             if ($remote) {
                 if ($PSCmdlet.ShouldProcess($upn, "Convert mailbox to shared (on-prem Set-RemoteMailbox)")) {
                     Set-RemoteMailbox -Identity $upn -Type Shared
-                    $actions.Add("converted mailbox to shared on-prem (Set-RemoteMailbox -Type Shared)")
                     if ($TriggerSync) {
                         try { & $TriggerSync; $actions.Add("triggered Entra Connect delta sync to push the shared conversion") }
                         catch { $actions.Add("WARN convert synced on next cycle — delta-sync trigger failed: $($_.Exception.Message)") }
                     }
+                    # The on-prem convert only sets the ON-PREM attribute. The CLOUD mailbox stays a
+                    # UserMailbox until a delta sync lands — and forever if the trigger above failed.
+                    # The licence gate keys off our action line, and taking the licence off a cloud
+                    # UserMailbox lets Exchange purge it after the 30-day grace. So do NOT claim the
+                    # convert until the cloud actually reflects it; read it back and say which it is.
+                    if (-not $hasExoMailbox) {
+                        # A MailUser has NO cloud mailbox — the mail lives on-prem, so there is nothing
+                        # for Exchange Online to purge and nothing for a sync to reflect. The on-prem
+                        # convert is the whole job, and the licence is safe to remove.
+                        $actions.Add("converted mailbox to shared on-prem (Set-RemoteMailbox -Type Shared) — mailbox is on-prem (a MailUser in EXO), so there is no cloud mailbox to purge")
+                    }
+                    elseif (Test-CtgCloudMailboxShared -Upn $upn) {
+                        $actions.Add("converted mailbox to shared on-prem (Set-RemoteMailbox -Type Shared) — verified shared in the cloud")
+                    }
+                    else {
+                        $actions.Add("WARN convert submitted on-prem (Set-RemoteMailbox -Type Shared) but the cloud still reads UserMailbox — awaiting an Entra Connect sync. The licence stays until it lands. Re-run this step after the next sync cycle; if it never flips, check Entra Connect.")
+                    }
                 }
+            }
+            elseif (-not $hasExoMailbox) {
+                # No on-prem session AND no EXO mailbox: Set-Mailbox would throw "This task does not
+                # support recipients of this type" and abort the whole step (taking the DL cleanup and
+                # everything after it with it). Every other EXO block here is gated on $hasExoMailbox;
+                # this one used to be the exception.
+                $actions.Add("WARN mailbox NOT converted — $upn is a MailUser (no EXO mailbox) and the on-prem Exchange session that owns it isn't available, so neither Set-RemoteMailbox nor Set-Mailbox can run. Convert it on-prem, then re-run. The licence stays.")
             }
             elseif ($PSCmdlet.ShouldProcess($upn, "Convert mailbox to shared")) {
                 Set-Mailbox -Identity $upn -Type Shared
@@ -895,4 +983,4 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

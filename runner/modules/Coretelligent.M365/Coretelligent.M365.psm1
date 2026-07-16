@@ -1394,6 +1394,12 @@ function Invoke-CtgM365Offboarding {
         $actions.Add("license kept here by design — it is removed $(if ($by) { "in the $by step" } else { 'in a later step' }), after the mailbox is converted to shared")
     }
     elseif ($null -ne $removeLicense) {
+        # NOTE on an unreadable mailbox size: it is guarded at the SOURCE, in the Exchange executor.
+        # Get-CtgMailboxSizeGB returns $null (not 0) when the read fails, and the convert refuses to
+        # run without a size it can prove is under the cap — so it never reports a conversion, and this
+        # cascade lands on the "$convertedKnown -and -not $converted" branch below and keeps the
+        # licence. A reported conversion therefore already implies the size was read AND under
+        # threshold; re-checking it here would only re-derive what the convert already proved.
         if ($MailboxSizeGB -gt $threshold) {
             # WARN, not a quiet note: the seat is still being paid for and the mailbox still needs a
             # decision (archive? keep licensed?). It must surface on the run report — and now in the
@@ -1407,6 +1413,7 @@ function Invoke-CtgM365Offboarding {
             $actions.Add("WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides. Convert the mailbox (or archive the mail), then re-run this step.")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Remove directly-assigned licenses")) {
+            $statesUnreadable = $false
             $userObj = Get-MgUser -UserId $userId -Property 'LicenseAssignmentStates' -ErrorAction SilentlyContinue
             $states = @(@(Get-CtgProp $userObj 'LicenseAssignmentStates') | Where-Object { $_ })
             $skuName = @{}; foreach ($d in @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue)) { $skuName[[string](Get-CtgProp $d 'SkuId')] = [string](Get-CtgProp $d 'SkuPartNumber') }
@@ -1414,15 +1421,45 @@ function Invoke-CtgM365Offboarding {
                 $direct  = @($states | Where-Object { [string]::IsNullOrEmpty([string]$_.AssignedByGroup) } | ForEach-Object { [string]$_.SkuId } | Where-Object { $_ } | Select-Object -Unique)
                 $byGroup = @($states | Where-Object { -not [string]::IsNullOrEmpty([string]$_.AssignedByGroup) })
             } else {
-                # No assignment-state detail — fall back to removing whatever's directly assignable.
-                $direct = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.SkuId }); $byGroup = @()
+                # No assignment-state detail, which has TWO very different causes. Get-MgUser above is
+                # -ErrorAction SilentlyContinue, so a throttled/transient read looks exactly like "this
+                # user has no licences" — the same silently-dropped read PR #90 fixed for app-role names.
+                # $skuName (from Get-MgUserLicenseDetail) tells them apart: licences listed but no
+                # assignment states = the states read FAILED; nothing listed = genuinely unlicensed.
+                #
+                # The old fallback removed every SKU Get-MgUserLicenseDetail returned — but that lists
+                # GROUP-INHERITED licences identically to direct ones, and Graph rejects those ("User
+                # license is inherited from a group membership and it cannot be removed directly").
+                # Invoke-CtgM365Write rethrows, so the WHOLE offboard step failed, and re-failed
+                # identically on every retry — the seat never freed, the case never green. We cannot
+                # tell direct from group-assigned without the states, and guessing wrong is a hard
+                # failure, so report the unreadable state instead of gambling.
+                # Attempt it anyway — it is the only way to free a genuinely direct seat — but the
+                # rejection is handled below instead of being allowed to kill the step.
+                $direct = @($skuName.Keys | Where-Object { $_ }); $byGroup = @()
+                if ($skuName.Count) { $statesUnreadable = $true }
             }
             if ($direct.Count) {
-                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $direct } | Out-Null
-                # Name the freed SKUs (from the pre-removal license detail) so the reclamation shows up in
-                # the case notes + the ServiceNow work-note ("freed 2 license(s): SPE_E5, ENTERPRISEPACK").
-                $freed = @($direct | ForEach-Object { if ($skuName.ContainsKey([string]$_)) { $skuName[[string]$_] } else { [string]$_ } })
-                $actions.Add("freed $($direct.Count) directly-assigned license(s): $($freed -join ', ')")
+                # A GROUP-assigned SKU cannot be removed directly — Graph rejects the whole call with
+                # "User license is inherited from a group membership and it cannot be removed directly
+                # from the user". When the assignment states were unreadable we cannot pre-filter those
+                # out ($statesUnreadable above), so that rejection is an EXPECTED outcome here, not a
+                # crash: letting it propagate failed the entire offboard step and re-failed identically
+                # on every retry, so the seat was never freed and the case could never go green.
+                # Report it and carry on; a real removal failure still throws.
+                try {
+                    Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses $direct } | Out-Null
+                    # Name the freed SKUs (from the pre-removal license detail) so the reclamation shows up in
+                    # the case notes + the ServiceNow work-note ("freed 2 license(s): SPE_E5, ENTERPRISEPACK").
+                    $freed = @($direct | ForEach-Object { if ($skuName.ContainsKey([string]$_)) { $skuName[[string]$_] } else { [string]$_ } })
+                    $actions.Add("freed $($direct.Count) directly-assigned license(s): $($freed -join ', ')")
+                }
+                catch {
+                    if ([string]$_.Exception.Message -match 'inherited from a group') {
+                        $actions.Add("WARN license NOT removed — Microsoft rejected the removal because the license is inherited from a GROUP membership, and this user's assignment states couldn't be read to tell direct from group-assigned. A group-assigned license drops when the user leaves that group (on-prem-synced licensing groups are removed by the AD step). Re-run once Graph reports assignment states; if the license is group-assigned, no action is needed here.")
+                    }
+                    else { throw }
+                }
             }
             $seen = @{}
             foreach ($s in $byGroup) {
@@ -1432,7 +1469,10 @@ function Invoke-CtgM365Offboarding {
                 $sName = if ($skuName.ContainsKey([string]$s.SkuId)) { $skuName[[string]$s.SkuId] } else { [string]$s.SkuId }
                 $actions.Add("license '$sName' is GROUP-ASSIGNED by '$gName' — it drops when the user leaves that group (on-prem-synced licensing groups are removed by the AD step), not via direct removal")
             }
-            if (-not $direct.Count -and -not $byGroup.Count) { $actions.Add("no licenses to remove") }
+            # Only claim "nothing to remove" when we could actually READ that there is nothing. When the
+            # assignment-state read failed we already warned, and saying "no licenses to remove" here
+            # would contradict it — and read as a clean success on a user who may still hold a seat.
+            if (-not $direct.Count -and -not $byGroup.Count -and -not $statesUnreadable) { $actions.Add("no licenses to remove") }
         }
     }
 
