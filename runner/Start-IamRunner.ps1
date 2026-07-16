@@ -857,31 +857,108 @@ function Get-CtgTenantDomain {
     $t
 }
 
+# The app id this job's Graph/EXO work must run as — the m365-admin secret's Username.
+function Get-CtgM365AppId {
+    param($Creds)
+    $s = $Creds['m365-admin']
+    if (-not $s) { return '' }
+    try { [string]$s.Credential.UserName } catch { '' }
+}
+
+# The authoritative Directory (tenant) ID GUID from the m365-admin secret, or '' when unset.
+function Get-CtgM365TenantId {
+    param($Creds)
+    $s = $Creds['m365-admin']
+    if (-not $s -or -not $s.Fields) { return '' }
+    [string]$s.Fields['TenantId']
+}
+
+# True only when the process-wide Graph session belongs to THIS job's client.
+#
+# Connect-MgGraph holds ONE context for the WHOLE PROCESS, and the central runner serves the whole
+# fleet from one long-lived process. So a Graph session left behind by ANOTHER client's job is worse
+# than no session at all: anything read off it (notably the tenant's verified domains) describes the
+# OTHER client's directory, and pairing that with this client's app id yields AADSTS700016 "app not
+# found in the directory '<the other client>'". Identity, not liveness, is what matters here.
+function Test-CtgGraphBoundTo {
+    param([string]$AppId, [string]$TenantId)
+    if (-not $AppId) { return $false }
+    $ctx = try { Get-MgContext -ErrorAction Stop } catch { $null }
+    if (-not $ctx) { return $false }
+    if ([string]$ctx.ClientId -ne $AppId) { return $false }
+    # A TenantId on the secret is the authoritative GUID — when present it must match too, because one
+    # app registration can be shared across sibling clients (a child inherits its parent's m365-admin),
+    # so a matching ClientId alone does NOT prove the session is bound to THIS client's tenant.
+    # Only a GUID is comparable: Get-MgContext always reports the tenant as a GUID, so an operator who
+    # typed a DOMAIN into the TenantId field would never match and we'd reject our own session forever
+    # (falling back to the configured domains on every run — the JAMS path). Compare when we can,
+    # rely on the app id when we can't. String -ne is case-insensitive, so GUID casing is a non-issue.
+    if ($TenantId -match '^[0-9a-fA-F-]{36}$' -and [string]$ctx.TenantId -ne $TenantId) { return $false }
+    $true
+}
+
+# Bind Graph to THIS job's client, unless it already is. Best-effort: returns $false (rather than
+# throwing) when the client's m365-admin can't drive Graph — e.g. a cert-only app with no client
+# secret — so callers fall back to configured domains exactly as they did before.
+function Connect-CtgGraphForJob {
+    param($Job, $Creds)
+    $s = $Creds['m365-admin']
+    if (-not $s) { return $false }
+    if (Test-CtgGraphBoundTo -AppId (Get-CtgM365AppId $Creds) -TenantId (Get-CtgM365TenantId $Creds)) { return $true }
+    try {
+        # Out-Null, not bare: a PowerShell function returns EVERY uncaptured value, so anything the
+        # connect emits would ride out alongside $true and make the result an array.
+        Connect-CtgM365 -Credential $s.Credential -TenantId (Get-CtgTenantDomain $Job $Creds) | Out-Null
+        # We just REBOUND the one process-wide Graph session, displacing whoever held it. Every cached
+        # key that rides Graph now describes a session that no longer exists, so forget them all — or
+        # the next m365/entra job for the client we displaced sees its key intact, SKIPS Connect, and
+        # runs inside THIS client's tenant. That is the same defect $script:ConnectionGroups exists to
+        # prevent; it lives here, at the rebind, because only this call knows a rebind happened.
+        Clear-CtgConnectionSiblings -SystemKey 'm365' -IncludeSelf
+        $true
+    }
+    catch { $false }
+}
+
 function Get-CtgExoOrganization {
     # Exchange Online's -Organization needs a DOMAIN (e.g. dcg.co / dcg.onmicrosoft.com), NOT the
     # tenant GUID that Graph -TenantId uses ("Organization cannot be a Guid").
     #
-    # CRITICAL: EXO must operate on the SAME tenant the user was just created in via Graph. Graph
-    # connects with the authoritative TenantId (a GUID); deriving EXO's domain independently from the
-    # client's primaryDomain can resolve to a DIFFERENT directory (e.g. JAMS' primaryDomain newcoinc.com
-    # resolved to a separate "Newco, Inc." tenant while Graph used the real app tenant) → AADSTS700016
-    # "app not found in directory". So PREFER the connected Graph tenant's own default verified domain;
-    # only fall back to client/secret/UPN domains when no Graph session is established.
+    # CRITICAL: EXO must operate on the tenant this client's OWN credentials belong to. Deriving the
+    # domain from the client's primaryDomain can resolve to a DIFFERENT directory (e.g. JAMS'
+    # primaryDomain newcoinc.com resolved to a separate "Newco, Inc." tenant while Graph used the real
+    # app tenant) → AADSTS700016 "app not found in directory". primaryDomain is the SN `website` value
+    # and explicitly informational (schema.prisma) — it is a hint, never an authority. The only
+    # authoritative answer to "what domain is this tenant?" is the tenant itself, so PREFER its own
+    # default verified domain read over Graph.
+    #
+    # EQUALLY CRITICAL: only trust a Graph session that is THIS client's (Test-CtgGraphBoundTo). The
+    # session is process-wide and the central runner is fleet-wide, so an m365/entra job or conn-test
+    # for another client leaves Graph bound to THEIR tenant. Inheriting it silently sends this client's
+    # app id to a foreign directory — UM0029840: Olympus Cosmetic's conn tests bound Graph, then
+    # Easterseals' exchange step (which since the offboard reorder runs BEFORE m365/entra, so it has no
+    # session of its own) read olympuscosmetic.com off it. Callers that need Graph bind it themselves
+    # via Connect-CtgGraphForJob; here we only ever READ a session already proven to be ours.
     param($Job, $Creds)
-    try {
-        $org = @(Get-MgOrganization -ErrorAction Stop)[0]
-        if ($org -and $org.VerifiedDomains) {
-            $def = @($org.VerifiedDomains | Where-Object { $_.IsDefault } | ForEach-Object { [string]$_.Name } | Where-Object { $_ })
-            if ($def.Count) { return $def[0] }
-            $any = @($org.VerifiedDomains | ForEach-Object { [string]$_.Name } | Where-Object { $_ -and $_ -match '\.' })
-            if ($any.Count) { return $any[0] }
+    if (Test-CtgGraphBoundTo -AppId (Get-CtgM365AppId $Creds) -TenantId (Get-CtgM365TenantId $Creds)) {
+        try {
+            $org = @(Get-MgOrganization -ErrorAction Stop)[0]
+            if ($org -and $org.VerifiedDomains) {
+                $def = @($org.VerifiedDomains | Where-Object { $_.IsDefault } | ForEach-Object { [string]$_.Name } | Where-Object { $_ })
+                if ($def.Count) { return $def[0] }
+                $any = @($org.VerifiedDomains | ForEach-Object { [string]$_.Name } | Where-Object { $_ -and $_ -match '\.' })
+                if ($any.Count) { return $any[0] }
+            }
         }
+        catch { } # Graph is ours but unreadable (throttle/perms) — fall back to configured domains
     }
-    catch { } # no Graph session (e.g. a standalone exchange test) — fall back to configured domains
+    # Fallbacks, most-explicit first. An operator-set Domain field on the secret outranks primaryDomain:
+    # it was typed to name THIS tenant, whereas primaryDomain is the marketing website's domain and is
+    # what sent JAMS to the wrong directory in the first place.
     $cand = [System.Collections.Generic.List[string]]::new()
-    if ($Job.client -and $Job.client.primaryDomain) { $cand.Add([string]$Job.client.primaryDomain) }
     $s = $Creds['m365-admin']
     if ($s -and $s.Fields) { foreach ($k in @('Domain', 'TenantDomain', 'Organization')) { if ($s.Fields[$k]) { $cand.Add([string]$s.Fields[$k]) } } }
+    if ($Job.client -and $Job.client.primaryDomain) { $cand.Add([string]$Job.client.primaryDomain) }
     if ($Job.payload -and $Job.payload.UserPrincipalName -and ([string]$Job.payload.UserPrincipalName) -match '@') { $cand.Add(([string]$Job.payload.UserPrincipalName -split '@')[1]) }
     foreach ($c in $cand) { $d = ([string]$c).Trim(); if ($d -and $d -notmatch '^[0-9a-fA-F-]{36}$') { return $d } }
     throw "no Exchange Online organization DOMAIN for '$($Job.client.slug)' — EXO needs a domain (e.g. <tenant>.onmicrosoft.com), not the tenant GUID. Set the client's primary domain, or add a Domain field to the m365-admin secret."
@@ -956,6 +1033,10 @@ function Invoke-CtgM365ExoFinish {
     }
     try {
         $what = @($(if ($names.Count) { 'distribution lists' }), $(if ($mirror) { 'mirror (DLs + shared mailboxes)' }) | Where-Object { $_ }) -join ' + '
+        # Graph is already this client's here (the m365 lane's own Connect bound it just upstream), so
+        # this is normally a no-op — but bind explicitly rather than trusting a caller two lanes away.
+        # Depending on distant ordering for tenant correctness is exactly what produced UM0029840.
+        [void](Connect-CtgGraphForJob $Job $Creds)
         $exoOrg = Get-CtgExoOrganization $Job $Creds
         Set-CtgPhase $Job.id "finishing over Exchange Online (app-only) for $exoOrg`: $what"
         Connect-CtgExchange -AppId $s.Credential.UserName -Organization $exoOrg @certArgs
@@ -972,7 +1053,12 @@ function Invoke-CtgM365ExoFinish {
         $org = try { [string](Get-CtgExoOrganization $Job $Creds) } catch { '' }
         $hint =
             if ($emsg -match 'AADSTS700016|was not found in the directory|AADSTS90002|AADSTS70011|Invalid scope') {
-                "the EXO app '$appId' isn't registered/consented in tenant '$org'. Fix the m365-admin secret's app id so it's an app that EXISTS in THIS client's tenant (not another client's), and admin-consent it there (a multi-tenant app must be consented in the tenant to create its service principal). Confirm '$org' is the correct tenant domain."
+                # TWO different faults produce this, and blaming the app id is wrong half the time:
+                # the app may be absent from the right tenant, OR the app is fine and we resolved the
+                # WRONG tenant (a domain naming another client's directory). Name the client and the
+                # tenant we used so whoever reads this — operator or fix-lane model — can tell which,
+                # instead of being steered straight at the secret's app id.
+                "the EXO app '$appId' (client '$($Job.client.slug)') isn't registered/consented in the tenant we connected to, '$org'. EITHER (a) '$org' is the WRONG TENANT for this client — if that domain belongs to a DIFFERENT client, the app id is fine and the organization resolved wrong: check the m365-admin secret's TenantId/Domain fields and the client's primary domain; OR (b) '$org' is correct and the app simply isn't there — use an app that EXISTS in this tenant and admin-consent it (a multi-tenant app must be consented in the tenant to create its service principal)."
             }
             elseif ($emsg -match 'AADSTS7000215|invalid client secret|AADSTS700027|AADSTS500011|certificate|Key was not found') {
                 "EXO app-only is CERTIFICATE auth (not a client secret): set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows) on the m365-admin secret, and upload that same cert to the app registration."
@@ -1079,6 +1165,16 @@ $DISPATCH = @{
             Set-CtgPhase $job.id "connecting to Exchange Online (app-only cert auth, app $($s.Credential.UserName))"
             $exoCert = Get-CtgExoCertArgs $s
             if ($exoCert.Count -eq 0) { throw "the m365-admin secret has no Exchange Online cert — set CertificateBase64 (a .pfx, cross-platform) or CertificateThumbprint (Windows store), and grant the app Exchange.ManageAsApp." }
+            # Bind Graph to THIS client before resolving -Organization, so the domain comes from this
+            # tenant's own verified domains rather than whatever tenant the (process-wide, fleet-shared)
+            # Graph session was last left on. On an offboard this lane runs BEFORE m365/entra, so there
+            # is no same-client session to inherit — without this the resolver would fall back to the
+            # informational primaryDomain, which is exactly what sent JAMS to the wrong directory.
+            # Best-effort: a client whose m365-admin can't drive Graph still falls back as before.
+            [void](Connect-CtgGraphForJob $job $creds)
+            # Close any session left open before opening ours: EXO sessions stack rather than replace,
+            # so without this a fleet runner accumulates them until the service refuses new ones.
+            Disconnect-CtgExchange
             Connect-CtgExchange -AppId $s.Credential.UserName -Organization (Get-CtgExoOrganization $job $creds) @exoCert
             # On-prem session for BOTH lanes when the `exchange-onprem` secret is brokered: onboard
             # needs Enable-RemoteMailbox; a HYBRID offboard needs Set-RemoteMailbox -Type Shared
@@ -1104,6 +1200,10 @@ $DISPATCH = @{
                 Connect-CtgExchangeOnPrem -ConnectionUri $opUri -Credential $op.Credential
             }
         }
+        # Close the EXO session once this client's onboard/offboard is done, so the next client starts
+        # from nothing instead of inheriting a live session bound to someone else's tenant. The job
+        # loop calls this in a finally and forgets the cache key in the same breath.
+        Disconnect = { Disconnect-CtgExchange }
         # Hybrid onboard, one pass across the sync boundary: enable remote mailbox -> trigger an Entra
         # Connect delta sync (so the mailbox provisions now) -> wait for it -> regional/calendar. The
         # sync trigger reuses the on-prem (ad-dc) credential and auto-discovers the Entra Connect host.
@@ -1376,6 +1476,13 @@ $script:ConnectedTenant = @{}
 #   graph  — m365, its 'entra' alias, m365-password-reset, tap and notify all Connect-CtgM365 with
 #            the m365-admin credential (Connect-MgGraph holds ONE process-wide context).
 #   google — google-workspace + google-password-reset share one Google session.
+# 'exchange' is deliberately NOT a member, even though it now binds Graph too (to read its tenant's
+# authoritative verified domain — see Get-CtgExoOrganization). Membership is SYMMETRIC, and only one
+# direction is true here: exchange rebinding Graph must invalidate the riders (Connect-CtgGraphForJob
+# does that itself, at the point it rebinds), but the reverse does NOT hold — exchange's cache key
+# already encodes its client, so a hit means its EXO session is that client's and is still valid, and
+# it re-binds Graph on any miss anyway. Making it a member would let every m365/entra job on this
+# fleet-wide runner evict exchange's key, forcing a Connect-ExchangeOnline that isn't needed.
 # So the A->B->A interleave above reappears ACROSS keys: an m365 job for client A connects Graph to A;
 # an entra job for client B rebinds that same Graph session to B; a second m365 job for A then finds
 # ConnectedTenant['m365'] still == A's key, SKIPS Connect, and provisions/offboards A's user inside
@@ -1402,6 +1509,44 @@ function Clear-CtgConnectionSiblings {
     if (-not $script:ConnectedTenant) { return }
     foreach ($sibling in (Get-CtgConnectionSiblings $SystemKey)) { [void]$script:ConnectedTenant.Remove($sibling) }
     if ($IncludeSelf) { [void]$script:ConnectedTenant.Remove($SystemKey) }
+}
+
+# Every cloud session this runner holds is PROCESS-WIDE (Connect-MgGraph keeps exactly one context;
+# Exchange Online stacks sessions), and this one process serves the whole fleet. Tear them all down.
+function Disconnect-CtgAllCloud {
+    try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }
+    # The Exchange module only loads on hosts that have ExchangeOnlineManagement — absent on an
+    # AD-only client agent, where there is no EXO session to close anyway.
+    if (Get-Command Disconnect-CtgExchange -ErrorAction SilentlyContinue) { Disconnect-CtgExchange }
+    # The cache describes sessions that no longer exist. Leaving a key behind would make the next job
+    # skip Connect and run unconnected — worse than the leak we just closed.
+    if ($script:ConnectedTenant) { $script:ConnectedTenant.Clear() }
+}
+
+$script:CurrentClientKey = $null
+
+# A HARD session boundary between clients: nothing bound for client A may still be live when client
+# B's work starts. Called before every job and every connection test, across both loops, so the
+# boundary holds no matter which kind of work crosses it.
+#
+# This is the primary defence for UM0029840, and it is deliberately dumber than the per-lane checks
+# it backs up: those depend on a lane NOTICING it holds someone else's session, and the whole bug was
+# a lane that didn't notice (the exchange lane read its tenant off Olympus Cosmetic's Graph session
+# and never suspected a thing). Disconnecting unconditionally can't fail to notice. The identity
+# guard (Test-CtgGraphBoundTo) stays as the second layer, for anything bound WITHIN a client's run.
+#
+# On CHANGE, not per job: within one client's own jobs there is nothing to leak FROM, and Exchange
+# reconnects cost seconds each — so a per-job teardown would buy no safety and slow every case.
+function Reset-CtgCloudSessionsOnClientChange {
+    param($Job)
+    $key = if ($Job.client -and $Job.client.slug) { [string]$Job.client.slug } else { '(no client)' }
+    if ($script:CurrentClientKey -eq $key) { return $false }
+    if ($script:CurrentClientKey) {  # not the first job of the process — someone else's sessions are live
+        Write-CtgLog -Level INFO -Message "client boundary $($script:CurrentClientKey) -> ${key}: disconnecting all cloud sessions so nothing is inherited"
+        Disconnect-CtgAllCloud
+    }
+    $script:CurrentClientKey = $key
+    $true
 }
 
 # A short, non-reversible fingerprint of every brokered secret's fields for this job. Used ONLY as
@@ -2363,6 +2508,12 @@ function Invoke-CtgConnectionTests {
         # this one system by hand — never on a sweep, which must not fire a real portal login per client.
         $job = [pscustomobject]@{ id = ''; systemKey = $t.systemKey; action = 'onboard'; config = $t.config; client = [pscustomobject]@{ slug = $t.clientSlug; primaryDomain = $t.primaryDomain }; connTestId = $t.id; deep = [bool]$t.deep }
 
+        # Same client boundary the job loop enforces — the two loops share this process's sessions and
+        # the same $script:CurrentClientKey, so the boundary holds whichever kind of work crosses it.
+        # This is not hypothetical: in UM0029840 it was Olympus Cosmetic's CONN TESTS that bound Graph,
+        # and an Easterseals JOB twelve minutes later that inherited it.
+        [void](Reset-CtgCloudSessionsOnClientChange $job)
+
         try {
             $names = @(@($t.secretNames) | Where-Object { $_ })
             foreach ($sn in $names) { $creds[$sn] = Get-ConnTestCredential $t.id $sn }
@@ -2633,6 +2784,11 @@ while ($true) {
                 Set-CtgPhase $job.id "starting $($job.action) $($job.systemKey)"
 
                 # Broker every secret the job names (least-privilege, one call each), keyed by name.
+                # Before anything connects: if the last work this process did was for a DIFFERENT
+                # client, drop every session it left bound. Nothing downstream then has to be clever
+                # about whose tenant it is talking to.
+                [void](Reset-CtgCloudSessionsOnClientChange $job)
+
                 Set-CtgPhase $job.id 'brokering credentials'
                 foreach ($sn in @($job.secretNames)) { if ($sn) { $creds[$sn] = Get-JobCredential $job.id $sn } }
 
@@ -2834,7 +2990,26 @@ while ($true) {
                 Write-CtgLog -Level ERROR -Message "job $($job.id) [$($job.systemKey)] $($job.action) FAILED: $err"
                 $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
-            finally { $global:CtgProgressJobId = $null }  # don't let a stray post target a finished job
+            finally {
+                $global:CtgProgressJobId = $null  # don't let a stray post target a finished job
+                # Leave nothing bound behind. These sessions are process-wide and this runner serves the
+                # whole fleet, so a session this job leaves open is one the NEXT client's job can
+                # silently inherit — which is how an Easterseals offboard came to authenticate against
+                # Olympus Cosmetic's directory (UM0029840, AADSTS700016). Tearing down at the END of a
+                # job is what makes "each client runs separately" true rather than merely usual.
+                #
+                # The connect cache MUST forget the key in the same breath (-IncludeSelf): a cached
+                # "still connected" pointing at a session we just closed would make the next job skip
+                # Connect entirely and run unconnected — the very poisoning the cache gate warns about.
+                #
+                # Runs for a FAILED job too (that's the point of a finally): a job that died mid-flight
+                # is exactly the one most likely to leave a session bound to the wrong tenant.
+                if ($handler -and $handler.ContainsKey('Disconnect')) {
+                    try { & $handler.Disconnect }
+                    catch { Write-CtgLog -Level WARN -Message "job $($job.id) [$($job.systemKey)]: disconnect failed — $($_.Exception.Message)" }
+                    Clear-CtgConnectionSiblings -SystemKey $job.systemKey -IncludeSelf
+                }
+            }
         }
 
         # Separate, isolated lane: operator-requested connection/permission tests (cloud here on the

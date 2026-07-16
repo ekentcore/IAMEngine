@@ -211,6 +211,25 @@ function Connect-CtgExchange {
     Write-Verbose "Connected to Exchange Online for $Organization."
 }
 
+function Disconnect-CtgExchange {
+    # Close this process's Exchange Online session.
+    #
+    # Connect-ExchangeOnline does NOT replace an existing session — sessions STACK, and the service
+    # caps how many a principal may hold ("you've exceeded the maximum number of connections"). A
+    # short-lived script gets away with never disconnecting; the central runner is a long-lived
+    # process serving ~200 orgs, so it must close what it opens or it eventually cannot open any.
+    #
+    # It also leaves nothing for the NEXT client to inherit, which is the same isolation rule that
+    # AADSTS700016 (UM0029840) taught us the hard way about the Graph session.
+    #
+    # Never throws: this runs in a job's finally, where a disconnect failure must not overwrite the
+    # job's real outcome (or mask a real error with a teardown one).
+    [CmdletBinding()]
+    param()
+    try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Stop | Out-Null }
+    catch { Write-Verbose "Disconnect-ExchangeOnline: $($_.Exception.Message)" }
+}
+
 # On-prem Exchange management session (hybrid only) — the *RemoteMailbox cmdlets (Enable/Get/Set-
 # RemoteMailbox) live ON-PREM, not in EXO, so the hybrid enable step needs a remote PowerShell
 # session to the client's Exchange server over Kerberos. We import ONLY *RemoteMailbox so the EXO

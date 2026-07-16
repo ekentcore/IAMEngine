@@ -61,8 +61,13 @@ export async function loadRunsPage(searchParams: RunsSearchParams) {
     fingerprint: r.fingerprint,
     // error is already messages[0] for a failed step (jobOutcome pushes it first), so append it
     // only when it isn't already shown — otherwise the copy duplicates it.
+    // The CLIENT belongs on the first line: this is the whole context the fix lane gets, and a
+    // vendor error naming a directory/tenant/domain is only diagnosable against the client it was
+    // supposed to be for. Without it, UM0029840 ("app not found in the directory 'Olympus Cosmetic'"
+    // — on an Easterseals case) reads as a plain consent gap, and the cross-tenant leak that WAS the
+    // bug is invisible to whoever reads the line next, human or model.
     copyText: [
-      `${r.systemKey} (${r.caseNumber})`,
+      `${r.systemKey} (${r.caseNumber}) — client: ${r.clientName}${r.action ? `, ${r.action}` : ""}`,
       ...r.messages,
       ...(r.error && !r.messages.includes(r.error) ? [r.error] : []),
       // machine-usable line for scripted remediation
