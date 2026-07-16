@@ -69,15 +69,54 @@ test("summarizeRights: verified / missing / unverified / unknown", () => {
   assert.deepEqual(summarizeRights([]), { state: "unknown" });
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: true, detail: "" }, { op: "b", ok: true, detail: "" }]),
-    { state: "verified", total: 2 }
+    { state: "verified", total: 2, optionalMissing: 0 }
   );
   // any definite miss wins over unverified
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: false, detail: "" }, { op: "b", ok: null, detail: "" }]),
-    { state: "missing", missing: 1, total: 2 }
+    { state: "missing", missing: 1, total: 2, optionalMissing: 0 }
   );
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: true, detail: "" }, { op: "b", ok: null, detail: "" }]),
-    { state: "unverified", unverified: 1, total: 2 }
+    { state: "unverified", unverified: 1, total: 2, optionalMissing: 0 }
   );
+});
+
+test("summarizeRights: a missing OPTIONAL op is noted, never a failure", () => {
+  // all required present + one optional missing -> still verified, with an optionalMissing note.
+  assert.deepEqual(
+    summarizeRights([
+      { op: "create users", ok: true, detail: "" },
+      { op: "remove MFA", ok: false, detail: "", optional: true },
+    ]),
+    { state: "verified", total: 1, optionalMissing: 1 }
+  );
+  // a granted optional doesn't inflate the required total, and isn't counted as missing.
+  assert.deepEqual(
+    summarizeRights([
+      { op: "create users", ok: true, detail: "" },
+      { op: "remove MFA", ok: true, detail: "", optional: true },
+    ]),
+    { state: "verified", total: 1, optionalMissing: 0 }
+  );
+  // a real required miss still wins, and the optional miss is reported alongside it.
+  assert.deepEqual(
+    summarizeRights([
+      { op: "create users", ok: false, detail: "" },
+      { op: "remove MFA", ok: false, detail: "", optional: true },
+    ]),
+    { state: "missing", missing: 1, total: 1, optionalMissing: 1 }
+  );
+});
+
+test("parseRights: carries the optional flag through, only when true", () => {
+  const rows = parseRights([
+    { op: "required", ok: true, detail: "" },
+    { op: "opt", ok: false, detail: "", optional: true },
+    { op: "not-opt", ok: true, detail: "", optional: false },
+  ]);
+  assert.ok(rows);
+  assert.equal(rows[0].optional, undefined);
+  assert.equal(rows[1].optional, true);
+  assert.equal(rows[2].optional, undefined);
 });

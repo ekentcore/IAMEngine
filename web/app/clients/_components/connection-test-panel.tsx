@@ -45,13 +45,15 @@ function apiBadge(t: Test): { text: string; color: string } {
   if (t.status === "running") return { text: "testing…", color: "#92400e" };
   return { text: "queued", color: "var(--muted)" };
 }
-// Stage 3 — per-operation rights, where the probe can verify them.
+// Stage 3 — per-operation rights, where the probe can verify them. A missing OPTIONAL permission is
+// appended as a muted note (e.g. "+1 optional"), never as its own failing badge.
 function rightsBadge(t: Test): { text: string; color: string } {
   const s = summarizeRights(t.rights);
-  if (s.state === "verified") return { text: `✓ ${s.total}/${s.total} ops`, color: "#15803d" };
-  if (s.state === "missing") return { text: `✗ missing ${s.missing}`, color: "#b91c1c" };
-  if (s.state === "unverified") return { text: `? ${s.unverified} unverified`, color: "#92400e" };
-  return { text: "—", color: "var(--muted)" };
+  if (s.state === "unknown") return { text: "—", color: "var(--muted)" };
+  const opt = s.optionalMissing > 0 ? ` +${s.optionalMissing} optional` : "";
+  if (s.state === "verified") return { text: `✓ ${s.total}/${s.total} ops${opt}`, color: "#15803d" };
+  if (s.state === "missing") return { text: `✗ missing ${s.missing}${opt}`, color: "#b91c1c" };
+  return { text: `? ${s.unverified} unverified${opt}`, color: "#92400e" };
 }
 
 export function ConnectionTestPanel({ slug, systemNames }: { slug: string; systemNames: Record<string, string> }) {
@@ -179,17 +181,22 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
                       <td colSpan={8} style={{ background: "var(--panel, transparent)" }}>
                         <table style={{ margin: "0.3rem 0 0.3rem 1rem", width: "auto" }}>
                           <tbody>
-                            {(t.rights ?? []).map((r) => (
-                              <tr key={r.op}>
-                                <td style={{ paddingRight: "0.8rem" }}>
-                                  <span style={{ color: r.ok === true ? "#15803d" : r.ok === false ? "#b91c1c" : "#92400e" }}>
-                                    {r.ok === true ? "✓" : r.ok === false ? "✗" : "?"}
-                                  </span>{" "}
-                                  {r.op}
-                                </td>
-                                <td className="muted" style={{ whiteSpace: "normal" }}>{r.detail}</td>
-                              </tr>
-                            ))}
+                            {(t.rights ?? []).map((r) => {
+                              // A missing optional permission is amber "○" (a note), not red "✗" — it
+                              // does not fail the test, so it must not read like a failure.
+                              const optMiss = r.optional && r.ok === false;
+                              const mark = r.ok === true ? "✓" : optMiss ? "○" : r.ok === false ? "✗" : "?";
+                              const color = r.ok === true ? "#15803d" : optMiss ? "#92400e" : r.ok === false ? "#b91c1c" : "#92400e";
+                              return (
+                                <tr key={r.op}>
+                                  <td style={{ paddingRight: "0.8rem" }}>
+                                    <span style={{ color }}>{mark}</span> {r.op}
+                                    {r.optional && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>(optional)</span>}
+                                  </td>
+                                  <td className="muted" style={{ whiteSpace: "normal" }}>{r.detail}</td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </td>

@@ -1932,6 +1932,16 @@ $script:GRAPH_REQUIRED_CAPS = @(
     @{ need = 'add users to groups';                      anyOf = @('Group.ReadWrite.All', 'GroupMember.ReadWrite.All', 'Directory.ReadWrite.All') }
     @{ need = 'read licenses / groups (SKUs)';            anyOf = @('Organization.Read.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'User.Read.All', 'Group.Read.All') }
 )
+# OPTIONAL Graph permissions: reported alongside the required ones so a gap is VISIBLE, but a miss
+# NEVER fails the test (they're not in Get-CtgGraphScopeGaps, which drives the throw). Each degrades
+# gracefully — the feature that needs it warns and carries on. Matches the client-facing consent list
+# in web/app/help/cloud-auth (Domain.Read.All + UserAuthenticationMethod.ReadWrite.All).
+$script:GRAPH_OPTIONAL_CAPS = @(
+    @{ need = 'remove MFA methods + revoke sessions on offboard'; anyOf = @('UserAuthenticationMethod.ReadWrite.All')
+       why  = "without it a leaver's registered second factors (phone / Authenticator / FIDO2) stay on the account and go live again the moment it is re-enabled; offboard warns and continues" }
+    @{ need = "read the tenant's verified email domains (multi-domain clients)"; anyOf = @('Domain.Read.All')
+       why  = 'needed only when a client has more than one verified email domain, to pick the right one; single-domain clients are unaffected' }
+)
 function Get-CtgGraphScopeGaps {
     param([string[]]$Granted)
     $gaps = @()
@@ -1953,6 +1963,14 @@ function Get-CtgGraphRightsRows {
         $rows += if ($match) { @{ op = [string]$r.need; ok = $true; detail = "granted via $match" } }
                  else        { @{ op = [string]$r.need; ok = $false; detail = "grant one of: $($r.anyOf -join ', ')" } }
     }
+    # Optional caps carry optional=$true so the app shows a miss as a note, not a red failure — and
+    # they're absent from Get-CtgGraphScopeGaps, so a missing one can never fail the test.
+    foreach ($r in $script:GRAPH_OPTIONAL_CAPS) {
+        $match = $null
+        foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $match = $s; break } }
+        $rows += if ($match) { @{ op = [string]$r.need; ok = $true;  optional = $true; detail = "granted via $match" } }
+                 else        { @{ op = [string]$r.need; ok = $false; optional = $true; detail = "optional — grant $($r.anyOf -join ' or ') — $($r.why)" } }
+    }
     $rows
 }
 
@@ -1964,36 +1982,57 @@ function Get-CtgGraphRightsRows {
 #   @{ ok=$true;  roles=@('User.ReadWrite.All', …) }   when it could read them
 #   @{ ok=$false; reason='…' }                          when it couldn't (usually the app lacks
 #                                                        Application.Read.All / Directory.Read.All)
+# A read-only Graph GET that survives transient throttling. When several M365 conn-tests run from the
+# same app registration back-to-back (entra + m365 + exchange fire together), Graph 429s the later
+# ones — which is precisely how the SAME credential could pass 'entra' and fail 'm365' seconds apart.
+# Read-only, so retrying is always safe. Rethrows the last error once the retries are exhausted.
+function Invoke-CtgGraphReadRetry {
+    param([string]$Uri, [int]$MaxAttempts = 4)
+    $attempt = 0
+    while ($true) {
+        try { return Invoke-MgGraphRequest -Method GET -ErrorAction Stop -Uri $Uri }
+        catch {
+            $attempt++
+            $msg = [string]$_.Exception.Message
+            $transient = $msg -match '(?i)\b429\b|throttl|too many request|tim(e|ed).?out|temporarily|\b50[0234]\b|gateway|unavailable|cancel(l)?ed'
+            if (-not $transient -or $attempt -ge $MaxAttempts) { throw }
+            Start-Sleep -Seconds ([math]::Min(8, [math]::Pow(2, $attempt)))
+        }
+    }
+}
 function Get-CtgGrantedGraphAppRoles {
     $ctx = Get-MgContext
     if (-not $ctx -or -not $ctx.ClientId) { return @{ ok = $false; reason = 'no Graph context (not connected app-only)' } }
     $appId = [string]$ctx.ClientId
     try {
-        $resp = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
-            -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$appId')/appRoleAssignments?`$top=200"
+        $resp = Invoke-CtgGraphReadRetry "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$appId')/appRoleAssignments?`$top=200"
     }
     catch {
         return @{ ok = $false; reason = "couldn't read this app's granted application permissions — the app registration likely lacks Application.Read.All or Directory.Read.All (grant one so this check can verify the rest), or verify manually in Entra > App registrations > API permissions. ($([string]$_.Exception.Message))" }
     }
     $assignments = @($resp.value)
-    if ($assignments.Count -eq 0) { return @{ ok = $true; roles = @() } } # consented to NOTHING
-    $rolesByResource = @{}  # resourceSpId -> @{ appRoleId -> value }
+    if ($assignments.Count -eq 0) { return @{ ok = $true; roles = @(); complete = $true; unresolved = 0 } } # consented to NOTHING
+    $rolesByResource = @{}  # resourceSpId -> @{ appRoleId -> value }  OR $null when that SP's read failed
     $names = [System.Collections.Generic.List[string]]::new()
+    $unresolved = 0         # assignments whose role NAME we couldn't read — a partial view, NOT proof of absence
     foreach ($a in $assignments) {
         $rid = [string]$a.resourceId
         if (-not $rolesByResource.ContainsKey($rid)) {
-            $map = @{}
+            $map = $null
             try {
-                $r = Invoke-MgGraphRequest -Method GET -ErrorAction Stop -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/${rid}?`$select=appRoles"
+                $r = Invoke-CtgGraphReadRetry "https://graph.microsoft.com/v1.0/servicePrincipals/${rid}?`$select=appRoles"
+                $map = @{}
                 foreach ($ar in @($r.appRoles)) { $map[[string]$ar.id] = [string]$ar.value }
             }
-            catch { }
+            catch { $map = $null }  # $null (not empty) = couldn't resolve this SP's roles; must NOT be read as "granted nothing"
             $rolesByResource[$rid] = $map
         }
-        $v = $rolesByResource[$rid][[string]$a.appRoleId]
-        if ($v) { $names.Add($v) }
+        $map = $rolesByResource[$rid]
+        if ($null -eq $map) { $unresolved++; continue }  # the old bug: this used to silently drop the role
+        $v = $map[[string]$a.appRoleId]
+        if ($v) { $names.Add($v) } else { $unresolved++ }
     }
-    return @{ ok = $true; roles = @($names | Sort-Object -Unique) }
+    return @{ ok = $true; roles = @($names | Sort-Object -Unique); complete = ($unresolved -eq 0); unresolved = $unresolved }
 }
 
 # Connection-test probes: after Connect (auth), one cheap authorized READ proves real access — not
@@ -2025,8 +2064,20 @@ $CONNTEST_PROBE = @{
         $script:ConnTestRights = @(Get-CtgGraphRightsRows $granted)
         # Warn before the app's own secret/cert expires (best-effort; needs Application.Read.All).
         try { $exp = Get-CtgAppCredentialExpiry; if ($exp -and $exp.expiresAt) { $script:ConnTestCredExpiresAt = [string]$exp.expiresAt } } catch { }
-        $gaps = Get-CtgGraphScopeGaps $granted
+        $gaps = Get-CtgGraphScopeGaps $granted   # REQUIRED-only — optional caps never appear here
         if ($gaps.Count) {
+            # A PARTIAL read (Graph throttled some appRole lookups) can make a granted permission look
+            # missing. Never fail on a permission we couldn't fully read: downgrade the apparent gaps
+            # to "unverifiable" and pass the test with a re-test nudge, instead of a false red.
+            if ($real.ok -and -not $real.complete) {
+                foreach ($row in $script:ConnTestRights) {
+                    if ($row.ok -eq $false -and -not $row.optional) {
+                        $row.ok = $null
+                        $row.detail = "couldn't verify — the granted-permission read was incomplete (Graph throttled it; $($real.unresolved) assignment(s) unresolved). Re-test; this is NOT a confirmed gap."
+                    }
+                }
+                return "$base · connected, but couldn't fully read the app's granted Graph permissions (throttled — $($real.unresolved) unresolved). Re-test to verify. Partial: $(@($granted) -join ', ')"
+            }
             throw "$base · consented ${how}: [$(@($granted) -join ', ')] — but MISSING: $($gaps -join ' || '). Add these as APPLICATION permissions on the app registration and grant admin consent IN THIS TENANT, then re-test."
         }
         "$base · all required Graph permissions present — ${how}: $(@($granted) -join ', ')"

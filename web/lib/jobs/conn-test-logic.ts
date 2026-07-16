@@ -38,8 +38,10 @@ export function testableSystems(
 }
 
 // Per-operation rights results a runner probe may report: ok=true (verified), ok=false (the
-// credential lacks it), ok=null ("cannot verify automatically — check manually").
-export type RightsRow = { op: string; ok: boolean | null; detail: string };
+// credential lacks it), ok=null ("cannot verify automatically — check manually"). `optional` marks a
+// nice-to-have permission (e.g. UserAuthenticationMethod.ReadWrite.All for offboard MFA removal): a
+// miss is NOTED but never fails the test or turns the rights badge red.
+export type RightsRow = { op: string; ok: boolean | null; detail: string; optional?: boolean };
 
 const MAX_RIGHTS_OPS = 20;
 const MAX_RIGHTS_DETAIL = 300;
@@ -56,24 +58,33 @@ export function parseRights(raw: unknown): RightsRow[] | null {
     if (!op) continue;
     const ok = typeof o.ok === "boolean" ? o.ok : null;
     const detail = typeof o.detail === "string" ? o.detail.slice(0, MAX_RIGHTS_DETAIL) : "";
-    rows.push({ op, ok, detail });
+    const row: RightsRow = { op, ok, detail };
+    if (o.optional === true) row.optional = true;
+    rows.push(row);
   }
   return rows.length > 0 ? rows : null;
 }
 
 // Roll a rights array up to the badge the UI shows: verified (all ops ok), missing (any op the
 // credential definitely lacks), unverified (some ops couldn't be checked), or unknown (no data).
+// The state is driven by the REQUIRED ops only — an optional op that's missing is surfaced as
+// `optionalMissing` (a note beside the badge), never as a "missing" that reads like a failure.
 export type RightsSummary =
   | { state: "unknown" }
-  | { state: "verified"; total: number }
-  | { state: "missing"; missing: number; total: number }
-  | { state: "unverified"; unverified: number; total: number };
+  | { state: "verified"; total: number; optionalMissing: number }
+  | { state: "missing"; missing: number; total: number; optionalMissing: number }
+  | { state: "unverified"; unverified: number; total: number; optionalMissing: number };
 
 export function summarizeRights(rights: RightsRow[] | null | undefined): RightsSummary {
   if (!rights || rights.length === 0) return { state: "unknown" };
-  const missing = rights.filter((r) => r.ok === false).length;
-  if (missing > 0) return { state: "missing", missing, total: rights.length };
-  const unverified = rights.filter((r) => r.ok === null).length;
-  if (unverified > 0) return { state: "unverified", unverified, total: rights.length };
-  return { state: "verified", total: rights.length };
+  const optionalMissing = rights.filter((r) => r.optional && r.ok === false).length;
+  // Required ops drive the badge. If a probe somehow sent only optional rows, fall back to all rows
+  // so the badge still reflects something rather than reporting an empty "verified".
+  const required = rights.filter((r) => !r.optional);
+  const base = required.length > 0 ? required : rights;
+  const missing = base.filter((r) => r.ok === false).length;
+  if (missing > 0) return { state: "missing", missing, total: base.length, optionalMissing };
+  const unverified = base.filter((r) => r.ok === null).length;
+  if (unverified > 0) return { state: "unverified", unverified, total: base.length, optionalMissing };
+  return { state: "verified", total: base.length, optionalMissing };
 }
