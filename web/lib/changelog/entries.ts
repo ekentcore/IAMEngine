@@ -5,10 +5,14 @@
 // tells them apart. Bullets are sent to chat verbatim as plain text: one line each, no markdown.
 export type ChangelogEntry = {
   id: string; // stable slug — the send API references entries by id
-  date: string; // ISO date (YYYY-MM-DD) the work shipped; append "~" nowhere — use `approx` instead
-  // Local wall-clock ship time, HH:MM on a 15-minute boundary (:00/:15/:30/:45) — round DOWN to the
-  // quarter it landed in, so the log never claims a time that hasn't happened yet. Required on
-  // anything shipped from 2026-07-13 on; the older entries below that line predate the field.
+  date: string; // ISO date (YYYY-MM-DD, EASTERN) the work shipped; append "~" nowhere — use `approx` instead
+  // EASTERN (America/New_York) wall-clock ship time, HH:MM on a 15-minute boundary (:00/:15/:30/:45)
+  // — round DOWN to the quarter it landed in, so the log never claims a time that hasn't happened yet.
+  // The team and the app read in Eastern; the string is rendered verbatim (never zone-shifted), so it
+  // MUST be Eastern. The build session clock is UTC — do NOT stamp session time. Get the value with
+  //   `TZ=America/New_York date +%H:%M`  (or read the PR's merge time and convert to Eastern).
+  // Both `date` and `time` are Eastern. Required on anything shipped from 2026-07-13 on; the older
+  // entries below that line predate the field.
   time?: string;
   approx?: boolean; // true when the date is a best-effort reconstruction
   title: string;
@@ -44,7 +48,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "adhoc-steps-above-case-resolution",
     date: "2026-07-15",
-    time: "22:00",
+    time: "22:15",
     title: "On-demand steps (force Spanning sync, password reset, hard match) now insert above Case resolution, which stays the last step",
     items: [
       "Triggering a force Spanning sync, an ad-hoc password reset, or a hard match used to append the new step at the very end — after Case resolution — so the case looked like it finished on a browser sync instead of on its resolution step",
@@ -55,7 +59,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "documents-upload-redline-progress",
     date: "2026-07-15",
-    time: "22:00",
+    time: "17:30",
     title: "Documents: upload your own edits, redline any two versions, and a clearer 'Update with AI'",
     items: [
       "'Update with AI' now shows a progress window while it runs - reading the change log, asking the model (with a live timer), parsing the reply, building the redline - instead of a button that just says 'Generating…'",
@@ -67,7 +71,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "spanning-force-sync-central-only",
     date: "2026-07-15",
-    time: "21:45",
+    time: "17:15",
     title: "Force Spanning sync is now correctly a central-runner job — the run report stops showing it as waiting on a client's on-prem agent",
     items: [
       "A pending force Spanning sync showed 'waiting for <the client's on-prem agent> to claim it' — but that agent has no browser automation and can never run it. It always ran on the central runner; only the message named the wrong agent (the client agent polls more often, so it won the 'claims it next' pick). The pending line now names the central, browser-capable runner",
@@ -76,9 +80,21 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    id: "changelog-times-eastern",
+    date: "2026-07-15",
+    time: "17:00",
+    title: "Change log times now read in Eastern - and today's entries were corrected",
+    items: [
+      "The change log had started showing ship times in UTC (a batch of today's entries read '9:30 pm' when it was mid-afternoon Eastern), because the build session's clock is UTC while the team reads in Eastern. Times are shown verbatim, so a UTC stamp displayed as-is looked hours into the future",
+      "Every 2026-07-15 entry was re-stamped to its real Eastern ship time (taken from each change's merge time) and the day was put back in true order - newest at the top. Earlier days were already in Eastern and were left as they are",
+      "The convention is now explicit in the log itself: both the date and the time are Eastern (America/New_York), rounded down to the quarter hour, so a new entry can never claim a time that has not happened yet",
+      "Display and data only - nothing about how updates are sent to the client chat channels changed",
+    ],
+  },
+  {
     id: "spanning-force-sync-fixed",
     date: "2026-07-15",
-    time: "21:30",
+    time: "16:15",
     title: "Force Spanning sync works again, and no longer piles a new warning step onto the case each time",
     items: [
       "Force Spanning sync had stopped working across every client: the Central Cloud Runner (the only agent that runs browser automation) had a half-installed Playwright, so the browser flow crashed the instant it started and reported the useless 'produced no result (Node.js v24.14.0)'. Brock Built's UM0029776 is where this surfaced",
@@ -92,7 +108,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "documents-versioned-in-app",
     date: "2026-07-15",
-    time: "21:30",
+    time: "16:00",
     title: "Documents: the IAM Engine reference docs now live in the app - versioned, downloadable, and updatable with AI",
     items: [
       "The four reference documents (client overview, setup and configuration guide, security design, and the internal reference) are now a Documents page in the app, instead of Word files passed around by hand",
@@ -106,7 +122,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "agent-url-migration",
     date: "2026-07-15",
-    time: "21:30",
+    time: "15:45",
     title: "Agents can move to a new app domain by themselves - no reinstall on each on-prem network",
     items: [
       "Set a new app URL under Settings > Agent domain migration. Prove it on one agent with the Migrate button on the Agents page, then enable it fleet-wide.",
@@ -116,9 +132,65 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    id: "ad-folder-tree-picker",
+    date: "2026-07-15",
+    time: "14:45",
+    title: "Pick any AD folder for onboarding - and the pick now actually takes effect",
+    items: [
+      "\"Refresh AD objects from DC\" used to list only OUs, so a client whose users live in the default Users container (a CN=Users folder, not an OU) had nothing to pick. PureTech's onboard (UM0029706) failed on exactly this - 'OU=Users' does not exist. Discovery now enumerates the WHOLE tree: OUs, containers (Users, Computers, Builtin, Managed Service Accounts), and the domain root",
+      "The folder tree labels containers and the domain root correctly (not just OUs), with an icon per kind so a container reads differently from an OU at a glance",
+      "You can now set the onboarding OU/folder on the Active Directory system in Edit systems - type a full DN or Browse the discovered tree. This is the value the runner actually uses (config.onboard.ou)",
+      "That closes a silent trap: an OU set under Roles & rules was overridden at run time by the system's own base OU, so edits there appeared to do nothing. Roles & rules now shows a warning when a base OU is set, pointing you to Edit systems - the one place the change takes effect",
+      "Agents need runner 1.61.0 for the fuller folder discovery",
+    ],
+  },
+  {
+    id: "agent-restart-status-visible",
+    date: "2026-07-15",
+    time: "14:30",
+    title: "The Agents page now shows a 'restart queued / restarting' status when you restart a runner",
+    items: [
+      "Clicking Restart on a runner used to give no visible feedback in the newer Agents view (v2) - the action lives in the 'Actions' menu, which closes the moment you click, so the 'Restarting...' label was hidden and it looked like nothing happened. The restart was actually queued; you just couldn't see it",
+      "A restart status line now shows on the runner's row itself, in both the classic and v2 views: 'restart queued - waiting for the runner to poll', then 'restarting - re-launching', then 'restarted - runner back online', with the operator who requested it",
+      "The row refreshes on its own while a restart is in flight (same 4-second live poll the Update flow already used), so the status advances and clears without a manual page refresh",
+    ],
+  },
+  {
+    id: "exo-pin-selfheal",
+    date: "2026-07-15",
+    time: "14:30",
+    title: "Runner self-heals the Exchange Online module pin",
+    items: [
+      "Exchange jobs no longer fail with \"does not contain a method named 'GetResponseHeader'\" on hosts that only had the broken ExchangeOnlineManagement 3.10.0 (which puretech/core2104 hit)",
+      "The runner now installs the PS7.6-safe 3.9.2 pin at startup when it is missing, instead of warning and silently falling back to the broken build (runner 1.61.0)",
+    ],
+  },
+  {
+    id: "optional-cred-empty-label",
+    date: "2026-07-15",
+    time: "13:15",
+    title: "An empty optional credential now reads '(optional)' in grey, on the client and the case",
+    items: [
+      "When a credential is optional (like ad-dc, or the Spanning portal login) and hasn't been wired, its name now shows a grey '(optional)' next to it - on both the client's credentials panel and a case's credentials - so a blank one reads as 'fine to leave unset', not as a missing credential",
+      "On the client this replaces the old always-on 'optional' pill: the hint now appears only when the credential is actually empty. Wire it and the '(optional)' marker goes away",
+      "Display only - nothing about how credentials are brokered or tested changed",
+    ],
+  },
+  {
+    id: "runner-version-startup-log",
+    date: "2026-07-15",
+    time: "11:45",
+    title: "The server now logs which runner version it serves to agents, every time it starts",
+    items: [
+      "On startup the app prints one line - e.g. 'serving v1.60.0 · build acf9ba83 · 68 files' - naming the exact runner version and build it will hand to agents. Agents self-update from whatever the app serves off its own disk, so this line is the ground truth for what your agents will update to",
+      "This makes a stale deploy obvious: if you ship a runner change but the server still logs the old version on restart, the app is running pre-pull code and agents will never see the update - pull and restart the app onto the new code first",
+      "Log only - no behaviour change, nothing new exposed in the UI or to agents",
+    ],
+  },
+  {
     id: "ad-dc-optional",
     date: "2026-07-15",
-    time: "21:15",
+    time: "10:15",
     title: "Active Directory no longer needs the ad-dc credential to run - a domain-controller agent signs in as itself",
     items: [
       "Marking the ad-dc credential 'not needed' used to break Active Directory - it forced AD to a manual step, or (with a half-cleared credential) failed the case at 'brokering credentials' before the agent ever ran. Brock Built's onboard (UM0029763) was stuck on exactly this",
@@ -130,77 +202,9 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
-    id: "build-from-systems-preview",
-    date: "2026-07-15",
-    time: "21:15",
-    title: "Build from systems now shows a preview you can edit before it saves, instead of overwriting the runbook the moment you click",
-    items: [
-      "On a client page, the 'Build from systems' button used to replace the onboard AND offboard runbook the instant you confirmed a browser popup - no chance to see what it generated first",
-      "It now opens a preview dialog with an Onboard and an Offboard tab, one section per participating system. You can reorder, rename, relink to a different system, and add or remove steps - the same editing you already had on the paste-a-runbook flow, now reused here",
-      "Nothing is written until you press Save; Cancel discards the whole thing and leaves the stored runbook untouched. Save replaces both actions' runbooks with what you see",
-      "If a tab has no participating systems it says so and is skipped on save; if you delete every section in a tab, that action is left unchanged rather than wiped",
-    ],
-  },
-  {
-    id: "agent-restart-status-visible",
-    date: "2026-07-15",
-    time: "14:15",
-    title: "The Agents page now shows a 'restart queued / restarting' status when you restart a runner",
-    items: [
-      "Clicking Restart on a runner used to give no visible feedback in the newer Agents view (v2) - the action lives in the 'Actions' menu, which closes the moment you click, so the 'Restarting...' label was hidden and it looked like nothing happened. The restart was actually queued; you just couldn't see it",
-      "A restart status line now shows on the runner's row itself, in both the classic and v2 views: 'restart queued - waiting for the runner to poll', then 'restarting - re-launching', then 'restarted - runner back online', with the operator who requested it",
-      "The row refreshes on its own while a restart is in flight (same 4-second live poll the Update flow already used), so the status advances and clears without a manual page refresh",
-    ],
-  },
-  {
-    id: "ad-folder-tree-picker",
-    date: "2026-07-15",
-    time: "14:00",
-    title: "Pick any AD folder for onboarding - and the pick now actually takes effect",
-    items: [
-      "\"Refresh AD objects from DC\" used to list only OUs, so a client whose users live in the default Users container (a CN=Users folder, not an OU) had nothing to pick. PureTech's onboard (UM0029706) failed on exactly this - 'OU=Users' does not exist. Discovery now enumerates the WHOLE tree: OUs, containers (Users, Computers, Builtin, Managed Service Accounts), and the domain root",
-      "The folder tree labels containers and the domain root correctly (not just OUs), with an icon per kind so a container reads differently from an OU at a glance",
-      "You can now set the onboarding OU/folder on the Active Directory system in Edit systems - type a full DN or Browse the discovered tree. This is the value the runner actually uses (config.onboard.ou)",
-      "That closes a silent trap: an OU set under Roles & rules was overridden at run time by the system's own base OU, so edits there appeared to do nothing. Roles & rules now shows a warning when a base OU is set, pointing you to Edit systems - the one place the change takes effect",
-      "Agents need runner 1.61.0 for the fuller folder discovery",
-    ],
-  },
-  {
-    id: "exo-pin-selfheal",
-    date: "2026-07-15",
-    time: "12:00",
-    title: "Runner self-heals the Exchange Online module pin",
-    items: [
-      "Exchange jobs no longer fail with \"does not contain a method named 'GetResponseHeader'\" on hosts that only had the broken ExchangeOnlineManagement 3.10.0 (which puretech/core2104 hit)",
-      "The runner now installs the PS7.6-safe 3.9.2 pin at startup when it is missing, instead of warning and silently falling back to the broken build (runner 1.61.0)",
-    ],
-  },
-  {
-    id: "optional-cred-empty-label",
-    date: "2026-07-15",
-    time: "11:00",
-    title: "An empty optional credential now reads '(optional)' in grey, on the client and the case",
-    items: [
-      "When a credential is optional (like ad-dc, or the Spanning portal login) and hasn't been wired, its name now shows a grey '(optional)' next to it - on both the client's credentials panel and a case's credentials - so a blank one reads as 'fine to leave unset', not as a missing credential",
-      "On the client this replaces the old always-on 'optional' pill: the hint now appears only when the credential is actually empty. Wire it and the '(optional)' marker goes away",
-      "Display only - nothing about how credentials are brokered or tested changed",
-    ],
-  },
-  {
-    id: "runner-version-startup-log",
-    date: "2026-07-15",
-    time: "10:45",
-    title: "The server now logs which runner version it serves to agents, every time it starts",
-    items: [
-      "On startup the app prints one line - e.g. 'serving v1.60.0 · build acf9ba83 · 68 files' - naming the exact runner version and build it will hand to agents. Agents self-update from whatever the app serves off its own disk, so this line is the ground truth for what your agents will update to",
-      "This makes a stale deploy obvious: if you ship a runner change but the server still logs the old version on restart, the app is running pre-pull code and agents will never see the update - pull and restart the app onto the new code first",
-      "Log only - no behaviour change, nothing new exposed in the UI or to agents",
-    ],
-  },
-  {
     id: "run-log-fixed-lines-populate",
     date: "2026-07-15",
-    time: "09:00",
+    time: "10:15",
     title: "Marking a run-log error 'Fixed' now moves it into the Fixed lines table (v2 run log)",
     items: [
       "On the v2 run log, clicking '✓ Fixed' set the line as resolved but the line then disappeared instead of moving to the 'Fixed lines' section below. The Fixed section only ever filled in if you also ticked the 'fixed' filter - so in normal use a fixed error just vanished",
@@ -210,7 +214,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "audit-actor-provenance",
     date: "2026-07-15",
-    time: "02:00",
+    time: "10:00",
     title: "The audit log can now tell you who did it - before, half of it just said 'ui'",
     items: [
       "Nobody could answer 'who created this case?'. Cases carried no creator at all - the only trace was the case.plan audit row written in the same second, and you had to know to go looking for it. Cases now record who opened them and how (by hand, imported from ServiceNow, pulled in by the poller, or the simulator), as columns on the case itself",
@@ -219,6 +223,18 @@ export const CHANGELOG: ChangelogEntry[] = [
       "A runbook save now records WHAT changed, not just that it was saved: the sections and steps added, removed, renamed and reordered. A save is a delete-and-recreate, so a section that quietly disappears is how a client stops getting a system provisioned - and until now the log could only say 'someone re-saved the runbook'",
       "Deleting an agent, re-scoping one to a different client, changing runner priority, and issuing an enrolment token were not audited at all. They are now",
       "The case list says 'Created by' for a hand-keyed case instead of mislabelling it 'Imported'",
+    ],
+  },
+  {
+    id: "build-from-systems-preview",
+    date: "2026-07-15",
+    time: "09:30",
+    title: "Build from systems now shows a preview you can edit before it saves, instead of overwriting the runbook the moment you click",
+    items: [
+      "On a client page, the 'Build from systems' button used to replace the onboard AND offboard runbook the instant you confirmed a browser popup - no chance to see what it generated first",
+      "It now opens a preview dialog with an Onboard and an Offboard tab, one section per participating system. You can reorder, rename, relink to a different system, and add or remove steps - the same editing you already had on the paste-a-runbook flow, now reused here",
+      "Nothing is written until you press Save; Cancel discards the whole thing and leaves the stored runbook untouched. Save replaces both actions' runbooks with what you see",
+      "If a tab has no participating systems it says so and is skipped on save; if you delete every section in a tab, that action is left unchanged rather than wiped",
     ],
   },
   {
