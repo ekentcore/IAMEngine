@@ -1193,6 +1193,54 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
+    # Delete ONE authentication method. Returns its short type name; throws whatever Graph threw.
+    # A function, not inline, because the removal has to be attempted TWICE — see the deferred pass in
+    # 2c — and duplicating this dispatch is how one copy quietly drifts from the other.
+    #
+    # if/elseif, NOT switch: `continue` inside a switch branch only leaves the SWITCH (a switch is
+    # itself a loop in PowerShell), so an unknown method would fall through and be recorded as
+    # removed — a false "we stripped it" on the case. Returning $null here is that same guard.
+    $removeAuthMethod = {
+        param($UserId, $M, $Short, $Odata)
+        if ($Odata -eq '#microsoft.graph.phoneAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationPhoneMethod -UserId $UserId -PhoneAuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $UserId -MicrosoftAuthenticatorAuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.fido2AuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationFido2Method -UserId $UserId -Fido2AuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.softwareOathAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $UserId -SoftwareOathAuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $UserId -WindowsHelloForBusinessAuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.emailAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationEmailMethod -UserId $UserId -EmailAuthenticationMethodId $M.Id }
+        }
+        elseif ($Odata -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
+            Invoke-CtgM365Write { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $UserId -TemporaryAccessPassAuthenticationMethodId $M.Id }
+        }
+        else {
+            # e.g. platformCredential (Mac Platform SSO), hardwareOath, qrCodePin — Graph keeps adding
+            # types. Never claim to have removed one we don't understand.
+            return $null
+        }
+        $Short
+    }
+
+    # Entra refuses to delete the method that is the user's DEFAULT second factor while other methods
+    # exist: "The requested authentication method id of [...] matches the user's current default
+    # authentication method, and cannot be deleted until the default authentication method is changed"
+    # (documented on phoneauthenticationmethod-delete). Recognise that ONE error precisely — anything
+    # else is a real failure and must be reported, not silently retried.
+    $isDefaultMethodBlock = {
+        param($Message)
+        [bool]([string]$Message -match "matches the user'?s current default authentication method|cannot be deleted until the default authentication method is changed")
+    }
+
     # 2c. Remove registered MFA / authentication methods ----
     # Blocking sign-in + revoking sessions secures the account TODAY. But the person's registered
     # SECOND FACTORS (phone, Authenticator, FIDO2, software OATH, Windows Hello) stay on the object:
@@ -1216,38 +1264,21 @@ function Invoke-CtgM365Offboarding {
                 Import-Module Microsoft.Graph.Identity.SignIns -ErrorAction SilentlyContinue
                 $methods = @(Get-MgUserAuthenticationMethod -UserId $userId -ErrorAction Stop)
                 $mfaLeft = 0   # candidates we could NOT remove — the security-relevant count
+                # The user's DEFAULT method can't be deleted while others remain, so it has to go LAST.
+                # We can't know which one that is up front: Graph's default lives in signInPreferences,
+                # which is beta-only and rejects the writes we'd need. So let Entra tell us — whatever
+                # it refuses AS the default gets set aside and retried once the rest are gone, at which
+                # point there is no other method for it to be the default over and the delete lands.
+                # Graph returns methods in its own order (phone early), which is why this surfaced as
+                # "the default was attempted first and lost" rather than never at all.
+                $deferred = [System.Collections.Generic.List[object]]::new()
                 foreach ($m in $methods) {
                     $odata = [string](Get-CtgProp $m.AdditionalProperties '@odata.type')
                     if ($odata -eq '#microsoft.graph.passwordAuthenticationMethod') { continue } # not removable via Graph
                     $short = ($odata -replace '^#microsoft\.graph\.', '') -replace 'AuthenticationMethod$', ''
-                    # if/elseif, NOT switch: `continue` inside a switch branch only leaves the SWITCH
-                    # (a switch is itself a loop in PowerShell), so an unknown method would fall
-                    # through and be recorded as removed — a false "we stripped it" on the case.
                     try {
-                        if ($odata -eq '#microsoft.graph.phoneAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationPhoneMethod -UserId $userId -PhoneAuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.microsoftAuthenticatorAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $userId -MicrosoftAuthenticatorAuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.fido2AuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationFido2Method -UserId $userId -Fido2AuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.softwareOathAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $userId -SoftwareOathAuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.windowsHelloForBusinessAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $userId -WindowsHelloForBusinessAuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.emailAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationEmailMethod -UserId $userId -EmailAuthenticationMethodId $m.Id }
-                        }
-                        elseif ($odata -eq '#microsoft.graph.temporaryAccessPassAuthenticationMethod') {
-                            Invoke-CtgM365Write { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $userId -TemporaryAccessPassAuthenticationMethodId $m.Id }
-                        }
-                        else {
-                            # e.g. platformCredential (Mac Platform SSO), hardwareOath, qrCodePin — Graph
-                            # keeps adding types. Never claim to have removed one we don't understand.
+                        $done = & $removeAuthMethod $userId $m $short $odata
+                        if ($null -eq $done) {
                             $mfaLeft++
                             $actions.Add("WARN auth method '$short' has no removal path — STILL REGISTERED")
                             continue
@@ -1255,8 +1286,29 @@ function Invoke-CtgM365Offboarding {
                         $mfaRemoved.Add($short)
                     }
                     catch {
+                        if (& $isDefaultMethodBlock $_.Exception.Message) {
+                            $deferred.Add([pscustomobject]@{ M = $m; Short = $short; Odata = $odata; Err = [string]$_.Exception.Message })
+                        }
+                        else {
+                            $mfaLeft++
+                            $actions.Add("WARN could not remove the '$short' auth method (STILL REGISTERED): $($_.Exception.Message)")
+                        }
+                    }
+                }
+                # Second pass: the default method(s), now that everything else is gone.
+                foreach ($d in $deferred) {
+                    try {
+                        $done = & $removeAuthMethod $userId $d.M $d.Short $d.Odata
+                        if ($null -eq $done) { $mfaLeft++; $actions.Add("WARN auth method '$($d.Short)' has no removal path — STILL REGISTERED"); continue }
+                        $mfaRemoved.Add($d.Short)
+                    }
+                    catch {
+                        # Still refused. Entra can hold a default it won't release to an app — e.g. an
+                        # alternate mobile set as default, which can't be deleted until it is last and
+                        # can't become last because the primary outlives it. Report the ORIGINAL error:
+                        # it names the real obstacle, where this retry's message is just an echo.
                         $mfaLeft++
-                        $actions.Add("WARN could not remove the '$short' auth method (STILL REGISTERED): $($_.Exception.Message)")
+                        $actions.Add("WARN could not remove the '$($d.Short)' auth method (STILL REGISTERED — it is the account's DEFAULT second factor and Entra would not release it, even with the others gone; clear it in Entra > the user > Authentication methods): $($d.Err)")
                     }
                 }
                 if ($mfaRemoved.Count) { $actions.Add("removed $($mfaRemoved.Count) registered MFA method(s): $($mfaRemoved -join ', ')") }

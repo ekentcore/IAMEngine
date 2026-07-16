@@ -488,6 +488,63 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r.Evidence.MfaMethods | Should -BeNullOrEmpty
     }
 
+    # Entra refuses to delete the user's DEFAULT second factor while other methods are registered, and
+    # Graph enumerates phone EARLY — so the default was attempted first, refused, and left behind while
+    # everything else came off (UM0029840, Easterseals). Retrying it once the others are gone is the fix.
+    It 'retries the DEFAULT method after the others are gone, and removes it' {
+        $script:phoneTries = 0
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith {
+            $script:phoneTries++
+            # Entra's real message, and its real behaviour: refused while the authenticator still
+            # exists, allowed once it is the last method standing.
+            if ($script:phoneTries -eq 1) {
+                throw "[badRequest] : The requested authentication method id of [3179e48a-750b-4051-897c-87b9720928f7] matches the user's current default authentication method, and cannot be deleted until the default authentication method is changed"
+            }
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+
+        $script:phoneTries | Should -Be 2 -Because 'the default must be attempted again after the other methods are removed'
+        ($r.Actions -join ' ') | Should -Match "removed 2 registered MFA method\(s\).*phone"
+        ($r.Actions -join ' ') | Should -Not -Match 'STILL REGISTERED'
+        $r.Evidence.MfaMethods | Should -Contain 'phone'
+    }
+
+    It 'orders the retry AFTER the other removals, not merely twice' {
+        # Retrying immediately would hit the same refusal — the whole point is that the other methods
+        # are gone by then. Pin the sequence, not just the count.
+        $script:seq = [System.Collections.Generic.List[string]]::new()
+        $script:phoneTries2 = 0
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith {
+            $script:phoneTries2++
+            $script:seq.Add("phone-try$($script:phoneTries2)")
+            if ($script:phoneTries2 -eq 1) { throw "matches the user's current default authentication method, and cannot be deleted until the default authentication method is changed" }
+        }
+        Mock Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -MockWith { $script:seq.Add('authenticator') }
+        $null = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        ($script:seq -join ',') | Should -Be 'phone-try1,authenticator,phone-try2'
+    }
+
+    It 'reports the default method as STILL REGISTERED when Entra refuses it even on the retry' {
+        # The catch-22 Entra can get into (e.g. an alternate mobile set as default). Must not be
+        # silently swallowed just because we retried — and must name the ORIGINAL reason.
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith {
+            throw "matches the user's current default authentication method, and cannot be deleted until the default authentication method is changed"
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Match "'phone' auth method \(STILL REGISTERED — it is the account's DEFAULT second factor"
+        ($r.Actions -join ' ') | Should -Match '1 MFA method\(s\) are STILL REGISTERED'
+        ($r.Actions -join ' ') | Should -Match 'removed 1 registered MFA method\(s\): microsoftAuthenticator'
+    }
+
+    It 'does NOT retry a failure that is not the default-method block' {
+        # A 403 or a transient must be reported once, not quietly attempted twice.
+        $script:denied = 0
+        Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith { $script:denied++; throw 'Authorization_RequestDenied' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        $script:denied | Should -Be 1
+        ($r.Actions -join ' ') | Should -Match "could not remove the 'phone' auth method \(STILL REGISTERED\): Authorization_RequestDenied"
+    }
+
     # UserAuthenticationMethod.ReadWrite.All is a MANUAL per-tenant grant most tenants won't have.
     # A 403 must not fail the offboard — but it must say loudly that the factors are still live.
     It 'warns (and does not fail) when the tenant has not granted the MFA-method permission' {
