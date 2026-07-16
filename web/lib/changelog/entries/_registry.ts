@@ -43,6 +43,7 @@ export { entry as llmModelAwareRequests } from "./llm-model-aware-requests";
 export { entry as llmProviderApiVersionAndAsk } from "./llm-provider-api-version-and-ask";
 export { entry as llmProviderAzureForm } from "./llm-provider-azure-form";
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
+export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";

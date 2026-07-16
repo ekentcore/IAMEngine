@@ -10,7 +10,7 @@ import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 import { ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
 import { CopyButton } from "@/app/_components/copy-button";
-import { parseMailboxOversize, isDecisionMarker } from "@/lib/cases/decision-markers";
+import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker } from "@/lib/cases/decision-markers";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -285,7 +285,14 @@ function MailboxOversizeDecision({ caseId, jobId, actions, refresh }: { caseId: 
     try {
       const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mailboxOversizePolicy: policy }) });
       if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
-      await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      // The answer is recorded but nothing runs until this re-queue lands, so its refusal (409: the job
+      // isn't in a finished state) has to surface. Unchecked, it read as a clean success with no re-run
+      // queued — the operator walks away and the decision silently sits there.
+      const rr = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      if (!rr.ok) {
+        setErr(`Choice saved, but the re-run didn't start: ${((await rr.json().catch(() => ({}))) as { error?: string }).error ?? rr.status}. Use Re-run on this step.`);
+        return;
+      }
       await refresh();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(null); }
@@ -298,6 +305,113 @@ function MailboxOversizeDecision({ caseId, jobId, actions, refresh }: { caseId: 
             button would be making the client's call for them, which is the thing we stopped doing. */}
         <button disabled={!!busy} onClick={() => decide("keep")}>{busy === "keep" ? "…" : "Keep the licence — retain the mail"}</button>
         <button disabled={!!busy} onClick={() => decide("remove")}>{busy === "remove" ? "…" : "Remove the licence — the mail will be lost"}</button>
+      </div>
+      {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
+    </div>
+  );
+}
+
+// The mailbox is UNDER the cap and nothing converted it. Unlike the oversize decision, converting is a
+// real answer here — so this offers three, and posts to ONE endpoint that owns the whole thing: the
+// convert answer has to re-queue exchange BEFORE the licence step or a runner claims the licence step
+// against the stale exchange result and just asks again. That ordering does not belong in a browser.
+function MailboxNotConvertedDecision({ caseId, actions, refresh }: { caseId: string; actions: string[]; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // Arming the destructive answer rather than window.confirm: it keeps the consequence on screen next
+  // to the button instead of in a modal that reads as chrome to click past.
+  const [armed, setArmed] = useState(false);
+  const decision = parseMailboxNotConverted(actions);
+  if (!decision) return null;
+  const size = decision.sizeGB;
+  // Exchange refuses to convert a mailbox whose size it could not read (it cannot prove it is under
+  // the cap), so offering Convert there would be a button guaranteed to fail.
+  const convertible = canConvert(decision);
+
+  async function decide(policy: "convert" | "remove" | "keep") {
+    setBusy(policy); setErr(null);
+    try {
+      const r = await fetch(`/api/cases/${caseId}/mailbox-decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy }),
+      });
+      // Checked, unlike the oversize picker's fire-and-forget re-run: a refusal here (nothing to record
+      // the answer on, no exchange step to convert with) must not read as a success with nothing queued.
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `failed (${r.status})`); return; }
+      await refresh();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); setArmed(false); }
+  }
+
+  return (
+    <div style={{ border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
+      <div style={{ fontSize: 13, color: "#92400e" }}>
+        <b>Decision needed</b>{size && size !== "unknown" ? <> — mailbox is <b>{size} GB</b></> : null}. {decision.message}
+      </div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        {/* Same restraint as the oversize picker: no "primary". One costs money and one destroys mail,
+            and styling a recommendation would be making the client's call for them. */}
+        {convertible && (
+          <button disabled={!!busy} onClick={() => decide("convert")}>
+            {busy === "convert" ? "…" : "Convert to shared, then remove the licence"}
+          </button>
+        )}
+        {!armed ? (
+          <button disabled={!!busy} onClick={() => { setArmed(true); setErr(null); }}>Remove the licence — the mailbox will be deleted</button>
+        ) : (
+          <button disabled={!!busy} onClick={() => decide("remove")} style={{ borderColor: "#b91c1c", color: "#b91c1c" }}>
+            {busy === "remove" ? "…" : "Confirm: remove it — the mail is unrecoverable after 30 days"}
+          </button>
+        )}
+        <button disabled={!!busy} onClick={() => decide("keep")}>{busy === "keep" ? "…" : "Leave the licence and the mailbox"}</button>
+        {armed && <button disabled={!!busy} onClick={() => setArmed(false)}>Cancel</button>}
+      </div>
+      {!convertible && (
+        <p className="note" style={{ marginTop: 4, color: "#92400e" }}>
+          Converting isn&apos;t offered: the mailbox size couldn&apos;t be read, so Exchange can&apos;t prove it is under the {decision.thresholdGB} GB cap and will refuse. Re-run the Exchange step first if the mail matters.
+        </p>
+      )}
+      {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
+    </div>
+  );
+}
+
+// The follow-up to a one-off Convert: this case is fixed, but the CLIENT still has no conversion
+// configured, so the next offboard parks on the same warning. Self-gating on the server's answer —
+// which is derived, not stored, so there is no dismissal state and nothing to migrate.
+function ExchangeConvertDefaultOffer({ caseId, systemKey }: { caseId: string; systemKey: string }) {
+  const [state, setState] = useState<{ offer: boolean; clientName: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const isExchange = systemKey === "exchange";
+  useEffect(() => {
+    if (!isExchange) return;
+    let alive = true;
+    fetch(`/api/cases/${caseId}/exchange-convert-default`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d) setState({ offer: Boolean(d.offer), clientName: d.clientName ?? null }); })
+      .catch(() => { /* the offer is a nicety — never surface its fetch as a case error */ });
+    return () => { alive = false; };
+  }, [caseId, isExchange]);
+  if (!isExchange || !state?.offer) return null;
+  if (done) return <p className="note" style={{ marginTop: 6, color: "#15803d" }}>✓ Convert-to-shared is now the default for future offboards.</p>;
+
+  async function apply() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch(`/api/cases/${caseId}/exchange-convert-default`, { method: "POST" });
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `failed (${r.status})`); return; }
+      setDone(true);
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
+      <div style={{ fontSize: 13, color: "#1e40af" }}>
+        This case converted the mailbox as a one-off. {state.clientName ?? "This client"} has no convert-to-shared configured, so the next offboard will stop on the same warning.
+      </div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        <button disabled={busy} onClick={apply}>{busy ? "…" : "Convert to shared by default from now on"}</button>
       </div>
       {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
     </div>
@@ -1014,6 +1128,10 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {/* Gated on the ACTIONS, not the error: this step succeeded — only the licence is
                   unresolved. The component returns null when its marker isn't present. */}
               {step.jobId && <MailboxOversizeDecision caseId={caseId} jobId={step.jobId} actions={step.actions} refresh={refresh} />}
+              {/* Same gating, different question: the mailbox is under the cap and nothing converted
+                  it, so converting is a real answer and this one owns its own re-queue ordering. */}
+              {step.jobId && <MailboxNotConvertedDecision caseId={caseId} actions={step.actions} refresh={refresh} />}
+              <ExchangeConvertDefaultOffer caseId={caseId} systemKey={step.systemKey} />
               {step.autoRetry && (
                 <div className="note" style={{ marginTop: 4, color: "#8a6d00" }} suppressHydrationWarning>
                   ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page

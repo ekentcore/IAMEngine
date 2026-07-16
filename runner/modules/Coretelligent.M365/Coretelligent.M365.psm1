@@ -1455,12 +1455,26 @@ function Invoke-CtgM365Offboarding {
     # read back on the re-run: 'remove' (take the seat, accept the mail is lost) or 'keep'.
     $oversizePolicy = [string](Get-CtgProp $Config 'mailboxOversizePolicy')
 
+    # The operator's answer to the NOT-CONVERTED decision: a mailbox UNDER the cap that nothing
+    # converted — most often a client whose profile configures no conversion at all, where "convert it
+    # and re-run" is advice that can never be taken. Written onto the job by the run report:
+    #   'remove' — take the seat, accepting that Exchange deletes the mailbox after its 30-day grace
+    #   'keep'   — leave the licence AND the mailbox exactly as they are, on purpose
+    # The third answer, 'convert', needs no policy here: it is executed by re-queuing the EXCHANGE step
+    # with convertToShared, and this step simply sees mailboxConverted=true on its own re-run. Encoding
+    # it as a policy too would be a second source of truth for the same fact.
+    #
+    # It is deliberately NOT $oversizePolicy: that one's reason text hardcodes "over the N GB cap",
+    # which is false here (this branch is reached UNDER the cap) and would land that falsehood in an
+    # AuditLog row and a ServiceNow work note.
+    $notConvertedPolicy = [string](Get-CtgProp $Config 'mailboxNotConvertedPolicy')
+
     # The single question every convert guard below asks: may this licence come off an un-converted
-    # mailbox? Two ways to say yes, and they must BOTH short-circuit ALL of the guards — an operator
+    # mailbox? Three ways to say yes, and they must ALL short-circuit ALL of the guards — an operator
     # who answered "remove" on the oversize decision would otherwise fall straight into the
     # "was NOT converted" branch on the re-run and have their answer silently ignored, which is worse
     # than never asking.
-    $mayRemoveWithoutConvert = $allowWithoutConvert -or ($oversizePolicy -eq 'remove')
+    $mayRemoveWithoutConvert = $allowWithoutConvert -or ($oversizePolicy -eq 'remove') -or ($notConvertedPolicy -eq 'remove')
 
     if ($null -ne $removeLicense -and $deferred) {
         $by = [string](Get-CtgProp $removeLicense 'removedBy')
@@ -1492,17 +1506,55 @@ function Invoke-CtgM365Offboarding {
         elseif ($convertPending -and -not $mayRemoveWithoutConvert) {
             $actions.Add("WARN license KEPT — this client converts the mailbox to shared and that step hasn't run yet. Removing the license first would let Exchange purge the mailbox after its 30-day grace. Re-run this step once the mailbox step is done, and the license comes off.")
         }
+        elseif ($convertedKnown -and -not $converted -and $notConvertedPolicy -eq 'keep') {
+            # Answered: leave both alone. NOT a WARN — decided is not unresolved (same reasoning as the
+            # oversize 'keep' above). A warning here would send the next person to re-decide something a
+            # human has already looked at and settled.
+            $actions.Add("license KEPT by operator decision — the mailbox was not converted to shared, and both the licence and the mailbox are being left as they are. The seat stays assigned.")
+        }
         elseif ($convertedKnown -and -not $converted -and -not $mayRemoveWithoutConvert) {
-            $actions.Add("WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides. Convert the mailbox (or archive the mail), then re-run this step.")
+            # The mailbox is under the cap, so it COULD become shared — but nothing converted it. The old
+            # text said "convert the mailbox, then re-run this step", which for a client whose profile
+            # configures no conversion at all (Easterseals: exchange.offboard is null, so the convert
+            # block is skipped silently) is advice nobody can act on: the re-run reproduces this warning
+            # forever and the licence is never reclaimed. So ASK, with the three answers that actually
+            # resolve it, exactly as the oversize branch does. NOT a throw, for the same reason: the
+            # containment above (sign-in blocked, sessions revoked, groups removed) already happened.
+            #
+            # sizeGB is the app's injected mailboxSizeGB, which is absent (so this param defaults to 0)
+            # precisely when Exchange could not READ the size. Report that as unknown rather than as
+            # "0 GB": the report uses it to decide whether converting is even offerable, and Exchange
+            # refuses to convert a mailbox it cannot prove is under the cap.
+            $sizeLabel = if ($MailboxSizeGB -gt 0) { [string]$MailboxSizeGB } else { 'unknown' }
+            $actions.Add("DECISION_NEEDED:mailbox_not_converted | The mailbox was never converted to a shared mailbox, so the licence cannot be removed safely — Exchange deletes an unlicensed, unconverted mailbox once its 30-day grace expires. Converting it keeps the mail AND frees the seat. Removing the licence without converting frees the seat but the mail is GONE after the grace. Leaving both alone keeps the mail and keeps paying for the seat. | sizeGB=$sizeLabel | thresholdGB=$threshold")
+            $actions.Add("WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides. Choose on the case: convert it and remove the licence, remove the licence anyway (the mail is lost), or leave both alone.")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Remove directly-assigned licenses")) {
             # Removing a licence from a mailbox that is NOT shared means Exchange purges it when the
             # 30-day grace expires. That is a legitimate outcome — the client opted out, or an operator
             # answered the oversize decision — but it must never be inferred from a silent run days
             # later. Say it on the case, with WHICH of the two reasons made it happen.
+            # THE RULE: a WARN means "a human still has to answer something". Every branch here has
+            # already been answered — on this case by an operator, or for this client by
+            # removeLicense.allowWithoutConvert — so none of them is a WARN, and the step lands
+            # "verified" instead of parking the case at "warning" with nothing left for anyone to do.
+            # (run-report promotes a succeeded step to "warning" on any /\bWARN\b/ action line.) What
+            # happened is still said in full, still in the AuditLog row and the ServiceNow work note: a
+            # destroyed mailbox is recorded loudly, it just isn't recorded as an open question.
             if ($mayRemoveWithoutConvert -and $convertedKnown -and -not $converted) {
-                $why = if ($oversizePolicy -eq 'remove') { "an operator chose to remove it (mailbox $MailboxSizeGB GB, over the $threshold GB cap)" } else { "this client is configured to allow it (removeLicense.allowWithoutConvert)" }
-                $actions.Add("WARN removing the license on a mailbox that was NOT converted to shared — $why. Exchange will PURGE this mailbox once its 30-day grace expires: the mail is not recoverable after that. Archive it now if it is needed.")
+                # Oversize is named FIRST: when the mailbox really is over the cap, that is the reason
+                # that matters — the mail could never have been saved, whatever anyone chose.
+                if ($oversizePolicy -eq 'remove') {
+                    $actions.Add("license removed by operator decision — the mailbox is $MailboxSizeGB GB, over the $threshold GB cap, so it could never become shared. Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Archive it now if it is needed.")
+                }
+                elseif ($notConvertedPolicy -eq 'remove') {
+                    $actions.Add("license removed by operator decision — the mailbox was NOT converted to shared, so Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Chosen on the case in preference to converting the mailbox or keeping the seat.")
+                }
+                else {
+                    # Not this operator, but a standing answer from the client: they configured
+                    # allowWithoutConvert precisely to say "we accept that the mailbox goes".
+                    $actions.Add("license removed on a mailbox that was NOT converted to shared — this client is configured to allow it (removeLicense.allowWithoutConvert). Exchange will DELETE this mailbox once its 30-day grace expires: the mail is not recoverable after that. Archive it now if it is needed.")
+                }
             }
             $statesUnreadable = $false
             $userObj = Get-MgUser -UserId $userId -Property 'LicenseAssignmentStates' -ErrorAction SilentlyContinue

@@ -696,9 +696,13 @@ Describe 'Invoke-CtgM365Offboarding' {
                                      mailboxConverted = $false; mailboxOversizePolicy = 'remove' }
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 60
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
-        ($r.Actions -join ' ') | Should -Match 'WARN removing the license on a mailbox that was NOT converted.*an operator chose to remove it'
-        ($r.Actions -join ' ') | Should -Match 'PURGE this mailbox'
+        ($r.Actions -join ' ') | Should -Match 'license removed by operator decision .* over the 50 GB cap'
+        ($r.Actions -join ' ') | Should -Match 'Exchange will DELETE it'
         ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'   # answered — never ask twice
+        # A WARN here parked the case at the "warning" verdict permanently, with nothing left for
+        # anyone to do — run-report promotes a succeeded step to "warning" on any /\bWARN\b/ line.
+        # A WARN means "a human still has to answer something"; this one has been answered.
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'
     }
 
     It 'keeps the license, and stops asking, when the operator answered "keep"' {
@@ -711,13 +715,80 @@ Describe 'Invoke-CtgM365Offboarding' {
         ($r.Actions -join ' ') | Should -Not -Match 'WARN license KEPT for now'  # decided is not unresolved
     }
 
+    # --- UNDER the cap but nothing converted it: ASK, don't park -----------------------------------
+    # Distinct from the oversize decision: here the mailbox COULD become shared, so "convert it" is a
+    # real third answer. The case that forced this: a client whose profile configures no conversion at
+    # all (exchange.offboard = null), where the old "convert the mailbox, then re-run this step" is
+    # advice nobody can act on — every re-run reproduced the warning and the seat was never reclaimed.
+    It 'ASKS when the mailbox is under the cap but was never converted' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 2.74
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_not_converted \|.*sizeGB=2.74 \| thresholdGB=50'
+        ($r.Actions -join ' ') | Should -Match 'WARN license KEPT .* NOT converted to shared'   # the human twin
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED:mailbox_oversize'          # under the cap: not that question
+    }
+
+    # The size is the app's injected mailboxSizeGB, absent (param defaults to 0) exactly when Exchange
+    # could not READ it. It must not be reported as "0 GB": the report keys the Convert button off this,
+    # and Exchange refuses to convert a mailbox it cannot prove is under the cap — so offering Convert
+    # on an unknown size would be a button guaranteed to fail.
+    It 'reports an unreadable mailbox size as unknown, not as 0' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config
+        ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_not_converted \|.*sizeGB=unknown \| thresholdGB=50'
+    }
+
+    It 'removes the license when the operator answered "remove" on the not-converted decision' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }
+                                     mailboxConverted = $false; mailboxNotConvertedPolicy = 'remove' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 2.74
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'license removed by operator decision'
+        ($r.Actions -join ' ') | Should -Match 'Exchange will DELETE it'
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'   # answered — never ask twice
+        # A decided, executed outcome is a SUCCESS, not a warning: run-report promotes a succeeded step
+        # to the "warning" verdict on any /\bWARN\b/ action, which would park this case at "warning"
+        # forever with nothing left for anyone to do.
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'
+        # …and it must NOT borrow the oversize reason: 2.74 GB is nowhere near the 50 GB cap, and that
+        # sentence would go into an AuditLog row and a ServiceNow work note as a falsehood.
+        ($r.Actions -join ' ') | Should -Not -Match 'over the 50 GB cap'
+    }
+
+    It 'keeps the license and the mailbox, and stops asking, when the operator answered "keep"' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }
+                                     mailboxConverted = $false; mailboxNotConvertedPolicy = 'keep' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 2.74
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'license KEPT by operator decision'
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'   # decided is a success, not a warning
+    }
+
+    # The 'convert' answer carries NO policy — it is executed by re-queuing the Exchange step with
+    # convertToShared, and this step just sees the conversion on its own re-run. Pinned because the
+    # temptation to add a third policy value here is exactly how a second source of truth starts.
+    It 'removes the license once a re-queued convert has landed, with no policy of its own' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $true }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 2.74
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED'
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'
+    }
+
     # --- the per-client opt-out -------------------------------------------------------------------
     It 'removes the license on an unconverted mailbox when the client allows it, and says the mail will go' {
         $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{ allowWithoutConvert = $true }; mailboxConverted = $false }
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 10
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
         ($r.Actions -join ' ') | Should -Match 'this client is configured to allow it \(removeLicense.allowWithoutConvert\)'
-        ($r.Actions -join ' ') | Should -Match 'PURGE this mailbox'
+        # The mail being destroyed is still said, loudly and in full — it just isn't said as a WARN.
+        # The client has ALREADY answered this question, standingly, by configuring the opt-out; there
+        # is nothing here for a human to decide, so it must not read as an open one.
+        ($r.Actions -join ' ') | Should -Match 'Exchange will DELETE this mailbox'
+        ($r.Actions -join ' ') | Should -Match 'not recoverable'
+        ($r.Actions -join ' ') | Should -Not -Match 'WARN'
     }
 
     It 'the opt-out also skips the still-pending convert guard' {

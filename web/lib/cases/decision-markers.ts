@@ -25,5 +25,32 @@ export function parseMailboxOversize(actions: string[]): MailboxOversizeDecision
   return null;
 }
 
+// The mailbox is UNDER the cap and nothing converted it — most often a client whose profile configures
+// no conversion at all, where "convert it and re-run" is advice nobody can act on. Unlike the oversize
+// decision, converting is a real answer here, so this carries the size the report needs to know whether
+// to offer it: `sizeGB` is "unknown" when Exchange could not read it, and Exchange refuses to convert a
+// mailbox it cannot prove is under the cap.
+export type MailboxNotConvertedDecision = { message: string; sizeGB: string; thresholdGB: string };
+
+const MAILBOX_NOT_CONVERTED = /^DECISION_NEEDED:mailbox_not_converted \| ([^|]+?) \| sizeGB=([^|]+?) \| thresholdGB=(.+)$/;
+
+export function parseMailboxNotConverted(actions: string[]): MailboxNotConvertedDecision | null {
+  for (const a of actions) {
+    const m = MAILBOX_NOT_CONVERTED.exec(a.trim());
+    if (m) return { message: m[1].trim(), sizeGB: m[2].trim(), thresholdGB: m[3].trim() };
+  }
+  return null;
+}
+
+// Can this mailbox actually be converted? Exchange refuses without a size it can prove is under the cap
+// (Coretelligent.Exchange.psm1), so offering Convert on an unknown or over-cap size would be a button
+// guaranteed to fail. Kept beside the parser so the rule lives with the fields it reads, not in the JSX.
+export function canConvert(d: MailboxNotConvertedDecision): boolean {
+  const size = Number(d.sizeGB);
+  const threshold = Number(d.thresholdGB);
+  if (!Number.isFinite(size) || !Number.isFinite(threshold)) return false; // "unknown" -> NaN -> no
+  return size > 0 && size <= threshold;
+}
+
 // Markers are for the pickers, not for people: every one is emitted alongside a human-readable line.
 export const isDecisionMarker = (line: string): boolean => line.startsWith("DECISION_NEEDED:");
