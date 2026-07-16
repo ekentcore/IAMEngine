@@ -11,6 +11,7 @@ import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
 import { generateInitialPassword } from "@/lib/auth/password";
 import { PASSWORD_RESET_KEY } from "@/lib/jobs/password-reset";
+import { insertStepSequence } from "@/lib/jobs/adhoc";
 import { recordAudit } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
@@ -41,14 +42,17 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   // initial-password knobs are dropped so the executor can't confuse this with an onboard.
   const srcReq = (src.request ?? {}) as Record<string, unknown>;
   const { initialPassword: _ip, initialPasswordSecret: _ips, ...config } = (srcReq.config ?? {}) as Record<string, unknown>;
-  const agg = await db.job.aggregate({ where: { caseRequestId: src.caseRequestId }, _max: { sequence: true } });
-  const job = await db.job.create({
-    data: {
-      caseRequestId: src.caseRequestId, systemKey: resetKey, mode: "api", sequence: (agg._max.sequence ?? 0) + 1,
-      status: "pending", singleRun: true, oneTimePassword: generateInitialPassword(),
-      request: { secretNames: srcReq.secretNames ?? [], config, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
-    },
-    select: { id: true },
+  // Insert ABOVE the case-resolution step (which must stay last) rather than appending at the end.
+  const job = await db.$transaction(async (tx) => {
+    const sequence = await insertStepSequence(tx, src.caseRequestId);
+    return tx.job.create({
+      data: {
+        caseRequestId: src.caseRequestId, systemKey: resetKey, mode: "api", sequence,
+        status: "pending", singleRun: true, oneTimePassword: generateInitialPassword(),
+        request: { secretNames: srcReq.secretNames ?? [], config, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
   });
   // The audit records the dispatch, never the value.
   await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey } });

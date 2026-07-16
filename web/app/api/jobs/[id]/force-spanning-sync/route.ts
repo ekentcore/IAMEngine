@@ -9,7 +9,7 @@ import { Prisma } from "@prisma/client";
 import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
-import { SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
+import { SPANNING_FORCE_SYNC_KEY, insertStepSequence } from "@/lib/jobs/adhoc";
 import { wiredOptionalSecrets } from "@/lib/secrets/auxiliary";
 import { recordAudit } from "@/lib/auth/audit";
 
@@ -73,14 +73,17 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     });
     jobId = existing.id;
   } else {
-    // First force-sync for this case — append a single new step at the end.
-    const agg = await db.job.aggregate({ where: { caseRequestId: src.caseRequestId }, _max: { sequence: true } });
-    const job = await db.job.create({
-      data: {
-        caseRequestId: src.caseRequestId, systemKey: SPANNING_FORCE_SYNC_KEY, mode: "api", sequence: (agg._max.sequence ?? 0) + 1,
-        status: "pending", singleRun: true, request,
-      },
-      select: { id: true },
+    // First force-sync for this case — insert it ABOVE the case-resolution step (which must stay the
+    // last step), not at the very end. Shift + create atomically.
+    const job = await db.$transaction(async (tx) => {
+      const sequence = await insertStepSequence(tx, src.caseRequestId);
+      return tx.job.create({
+        data: {
+          caseRequestId: src.caseRequestId, systemKey: SPANNING_FORCE_SYNC_KEY, mode: "api", sequence,
+          status: "pending", singleRun: true, request,
+        },
+        select: { id: true },
+      });
     });
     jobId = job.id;
   }

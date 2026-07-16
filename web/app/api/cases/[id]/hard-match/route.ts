@@ -8,6 +8,7 @@ import { Prisma } from "@prisma/client";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { caseInScope } from "@/lib/auth/client-scope";
+import { insertStepSequence } from "@/lib/jobs/adhoc";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -30,13 +31,16 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   }
 
   // Dispatch a single on-prem hard-match job (claimed by the client agent; central can't reach AD).
-  const seq = Math.max(0, ...c.jobs.map((j) => j.sequence)) + 1;
-  const job = await db.job.create({
-    data: {
-      caseRequestId: c.id, systemKey: "ad-hard-match", mode: "api", sequence: seq, status: "pending",
-      request: { secretNames: ["ad-dc"], config: { immutableId }, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
-    },
-    select: { id: true },
+  // Insert it ABOVE the case-resolution step (which must stay last), not at the very end.
+  const job = await db.$transaction(async (tx) => {
+    const sequence = await insertStepSequence(tx, c.id);
+    return tx.job.create({
+      data: {
+        caseRequestId: c.id, systemKey: "ad-hard-match", mode: "api", sequence, status: "pending",
+        request: { secretNames: ["ad-dc"], config: { immutableId }, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
   });
   // Make it claimable even on a completed case; recordResult recomputes the status when it finishes.
   if (c.status === "completed" || c.status === "failed") {
