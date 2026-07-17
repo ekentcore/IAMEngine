@@ -67,8 +67,9 @@ export type RunReportStep = {
 // ("spanning-force-sync"). Give them a human label here. Keep in sync with ADHOC_SYSTEM_KEYS. The view
 // (run-report-view) folds the "force Spanning sync" step in UNDER the Spanning step so it reads as a
 // sub-action of it rather than a bare, duplicated top-level warning.
-const ADHOC_STEP_LABELS: Record<string, string> = {
+export const ADHOC_STEP_LABELS: Record<string, string> = {
   "spanning-force-sync": "Spanning force sync",
+  printers: "Printers",
 };
 
 export type RunReport = {

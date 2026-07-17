@@ -137,6 +137,38 @@ export function resolvePlannedConfigs(
         return { ...j, config: cfg };
       });
 
+  // Printers attached to the matched location become one manual checklist step (there is no
+  // print-deployment executor). Only the PERSISTED split is honored — location.printers as an
+  // array — never re-classify here: a real-but-undiscovered group must not be demoted to a
+  // printer and dropped from the directory group-add. Un-migrated locations (no printers key)
+  // keep the legacy behavior (typed printers still ride in `groups`) until edited once in the UI.
+  const locPrinters = Array.isArray((location as { printers?: unknown } | null)?.printers)
+    ? ((location as { printers: unknown[] }).printers).filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim())
+    : [];
+  const printersJobs: PlannedJob[] = locPrinters.length === 0 ? [] : [{
+    systemKey: "printers",
+    sequence: 0, // filled in below relative to the final job list
+    mode: "manual",
+    requiresApproval: false,
+    captureEvidence: false,
+    intent: null,
+    secretNames: [],
+    dependsOn: [],
+    config: {
+      note: `Map printers at ${
+        client.locations && typeof client.locations === "object"
+          ? (Object.entries(client.locations as Record<string, unknown>).find(([, v]) => v === location)?.[0] ?? "the location")
+          : "the location"
+      }: ${locPrinters.join(", ")}`,
+    },
+  }];
+  // Append the printers step to the final job list, giving it a sequence past every real job.
+  const appendPrinters = (jobs: PlannedJob[]): PlannedJob[] => {
+    if (printersJobs.length === 0) return jobs;
+    const nextSeq = jobs.reduce((m, j) => Math.max(m, j.sequence), 0) + 1;
+    return [...jobs, ...printersJobs.map((p) => ({ ...p, sequence: nextSeq }))];
+  };
+
   // Requestor-picked groups from the ticket (FR #4): email distribution lists + security groups.
   // The intake captured them (payload.emailDistroGroups / payload.securityGroups) and the preview
   // showed them, but nothing ever merged them into a job's config — a non-default DL the requestor
@@ -284,10 +316,10 @@ export function resolvePlannedConfigs(
   // skips security/365 groups (those stay Graph's job).
   const m365Groups = deduped.find((j) => j.systemKey === "m365" || j.systemKey === "entra")?.config as { groups?: unknown } | null;
   const reqGroups = m365Groups && Array.isArray(m365Groups.groups) ? m365Groups.groups : null;
-  if (!reqGroups || reqGroups.length === 0) return deduped;
-  return deduped.map((j) =>
+  if (!reqGroups || reqGroups.length === 0) return appendPrinters(deduped);
+  return appendPrinters(deduped.map((j) =>
     j.systemKey === "exchange"
       ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), namedGroups: reqGroups } }
       : j
-  );
+  ));
 }

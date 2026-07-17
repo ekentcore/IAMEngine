@@ -13,6 +13,7 @@ import { refreshClientName } from "@/lib/clients/refresh-name";
 import { refreshClientLocations } from "@/lib/clients/refresh-locations";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { parseClientOverride } from "@/lib/notifications/types";
+import { applyLocationTargets } from "@/lib/profiles/location-targets";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
@@ -28,7 +29,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; ou?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; printers?: unknown; ou?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -125,24 +126,25 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
   }
 
-  // Location AD/Entra targets: set the groups (+ optional OU) a matched location adds. Merges into the
-  // existing Client.locations entry (keeps city/state/timezone/…). Applied at plan time (plan-resolve).
+  // Location targets: set the AD/Entra groups + printers (+ optional OU) a matched location adds.
+  // Merges into the existing Client.locations entry (keeps city/state/timezone/…). Groups union into
+  // the directory jobs and printers become a manual checklist step at plan time (plan-resolve).
   if (body.action === "set-location-targets") {
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) return NextResponse.json({ error: "location name required" }, { status: 422 });
-    const groups = Array.isArray(body.groups) ? body.groups.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()) : [];
+    const parseNames = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()) : [];
+    const groups = parseNames(body.groups);
+    const printers = parseNames(body.printers);
     const ou = typeof body.ou === "string" ? body.ou.trim() : "";
     const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true, locations: true } });
     if (!client) return NextResponse.json({ error: "client not found" }, { status: 404 });
     const locs = client.locations && typeof client.locations === "object" && !Array.isArray(client.locations)
       ? { ...(client.locations as Record<string, Record<string, unknown>>) } : {};
     if (!locs[name]) return NextResponse.json({ error: `no location named "${name}"` }, { status: 422 });
-    const entry = { ...locs[name] };
-    if (groups.length) entry.groups = groups; else delete entry.groups;
-    if (ou) entry.ou = ou; else delete entry.ou;
-    locs[name] = entry;
+    locs[name] = applyLocationTargets({ ...locs[name] }, { groups, printers, ou }) as Record<string, unknown>;
     await db.client.update({ where: { id: client.id }, data: { locations: locs as Prisma.InputJsonValue } });
-    await repo.writeAudit({ actor: who.label, userId: who.userId, action: "client.location_targets.set", clientId: client.id, detail: { name, groups: groups.length, ou: ou || null } });
+    await repo.writeAudit({ actor: who.label, userId: who.userId, action: "client.location_targets.set", clientId: client.id, detail: { name, groups: groups.length, printers: printers.length, ou: ou || null } });
     return NextResponse.json({ ok: true });
   }
 

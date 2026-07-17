@@ -617,3 +617,62 @@ dialog.doc-modal::backdrop { background: color-mix(in srgb, #000 45%, transparen
   display: inline-block; animation: doc-spin 0.7s linear infinite;
 }
 @keyframes doc-spin { to { transform: rotate(360deg); } }
+
+/* ── location targets: groups picker + printers box (double-line locations table) ──
+   Each location renders two rows: a main address line and a targets line holding the
+   groups multi-select + printers box as an attached sub-panel. Theme-aware via tokens. */
+.locations-table .loc-main-row td { border-bottom: none; padding-bottom: 0.3rem; }
+.locations-table .loc-main-row:hover,
+.locations-table .loc-targets-row:hover { background: transparent; }
+.locations-table .loc-targets-row td {
+  padding-top: 0.15rem; padding-bottom: 0.95rem;
+  border-bottom: 1px solid var(--line-2);
+}
+.locations-table tbody tr:last-child td { border-bottom: none; }
+
+.location-targets {
+  display: flex; flex-wrap: wrap; gap: 0.95rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: 10px;
+}
+.location-targets .lt-box { flex: 1 1 240px; min-width: 210px; }
+.location-targets .lt-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 0.4rem;
+}
+.location-targets .lt-status { flex-basis: 100%; min-height: 0.9em; }
+
+/* group multi-select: chips + search + sectioned scroll list */
+.group-multiselect { display: flex; flex-direction: column; gap: 0.4rem; }
+.group-multiselect .gm-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.group-multiselect .gm-chip {
+  display: inline-flex; align-items: center; gap: 0.35em;
+  font-size: 11.5px; font-weight: 600; width: auto;
+  padding: 0.13rem 0.5rem; border-radius: 999px;
+  color: var(--accent-press); background: var(--accent-soft);
+  border: 1px solid transparent; cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.group-multiselect .gm-chip:hover { border-color: var(--accent-ring); }
+.group-multiselect .gm-chip span { color: var(--muted); font-weight: 700; }
+.group-multiselect .gm-list {
+  max-height: 210px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); padding: 0.2rem 0.1rem;
+}
+.group-multiselect .gm-section + .gm-section { margin-top: 0.3rem; }
+.group-multiselect .gm-section-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--faint); padding: 0.28rem 0.55rem 0.15rem;
+  position: sticky; top: 0; z-index: 1;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(3px);
+}
+.group-multiselect .gm-option {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.22rem 0.55rem; font-size: 12.5px; cursor: pointer; border-radius: 6px;
+}
+.group-multiselect .gm-option:hover { background: var(--bg-soft); }
+.group-multiselect .gm-option input[type="checkbox"] { width: auto; margin: 0; flex: none; }

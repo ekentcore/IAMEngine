@@ -300,3 +300,44 @@ test("requested privileged groups are filtered out of the plan", () => {
   assert.deepEqual((resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).groups, ["SG-Finance"]);
   assert.deepEqual((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["Team"]);
 });
+
+test("a matched location's persisted printers emit one manual 'printers' job", () => {
+  const locClient = {
+    personas: null, globals: null,
+    locations: {
+      Boston: { city: "Boston", groups: ["FalconBOS"], printers: ["HP-Reception", "MFP-3rd"] },
+    },
+  };
+  const p = { firstName: "A", lastName: "B", officeLocation: "Boston", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const planned = [job("active-directory", {}), job("m365", {})];
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", planned);
+  // groups still union into directory jobs
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["FalconBOS"]);
+  // exactly one manual printers job, with the note
+  const printerJobs = resolved.filter((j) => j.systemKey === "printers");
+  assert.equal(printerJobs.length, 1);
+  assert.equal(printerJobs[0].mode, "manual");
+  assert.equal(printerJobs[0].requiresApproval, false);
+  assert.deepEqual(printerJobs[0].secretNames, []);
+  assert.equal((printerJobs[0].config as { note?: string }).note, "Map printers at Boston: HP-Reception, MFP-3rd");
+});
+
+test("un-migrated location (no printers key) emits no printers job and preserves group union", () => {
+  const locClient = {
+    personas: null, globals: null,
+    locations: { Boston: { city: "Boston", groups: ["FalconBOS", "TypedPrinter"] } },
+  };
+  const p = { firstName: "A", lastName: "B", officeLocation: "Boston", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", [job("active-directory", {})]);
+  assert.equal(resolved.filter((j) => j.systemKey === "printers").length, 0);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["FalconBOS", "TypedPrinter"]); // unchanged legacy behavior
+});
+
+test("printers only (no groups) still emits the manual job", () => {
+  const locClient = { personas: null, globals: null, locations: { Boston: { city: "Boston", printers: ["HP-Reception"] } } };
+  const p = { firstName: "A", lastName: "B", officeLocation: "Boston", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", [job("active-directory", {})]);
+  assert.equal(resolved.filter((j) => j.systemKey === "printers").length, 1);
+});

@@ -12,7 +12,7 @@ import { deriveCaseStatus } from "../jobs/runner-logic";
 import { missingRequiredSecrets, NOT_NEEDED } from "./case-secrets";
 import { ALL_OPTIONAL_SECRET_NAMES } from "../secrets/optional-secrets";
 import { secretIsSet } from "../secrets/wiring";
-import { jobWarningLines } from "./run-report";
+import { jobWarningLines, ADHOC_STEP_LABELS } from "./run-report";
 import { iamCaseNumber, needsIamNumber } from "./case-number";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 
@@ -837,7 +837,7 @@ export function makeCaseRepository(db: PrismaClient) {
           return {
             id: j.id,
             systemKey: j.systemKey,
-            systemName: nameByKey.get(j.systemKey) ?? j.systemKey,
+            systemName: nameByKey.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
             sequence: j.sequence,
             mode: j.mode,
             status: j.status,

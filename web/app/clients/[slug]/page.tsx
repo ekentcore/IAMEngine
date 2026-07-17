@@ -144,6 +144,19 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   ];
   const cloudGroupsMeta = { count: cloudGroupList.length, discoveredAt: typeof cloudGroups.discoveredAt === "string" ? cloudGroups.discoveredAt : null };
 
+  // Sectioned group options for the per-location groups picker (365 by type, then AD, then any
+  // configured every-user groups not already listed). Empty sections render nothing in the picker.
+  const groupSections = [
+    { label: "365 Distribution", options: cloudGroupList.filter((g) => g.type === "dl").map((g) => g.name) },
+    { label: "365 Security", options: cloudGroupList.filter((g) => g.type === "security").map((g) => g.name) },
+    { label: "365 Groups", options: cloudGroupList.filter((g) => g.type === "m365").map((g) => g.name) },
+    { label: "AD", options: adGroupNames },
+  ];
+  const everyUserExtra = everyUserM365Groups.filter((n) => !groupSections.some((s) => s.options.includes(n)));
+  if (everyUserExtra.length) groupSections.push({ label: "Configured (every user)", options: everyUserExtra });
+  // Flat set of discovered names for the display split of un-migrated locations (groups vs printers).
+  const discoveredGroupNames = [...new Set(knownGroups.map((g) => g.name))];
+
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
   // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled — but
   // ONLY while the link is intact: a child that broke it plans from its own systems, so claiming
@@ -444,7 +457,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
         globals={v21?.globals as never}
         locations={v21?.locations as never}
         slug={client.slug}
-        groupOptions={[...new Set(knownGroups.map((g) => g.name))]}
+        groupSections={groupSections}
+        discoveredNames={discoveredGroupNames}
       />
 
       {readiness && readiness.tier !== "no_systems" && (
