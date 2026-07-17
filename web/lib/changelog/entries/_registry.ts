@@ -23,6 +23,7 @@ export { entry as changelogTimesEastern } from "./changelog-times-eastern";
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
 export { entry as connectorBuilder } from "./connector-builder";
 export { entry as copyButtonsWorkOffTheHost } from "./copy-buttons-work-off-the-host";
+export { entry as coreidSlugRedirect } from "./coreid-slug-redirect";
 export { entry as coretelligentPostResetRestore } from "./coretelligent-post-reset-restore";
 export { entry as credExpirySettings } from "./cred-expiry-settings";
 export { entry as credPlatform } from "./cred-platform";

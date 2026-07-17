@@ -1,9 +1,10 @@
 // Client detail (server component): roster metadata + the modeled systems and their flags.
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
+import { findClientByCoreIdSlug } from "@/lib/clients/coreid-redirect";
 import { currentIsSuperAdmin } from "@/lib/auth/acting";
 import { RestrictedToggle } from "../_components/restricted-toggle";
 import { OwnAgentToggle } from "../_components/own-agent-toggle";
@@ -88,7 +89,14 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   // scope-gated: an out-of-scope (e.g. restricted) client reads as not-found here.
   const scope = await currentClientScope(db);
   const client = await makeClientRepository(db).getClientBySlug(params.slug, scope);
-  if (!client) notFound();
+  if (!client) {
+    // Slug miss: if the segment is a CORE id whose client lives under a name slug (e.g. /clients/core1955
+    // → /clients/yuma), redirect to the canonical URL. Scope-gate on the resolved id first so an
+    // out-of-scope client can't be reached (or probed for existence) via its coreid alias.
+    const alias = await findClientByCoreIdSlug(db, params.slug);
+    if (alias && scopeAllows(scope, alias.id)) redirect(`/clients/${alias.canonicalSlug}`);
+    notFound();
+  }
   const canRestrict = await currentIsSuperAdmin(); // only super admins see/flip the restricted control
   // Does this client have its own (client-network) agent? Drives the "run cloud on own agent" hint.
   const hasClientAgent = (await db.agent.count({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null } })) > 0;
