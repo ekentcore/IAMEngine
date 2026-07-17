@@ -9,7 +9,7 @@ import { Prisma } from "@prisma/client";
 import { guard } from "@/lib/auth/route-guard";
 import { jobInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
-import { generateInitialPassword } from "@/lib/auth/password";
+import { generateInitialPassword, validateManualPassword } from "@/lib/auth/password";
 import { PASSWORD_RESET_KEY } from "@/lib/jobs/password-reset";
 import { insertStepSequence } from "@/lib/jobs/adhoc";
 import { recordAudit } from "@/lib/auth/audit";
@@ -18,11 +18,21 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
-  // Optional body: { requireChangeAtSignIn?: boolean } — the operator's per-reset choice (FR #14).
-  // Default true; explicitly false means "I still have to log in as this user (equipment setup)".
-  let body: { requireChangeAtSignIn?: unknown } = {};
+  // Optional body:
+  //  - requireChangeAtSignIn?: boolean — the operator's per-reset choice (FR #14). Default true;
+  //    explicitly false means "I still have to log in as this user (equipment setup)".
+  //  - password?: string — FR #17: set a SPECIFIC password (e.g. a required passphrase) instead of
+  //    generating one. When present it's checked against a baseline complexity policy here to reject
+  //    the clearly-doomed up front; the target directory stays authoritative (an AD domain policy can
+  //    be stricter, so a baseline-valid value can still be refused on the runner).
+  let body: { requireChangeAtSignIn?: unknown; password?: unknown } = {};
   try { body = await req.json(); } catch { /* empty body = defaults */ }
   const requireChangeAtSignIn = body.requireChangeAtSignIn !== false;
+  const manual = typeof body.password === "string" && body.password.length > 0;
+  if (manual) {
+    const bad = validateManualPassword(body.password);
+    if (bad) return NextResponse.json({ error: bad }, { status: 422 });
+  }
   if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const src = await db.job.findUnique({
@@ -39,9 +49,26 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // One at a time per system: reuse an in-flight reset instead of stacking a second password change.
   const inflight = await db.job.findFirst({
     where: { caseRequestId: src.caseRequestId, systemKey: resetKey, status: { in: ["pending", "dispatched", "running"] } },
-    select: { id: true },
+    select: { id: true, status: true, request: true },
   });
-  if (inflight) return NextResponse.json({ ok: true, jobId: inflight.id, reused: true });
+  if (inflight) {
+    // A specific password must NOT be silently dropped onto a reset that's already queued/running: the
+    // account would get the earlier (generated) value while the operator is told their passphrase was
+    // set (FR #17). If it's only queued (not yet claimed), retarget it to the entered password
+    // atomically; once it's dispatched/running the value is already in flight, so refuse and let it land.
+    if (manual) {
+      const ireq = (inflight.request ?? {}) as Record<string, unknown>;
+      const iconfig = { ...((ireq.config ?? {}) as Record<string, unknown>), requireChangeAtSignIn };
+      const upd = await db.job.updateMany({
+        where: { id: inflight.id, status: "pending" },
+        data: { oneTimePassword: body.password as string, request: { ...ireq, manualPassword: true, config: iconfig } as Prisma.InputJsonValue },
+      });
+      if (upd.count === 0) return NextResponse.json({ error: "a password reset for this account is already running — wait for it to finish, then set the specific password" }, { status: 409 });
+      await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: inflight.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey, requireChangeAtSignIn, manual: true, reused: true } });
+      return NextResponse.json({ ok: true, jobId: inflight.id, manual: true, reused: true });
+    }
+    return NextResponse.json({ ok: true, jobId: inflight.id, reused: true });
+  }
 
   // Ride the source line's request so credential brokering + tenant/identity config just work; the
   // initial-password knobs are dropped so the executor can't confuse this with an onboard.
@@ -54,13 +81,18 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     return tx.job.create({
       data: {
         caseRequestId: src.caseRequestId, systemKey: resetKey, mode: "api", sequence,
-        status: "pending", singleRun: true, oneTimePassword: generateInitialPassword(),
-        request: { secretNames: srcReq.secretNames ?? [], config, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
+        // Manual and generated passwords both ride Job.oneTimePassword — that's the only channel the
+        // runner reads the value from at claim time. For a manual value the operator already knows it,
+        // so the UI skips the one-time reveal; `manualPassword` marks it so recordResult wipes it as
+        // soon as the reset lands (success OR failure) — a reused human passphrase must not linger in
+        // the DB or stay revealable, the way a single-use random value safely could.
+        status: "pending", singleRun: true, oneTimePassword: manual ? (body.password as string) : generateInitialPassword(),
+        request: { secretNames: srcReq.secretNames ?? [], config, manualPassword: manual, dependsOn: [], requiresApproval: false, captureEvidence: false } as Prisma.InputJsonValue,
       },
       select: { id: true },
     });
   });
-  // The audit records the dispatch, never the value.
-  await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey, requireChangeAtSignIn } });
-  return NextResponse.json({ ok: true, jobId: job.id });
+  // The audit records the dispatch and WHETHER the operator set a specific password — never the value.
+  await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey, requireChangeAtSignIn, manual } });
+  return NextResponse.json({ ok: true, jobId: job.id, manual });
 }

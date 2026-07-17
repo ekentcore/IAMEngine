@@ -2,6 +2,9 @@
 // Stored form: "scrypt$<saltB64>$<hashB64>". Verify is constant-time.
 import { randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 
+// Re-export the client-safe policy helpers so server callers keep a single import surface.
+export { MANUAL_PASSWORD_HINT, validateManualPassword } from "./password-policy";
+
 const KEYLEN = 64;
 
 export function hashPassword(password: string): string {

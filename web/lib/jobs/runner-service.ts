@@ -298,6 +298,19 @@ async function preflightConnTestFields(
   }
 }
 
+// Shared guard for the central-runner discovery RESULT endpoints (cloud groups + shared mailboxes):
+// only the central (cloud) runner may write these, and never a client-network agent — that would be a
+// cross-client write into another client's picker. Returns the client id. `what` names the resource in
+// the error. Keep both callers on this one guard so the cross-client rule can't drift between them.
+async function assertCentralAgentForClient(db: PrismaClient, agentId: string, clientSlug: string, what: string): Promise<string> {
+  const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
+  if (!agent || !agent.enabled) throw new HttpError(403, "unknown or disabled agent");
+  if (agent.clientId) throw new HttpError(403, `only the central runner reports ${what}`);
+  const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+  if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+  return client.id;
+}
+
 export function makeRunnerService(db: PrismaClient) {
   return {
     async enroll(input: { name: string; scope: AgentScope; clientSlug?: string | null }): Promise<{ id: string; scope: AgentScope; clientId: string | null }> {
@@ -1447,20 +1460,34 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
-      if (!agent || !agent.enabled) throw new HttpError(403, "unknown or disabled agent");
-      // Only the central (cloud) runner discovers cloud groups — mirror claimCloudGroupDiscovery. A
-      // client-network agent must not be able to write another client's group picker (cross-client write).
-      if (agent.clientId) throw new HttpError(403, "only the central runner reports cloud groups");
-      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
-      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      // Central-runner-only, no cross-client write — shared with reportCloudMailboxes.
+      const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "cloud groups");
       // Normalize + cap (a big tenant can have thousands) so the picker payload stays sane.
       const clean = groups
         .filter((g) => g && typeof g.name === "string" && g.name.trim())
         .map((g) => ({ name: g.name.trim(), type: ["dl", "security", "m365"].includes(g.type) ? g.type : "security" }))
         .slice(0, 5000);
-      await db.client.update({ where: { id: client.id }, data: { cloudGroups: { groups: clean, discoveredAt: new Date().toISOString() } } });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudgroups.result", clientId: client.id, detail: { count: clean.length } } });
+      await db.client.update({ where: { id: clientId }, data: { cloudGroups: { groups: clean, discoveredAt: new Date().toISOString() } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudgroups.result", clientId, detail: { count: clean.length } } });
+      return { ok: true, count: clean.length };
+    },
+
+    // Shared mailboxes the central runner enumerated over Exchange Online alongside the cloud groups
+    // (same discovery request). Stored on the client to back the "default shared-mailbox access" picker
+    // (FR #15). Central-runner-only, exactly like reportCloudGroups — a client-network agent must not
+    // be able to write another client's mailbox picker.
+    async reportCloudMailboxes(agentId: string, clientSlug: string, mailboxes: { address: string; displayName?: string }[]): Promise<{ ok: true; count: number }> {
+      // Central-runner-only, no cross-client write — same guard as reportCloudGroups.
+      const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "cloud mailboxes");
+      // Normalize (address is the identity the runner grants against) + dedupe by address + cap.
+      const seen = new Set<string>();
+      const clean = mailboxes
+        .filter((m) => m && typeof m.address === "string" && m.address.trim())
+        .map((m) => ({ address: m.address.trim(), displayName: typeof m.displayName === "string" ? m.displayName.trim() : "" }))
+        .filter((m) => { const k = m.address.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+        .slice(0, 5000);
+      await db.client.update({ where: { id: clientId }, data: { cloudMailboxes: { mailboxes: clean, discoveredAt: new Date().toISOString() } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudmailboxes.result", clientId, detail: { count: clean.length } } });
       return { ok: true, count: clean.length };
     },
 
@@ -1557,8 +1584,11 @@ export function makeRunnerService(db: PrismaClient) {
           error: needsTargetDecision ? offboardDecisionError(input.result, candidates.length) : (input.error ?? null),
           finishedAt: new Date(), singleRun: false,
           // A password reset that didn't land never shows its value — wipe it so a plaintext that was
-          // never set on the account can't linger (a succeeded reset keeps it until the one-time reveal).
-          ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && status !== "succeeded" ? { oneTimePassword: null } : {}),
+          // never set on the account can't linger. A GENERATED reset keeps its value on success until
+          // the one-time reveal; a MANUAL one (FR #17) is never revealed (the operator already has it),
+          // so wipe it on any terminal state — a reused human passphrase must not linger or stay
+          // revealable via the reset line's reveal button.
+          ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && (status !== "succeeded" || (job.request as Record<string, unknown> | null)?.manualPassword === true) ? { oneTimePassword: null } : {}),
         },
       });
 

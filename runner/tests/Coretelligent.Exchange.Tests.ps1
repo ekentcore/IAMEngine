@@ -76,6 +76,58 @@ Describe 'Invoke-CtgExchangeSharedMailboxMirror' {
     }
 }
 
+Describe 'Invoke-CtgExchangeDefaultMailboxAccess' {
+    BeforeEach {
+        # Target user (the new hire) — one Get-Recipient lookup by NewUser.
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'new@x.com' } -MockWith { [pscustomobject]@{ DisplayName='New User'; PrimarySmtpAddress='new@x.com'; UserPrincipalName='new@x.com' } }
+        # Named-mailbox lookups by -Identity (address).
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'finance@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Finance'; PrimarySmtpAddress='finance@x.com'; ExchangeGuid='11111111-1111-1111-1111-111111111111'; Identity='finance@x.com'; GrantSendOnBehalfTo=@() } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'vacation@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Global Vacation Calendar'; PrimarySmtpAddress='vacation@x.com'; ExchangeGuid='22222222-2222-2222-2222-222222222222'; Identity='vacation@x.com'; GrantSendOnBehalfTo=@() } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'missing@x.com' } -MockWith { $null }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Get-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Add-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
+    }
+
+    It 'grants FullAccess by default and routes SendAs / SendOnBehalf by the access field' {
+        $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @(
+            @{ address='finance@x.com'; access='FullAccess' }
+            @{ address='vacation@x.com'; access='SendAs' }
+            'plainstring@x.com'  # a bare string defaults to FullAccess
+        )
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq '11111111-1111-1111-1111-111111111111' -and $User -eq 'new@x.com' -and ($AccessRights -contains 'FullAccess') } -Times 1
+        Should -Invoke Add-RecipientPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq '22222222-2222-2222-2222-222222222222' -and $Trustee -eq 'new@x.com' } -Times 1
+        ($acts -join ' ') | Should -Match 'default shared mailbox FullAccess: Finance'
+        ($acts -join ' ') | Should -Match 'default shared mailbox SendAs: Global Vacation Calendar'
+    }
+
+    It 'grants SendOnBehalf via Set-Mailbox' {
+        $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @(@{ address='finance@x.com'; access='SendOnBehalf' })
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $GrantSendOnBehalfTo['Add'] -eq 'new@x.com' } -Times 1
+        ($acts -join ' ') | Should -Match 'default shared mailbox SendOnBehalf: Finance'
+    }
+
+    It 'is idempotent — skips a mailbox the target already has FullAccess on' {
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ User='new@x.com'; AccessRights=@('FullAccess'); IsInherited=$false }) }
+        $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @(@{ address='finance@x.com'; access='FullAccess' })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($acts -join ' ') | Should -Match 'already FullAccess: Finance'
+    }
+
+    It 'warns (does not throw) when a named mailbox is not found' {
+        $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @(@{ address='missing@x.com'; access='FullAccess' })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($acts -join ' ') | Should -Match 'WARN default shared mailbox not found in Exchange Online: missing@x.com'
+    }
+
+    It 'returns nothing for an empty list' {
+        $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @()
+        @($acts).Count | Should -Be 0
+    }
+}
+
 Describe 'Invoke-CtgExchangeDistListMirror' {
     It 'adds the new user to the reference user''s distribution + mail-enabled security groups (static only)' {
         Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'Christine Holleran' } -MockWith { [pscustomobject]@{ DisplayName = 'Christine Holleran'; DistinguishedName = 'CN=Christine,DC=x' } }

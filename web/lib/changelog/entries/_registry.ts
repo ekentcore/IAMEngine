@@ -29,6 +29,7 @@ export { entry as coreidSlugRedirect } from "./coreid-slug-redirect";
 export { entry as coretelligentPostResetRestore } from "./coretelligent-post-reset-restore";
 export { entry as credExpirySettings } from "./cred-expiry-settings";
 export { entry as credPlatform } from "./cred-platform";
+export { entry as defaultSharedMailboxAccess } from "./default-shared-mailbox-access";
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
 export { entry as documentsVersionedInApp } from "./documents-versioned-in-app";
@@ -59,6 +60,7 @@ export { entry as m365PasswordResetPermission } from "./m365-password-reset-perm
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
+export { entry as manualSetPasswordOption } from "./manual-set-password-option";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
 export { entry as mimecastDocProductsPoc } from "./mimecast-doc-products-poc";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";

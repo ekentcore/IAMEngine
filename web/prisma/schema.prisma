@@ -109,6 +109,11 @@ model Client {
   // groups" and consumed by the CENTRAL runner (it has Graph), which posts the result back.
   cloudGroups            Json?
   cloudGroupsRequestedAt DateTime?
+  // Shared mailboxes discovered from Exchange Online alongside the cloud groups (same "Refresh"
+  // request flag; the central runner enumerates Get-Mailbox -RecipientTypeDetails SharedMailbox when
+  // the m365-admin secret carries an EXO cert). Backs the per-client "default shared-mailbox access"
+  // picker (FR #15). Shape: { mailboxes: [{ address, displayName }], discoveredAt }.
+  cloudMailboxes         Json?
   status                 ClientStatus @default(active)
   // Where this client's onboarding/offboarding requests come from, so case-scanning hits the right
   // ServiceNow table: "um" = external clients (sn_customerservice_user_management cases, the default),

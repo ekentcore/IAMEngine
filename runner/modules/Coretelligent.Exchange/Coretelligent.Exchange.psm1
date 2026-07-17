@@ -1048,4 +1048,84 @@ function Confirm-CtgExchange {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+function Invoke-CtgExchangeDefaultMailboxAccess {
+    <#
+    .SYNOPSIS
+        Grant the new user a SPECIFIC access level on each of a NAMED list of shared mailboxes — the
+        per-client "add everyone to these shared mailboxes by default" list (FR #15). Unlike the
+        reference-user mirror, this is driven by an explicit list + a chosen level per mailbox, not by
+        copying someone's permissions.
+    .NOTES
+        Access levels: FullAccess (default — opens the mailbox, covers a shared "Global Vacation
+        Calendar"), SendAs, SendOnBehalf. Idempotent: a grant is added only when the target doesn't
+        already hold it. Needs Exchange Online (the same app-only connection the DL adds use). Each
+        entry is { address, access } (a bare string is treated as a FullAccess address).
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$NewUser, $Mailboxes)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $entries = @($Mailboxes | Where-Object { $_ })
+    if ($entries.Count -eq 0) { return $actions.ToArray() }
+
+    # Every identifier EXO might record the target under, lowercased, so an "already has it" check is
+    # form-agnostic (a permission stored under UPN still matches when we were handed an SMTP address).
+    $tgt = Get-Recipient -Identity $NewUser -ErrorAction SilentlyContinue
+    $idsOf = {
+        param($r, $raw)
+        $fields = @('PrimarySmtpAddress', 'UserPrincipalName', 'WindowsLiveID', 'Name', 'Alias', 'DistinguishedName', 'ExternalDirectoryObjectId')
+        @(@($raw) + @($fields | ForEach-Object { Get-CtgProp $r $_ })) |
+            Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Select-Object -Unique
+    }
+    $targetIds = @(& $idsOf $tgt $NewUser)
+    $isTarget = { param($u) $u -and (([string]$u).ToLowerInvariant() -in $targetIds) }
+
+    foreach ($entry in $entries) {
+        $addr = if ($entry -is [string]) { $entry } else { [string]((Get-CtgProp $entry 'address') ?? (Get-CtgProp $entry 'mailbox') ?? (Get-CtgProp $entry 'name')) }
+        if ([string]::IsNullOrWhiteSpace($addr)) { continue }
+        $accessRaw = if ($entry -is [string]) { 'FullAccess' } else { [string](Get-CtgProp $entry 'access') }
+        # Tolerant of casing / punctuation ("send-as", "SendOnBehalf"); anything else falls to FullAccess.
+        $access = switch -Regex ($accessRaw) { 'sendas|send.?as' { 'SendAs' } 'onbehalf|on.?behalf' { 'SendOnBehalf' } default { 'FullAccess' } }
+        $mbx = Get-Mailbox -Identity $addr -ErrorAction SilentlyContinue
+        if (-not $mbx) { $actions.Add("WARN default shared mailbox not found in Exchange Online: $addr"); Write-CtgStep "✗ mailbox not found: $addr"; continue }
+        $name = $mbx.DisplayName
+        # A GUARANTEED-UNIQUE identity for the per-mailbox cmdlets (a mailbox's Name/alias can collide
+        # with a like-named DL) — same precaution the mirror takes.
+        $mbxId = @(
+            (Get-CtgProp $mbx 'ExchangeGuid'), (Get-CtgProp $mbx 'PrimarySmtpAddress'),
+            (Get-CtgProp $mbx 'Guid'), (Get-CtgProp $mbx 'Identity')
+        ) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -First 1
+        try {
+            switch ($access) {
+                'SendAs' {
+                    $rperms = @(Get-RecipientPermission -Identity $mbxId -ErrorAction SilentlyContinue | Where-Object { $_.AccessRights -contains 'SendAs' })
+                    if (@($rperms | Where-Object { & $isTarget $_.Trustee }).Count) { $actions.Add("already SendAs: $name") }
+                    elseif ($PSCmdlet.ShouldProcess($NewUser, "SendAs on $name")) {
+                        Add-RecipientPermission -Identity $mbxId -Trustee $NewUser -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+                        $actions.Add("default shared mailbox SendAs: $name"); Write-CtgStep "✓ SendAs: $name"
+                    }
+                }
+                'SendOnBehalf' {
+                    $sobList = @($mbx.GrantSendOnBehalfTo)
+                    if (@($sobList | Where-Object { & $isTarget $_ }).Count) { $actions.Add("already SendOnBehalf: $name") }
+                    elseif ($PSCmdlet.ShouldProcess($NewUser, "SendOnBehalf on $name")) {
+                        Set-Mailbox -Identity $mbxId -GrantSendOnBehalfTo @{ Add = $NewUser } -ErrorAction Stop
+                        $actions.Add("default shared mailbox SendOnBehalf: $name"); Write-CtgStep "✓ SendOnBehalf: $name"
+                    }
+                }
+                default {
+                    $perms = @(Get-MailboxPermission -Identity $mbxId -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and ($_.AccessRights -contains 'FullAccess') })
+                    if (@($perms | Where-Object { & $isTarget $_.User }).Count) { $actions.Add("already FullAccess: $name") }
+                    elseif ($PSCmdlet.ShouldProcess($NewUser, "FullAccess on $name")) {
+                        Add-MailboxPermission -Identity $mbxId -User $NewUser -AccessRights FullAccess -InheritanceType All -AutoMapping:$true -Confirm:$false -ErrorAction Stop | Out-Null
+                        $actions.Add("default shared mailbox FullAccess: $name"); Write-CtgStep "✓ FullAccess: $name"
+                    }
+                }
+            }
+        } catch {
+            $actions.Add("WARN default shared mailbox '$name' ($access): $($_.Exception.Message)"); Write-CtgStep "✗ $name — $($_.Exception.Message)"
+        }
+    }
+    return $actions.ToArray()
+}
+
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

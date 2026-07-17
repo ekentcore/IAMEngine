@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CopyButton } from "@/app/_components/copy-button";
+import { MANUAL_PASSWORD_HINT, validateManualPassword } from "@/lib/auth/password-policy";
 
 type RevealResponse = { ready?: boolean; status?: string; password?: string; error?: string };
 
@@ -103,10 +104,26 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
+  const [manualSet, setManualSet] = useState(false); // FR #17: a specific password was set (no reveal)
   const [err, setErr] = useState<string | null>(null);
   // FR #14: default ON; untick when a tech still has to log in AS the user (equipment setup)
   // before handing the account over — a forced change at first sign-in would land on the tech.
   const [requireChange, setRequireChange] = useState(true);
+  // FR #17: "generate" a random password (shown once) or set a "manual" specific one (e.g. a required
+  // passphrase). A manual password the operator chose on purpose would be wiped by a forced change at
+  // next sign-in, so switching to manual clears that box; they can re-tick it.
+  const [mode, setMode] = useState<"generate" | "manual">("generate");
+  const [customPw, setCustomPw] = useState("");
+
+  const pwError = mode === "manual" ? validateManualPassword(customPw) : null;
+  const canSubmit = !busy && (mode === "generate" || (customPw.length > 0 && !pwError));
+
+  // Clear the dialog. On open/Cancel we reset everything; after dispatch we keep `requireChange` so
+  // RevealDialog reads the value that was actually sent (not a reset-to-default).
+  function reset(opts?: { keepRequireChange?: boolean }) {
+    setConfirming(false); setMode("generate"); setCustomPw(""); setErr(null);
+    if (!opts?.keepRequireChange) setRequireChange(true);
+  }
 
   async function dispatch() {
     setBusy(true); setErr(null);
@@ -114,12 +131,17 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
       const r = await fetch(`/api/jobs/${jobId}/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requireChangeAtSignIn: requireChange }),
+        body: JSON.stringify({
+          requireChangeAtSignIn: requireChange,
+          ...(mode === "manual" ? { password: customPw } : {}),
+        }),
       });
-      const d = (await r.json().catch(() => ({}))) as { jobId?: string; error?: string };
+      const d = (await r.json().catch(() => ({}))) as { jobId?: string; manual?: boolean; error?: string };
       if (!r.ok || !d.jobId) { setErr(d.error ?? `failed (${r.status})`); return; }
-      setConfirming(false);
-      setResetJobId(d.jobId);
+      const wasManual = mode === "manual";
+      reset({ keepRequireChange: true });
+      // Generated → reveal it once. Manual → the operator already knows it; just confirm it was queued.
+      if (wasManual) setManualSet(true); else setResetJobId(d.jobId);
       await refresh?.();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
@@ -129,32 +151,71 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
     <>
       <button
         style={{ marginLeft: 8, fontSize: 11 }}
-        title="Set a completely random new password on this account and show it once (with copy). It can't be recalled afterwards."
-        onClick={(e) => { e.preventDefault(); setConfirming(true); }}
+        title="Set a new password on this account — either generated (shown once) or a specific password you enter."
+        onClick={(e) => { e.preventDefault(); reset(); setConfirming(true); }}
       >
-        🔑 generate random password
+        🔑 set / generate password
       </button>
       {err && !confirming && <span className="note" style={{ marginLeft: 6, color: "#b3261e" }}>{err}</span>}
       {confirming && (
-        <Overlay onBackdropClick={() => setConfirming(false)}>
-          <h2 style={{ margin: "0 0 0.25rem" }}>Generate random password — {systemName}</h2>
+        <Overlay onBackdropClick={() => reset()}>
+          <h2 style={{ margin: "0 0 0.25rem" }}>Set a new password — {systemName}</h2>
           <p className="note" style={{ marginTop: 0 }}>
-            This sets a <b>new random password</b> on the account in {systemName} right now — the current password stops working.
-            The new password is shown <b>once</b>, then wiped for security; it cannot be recalled.
+            This sets a new password on the account in {systemName} right now — the current password stops working.
           </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, margin: "0.6rem 0" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, fontSize: 13 }}>
+              <input type="radio" name={`pwmode-${jobId}`} checked={mode === "generate"} onChange={() => { setMode("generate"); setRequireChange(true); }} style={{ width: "auto" }} />
+              Generate a random password (shown once, then wiped)
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, fontSize: 13 }}>
+              <input type="radio" name={`pwmode-${jobId}`} checked={mode === "manual"} onChange={() => { setMode("manual"); setRequireChange(false); }} style={{ width: "auto" }} />
+              Enter a specific password
+            </label>
+          </div>
+          {mode === "generate" ? (
+            <p className="note" style={{ marginTop: 0 }}>
+              The new password is shown <b>once</b>, then wiped for security; it cannot be recalled.
+            </p>
+          ) : (
+            <div style={{ margin: "0 0 0.4rem" }}>
+              {/* Plain text (not masked): the operator is choosing a password to hand over, so seeing
+                  exactly what they typed prevents a typo becoming an un-recallable account password. */}
+              <input
+                type="text" value={customPw} onChange={(e) => setCustomPw(e.target.value)} autoComplete="off" spellCheck={false}
+                placeholder="the password to set" style={{ width: "100%", fontSize: 14, fontFamily: "var(--mono, monospace)" }}
+              />
+              <p className="note" style={{ margin: "3px 0 0", color: customPw.length > 0 && pwError ? "#b3261e" : undefined }}>
+                {customPw.length > 0 && pwError ? pwError : MANUAL_PASSWORD_HINT}
+              </p>
+            </div>
+          )}
           <label className="note" style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.4rem 0" }}>
             <input type="checkbox" checked={requireChange} onChange={(e) => setRequireChange(e.target.checked)} />
             Require the user to change this password at next sign-in
           </label>
           {!requireChange && (
             <p className="note" style={{ marginTop: 0 }}>
-              The password stays as generated — for setting up equipment logged in as the user. Hand it over securely, and reset again if it was exposed.
+              {mode === "manual"
+                ? "The password stays as you entered it. Hand it over securely, and reset again if it was exposed."
+                : "The password stays as generated — for setting up equipment logged in as the user. Hand it over securely, and reset again if it was exposed."}
             </p>
           )}
           {err && <p className="note" style={{ color: "#b3261e" }}>{err}</p>}
           <div className="toolbar" style={{ justifyContent: "flex-end", gap: 8 }}>
-            <button onClick={() => setConfirming(false)}>Cancel</button>
-            <button className="primary" disabled={busy} onClick={dispatch}>{busy ? "Dispatching…" : "Set new password"}</button>
+            <button onClick={() => reset()}>Cancel</button>
+            <button className="primary" disabled={!canSubmit} onClick={dispatch}>{busy ? "Dispatching…" : "Set new password"}</button>
+          </div>
+        </Overlay>
+      )}
+      {manualSet && (
+        <Overlay onBackdropClick={() => setManualSet(false)}>
+          <h2 style={{ margin: "0 0 0.25rem" }}>Password queued — {systemName}</h2>
+          <p className="note" style={{ marginTop: 0 }}>
+            The password you entered will be set on the next runner poll. Watch the reset line below for the result — there&rsquo;s no reveal because you already have it.
+          </p>
+          <div className="toolbar" style={{ justifyContent: "flex-end" }}>
+            <button className="primary" onClick={() => setManualSet(false)}>OK</button>
           </div>
         </Overlay>
       )}

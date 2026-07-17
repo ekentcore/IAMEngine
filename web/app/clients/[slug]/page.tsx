@@ -27,6 +27,7 @@ import { M365LicenseRulesEditor } from "../_components/m365-license-rules-editor
 import { normalizeLicenseRules } from "@/lib/m365/license-rules";
 import { parseLicenseEntries } from "@/lib/m365/license-config";
 import { M365GroupsEditor } from "../_components/m365-groups-editor";
+import { MailboxAccessEditor } from "../_components/mailbox-access-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
@@ -111,7 +112,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     : null;
 
   // v2.1 resolution rules (personas/globals/locations) — the conditional group/OU/attribute logic.
-  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true } });
+  const v21 = await db.client.findUnique({ where: { id: client.id }, select: { personas: true, globals: true, locations: true, adObjects: true, cloudGroups: true, cloudMailboxes: true } });
   const notify = await db.client.findUnique({ where: { id: client.id }, select: { notifyOverride: true } });
   const notifyOverride = parseClientOverride(notify?.notifyOverride);
 
@@ -143,6 +144,13 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
     ...everyUserM365Groups.map((name) => ({ name })),
   ];
   const cloudGroupsMeta = { count: cloudGroupList.length, discoveredAt: typeof cloudGroups.discoveredAt === "string" ? cloudGroups.discoveredAt : null };
+
+  // Discovered shared mailboxes (FR #15) — backs the default shared-mailbox picker, same discovery run.
+  const cloudMailboxes = ((v21?.cloudMailboxes as { mailboxes?: unknown; discoveredAt?: string } | null) ?? {});
+  const cloudMailboxList = Array.isArray(cloudMailboxes.mailboxes)
+    ? (cloudMailboxes.mailboxes as unknown[]).filter((m): m is { address: string; displayName?: string } => !!m && typeof m === "object" && typeof (m as { address?: unknown }).address === "string")
+    : [];
+  const cloudMailboxesMeta = { count: cloudMailboxList.length, discoveredAt: typeof cloudMailboxes.discoveredAt === "string" ? cloudMailboxes.discoveredAt : null };
 
   // Sectioned group options for the per-location groups picker (365 by type, then AD, then any
   // configured every-user groups not already listed). Empty sections render nothing in the picker.
@@ -362,6 +370,24 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           everyUserGroups={everyUserM365Groups}
           knownGroups={knownGroups}
           cloudGroupsMeta={cloudGroupsMeta}
+        />
+      )}
+      {sysByKey.has("m365") && (
+        <MailboxAccessEditor
+          slug={client.slug}
+          current={(() => {
+            const cfg = (sysByKey.get("m365")?.config ?? {}) as { onboard?: { defaultSharedMailboxes?: unknown } };
+            const ms = cfg.onboard?.defaultSharedMailboxes ?? [];
+            return Array.isArray(ms)
+              ? ms.map((x) => ({
+                  address: String((x as { address?: unknown })?.address ?? ""),
+                  displayName: typeof (x as { displayName?: unknown })?.displayName === "string" ? (x as { displayName: string }).displayName : undefined,
+                  access: typeof (x as { access?: unknown })?.access === "string" ? (x as { access: string }).access : undefined,
+                })).filter((x) => x.address)
+              : [];
+          })()}
+          discovered={cloudMailboxList}
+          discoveredMeta={cloudMailboxesMeta}
         />
       )}
       {sysByKey.has("m365") && (
