@@ -45,6 +45,7 @@ export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";
 export { entry as llmModelAwareRequests } from "./llm-model-aware-requests";
 export { entry as llmProviderApiVersionAndAsk } from "./llm-provider-api-version-and-ask";
 export { entry as llmProviderAzureForm } from "./llm-provider-azure-form";
+export { entry as m365FleetPermissionReport } from "./m365-fleet-permission-report";
 export { entry as m365PasswordResetPermission } from "./m365-password-reset-permission";
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
