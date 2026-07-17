@@ -9,7 +9,6 @@ import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notification
 import { AUTO_FIX_SETTING_KEY, type AutoFixSetting } from "@/lib/fixes/fix-tasks";
 import { listProvidersMasked } from "@/lib/fixes/providers";
 import { NotificationForm } from "./_components/notification-form";
-import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
 import { RestartServerButton } from "./_components/restart-server-button";
 import { AutoFixToggle } from "./_components/auto-fix-toggle";
 import { LlmProviders } from "./_components/llm-providers";
@@ -17,7 +16,7 @@ import { AgentAutoUpdateToggle } from "./_components/agent-auto-update-toggle";
 import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
 import { AgentMigrationSettings } from "./_components/agent-migration-settings";
 import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
-import { loadDbBackupStatus, loadFeatureRequests } from "./_lib/loader";
+import { loadDbBackupStatus } from "./_lib/loader";
 import { DbBackupCard } from "./_components/db-backup-card";
 import { MergePrs } from "./_components/merge-prs";
 import { isSupervised } from "@/lib/supervised";
@@ -27,16 +26,13 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
-  let canHide = true; // auth disabled (dev) acts as super_admin
   if (authEnabled()) {
     const me = await getCurrentUser();
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
-    canHide = can(me.role, "feature_request.hide");
   }
   // independent single-row reads — fetch in parallel, not as six serial round trips
-  const [rawSettings, featureRequests, autoFix, llmProviders, autoUpdate, dbBackup, agentMigration] = await Promise.all([
+  const [rawSettings, autoFix, llmProviders, autoUpdate, dbBackup, agentMigration] = await Promise.all([
     getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
-    loadFeatureRequests(),
     getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
     listProvidersMasked(db),
     getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY),
@@ -53,13 +49,11 @@ export default async function SettingsPage() {
         you exactly where to find its link.
       </p>
       <NotificationForm initial={settings} />
-      <h2 style={{ marginTop: "2.5rem" }}>Feature requests</h2>
-      <p className="note" style={{ marginBottom: "1rem" }}>
-        Filed by operators via the 💡 button in the header. Set a status (and, when it lands or is
-        declined, a note) to keep the queue honest — everyone can watch progress on the{" "}
-        <a href="/feature-requests">requests board</a>.
+      {/* Feature-request management moved to its own page — /feature-requests carries the same
+          admin editor for settings.manage holders, and the board for everyone else. */}
+      <p className="note" style={{ marginTop: "2.5rem" }}>
+        Looking for feature requests? They have their own page now: <a href="/feature-requests">Feature requests</a>.
       </p>
-      <FeatureRequestsAdmin initial={featureRequests} canHide={canHide} />
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
       <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />

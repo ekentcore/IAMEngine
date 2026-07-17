@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "unlicensed-user-holds-mimecast-spanning",
   date: "2026-07-16",
-  time: "19:00",
+  time: "22:15",
   title: "No M365 license? Mimecast and Spanning now wait instead of failing for four hours",
   items: [
     "When no license seat was free, the m365 step succeeded with a warning (user created unlicensed) and Mimecast/Spanning dispatched anyway — an unlicensed user has no mailbox, so they can never be discovered, and both steps burned their entire ~4-hour retry budget on a guaranteed failure. (FR #0000005)",

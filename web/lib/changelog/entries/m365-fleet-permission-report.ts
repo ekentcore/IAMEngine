@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "m365-fleet-permission-report",
   date: "2026-07-17",
-  time: "08:45",
+  time: "09:30",
   title: "The Microsoft 365 permission picture for every client — including the 63 that have no credential at all",
   items: [
     "New: `npx tsx scripts/report-m365-perms.ts` reports the Graph permission state of every client that has Microsoft 365, and `--send` posts it to the chat rooms. Sent to the team room today",

@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "requested-groups-reach-the-plan",
   date: "2026-07-16",
-  time: "18:15",
+  time: "22:15",
   title: "Distribution lists and security groups picked on the ticket are now actually added",
   items: [
     "A requestor could add non-default email distribution lists to the case and the intake captured them — but nothing merged them into any job, so they were silently dropped and never added. (FR #0000004)",

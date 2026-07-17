@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "offboard-onedrive-delegate-access",
   date: "2026-07-16",
-  time: "20:15",
+  time: "22:15",
   title: "Offboarding grants the delegate the leaver's OneDrive too",
   items: [
     "There was no OneDrive handling at all — a ticket asking for \"access to Matt's inbox and OneDrive for Peter\" got the inbox handled (now, per FR #7) and the OneDrive silently ignored. (FR #0000008)",

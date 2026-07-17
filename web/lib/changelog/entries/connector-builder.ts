@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "connector-builder",
   date: "2026-07-16",
-  time: "23:15",
+  time: "23:45",
   title: "Add a new system without writing code: the low-code connector builder",
   items: [
     "New /connectors page (global admins): describe a system's API as a declarative connector, test it, and publish. A published connector becomes a system clients can attach in the systems editor — the runner interprets the definition, so there's no new module to build or deploy.",

@@ -10,8 +10,8 @@ import { redirect } from "next/navigation";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { frNumber } from "@/lib/feature-requests/visibility";
-import { loadFeatureRequests } from "../settings/_lib/loader";
-import { FeatureRequestsAdmin } from "../settings/_components/feature-requests-admin";
+import { loadFeatureRequests } from "./_lib/loader";
+import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
 import { FeatureStatusBadge } from "./_components/status-badge";
 import { CompletedTable } from "./_components/completed-table";
 

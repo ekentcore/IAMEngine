@@ -22,6 +22,9 @@ type Item = readonly [string, string];
 export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }): { label: string; items: Item[] }[] {
   const reference: Item[] = [
     ...(flags.showDocs ? ([["/docs", "Documents"]] as const) : []),
+    // Everyone sees the board (read-only below admin); the admin editor lives ON the page,
+    // gated server-side — it moved out of Settings, so the nav is how you find it now.
+    ["/feature-requests", "Feature requests"],
     ["/modules", "Modules"],
     ["/health", "Health"],
     // Fleet sweeps over every client's M365 credential — same capability as wiring one.

@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "offboard-clears-manager-in-entra",
   date: "2026-07-16",
-  time: "18:00",
+  time: "22:15",
   title: "Offboarding now clears the manager for cloud-only users, not just AD ones",
   items: [
     "Only the Active Directory step ever removed a leaver's manager. A cloud-mastered user (no AD lane — the JAMS case) kept the link forever, so the leaver stayed in their manager's org chart. The m365/entra step now clears it in Entra. (FR #0000012)",

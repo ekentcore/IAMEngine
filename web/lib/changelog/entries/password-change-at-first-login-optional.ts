@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "password-change-at-first-login-optional",
   date: "2026-07-16",
-  time: "18:45",
+  time: "22:15",
   title: "Generate password: you choose whether the user must change it at first sign-in",
   items: [
     "Generated passwords always forced a change at next sign-in — which lands on the TECH when a client's equipment is set up logged in as the user before handover. (FR #0000014)",

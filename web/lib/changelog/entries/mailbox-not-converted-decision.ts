@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "mailbox-not-converted-decision",
   date: "2026-07-16",
-  time: "15:30",
+  time: "16:00",
   title: "Offboards that parked on \"the mailbox was NOT converted to shared\" now have buttons that finish them",
   items: [
     "That warning used to be a dead end. It said \"convert the mailbox, then re-run this step\" — but for a client whose profile configures no conversion at all, nothing in the case ever converts anything, so every re-run reproduced the identical warning and the seat was never reclaimed. UM0029840 (Easterseals) sat on it with a 2.74 GB mailbox: nowhere near the 50 GB cap, so size was never the obstacle",

@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "mimecast-doc-products-poc",
   date: "2026-07-16",
-  time: "17:45",
+  time: "22:15",
   title:
     "Mimecast setup guide: the product list matches what the console actually offers, and the point of contact is spelled out",
   items: [

@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "dismiss-warnings-on-a-done-case",
   date: "2026-07-16",
-  time: "19:30",
+  time: "22:15",
   title: "Done cases: dismiss all the warnings you finished by hand, in one click",
   items: [
     'A case like UM0029777 — automation did most of it, you completed the rest manually — stayed orange forever: warnings could only be ignored one step at a time, and the cases LIST recomputed them raw so it stayed orange even then. (FR #0000013)',

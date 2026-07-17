@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "m365-password-reset-permission",
   date: "2026-07-16",
-  time: "17:00",
+  time: "22:00",
   title: "Microsoft 365 password resets: name the permission Graph actually needs, and stop asking admins for domain write access",
   items: [
     "Every Microsoft 365 password reset in the fleet has been failing with a bare '[Authorization_RequestDenied] Insufficient privileges', on credentials whose connection test was green (UM0028954/Emporia Software hit this on an onboard). A sweep of all 76 clients confirms it was never client-specific: 0 of the 31 wired tenants could reset a cloud password",

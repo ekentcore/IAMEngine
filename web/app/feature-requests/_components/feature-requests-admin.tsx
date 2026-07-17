@@ -12,7 +12,7 @@
 import { useRef, useState } from "react";
 import { frIsHideable, frNumber } from "@/lib/feature-requests/visibility";
 import type { FeatureRequestRow } from "@/lib/feature-requests/serialize";
-import { FeatureStatusBadge } from "../../feature-requests/_components/status-badge";
+import { FeatureStatusBadge } from "./status-badge";
 import { CompletedTable } from "../../feature-requests/_components/completed-table";
 import { StatusSelect, type SendFn } from "../../feature-requests/_components/status-select";
 

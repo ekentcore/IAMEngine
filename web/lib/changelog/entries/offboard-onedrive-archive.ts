@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "offboard-onedrive-archive",
   date: "2026-07-16",
-  time: "20:15",
+  time: "22:15",
   title: "Offboarding can move the leaver's OneDrive files to another OneDrive or SharePoint",
   items: [
     'The profile\'s oneDriveBackup setting only printed "OneDrive backup required" and a human did the rest. It now actually archives: every top-level item is copied server-side into an "Archive - <name>" folder on the target. (FR #0000009)',

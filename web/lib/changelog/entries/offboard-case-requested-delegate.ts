@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "offboard-case-requested-delegate",
   date: "2026-07-16",
-  time: "19:45",
+  time: "22:15",
   title: "Offboarding grants the delegate the ticket actually asked for",
   items: [
     'The offboard form captures "provide mailbox access to <person>" — and nothing ever read it. Only the profile-static "grant the MANAGER access" rule ran, so the requested delegate (UM0029777: Peter Hegland) silently got nothing. (FR #0000007)',

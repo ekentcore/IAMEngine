@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "ten-fix-hardening-batch",
   date: "2026-07-17",
-  time: "00:00",
+  time: "07:15",
   title: "Hardening batch: offboard safety, reseed protection, verify honesty (runner 1.71.0)",
   items: [
     "11 clients carried an unguarded licence removal with no Exchange step to protect the mailbox - their next offboard would have purged an unconverted mailbox with no warning. The config is stripped, and the sweep now refuses to write licence removal for any client without an exchange offboard step",
