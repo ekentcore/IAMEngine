@@ -81,6 +81,7 @@ export { entry as runnerGenerator } from "./runner-generator";
 export { entry as runnerGraphSkewGuard } from "./runner-graph-skew-guard";
 export { entry as runnerVersionStartupLog } from "./runner-version-startup-log";
 export { entry as securityP0Runner } from "./security-p0-runner";
+export { entry as selfHealWatchdog } from "./self-heal-watchdog";
 export { entry as slackExecutorAndManualFlip } from "./slack-executor-and-manual-flip";
 export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-central-only";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";

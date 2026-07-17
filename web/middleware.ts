@@ -60,6 +60,10 @@ export function middleware(req: NextRequest) {
   headers.set("x-pathname", pathname);
   const pass = () => NextResponse.next({ request: { headers } });
 
+  // Liveness probe — public by design: the self-heal watchdog and the in-page restart modal need an
+  // endpoint that PROVES route code executes. Gating it here would make the middleware answer for a
+  // broken app (the /api/health 401 problem). It exposes liveness + one DB-reachability bit only.
+  if (pathname === "/api/health/probe") return NextResponse.next();
   if (isRunnerBootstrap(pathname)) return pass(); // runner bundle download / installer — open by necessity (no token yet)
   if (pathname === "/api/agents" && req.method === "POST") return pass(); // agent enrollment — gated in-handler by the enroll token (no operator cookie / no bearer)
   if (process.env.AUTH_ENABLED !== "true") {

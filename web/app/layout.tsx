@@ -11,6 +11,8 @@ import { UserMenu } from "./_components/user-menu";
 import { FeatureRequestButton } from "./_components/feature-request-button";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { ImpersonationBanner } from "./_components/impersonation-banner";
+import { ServerWatchdog } from "./_components/server-watchdog";
+import { isSupervised } from "@/lib/supervised";
 import { authEnabled, getActingContext } from "@/lib/auth/current-user";
 import { can, ROLE_RANK } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
@@ -53,6 +55,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" data-theme={theme}>
       <body>
+        {/* Every page watches the server's pulse — when the route layer breaks wholesale (the class
+            that stalls the runner fleet) this announces the self-restart and reconnects the page. */}
+        <ServerWatchdog supervised={isSupervised()} />
         {!onLogin && (
           <header className="app-header">
             <Link href="/clients" className="brand">iam-engine</Link>
