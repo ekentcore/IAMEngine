@@ -71,6 +71,7 @@ sync_local_after_merge() {
     return 0
   fi
   echo "sync: fast-forwarding main…"
+  local before_sync; before_sync=$(git -C "$root" rev-parse HEAD)
   if ! git -C "$root" pull --ff-only -q; then
     echo "sync: could not fast-forward main (diverged from origin?) — pull it by hand, then \`npm install\`."
     return 0
@@ -88,6 +89,20 @@ sync_local_after_merge() {
   done
   echo "sync: local checkout is current. Restart the dev server to pick up app changes; a merged runner"
   echo "      file is served from disk, so agents auto-update on their next heartbeat (no rebuild)."
+  # A merge that DELETES or RENAMES a file under web/ is not a "pick it up when convenient" change:
+  # a running `next dev` still holds the old module graph, the next recompile fails to read the
+  # missing path, and ONE ModuleBuildError poisons the whole dev module graph — every route starts
+  # returning 500, /api/agents/heartbeat included, so the entire runner fleet stalls until the server
+  # is restarted (2026-07-17: the feature-requests-admin move did exactly this for 20 minutes).
+  local moved
+  moved=$(git -C "$root" diff --name-only --diff-filter=DR "$before_sync"..HEAD -- web/ 2>/dev/null | head -5)
+  if [[ -n "$moved" ]]; then
+    echo ""
+    echo "sync: ⚠⚠ THIS MERGE DELETED/RENAMED web/ FILES — RESTART THE DEV SERVER NOW ⚠⚠"
+    echo "      A running \`next dev\` will 500 on EVERY route (heartbeats included — the fleet"
+    echo "      stalls) as soon as it recompiles. Affected:"
+    sed 's/^/        /' <<<"$moved"
+  fi
 }
 
 # The by-hand recipe, printed whenever the migration isn't (or can't be) run automatically.
