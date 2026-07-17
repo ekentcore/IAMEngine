@@ -7,7 +7,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { PRIMARY, menuGroups } from "./nav";
+import { PRIMARY, menuGroups, FEATURE_REQUESTS_HREF } from "./nav";
+import { FeatureRequestNavBadge } from "./feature-request-nav-badge";
 
 export function MobileNav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -31,7 +32,8 @@ export function MobileNav(flags: { showUsers?: boolean; showAudit?: boolean; sho
                 <div className="nav-menu-label">{g.label}</div>
                 {g.items.map(([href, label]) => (
                   <Link key={href} href={href} aria-current={path === href || path.startsWith(`${href}/`) ? "page" : undefined} onClick={() => setOpen(false)}>
-                    {label}
+                    <span>{label}</span>
+                    {href === FEATURE_REQUESTS_HREF && <FeatureRequestNavBadge />}
                   </Link>
                 ))}
               </div>

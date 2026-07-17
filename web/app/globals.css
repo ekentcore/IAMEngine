@@ -175,12 +175,23 @@ a:hover { text-decoration-color: currentColor; }
   color: var(--muted); opacity: 0.75;
 }
 .nav-menu-item {
-  display: block; padding: 0.42rem 0.55rem; border-radius: 7px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0.42rem 0.55rem; border-radius: 7px;
   color: var(--fg); font-size: 13.5px; font-weight: 500; text-decoration: none;
   transition: background 0.12s ease;
 }
 .nav-menu-item:hover { background: color-mix(in srgb, var(--page) 60%, transparent); }
 .nav-menu-item[aria-current="page"] { color: var(--accent-press); background: var(--accent-soft); }
+
+/* Count pill on a nav link (open feature requests). A small circle with a number; hidden at zero by
+   the component itself. Uses the accent chip colors so it reads as "here's a number", not an alert. */
+.nav-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums;
+  color: var(--accent-press); background: var(--accent-soft);
+}
 @media (prefers-reduced-motion: reduce) { .nav-menu { animation: none; } .nav-caret { transition: none; } }
 
 /* ── page panel: every <main> becomes a clean floating card ───────────────── */
@@ -520,7 +531,7 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
   background: var(--bg); border-left: 1px solid var(--line); box-shadow: var(--shadow-2);
   padding: 1rem; display: flex; flex-direction: column; gap: 0.15rem; overflow-y: auto;
 }
-.mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; display: block; }
+.mobile-drawer a { padding: 0.7rem 0.6rem; border-radius: 8px; color: var(--fg); text-decoration: none; font-weight: 500; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mobile-drawer-group + .mobile-drawer-group { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
 .mobile-drawer a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-press); }
 .mobile-drawer a:active { background: var(--bg-soft); }

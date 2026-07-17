@@ -9,8 +9,10 @@
 // lists are derived from that array, so a request can never render in both at once. The array
 // re-adopts `initial` whenever the server sends a fresh one (router.refresh(), navigation),
 // otherwise the board would keep rendering a snapshot frozen at mount.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { frIsHideable, frNumber } from "@/lib/feature-requests/visibility";
+import { frCounts } from "@/lib/feature-requests/counts";
+import { broadcastFrCounts } from "@/lib/feature-requests/live";
 import type { FeatureRequestRow } from "@/lib/feature-requests/serialize";
 import { FeatureStatusBadge } from "./status-badge";
 import { CompletedTable } from "../../feature-requests/_components/completed-table";
@@ -104,6 +106,11 @@ export function FeatureRequestsAdmin({ initial, canHide = false }: { initial: Fe
   };
 
   const replace = (r: FeatureRequestRow) => setRows((prev) => prev.map((x) => (x.id === r.id ? r : x)));
+
+  // Tell the read-only surfaces (the page summary line and the nav badge) the current counts, so a
+  // status change moves them the moment `rows` changes — no reload. Fires on mount too, matching the
+  // server's numbers, which is a no-op for the viewer.
+  useEffect(() => { broadcastFrCounts(frCounts(rows)); }, [rows]);
 
   if (rows.length === 0) return <p className="note">No feature requests yet — the 💡 button in the header files one.</p>;
 

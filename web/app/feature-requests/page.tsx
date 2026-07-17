@@ -10,8 +10,10 @@ import { redirect } from "next/navigation";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 import { frNumber } from "@/lib/feature-requests/visibility";
+import { frCounts } from "@/lib/feature-requests/counts";
 import { loadFeatureRequests } from "./_lib/loader";
 import { FeatureRequestsAdmin } from "./_components/feature-requests-admin";
+import { FeatureRequestsSummary } from "./_components/feature-requests-summary";
 import { FeatureStatusBadge } from "./_components/status-badge";
 import { CompletedTable } from "./_components/completed-table";
 
@@ -31,18 +33,14 @@ export default async function FeatureRequestsPage() {
 
   const board = requests.filter((r) => !r.hidden);
   const completed = requests.filter((r) => r.hidden);
-  const open = board.filter((r) => r.status !== "done" && r.status !== "declined").length;
-  const shipped = requests.filter((r) => r.status === "done").length;
 
   return (
     <main>
       <div className="row-between">
         <div>
           <h1>Feature requests</h1>
-          <p className="note">
-            {requests.length} total · {open} open · {shipped} implemented — filed from the 💡 button in the header.
-            {canManage ? " Set a status to keep the queue honest." : " An admin sets the status."}
-          </p>
+          {/* Live: the counts recompute in place when an admin re-triages a request — no reload. */}
+          <FeatureRequestsSummary initial={frCounts(requests)} canManage={canManage} />
         </div>
       </div>
 

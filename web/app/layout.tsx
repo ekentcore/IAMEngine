@@ -9,6 +9,7 @@ import { MobileNav } from "./_components/mobile-nav";
 import { V2_COOKIE } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { FeatureRequestButton } from "./_components/feature-request-button";
+import { FeatureRequestCountSync } from "./_components/feature-request-count-sync";
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { ImpersonationBanner } from "./_components/impersonation-banner";
 import { ServerWatchdog } from "./_components/server-watchdog";
@@ -17,6 +18,7 @@ import { authEnabled, getActingContext } from "@/lib/auth/current-user";
 import { can, ROLE_RANK } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
+import { openFeatureRequestCount } from "./feature-requests/_lib/loader";
 
 // Title template: each page sets its own title (e.g. "Agents") and the tab reads "Agents · iam-engine",
 // so people can tell pages apart from the title bar / tab strip.
@@ -51,6 +53,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const onAgents = pathname === "/agents" || pathname.startsWith("/agents/");
   const canManageAgents = !authEnabled() || (!!user && can(user.role, "agent.manage"));
   const outdatedAgents = loggedIn && !onLogin && !onAgents ? await outdatedAgentCount(db) : 0;
+  // Open-request count for the "Feature requests" menu badge. Cheap COUNT; only when the nav renders.
+  const openFeatureRequests = loggedIn && !onLogin ? await openFeatureRequestCount() : 0;
 
   return (
     <html lang="en" data-theme={theme}>
@@ -70,6 +74,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
               showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
             />
+            {/* Renders nothing; keeps the nav badge's open-count store seeded + live (see the component). */}
+            <FeatureRequestCountSync serverCount={openFeatureRequests} />
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
               <MobileNav
                 showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}

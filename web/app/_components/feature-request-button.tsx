@@ -8,6 +8,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { broadcastFrFiled } from "@/lib/feature-requests/live";
 
 const overlayStyle: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "grid", placeItems: "center", zIndex: 80 };
 const cardStyle: React.CSSProperties = { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.3rem", width: "min(460px, calc(100vw - 2rem))", boxShadow: "var(--shadow-2, 0 10px 40px rgba(0,0,0,.3))" };
@@ -51,6 +52,7 @@ export function FeatureRequestButton() {
         return;
       }
       setSent(true);
+      broadcastFrFiled(); // bump the nav badge — a new request is always open
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }

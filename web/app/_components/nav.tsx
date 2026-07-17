@@ -6,6 +6,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { FeatureRequestNavBadge } from "./feature-request-nav-badge";
+
+// The one menu link that carries a live count badge — kept as a constant so nav and mobile-nav agree.
+export const FEATURE_REQUESTS_HREF = "/feature-requests";
 
 // Always-visible: the pages an operator lives in. (Also the mobile drawer's first group.)
 export const PRIMARY = [
@@ -89,7 +93,8 @@ export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSetti
                 <div className="nav-menu-label">{g.label}</div>
                 {g.items.map(([href, label]) => (
                   <Link key={href} href={href} role="menuitem" className="nav-menu-item" aria-current={isActive(path, href) ? "page" : undefined}>
-                    {label}
+                    <span>{label}</span>
+                    {href === FEATURE_REQUESTS_HREF && <FeatureRequestNavBadge />}
                   </Link>
                 ))}
               </div>

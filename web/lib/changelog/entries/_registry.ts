@@ -39,6 +39,7 @@ export { entry as exchangeManagerName } from "./exchange-manager-name";
 export { entry as exoPinSelfheal } from "./exo-pin-selfheal";
 export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
 export { entry as featureRequestNumbersAndAutoHide } from "./feature-request-numbers-and-auto-hide";
+export { entry as featureRequestsMenuBadgeLiveCounts } from "./feature-requests-menu-badge-live-counts";
 export { entry as featureRequestsOwnPage } from "./feature-requests-own-page";
 export { entry as fleetAuditPermsAndLeakedSeats } from "./fleet-audit-perms-and-leaked-seats";
 export { entry as fleetReportRestrictedRouting } from "./fleet-report-restricted-routing";
