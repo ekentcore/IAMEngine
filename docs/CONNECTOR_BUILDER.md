@@ -133,6 +133,48 @@ Targets: exactly one of `css`, `role`(+`name`), `label`, `placeholder`, `text`, 
 before every `expect` (evidence). Browser connectors are central-runner-only and gated by
 the existing `browser` capability; their systemKeys join `BROWSER_SYSTEMS` dynamically.
 
+## Definition schema (kind: "http", auth `browser-session` — the hybrid)
+
+For a portal whose API is real but authenticated by a *browser session* (a login cookie or a
+token the SPA stashes in `localStorage`) rather than a static credential — the case the HAR-import
+credential probe surfaces as "auth-rejected / redirected to login". A headless browser performs the
+login, the session is harvested, and every http operation then runs with it. It is an ordinary
+`kind: "http"` connector — operations, `expect`, `extract`, lanes, idempotency all unchanged — only
+the `auth` block differs:
+
+```jsonc
+{
+  "version": 1, "kind": "http",
+  "baseUrl": "https://portal.vendor.com/api",
+  "hosts": ["portal.vendor.com"],       // login navigation AND http ops must stay within this allowlist
+  "auth": {
+    "type": "browser-session",
+    "secretName": "custom-vendor-portal", // username/password (+ optional TOTP seed) in Delinea
+    "login": [                            // the browser step vocabulary (same as a browser connector)
+      { "type": "goto",  "url": "https://portal.vendor.com/login" },
+      { "type": "fill",  "target": { "label": "Email" },    "value": "{{secret.username}}" },
+      { "type": "fill",  "target": { "label": "Password" }, "value": "{{secret.password}}", "secret": true },
+      { "type": "click", "target": { "role": "button", "name": "Sign in" } },
+      { "type": "expect","target": { "text": "Dashboard" } }
+    ],
+    "harvest": { "cookies": ["session"] },   // OR { "storageKey": "authToken" }
+    "apply":   { "as": "cookie" }            // "cookie" (needs harvest.cookies) | "bearer" | "header" (+ "header": "X-Auth")
+  },
+  "operations": { "find-user": { "request": { "method": "GET", "path": "/users?email={{user.email}}" } } },
+  "lanes": { "offboard": [ { "op": "find-user" } ] }
+}
+```
+
+The runner signs in **once per job** (the harvested headers are cached per `secretName` and reset
+per job — a session never leaks between clients on the fleet-wide runner). `bearer`/`header` send a
+single token (`storageKey`, or exactly one harvested cookie); `cookie` sends the named cookie set as
+a `Cookie` header. Harvest happens only after login succeeds and only on an allowlisted page — a
+login that redirects off-allowlist is a failed login, not a place to read a token from. Harvested
+values are registered for redaction before use. Because it opens a browser, a browser-session
+connector needs the `browser` capability and joins the browser-gated set exactly like a `kind:
+browser` connector (`connectorNeedsBrowser` decides — an http kind is no longer proof no browser is
+needed). Its connection test does not fire a standalone login on the sweep (like the browser kind).
+
 ## Import paths (the no-code part)
 
 - **HAR import** (`kind: http`): upload a HAR captured while doing the task by hand in
@@ -179,4 +221,7 @@ candidate query and they'd never be claimed — so we don't.
 Interactive OAuth grants (auth-code flow), inbound webhooks (vendor→app callbacks), SCIM,
 client-network routing for connectors (all connector jobs run on the central runner; an
 on-prem REST appliance needs `runCloudOnOwnAgent` for now), an in-browser step recorder
-(codegen paste covers it), and per-connector rate limiting.
+(codegen paste covers it), and per-connector rate limiting. Note the `browser-session` hybrid
+(above) now covers the common "private API behind a browser login" case that used to be out of
+scope — the remaining gap is a session that must be *refreshed mid-job* (the login runs once per
+job today).

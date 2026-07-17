@@ -10,7 +10,14 @@ export const CONNECTOR_KINDS = ["http", "browser"] as const;
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number];
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] as const;
-export const AUTH_TYPES = ["bearer", "basic", "header", "oauth2-client-credentials", "none"] as const;
+// "browser-session" is the hybrid: a headless browser performs the portal login (username/password,
+// optional TOTP), the resulting session (a named cookie set, or a token stashed in localStorage) is
+// harvested, and every http operation then runs with it. It exists for portals with a real
+// underlying API that is authenticated by a browser session rather than a static credential — the
+// case the HAR-import credential probe surfaces as "auth-rejected / redirected to login".
+export const AUTH_TYPES = ["bearer", "basic", "header", "oauth2-client-credentials", "browser-session", "none"] as const;
+// How a harvested browser session is attached to http requests.
+export const SESSION_APPLY_MODES = ["cookie", "bearer", "header"] as const;
 export const LANES = ["test", "onboard", "offboard"] as const;
 export type ConnectorLane = (typeof LANES)[number];
 
@@ -40,12 +47,33 @@ export type LaneStep = {
   optional?: boolean;
 };
 
+// How the browser-session login harvests the session after signing in: capture one or more named
+// cookies, OR read a token from a localStorage key. Exactly one mechanism.
+export type SessionHarvest = { cookies?: string[]; storageKey?: string };
+// How the harvested session attaches to http requests: as a Cookie header (needs harvest.cookies),
+// as Authorization: Bearer <token>, or under a custom header. bearer/header take the token from
+// storageKey, or from a single harvested cookie.
+export type SessionApply = { as: (typeof SESSION_APPLY_MODES)[number]; header?: string };
+
+export type ConnectorAuth = {
+  type: (typeof AUTH_TYPES)[number];
+  secretName?: string;
+  header?: string;
+  valueTemplate?: string;
+  tokenUrl?: string;
+  scope?: string;
+  // browser-session only:
+  login?: BrowserStep[];
+  harvest?: SessionHarvest;
+  apply?: SessionApply;
+};
+
 export type HttpDefinition = {
   version: 1;
   kind: "http";
   baseUrl: string;
   hosts: string[];
-  auth: { type: (typeof AUTH_TYPES)[number]; secretName?: string; header?: string; valueTemplate?: string; tokenUrl?: string; scope?: string };
+  auth: ConnectorAuth;
   defaults?: { headers?: Record<string, string> };
   operations: Record<string, HttpOperation>;
   lanes: Partial<Record<ConnectorLane, LaneStep[]>>;
@@ -165,6 +193,9 @@ function validateHttp(def: Record<string, unknown>, errors: string[]) {
       if (!isString(auth.header)) errors.push("auth.header is required for type=header");
       if (!isString(auth.valueTemplate)) errors.push("auth.valueTemplate is required for type=header");
     }
+    if (auth.type === "browser-session") {
+      validateBrowserSession(auth, hosts, errors);
+    }
     if (auth.type === "oauth2-client-credentials") {
       if (!isString(auth.tokenUrl) || !/^https:\/\//.test(auth.tokenUrl)) {
         errors.push("auth.tokenUrl (https) is required for oauth2-client-credentials");
@@ -279,6 +310,98 @@ function validateHttp(def: Record<string, unknown>, errors: string[]) {
   return declaredSecrets;
 }
 
+// One browser step, validated. Shared by browser-connector lanes AND browser-session login steps —
+// the vocabulary and the "exactly one target key" / template rules are identical, so they must not
+// drift. `allowedSecret` is the browser form ({{secret.username}}/{{secret.password}}).
+function validateBrowserStep(s: unknown, where: string, errors: string[], allowedSecret: (n: string) => boolean) {
+  if (!isRecord(s)) return errors.push(`${where}: must be an object`);
+  const type = s.type as (typeof BROWSER_STEP_TYPES)[number];
+  if (!BROWSER_STEP_TYPES.includes(type)) return errors.push(`${where}: unknown step type "${String(s.type)}"`);
+  const needsTarget = ["fill", "click", "press", "select", "waitFor", "expect", "totp"].includes(type);
+  if (needsTarget) {
+    const t = s.target;
+    const keys = isRecord(t) ? BROWSER_TARGET_KEYS.filter((k) => t[k] !== undefined) : [];
+    if (keys.length !== 1) errors.push(`${where}: target must set exactly one of ${BROWSER_TARGET_KEYS.join(", ")}`);
+    else if (!isString((t as Record<string, unknown>)[keys[0]])) errors.push(`${where}: target.${keys[0]} must be a string`);
+    if (isRecord(t) && t.name !== undefined && !isString(t.name)) errors.push(`${where}: target.name must be a string`);
+  }
+  if (type === "goto") {
+    if (!isString(s.url)) errors.push(`${where}: goto needs a url`);
+    else checkTemplates(s.url, `${where}.url`, errors, allowedSecret, "browser");
+  }
+  if ((type === "fill" || type === "select" || type === "press") && !isString(s.value)) {
+    errors.push(`${where}: ${type} needs a value`);
+  }
+  if (isString(s.value)) checkTemplates(s.value, `${where}.value`, errors, allowedSecret, "browser");
+  if (type === "sleep" && (!Number.isInteger(s.ms) || (s.ms as number) < 0 || (s.ms as number) > 60_000)) {
+    errors.push(`${where}: sleep.ms must be 0–60000`);
+  }
+  if (s.timeoutMs !== undefined && (!Number.isInteger(s.timeoutMs) || (s.timeoutMs as number) < 100 || (s.timeoutMs as number) > 120_000)) {
+    errors.push(`${where}: timeoutMs must be 100–120000`);
+  }
+}
+
+// A browser-session auth block on an http connector: login steps + how to harvest the session + how
+// to apply it. `hosts` is the http allowlist the login's goto steps must also stay within — enforced
+// on the runner (every navigation re-asserts the allowlist), but a statically-resolvable off-allowlist
+// login URL is rejected here too, matching the tokenUrl/absolute-path rules.
+function validateBrowserSession(auth: Record<string, unknown>, hosts: unknown, errors: string[]) {
+  if (!isString(auth.secretName) || !SECRET_NAME_RE.test(auth.secretName)) {
+    errors.push("auth.secretName is required for browser-session (the portal login secret)");
+  }
+  const login = auth.login;
+  if (!Array.isArray(login) || login.length === 0) {
+    errors.push("auth.login must be a non-empty array of browser steps that sign in");
+  } else if (login.length > 100) {
+    errors.push("auth.login has more than 100 steps");
+  } else {
+    // The login addresses the ONE portal secret as {{secret.username}}/{{secret.password}} — same as
+    // a browser connector; any secret.* path is fine.
+    login.forEach((s, i) => validateBrowserStep(s, `auth.login[${i}]`, errors, () => true));
+    // A statically-resolvable login goto host must be allowlisted (the runner re-checks every nav).
+    const hostList = Array.isArray(hosts) ? hosts.map((h) => String(h).toLowerCase()) : [];
+    for (const [i, s] of login.entries()) {
+      if (isRecord(s) && s.type === "goto" && isString(s.url) && /^https:\/\/[^/]*[^{]/.test(s.url) && !/\{\{/.test(new URL(s.url.replace(/\{\{[^}]*\}\}/g, "x")).host)) {
+        try {
+          const h = new URL(s.url).hostname.toLowerCase();
+          if (hostList.length && !hostList.includes(h)) errors.push(`auth.login[${i}]: goto host (${h}) is not in the connector's hosts allowlist`);
+        } catch { /* a templated URL can't be resolved statically — the runner allowlist covers it */ }
+      }
+    }
+  }
+  const harvest = auth.harvest;
+  let hasCookies = false;
+  let hasStorage = false;
+  let cookieCount = 0;
+  if (!isRecord(harvest)) {
+    errors.push("auth.harvest is required (either cookies: [names] or storageKey: name)");
+  } else {
+    if (harvest.cookies !== undefined) {
+      if (!Array.isArray(harvest.cookies) || harvest.cookies.length === 0 || !harvest.cookies.every((c) => isString(c) && c.length > 0)) {
+        errors.push("auth.harvest.cookies must be a non-empty array of cookie names");
+      } else { hasCookies = true; cookieCount = harvest.cookies.length; }
+    }
+    if (harvest.storageKey !== undefined) {
+      if (!isString(harvest.storageKey) || !harvest.storageKey) errors.push("auth.harvest.storageKey must be a localStorage key name");
+      else hasStorage = true;
+    }
+    if (hasCookies && hasStorage) errors.push("auth.harvest: set cookies OR storageKey, not both");
+    if (!hasCookies && !hasStorage) errors.push("auth.harvest must set cookies (names) or storageKey");
+  }
+  const apply = auth.apply;
+  if (!isRecord(apply) || !SESSION_APPLY_MODES.includes(apply.as as (typeof SESSION_APPLY_MODES)[number])) {
+    errors.push(`auth.apply.as must be one of ${SESSION_APPLY_MODES.join(", ")}`);
+  } else {
+    if (apply.as === "cookie" && !hasCookies) errors.push("auth.apply.as='cookie' needs auth.harvest.cookies (there is nothing to send as a Cookie header otherwise)");
+    if (apply.as === "header" && (!isString(apply.header) || !apply.header)) errors.push("auth.apply.as='header' needs auth.apply.header (the header name)");
+    // bearer/header send ONE token — from storageKey, or a single harvested cookie. Multiple cookies
+    // with bearer/header is ambiguous: which one is the token?
+    if ((apply.as === "bearer" || apply.as === "header") && cookieCount > 1) {
+      errors.push(`auth.apply.as='${apply.as}' takes a single token, but harvest.cookies lists ${cookieCount} — use storageKey, or harvest one cookie`);
+    }
+  }
+}
+
 function validateBrowser(def: Record<string, unknown>, errors: string[]) {
   const startUrl = def.startUrl;
   if (!isString(startUrl) || !/^https:\/\//.test(startUrl)) errors.push("startUrl must be an https:// URL");
@@ -304,34 +427,7 @@ function validateBrowser(def: Record<string, unknown>, errors: string[]) {
     const steps = lanes[lane];
     if (!Array.isArray(steps)) { errors.push(`lanes.${lane} must be an array`); continue; }
     if (steps.length > 100) errors.push(`lanes.${lane}: more than 100 steps`);
-    steps.forEach((s, i) => {
-      const where = `lanes.${lane}[${i}]`;
-      if (!isRecord(s)) return errors.push(`${where}: must be an object`);
-      const type = s.type as (typeof BROWSER_STEP_TYPES)[number];
-      if (!BROWSER_STEP_TYPES.includes(type)) return errors.push(`${where}: unknown step type "${String(s.type)}"`);
-      const needsTarget = ["fill", "click", "press", "select", "waitFor", "expect", "totp"].includes(type);
-      if (needsTarget) {
-        const t = s.target;
-        const keys = isRecord(t) ? BROWSER_TARGET_KEYS.filter((k) => t[k] !== undefined) : [];
-        if (keys.length !== 1) errors.push(`${where}: target must set exactly one of ${BROWSER_TARGET_KEYS.join(", ")}`);
-        else if (!isString((t as Record<string, unknown>)[keys[0]])) errors.push(`${where}: target.${keys[0]} must be a string`);
-        if (isRecord(t) && t.name !== undefined && !isString(t.name)) errors.push(`${where}: target.name must be a string`);
-      }
-      if (type === "goto") {
-        if (!isString(s.url)) errors.push(`${where}: goto needs a url`);
-        else checkTemplates(s.url, `${where}.url`, errors, allowedSecret, "browser");
-      }
-      if ((type === "fill" || type === "select" || type === "press") && !isString(s.value)) {
-        errors.push(`${where}: ${type} needs a value`);
-      }
-      if (isString(s.value)) checkTemplates(s.value, `${where}.value`, errors, allowedSecret, "browser");
-      if (type === "sleep" && (!Number.isInteger(s.ms) || (s.ms as number) < 0 || (s.ms as number) > 60_000)) {
-        errors.push(`${where}: sleep.ms must be 0–60000`);
-      }
-      if (s.timeoutMs !== undefined && (!Number.isInteger(s.timeoutMs) || (s.timeoutMs as number) < 100 || (s.timeoutMs as number) > 120_000)) {
-        errors.push(`${where}: timeoutMs must be 100–120000`);
-      }
-    });
+    steps.forEach((s, i) => validateBrowserStep(s, `lanes.${lane}[${i}]`, errors, allowedSecret));
   }
   return declaredSecrets;
 }
@@ -351,6 +447,19 @@ export function validateConnectorDefinition(kind: unknown, definition: unknown):
   else if (kind === "browser") secrets = validateBrowser(definition, errors);
 
   return { ok: errors.length === 0, errors, secretNames: [...secrets].sort() };
+}
+
+// Does running this connector need the Node/Playwright browser harness? True for every browser-kind
+// connector, AND for an http connector whose auth is browser-session (it opens a headless browser to
+// sign in before any http call). The claim gate uses this to withhold such connectors from an agent
+// that doesn't report the "browser" capability — an http connector is no longer proof of "no browser
+// needed". Tolerant of a raw JSON definition (unknown shape) so the claim path can call it on the
+// stored `definition` column.
+export function connectorNeedsBrowser(kind: unknown, definition: unknown): boolean {
+  if (kind === "browser") return true;
+  if (kind !== "http") return false;
+  const auth = isRecord(definition) ? definition.auth : undefined;
+  return isRecord(auth) && auth.type === "browser-session";
 }
 
 // Which lanes a definition actually defines — drives SystemCatalog supports flags on publish.

@@ -22,6 +22,7 @@ import { sweepDbBackup } from "./db-backup";
 import { AGENT_MIGRATION_KEY, migrateDecision, type AgentMigrationSetting } from "./agent-migration";
 import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions, BROWSER_SYSTEMS } from "../runner/capabilities";
+import { connectorNeedsBrowser } from "../connectors/definition";
 import { purgeCutoff } from "./agent-trash";
 import { generateInitialPassword } from "../auth/password";
 import { sweepProcurementWatches } from "./procurement-watch";
@@ -639,11 +640,14 @@ export function makeRunnerService(db: PrismaClient) {
       const scope = agent.clientId ? { clientId: agent.clientId } : {};
       const caps = parseCapabilities(agent.capabilities);
       const onPremExclude = agent.clientId ? onPremExclusions(caps) : ALWAYS_ON_PREM_SYSTEMS;
-      // Browser-kind CONNECTORS (custom-…) are browser systems too: they join the capability gate and
-      // the pinning exception exactly like the built-in list. Published-only — a draft never claims.
+      // Browser-needing CONNECTORS (custom-…) are browser systems too: they join the capability gate
+      // and the pinning exception exactly like the built-in list. Published-only — a draft never
+      // claims. This is EVERY browser-kind connector PLUS every http connector whose auth is
+      // browser-session (it opens a headless browser to sign in) — an http kind is no longer proof it
+      // needs no browser, so filter on the definition, not the kind column.
       const browserConnectorKeys = (
-        await db.connector.findMany({ where: { status: "published", kind: "browser" }, select: { key: true } })
-      ).map((c) => c.key);
+        await db.connector.findMany({ where: { status: "published" }, select: { key: true, kind: true, definition: true } })
+      ).filter((c) => connectorNeedsBrowser(c.kind, c.definition)).map((c) => c.key);
       const browserSystems = [...BROWSER_SYSTEMS, ...browserConnectorKeys];
       // Browser-automation gate (both central AND client agents): withhold browser-only systems (e.g.
       // spanning-force-sync + every published browser connector) unless the agent reports the 'browser'

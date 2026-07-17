@@ -29,6 +29,8 @@ import { totp } from "../lib/totp.mjs";
 
 const PLACEHOLDER_RE = /\{\{\s*([^}]+?)\s*\}\}/g;
 
+export const TARGET_KEYS = ["css", "role", "label", "placeholder", "text", "testId"];
+
 // Resolve a dotted path against the context; absent → undefined (never throws).
 function getPath(ctx, path) {
   let cur = ctx;
@@ -52,7 +54,7 @@ function resolveTemplate(text, ctx) {
 
 // Exact host, or a real dotted subdomain of an allowed host. Rejects suffix ("evilvendor.com" vs
 // "vendor.com") and prefix ("vendor.com.evil.com") confusion.
-function hostAllowed(href, allowedHosts, allowAny) {
+export function hostAllowed(href, allowedHosts, allowAny) {
   try {
     const u = new URL(href);
     if (allowAny) return true; // localhost test harness escape hatch — never set in prod
@@ -83,32 +85,20 @@ function describeTarget(target) {
   return key ? `${key}=${target[key]}${target.name ? `[name=${target.name}]` : ""}` : "";
 }
 
-export default async function run({ page, shot, input, log }) {
-  const p = input?.params ?? {};
-  const def = p.definition ?? {};
-  const lane = p.lane;
-  const steps = def?.lanes?.[lane];
-  if (!Array.isArray(steps)) {
-    return { ok: false, error: `connector browser definition has no '${lane}' lane` };
-  }
-
-  // Allowlist = startUrl host + any explicitly listed hosts.
+// Build the navigation allowlist for a definition: startUrl host (if any) + every listed host.
+export function buildAllowedHosts(def) {
   const allowedHosts = [];
-  try { allowedHosts.push(new URL(def.startUrl).hostname.toLowerCase()); } catch { /* validated app-side */ }
-  for (const h of def.hosts ?? []) allowedHosts.push(String(h).toLowerCase());
-  const allowAny = p.allowAnyOrigin === true;
+  try { if (def?.startUrl) allowedHosts.push(new URL(def.startUrl).hostname.toLowerCase()); } catch { /* validated app-side */ }
+  for (const h of def?.hosts ?? []) allowedHosts.push(String(h).toLowerCase());
+  return allowedHosts;
+}
 
-  // Template context. `secret` exposes the brokered portal credential; def exposes definition fields.
-  const ctx = {
-    user: p.user ?? {},
-    payload: p.user ?? {},
-    config: p.config ?? {},
-    client: p.client ?? {},
-    vars: {},
-    def,
-    secret: { username: input?.username ?? "", password: input?.password ?? "" },
-  };
-
+// Run an array of declarative steps against `page` with template context `ctx`. Shared by the
+// browser-connector lanes AND the browser-session login (connector-login.mjs) — the step vocabulary,
+// the unconditional host re-assertion before every input, and the secret-safe logging are identical,
+// so they live in one place and cannot drift. Returns { ok, error?, evidence?, ran } — never throws.
+// `label` names the phase in evidence/log lines ("connector" | "login").
+export async function executeSteps({ page, shot, log, steps, ctx, allowedHosts, allowAny, totpSeed, label = "connector" }) {
   const assertHost = (href, what) => {
     if (!hostAllowed(href, allowedHosts, allowAny)) {
       throw new Error(`${what} host is not in the connector's allowlist (${allowedHosts.join(", ") || "none"}) — refusing`);
@@ -122,7 +112,7 @@ export default async function run({ page, shot, input, log }) {
       const type = step?.type;
       const timeout = Number.isInteger(step?.timeoutMs) ? step.timeoutMs : undefined;
       last = `${type} ${describeTarget(step?.target)}`.trim();
-      log(`step ${i + 1}/${steps.length}: ${type} ${describeTarget(step?.target)}`); // never the value
+      log(`${label} step ${i + 1}/${steps.length}: ${type} ${describeTarget(step?.target)}`); // never the value
 
       switch (type) {
         case "goto": {
@@ -156,9 +146,9 @@ export default async function run({ page, shot, input, log }) {
           await locator(page, step.target, ctx).selectOption(resolveTemplate(step.value, ctx), timeout ? { timeout } : undefined);
           break;
         case "totp": {
-          if (!p.totpSeed) throw new Error("a totp step needs a TOTP seed on the connector's secret, but none was brokered");
+          if (!totpSeed) throw new Error("a totp step needs a TOTP seed on the connector's secret, but none was brokered");
           assertHost(page.url(), "current page (before entering an MFA code)");
-          const code = totp(p.totpSeed);
+          const code = totp(totpSeed);
           await locator(page, step.target, ctx).fill(code, timeout ? { timeout } : undefined);
           break;
         }
@@ -170,8 +160,8 @@ export default async function run({ page, shot, input, log }) {
           try {
             await locator(page, step.target, ctx).waitFor({ state: "visible", ...(timeout ? { timeout } : {}) });
           } catch {
-            const evidence = await shot(`connector-expect-${i + 1}`);
-            return { ok: false, error: `expected ${describeTarget(step.target)} to appear, but it did not`, evidence };
+            const evidence = await shot(`${label}-expect-${i + 1}`);
+            return { ok: false, error: `expected ${describeTarget(step.target)} to appear, but it did not`, evidence, ran: i };
           }
           break;
         }
@@ -179,18 +169,46 @@ export default async function run({ page, shot, input, log }) {
           await page.waitForTimeout(Math.min(60_000, Math.max(0, Number(step.ms) || 0)));
           break;
         case "screenshot":
-          await shot(`connector-step-${i + 1}`);
+          await shot(`${label}-step-${i + 1}`);
           break;
         default:
           throw new Error(`unknown step type '${type}'`);
       }
     }
-    const evidence = await shot("connector-done");
-    return { ok: true, message: `ran ${steps.length} step(s) for the ${lane} lane`, evidence };
+    return { ok: true, ran: steps.length };
   } catch (e) {
-    const evidence = await shot("connector-fail");
+    const evidence = await shot(`${label}-fail`);
     // e.message is our own text or Playwright's (selector/timeout) — never a credential (we log types,
     // and secret values are only ever passed to .fill(), never interpolated into a message).
-    return { ok: false, error: `browser step failed (${last}): ${e?.message ?? e}`, evidence };
+    return { ok: false, error: `${label} step failed (${last}): ${e?.message ?? e}`, evidence, ran: -1 };
   }
+}
+
+export default async function run({ page, shot, input, log }) {
+  const p = input?.params ?? {};
+  const def = p.definition ?? {};
+  const lane = p.lane;
+  const steps = def?.lanes?.[lane];
+  if (!Array.isArray(steps)) {
+    return { ok: false, error: `connector browser definition has no '${lane}' lane` };
+  }
+
+  const allowedHosts = buildAllowedHosts(def);
+  const allowAny = p.allowAnyOrigin === true;
+
+  // Template context. `secret` exposes the brokered portal credential; def exposes definition fields.
+  const ctx = {
+    user: p.user ?? {},
+    payload: p.user ?? {},
+    config: p.config ?? {},
+    client: p.client ?? {},
+    vars: {},
+    def,
+    secret: { username: input?.username ?? "", password: input?.password ?? "" },
+  };
+
+  const r = await executeSteps({ page, shot, log, steps, ctx, allowedHosts, allowAny, totpSeed: p.totpSeed, label: "connector" });
+  if (!r.ok) return { ok: false, error: r.error, evidence: r.evidence };
+  const evidence = await shot("connector-done");
+  return { ok: true, message: `ran ${steps.length} step(s) for the ${lane} lane`, evidence };
 }

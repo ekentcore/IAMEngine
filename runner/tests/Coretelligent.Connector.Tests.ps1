@@ -234,6 +234,109 @@ Describe 'Test-CtgConnectorConnection' {
     }
 }
 
+Describe 'browser-session (hybrid) auth' {
+    BeforeAll {
+        # A stub so the connector module (which does not import Coretelligent.Browser) can resolve the
+        # call; the Mock -ModuleName below intercepts the module-internal invocation.
+        function global:Invoke-CtgBrowserFlow { param($Flow, $InputObject, $TimeoutSeconds) }
+
+        function script:SessionDef {
+            param([hashtable]$AuthOver = @{})
+            $auth = @{
+                type    = 'browser-session'
+                secretName = 'custom-vendor-portal'
+                login   = @(
+                    @{ type = 'goto'; url = 'https://api.vendor.com/login' },
+                    @{ type = 'fill'; target = @{ label = 'Email' }; value = '{{secret.username}}' },
+                    @{ type = 'fill'; target = @{ label = 'Password' }; value = '{{secret.password}}'; secret = $true },
+                    @{ type = 'click'; target = @{ role = 'button'; name = 'Sign in' } }
+                )
+                harvest = @{ cookies = @('session') }
+                apply   = @{ as = 'cookie' }
+            }
+            foreach ($k in $AuthOver.Keys) { $auth[$k] = $AuthOver[$k] }
+            NewDefinition @{ auth = $auth }
+        }
+
+        function script:SessionCreds {
+            $pw = ConvertTo-SecureString 'portal-pass' -AsPlainText -Force
+            @{ 'custom-vendor-portal' = [pscustomobject]@{
+                    Username = 'admin@vendor.com'; Password = $pw
+                    Fields   = @{ Username = 'admin@vendor.com'; Password = 'portal-pass' }
+                } }
+        }
+    }
+
+    It 'signs in via the browser, harvests the cookie, and sends it as a Cookie header' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $true; message = 'signed in'; error = $null; evidence = $null; retryAfterMinutes = $null; session = [pscustomobject]@{ cookies = [pscustomobject]@{ session = 'COOKIEVAL' } } }
+        }
+        $def = SessionDef
+        $ctx = Initialize-CtgConnectorContext $User $null (SessionCreds) $Client $def
+        $headers = Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx
+        $headers['Cookie'] | Should -Be 'session=COOKIEVAL'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -ParameterFilter { $Flow -eq 'connector-login' } -Times 1
+    }
+
+    It 'signs in ONCE per job even across many operations (session cached)' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $true; session = [pscustomobject]@{ cookies = [pscustomobject]@{ session = 'V' } } }
+        }
+        $def = SessionDef
+        $ctx = Initialize-CtgConnectorContext $User $null (SessionCreds) $Client $def
+        Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx | Out-Null
+        Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx | Out-Null
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -Times 1 -Exactly
+    }
+
+    It 'applies a storage token as a bearer' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $true; session = [pscustomobject]@{ token = 'JWTVALUE' } }
+        }
+        $def = SessionDef @{ harvest = @{ storageKey = 'authToken' }; apply = @{ as = 'bearer' } }
+        $ctx = Initialize-CtgConnectorContext $User $null (SessionCreds) $Client $def
+        (Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx)['Authorization'] | Should -Be 'Bearer JWTVALUE'
+    }
+
+    It 'registers the harvested value for redaction' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $true; session = [pscustomobject]@{ cookies = [pscustomobject]@{ session = 'SUPERSECRETSESSION' } } }
+        }
+        $def = SessionDef
+        $ctx = Initialize-CtgConnectorContext $User $null (SessionCreds) $Client $def
+        Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx | Out-Null
+        Hide-CtgConnectorSecrets 'the cookie was SUPERSECRETSESSION' | Should -Not -Match 'SUPERSECRETSESSION'
+    }
+
+    It 'fails closed (redacted) when the browser login fails' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $false; error = 'expected Dashboard to appear, but it did not' }
+        }
+        $def = SessionDef
+        $ctx = Initialize-CtgConnectorContext $User $null (SessionCreds) $Client $def
+        { Get-CtgConnectorAuthHeaders -Definition $def -Context $ctx } | Should -Throw '*browser-session login failed*'
+    }
+
+    It 'end-to-end: an offboard runs the login THEN the http operation with the harvested cookie' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -MockWith {
+            [pscustomobject]@{ ok = $true; session = [pscustomobject]@{ cookies = [pscustomobject]@{ session = 'S1' } } }
+        }
+        $seen = $null
+        Mock Invoke-CtgConnectorApi -ModuleName Coretelligent.Connector -MockWith {
+            $script:seen = $Headers
+            @{ Status = 200; Body = ([pscustomobject]@{ results = @([pscustomobject]@{ id = 'u1' }) }); Raw = '' }
+        }
+        $def = SessionDef
+        $def.lanes = @{ offboard = @( @{ op = 'find-user' } ) }
+        $cfg = [pscustomobject]@{ connector = [pscustomobject]@{ kind = 'http'; definition = $def } }
+        $r = Invoke-CtgConnectorOffboarding -User $User -Config $cfg -Credentials (SessionCreds) -Client $Client
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Connector -ParameterFilter { $Flow -eq 'connector-login' } -Times 1
+    }
+
+    AfterAll { Remove-Item function:global:Invoke-CtgBrowserFlow -ErrorAction SilentlyContinue }
+}
+
 Describe 'template + condition primitives' {
     It 'resolves dotted paths through arrays' {
         $obj = [pscustomobject]@{ results = @([pscustomobject]@{ id = 'a' }, [pscustomobject]@{ id = 'b' }) }

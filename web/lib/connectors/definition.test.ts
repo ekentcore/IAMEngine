@@ -1,6 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { definedLanes, validateConnectorDefinition, validateConnectorKey, type ConnectorDefinition } from "./definition";
+import { connectorNeedsBrowser, definedLanes, validateConnectorDefinition, validateConnectorKey, type ConnectorDefinition } from "./definition";
+
+// A browser-session (hybrid) http connector: a browser login harvests a session, then http ops run.
+const sessionAuth = (over: Record<string, unknown> = {}) => ({
+  type: "browser-session",
+  secretName: "custom-vendor-portal",
+  login: [
+    { type: "goto", url: "https://api.vendor.com/login" },
+    { type: "fill", target: { label: "Email" }, value: "{{secret.username}}" },
+    { type: "fill", target: { label: "Password" }, value: "{{secret.password}}", secret: true },
+    { type: "click", target: { role: "button", name: "Sign in" } },
+    { type: "expect", target: { text: "Dashboard" } },
+  ],
+  harvest: { cookies: ["session"] },
+  apply: { as: "cookie" },
+  ...over,
+});
 
 const httpDef = (over: Record<string, unknown> = {}) => ({
   version: 1,
@@ -190,6 +206,57 @@ test("defaults.headers and step message templates are validated at save (same ru
     lanes: { offboard: [{ op: "find-user" }, { warnWhen: "!vars.userId", message: "{{secret.undeclared}}" }] },
   }));
   assert.equal(badMessage.ok, false);
+});
+
+// ── browser-session (hybrid) auth ────────────────────────────────────────────
+
+test("a well-formed browser-session http connector validates", () => {
+  const v = validateConnectorDefinition("http", httpDef({ auth: sessionAuth() }));
+  assert.deepEqual(v.errors, []);
+  assert.equal(v.ok, true);
+});
+
+test("browser-session login steps are held to the same rules as browser lanes", () => {
+  const unknownType = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ login: [{ type: "evaluate", value: "x" }] }) }));
+  assert.equal(unknownType.ok, false);
+  const twoTargets = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ login: [{ type: "click", target: { css: "#a", text: "A" } }] }) }));
+  assert.equal(twoTargets.ok, false);
+  const empty = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ login: [] }) }));
+  assert.equal(empty.ok, false);
+});
+
+test("a login goto host that isn't in the allowlist is rejected at save", () => {
+  const v = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ login: [{ type: "goto", url: "https://login.evil.com/x" }] }) }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.join("\n"), /goto host \(login\.evil\.com\) is not in the connector's hosts allowlist/);
+});
+
+test("harvest must set exactly one of cookies / storageKey", () => {
+  assert.equal(validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: {} }) })).ok, false);
+  assert.equal(validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { cookies: ["s"], storageKey: "t" } }) })).ok, false);
+  assert.equal(validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { storageKey: "authToken" }, apply: { as: "bearer" } }) })).ok, true);
+});
+
+test("apply.as='cookie' needs harvested cookies; bearer/header take a single token", () => {
+  // cookie apply with only a storageKey → nothing to send as Cookie
+  assert.equal(validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { storageKey: "t" }, apply: { as: "cookie" } }) })).ok, false);
+  // header apply without a header name
+  assert.equal(validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { storageKey: "t" }, apply: { as: "header" } }) })).ok, false);
+  const okHeader = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { storageKey: "t" }, apply: { as: "header", header: "X-Auth" } }) }));
+  assert.equal(okHeader.ok, true, okHeader.errors.join("; "));
+  // bearer with 2 cookies is ambiguous — which one is the token?
+  const twoCookiesBearer = validateConnectorDefinition("http", httpDef({ auth: sessionAuth({ harvest: { cookies: ["a", "b"] }, apply: { as: "bearer" } }) }));
+  assert.equal(twoCookiesBearer.ok, false);
+  assert.match(twoCookiesBearer.errors.join("\n"), /takes a single token/);
+});
+
+test("connectorNeedsBrowser: browser kind, and http-with-browser-session, need the browser harness", () => {
+  assert.equal(connectorNeedsBrowser("browser", browserDef()), true);
+  assert.equal(connectorNeedsBrowser("http", httpDef()), false);
+  assert.equal(connectorNeedsBrowser("http", httpDef({ auth: sessionAuth() })), true);
+  // tolerant of a raw/foreign definition shape (the claim path calls it on the stored JSON column)
+  assert.equal(connectorNeedsBrowser("http", null), false);
+  assert.equal(connectorNeedsBrowser("http", { auth: { type: "bearer" } }), false);
 });
 
 test("connector keys are custom- prefixed slugs", () => {

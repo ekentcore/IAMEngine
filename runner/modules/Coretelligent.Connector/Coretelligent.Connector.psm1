@@ -20,6 +20,10 @@ Set-StrictMode -Version Latest
 $script:ConnectorTokens = @{}
 # Secret values to scrub from anything a human might see (set by Initialize-CtgConnectorContext).
 $script:ConnectorRedactions = @()
+# Harvested browser-session auth headers, cached per secretName for the CURRENT job so a hybrid
+# connector signs in ONCE, not once per operation. Reset per job in Initialize-CtgConnectorContext —
+# a session must never leak from one client's job into another on the fleet-wide runner.
+$script:ConnectorSessions = @{}
 
 function Get-CtgProp {
     # Read a property whether $Object is a hashtable, a generic IDictionary, or a PSObject.
@@ -181,12 +185,89 @@ function Get-CtgConnectorOAuthToken {
     return [string]$access
 }
 
+function Get-CtgConnectorBrowserSession {
+    # browser-session (hybrid) auth: sign in to the portal in a headless browser (connector-login
+    # flow), harvest the session (cookie set or storage token), and turn it into the header(s) that
+    # authenticate the http operations. Signs in ONCE per job — the result is cached per secretName in
+    # $script:ConnectorSessions and reused for every operation. Returns a headers hashtable.
+    param($Definition, $Auth, [hashtable]$Context)
+    $secretName = [string](Get-CtgProp $Auth 'secretName')
+    if (-not $secretName) { throw "browser-session auth needs a secretName (the portal login secret)" }
+    if ($script:ConnectorSessions.ContainsKey($secretName)) { return $script:ConnectorSessions[$secretName] }
+
+    $entry = Get-CtgProp $Context.secret $secretName
+    if (-not $entry) { throw "the job did not broker the '$secretName' secret this connector's browser login needs — wire it on the client system" }
+    $username = [string](Get-CtgProp $entry 'username')
+    $password = [string](Get-CtgProp $entry 'password')
+    # A TOTP seed field on the secret (any of the usual names) lets a `totp` login step clear MFA.
+    $seed = $null
+    foreach ($k in @('TOTP', 'TotpSeed', 'AuthenticatorSeed', 'MFASeed', 'OTPSeed', 'Seed')) {
+        $v = Get-CtgProp $entry $k
+        if ($v) { $seed = [string]$v; break }
+    }
+
+    # The login flow needs the hosts allowlist + the login steps + the harvest spec. Pass the case
+    # context through so {{user.*}} etc. resolve in login steps, mirroring the browser lane.
+    $loginDef = @{
+        hosts   = @(Get-CtgProp $Definition 'hosts')
+        login   = Get-CtgProp $Auth 'login'
+        harvest = Get-CtgProp $Auth 'harvest'
+    }
+    $params = @{ definition = $loginDef; user = $Context.payload; config = $Context.config; client = $Context.client }
+    if ($seed) { $params.totpSeed = $seed }
+    if ($env:CTG_CONNECTOR_ALLOW_ANY_ORIGIN -eq '1') { $params.allowAnyOrigin = $true }
+
+    $r = Invoke-CtgBrowserFlow -Flow 'connector-login' -InputObject @{ username = $username; password = $password; params = $params }
+    if (-not $r.ok) { throw (Hide-CtgConnectorSecrets ("browser-session login failed: " + [string]$r.error)) }
+    $session = $r.session
+    if (-not $session) { throw "browser-session login returned no session material" }
+
+    # Build the auth header(s) from the harvested session per auth.apply, and register every harvested
+    # value for redaction BEFORE it can appear anywhere.
+    $apply = Get-CtgProp $Auth 'apply'
+    $as = [string](Get-CtgProp $apply 'as')
+    $cookies = Get-CtgProp $session 'cookies'
+    $token = [string](Get-CtgProp $session 'token')
+    $headers = @{}
+    $reg = [System.Collections.Generic.List[string]]::new()
+
+    if ($as -eq 'cookie') {
+        if (-not $cookies) { throw "apply.as='cookie' but the login harvested no cookies" }
+        $names = if ($cookies -is [System.Collections.IDictionary]) { @($cookies.Keys) } else { @($cookies.PSObject.Properties.Name) }
+        $pairs = foreach ($n in $names) { $val = [string](Get-CtgProp $cookies $n); $reg.Add($val); "$n=$val" }
+        $headers['Cookie'] = ($pairs -join '; ')
+    }
+    else {
+        # bearer / header send ONE token: the storage token, or the single harvested cookie's value.
+        $one = $token
+        if (-not $one -and $cookies) {
+            $names = if ($cookies -is [System.Collections.IDictionary]) { @($cookies.Keys) } else { @($cookies.PSObject.Properties.Name) }
+            if (@($names).Count -eq 1) { $one = [string](Get-CtgProp $cookies $names[0]) }
+        }
+        if (-not $one) { throw "apply.as='$as' needs a single token — harvest a storageKey or exactly one cookie" }
+        $reg.Add($one)
+        if ($as -eq 'bearer') { $headers['Authorization'] = "Bearer $one" }
+        elseif ($as -eq 'header') {
+            $hn = [string](Get-CtgProp $apply 'header')
+            if (-not $hn) { throw "apply.as='header' needs apply.header" }
+            $headers[$hn] = $one
+        }
+        else { throw "unknown apply.as '$as'" }
+    }
+    $script:ConnectorRedactions = @($script:ConnectorRedactions + $reg.ToArray() | Where-Object { $_ } | Select-Object -Unique)
+    $script:ConnectorSessions[$secretName] = $headers
+    return $headers
+}
+
 function Get-CtgConnectorAuthHeaders {
     # Headers that authenticate every operation, from definition.auth + the brokered secret.
     param($Definition, [hashtable]$Context)
     $auth = Get-CtgProp $Definition 'auth'
     $type = [string](Get-CtgProp $auth 'type')
     if (-not $type -or $type -eq 'none') { return @{} }
+    # browser-session resolves through a headless login rather than a static field — handle it before
+    # the field-based branches (it has login/harvest/apply, not a token in the secret).
+    if ($type -eq 'browser-session') { return Get-CtgConnectorBrowserSession -Definition $Definition -Auth $auth -Context $Context }
     $secretName = [string](Get-CtgProp $auth 'secretName')
     $secretMap = $Context.secret
     $secret = if ($secretName) { Get-CtgProp $secretMap $secretName } else { $null }
@@ -357,6 +438,9 @@ function Initialize-CtgConnectorContext {
         }
     }
     $script:ConnectorRedactions = @($redact | Select-Object -Unique)
+    # New job → no carried-over browser session. On the fleet-wide runner this is what stops one
+    # client's harvested cookie from authenticating the next client's http operations.
+    $script:ConnectorSessions = @{}
     # config WITHOUT the injected definition — {{config.x}} means the per-client lane settings.
     $cfg = @{}
     if ($Config) {
@@ -500,6 +584,12 @@ function Test-CtgConnectorConnection {
         return @{ ok = $true; detail = 'browser connector — portal credential resolved; the sign-in is exercised when a lane runs (no standalone browser probe on the sweep)' }
     }
     $def = Get-CtgConnectorDefinition $Config
+    # A browser-session (hybrid) http connector's test lane would trigger a real headless portal login,
+    # same as a browser connector — so don't run it on the sweep. The access stage proved the portal
+    # secret resolves; the sign-in is exercised when a lane runs.
+    if ([string](Get-CtgProp (Get-CtgProp $def 'auth') 'type') -eq 'browser-session') {
+        return @{ ok = $true; detail = 'browser-session connector — portal credential resolved; the sign-in is exercised when a lane runs (no standalone browser login on the sweep)' }
+    }
     $lanes = Get-CtgProp $def 'lanes'
     if (-not (Get-CtgProp $lanes 'test')) {
         return @{ ok = $false; detail = "this connector defines no 'test' lane — add one (a single read operation) so access can be verified" }
@@ -517,6 +607,7 @@ function Test-CtgConnectorConnection {
 Export-ModuleMember -Function @(
     'Get-CtgConnectorPath', 'Resolve-CtgConnectorTemplate', 'Resolve-CtgConnectorValue',
     'Test-CtgConnectorCondition', 'Invoke-CtgConnectorApi', 'Get-CtgConnectorAuthHeaders',
+    'Get-CtgConnectorBrowserSession',
     'Assert-CtgConnectorHost', 'Invoke-CtgConnectorOperation', 'Invoke-CtgConnectorLane',
     'Initialize-CtgConnectorContext', 'Get-CtgConnectorDefinition',
     'Invoke-CtgConnectorOnboarding', 'Invoke-CtgConnectorOffboarding', 'Test-CtgConnectorConnection',

@@ -17,6 +17,9 @@ const FLOWS = {
   // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
   // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
   "connector-steps": () => import("./flows/connector-steps.mjs"),
+  // The browser half of a browser-session (hybrid) http connector: sign in, harvest the session
+  // (cookie set or storage token), return it in the result's `session` field for the http operations.
+  "connector-login": () => import("./flows/connector-login.mjs"),
 };
 
 function readStdin() {
@@ -45,6 +48,10 @@ function emit(result) {
     message: result?.message ?? null,
     evidence: result?.evidence ?? null,
     ...(result?.retryAfterMinutes != null ? { retryAfterMinutes: Number(result.retryAfterMinutes) } : {}),
+    // `session` carries harvested session material for a browser-session connector (connector-login).
+    // It rides the single stdout result line — the sidecar→PowerShell channel, which is captured and
+    // never logged — exactly as the password rides stdin. Only present when a flow set it.
+    ...(result?.session != null ? { session: result.session } : {}),
     ...(result?.ok ? {} : { error: result?.error ?? "unknown error" }),
   };
   process.stdout.write(JSON.stringify(out) + "\n");

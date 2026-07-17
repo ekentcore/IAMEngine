@@ -283,6 +283,10 @@ function Invoke-CtgBrowserFlow {
         error             = if ($parsed.PSObject.Properties['error'])   { $parsed.error }   else { $null }
         evidence          = if ($parsed.PSObject.Properties['evidence']) { $parsed.evidence } else { $null }
         retryAfterMinutes = if ($parsed.PSObject.Properties['retryAfterMinutes'] -and $null -ne $parsed.retryAfterMinutes) { [int]$parsed.retryAfterMinutes } else { $null }
+        # Harvested session from a browser-session (hybrid) connector's login flow (connector-login):
+        # { cookies: {name:value}, token: string }. Present only for that flow; the caller registers
+        # its values for redaction before using them. $null for every other flow.
+        session           = if ($parsed.PSObject.Properties['session']) { $parsed.session } else { $null }
     }
 }
 

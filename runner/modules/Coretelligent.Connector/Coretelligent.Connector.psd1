@@ -10,6 +10,7 @@
     FunctionsToExport = @(
         'Get-CtgConnectorPath', 'Resolve-CtgConnectorTemplate', 'Resolve-CtgConnectorValue',
         'Test-CtgConnectorCondition', 'Invoke-CtgConnectorApi', 'Get-CtgConnectorAuthHeaders',
+        'Get-CtgConnectorBrowserSession',
         'Assert-CtgConnectorHost', 'Invoke-CtgConnectorOperation', 'Invoke-CtgConnectorLane',
         'Initialize-CtgConnectorContext', 'Get-CtgConnectorDefinition',
         'Invoke-CtgConnectorOnboarding', 'Invoke-CtgConnectorOffboarding', 'Test-CtgConnectorConnection',
