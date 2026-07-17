@@ -183,7 +183,7 @@ export function wrapNames(names: readonly string[], width: number): string[] {
   return out;
 }
 
-// How wide a wrapped name line may be. Comfortably under ZOOM_MAX_CHARS so a name line always fits a
+// How wide a wrapped name line may be. Comfortably under ZOOM_MESSAGE_BUDGET so a name line always fits a
 // message with its title, and short enough to stay readable in a chat pane.
 const NAME_WRAP = 300;
 
@@ -243,11 +243,15 @@ export function reportLines(rows: readonly FleetRow[], role: string): string[] {
   return out;
 }
 
-// Zoom rejects a chat message over 4096 characters, and nothing in the send path guards it — so a
-// fleet-sized report must be split here or it simply never arrives. The budget is per MESSAGE and the
-// title rides in the same payload (sender.messageText prepends it), so the title's cost comes out of
-// each chunk's allowance.
-export const ZOOM_MAX_CHARS = 4096;
+// Zoom's cap on a chat message is 4000 characters — their own answer said 4096 first and was later
+// CORRECTED to 4000, and a report split against 4096 verifiably arrived with its tail silently cut
+// off mid-list (2026-07-17 fleet report). Zoom does not document whether it counts characters or
+// bytes, and this report is full of multibyte punctuation ("—", "·"), so the budget is measured in
+// UTF-8 BYTES with margin: a message of ≤3800 bytes fits the cap under either reading (chars ≤ bytes).
+// The budget is per MESSAGE and the title rides in the same payload (sender.messageText prepends
+// it), so the title's cost comes out of each chunk's allowance.
+export const ZOOM_MESSAGE_BUDGET = 3800;
+const utf8Len = (s: string): number => new TextEncoder().encode(s).length;
 
 // Split lines into chunks whose rendered "title\nline\nline…" stays under `limit`.
 //
@@ -262,7 +266,19 @@ export const ZOOM_MAX_CHARS = 4096;
 // iterate to a fixed point, where the width we split against is at least the width the resulting
 // count actually needs. Each round strictly widens, and the width only grows with the counter's digit
 // count, so it settles in a couple of rounds.
-export function chunkLines(lines: readonly string[], titleFor: (i: number, total: number) => string, limit: number = ZOOM_MAX_CHARS): { title: string; detail: string }[] {
+export function chunkLines(lines: readonly string[], titleFor: (i: number, total: number) => string, limit: number = ZOOM_MESSAGE_BUDGET): { title: string; detail: string }[] {
+  // Hard-cut a line to fit `maxBytes` UTF-8 bytes including a trailing ellipsis. Binary search on the
+  // slice length: a cut can land inside a surrogate pair, which encodes as a 3-byte replacement — ugly
+  // in one pathological name, but never over budget.
+  const cutToBytes = (s: string, maxBytes: number): string => {
+    const room = Math.max(0, maxBytes - utf8Len("…"));
+    let lo = 0, hi = s.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (utf8Len(s.slice(0, mid)) <= room) lo = mid; else hi = mid - 1;
+    }
+    return `${s.slice(0, lo)}…`;
+  };
   const split = (titleWidth: number): string[][] => {
     const chunks: string[][] = [];
     let cur: string[] = [];
@@ -271,15 +287,15 @@ export function chunkLines(lines: readonly string[], titleFor: (i: number, total
       // A single line longer than the whole budget can never fit; hard-cut it rather than emit a
       // message the transport will reject outright.
       const room = limit - titleWidth - 1;
-      return raw.length > room ? `${raw.slice(0, Math.max(0, room - 1))}…` : raw;
+      return utf8Len(raw) > room ? cutToBytes(raw, room) : raw;
     });
     for (const [i, line] of fitted.entries()) {
-      const cost = line.length + 1; // +1 for the newline joining it to what precedes
+      const cost = utf8Len(line) + 1; // +1 for the newline joining it to what precedes
       // A section heading stranded as the last line of a message leaves the next message a wall of
       // names with nothing saying what they are — and chat does not guarantee the two stay adjacent.
       // So a heading only starts here if its first row fits here too.
       const next = fitted[i + 1];
-      const need = isSectionHeader(line) && next !== undefined ? cost + next.length + 1 : cost;
+      const need = isSectionHeader(line) && next !== undefined ? cost + utf8Len(next) + 1 : cost;
       if (cur.length && size + need > limit - titleWidth) {
         chunks.push(cur);
         cur = [];
@@ -296,7 +312,7 @@ export function chunkLines(lines: readonly string[], titleFor: (i: number, total
   // and last, so a titleFor that is not monotonic in `i` cannot slip a wider title past the budget.
   const maxTitleWidth = (total: number): number => {
     let w = 0;
-    for (let i = 0; i < Math.max(1, total); i++) w = Math.max(w, titleFor(i, total).length);
+    for (let i = 0; i < Math.max(1, total); i++) w = Math.max(w, utf8Len(titleFor(i, total)));
     return w;
   };
 

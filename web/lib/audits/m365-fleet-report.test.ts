@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildFleetRows, formatRow, reportLines, summarize, chunkLines, wrapNames, isSectionHeader, reportableRoles, ZOOM_MAX_CHARS, type FleetRow, type M365Client } from "./m365-fleet-report";
+import { buildFleetRows, formatRow, reportLines, summarize, chunkLines, wrapNames, isSectionHeader, reportableRoles, ZOOM_MESSAGE_BUDGET, type FleetRow, type M365Client } from "./m365-fleet-report";
 import type { PermissionRow } from "./m365-audit";
 import { messageText } from "../notifications/sender";
 
@@ -161,7 +161,23 @@ test("every chunk, rendered exactly as the sender will render it, fits Zoom's li
   assert.ok(chunks.length > 1, "400 rich lines must need more than one message");
   for (const c of chunks) {
     // messageText is what actually goes on the wire — measure THAT, not the detail alone.
-    assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MAX_CHARS, `chunk over the limit: ${c.title}`);
+    assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MESSAGE_BUDGET, `chunk over the limit: ${c.title}`);
+  }
+});
+
+// Zoom's real cap is 4000 characters (their own community answer said 4096 first and was corrected
+// to 4000), and whether it counts characters or UTF-8 BYTES is undocumented — this report is full of
+// multibyte punctuation ("—", "·"), so a chunk that fits 4000 characters can still blow 4000 bytes.
+// The 2026-07-17 fleet report verifiably lost its tail mid-list in the room; the budget must clear
+// the real cap BOTH ways, with margin.
+test("every chunk fits Zoom's REAL cap (4000) in characters AND UTF-8 bytes", () => {
+  const lines = Array.from({ length: 400 }, (_, i) => `Client ${i} — 12 roles · missing: ${PP} · OVER-PERMISSIONED: RoleManagement.ReadWrite.Directory`);
+  const chunks = chunkLines(lines, (i, n) => `Microsoft 365 permissions — fleet report (2026-07-17) ${i + 1}/${n}`);
+  assert.ok(chunks.length > 1, "400 rich lines must need more than one message");
+  for (const c of chunks) {
+    const text = messageText({ event: "announcement", title: c.title, detail: c.detail });
+    assert.ok(text.length <= 4000, `${c.title}: ${text.length} chars — over Zoom's real 4000 cap, the tail is silently lost`);
+    assert.ok(new TextEncoder().encode(text).length <= 4000, `${c.title}: ${new TextEncoder().encode(text).length} UTF-8 bytes — over 4000 if Zoom counts bytes`);
   }
 });
 
@@ -174,10 +190,10 @@ test("a report whose chunk count grows a digit still fits — the title budget m
   const titleFor = (i: number, n: number) => (n === 1 ? "Report" : `Report ${i + 1}/${n}`);
   const lines = Array.from({ length: 8 }, (_, i) => `${String(i).padStart(3, "0")}${"x".repeat(4082)}`);
   lines.push("a".repeat(3999), "b".repeat(89));
-  const chunks = chunkLines(lines, titleFor, ZOOM_MAX_CHARS);
+  const chunks = chunkLines(lines, titleFor, ZOOM_MESSAGE_BUDGET);
   for (const c of chunks) {
     const len = messageText({ event: "announcement", title: c.title, detail: c.detail }).length;
-    assert.ok(len <= ZOOM_MAX_CHARS, `"${c.title}" renders to ${len} chars — ${len - ZOOM_MAX_CHARS} over, Zoom would reject it`);
+    assert.ok(len <= ZOOM_MESSAGE_BUDGET, `"${c.title}" renders to ${len} chars — ${len - ZOOM_MESSAGE_BUDGET} over, Zoom would reject it`);
   }
   // These lines are deliberately wider than a message, so each is hard-cut with an ellipsis — byte
   // identity is not the property here. Every line must still be PRESENT and in order, which the 3-digit
@@ -191,10 +207,10 @@ test("a report whose chunk count grows a digit still fits — the title budget m
 test("the fixed point holds when the counter crosses 99 -> 100", () => {
   const titleFor = (i: number, n: number) => `Part ${i + 1}/${n}`;
   const lines = Array.from({ length: 120 }, () => "z".repeat(4070));
-  const chunks = chunkLines(lines, titleFor, ZOOM_MAX_CHARS);
+  const chunks = chunkLines(lines, titleFor, ZOOM_MESSAGE_BUDGET);
   assert.ok(chunks.length >= 100, `expected the counter to cross into 3 digits, got ${chunks.length}`);
   for (const c of chunks) {
-    assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MAX_CHARS, `${c.title} over the limit`);
+    assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MESSAGE_BUDGET, `${c.title} over the limit`);
   }
 });
 
@@ -220,9 +236,9 @@ test("a short report stays a single message", () => {
 // A client name long enough to blow the whole budget would otherwise produce a message the transport
 // rejects — taking the rest of that chunk's clients down with it.
 test("a single line longer than the whole budget is cut, not emitted whole", () => {
-  const monster = "z".repeat(ZOOM_MAX_CHARS * 2);
+  const monster = "z".repeat(ZOOM_MESSAGE_BUDGET * 2);
   const chunks = chunkLines([monster], (i, n) => `T (${i + 1}/${n})`);
-  for (const c of chunks) assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MAX_CHARS);
+  for (const c of chunks) assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MESSAGE_BUDGET);
   assert.match(chunks[0].detail, /…$/, "a truncated line should show that it was truncated");
 });
 
@@ -295,7 +311,7 @@ test("EVERY client survives the whole pipeline — grouping, wrapping and chunki
   const chunks = chunkLines(reportLines(rows, PP), (i, n) => `M365 permissions (${i + 1}/${n})`);
   const wire = chunks.map((c) => messageText({ event: "announcement", title: c.title, detail: c.detail })).join("\n");
   for (const c of clients) assert.ok(wire.includes(c.name), `${c.name} was lost from the report`);
-  for (const c of chunks) assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MAX_CHARS, "chunk over Zoom's limit");
+  for (const c of chunks) assert.ok(messageText({ event: "announcement", title: c.title, detail: c.detail }).length <= ZOOM_MESSAGE_BUDGET, "chunk over Zoom's limit");
 });
 
 // chunkLines protects headings from being stranded, but only recognises them by shape. This pins the

@@ -90,3 +90,4 @@ export { entry as systemsEditorKb } from "./systems-editor-kb";
 export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
 export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-holds-mimecast-spanning";
 export { entry as v2Offboarding } from "./v2-offboarding";
+export { entry as zoomChunkRealCap } from "./zoom-chunk-real-cap";
