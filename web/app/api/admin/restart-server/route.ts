@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
+import { isSupervised } from "@/lib/supervised";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,9 @@ export async function POST() {
   const g = await guard("settings.manage");
   if (g.res) return g.res;
 
-  if (process.env.IAM_SUPERVISED !== "1") {
+  // isSupervised also admits Azure App Service (WEBSITE_SITE_NAME) — the platform relaunches an
+  // exited process, so the same exit-and-be-relaunched restart works there unchanged.
+  if (!isSupervised()) {
     return NextResponse.json(
       { error: "not running under the supervisor — install it with web/scripts/install-web-supervisor.sh, then Restart works from here" },
       { status: 409 }

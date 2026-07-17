@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Agents (v2)" };
 
 export default async function AgentsV2Page() {
-  const { agents, trashed, clients } = await loadAgentsPage();
+  const { agents, trashed, clients, migration } = await loadAgentsPage();
 
   return (
     <main>
@@ -23,7 +23,7 @@ export default async function AgentsV2Page() {
           </p>
         </div>
       </div>
-      <AgentsView agents={agents} clients={clients} trashed={trashed} currentBuild={runnerBuildId()} currentVersion={runnerVersion()} now={Date.now()} v2 />
+      <AgentsView agents={agents} clients={clients} trashed={trashed} currentBuild={runnerBuildId()} currentVersion={runnerVersion()} now={Date.now()} migration={migration} v2 />
     </main>
   );
 }

@@ -10,6 +10,8 @@ import { mintEnrollToken, enrollSecret } from "@/lib/runner/enroll-token";
 import { requirePermission, AuthError } from "@/lib/auth/guard";
 import { recordAudit, auditActor, type AuditActor } from "@/lib/auth/audit";
 import { runnerBuildId } from "@/lib/runner/bundle";
+import { getAppSetting, setAppSetting } from "@/lib/settings";
+import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
 
 // Mint a short-lived enroll token for the one-line installer (scope/client bound into the token).
 export async function createEnrollToken(input: { scope: AgentScope; clientSlug: string | null }) {
@@ -144,6 +146,70 @@ export async function requestAgentMigrate(id: string) {
   try {
     const me = await requirePermission("agent.manage");
     await makeRunnerService(db).requestMigrate(id, auditActor(me, "ui"));
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
+// The Change-app-URL modal: save the global migration target and kick off the chosen scope in one
+// action. "one" = the prove-it-first canary — the setting remembers WHICH agent is proving the move
+// (proofAgentId) so any admin's Agents page can offer "move all the others" when it converges, and
+// the migrate-failed writeback can clear the pending proof server-side. "fleet" = every agent
+// migrates on its next heartbeat. Guarded like the settings API for the same setting.
+export async function changeAppUrl(input: { targetUrl: string; scope: "one" | "fleet"; agentId?: string }) {
+  try {
+    const me = await requirePermission("settings.manage");
+    const targetUrl = input.targetUrl.trim();
+    let valid = false;
+    try {
+      const u = new URL(targetUrl);
+      valid = u.protocol === "http:" || u.protocol === "https:";
+    } catch { valid = false; }
+    if (!valid) return { ok: false as const, error: "the new URL must be an absolute http(s) URL" };
+    if (input.scope === "one" && !input.agentId) return { ok: false as const, error: "pick the agent to prove the move on" };
+
+    const setting: AgentMigrationSetting =
+      input.scope === "fleet"
+        ? { enabled: true, targetUrl, proofAgentId: null }
+        : { enabled: false, targetUrl, proofAgentId: input.agentId! };
+    await setAppSetting(db, AGENT_MIGRATION_KEY, setting);
+    await recordAudit("agent.migration.configure", { user: me, detail: { ...setting, via: "change-url-modal" } });
+    if (input.scope === "one") await makeRunnerService(db).requestMigrate(input.agentId!, auditActor(me, "ui"));
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
+// "Move all the other agents now" on the proof-succeeded dialog: flip the already-proven target to
+// fleet-wide and retire the proof pointer.
+export async function confirmFleetAfterProof() {
+  try {
+    const me = await requirePermission("settings.manage");
+    const s = await getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY);
+    if (!s?.targetUrl?.trim()) return { ok: false as const, error: "no migration target is set" };
+    const next: AgentMigrationSetting = { enabled: true, targetUrl: s.targetUrl, proofAgentId: null };
+    await setAppSetting(db, AGENT_MIGRATION_KEY, next);
+    await recordAudit("agent.migration.configure", { user: me, detail: { ...next, via: "proof-confirm", provenBy: s.proofAgentId ?? null } });
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
+// "Not now" on the proof-succeeded dialog: keep the target, stop tracking the proof (the dialog
+// stops appearing for every admin — the state is server-side, not per-browser).
+export async function dismissProof() {
+  try {
+    const me = await requirePermission("settings.manage");
+    const s = await getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY);
+    if (!s?.proofAgentId) return { ok: true as const };
+    await setAppSetting(db, AGENT_MIGRATION_KEY, { ...s, proofAgentId: null });
+    await recordAudit("agent.migration.proof_dismissed", { user: me, detail: { agentId: s.proofAgentId, targetUrl: s.targetUrl ?? null } });
     revalidatePath("/agents");
     return { ok: true as const };
   } catch (e) {

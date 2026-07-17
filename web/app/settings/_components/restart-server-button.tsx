@@ -1,10 +1,12 @@
 "use client";
 
-// "Restart server" (settings.manage): asks the app to exit; the launchd supervisor relaunches it.
-// Polls /api/health until the new process answers, so the operator sees when it's back.
+// "Restart server" (settings.manage): asks the app to exit; the supervisor (launchd locally,
+// the App Service platform on Azure) relaunches it. Polls /api/health until the new process
+// answers, so the operator sees when it's back. `children` renders beside the restart control —
+// the Merge PRs dialog lives there (merge, then restart to pick up what landed).
 import { useRef, useState } from "react";
 
-export function RestartServerButton({ supervised }: { supervised: boolean }) {
+export function RestartServerButton({ supervised, children }: { supervised: boolean; children?: React.ReactNode }) {
   const [state, setState] = useState<"idle" | "confirm" | "restarting" | "back" | "error">("idle");
   const [err, setErr] = useState<string | null>(null);
   const started = useRef(0);
@@ -39,8 +41,10 @@ export function RestartServerButton({ supervised }: { supervised: boolean }) {
       <h2>Server</h2>
       {!supervised ? (
         <p className="note">
-          Restart from here needs the launchd supervisor — run <code>web/scripts/install-web-supervisor.sh</code> once
-          on the host, and the server auto-restarts on crashes too.
+          Restart from here needs a supervisor to relaunch the exited process — run{" "}
+          <code>web/scripts/install-web-supervisor.sh</code> once on the host (the server then also
+          auto-restarts on crashes). On Azure App Service this works with no setup: the platform
+          relaunches the process itself.
         </p>
       ) : state === "restarting" ? (
         <p className="note">Restarting… waiting for the server to come back.</p>
@@ -55,9 +59,12 @@ export function RestartServerButton({ supervised }: { supervised: boolean }) {
       ) : (
         <p className="note">
           <button onClick={() => setState("confirm")}>↻ Restart server</button>
-          {" "}The supervisor relaunches it automatically; use after config or code changes.
+          {" "}The supervisor relaunches it automatically; use after config or code changes (e.g. a just-merged PR).
         </p>
       )}
+      {/* Merge PRs lives here as a sibling, NOT inside the <p> above — it renders a <dialog> with a
+          <table>, and block content inside <p> is invalid HTML that React 18 rejects at hydration. */}
+      {children && <div className="note" style={{ marginTop: 6 }}>{children}</div>}
       {err && <p className="note" style={{ color: "#b3261e" }}>{err}</p>}
     </section>
   );

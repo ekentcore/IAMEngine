@@ -6,6 +6,14 @@ import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
 import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
 import { CopyButton } from "@/app/_components/copy-button";
+import { migrateStatus } from "@/lib/agents/migrate-status";
+import { normalizeUrl } from "@/lib/jobs/agent-migration";
+import { ChangeUrlModal } from "./change-url-modal";
+import { ProofSuccessModal } from "./proof-success-modal";
+
+// The global app-URL migration state, as this view needs it: the target (status labels + modal
+// prefill) and the pending "prove it on one" pointer (drives the proof-succeeded dialog).
+export type MigrationVM = { targetUrl: string; enabled: boolean; proofAgentId: string | null };
 
 export type AgentVM = {
   id: string;
@@ -120,21 +128,10 @@ function restartStatus(a: AgentVM): { label: string; color: string } | null {
   return null;
 }
 
-// Live app-URL migration status. failed (agent tried the new URL and couldn't verify/rewrite — stays
-// on the old one) -> migrated (its heartbeat came back reporting the new URL) -> queued (operator asked,
-// not yet polled) -> migrating (delivered, agent verifying+rewriting+relaunching). migratedAt/migrateError
-// are terminal-ish so they take precedence over the in-flight labels. Returns null when nothing's afoot.
-function migrateStatus(a: AgentVM): { label: string; color: string } | null {
-  const by = a.migrateRequestedBy ? ` (by ${a.migrateRequestedBy})` : "";
-  if (a.migrateError) return { label: `⚠ migration failed — ${a.migrateError} (still on the old URL)`, color: "var(--danger-fg, #b00)" };
-  if (a.migratedAt) return { label: `✓ migrated${by} — now on ${a.currentAppUrl ?? "the new URL"}`, color: "var(--ok-fg)" };
-  if (a.migrateRequested) return { label: `↻ migration queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
-  if (a.migrateDeliveredAt) {
-    if (Date.now() - new Date(a.migrateDeliveredAt).getTime() > 5 * 60_000) return null;
-    return { label: `↻ migrating${by} — verifying the new URL + rewriting the scheduled task…`, color: "var(--info-fg)" };
-  }
-  return null;
-}
+// Live app-URL migration status now lives in lib/agents/migrate-status.ts (pure + unit-tested).
+// Unlike the old in-component version it never goes silent while the agent is: a runner that
+// switched away and hasn't reported in on the new URL shows "moving URL — not communicating yet"
+// indefinitely, and one that comes back still on the old URL says so.
 
 export type TrashedAgentVM = {
   id: string;
@@ -269,7 +266,7 @@ function VersionCell({ a, currentBuild, currentVersion }: { a: AgentVM; currentB
   );
 }
 
-export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now, v2 = false }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number; v2?: boolean }) {
+export function AgentsView({ agents, clients, trashed, currentBuild, currentVersion, now, migration, v2 = false }: { agents: AgentVM[]; clients: { slug: string; name: string }[]; trashed: TrashedAgentVM[]; currentBuild: string; currentVersion: string | null; now: number; migration: MigrationVM; v2?: boolean }) {
   const router = useRouter();
   const ref = useRef<HTMLDialogElement>(null);
   const [scope, setScope] = useState<AgentScope>("central");
@@ -297,6 +294,18 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
   const [localRestartAgent, setLocalRestartAgent] = useState<AgentVM | null>(null);
   const localRestartRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (localRestartAgent) localRestartRef.current?.showModal(); else localRestartRef.current?.close(); }, [localRestartAgent]);
+
+  // Change-app-URL dialog. Opened from the toolbar, or from a per-agent Migrate button when no
+  // target is set yet (preselecting that agent as the proof runner).
+  const [urlModal, setUrlModal] = useState<{ agentId: string | null } | null>(null);
+
+  // The "prove it on one runner first" canary converged: its heartbeat landed reporting the target
+  // URL while the server-side proof pointer is still set and the fleet flag is off. requestMigrate
+  // resets migratedAt when the proof is queued, so a set migratedAt here belongs to THIS proof.
+  const proofAgent = migration.proofAgentId ? agents.find((x) => x.id === migration.proofAgentId) ?? null : null;
+  const proofSucceeded =
+    !!proofAgent && !migration.enabled && !!proofAgent.migratedAt &&
+    !!migration.targetUrl && normalizeUrl(proofAgent.currentAppUrl) === normalizeUrl(migration.targetUrl);
 
   // Edit an agent's identity: rename, and re-point a client-network agent at its client. Also the
   // recovery path for an agent row recreated after data loss — the runner keeps polling with its
@@ -352,12 +361,16 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
         (a.restartRequested && fresh(a.restartRequestedAt, 10 * 60_000)) ||
         fresh(a.restartDeliveredAt, 5 * 60_000) ||
         (a.migrateRequested && fresh(a.migrateRequestedAt, 10 * 60_000)) ||
-        fresh(a.migrateDeliveredAt, 5 * 60_000)
+        // A delivered migration polls for up to an hour (not 5 min): the "moving URL — not
+        // communicating yet" window is exactly when the operator is watching, and the proof-
+        // succeeded dialog should pop without a manual refresh. Once migrated, it's done.
+        (!a.migratedAt && fresh(a.migrateDeliveredAt, 60 * 60_000)) ||
+        (migration.proofAgentId === a.id && !!a.migratedAt && fresh(a.migratedAt, 60 * 60_000))
     );
     if (!inFlight) return;
     const t = setInterval(() => router.refresh(), 4000);
     return () => clearInterval(t);
-  }, [agents, router]);
+  }, [agents, migration, router]);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "<APP_URL>";
 
@@ -474,6 +487,12 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
           {bulkBusy ? "Queuing…" : "Update all"}
         </button>
         <span className="grow" />
+        <button onClick={() => setUrlModal({ agentId: null })}
+          title={migration.targetUrl
+            ? `Move runners to a new app URL (current target: ${migration.targetUrl}${migration.enabled ? ", fleet migration ON" : ""})`
+            : "Move runners to a new app URL — prove it on one first, or move the whole fleet"}>
+          Change app URL{migration.enabled ? " (fleet ON)" : ""}
+        </button>
         <button className="primary" onClick={open}>Add runner</button>
       </div>
 
@@ -576,7 +595,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {a.currentAppUrl && <div className="note muted" style={{ marginTop: 2 }} title="the app URL this runner is polling">url: {a.currentAppUrl}</div>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
                   {(() => { const r = restartStatus(a); return r ? <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div> : null; })()}
-                  {(() => { const m = migrateStatus(a); return m ? <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div> : null; })()}
+                  {(() => { const m = migrateStatus(a, migration.targetUrl, nowMs); return m ? <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div> : null; })()}
                 </td>
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
@@ -597,7 +616,12 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       </button>
                     )}
                     {a.enabled && !a.migratedAt && (
-                      <button onClick={() => run(a.id, requestAgentMigrate)} disabled={toggling === a.id || a.migrateRequested} title="Move this runner to the new app URL (set the target in Settings first). It verifies the new URL, rewrites its own scheduled task, and switches — the old URL is removed once it reports in.">
+                      <button
+                        onClick={() => (migration.targetUrl ? run(a.id, requestAgentMigrate) : setUrlModal({ agentId: a.id }))}
+                        disabled={toggling === a.id || a.migrateRequested}
+                        title={migration.targetUrl
+                          ? `Move this runner to ${migration.targetUrl}. It verifies the new URL, rewrites its own scheduled task, and switches — the old URL is removed once it reports in.`
+                          : "No target URL set yet — opens the Change app URL dialog with this runner preselected."}>
                         {toggling === a.id ? "…" : a.migrateRequested ? "Migrating…" : "Migrate"}
                       </button>
                     )}
@@ -641,7 +665,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             const upToDate = isUpToDate(a);
             const u = updateStatus(a);
             const r = restartStatus(a);
-            const m = migrateStatus(a);
+            const m = migrateStatus(a, migration.targetUrl, nowMs);
             const stuck = stuckLabel(a, ls.online, nowMs);
             return (
               <tr key={a.id}>
@@ -696,7 +720,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
                       : []),
                     ...(a.enabled && !a.migratedAt
-                      ? [{ label: a.migrateRequested ? "Migrating…" : "Migrate to new URL", disabled: toggling === a.id || a.migrateRequested, onClick: () => run(a.id, requestAgentMigrate) }]
+                      ? [{ label: a.migrateRequested ? "Migrating…" : "Migrate to new URL", disabled: toggling === a.id || a.migrateRequested, onClick: () => (migration.targetUrl ? run(a.id, requestAgentMigrate) : setUrlModal({ agentId: a.id })) }]
                       : []),
                     ...(!a.enabled
                       ? [{ label: "Trash", danger: true, onClick: () => run(a.id, trashAgent) }]
@@ -761,6 +785,21 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             </tbody>
           </table>
         </details>
+      )}
+
+      <ChangeUrlModal
+        open={urlModal !== null}
+        agents={agents.filter((a) => a.enabled).map((a) => ({ id: a.id, name: a.name, online: lastSeen(a.lastSeenAt, nowMs).online }))}
+        initialUrl={migration.targetUrl}
+        initialAgentId={urlModal?.agentId ?? null}
+        onClose={() => setUrlModal(null)}
+      />
+      {proofSucceeded && proofAgent && (
+        <ProofSuccessModal
+          agentName={proofAgent.name}
+          targetUrl={migration.targetUrl}
+          othersCount={agents.filter((a) => a.enabled && a.id !== proofAgent.id && normalizeUrl(a.currentAppUrl) !== normalizeUrl(migration.targetUrl)).length}
+        />
       )}
 
       <dialog ref={ref} style={{ maxWidth: 620 }}>

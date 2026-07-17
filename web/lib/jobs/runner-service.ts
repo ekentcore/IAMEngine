@@ -4,7 +4,7 @@
 import type { AgentScope, CaseStatus, JobStatus, Mode, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, LICENSE_DEPENDENT_SYSTEMS, type JobLite, type SetupGatePolicy } from "./runner-logic";
-import { getAppSetting } from "../settings";
+import { getAppSetting, setAppSetting } from "../settings";
 
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
 export const SETUP_GATE_KEY = "setup_gate";
@@ -438,6 +438,14 @@ export function makeRunnerService(db: PrismaClient) {
       // passes null → keep whatever's stored (stays null → treated as capable). An empty array IS a
       // report ("can run no on-prem system") and is persisted as [].
       await db.agent.update({ where: { id: agentId }, data: { lastSeenAt: new Date(), version: version ?? agent.version, semver: semver ?? agent.semver, ...(bootAt ? { bootAt } : {}), ...(capabilities != null ? { capabilities: capabilities as Prisma.InputJsonValue } : {}), ...(appUrl ? { currentAppUrl: appUrl } : {}), ...(decision.converged ? { migratedAt: new Date(), migrateError: null, migrateRequested: false } : migrateError != null ? { migrateError } : {}) } });
+      // A failed PROOF migration (the "prove it on one agent first" canary) clears the pending proof
+      // right here, server-side — otherwise every admin's Agents page would keep waiting to offer
+      // "move all the others" on a canary that already gave its answer. The row still shows the
+      // ⚠ failed status from migrateError; only the pointer is retired.
+      if (migrateError != null && !decision.converged && migrateSetting?.proofAgentId === agentId) {
+        await setAppSetting(db, AGENT_MIGRATION_KEY, { ...migrateSetting, proofAgentId: null });
+        await db.auditLog.create({ data: { actor: "system:agent", action: "agent.migration.proof_failed", detail: { agentId, error: migrateError, targetUrl: migrateSetting.targetUrl ?? null } } });
+      }
       // Heartbeats double as the app's pulse: piggyback the procurement-case sweep (PC resolved ->
       // re-queue the blocked job). Fire-and-forget — a SN hiccup must never fail a heartbeat. The
       // sweep self-throttles to ~1/min and checks each watch every ~5 min.

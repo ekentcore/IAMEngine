@@ -16,6 +16,13 @@ import { AutoFixToggle } from "../_components/auto-fix-toggle";
 import { LlmProviders } from "../_components/llm-providers";
 import { loadDbBackupStatus, loadFeatureRequests } from "../_lib/loader";
 import { DbBackupCard } from "../_components/db-backup-card";
+import { AgentAutoUpdateToggle } from "../_components/agent-auto-update-toggle";
+import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
+import { AgentMigrationSettings } from "../_components/agent-migration-settings";
+import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
+import { MergePrs } from "../_components/merge-prs";
+import { isSupervised } from "@/lib/supervised";
+import { prsAvailable } from "@/lib/prs/local-prs";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings (v2)" };
@@ -27,13 +34,15 @@ export default async function SettingsV2Page() {
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
     canHide = can(me.role, "feature_request.hide");
   }
-  // independent single-row reads — fetch in parallel, not as five serial round trips
-  const [rawSettings, featureRequests, autoFix, llmProviders, dbBackup] = await Promise.all([
+  // independent single-row reads — fetch in parallel, not as seven serial round trips
+  const [rawSettings, featureRequests, autoFix, llmProviders, dbBackup, autoUpdate, agentMigration] = await Promise.all([
     getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
     loadFeatureRequests(),
     getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
     listProvidersMasked(db),
     loadDbBackupStatus(),
+    getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY),
+    getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY),
   ]);
   const settings = normalizeSettings(rawSettings);
   return (
@@ -59,8 +68,12 @@ export default async function SettingsV2Page() {
       <FeatureRequestsAdmin initial={featureRequests} canHide={canHide} />
       <LlmProviders initial={llmProviders} />
       <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
+      <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
+      <AgentMigrationSettings initial={{ enabled: agentMigration?.enabled === true, targetUrl: agentMigration?.targetUrl ?? "" }} />
       <DbBackupCard initial={dbBackup} />
-      <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
+      <RestartServerButton supervised={isSupervised()}>
+        <MergePrs available={await prsAvailable()} />
+      </RestartServerButton>
     </main>
   );
 }

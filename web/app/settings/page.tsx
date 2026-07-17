@@ -19,6 +19,9 @@ import { AgentMigrationSettings } from "./_components/agent-migration-settings";
 import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
 import { loadDbBackupStatus, loadFeatureRequests } from "./_lib/loader";
 import { DbBackupCard } from "./_components/db-backup-card";
+import { MergePrs } from "./_components/merge-prs";
+import { isSupervised } from "@/lib/supervised";
+import { prsAvailable } from "@/lib/prs/local-prs";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Settings" };
@@ -62,7 +65,9 @@ export default async function SettingsPage() {
       <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
       <AgentMigrationSettings initial={{ enabled: agentMigration?.enabled === true, targetUrl: agentMigration?.targetUrl ?? "" }} />
       <DbBackupCard initial={dbBackup} />
-      <RestartServerButton supervised={process.env.IAM_SUPERVISED === "1"} />
+      <RestartServerButton supervised={isSupervised()}>
+        <MergePrs available={await prsAvailable()} />
+      </RestartServerButton>
     </main>
   );
 }

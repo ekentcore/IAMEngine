@@ -10,6 +10,7 @@ export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case
 export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
 export { entry as agentUrlMigration } from "./agent-url-migration";
+export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";

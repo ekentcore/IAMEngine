@@ -6,7 +6,9 @@ import { parseCapabilities } from "@/lib/runner/capabilities";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { currentClientScope, clientIdWhere } from "@/lib/auth/client-scope";
 import { trashDaysLeft } from "@/lib/jobs/agent-trash";
-import type { AgentVM, TrashedAgentVM } from "../_components/agents-view";
+import { getAppSetting } from "@/lib/settings";
+import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
+import type { AgentVM, TrashedAgentVM, MigrationVM } from "../_components/agents-view";
 
 export async function loadAgentsPage() {
   // Purge any trash past the 30-day window on load (no cron infra — lazy purge on visit).
@@ -33,6 +35,12 @@ export async function loadAgentsPage() {
     orderBy: { name: "asc" },
     select: { slug: true, name: true },
   });
+  const migrationSetting = await getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY);
+  const migration: MigrationVM = {
+    targetUrl: migrationSetting?.targetUrl?.trim() ?? "",
+    enabled: migrationSetting?.enabled === true,
+    proofAgentId: migrationSetting?.proofAgentId ?? null,
+  };
 
   // Active (pending/in-flight) api jobs, to show per agent on hover: what each runner is doing or
   // about to do. A job is relevant to an agent if it's assigned to it (in flight) OR it's pending and
@@ -110,5 +118,5 @@ export async function loadAgentsPage() {
     daysLeft: trashDaysLeft(a.deletedAt!, now),
   }));
 
-  return { agents: vms, trashed: trashVms, clients };
+  return { agents: vms, trashed: trashVms, clients, migration };
 }

@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Agents" };
 
 export default async function AgentsPage() {
-  const { agents, trashed, clients } = await loadAgentsPage();
+  const { agents, trashed, clients, migration } = await loadAgentsPage();
 
   return (
     <main>
@@ -22,7 +22,7 @@ export default async function AgentsPage() {
           </p>
         </div>
       </div>
-      <AgentsView agents={agents} clients={clients} trashed={trashed} currentBuild={runnerBuildId()} currentVersion={runnerVersion()} now={Date.now()} />
+      <AgentsView agents={agents} clients={clients} trashed={trashed} currentBuild={runnerBuildId()} currentVersion={runnerVersion()} now={Date.now()} migration={migration} />
     </main>
   );
 }
