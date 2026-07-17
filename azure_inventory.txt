@@ -1,0 +1,464 @@
+=========================================
+ Azure Migration Inventory
+=========================================
+
+Date: Fri Jul 17 07:48:45 EDT 2026
+Current Directory: /Users/evankent/coding/newuserscript
+
+### Operating System
+Darwin Evans-MacBook-Pro.local 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:55 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_T8103 arm64
+
+### Python Version
+Python 3.9.6
+
+### Node Version
+v24.14.0
+
+### NPM Version
+11.9.0
+
+### Git Version
+git version 2.53.0
+
+### Docker Version
+Docker not installed
+
+### Azure CLI Version
+Azure CLI not installed
+
+### Directory Structure
+.
+./.gitattributes
+./.gitignore
+./.remember
+./azure_inventory.sh
+./azure_inventory.txt
+./CLAUDE.md
+./claude.rtf
+./docs
+./docs/ARCHITECTURE.md
+./docs/AUTH_PLAN.md
+./docs/BROWSER_AUTOMATION.md
+./docs/BUILD_PLAN.md
+./docs/client
+./docs/client/_docx_style.py
+./docs/client/build_overview_docx.py
+./docs/client/build_security_docx.py
+./docs/client/Coretelligent-IAM-Engine-Overview.docx
+./docs/client/Coretelligent-IAM-Engine-Security.docx
+./docs/CONNECTOR_BUILDER.md
+./docs/DATA_MODEL.md
+./docs/DEPLOY_AZURE.md
+./docs/FIX_LANE.md
+./docs/INTERNAL_ONBOARDING_PORT.md
+./docs/modules
+./docs/modules/_INDEX.md
+./docs/modules/_TEMPLATE.md
+./docs/modules/1password.md
+./docs/modules/active-directory.md
+./docs/modules/ad-consistency-check.md
+./docs/modules/ad-email-writeback.md
+./docs/modules/address-book.md
+./docs/modules/adobe.md
+./docs/modules/archive.md
+./docs/modules/avd.md
+./docs/modules/case-resolution.md
+./docs/modules/data-transfer.md
+./docs/modules/directory-sync.md
+./docs/modules/dropbox.md
+./docs/modules/egnyte-sync-server.md
+./docs/modules/egnyte.md
+./docs/modules/entra.md
+./docs/modules/equipment-return.md
+./docs/modules/exchange.md
+./docs/modules/first-day-call.md
+./docs/modules/google-workspace.md
+./docs/modules/hardware.md
+./docs/modules/knowbe4.md
+./docs/modules/m365.md
+./docs/modules/mdm.md
+./docs/modules/mimecast.md
+./docs/modules/notion.md
+./docs/modules/password-reset.md
+./docs/modules/perimeter81.md
+./docs/modules/printix.md
+./docs/modules/proofpoint.md
+./docs/modules/servicenow.md
+./docs/modules/sharepoint.md
+./docs/modules/slack.md
+./docs/modules/spanning.md
+./docs/modules/tableau.md
+./docs/modules/teams.md
+./docs/modules/welcome-letter.md
+./docs/modules/workstation.md
+./docs/modules/zoom.md
+./docs/POC_RUNBOOK.md
+./docs/RUNNER_PROTOCOL.md
+./docs/runner-dc-setup.md
+./docs/superpowers
+./docs/superpowers/plans
+./docs/superpowers/specs
+./env text.example
+./profiles
+./profiles/_schema.json
+./profiles/coretelligent.json
+./profiles/marketscience.json
+./profiles/raith.json
+./profiles/regal.json
+./profiles/six-one.json
+./profiles/yuma.json
+./README.md
+./runner
+./runner/browser
+./runner/browser/.gitignore
+./runner/browser/flows
+./runner/browser/lib
+./runner/browser/package-lock.json
+./runner/browser/package.json
+./runner/browser/README.md
+./runner/browser/run-flow.mjs
+./runner/browser/scripts
+./runner/install-launchd.sh
+./runner/install-systemd.sh
+./runner/install-task.ps1
+./runner/Keep-IamRunnerAlive.ps1
+./runner/lib
+./runner/lib/Coretelligent.Secrets
+./runner/lib/Coretelligent.ServiceNow
+./runner/lib/Coretelligent.Watchdog
+./runner/lib/CtgMigrate.ps1
+./runner/modules
+./runner/modules/Coretelligent.1Password
+./runner/modules/Coretelligent.ActiveDirectory
+./runner/modules/Coretelligent.Adobe
+./runner/modules/Coretelligent.Browser
+./runner/modules/Coretelligent.Connector
+./runner/modules/Coretelligent.DirectorySync
+./runner/modules/Coretelligent.Duo
+./runner/modules/Coretelligent.Egnyte
+./runner/modules/Coretelligent.Exchange
+./runner/modules/Coretelligent.GoogleWorkspace
+./runner/modules/Coretelligent.HubSpot
+./runner/modules/Coretelligent.Jira
+./runner/modules/Coretelligent.KnowBe4
+./runner/modules/Coretelligent.LogicMonitor
+./runner/modules/Coretelligent.M365
+./runner/modules/Coretelligent.Mimecast
+./runner/modules/Coretelligent.Notify
+./runner/modules/Coretelligent.Perimeter81
+./runner/modules/Coretelligent.Proofpoint
+./runner/modules/Coretelligent.Salesforce
+./runner/modules/Coretelligent.SentinelOne
+./runner/modules/Coretelligent.Slack
+./runner/modules/Coretelligent.Spanning
+./runner/modules/Coretelligent.XMatters
+./runner/modules/Coretelligent.Zoom
+./runner/scripts
+./runner/scripts/Test-SentinelOneDisconnect.ps1
+./runner/Start-IamRunner.ps1
+./runner/tests
+./runner/tests/AdConnection.Tests.ps1
+./runner/tests/AdDiscovery.Tests.ps1
+./runner/tests/AdobeSecret.Tests.ps1
+./runner/tests/ConnectionCache.Tests.ps1
+./runner/tests/Coretelligent.1Password.Tests.ps1
+./runner/tests/Coretelligent.ActiveDirectory.Tests.ps1
+./runner/tests/Coretelligent.Adobe.Tests.ps1
+./runner/tests/Coretelligent.Browser.Tests.ps1
+./runner/tests/Coretelligent.Connector.Tests.ps1
+./runner/tests/Coretelligent.DirectorySync.Tests.ps1
+./runner/tests/Coretelligent.Duo.Tests.ps1
+./runner/tests/Coretelligent.Egnyte.Tests.ps1
+./runner/tests/Coretelligent.Exchange.Tests.ps1
+./runner/tests/Coretelligent.GoogleWorkspace.Tests.ps1
+./runner/tests/Coretelligent.HubSpot.Tests.ps1
+./runner/tests/Coretelligent.Jira.Tests.ps1
+./runner/tests/Coretelligent.KnowBe4.Tests.ps1
+./runner/tests/Coretelligent.LogicMonitor.Tests.ps1
+./runner/tests/Coretelligent.M365.Tests.ps1
+./runner/tests/Coretelligent.Mimecast.Tests.ps1
+./runner/tests/Coretelligent.Notify.Tests.ps1
+./runner/tests/Coretelligent.Perimeter81.Tests.ps1
+./runner/tests/Coretelligent.Proofpoint.Tests.ps1
+./runner/tests/Coretelligent.Salesforce.Tests.ps1
+./runner/tests/Coretelligent.SentinelOne.Tests.ps1
+./runner/tests/Coretelligent.Slack.Tests.ps1
+./runner/tests/Coretelligent.Spanning.Tests.ps1
+./runner/tests/Coretelligent.Watchdog.Tests.ps1
+./runner/tests/Coretelligent.XMatters.Tests.ps1
+./runner/tests/Coretelligent.Zoom.Tests.ps1
+./runner/tests/CredentialFieldSynonyms.Tests.ps1
+./runner/tests/CtgMigrate.Tests.ps1
+./runner/tests/ExoPin.Tests.ps1
+./runner/tests/ExoTenantIsolation.Tests.ps1
+./runner/tests/GraphCaps.Tests.ps1
+./runner/tests/GraphVersionSkew.Tests.ps1
+./runner/tests/ModuleManifests.Tests.ps1
+./runner/tests/Smoke.Tests.ps1
+./runner/update-dc-runner.ps1
+./runner/update-mac-runner.sh
+./runner/VERSION
+./scripts
+./scripts/azure-llm-probe.mjs
+./scripts/dev-lan.sh
+./scripts/llm-fix.mjs
+./scripts/prs.sh
+./scripts/tests
+./scripts/tests/prs-branch-sync.test.sh
+./sentinelone-unwired-clients.csv
+./tools
+./tools/profile-generator
+./tools/profile-generator/assemble
+./tools/profile-generator/extract
+./tools/profile-generator/ir.schema.json
+./tools/profile-generator/README.md
+./tools/profile-generator/run.sh
+./web
+./web/.env.example
+./web/app
+./web/app/_components
+./web/app/account
+./web/app/agents
+./web/app/api
+./web/app/audit
+./web/app/cases
+./web/app/changelog
+./web/app/clients
+./web/app/connectors
+./web/app/docs
+./web/app/feature-requests
+./web/app/fleet-audit
+./web/app/globals.css
+./web/app/health
+./web/app/help
+./web/app/layout.tsx
+./web/app/login
+./web/app/modules
+./web/app/page.tsx
+./web/app/runs
+./web/app/settings
+./web/app/users
+./web/e2e
+./web/e2e/app.spec.ts
+./web/instrumentation.node.ts
+./web/instrumentation.ts
+./web/lib
+./web/lib/audit
+./web/lib/audits
+./web/lib/auth
+./web/lib/automation
+./web/lib/cases
+./web/lib/changelog
+./web/lib/clients
+./web/lib/clipboard.test.ts
+./web/lib/clipboard.ts
+./web/lib/connectors
+./web/lib/dates.ts
+./web/lib/db.ts
+./web/lib/docs
+./web/lib/feature-requests
+./web/lib/fixes
+./web/lib/generator
+./web/lib/health
+./web/lib/help
+./web/lib/jobs
+./web/lib/m365
+./web/lib/modules
+./web/lib/notifications
+./web/lib/orchestrator.test.ts
+./web/lib/orchestrator.ts
+./web/lib/profiles
+./web/lib/rules
+./web/lib/runbook
+./web/lib/runner
+./web/lib/runs
+./web/lib/secrets
+./web/lib/servicenow
+./web/lib/settings.ts
+./web/lib/v2.ts
+./web/middleware.ts
+./web/next.config.mjs
+./web/package-lock.json
+./web/package.json
+./web/playwright.config.ts
+./web/prisma
+./web/prisma/full-schema.sql
+./web/prisma/migrations
+./web/prisma/schema.prisma
+./web/prisma/seed-docs
+./web/prisma/seed-docs.ts
+./web/prisma/seed.ts
+./web/scripts
+./web/scripts/audit-kb-21-signal.mjs
+./web/scripts/audit-kb-discovery.ts
+./web/scripts/audit-leaked-seats.ts
+./web/scripts/audit-m365-cred-kind.ts
+./web/scripts/audit-m365-graph-perms.ts
+./web/scripts/auth-user.ts
+./web/scripts/backfill-accepted-failure-case-status.ts
+./web/scripts/backfill-framework-system-modes.ts
+./web/scripts/backfill-outcome-fingerprints.ts
+./web/scripts/backfill-uncredentialed-system-modes.ts
+./web/scripts/baypine-offboard-license.mjs
+./web/scripts/check-zoom-secret.ts
+./web/scripts/create-db.mjs
+./web/scripts/db-backup
+./web/scripts/dry-run-um.ts
+./web/scripts/dump-v21-candidates.ts
+./web/scripts/fix-collation.mjs
+./web/scripts/generate-profiles.ts
+./web/scripts/generator
+./web/scripts/install-web-supervisor.sh
+./web/scripts/kb-trace.ts
+./web/scripts/offboard-licence-manual-note.mjs
+./web/scripts/offboard-license-sweep.mjs
+./web/scripts/patch-exchange-uri.ts
+./web/scripts/probe-m365-cred.ts
+./web/scripts/probe-v21.ts
+./web/scripts/provision-db.mjs
+./web/scripts/read-env.mjs
+./web/scripts/recover-delinea-creds.ts
+./web/scripts/restore-coretelligent.ts
+./web/scripts/sim-coretelligent-onboard.ts
+./web/scripts/sim-run-case.ts
+./web/scripts/sn-get.mjs
+./web/scripts/snapshot-secret-refs.ts
+./web/scripts/sync-env.mjs
+./web/scripts/test-sn-oauth.mjs
+./web/scripts/verify-graph-role-ids.ts
+./web/scripts/wire-coretelligent-offboard.ts
+./web/tsconfig.json
+
+### Python Files
+./tools/profile-generator/extract/requirements.txt
+./tools/profile-generator/extract/tests/test_inference.py
+./tools/profile-generator/extract/tests/test_catalog.py
+./tools/profile-generator/extract/tests/test_loader.py
+./tools/profile-generator/extract/tests/test_signals.py
+./tools/profile-generator/extract/tests/test_artifacts.py
+./tools/profile-generator/extract/tests/test_sectioning.py
+./tools/profile-generator/extract/tests/test_build.py
+./tools/profile-generator/extract/kbgen/catalog.py
+./tools/profile-generator/extract/kbgen/build.py
+./tools/profile-generator/extract/kbgen/registry.py
+./tools/profile-generator/extract/kbgen/backbone.py
+./tools/profile-generator/extract/kbgen/sectioning.py
+./tools/profile-generator/extract/kbgen/families.py
+./tools/profile-generator/extract/kbgen/__init__.py
+./tools/profile-generator/extract/kbgen/cli.py
+./tools/profile-generator/extract/kbgen/loader.py
+./tools/profile-generator/extract/kbgen/extractors/m365.py
+./tools/profile-generator/extract/kbgen/extractors/__init__.py
+./tools/profile-generator/extract/kbgen/extractors/active_directory.py
+./tools/profile-generator/extract/kbgen/extractors/artifacts.py
+./tools/profile-generator/extract/kbgen/scope.py
+./docs/client/build_overview_docx.py
+./docs/client/build_security_docx.py
+./docs/client/_docx_style.py
+
+### FastAPI Files
+
+### package.json Files
+./runner/browser/package.json
+./tools/profile-generator/assemble/package.json
+./web/package.json
+
+===== ./runner/browser/package.json =====
+name: @coretelligent/runner-browser
+version: 0.1.0
+scripts:
+  install-browser = playwright install chromium
+  test = node --test flows/*.test.mjs lib/*.test.mjs
+
+===== ./tools/profile-generator/assemble/package.json =====
+name: iam-profile-assembler
+version: 0.1.0
+scripts:
+  assemble = tsx src/cli.ts
+  test = tsx --test src/*.test.ts
+
+===== ./web/package.json =====
+name: iam-engine-web
+version: 0.1.0
+scripts:
+  dev = next dev
+  dev:lan = next dev -H 0.0.0.0 -p 3000
+  dev:fresh = bash ../scripts/dev-lan.sh
+  build = next build
+  start = next start
+  lint = next lint
+  db:migrate = prisma migrate dev
+  db:seed = prisma db seed
+  db:studio = prisma studio
+  env:sync = node scripts/sync-env.mjs
+  db:create = node scripts/create-db.mjs
+  db:setup = npm run env:sync && npm run db:create && npm run db:migrate && npm run db:seed
+  generate:profiles = ts-node --compiler-options '{"module":"CommonJS"}' scripts/generate-profiles.ts
+  test = tsx --test "lib/**/*.test.ts"
+  e2e = playwright test
+  db:provision = node scripts/provision-db.mjs
+
+### Docker Files
+
+### Environment Files
+./web/.env.example
+
+### Git
+origin	https://github.com/xtrezpasor/iam-engine.git (fetch)
+origin	https://github.com/xtrezpasor/iam-engine.git (push)
+  agents-caps-and-help-index
+  azure-llm-probe
+  azure-provider-form
+  changelog-2026-07-13
+  changelog-spanning-time
+  claude/ad-module-manifest-exports
+  claude/trusting-cray-9VfCW
+  claude/writeback-validator-lookup
+  cred-failure-outcomes
+  domain-read-all-docs
+  fix/engine-optout-review
+  fix/framework-system-modes
+  import-adopt-hardening
+  import-by-coreid-review-fixes
+  llm-ask-row-layout
+  llm-model-aware
+* main
+  multi-domain-clients
+  nav-redesign
+  otp-timing-fix
+  review-fixes-batch
+  runner-fixes-and-spanning-otp
+  runner-graph-hardening
+  runner-nonblocking-browser
+  section-system-link
+  security-design-doc
+  spanning-sync-api
+  verify-42
+  worktree-accepted-failure-case-status
+  worktree-adobe-orgid-fallback
++ worktree-azure-inventory-commit
+  worktree-changelog-times
+  worktree-client-engine-optout
+  worktree-cred-setup-platform
+  worktree-delinea-cred-recovery
++ worktree-fr-3-14-batch
+  worktree-import-by-coreid
+  worktree-kb-fetch-steps-core1269
+  worktree-llm-provider-version-test-reveal
++ worktree-m365-password-reset-permission
+  worktree-prs-all-flag
+  worktree-restore-coretelligent-post-reset
++ worktree-ten-fix-batch
+  worktree-wise-purring-fox
+
+### Requirements
+
+===== ./tools/profile-generator/extract/requirements.txt =====
+beautifulsoup4>=4.12
+lxml>=5.0
+pytest>=8.0
+
+=========================================
+Inventory Complete
+Output saved to:
+/Users/evankent/coding/newuserscript/azure_inventory.txt

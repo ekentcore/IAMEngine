@@ -11,6 +11,7 @@ export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
 export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
+export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
 export { entry as casesV2AccessRules } from "./cases-v2-access-rules";

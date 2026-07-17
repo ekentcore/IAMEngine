@@ -1,0 +1,41 @@
+client,coreId,slug,delineaSecretId,delineaSecretName,folderPath
+"ACORE Capital, LP",CORE507,core507,1487,AlienVault S1 API,"\Clients\ACORE Capital, LP !CORE507!\CoreArmor"
+"Atlas Capital Group, LLC",CORE1066,core1066,3103,S1_API integration,"\Clients\Atlas Capital Group, LLC !CORE1066!\CoreArmor"
+B. Dyson Capital Advisors,CORE1069,core1069,27746,S1 API,\Clients\B. Dyson Capital Advisors !CORE1069!\Vendor
+BayPine Capital,CORE1186,core1186,3410,S1 API,\Clients\BayPine Capital !CORE1186!\CoreArmor
+"Berkeley Partners Management, LLC",CORE519,core519,3732,SentinelOne API Account,"\Clients\Berkeley Partners Management, LLC !CORE519!\CoreArmor"
+"Biospring Management, LLC",CORE788,core788,4809,S1 API account,"\Clients\Biospring Management, LLC !CORE788!\CoreArmor"
+Breakthrough Energy Ventures,CORE397,core397,29056,S1 API,\Clients\Breakthrough Energy Ventures !CORE397!\CoreArmor
+"Brooklands Capital Strategies Management, LP",CORE1388,core1388,5399,S1 API,"\Clients\Brooklands Capital Strategies Management, LP !CORE1388!\CoreArmor"
+"CCA Group, LLC",CORE78,core78,29431,S1 api MFA backup codes,"\Clients\CCA Group, LLC !CORE78!\CoreArmor"
+Carrick Capital Partners,CORE660,core660,5771,SentinelOne API,\Clients\Carrick Capital Partners !CORE660!\CoreArmor
+"Carrington, Coleman, Sloman & Blumenthal, L.L.P. (CCSB)",CORE1387,core1387,5858,S1 API,"\Clients\Carrington, Coleman, Sloman & Blumenthal, L.L.P. (CCSB) !CORE1387!\CoreArmor"
+Coastal Bridge Advisors,CORE204,core204,6452,SentinelOne AlienVault API ,\Clients\Coastal Bridge Advisors !CORE204!\CoreArmor
+Copley Equity Partners,CORE667,core667,6807,SentinelOne API Account,\Clients\Copley Equity Partners !CORE667!\CoreArmor
+Cove Hill Partners,CORE169,core169,30164,S1 API,\Clients\Cove Hill Partners !CORE169!\CoreArmor
+"Dianthus Therapeutics OpCo, Inc",CORE1180,core1180,46625,S1 API,"\Clients\Dianthus Therapeutics OpCo, Inc !CORE1180!\CoreArmor"
+Drive Capital,CORE1226,core1226,8402,S1 api,\Clients\Drive Capital !CORE1226!\CoreArmor
+"Equality Asset Management, LP",CORE103,core103,9171,S1 Api,"\Clients\Equality Asset Management, LP !CORE103!\CoreArmor"
+GCP Capital Partners LLC,CORE1025,core1025,32361,S1_API integration,\Clients\GCP Capital Partners LLC !CORE1025!\CoreArmor
+GMF Management LLC,CORE539,core539,11710,S1 API,\Clients\GMF Management LLC !CORE539!\CoreArmor
+Glavin PLLC,CORE621,core621,11523,S1 API backup codes,\Clients\Glavin PLLC !CORE621!\CoreArmor
+JAT Capital Management LP,CORE258,core258,33815,S1 API ,\Clients\JAT Capital Management LP !CORE258!\CoreArmor
+John Evans' Sons LLC,CORE1579,core1579,46634,S1 API,\Clients\John Evans Sons Incorporated !CORE1579!\CoreArmor
+"Long Focus Capital Management, LLC",CORE785,core785,15000,S1-API,"\Clients\Long Focus Capital Management, LLC !CORE785!\CoreArmor"
+"Magma Capital Partners, LLC",CORE658,core658,15356,S1 Api,"\Clients\Magma Capital Partners, LLC !CORE658!\CoreArmor"
+MarketScience,,core1028,46638,S1 API,\Clients\Marketscience !CORE1028!\CoreArmor
+Marketscience,CORE1028,core1028-ad69a8,46638,S1 API,\Clients\Marketscience !CORE1028!\CoreArmor
+Nonantum Capital Partners,CORE74,core74,35964,SentinelOne Alienvault API,\Clients\Nonantum Capital Partners !CORE74!\CoreArmor
+PayArc,CORE1082,core1082,37094,S1_API integration,\Clients\PayArc !CORE1082!\CoreArmor
+"Raith Capital Partners, LLC",CORE745,core745,20100,S1 API,"\Clients\Raith Capital Partners, LLC !CORE745!\CoreArmor"
+"Regent Properties, LLC",CORE492,core492,38076,S1 Api,"\Clients\Regent Properties, LLC !CORE492!\Vendor"
+Silversmith Capital Partners,CORE76,core76,39406,S1 API backup codes,\Clients\Silversmith Capital Partners !CORE76!\CoreArmor
+Simpson Senior Services,CORE1711,core1711,46389,S1 API,\Clients\Simpson Senior Services !CORE1711!\CoreArmor
+Six One Commodities LLC,CORE1087,six-one,39539,S1_API integration,\Clients\Six One Commodities LLC !CORE1087!\Vendor
+"Soliant Health, Inc",CORE127,core127,39736,AlienVault S1 integration,"\Clients\Soliant Health, Inc !CORE127!\CoreArmor"
+SolidaritUS,CORE1455,core1455,22947,S1 API,\Clients\SolidaritUS !CORE1455!\CoreArmor
+"Sporos Bioventures, Inc",CORE657,core657,23433,SentinelOne API Login,"\Clients\Sporos Bioventures, Inc !CORE657!\Vendor"
+TMMB Corporation,CORE1594,core1594,41200,S1 API,\Clients\TMMB Corporation !CORE1594!\CoreArmor
+Taconic Partners,CORE1047,core1047,40530,S1_API integration,\Clients\Taconic Partners !CORE1047!\Vendor
+Town Hall Ventures,CORE744,core744,24722,S1 API,\Clients\Town Hall Ventures !CORE744!\CoreArmor
+"Valspring Capital, LLC",CORE782,core782,25143,S1_AV integration account,"\Clients\Valspring Capital, LLC !CORE782!\CoreArmor"
