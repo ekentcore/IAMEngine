@@ -9,6 +9,7 @@ import { useState } from "react";
 import type { ConnectorRow } from "../_lib/loader";
 import { HTTP_EXAMPLE, BROWSER_EXAMPLE } from "./examples";
 import { HarImport } from "./har-import";
+import { HarHosts } from "./har-hosts";
 import { CodegenImport } from "./codegen-import";
 
 type EditorState = {
@@ -167,10 +168,16 @@ export function ConnectorsAdmin({ initial }: { initial: ConnectorRow[] }) {
             />
           )}
           {editor.kind === "browser" && (
-            <CodegenImport
-              onApply={(def) => setEditor((s) => (s ? { ...s, json: JSON.stringify(def, null, 2) } : s))}
-              currentJson={editor.json}
-            />
+            <>
+              <CodegenImport
+                onApply={(def) => setEditor((s) => (s ? { ...s, json: JSON.stringify(def, null, 2) } : s))}
+                currentJson={editor.json}
+              />
+              <HarHosts
+                onApply={(def) => setEditor((s) => (s ? { ...s, json: JSON.stringify(def, null, 2) } : s))}
+                currentJson={editor.json}
+              />
+            </>
           )}
 
           <label style={{ display: "block", margin: "0.4rem 0" }}>

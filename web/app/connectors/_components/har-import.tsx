@@ -7,8 +7,129 @@
 // server validation on save.
 import { useState } from "react";
 import type { HarImportResult, ImportedOperation } from "@/lib/connectors/import-har";
+import type { ProbeOpResult, ProbeVerdict } from "@/lib/connectors/probe";
 
 type Kept = ImportedOperation & { keep: boolean; name: string };
+
+type ProbeTargets = { clients: { slug: string; name: string; secrets: string[] }[] };
+type ProbeResponse = { results: ProbeOpResult[]; skippedUnsafe: string[]; verdict: ProbeVerdict; note: string };
+
+// The credential probe: replay the ticked GET/HEAD calls with a real credential BEFORE building
+// anything, to learn whether this (often private) API accepts a stored credential at all — or is
+// session-cookie-authed and belongs in the browser lane. Writes are never replayed; secret values
+// never reach the browser; the server returns status codes only.
+function ProbePanel({ ops, currentJson }: { ops: Kept[]; currentJson: string }) {
+  const [open, setOpen] = useState(false);
+  const [targets, setTargets] = useState<ProbeTargets | null>(null);
+  const [clientSlug, setClientSlug] = useState("");
+  const [secretName, setSecretName] = useState("");
+  const [externalId, setExternalId] = useState("");
+  const [noAuth, setNoAuth] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [res, setRes] = useState<ProbeResponse | null>(null);
+
+  const authFromEditor = (): unknown => {
+    try { const cur = JSON.parse(currentJson); if (cur?.auth) return cur.auth; } catch { /* fall through */ }
+    return { type: "bearer", secretName: "custom-vendor-api" };
+  };
+  const auth = noAuth ? { type: "none" } : authFromEditor();
+  const authLabel = noAuth ? "none (unauthenticated)" : `${(auth as { type?: string }).type ?? "?"}${(auth as { secretName?: string }).secretName ? ` via secret "${(auth as { secretName?: string }).secretName}"` : ""}`;
+
+  const openPanel = async () => {
+    setOpen((v) => !v);
+    if (targets || open) return;
+    try {
+      const r = await fetch("/api/connectors/probe-targets");
+      if (r.ok) setTargets((await r.json()) as ProbeTargets);
+    } catch { /* the manual externalId path still works */ }
+  };
+
+  const probe = async () => {
+    setErr(null); setRes(null); setBusy(true);
+    try {
+      const keep = ops.filter((o) => o.keep).map((o) => ({ suggestedName: o.name, method: o.method, host: o.host, path: o.path, headers: o.headers }));
+      const r = await fetch("/api/connectors/probe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ops: keep, auth, ...(externalId.trim() ? { externalId: externalId.trim() } : { clientSlug, secretName }) }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
+      setRes(data as ProbeResponse);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const client = targets?.clients.find((c) => c.slug === clientSlug);
+  const ready = noAuth || externalId.trim() || (clientSlug && secretName);
+
+  return (
+    <div style={{ borderTop: "1px solid var(--line)", marginTop: "0.6rem", paddingTop: "0.5rem" }}>
+      <button type="button" onClick={openPanel}>{open ? "Hide credential probe" : "Probe with a credential"}</button>
+      {open && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <p className="note" style={{ marginTop: 0 }}>
+            Replays the ticked GET/HEAD calls with a real credential to see whether this API accepts a stored credential —
+            or rejects everything (session-cookie auth → build the browser lane instead). Writes are never replayed.
+            Auth applied: <span className="mono">{authLabel}</span> (edit the definition’s auth block to change it).
+          </p>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label>
+              <div className="note">Client with a wired secret</div>
+              <select value={clientSlug} onChange={(e) => { setClientSlug(e.target.value); setSecretName(""); }} disabled={noAuth || !!externalId.trim()}>
+                <option value="">— pick a client —</option>
+                {(targets?.clients ?? []).map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+              </select>
+            </label>
+            <label>
+              <div className="note">Secret</div>
+              <select value={secretName} onChange={(e) => setSecretName(e.target.value)} disabled={noAuth || !clientSlug || !!externalId.trim()}>
+                <option value="">— pick —</option>
+                {(client?.secrets ?? []).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <span className="note">or</span>
+            <label>
+              <div className="note">Delinea secret number</div>
+              <input value={externalId} onChange={(e) => setExternalId(e.target.value)} placeholder="e.g. 5041" className="mono" style={{ width: 110 }} disabled={noAuth} />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={noAuth} onChange={(e) => setNoAuth(e.target.checked)} />
+              <span className="note">probe without auth</span>
+            </label>
+            <button type="button" onClick={probe} disabled={busy || !ready}>{busy ? "Probing…" : "Probe GET endpoints"}</button>
+          </div>
+          {err && <p style={{ color: "var(--err, #b91c1c)" }}>{err}</p>}
+          {res && (
+            <div style={{ marginTop: "0.5rem" }}>
+              <p style={{ margin: 0 }}><strong>{res.verdict === "usable" ? "✓" : res.verdict === "auth-rejected" ? "✗" : "…"}</strong> {res.note}</p>
+              <table style={{ width: "100%", fontSize: "0.8rem", borderCollapse: "collapse", marginTop: "0.35rem" }}>
+                <tbody>
+                  {res.results.map((r, i) => (
+                    <tr key={i} style={{ borderTop: "1px solid var(--line)" }}>
+                      <td style={{ padding: "0.2rem" }} className="mono">{r.method} {r.path}</td>
+                      <td style={{ padding: "0.2rem" }} className="mono">
+                        {r.status === null ? `error: ${r.error ?? "no response"}` : `HTTP ${r.status}`}
+                        {r.authRejected ? " — auth rejected" : r.redirected ? " — redirected (login page?)" : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {res.skippedUnsafe.length > 0 && (
+                <p className="note">Not replayed (writes are never probed): {res.skippedUnsafe.join(", ")}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function slugToBaseUrl(op: ImportedOperation): string {
   // Guess a baseUrl from the first operation's host + the common leading path segment (e.g. /v1).
@@ -123,6 +244,7 @@ export function HarImport({ onApply, currentJson }: { onApply: (def: unknown) =>
                   </table>
                   <button type="button" onClick={assemble} style={{ marginTop: "0.5rem" }}>Build definition from ticked operations</button>
                   <p className="note">Fills the JSON editor below. You still name the lanes, add {"{{templates}}"} for the user’s fields, and set auth.</p>
+                  <ProbePanel ops={ops} currentJson={currentJson} />
                 </>
               )}
             </div>
