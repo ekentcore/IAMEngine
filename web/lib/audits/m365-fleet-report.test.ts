@@ -10,15 +10,15 @@ function perm(over: Partial<PermissionRow>): PermissionRow {
   return { clientId: "c1", client: "Client One", slug: "core1", status: "ok", granted: [], missingRequired: [], missingOptional: [], surplus: [], ...over };
 }
 function row(over: Partial<FleetRow>): FleetRow {
-  return { client: "Client One", slug: "core1", state: "verified", grantedCount: 5, missingRequired: [], missingOptional: [], surplus: [], ...over };
+  return { client: "Client One", slug: "core1", restricted: false, state: "verified", grantedCount: 5, missingRequired: [], missingOptional: [], surplus: [], ...over };
 }
 
 // The whole reason this module exists: a client with no credential never reaches scanPermissions, so
 // joining on the swept rows alone would drop 63 of 139 clients — the worst-off ones.
 test("a client with Microsoft 365 but NO wired credential is reported as not configured, not omitted", () => {
   const rows = buildFleetRows([perm({ slug: "wired", client: "Wired Co" })], [
-    { slug: "wired", name: "Wired Co", hasCredential: true },
-    { slug: "bare", name: "Bare Co", hasCredential: false },
+    { slug: "wired", name: "Wired Co", hasCredential: true, restricted: false },
+    { slug: "bare", name: "Bare Co", hasCredential: false, restricted: false },
   ]);
   assert.equal(rows.length, 2, "every M365 client must appear");
   assert.equal(rows.find((r) => r.slug === "bare")!.state, "not-configured");
@@ -30,7 +30,7 @@ test("a client with neither Microsoft 365 nor a swept row is not in the report a
 });
 
 test("audit statuses map to the state the reader must act on", () => {
-  const clients = [{ slug: "a", name: "A", hasCredential: true }, { slug: "b", name: "B", hasCredential: true }, { slug: "c", name: "C", hasCredential: true }, { slug: "d", name: "D", hasCredential: true }];
+  const clients = [{ slug: "a", name: "A", hasCredential: true, restricted: false }, { slug: "b", name: "B", hasCredential: true, restricted: false }, { slug: "c", name: "C", hasCredential: true, restricted: false }, { slug: "d", name: "D", hasCredential: true, restricted: false }];
   const rows = buildFleetRows(
     [
       perm({ slug: "a", status: "ok" }),
@@ -51,7 +51,7 @@ test("audit statuses map to the state the reader must act on", () => {
 // A throttled read once reported every permission as missing (PR #90). An unconfirmed gap must never
 // be counted as a gap, or the report sends people to grant roles they already have.
 test("an unverified client is never counted as missing the role", () => {
-  const rows = buildFleetRows([perm({ slug: "t", status: "unverified", missingOptional: [PP] })], [{ slug: "t", name: "Throttled", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "t", status: "unverified", missingOptional: [PP] })], [{ slug: "t", name: "Throttled", hasCredential: true, restricted: false }]);
   const s = summarize(rows, PP);
   assert.equal(s.missingRole, 0, "a throttled read is not evidence of a gap");
   assert.equal(s.verified, 0);
@@ -59,7 +59,7 @@ test("an unverified client is never counted as missing the role", () => {
 });
 
 test("a cred-unusable client is never counted as missing the role — we learned nothing about it", () => {
-  const rows = buildFleetRows([perm({ slug: "x", status: "cred-bad", detail: "Global Admin account" })], [{ slug: "x", name: "Ex", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "x", status: "cred-bad", detail: "Global Admin account" })], [{ slug: "x", name: "Ex", hasCredential: true, restricted: false }]);
   assert.equal(summarize(rows, PP).missingRole, 0);
   assert.match(formatRow(rows[0]), /credential unusable: Global Admin account/);
 });
@@ -95,7 +95,7 @@ test("summary counts each state once and only counts escalation among verified c
       perm({ slug: "b", status: "ok", granted: ["x"] }),
       perm({ slug: "c", status: "cred-bad" }),
     ],
-    [{ slug: "a", name: "A", hasCredential: true }, { slug: "b", name: "B", hasCredential: true }, { slug: "c", name: "C", hasCredential: true }, { slug: "d", name: "D", hasCredential: false }]
+    [{ slug: "a", name: "A", hasCredential: true, restricted: false }, { slug: "b", name: "B", hasCredential: true, restricted: false }, { slug: "c", name: "C", hasCredential: true, restricted: false }, { slug: "d", name: "D", hasCredential: false, restricted: false }]
   );
   const s = summarize(rows, PP);
   assert.deepEqual(
@@ -110,7 +110,7 @@ test("summary counts each state once and only counts escalation among verified c
 // "not configured" from that absence invents a state — and --send posts it to a customer-visible room
 // as fact about clients whose credentials are wired and working.
 test("a client whose credential is wired but which the sweep did not cover is UNVERIFIED, not 'not configured'", () => {
-  const rows = buildFleetRows([], [{ slug: "skipped", name: "Skipped Co", hasCredential: true }]);
+  const rows = buildFleetRows([], [{ slug: "skipped", name: "Skipped Co", hasCredential: true, restricted: false }]);
   assert.equal(rows[0].state, "unverified", "a partial sweep must never fabricate 'not configured'");
   assert.equal(summarize(rows, PP).notConfigured, 0);
   assert.match(formatRow(rows[0]), /did not cover it|incomplete/i);
@@ -120,13 +120,13 @@ test("a Delinea resolve failure is unverified, not a broken credential", () => {
   // no-cred = Delinea did not answer (m365-audit.ts:89). The sweep shares ONE Delinea token, so a
   // mid-sweep expiry turns the rest of the fleet into no-cred; calling that "cannot authenticate"
   // would send the team to re-wire working credentials and post the count to chat as fact.
-  const rows = buildFleetRows([perm({ slug: "d", status: "no-cred", detail: "could not resolve the secret" })], [{ slug: "d", name: "Delinea Blip", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "d", status: "no-cred", detail: "could not resolve the secret" })], [{ slug: "d", name: "Delinea Blip", hasCredential: true, restricted: false }]);
   assert.equal(rows[0].state, "unverified");
   assert.equal(summarize(rows, PP).credUnusable, 0, "an unresolved secret is not a confirmed credential fault");
 });
 
 test("an unrecognised audit status is surfaced as unverified, never dropped into no section", () => {
-  const rows = buildFleetRows([perm({ slug: "w", status: "wat" as PermissionRow["status"] })], [{ slug: "w", name: "Weird Co", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "w", status: "wat" as PermissionRow["status"] })], [{ slug: "w", name: "Weird Co", hasCredential: true, restricted: false }]);
   assert.equal(rows[0].state, "unverified");
   const text = reportLines(rows, PP).join("\n");
   assert.ok(text.includes("Weird Co"), "counted in the total but rendered nowhere is the silent drop this module exists to prevent");
@@ -138,8 +138,50 @@ test("a swept row for a client missing from the M365 list is carried, not droppe
   assert.match(formatRow(rows[0]), /MISSING: User\.ReadWrite\.All/);
 });
 
+// ── Restricted routing ──────────────────────────────────────────────────────
+// The report script splits rows on this flag and sends each side to its own room, so the flag on the
+// row IS the routing decision: get it wrong here and a restricted client's permission state lands in
+// the all-clients room.
+
+test("each row carries its client's restricted flag", () => {
+  const rows = buildFleetRows(
+    [perm({ slug: "core", client: "Coretelligent", status: "ok" }), perm({ slug: "pub", client: "Public Co", status: "ok" })],
+    [
+      { slug: "core", name: "Coretelligent", hasCredential: true, restricted: true },
+      { slug: "pub", name: "Public Co", hasCredential: true, restricted: false },
+      { slug: "bare", name: "Bare Co", hasCredential: false, restricted: true },
+    ]
+  );
+  const r = (s: string) => rows.find((x) => x.slug === s)!;
+  assert.equal(r("core").restricted, true);
+  assert.equal(r("pub").restricted, false);
+  assert.equal(r("bare").restricted, true, "the flag must ride along regardless of credential state");
+});
+
+test("a carried row with no known client is restricted — fail closed, never into the all-clients room", () => {
+  const rows = buildFleetRows([perm({ slug: "ghost", client: "Ghost Co", status: "gaps" })], []);
+  assert.equal(rows[0].restricted, true, "unknown restriction status must route to the restricted room, not the default one");
+});
+
+test("splitting rows by the flag puts every client in exactly one segment", () => {
+  const rows = buildFleetRows(
+    [perm({ slug: "core", client: "Coretelligent", status: "ok" })],
+    [
+      { slug: "core", name: "Coretelligent", hasCredential: true, restricted: true },
+      { slug: "pub", name: "Public Co", hasCredential: false, restricted: false },
+    ]
+  );
+  const regular = reportLines(rows.filter((r) => !r.restricted), PP).join("\n");
+  const restricted = reportLines(rows.filter((r) => r.restricted), PP).join("\n");
+  assert.ok(!regular.includes("Coretelligent"), "a restricted client's name must never render into the regular report");
+  assert.ok(restricted.includes("Coretelligent"));
+  assert.ok(!restricted.includes("Public Co"));
+  assert.match(regular, /1 clients have Microsoft 365\./, "each segment's totals must describe only its own clients");
+  assert.match(restricted, /1 clients have Microsoft 365\./);
+});
+
 test("the unverified row reports WHY, rather than guessing at throttling", () => {
-  const rows = buildFleetRows([perm({ slug: "u", status: "unverified", detail: "Graph returned 403 for the app-role read" })], [{ slug: "u", name: "U Co", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "u", status: "unverified", detail: "Graph returned 403 for the app-role read" })], [{ slug: "u", name: "U Co", hasCredential: true, restricted: false }]);
   assert.match(formatRow(rows[0]), /Graph returned 403/, "a permanent failure must not be reported as a transient one");
 });
 
@@ -249,7 +291,7 @@ test("chunkLines handles an empty report without producing an empty message", ()
 test("the report body groups every client under exactly one heading", () => {
   const rows = buildFleetRows(
     [perm({ slug: "a", status: "ok" }), perm({ slug: "c", status: "cred-bad", detail: "GA account" })],
-    [{ slug: "a", name: "Alpha", hasCredential: true }, { slug: "c", name: "Charlie", hasCredential: true }, { slug: "n", name: "November", hasCredential: false }]
+    [{ slug: "a", name: "Alpha", hasCredential: true, restricted: false }, { slug: "c", name: "Charlie", hasCredential: true, restricted: false }, { slug: "n", name: "November", hasCredential: false, restricted: false }]
   );
   const text = reportLines(rows, PP).join("\n");
   assert.match(text, /WORKING CREDENTIAL \(1\)/);
@@ -269,7 +311,7 @@ test("clients sharing an unusable-credential reason are grouped under it once, n
       perm({ slug: "b", status: "cred-bad", detail: ga }),
       perm({ slug: "c", status: "cred-bad", detail: "Entra rejected this credential (AADSTS7000222)" }),
     ],
-    [{ slug: "a", name: "Alpha", hasCredential: true }, { slug: "b", name: "Bravo", hasCredential: true }, { slug: "c", name: "Charlie", hasCredential: true }]
+    [{ slug: "a", name: "Alpha", hasCredential: true, restricted: false }, { slug: "b", name: "Bravo", hasCredential: true, restricted: false }, { slug: "c", name: "Charlie", hasCredential: true, restricted: false }]
   );
   const text = reportLines(rows, PP).join("\n");
   assert.equal(text.split(ga).length - 1, 1, "the shared reason must be printed once, not once per client");
@@ -302,9 +344,9 @@ test("EVERY client survives the whole pipeline — grouping, wrapping and chunki
   const ga = "the username is a UPN (a person), not an application id — this is a Global Admin account, and the client-credentials flow the runner uses cannot authenticate with it";
   const clients: M365Client[] = [];
   const perms: PermissionRow[] = [];
-  for (let i = 0; i < 40; i++) { clients.push({ slug: `w${i}`, name: `Working Client ${i} LLC`, hasCredential: true }); perms.push(perm({ slug: `w${i}`, status: "ok", granted: ["a", "b"], missingOptional: [PP, "Mail.Send"], surplus: [{ role: "Application.ReadWrite.All", escalation: true, why: "w" }] })); }
-  for (let i = 0; i < 45; i++) { clients.push({ slug: `b${i}`, name: `Bad Cred Client ${i}, Inc`, hasCredential: true }); perms.push(perm({ slug: `b${i}`, status: "cred-bad", detail: ga })); }
-  for (let i = 0; i < 63; i++) clients.push({ slug: `n${i}`, name: `Unconfigured Client ${i}`, hasCredential: false });
+  for (let i = 0; i < 40; i++) { clients.push({ slug: `w${i}`, name: `Working Client ${i} LLC`, hasCredential: true, restricted: false }); perms.push(perm({ slug: `w${i}`, status: "ok", granted: ["a", "b"], missingOptional: [PP, "Mail.Send"], surplus: [{ role: "Application.ReadWrite.All", escalation: true, why: "w" }] })); }
+  for (let i = 0; i < 45; i++) { clients.push({ slug: `b${i}`, name: `Bad Cred Client ${i}, Inc`, hasCredential: true, restricted: false }); perms.push(perm({ slug: `b${i}`, status: "cred-bad", detail: ga })); }
+  for (let i = 0; i < 63; i++) clients.push({ slug: `n${i}`, name: `Unconfigured Client ${i}`, hasCredential: false, restricted: false });
 
   const rows = buildFleetRows(perms, clients);
   assert.equal(rows.length, 148);
@@ -324,7 +366,7 @@ test("report body headings are all recognised as headings, and nothing else is",
       perm({ slug: "u", status: "unverified" }),
       perm({ slug: "c", status: "cred-bad", detail: "GA account" }),
     ],
-    [{ slug: "a", name: "Alpha", hasCredential: true }, { slug: "u", name: "Uniform", hasCredential: true }, { slug: "c", name: "Charlie", hasCredential: true }, { slug: "n", name: "November", hasCredential: false }]
+    [{ slug: "a", name: "Alpha", hasCredential: true, restricted: false }, { slug: "u", name: "Uniform", hasCredential: true, restricted: false }, { slug: "c", name: "Charlie", hasCredential: true, restricted: false }, { slug: "n", name: "November", hasCredential: false, restricted: false }]
   );
   assert.deepEqual(reportLines(rows, PP).filter(isSectionHeader), [
     "WORKING CREDENTIAL (1)",
@@ -336,9 +378,9 @@ test("report body headings are all recognised as headings, and nothing else is",
 
 test("a section heading is never the last line of a message", () => {
   // Sized so a heading would naturally land at a chunk boundary.
-  const clients = Array.from({ length: 90 }, (_, i) => ({ slug: `n${i}`, name: `Unconfigured Client Number ${i}`, hasCredential: false }));
+  const clients = Array.from({ length: 90 }, (_, i) => ({ slug: `n${i}`, name: `Unconfigured Client Number ${i}`, hasCredential: false, restricted: false }));
   const perms = Array.from({ length: 60 }, (_, i) => perm({ slug: `w${i}`, status: "ok", granted: ["a"], missingOptional: [PP] }));
-  clients.push(...perms.map((_, i) => ({ slug: `w${i}`, name: `Working Client Number ${i}`, hasCredential: true })));
+  clients.push(...perms.map((_, i) => ({ slug: `w${i}`, name: `Working Client Number ${i}`, hasCredential: true, restricted: false })));
   for (const limit of [700, 900, 1200, 1500, 2000, 4096]) {
     const chunks = chunkLines(reportLines(buildFleetRows(perms, clients), PP), (i, n) => `T (${i + 1}/${n})`, limit);
     for (const c of chunks) {
@@ -349,7 +391,7 @@ test("a section heading is never the last line of a message", () => {
 });
 
 test("an empty section is omitted rather than printed as a zero heading", () => {
-  const rows = buildFleetRows([perm({ slug: "a", status: "ok" })], [{ slug: "a", name: "Alpha", hasCredential: true }]);
+  const rows = buildFleetRows([perm({ slug: "a", status: "ok" })], [{ slug: "a", name: "Alpha", hasCredential: true, restricted: false }]);
   const text = reportLines(rows, PP).join("\n");
   assert.ok(!/NOT CONFIGURED/.test(text));
   assert.ok(!/\(0\)/.test(text));

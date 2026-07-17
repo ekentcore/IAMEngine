@@ -38,6 +38,7 @@ export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
 export { entry as featureRequestNumbersAndAutoHide } from "./feature-request-numbers-and-auto-hide";
 export { entry as featureRequestsOwnPage } from "./feature-requests-own-page";
 export { entry as fleetAuditPermsAndLeakedSeats } from "./fleet-audit-perms-and-leaked-seats";
+export { entry as fleetReportRestrictedRouting } from "./fleet-report-restricted-routing";
 export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";

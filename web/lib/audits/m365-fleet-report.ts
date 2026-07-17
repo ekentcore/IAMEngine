@@ -30,7 +30,11 @@ export const reportableRoles = (): string[] => [...GRAPH_REQUIRED_CAPS, ...GRAPH
 // through audit-m365-graph-perms.ts's own --missing/--client filters — report a client whose
 // credential is wired and working as "not configured", which is not a dropped client but an invented
 // one, posted to a customer-visible room as fact.
-export type M365Client = { slug: string; name: string; hasCredential: boolean };
+//
+// `restricted` mirrors Client.restricted and decides which chat room the client's row may appear in:
+// a restricted client's permission state goes to the restricted destinations ONLY, never the
+// default (all-clients) room.
+export type M365Client = { slug: string; name: string; hasCredential: boolean; restricted: boolean };
 
 export type FleetState =
   | "not-configured" // no m365-admin secret wired — nothing to check
@@ -41,6 +45,7 @@ export type FleetState =
 export type FleetRow = {
   client: string;
   slug: string;
+  restricted: boolean;
   state: FleetState;
   grantedCount: number;
   missingRequired: string[];
@@ -77,12 +82,13 @@ export function buildFleetRows(perm: readonly PermissionRow[], m365Clients: read
       // No swept row. What that means depends entirely on whether a credential is wired — see the
       // note on M365Client. Never nothing-to-report by default.
       return c.hasCredential
-        ? { client: c.name, slug: c.slug, state: "unverified" as const, grantedCount: 0, missingRequired: [], missingOptional: [], surplus: [], detail: "a credential is wired but this sweep did not cover it — the results being reported are incomplete" }
-        : { client: c.name, slug: c.slug, state: "not-configured" as const, grantedCount: 0, missingRequired: [], missingOptional: [], surplus: [] };
+        ? { client: c.name, slug: c.slug, restricted: c.restricted, state: "unverified" as const, grantedCount: 0, missingRequired: [], missingOptional: [], surplus: [], detail: "a credential is wired but this sweep did not cover it — the results being reported are incomplete" }
+        : { client: c.name, slug: c.slug, restricted: c.restricted, state: "not-configured" as const, grantedCount: 0, missingRequired: [], missingOptional: [], surplus: [] };
     }
     return {
       client: c.name,
       slug: c.slug,
+      restricted: c.restricted,
       // ?? "unverified": a status this map doesn't know would otherwise be `undefined`, which matches
       // no section, so the client would be counted in the total and rendered nowhere — the silent drop
       // this module exists to prevent. An unknown status is something we cannot speak to, so say that.
@@ -104,6 +110,10 @@ export function buildFleetRows(perm: readonly PermissionRow[], m365Clients: read
     rows.push({
       client: p.client,
       slug: p.slug,
+      // A row we can't join to a Client has no restricted flag to read. Fail CLOSED: an extra row in
+      // the restricted room is a curiosity; a restricted client's row in the all-clients room is a
+      // disclosure that cannot be recalled.
+      restricted: true,
       state: STATE_FROM_AUDIT[p.status] ?? "unverified",
       grantedCount: p.granted.length,
       missingRequired: p.missingRequired,

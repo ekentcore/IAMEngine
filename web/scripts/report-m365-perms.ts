@@ -2,10 +2,17 @@
  *
  *   npx tsx scripts/report-m365-perms.ts                      # print it (default — never sends)
  *   npx tsx scripts/report-m365-perms.ts --send               # print it, then post to the chat rooms
- *   npx tsx scripts/report-m365-perms.ts --audience both      # all (default) | restricted | both
+ *   npx tsx scripts/report-m365-perms.ts --only restricted    # send just one segment: regular | restricted
  *   npx tsx scripts/report-m365-perms.ts --role Mail.Send     # headline a different permission
  *   npx tsx scripts/report-m365-perms.ts --from perms.json    # reuse a captured sweep, skip Graph
  *   npx tsx scripts/report-m365-perms.ts --json               # the joined rows, for piping
+ *
+ * Routing is PER CLIENT, not per run: clients flagged restricted (Client.restricted — e.g.
+ * Coretelligent) go as their own report to each channel's RESTRICTED destination; everyone else goes
+ * to the default (all-clients) destination. A restricted client's permission state never reaches the
+ * default room — if no restricted destination is configured, that segment fails loudly rather than
+ * falling back. (`--audience`, which used to aim the WHOLE batch at one side, is gone: it could put
+ * restricted clients' data in the regular room.)
  *
  * Unlike audit-m365-graph-perms.ts, this covers clients with NO credential wired: that script walks
  * the wired m365-admin secrets (the right set for "who is missing a role"), which silently omits the
@@ -49,7 +56,7 @@ const send = argv.includes("--send");
 const asJson = argv.includes("--json");
 const from = flag("--from");
 const role = flag("--role") ?? "User-PasswordProfile.ReadWrite.All";
-const audience = (flag("--audience") ?? "all") as AnnouncementAudience;
+const only = flag("--only"); // regular | restricted — resend one segment after a partial failure
 
 const db = new PrismaClient();
 
@@ -62,11 +69,11 @@ const UNSET = ["", "REPLACE_ME", "NOT_NEEDED"];
 async function m365Clients(): Promise<M365Client[]> {
   const rows = await db.client.findMany({
     where: { archivedAt: null, systems: { some: { systemKey: { in: ["m365", "entra"] } } } },
-    select: { slug: true, name: true, secrets: { where: { name: "m365-admin" }, select: { externalId: true } } },
+    select: { slug: true, name: true, restricted: true, secrets: { where: { name: "m365-admin" }, select: { externalId: true } } },
     orderBy: { name: "asc" },
   });
   // The same wired-or-not test auditTargets uses, so this can't disagree with what the sweep walked.
-  return rows.map((r) => ({ slug: r.slug, name: r.name, hasCredential: r.secrets.some((s) => !UNSET.includes(s.externalId.trim())) }));
+  return rows.map((r) => ({ slug: r.slug, name: r.name, restricted: r.restricted, hasCredential: r.secrets.some((s) => !UNSET.includes(s.externalId.trim())) }));
 }
 
 // A failed send's error can quote the destination — Node's own "Failed to parse URL from <url>" does
@@ -78,7 +85,13 @@ const scrubUrls = (s: string | undefined): string | undefined =>
   s?.replace(/\b(?:https?:\/\/|hooks\.)\S+/gi, "<redacted url>");
 
 (async () => {
-  if (!["all", "restricted", "both"].includes(audience)) throw new Error(`--audience must be all, restricted or both (got ${audience})`);
+  // --audience aimed the WHOLE batch at one side, so `--audience all` posted restricted clients'
+  // permission state to the all-clients room. Refuse it rather than silently ignore it: whoever
+  // typed it has an expectation about where this report lands, and it changed.
+  if (argv.includes("--audience")) {
+    throw new Error("--audience is gone: routing is per client now (restricted clients → the restricted destinations, everyone else → the default ones). Use --only regular|restricted to resend a single segment.");
+  }
+  if (only !== undefined && !["regular", "restricted"].includes(only)) throw new Error(`--only must be regular or restricted (got ${only})`);
   // --role names the permission the headline counts. Only a capability's suggested role can ever
   // appear in a missing list, so anything else would silently headline a truthful-looking "0/31".
   if (!reportableRoles().some((r) => r.toLowerCase() === role.toLowerCase())) {
@@ -98,41 +111,70 @@ const scrubUrls = (s: string | undefined): string | undefined =>
   const rows = buildFleetRows(perm, clients);
   if (asJson) { console.log(JSON.stringify(rows, null, 2)); await db.$disconnect(); return; }
 
-  const lines = reportLines(rows, role);
-  const s = summarize(rows, role);
   const stamp = new Date().toISOString().slice(0, 10);
-  const chunks = chunkLines(lines, (i, n) => (n === 1 ? `Microsoft 365 permissions — fleet report (${stamp})` : `Microsoft 365 permissions — fleet report (${stamp}) ${i + 1}/${n}`));
 
-  for (const c of chunks) {
-    console.log(`\n${"═".repeat(78)}\n${c.title}\n${"═".repeat(78)}`);
-    console.log(c.detail);
+  // Two SEPARATE reports, not one report filtered per room: each side's rooms get complete,
+  // correctly-scoped text — totals, section counts and part numbers that describe exactly the
+  // clients that room is allowed to see. The restricted segment is titled as such so nobody
+  // mistakes its 2-client "fleet" for the fleet.
+  type SegmentKey = "regular" | "restricted";
+  const title = (seg: SegmentKey) => (i: number, n: number) => {
+    const base = seg === "restricted" ? `Microsoft 365 permissions — restricted clients (${stamp})` : `Microsoft 365 permissions — fleet report (${stamp})`;
+    return n === 1 ? base : `${base} ${i + 1}/${n}`;
+  };
+  const segments = (
+    [
+      { key: "regular" as const, audience: "all" as AnnouncementAudience, room: "default (all-clients)", rows: rows.filter((r) => !r.restricted) },
+      { key: "restricted" as const, audience: "restricted" as AnnouncementAudience, room: "restricted", rows: rows.filter((r) => r.restricted) },
+    ]
+      .filter((seg) => !only || seg.key === only)
+      .filter((seg) => seg.rows.length > 0)
+  ).map((seg) => ({ ...seg, summary: summarize(seg.rows, role), chunks: chunkLines(reportLines(seg.rows, role), title(seg.key)) }));
+
+  if (!segments.length) {
+    console.error(only ? `No clients in the "${only}" segment — nothing to report.` : "No clients — nothing to report.");
+    await db.$disconnect();
+    return;
   }
-  console.error(`\n${chunks.length} chat message(s); ${s.total} clients.`);
+
+  for (const seg of segments) {
+    for (const c of seg.chunks) {
+      console.log(`\n${"═".repeat(78)}\n${c.title}   [→ ${seg.room} destinations]\n${"═".repeat(78)}`);
+      console.log(c.detail);
+    }
+  }
+  console.error(`\n${segments.map((seg) => `${seg.key}: ${seg.chunks.length} chat message(s), ${seg.summary.total} client(s) → ${seg.room} destinations`).join("\n")}`);
 
   if (!send) {
-    console.error(`\nNothing sent. Re-run with --send to post to the "${audience}" chat destination(s).`);
+    console.error(`\nNothing sent. Re-run with --send to post each segment to its chat destination(s).`);
     await db.$disconnect();
     return;
   }
 
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
-  console.error(`\nsending ${chunks.length} message(s) to the "${audience}" destination(s)…`);
   // SEQUENTIALLY, and never in parallel: these are numbered parts of one report, and a chat room
   // shows them in arrival order. Racing them scrambles the report. The small gap also keeps a
   // multi-part send under the incoming-webhook rate limit.
-  const sent: { part: number; results: { channel: string; ok: boolean; error?: string }[] }[] = [];
-  for (const [i, c] of chunks.entries()) {
-    const raw = await sendAnnouncement(settings, audience, { event: "announcement", title: c.title, detail: c.detail });
-    const results = raw.map((r) => ({ channel: r.channel as string, ok: r.ok, error: scrubUrls(r.error) }));
-    sent.push({ part: i + 1, results });
-    const bad = results.filter((r) => !r.ok);
-    console.error(`  ${i + 1}/${chunks.length} → ${results.length ? results.map((r) => `${r.channel}:${r.ok ? "ok" : `FAILED ${r.error}`}`).join(" ") : "NO DESTINATION CONFIGURED"}`);
-    if (bad.length) console.error(`     ↑ part ${i + 1} did not arrive — the report in chat is now incomplete`);
-    if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 700));
+  type PartResult = { part: number; results: { channel: string; ok: boolean; error?: string }[] };
+  const sentSegments: { segment: SegmentKey; room: string; clients: number; parts: number; sent: PartResult[] }[] = [];
+  for (const seg of segments) {
+    console.error(`\nsending ${seg.chunks.length} message(s) to the ${seg.room} destination(s)…`);
+    const sent: PartResult[] = [];
+    for (const [i, c] of seg.chunks.entries()) {
+      const raw = await sendAnnouncement(settings, seg.audience, { event: "announcement", title: c.title, detail: c.detail });
+      const results = raw.map((r) => ({ channel: r.channel as string, ok: r.ok, error: scrubUrls(r.error) }));
+      sent.push({ part: i + 1, results });
+      const bad = results.filter((r) => !r.ok);
+      console.error(`  ${i + 1}/${seg.chunks.length} → ${results.length ? results.map((r) => `${r.channel}:${r.ok ? "ok" : `FAILED ${r.error}`}`).join(" ") : "NO DESTINATION CONFIGURED"}`);
+      if (bad.length) console.error(`     ↑ part ${i + 1} did not arrive — the report in chat is now incomplete`);
+      if (i < seg.chunks.length - 1) await new Promise((r) => setTimeout(r, 700));
+    }
+    sentSegments.push({ segment: seg.key, room: seg.room, clients: seg.summary.total, parts: seg.chunks.length, sent });
   }
 
-  const delivered = sent.flatMap((p) => p.results).filter((r) => r.ok).length;
-  const attempted = sent.flatMap((p) => p.results).length;
+  const allResults = sentSegments.flatMap((s) => s.sent.flatMap((p) => p.results));
+  const delivered = allResults.filter((r) => r.ok).length;
+  const attempted = allResults.length;
 
   // Posting to a customer-visible room is exactly the kind of act the audit trail exists for, and the
   // UI's own send (app/api/admin/changelog) records one. A CLI is not a reason to skip it. Never the
@@ -146,19 +188,34 @@ const scrubUrls = (s: string | undefined): string | undefined =>
     data: {
       actor: "script:report-m365-perms",
       action: delivered > 0 ? "notification.sent" : "notification.error",
-      detail: { event: "announcement", report: "m365-graph-permissions", audience, role, parts: chunks.length, clients: s.total, delivered, attempted, results: sent },
+      detail: {
+        event: "announcement",
+        report: "m365-graph-permissions",
+        role,
+        delivered,
+        attempted,
+        segments: sentSegments.map((s) => ({ segment: s.segment, room: s.room, clients: s.clients, parts: s.parts, results: s.sent })),
+      },
     },
   }).catch((e: unknown) => console.error(`(recording the audit row failed: ${e instanceof Error ? e.message : String(e)})`));
   await db.$disconnect();
 
-  // Exit non-zero when nothing reached anyone: --send that silently no-ops is how a report is believed
-  // to have been filed when the room never saw it.
-  if (attempted === 0) {
-    console.error(`\nNOTHING WAS SENT: no "${audience}" destination is configured or enabled (Settings → notifications).`);
-    process.exit(1);
+  // Exit non-zero when a segment reached no one: --send that silently no-ops is how a report is
+  // believed to have been filed when the room never saw it. Checked PER SEGMENT — the regular send
+  // succeeding must not mask a restricted segment that had nowhere to go.
+  let failed = false;
+  for (const s of sentSegments) {
+    if (s.sent.flatMap((p) => p.results).length > 0) continue;
+    failed = true;
+    console.error(
+      s.segment === "restricted"
+        ? `\nRESTRICTED SEGMENT NOT SENT: ${s.clients} restricted client(s) have M365 but no restricted destination is configured or enabled (Settings → notifications). Their data was NOT posted anywhere — it is never sent to the default room.`
+        : `\nNOTHING WAS SENT for the regular segment: no default destination is configured or enabled (Settings → notifications).`
+    );
   }
   if (delivered < attempted) {
+    failed = true;
     console.error(`\n${attempted - delivered} of ${attempted} sends FAILED — what is in chat is an incomplete report.`);
-    process.exit(1);
   }
+  if (failed) process.exit(1);
 })().catch(async (e) => { console.error(e); await db.$disconnect(); process.exit(1); });
