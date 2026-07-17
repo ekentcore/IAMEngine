@@ -12,6 +12,7 @@
 // Pure — no DB, no network, no I/O. The caller supplies the data; these functions only shape it.
 import type { PermissionRow } from "./m365-audit";
 import { GRAPH_REQUIRED_CAPS, GRAPH_OPTIONAL_CAPS, suggestedRole, type SurplusRole } from "../secrets/graph-caps";
+import { chunkLines as chunkLinesShared, ZOOM_MESSAGE_BUDGET as ZOOM_BUDGET } from "../notifications/chunk";
 
 // The only role names that can ever appear in a missing list, and so the only ones a headline can
 // count. m365-audit fills those lists via suggestedRole(), which returns a capability's FIRST anyOf —
@@ -243,92 +244,12 @@ export function reportLines(rows: readonly FleetRow[], role: string): string[] {
   return out;
 }
 
-// Zoom's cap on a chat message is 4000 characters — their own answer said 4096 first and was later
-// CORRECTED to 4000, and a report split against 4096 verifiably arrived with its tail silently cut
-// off mid-list (2026-07-17 fleet report). Zoom does not document whether it counts characters or
-// bytes, and this report is full of multibyte punctuation ("—", "·"), so the budget is measured in
-// UTF-8 BYTES with margin: a message of ≤3800 bytes fits the cap under either reading (chars ≤ bytes).
-// The budget is per MESSAGE and the title rides in the same payload (sender.messageText prepends
-// it), so the title's cost comes out of each chunk's allowance.
-export const ZOOM_MESSAGE_BUDGET = 3800;
-const utf8Len = (s: string): number => new TextEncoder().encode(s).length;
+// The transport limit and the generic splitter live with the notifications sender
+// (lib/notifications/chunk.ts) — the cap is a property of Zoom, not of this report; sender.ts now
+// guards EVERY Zoom message with the same budget. This wrapper binds the report's section-heading
+// rule: a heading is never stranded as the last line of a message (see keepWithNext there).
+export { ZOOM_MESSAGE_BUDGET } from "../notifications/chunk";
 
-// Split lines into chunks whose rendered "title\nline\nline…" stays under `limit`.
-//
-// `titleFor(i, total)` is a callback rather than a string because the title carries the "(2/5)"
-// counter — which depends on the total, which is not known until the split is done. That is circular:
-// the title's width comes out of each chunk's budget, so a wider title makes more chunks, and more
-// chunks make a wider counter ("9/9" → "9/10").
-//
-// Two passes do NOT settle this. Splitting for "Report" (6 chars) can yield 9 chunks; re-splitting for
-// "Report 9/9" (10) can then yield 10, whose real titles are "Report 4/10" (11) — one wider than the
-// budget they were split against, so every full chunk lands 1 char over and Zoom rejects it. So:
-// iterate to a fixed point, where the width we split against is at least the width the resulting
-// count actually needs. Each round strictly widens, and the width only grows with the counter's digit
-// count, so it settles in a couple of rounds.
-export function chunkLines(lines: readonly string[], titleFor: (i: number, total: number) => string, limit: number = ZOOM_MESSAGE_BUDGET): { title: string; detail: string }[] {
-  // Hard-cut a line to fit `maxBytes` UTF-8 bytes including a trailing ellipsis. Binary search on the
-  // slice length: a cut can land inside a surrogate pair, which encodes as a 3-byte replacement — ugly
-  // in one pathological name, but never over budget.
-  const cutToBytes = (s: string, maxBytes: number): string => {
-    const room = Math.max(0, maxBytes - utf8Len("…"));
-    let lo = 0, hi = s.length;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (utf8Len(s.slice(0, mid)) <= room) lo = mid; else hi = mid - 1;
-    }
-    return `${s.slice(0, lo)}…`;
-  };
-  const split = (titleWidth: number): string[][] => {
-    const chunks: string[][] = [];
-    let cur: string[] = [];
-    let size = 0;
-    const fitted = lines.map((raw) => {
-      // A single line longer than the whole budget can never fit; hard-cut it rather than emit a
-      // message the transport will reject outright.
-      const room = limit - titleWidth - 1;
-      return utf8Len(raw) > room ? cutToBytes(raw, room) : raw;
-    });
-    for (const [i, line] of fitted.entries()) {
-      const cost = utf8Len(line) + 1; // +1 for the newline joining it to what precedes
-      // A section heading stranded as the last line of a message leaves the next message a wall of
-      // names with nothing saying what they are — and chat does not guarantee the two stay adjacent.
-      // So a heading only starts here if its first row fits here too.
-      const next = fitted[i + 1];
-      const need = isSectionHeader(line) && next !== undefined ? cost + utf8Len(next) + 1 : cost;
-      if (cur.length && size + need > limit - titleWidth) {
-        chunks.push(cur);
-        cur = [];
-        size = 0;
-      }
-      cur.push(line);
-      size += cost;
-    }
-    if (cur.length) chunks.push(cur);
-    return chunks;
-  };
-
-  // The widest title any of `total` chunks will carry. Measured over every index, not just the first
-  // and last, so a titleFor that is not monotonic in `i` cannot slip a wider title past the budget.
-  const maxTitleWidth = (total: number): number => {
-    let w = 0;
-    for (let i = 0; i < Math.max(1, total); i++) w = Math.max(w, utf8Len(titleFor(i, total)));
-    return w;
-  };
-
-  let width = maxTitleWidth(1);
-  let chunks = split(width);
-  let settled = false;
-  for (let round = 0; round < 8; round++) {
-    const need = maxTitleWidth(chunks.length);
-    if (need <= width) { settled = true; break; }
-    width = need;
-    chunks = split(width);
-  }
-  // Belt and braces: if it somehow hasn't settled, split against the width for the worst case there
-  // is — one chunk per line, which no split can exceed. Guaranteed to fit, at the cost of a slightly
-  // narrower body. Being a character over the limit is silent non-delivery; being under is invisible.
-  if (!settled && maxTitleWidth(chunks.length) > width) chunks = split(maxTitleWidth(Math.max(1, lines.length)));
-
-  return chunks.map((c, i) => ({ title: titleFor(i, chunks.length), detail: c.join("\n") }));
+export function chunkLines(lines: readonly string[], titleFor: (i: number, total: number) => string, limit: number = ZOOM_BUDGET): { title: string; detail: string }[] {
+  return chunkLinesShared(lines, titleFor, limit, isSectionHeader);
 }

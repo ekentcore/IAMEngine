@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageText, sendWebhook, sendZoom, sendTest, resolveWebhookDests, resolveEmailDests } from "./sender";
+import { messageText, sendWebhook, sendZoom, sendTest, resolveWebhookDests, resolveEmailDests, zoomParts } from "./sender";
+import { ZOOM_MESSAGE_BUDGET } from "./chunk";
 import { normalizeSettings, parseClientOverride, DEFAULT_NOTIFICATIONS, NOTIF_EVENTS, type NotificationEvent } from "./types";
 
 const ev: NotificationEvent = {
@@ -147,5 +148,56 @@ test("sendTest routes to the right transport per channel", async () => {
     assert.match(hits[1], /zoom.*format=full/);
     const email = await sendTest("email", { recipients: ["x@y.com"] }, ev); // no NOTIFY_GRAPH env
     assert.equal(email.ok, false); // email not configured -> clean failure, not a throw
+  } finally { globalThis.fetch = orig; }
+});
+
+// ── The Zoom over-length guard ──────────────────────────────────────────────
+// Zoom silently cuts a message over its cap (really 4000, budgeted 3800 UTF-8 bytes — see chunk.ts),
+// and until now only the fleet report pre-chunked; any OTHER long message lost its tail in the room.
+// Every Zoom send is now guarded: over-budget messages split into sequential "(x of y)" parts.
+
+test("zoomParts: a message within budget is one part with the plain title — no (x of y)", () => {
+  const parts = zoomParts({ event: "announcement", title: "Short note", detail: "line 1\nline 2" });
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0].head, "Short note");
+  assert.ok(!/\(\d+ of \d+\)/.test(parts[0].head));
+  assert.deepEqual(parts[0].lines, ["line 1", "line 2"]);
+});
+
+test("zoomParts: an over-budget message splits into (x of y) parts that each fit, losing no line", () => {
+  const lines = Array.from({ length: 220 }, (_, i) => `row ${String(i).padStart(3, "0")} — ${"x".repeat(40)} · end`);
+  const parts = zoomParts({ event: "announcement", title: "Big report", detail: lines.join("\n") });
+  assert.ok(parts.length > 1, "an ~11k-byte message must split");
+  for (const [i, p] of parts.entries()) {
+    assert.equal(p.head, `Big report (${i + 1} of ${parts.length})`);
+    const rendered = [p.head, ...p.lines].join("\n");
+    assert.ok(new TextEncoder().encode(rendered).length <= ZOOM_MESSAGE_BUDGET, `part ${i + 1} over budget`);
+  }
+  assert.deepEqual(parts.flatMap((p) => p.lines), lines, "no line may be lost or reordered");
+});
+
+test("zoomParts: a title-only event over budget is hard-cut, never dropped", () => {
+  const parts = zoomParts({ event: "announcement", title: `T ${"y".repeat(5000)}` });
+  assert.equal(parts.length, 1, "nothing to paginate — but it must still send");
+  assert.ok(new TextEncoder().encode(parts[0].head).length <= ZOOM_MESSAGE_BUDGET);
+});
+
+test("sendZoom posts every part in order and reports a failed part", async () => {
+  const bodies: string[] = [];
+  let call = 0;
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+    bodies.push(String(init?.body));
+    call++;
+    return { ok: call !== 2, status: call === 2 ? 500 : 200 } as Response; // part 2 fails
+  }) as unknown as typeof fetch;
+  try {
+    const lines = Array.from({ length: 220 }, (_, i) => `row ${i} ${"z".repeat(40)}`);
+    const res = await sendZoom("https://hooks.zoom.us/x", "tok", { event: "announcement", title: "Big", detail: lines.join("\n") });
+    assert.ok(bodies.length > 2, "every part must still be attempted");
+    const heads = bodies.map((b) => (JSON.parse(b) as { content: { head: { text: string } } }).content.head.text);
+    assert.equal(heads[0], `Big (1 of ${bodies.length})`);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /part 2\//);
   } finally { globalThis.fetch = orig; }
 });

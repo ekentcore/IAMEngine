@@ -3,6 +3,7 @@
 // pair + the client's per-channel override, then sends via the right transport.
 import { db } from "@/lib/db";
 import { getAppSetting } from "@/lib/settings";
+import { chunkLines, cutToBytes, utf8Len, ZOOM_MESSAGE_BUDGET } from "./chunk";
 import {
   NOTIFICATIONS_SETTING_KEY,
   normalizeSettings,
@@ -57,10 +58,32 @@ export const sendWebhook = (webhookUrl: string, e: NotificationEvent): Promise<S
 // `{ type: "message", text }` segment per line); a plain string shows a literal "\n". `?format=full`
 // is the format that accepts this structure (see Zoom "send messages via incoming webhooks"). Missing
 // token -> HTTP 400/401.
-export function zoomBody(e: NotificationEvent): { content: { head: { text: string }; body: { type: "message"; text: string }[] } } {
+type ZoomCard = { content: { head: { text: string }; body: { type: "message"; text: string }[] } };
+const zoomCard = (head: string, lines: readonly string[]): ZoomCard =>
+  ({ content: { head: { text: head }, body: lines.map((text) => ({ type: "message", text })) } });
+
+export function zoomBody(e: NotificationEvent): ZoomCard {
   const lines = messageText(e).split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
   const head = lines.shift() ?? e.title;
-  return { content: { head: { text: head }, body: lines.map((text) => ({ type: "message", text })) } };
+  return zoomCard(head, lines);
+}
+
+// The over-length guard for EVERY Zoom send. Zoom silently cuts a message over its cap (really 4000
+// characters, budgeted at 3800 UTF-8 bytes — see ./chunk), and until now only the fleet report
+// pre-chunked; any other long message lost its tail in the room with the send still reporting ok.
+// A message that fits goes out exactly as before. One that doesn't is split into sequential
+// messages whose head carries "(x of y)" — no counter on a single message.
+export function zoomParts(e: NotificationEvent): { head: string; lines: string[] }[] {
+  const all = messageText(e).split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
+  const rawHead = all.shift() ?? e.title;
+  // A pathological title could eat the whole budget (or all of it) and starve the body; real titles
+  // are short constants, so cap the head at 500 bytes and give the rest to the lines.
+  const head = utf8Len(rawHead) > 500 ? cutToBytes(rawHead, 500) : rawHead;
+  if (utf8Len([head, ...all].join("\n")) <= ZOOM_MESSAGE_BUDGET) return [{ head, lines: all }];
+  const chunks = chunkLines(all, (i, n) => `${head} (${i + 1} of ${n})`);
+  // No body lines at all (title-only event): chunkLines has nothing to paginate — still send the head.
+  if (chunks.length === 0) return [{ head, lines: [] }];
+  return chunks.map((c) => ({ head: c.title, lines: c.detail.split("\n") }));
 }
 
 export async function sendZoom(webhookUrl: string, token: string, e: NotificationEvent): Promise<SendResult> {
@@ -69,13 +92,22 @@ export async function sendZoom(webhookUrl: string, token: string, e: Notificatio
     token = token.trim(); // a stray space here = a rejected Authorization header
     let url = hook;
     try { const u = new URL(hook); u.searchParams.set("format", "full"); url = u.toString(); } catch { /* leave as-is if not a full URL */ }
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },
-      body: JSON.stringify(zoomBody(e)),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}${token ? "" : " — set the Zoom verification token"}` };
+    // Parts go SEQUENTIALLY: they are numbered pages of one message and the room shows arrival
+    // order. Every part is attempted even after a failure (the room keeps what did arrive; the
+    // error names what didn't). The gap keeps a multi-part send under the webhook rate limit.
+    const parts = zoomParts(e);
+    const failed: string[] = [];
+    for (const [i, p] of parts.entries()) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },
+        body: JSON.stringify(zoomCard(p.head, p.lines)),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (!res.ok) failed.push(`part ${i + 1}/${parts.length}: HTTP ${res.status}${token ? "" : " — set the Zoom verification token"}`);
+      if (i < parts.length - 1) await new Promise((r) => setTimeout(r, 300));
+    }
+    return failed.length ? { ok: false, error: failed.join("; ") } : { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
