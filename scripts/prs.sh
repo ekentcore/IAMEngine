@@ -90,6 +90,65 @@ sync_local_after_merge() {
   echo "      file is served from disk, so agents auto-update on their next heartbeat (no rebuild)."
 }
 
+# The by-hand recipe, printed whenever the migration isn't (or can't be) run automatically.
+print_migration_manual() {
+  cat <<'NEXT'
+    cd "$(git rev-parse --show-toplevel)/web"
+    git checkout main && git pull
+    npx prisma migrate deploy    # forward-only. NEVER `migrate dev` — that resets the DB.
+    npx prisma generate
+  Then restart the dev server so it picks up the regenerated client.
+NEXT
+}
+
+# A merged PR shipped a DB migration; the database still needs it. This RUNS it (with approval) rather
+# than only printing the steps — but only where it is safe to: the up-to-date main checkout. Anywhere
+# else (a worktree, a detached HEAD, no web/) it can't be sure the migration file is even on disk or
+# that DATABASE_URL is configured, so it prints the recipe instead.
+#
+# `migrate deploy` is forward-only and never resets data — but it writes to whatever DATABASE_URL this
+# environment points at, so it gets its OWN approval, separate from the merge's --yes (a shared-DB
+# write is a bigger deal than a merge, and this repo has a DB-reset incident on record). Auto-apply
+# without prompting by exporting PRS_MIGRATE=1; force manual-only with PRS_NO_MIGRATE=1.
+# $1 = a human label for WHICH PR(s) carried it.
+run_migration_deploy() {
+  [[ "${PRS_NO_MIGRATE:-}" == "1" ]] && { echo; echo "$1 shipped a DB migration (PRS_NO_MIGRATE=1 — not applying):"; print_migration_manual; return 0; }
+  local root branch
+  root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  echo
+  echo "$1 shipped a DB migration — the database still needs it (forward-only: migrate deploy)."
+  if [[ -z "$root" || ! -f "$root/web/prisma/schema.prisma" ]]; then
+    echo "  (no web/ Prisma app in this checkout — apply it wherever the DB app lives.)"; print_migration_manual; return 0
+  fi
+  branch=$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+  # sync_local_after_merge only fast-forwards main when we're ON it and clean, so only then is the just-
+  # merged migration guaranteed present. From a worktree / detached HEAD, don't guess — hand it over.
+  if [[ "$branch" != "main" ]]; then
+    echo "  (this checkout is on '${branch:-a detached HEAD}', not the main checkout — can't run it safely here.)"
+    print_migration_manual; return 0
+  fi
+
+  local go=""
+  if [[ "${PRS_MIGRATE:-}" == "1" ]]; then
+    go="y"; echo "  PRS_MIGRATE=1 — applying without asking."
+  elif [[ -t 1 && -r /dev/tty ]]; then
+    read -r -p "  Apply it to THIS environment's database now (prisma migrate deploy + generate)? [y/N] " go < /dev/tty || go=""
+  else
+    echo "  (no terminal to confirm at — not applying automatically.)"
+  fi
+
+  if [[ "$go" == "y" || "$go" == "Y" ]]; then
+    echo "  applying…"
+    if ( cd "$root/web" && npx prisma migrate deploy && npx prisma generate ); then
+      echo "  migration applied + Prisma client regenerated. Restart the dev server to pick it up."
+    else
+      echo "  migration FAILED — nothing was half-applied by this script; apply it by hand:"; print_migration_manual
+    fi
+  else
+    echo "  skipped. Apply it when you're ready:"; print_migration_manual
+  fi
+}
+
 # Bring the PR's branch up to date with main BEFORE asking GitHub to merge it.
 #
 # main moves while a PR is open. The moment the PR touches anything main also touched, GitHub reports
@@ -346,14 +405,24 @@ if [[ "$PR" == "--tidy" ]]; then
     if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
       echo "  keep   $short  (uncommitted changes)"; KEPT=$((KEPT+1)); continue
     fi
-    # Is its work already on main? A SQUASH-merge rewrites the commits, so `git branch --merged` says
-    # "no" even when every line has shipped. Compare the trees instead: if the branch's tree is
-    # identical to main's, or it has no commits main doesn't already contain, it is done.
+    # Is its work already on main? THREE signals — any one means "done":
+    #   - GitHub says a PR from this branch is MERGED. This is the DEFINITIVE one and the only signal a
+    #     SQUASH-merge doesn't hide: a squash rewrites the branch's commits into one NEW commit on main,
+    #     so the branch still has "commits main lacks" and a different tree forever. Every branch below
+    #     that was kept for "N commit(s) not on main" was in fact merged — this is why they piled up.
+    #   - no commits main lacks (a plain merge / already contained), or
+    #   - a byte-identical tree to main.
+    # gh is the backstop the offline checks can't be; when gh is unavailable we fall back to them alone.
+    MERGED_PR=""
+    if command -v gh >/dev/null 2>&1; then
+      MERGED_PR=$(gh pr list --head "$short" --state merged --json number --jq '.[0].number' 2>/dev/null || true)
+    fi
     AHEAD=$(git rev-list --count "origin/main..$branch" 2>/dev/null || echo 0)
     SAME_TREE=$([[ "$(git rev-parse "$branch^{tree}" 2>/dev/null)" == "$(git rev-parse origin/main^{tree})" ]] && echo yes || echo no)
-    if [[ "$AHEAD" != "0" && "$SAME_TREE" == "no" ]]; then
-      echo "  keep   $short  ($AHEAD commit(s) not on main)"; KEPT=$((KEPT+1)); continue
+    if [[ -z "$MERGED_PR" && "$AHEAD" != "0" && "$SAME_TREE" == "no" ]]; then
+      echo "  keep   $short  ($AHEAD commit(s) not on main, and no merged PR)"; KEPT=$((KEPT+1)); continue
     fi
+    [[ -n "$MERGED_PR" ]] && MERGED_NOTE="  (PR #$MERGED_PR merged)" || MERGED_NOTE=""
 
     if [[ "$DO_IT" == "--yes" ]]; then
       # A locked worktree needs --force to come out. Safe HERE and only here: we have already proved it
@@ -361,9 +430,9 @@ if [[ "$PR" == "--tidy" ]]; then
       git worktree unlock "$path" >/dev/null 2>&1 || true
       git worktree remove "$path" 2>/dev/null || git worktree remove --force "$path"
       git branch -D "$short" >/dev/null 2>&1 || true
-      echo "  gone   $short"
+      echo "  gone   $short$MERGED_NOTE"
     else
-      echo "  would remove   $short  ($path)${locked:+  [locked, but abandoned]}"
+      echo "  would remove   $short  ($path)${MERGED_NOTE}${locked:+  [locked, but abandoned]}"
     fi
     GONE=$((GONE+1))
   done
@@ -446,18 +515,11 @@ if [[ "$PR" == "--all" ]]; then
     sync_local_after_merge
   fi
 
+  # Applied once for the whole batch, AFTER the local sync above fast-forwarded main (so every merged
+  # migration file is on disk). migrate deploy runs each pending migration in order, so one call
+  # covers all the PRs in $MIG_PRS.
   if [[ -n "$MIG_PRS" ]]; then
-    cat <<NEXT
-
-One or more merged PRs shipped a DB migration ($MIG_PRS). The database still needs them:
-
-  cd "\$(git rev-parse --show-toplevel)/web"
-  git checkout main && git pull
-  npx prisma migrate deploy    # forward-only. NEVER \`migrate dev\` — that resets the DB.
-  npx prisma generate
-
-Then restart the dev server so it picks up the regenerated client.
-NEXT
+    run_migration_deploy "Merged PRs$MIG_PRS"
   fi
   exit 0
 fi
@@ -555,16 +617,8 @@ if [[ "${PRS_IN_ALL:-}" != "1" ]]; then
   sync_local_after_merge
 fi
 
-if [[ -n "$MIGRATIONS" ]]; then
-  cat <<'NEXT'
-
-This PR shipped a migration, so the database still needs it:
-
-  cd "$(git rev-parse --show-toplevel)/web"
-  git checkout main && git pull
-  npx prisma migrate deploy    # forward-only. NEVER `migrate dev` — that resets the DB.
-  npx prisma generate
-
-Then restart the dev server so it picks up the regenerated client.
-NEXT
+# In a --all batch the per-PR migrations are applied ONCE at the end of the batch (after the single
+# local sync), not after every merge — same reason the local sync is suppressed here via PRS_IN_ALL.
+if [[ -n "$MIGRATIONS" && "${PRS_IN_ALL:-}" != "1" ]]; then
+  run_migration_deploy "This PR (#$PR)"
 fi
