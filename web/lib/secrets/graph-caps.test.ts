@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   GRAPH_REQUIRED_CAPS,
   GRAPH_OPTIONAL_CAPS,
+  GRAPH_ESCALATION_ROLES,
   graphCapGaps,
   graphCapRows,
+  graphSurplusRoles,
   suggestedRole,
   GRAPH_APP_ROLE_IDS,
 } from "./graph-caps";
@@ -52,11 +54,147 @@ test("the suggested role is the least-privilege one that satisfies the capabilit
   assert.equal(suggestedRole(GRAPH_REQUIRED_CAPS[1]), "Group.ReadWrite.All");
 });
 
-test("the three permissions we hand out instructions for carry their app-role ids", () => {
+test("the permissions we hand out instructions for carry their app-role ids", () => {
   // Without an id the non-interactive grant can't be scripted, only clicked.
-  for (const r of ["UserAuthenticationMethod.ReadWrite.All", "Domain.Read.All", "MailboxSettings.Read"]) {
+  for (const r of [
+    "UserAuthenticationMethod.ReadWrite.All",
+    "Domain.Read.All",
+    "MailboxSettings.Read",
+    "User-PasswordProfile.ReadWrite.All",
+  ]) {
     assert.match(GRAPH_APP_ROLE_IDS[r] ?? "", /^[0-9a-f-]{36}$/, `${r} needs an app-role id`);
   }
+});
+
+// Every id here is an APPLICATION role id read back from Microsoft's Graph service principal
+// (appId 00000003-...). Microsoft publishes the same NAME as both an app role and a delegated scope
+// with different ids, and consenting a delegated id to an app-only credential grants nothing while
+// looking granted. Domain.Read.All shipped as 7e05723c-… — the app role for Domain.ReadWrite.All —
+// so the instructions asked admins for domain WRITE to satisfy a read-only capability. Pin the exact
+// values: a wrong id here is invisible until a tenant grants it and the call still returns 403.
+test("app-role ids are the APPLICATION ids, not delegated scopes or a neighbouring role", () => {
+  // Verify against Microsoft with: npx tsx scripts/verify-graph-role-ids.ts
+  assert.deepEqual(GRAPH_APP_ROLE_IDS, {
+    "UserAuthenticationMethod.ReadWrite.All": "50483e42-d915-4231-9639-7fdb7fd190e5",
+    "Domain.Read.All": "dbb9058a-0e50-45d7-ae91-66909b5d4664",
+    "MailboxSettings.Read": "40f97065-369a-49f4-947c-6a255697ae91",
+    "User-PasswordProfile.ReadWrite.All": "cc117bb9-00cf-4eb8-b580-ea2a878fe8f7",
+    "Application.Read.All": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+    "Mail.Send": "b633e1c5-b582-4048-a93e-9f11b44c7e96",
+    "Device.ReadWrite.All": "1138cb37-bd11-4084-a2b7-9f71582aeddb",
+  });
+  // The delegated twins of roles we hand out — never let one of these creep back in. Each grants
+  // nothing to an app-only credential while looking perfectly consented.
+  const delegated = [
+    "56760768-b641-451f-8906-e1b8ab31bca7", // User-PasswordProfile.ReadWrite.All (delegated)
+    "2f9ee017-59c1-4f1d-9472-bd5529a7b311", // Domain.Read.All (delegated)
+    "e383f46e-2787-4529-855e-0e479a3ffac0", // Mail.Send (delegated)
+    "c79f8feb-a9db-4090-85f9-90d820caa0eb", // Application.Read.All (delegated)
+    "87f447af-9fa4-4c32-9dfa-4a57a73d18ce", // MailboxSettings.Read (delegated)
+    "b7887744-6746-4312-813d-72daeaee7e2d", // UserAuthenticationMethod.ReadWrite.All (delegated)
+  ];
+  assert.ok(!Object.values(GRAPH_APP_ROLE_IDS).some((id) => delegated.includes(id)));
+  // Domain.Read.All's original value was Domain.ReadWrite.All's app role — a WRITE role handed out to
+  // satisfy a read. Not a delegated twin, so the check above would not catch it.
+  assert.notEqual(GRAPH_APP_ROLE_IDS["Domain.Read.All"], "7e05723c-0bb0-42da-be95-ae9f08a6e53c");
+});
+
+// The list on /help/cloud-auth is RENDERED from these caps, so anything we hand out instructions for
+// must carry an id — otherwise the page names a role the admin can only grant by clicking.
+test("every optional cap's suggested role has an app-role id to script the grant with", () => {
+  for (const cap of GRAPH_OPTIONAL_CAPS) {
+    assert.match(GRAPH_APP_ROLE_IDS[suggestedRole(cap)] ?? "", /^[0-9a-f-]{36}$/, `${suggestedRole(cap)} needs an app-role id`);
+  }
+});
+
+// The reset is the one optional cap that does NOT degrade: without it the step fails outright. It is
+// optional only because a client who never resets a cloud password is unaffected.
+test("resetting a password is its own capability — User.ReadWrite.All does not cover it", () => {
+  const reset = GRAPH_OPTIONAL_CAPS.find((c) => c.need.includes("reset"))!;
+  assert.deepEqual(reset.anyOf, ["User-PasswordProfile.ReadWrite.All"]);
+  // A tenant with the broad write roles still cannot change a password.
+  const rows = graphCapRows(["Directory.ReadWrite.All", "User.ReadWrite.All"]);
+  assert.equal(rows.find((r) => r.need.includes("reset"))!.ok, false);
+});
+
+// ── Over-permissioning ───────────────────────────────────────────────────────────────────────────
+// The capability table only ever asked "can it do the job?". These pin the opposite question, which
+// no check asked before: what authority is this credential holding that we never needed? Every case
+// below is a real fleet credential as of 2026-07-16.
+
+test("a least-privilege tenant is reported as holding nothing surplus", () => {
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Exchange.ManageAsApp"]), []);
+});
+
+test("an escalation role is surplus and flagged, however the rest of the grant looks", () => {
+  // core31: cannot create a user (no User.ReadWrite.All) yet can make itself Global Administrator.
+  const s = graphSurplusRoles(["Application.ReadWrite.All", "Exchange.ManageAsApp", "RoleManagement.ReadWrite.Directory"]);
+  assert.deepEqual(s.map((r) => r.role), ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"]);
+  assert.ok(s.every((r) => r.escalation));
+  assert.match(s.find((r) => r.role === "RoleManagement.ReadWrite.Directory")!.why, /Global Administrator/);
+  // Under-permissioned at the same time — the two questions are independent.
+  assert.equal(graphCapGaps(["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"]).length, 3);
+});
+
+test("escalation roles sort first — a security review must not have to scroll", () => {
+  const s = graphSurplusRoles([...NARROW, "Sites.Read.All", "RoleManagement.ReadWrite.Directory", "Files.Read.All"]);
+  assert.equal(s[0].role, "RoleManagement.ReadWrite.Directory");
+  assert.ok(s[0].escalation);
+  assert.ok(s.slice(1).every((r) => !r.escalation));
+});
+
+test("the broad role is surplus when a narrower granted one already covers the need — not both", () => {
+  // Holding Group.ReadWrite.All AND GroupMember.ReadWrite.All: exactly one is redundant, and it must
+  // be the one the anyOf order does NOT prefer. Flagging both would tell someone to remove the
+  // permission the engine runs on. (coretelligent holds both today.)
+  const s = graphSurplusRoles([...NARROW, "GroupMember.ReadWrite.All"]);
+  assert.deepEqual(s.map((r) => r.role), ["GroupMember.ReadWrite.All"]);
+  assert.match(s[0].why, /redundant — Group\.ReadWrite\.All is also granted/);
+  // ...and alone, the same role is load-bearing and must not be reported.
+  assert.ok(!graphSurplusRoles(["User.ReadWrite.All", "GroupMember.ReadWrite.All", "Organization.Read.All"]).length);
+});
+
+test("a broad role is NOT surplus while it is the only thing covering some capability", () => {
+  // Non-obvious, and the reason this cannot just diff granted-against-suggested. Alongside the narrow
+  // three, Directory.ReadWrite.All is the only granted role satisfying the domain-read, secret-expiry
+  // AND device-disable caps — genuinely load-bearing, and calling it surplus would be advice that
+  // silently breaks three features. It stays load-bearing until something narrower covers every one
+  // of them; only then does it become redundant. Being wrong in this direction is the expensive one:
+  // a client's security team acts on this list.
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Directory.ReadWrite.All"]), []);
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Domain.Read.All", "Directory.ReadWrite.All"]), []);
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Domain.Read.All", "Application.Read.All", "Directory.ReadWrite.All"]), []);
+  // Every cap it covered now has a narrower granted role — NOW it is surplus.
+  const fully = graphSurplusRoles([...NARROW, "Domain.Read.All", "Application.Read.All", "Device.ReadWrite.All", "Directory.ReadWrite.All"]);
+  assert.deepEqual(fully.map((r) => r.role), ["Directory.ReadWrite.All"]);
+  assert.match(fully[0].why, /redundant — User\.ReadWrite\.All is also granted/);
+});
+
+test("a role nothing in the engine calls is surplus, and says so plainly", () => {
+  const s = graphSurplusRoles([...NARROW, "Files.Read.All"]);
+  assert.deepEqual(s.map((r) => r.role), ["Files.Read.All"]);
+  assert.equal(s[0].escalation, false);
+  assert.match(s[0].why, /never calls anything that needs this/);
+});
+
+test("Exchange.ManageAsApp is used, not surplus — it is simply not a Graph role", () => {
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Exchange.ManageAsApp"]), []);
+  // Its variants are NOT whitelisted: we don't call them, and a client's team should hear that.
+  assert.deepEqual(graphSurplusRoles([...NARROW, "Exchange.ManageAsAppV2"]).map((r) => r.role), ["Exchange.ManageAsAppV2"]);
+});
+
+test("holding an optional permission is not surplus — it is the feature working as intended", () => {
+  assert.deepEqual(graphSurplusRoles([...NARROW, "User-PasswordProfile.ReadWrite.All", "Mail.Send"]), []);
+});
+
+test("the escalation list names the two roles our own setup guide promises we do not hold", () => {
+  // /help/cloud-auth: "the app registration cannot grant itself new permissions (that would need
+  // Application.ReadWrite.All + AppRoleAssignment.ReadWrite.All, which we deliberately do not hold)".
+  // Five fleet credentials hold the first and two hold both — the check exists to surface that drift.
+  for (const r of ["Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All"]) {
+    assert.ok(GRAPH_ESCALATION_ROLES[r], `${r} must be treated as escalation`);
+  }
+  assert.ok(graphSurplusRoles(["AppRoleAssignment.ReadWrite.All"])[0].escalation);
 });
 
 // This file is the web's copy of $GRAPH_REQUIRED_CAPS / $GRAPH_OPTIONAL_CAPS in
@@ -70,8 +208,32 @@ test("the cap sets match the runner's copy (hand-synced — update both)", () =>
   ]);
   assert.deepEqual(GRAPH_OPTIONAL_CAPS.map((c) => c.anyOf), [
     ["UserAuthenticationMethod.ReadWrite.All"],
-    ["Domain.Read.All"],
+    ["Domain.Read.All", "Domain.ReadWrite.All", "Directory.Read.All", "Directory.ReadWrite.All"],
     // Web-only for now: the scanner needs it; the runner has no use for it yet.
     ["MailboxSettings.Read", "MailboxSettings.ReadWrite"],
+    ["User-PasswordProfile.ReadWrite.All"],
+    ["Application.Read.All", "Application.ReadWrite.All", "Directory.Read.All", "Directory.ReadWrite.All"],
+    ["Mail.Send"],
+    ["Device.ReadWrite.All", "Directory.ReadWrite.All"],
   ]);
+});
+
+// Each cap must map to something the code actually CALLS. Every gap found on 2026-07-16 was a feature
+// that shipped without anyone adding its permission here — so the list is only trustworthy if it is
+// checked against the executors, not curated from memory. Names the call sites so the next reader can
+// re-check them rather than trust this comment.
+test("the optional caps cover every feature-gated Graph call the runner makes", () => {
+  const needs = GRAPH_OPTIONAL_CAPS.map((c) => c.need).join(" | ");
+  for (const feature of [
+    /MFA methods/, //            Remove-MgUserAuthentication*Method   Coretelligent.M365.psm1:1206-1224
+    /Temporary Access Pass/, //  New-MgUserAuthenticationTemporaryAccessPassMethod  :1846
+    /verified email domains/, // GET /domains                          web/lib/m365/tenant-domains.ts:36
+    /converted to shared/, //    mailboxSettings read                  leaked-seat scan
+    /reset a cloud user's password/, // Update-MgUser -PasswordProfile :1892
+    /secret\/certificate expires/, //   GET /applications              :1925
+    /notification email/, //     Send-MgUserMail                       Coretelligent.Notify.psm1:54
+    /Entra-joined devices/, //   Update-MgDevice -AccountEnabled       :1394
+  ]) {
+    assert.match(needs, feature, `no optional cap covers ${feature} — a feature that can fail for want of a permission nobody asked for`);
+  }
 });

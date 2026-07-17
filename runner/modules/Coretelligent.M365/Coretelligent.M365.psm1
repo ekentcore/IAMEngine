@@ -2,10 +2,17 @@
 
 # Coretelligent.M365
 # Shared system module — written once, reused by every client.
-# Depends on the Microsoft.Graph SDK. Required delegated/app scopes:
-#   User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All, Domain.Read.All (domain list),
-#   UserAuthenticationMethod.ReadWrite.All (offboard: strip the leaver's registered MFA methods —
-#     optional; without it the offboard warns and leaves the second factors registered)
+# Depends on the Microsoft.Graph SDK. App-only permissions — this list is a convenience copy; the
+# authoritative one is $GRAPH_REQUIRED_CAPS / $GRAPH_OPTIONAL_CAPS in Start-IamRunner.ps1 (mirrored in
+# web/lib/secrets/graph-caps.ts, which renders /help/cloud-auth). Add a permission THERE, not here, or
+# the conn test stays green about a tenant that cannot do the thing:
+#   REQUIRED  User.ReadWrite.All, Group.ReadWrite.All, Organization.Read.All
+#   OPTIONAL  UserAuthenticationMethod.ReadWrite.All (offboard: strip the leaver's MFA methods —
+#               warns without it; onboard: issue a TAP — FAILS without it)
+#             User-PasswordProfile.ReadWrite.All (change an existing password — FAILS without it;
+#               User.ReadWrite.All only covers setting one while CREATING the account)
+#             Domain.Read.All (domain list), Application.Read.All (own credential expiry),
+#             Mail.Send (notification mail), Device.ReadWrite.All (offboard: disable Entra devices)
 #
 # Public surface:
 #   Connect-CtgM365            - establish a Graph session from a credential
@@ -1889,8 +1896,28 @@ function Invoke-CtgM365PasswordReset {
     $actions = [System.Collections.Generic.List[string]]::new()
     if ($PSCmdlet.ShouldProcess($upn, "Reset password")) {
         try {
-            Update-MgUser -UserId $u.Id -PasswordProfile @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true } -ErrorAction Stop
-        } catch { throw "resetting the password for '$upn': $($_.Exception.Message)" }
+            # Through the retry seam like every other Graph write in this module. It matters MORE here
+            # than elsewhere: the app wipes newPassword after its one-time reveal, so a job lost to a
+            # throttle or a gateway blip cannot be re-run — the operator has to dispatch a whole new
+            # reset. Authorization_RequestDenied is not transient, so the permission hint below still
+            # fires on the first attempt rather than after four.
+            Invoke-CtgM365Write { Update-MgUser -UserId $u.Id -PasswordProfile @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true } -ErrorAction Stop }
+        } catch {
+            $msg = [string]$_.Exception.Message
+            # Graph treats passwordProfile as a PRIVILEGED write with its own app role. User.ReadWrite.All
+            # — which every wired tenant has — sets a password as part of CREATING a user, but is denied
+            # when CHANGING one afterwards. So the bare "Insufficient privileges" here does not mean the
+            # credential is broken: it almost always means User-PasswordProfile.ReadWrite.All was never
+            # granted (nothing asked for it before runner 1.68.0, so no tenant has it yet). Name it, or
+            # the operator re-runs the job against a credential that can never succeed.
+            if ($msg -match 'Authorization_RequestDenied|accessDenied|Request Authorization failed|Forbidden|\b403\b|Insufficient privileges') {
+                throw ("resetting the password for '$upn': $msg`n" +
+                    "The app registration is almost certainly missing User-PasswordProfile.ReadWrite.All — Graph needs that specific app role to CHANGE an existing password. User.ReadWrite.All only covers setting one while CREATING an account, which is why the rest of the onboard succeeded on this same credential. Grant it in Entra -> App registrations -> API permissions -> Microsoft Graph -> Application permissions, then Grant admin consent; see /help/cloud-auth. " +
+                    "If it was granted recently, this runner's cached Graph token predates the consent and still carries the old permissions — restart the runner, then dispatch a fresh reset. " +
+                    "If it is granted and consented and this still denies, the target likely holds an admin role: resetting an administrator's password additionally requires a privileged directory role (Privileged Authentication Administrator) on the app's service principal.")
+            }
+            throw "resetting the password for '$upn': $msg"
+        }
         $actions.Add("reset password for $upn (must change at next sign-in; shown once to the operator, never stored)")
     }
     [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }

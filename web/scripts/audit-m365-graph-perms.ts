@@ -57,6 +57,12 @@ const db = new PrismaClient();
     const bits: string[] = [];
     if (r.missingRequired.length) bits.push(`MISSING: ${r.missingRequired.join(", ")}`);
     if (r.missingOptional.length) bits.push(`optional: ${r.missingOptional.join(", ")}`);
+    // Over-permissioned is the other half of the question, and the half a client's security team
+    // cares about. Escalation-capable roles get shouted; the rest are a quiet note.
+    const esc = r.surplus.filter((s) => s.escalation);
+    if (esc.length) bits.push(`OVER-PERMISSIONED: ${esc.map((s) => s.role).join(", ")}`);
+    const spare = r.surplus.filter((s) => !s.escalation);
+    if (spare.length) bits.push(`unused: ${spare.map((s) => s.role).join(", ")}`);
     if (r.detail) bits.push(r.detail);
     console.log(`${mark[r.status]} ${r.client.padEnd(38).slice(0, 38)} ${r.slug.padEnd(10)} ${bits.join(" · ") || `${r.granted.length} role(s), all capabilities covered`}`);
   }
@@ -83,6 +89,29 @@ const db = new PrismaClient();
       }
     }
   }
+  // The reverse pivot: who holds authority the engine never needs. Escalation roles are listed with
+  // WHAT they permit rather than just named — "RoleManagement.ReadWrite.Directory" means nothing to
+  // most readers; "can make itself Global Administrator" ends the conversation.
+  const byEscalation = new Map<string, { why: string; slugs: string[] }>();
+  for (const r of rows) {
+    for (const s of r.surplus.filter((x) => x.escalation)) {
+      const e = byEscalation.get(s.role) ?? { why: s.why, slugs: [] };
+      e.slugs.push(r.slug);
+      byEscalation.set(s.role, e);
+    }
+  }
+  if (byEscalation.size) {
+    console.log(`\n${"—".repeat(78)}`);
+    console.log(`OVER-PERMISSIONED — these credentials hold authority this engine never uses.`);
+    console.log(`Each is a standing escalation primitive on a secret a runner reads at execution time.`);
+    for (const [role, e] of [...byEscalation].sort((a, b) => b[1].slugs.length - a[1].slugs.length)) {
+      console.log(`\n  ${role} — ${e.slugs.length} client(s): ${e.slugs.join(", ")}`);
+      console.log(`    ${e.why}`);
+    }
+    console.log(`\n  Removing one is a client-side decision — the app registration may be shared with`);
+    console.log(`  tooling that is none of ours. Report it; don't assume it is ours to revoke.`);
+  }
+
   const unverified = rows.filter((r) => r.status === "unverified");
   if (unverified.length) console.log(`\n${unverified.length} client(s) could not be fully read (Graph throttling) — re-run for those: ${unverified.map((r) => r.slug).join(", ")}`);
 })().catch(async (e) => { console.error(e); await db.$disconnect(); process.exit(1); });

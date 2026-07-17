@@ -17,7 +17,8 @@ import {
   M365_TENANT_FIELDS,
 } from "../secrets/m365-credential";
 import { readGrantedAppRoles, listDisabledLicensedUsers, readSkuNames, readMailboxPurpose } from "../secrets/graph-app-roles";
-import { graphCapGaps, graphCapRows, suggestedRole } from "../secrets/graph-caps";
+import { graphCapGaps, graphCapRows, graphSurplusRoles, suggestedRole } from "../secrets/graph-caps";
+import type { SurplusRole } from "../secrets/graph-caps";
 
 // The "not set" sentinels every secret sweep skips. An empty slot is not a finding.
 const UNSET = ["", "REPLACE_ME", "NOT_NEEDED"];
@@ -32,6 +33,15 @@ export type PermissionRow = {
   granted: string[];
   missingRequired: string[];
   missingOptional: string[];
+  // Authority the credential holds that the engine never needs — the opposite question to "missing",
+  // and the one a client's security team asks. Escalation-capable roles sort first. Advisory only:
+  // it never changes `status`, because a permission we don't use is not a fault in OUR setup, and the
+  // app registration may be shared with tooling that is none of our business.
+  //
+  // Safe on an incomplete read, unlike `missing`: an unresolved role is simply absent from `granted`,
+  // and absence can only make a broad role look load-bearing — i.e. UNDER-report surplus, never
+  // invent one. (The reverse is why `missing` needs the "unverified" branch below.)
+  surplus: SurplusRole[];
   detail?: string;
 };
 
@@ -102,7 +112,7 @@ export async function scanPermissions(db: PrismaClient, opts: { onlyClient?: str
   const out: PermissionRow[] = [];
 
   for (const [i, t] of targets.entries()) {
-    const base = { clientId: t.clientId, client: t.client, slug: t.slug, granted: [] as string[], missingRequired: [] as string[], missingOptional: [] as string[] };
+    const base = { clientId: t.clientId, client: t.client, slug: t.slug, granted: [] as string[], missingRequired: [] as string[], missingOptional: [] as string[], surplus: [] as SurplusRole[] };
     const tok = await tokenFor(t, cfg, dToken);
     if (!tok.ok) {
       out.push({ ...base, status: tok.status, detail: tok.detail });
@@ -118,17 +128,18 @@ export async function scanPermissions(db: PrismaClient, opts: { onlyClient?: str
     const rows = graphCapRows(granted.roles);
     const missingRequired = rows.filter((r) => !r.optional && !r.ok).map((r) => suggestedRole({ need: r.need, anyOf: r.anyOf }));
     const missingOptional = rows.filter((r) => r.optional && !r.ok).map((r) => suggestedRole({ need: r.need, anyOf: r.anyOf }));
+    const surplus = graphSurplusRoles(granted.roles);
 
     // An INCOMPLETE read cannot support a "missing" claim: the roles may well be granted and simply
     // unreadable this pass (Graph throttles a fleet sweep — that is the PR #90 bug). Say "couldn't
     // verify" and let the operator re-run. Never guess.
     if (!granted.complete && (missingRequired.length || missingOptional.length)) {
       out.push({
-        ...base, status: "unverified", granted: granted.roles, missingRequired, missingOptional,
+        ...base, status: "unverified", granted: granted.roles, missingRequired, missingOptional, surplus,
         detail: `${granted.unresolved} assignment(s) unresolved (Graph throttled the lookup) — re-run to confirm; this is NOT a confirmed gap`,
       });
     } else {
-      out.push({ ...base, status: graphCapGaps(granted.roles).length ? "gaps" : "ok", granted: granted.roles, missingRequired, missingOptional });
+      out.push({ ...base, status: graphCapGaps(granted.roles).length ? "gaps" : "ok", granted: granted.roles, missingRequired, missingOptional, surplus });
     }
     await opts.onProgress?.(i + 1);
   }

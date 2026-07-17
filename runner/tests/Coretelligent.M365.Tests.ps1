@@ -1259,4 +1259,48 @@ Describe 'Invoke-CtgM365PasswordReset' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
         { Invoke-CtgM365PasswordReset -User $user -Config ([pscustomobject]@{}) } | Should -Throw '*newPassword*'
     }
+
+    # UM0028954 (Emporia): Graph gates passwordProfile behind User-PasswordProfile.ReadWrite.All, which
+    # nothing asked for before 1.68.0 — so the raw "Insufficient privileges" gave the operator nothing
+    # to act on, on a credential whose conn test was green and whose account step had just succeeded.
+    Context 'when Graph denies the write for want of a permission' {
+        BeforeEach {
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        }
+
+        It 'names the permission to grant instead of relaying "Insufficient privileges"' {
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { throw '[Authorization_RequestDenied] : Insufficient privileges to complete the operation.' }
+            { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*User-PasswordProfile.ReadWrite.All*'
+        }
+
+        It 'explains why the account step could succeed on the same credential' {
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { throw '[Authorization_RequestDenied] : Insufficient privileges to complete the operation.' }
+            # The distinction that makes the denial make sense: User.ReadWrite.All sets a password while
+            # CREATING an account but cannot CHANGE one. Without this sentence the operator sees a step
+            # fail on the credential that just provisioned the account and concludes the cred is broken.
+            { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*CREATING an account*'
+        }
+
+        It 'matches Graph''s other denial shape too (accessDenied / Request Authorization failed)' {
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { throw '[accessDenied] : Request Authorization failed' }
+            { Invoke-CtgM365PasswordReset -User $user -Config $config } | Should -Throw '*User-PasswordProfile.ReadWrite.All*'
+        }
+
+        It 'never leaks the password into the denial message' {
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { throw '[Authorization_RequestDenied] : Insufficient privileges to complete the operation.' }
+            $err = $null
+            try { Invoke-CtgM365PasswordReset -User $user -Config $config } catch { $err = [string]$_.Exception.Message }
+            $err | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+        }
+
+        It 'leaves an unrelated failure alone rather than blaming the permission' {
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { throw 'Service temporarily unavailable' }
+            # Still throws (a failed reset is never silent) — but must not send the operator hunting for
+            # a permission when Graph was simply unavailable.
+            $err = $null
+            try { Invoke-CtgM365PasswordReset -User $user -Config $config } catch { $err = [string]$_.Exception.Message }
+            $err | Should -BeLike '*temporarily unavailable*'
+            $err | Should -Not -BeLike '*PasswordProfile*'
+        }
+    }
 }

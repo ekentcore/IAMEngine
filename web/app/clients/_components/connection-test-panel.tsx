@@ -47,13 +47,20 @@ function apiBadge(t: Test): { text: string; color: string } {
 }
 // Stage 3 — per-operation rights, where the probe can verify them. A missing OPTIONAL permission is
 // appended as a muted note (e.g. "+1 optional"), never as its own failing badge.
+//
+// `surplus` is the reverse finding — permissions the credential holds that we never use. It rides in
+// as optional rows, so it must be named separately: "+3 optional" about permissions there are too
+// MANY of would read as the exact opposite of the truth. It never colours the badge (a green
+// credential that also has too much authority is still green: it works — the surplus is the client's
+// call, and the detail rows say what each one permits).
 function rightsBadge(t: Test): { text: string; color: string } {
   const s = summarizeRights(t.rights);
   if (s.state === "unknown") return { text: "—", color: "var(--muted)" };
   const opt = s.optionalMissing > 0 ? ` +${s.optionalMissing} optional` : "";
-  if (s.state === "verified") return { text: `✓ ${s.total}/${s.total} ops${opt}`, color: "#15803d" };
-  if (s.state === "missing") return { text: `✗ missing ${s.missing}${opt}`, color: "#b91c1c" };
-  return { text: `? ${s.unverified} unverified${opt}`, color: "#92400e" };
+  const extra = s.surplus > 0 ? ` · ${s.surplus} not needed` : "";
+  if (s.state === "verified") return { text: `✓ ${s.total}/${s.total} ops${opt}${extra}`, color: "#15803d" };
+  if (s.state === "missing") return { text: `✗ missing ${s.missing}${opt}${extra}`, color: "#b91c1c" };
+  return { text: `? ${s.unverified} unverified${opt}${extra}`, color: "#92400e" };
 }
 
 export function ConnectionTestPanel({ slug, systemNames }: { slug: string; systemNames: Record<string, string> }) {

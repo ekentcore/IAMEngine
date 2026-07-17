@@ -6,6 +6,10 @@
 import Link from "next/link";
 import { Code } from "../_components/code";
 import { ExoCertTool } from "./_components/exo-cert-tool";
+// The permission list below is RENDERED from these, not written out by hand. The hand-written copy
+// drifted: it never mentioned the role a password reset needs (so no client ever granted it, and every
+// reset in the fleet failed), and it handed out Domain.ReadWrite.All's id under Domain.Read.All's name.
+import { GRAPH_REQUIRED_CAPS, GRAPH_OPTIONAL_CAPS, suggestedRole } from "@/lib/secrets/graph-caps";
 
 export const metadata = { title: "M365 auth setup" };
 
@@ -61,11 +65,53 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
       </ol>
 
       <h2>{step()}. API permissions (application, not delegated)</h2>
+      <p className="note">
+        This is the complete list, and it is generated from the same capability table the connection test and
+        the fleet audit check against (<code>lib/secrets/graph-caps.ts</code>) — so it cannot drift from what the
+        runner actually calls. Each line names the <b>least-privileged</b> role that satisfies it; if the app
+        already holds a broader role that covers the same ground, that counts too and the test says which one.
+      </p>
+
+      <h3>Required — every client</h3>
       <ul>
-        <li><b>Microsoft Graph</b> → Application permissions → <code>User.ReadWrite.All</code>, <code>Group.ReadWrite.All</code>, <code>Organization.Read.All</code> (license/seat counts), <code>Domain.Read.All</code> (lists the tenant’s verified email domains for multi-domain clients; add <code>Directory.Read.All</code> if you resolve managers by name).</li>
-        <li><b>Microsoft Graph</b> → Application permissions → <code>UserAuthenticationMethod.ReadWrite.All</code> — <b>offboarding security</b>. Without it, a leaver’s registered second factors (phone, Authenticator, FIDO2) stay on the account: they go live again the moment anyone re-enables it, and remain usable for self-service password reset. Optional — the offboard warns and carries on if it’s missing, but it will say the factors are still registered.</li>
-        <li>{!hybrid && <b>(distribution lists only) </b>}<b>APIs my organization uses</b> → <b>Office 365 Exchange Online</b> → Application permissions → <code>Exchange.ManageAsApp</code>{!hybrid && " — only if this client has distribution lists"}.</li>
-        <li className="note">Adding a permission is always a MANUAL admin step — the app registration cannot grant itself new permissions (that would need <code>Application.ReadWrite.All</code> + <code>AppRoleAssignment.ReadWrite.All</code>, which we deliberately do not hold). Portal: API permissions → Add → Grant admin consent. Or a Global Admin can run: <code>Add-MgApplicationApiPermission</code> equivalents via Graph PowerShell — e.g. add the <code>Domain.Read.All</code> app role (id <code>7e05723c-0bb0-42da-be95-ae9f08a6e53c</code>) to the app’s requiredResourceAccess and then <code>New-MgServicePrincipalAppRoleAssignment</code> to consent.</li>
+        {GRAPH_REQUIRED_CAPS.map((cap) => (
+          <li key={cap.need}>
+            <b>Microsoft Graph</b> → Application permissions → <code>{suggestedRole(cap)}</code> — {cap.need}.
+            {cap.anyOf.length > 1 && <span className="note"> Or any of: {cap.anyOf.slice(1).join(", ")}.</span>}
+          </li>
+        ))}
+      </ul>
+
+      <h3>Optional — grant the ones whose feature this client uses</h3>
+      <p className="note">
+        A missing optional permission never fails the connection test — it is reported as “(optional)”. Most
+        degrade to a warning, but two do not: a password reset and a TAP-issuing onboard <b>fail outright</b>.
+        The consequence is spelled out on each line.
+      </p>
+      <ul>
+        {GRAPH_OPTIONAL_CAPS.map((cap) => (
+          <li key={cap.need}>
+            <b>Microsoft Graph</b> → Application permissions → <code>{suggestedRole(cap)}</code> — {cap.need}.
+            {/* `why` is a whole sentence already, and not always a consequence — some read "without
+                it X", others "needed only when Y". Rendering it as its own sentence fits both; a
+                "Without it:" prefix produced "Without it: without it …" and inverted the scope notes. */}
+            {cap.why && <> {cap.why.charAt(0).toUpperCase() + cap.why.slice(1)}.</>}
+            {cap.anyOf.length > 1 && <span className="note"> Or any of: {cap.anyOf.slice(1).join(", ")}.</span>}
+          </li>
+        ))}
+      </ul>
+
+      <h3>Exchange Online — a different API, not Microsoft Graph</h3>
+      <ul>
+        <li>{!hybrid && <b>(distribution lists only) </b>}<b>APIs my organization uses</b> → <b>Office 365 Exchange Online</b> → Application permissions → <code>Exchange.ManageAsApp</code>{!hybrid && " — only if this client has distribution lists"}. Graph cannot write distribution lists or convert a mailbox to shared, so that work goes over Exchange Online.</li>
+        <li>{!hybrid && <b>(distribution lists only) </b>}<code>Exchange.ManageAsApp</code> is <b>not enough on its own</b>: the app’s <b>service principal</b> must also hold the <b>Exchange Administrator</b> directory role (Entra → Roles and administrators → Exchange Administrator → Add assignments → pick the app). A permission grant without the role still returns “access denied” on every mailbox cmdlet. Exchange Online app-only is also <b>certificate</b>-based — the client secret does not authenticate it.</li>
+      </ul>
+
+      <h3>Granting them</h3>
+      <ul>
+        <li className="note">Adding a permission is always a MANUAL admin step — the app registration cannot grant itself new permissions (that would need <code>Application.ReadWrite.All</code> + <code>AppRoleAssignment.ReadWrite.All</code>, which we deliberately do not hold). Portal: API permissions → Add → Grant admin consent. Or a Global Admin can run: <code>Add-MgApplicationApiPermission</code> equivalents via Graph PowerShell — e.g. add the <code>Domain.Read.All</code> app role (id <code>dbb9058a-0e50-45d7-ae91-66909b5d4664</code>) to the app’s requiredResourceAccess and then <code>New-MgServicePrincipalAppRoleAssignment</code> to consent.</li>
+        <li className="note">Use the <b>application</b> role id, never the delegated one. Microsoft publishes both under the same name with different ids, and consenting the delegated id to an app-only credential grants nothing — it looks granted and still returns “Insufficient privileges”. The ids we hand out are read back from Microsoft’s own Graph service principal, so they are the application ones.</li>
+        <li className="note"><b>Grant only what’s above.</b> The connection test reports the reverse too: permissions the app holds that this engine never uses. Some are merely unused, but a few — <code>RoleManagement.ReadWrite.Directory</code>, <code>AppRoleAssignment.ReadWrite.All</code>, <code>Application.ReadWrite.All</code>, <code>full_access_as_app</code> — let the credential escalate its own authority, which makes every boundary on this page advisory. If a client offers a broader role to “just make it work”, take the narrow one; the test will tell you exactly which is missing.</li>
         <li>Click <b>Grant admin consent</b> (the statuses must show a green check).</li>
       </ul>
 

@@ -41,9 +41,16 @@ export function testableSystems(
 // credential lacks it), ok=null ("cannot verify automatically — check manually"). `optional` marks a
 // nice-to-have permission (e.g. UserAuthenticationMethod.ReadWrite.All for offboard MFA removal): a
 // miss is NOTED but never fails the test or turns the rights badge red.
-export type RightsRow = { op: string; ok: boolean | null; detail: string; optional?: boolean };
+// `surplus` marks the OPPOSITE finding: a permission the credential holds that the engine never uses
+// (an over-permissioned app registration). It rides in as optional+ok=false so it can never fail a
+// test, but it is NOT a missing optional permission and must not be counted as one — "3 optional
+// missing" when the truth is "3 permissions too many" is a report that means the reverse of itself.
+export type RightsRow = { op: string; ok: boolean | null; detail: string; optional?: boolean; surplus?: boolean };
 
-const MAX_RIGHTS_OPS = 20;
+// Rows per probe. Was 20, which the m365 probe now exceeds on a real tenant: 3 required + 7 optional
+// caps + one row per surplus role (coretelligent has 7). A silent slice here would drop findings off
+// the end of the table and read as "nothing else to see".
+const MAX_RIGHTS_OPS = 48;
 const MAX_RIGHTS_DETAIL = 300;
 
 // Normalize a runner-posted rights array: drop malformed entries, cap lengths. Returns null when
@@ -60,6 +67,7 @@ export function parseRights(raw: unknown): RightsRow[] | null {
     const detail = typeof o.detail === "string" ? o.detail.slice(0, MAX_RIGHTS_DETAIL) : "";
     const row: RightsRow = { op, ok, detail };
     if (o.optional === true) row.optional = true;
+    if (o.surplus === true) { row.surplus = true; row.optional = true; } // surplus can never fail a test
     rows.push(row);
   }
   return rows.length > 0 ? rows : null;
@@ -71,20 +79,26 @@ export function parseRights(raw: unknown): RightsRow[] | null {
 // `optionalMissing` (a note beside the badge), never as a "missing" that reads like a failure.
 export type RightsSummary =
   | { state: "unknown" }
-  | { state: "verified"; total: number; optionalMissing: number }
-  | { state: "missing"; missing: number; total: number; optionalMissing: number }
-  | { state: "unverified"; unverified: number; total: number; optionalMissing: number };
+  | { state: "verified"; total: number; optionalMissing: number; surplus: number }
+  | { state: "missing"; missing: number; total: number; optionalMissing: number; surplus: number }
+  | { state: "unverified"; unverified: number; total: number; optionalMissing: number; surplus: number };
 
 export function summarizeRights(rights: RightsRow[] | null | undefined): RightsSummary {
   if (!rights || rights.length === 0) return { state: "unknown" };
-  const optionalMissing = rights.filter((r) => r.optional && r.ok === false).length;
+  // Surplus rows are optional+ok=false on the wire, but they are the opposite of a missing optional
+  // permission — count them separately or the badge says "N optional missing" about permissions the
+  // credential HAS too many of.
+  const surplus = rights.filter((r) => r.surplus).length;
+  const optionalMissing = rights.filter((r) => r.optional && !r.surplus && r.ok === false).length;
   // Required ops drive the badge. If a probe somehow sent only optional rows, fall back to all rows
-  // so the badge still reflects something rather than reporting an empty "verified".
+  // so the badge still reflects something rather than reporting an empty "verified" — but never fall
+  // back to surplus rows, which would report a fully-working credential as "missing".
   const required = rights.filter((r) => !r.optional);
-  const base = required.length > 0 ? required : rights;
+  const base = required.length > 0 ? required : rights.filter((r) => !r.surplus);
+  if (base.length === 0) return { state: "verified", total: 0, optionalMissing, surplus };
   const missing = base.filter((r) => r.ok === false).length;
-  if (missing > 0) return { state: "missing", missing, total: base.length, optionalMissing };
+  if (missing > 0) return { state: "missing", missing, total: base.length, optionalMissing, surplus };
   const unverified = base.filter((r) => r.ok === null).length;
-  if (unverified > 0) return { state: "unverified", unverified, total: base.length, optionalMissing };
-  return { state: "verified", total: base.length, optionalMissing };
+  if (unverified > 0) return { state: "unverified", unverified, total: base.length, optionalMissing, surplus };
+  return { state: "verified", total: base.length, optionalMissing, surplus };
 }

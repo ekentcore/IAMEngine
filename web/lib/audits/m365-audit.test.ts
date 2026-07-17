@@ -5,7 +5,7 @@ import { pivotByPermission, leakVerdict, type PermissionRow } from "./m365-audit
 function row(over: Partial<PermissionRow>): PermissionRow {
   return {
     clientId: "c1", client: "Client One", slug: "core1", status: "ok",
-    granted: [], missingRequired: [], missingOptional: [],
+    granted: [], missingRequired: [], missingOptional: [], surplus: [],
     ...over,
   };
 }

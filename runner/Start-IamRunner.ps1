@@ -2082,10 +2082,39 @@ $script:GRAPH_REQUIRED_CAPS = @(
 # gracefully — the feature that needs it warns and carries on. Matches the client-facing consent list
 # in web/app/help/cloud-auth (Domain.Read.All + UserAuthenticationMethod.ReadWrite.All).
 $script:GRAPH_OPTIONAL_CAPS = @(
-    @{ need = 'remove MFA methods + revoke sessions on offboard'; anyOf = @('UserAuthenticationMethod.ReadWrite.All')
-       why  = "without it a leaver's registered second factors (phone / Authenticator / FIDO2) stay on the account and go live again the moment it is re-enabled; offboard warns and continues" }
-    @{ need = "read the tenant's verified email domains (multi-domain clients)"; anyOf = @('Domain.Read.All')
+    # Also covers ISSUING a Temporary Access Pass on onboard (Invoke-CtgEntraTap) — same app role,
+    # opposite lane: the offboard half warns, a TAP-issuing onboard FAILS.
+    # NOT modelled: revoking sign-in sessions. Microsoft's docs say app-only revoke needs
+    # User.RevokeSessions.All with no higher-privileged alternative, but that is stale — 12 production
+    # offboards revoked sessions with User.ReadWrite.All and zero warnings.
+    @{ need = 'remove MFA methods on offboard, and issue a Temporary Access Pass on onboard'; anyOf = @('UserAuthenticationMethod.ReadWrite.All')
+       why  = "without it a leaver's registered second factors (phone / Authenticator / FIDO2) stay on the account and go live again the moment it is re-enabled; offboard warns and continues. A TAP-issuing onboard fails outright" }
+    # Directory.Read.All / the Domain write roles are HIGHER-privileged alternatives Microsoft documents
+    # for GET /domains, and they were missing here: a tenant holding Directory.Read.All reads domains
+    # fine and was still told to grant Domain.Read.All (verified live on core1390 — 200, no Domain role).
+    @{ need = "read the tenant's verified email domains (multi-domain clients)"; anyOf = @('Domain.Read.All', 'Domain.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
        why  = 'needed only when a client has more than one verified email domain, to pick the right one; single-domain clients are unaffected' }
+    # Get-CtgAppCredentialExpiry reads this app's own passwordCredentials/keyCredentials to warn before
+    # the secret lapses. Degrades to a note, but nothing modelled it.
+    @{ need = "warn before this app registration's own secret/certificate expires"; anyOf = @('Application.Read.All', 'Application.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
+       why  = "without it the connection test cannot read the credential's expiry date, so it can't warn you in advance — the first sign is every M365 step failing at once on the day it lapses" }
+    # Send-CtgGraphMail POSTs /users/{from}/sendMail. Same miss as the password reset: shipped, never
+    # asked for, no tenant in the fleet has it.
+    @{ need = 'send an offboard notification email as a mailbox'; anyOf = @('Mail.Send')
+       why  = 'without it any configured onboard/offboard notification fails to send — the case still completes, so the mail simply never arrives. Only clients with a notification configured are affected' }
+    # Update-MgDevice -AccountEnabled:$false. The device READ is fine on Directory.Read.All (Microsoft's
+    # docs claim app-only is unsupported there; verified 200 against two live tenants) — this is the write.
+    @{ need = "disable a leaver's Entra-joined devices"; anyOf = @('Device.ReadWrite.All', 'Directory.ReadWrite.All')
+       why  = "without it the leaver's Entra device objects stay enabled; the offboard warns and continues. Only clients with disableDevices configured are affected" }
+    # Graph treats passwordProfile as a PRIVILEGED write with its own app role: User.ReadWrite.All sets
+    # a password as part of CREATING a user, but changing one afterwards is denied without this. That
+    # split is why onboarding looks healthy while a reset fails on the same credential — only the reset
+    # issues a passwordProfile UPDATE. Adopting is how you MEET this, not a cause: the adopt branch
+    # never touches the password, so the operator follows up with "Generate random password" — the call
+    # that gets denied. Optional because a client who never resets a cloud password is unaffected; it
+    # does NOT degrade gracefully like the caps above — the step fails outright.
+    @{ need = "reset a cloud user's password (the 'Generate random password' action)"; anyOf = @('User-PasswordProfile.ReadWrite.All')
+       why  = "without it Graph denies the reset with 'Authorization_RequestDenied'; an onboard that CREATES the account sets its password as part of the create and is not affected" }
 )
 function Get-CtgGraphScopeGaps {
     param([string[]]$Granted)
@@ -2097,6 +2126,49 @@ function Get-CtgGraphScopeGaps {
     }
     $gaps
 }
+# Roles that let a credential EXPAND ITS OWN AUTHORITY or reach the whole tenant's content. None is
+# ever needed by this engine. Mirrors $GRAPH_ESCALATION_ROLES in web/lib/secrets/graph-caps.ts.
+$script:GRAPH_ESCALATION_ROLES = @{
+    'RoleManagement.ReadWrite.Directory'     = 'can assign directory roles — including making itself Global Administrator. This single role is a route to full tenant takeover'
+    'AppRoleAssignment.ReadWrite.All'        = 'can consent app roles to itself — whatever it is missing, it can grant. It makes every other permission boundary advisory'
+    'Application.ReadWrite.All'              = 'can add credentials to ANY app registration in the tenant, and so authenticate as any of them'
+    'DelegatedPermissionGrant.ReadWrite.All' = "can grant delegated permissions on users' behalf, without those users consenting"
+    'full_access_as_app'                     = 'full access to EVERY mailbox in the tenant — the engine only ever needs the mailboxes in a case'
+    'Sites.FullControl.All'                  = 'full control of every SharePoint site in the tenant'
+}
+# Roles on OTHER resources the engine genuinely uses, so the surplus check doesn't call them unused.
+$script:USED_NON_GRAPH_ROLES = @('Exchange.ManageAsApp')
+
+# What is granted that the engine does NOT need — the opposite question to Get-CtgGraphScopeGaps, and
+# the one a client's security team asks. "Needed" per capability is the FIRST granted role in its
+# anyOf (least-privilege-first), so holding both User.ReadWrite.All and the broader
+# Directory.ReadWrite.All reports the BROAD one, never the narrow one the engine runs on.
+# ADVISORY: never feeds Get-CtgGraphScopeGaps, so it can never fail a test. The app registration may
+# be shared with tooling that is none of our business — report it, don't presume to revoke it.
+function Get-CtgGraphSurplusRoles {
+    param([string[]]$Granted)
+    $needed = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in @($script:GRAPH_REQUIRED_CAPS) + @($script:GRAPH_OPTIONAL_CAPS)) {
+        foreach ($s in $r.anyOf) { if ($Granted -contains $s) { [void]$needed.Add($s); break } }
+    }
+    foreach ($s in $script:USED_NON_GRAPH_ROLES) { [void]$needed.Add($s) }
+    $out = @()
+    foreach ($g in $Granted) {
+        $esc = $script:GRAPH_ESCALATION_ROLES.Keys | Where-Object { $_ -ieq $g } | Select-Object -First 1
+        if ($esc) { $out += @{ role = [string]$g; escalation = $true; why = [string]$script:GRAPH_ESCALATION_ROLES[$esc] }; continue }
+        if ($needed.Contains($g)) { continue }
+        $covered = @($script:GRAPH_REQUIRED_CAPS) + @($script:GRAPH_OPTIONAL_CAPS) | Where-Object { $_.anyOf -icontains $g } | Select-Object -First 1
+        $narrower = if ($covered) { $covered.anyOf | Where-Object { $Granted -contains $_ } | Select-Object -First 1 }
+        $out += @{
+            role = [string]$g; escalation = $false
+            why  = if ($narrower) { "redundant — $narrower is also granted and already covers `"$($covered.need)`", with less authority" }
+                   else           { 'the engine never calls anything that needs this' }
+        }
+    }
+    # Escalation first: that's what a security review needs to see.
+    @($out | Sort-Object @{ Expression = { -[int][bool]$_.escalation } }, @{ Expression = { $_.role } })
+}
+
 # The same requirement map as structured per-operation rows for the conn-test result:
 # @{ op; ok ($true/$false/$null = unverifiable); detail }.
 function Get-CtgGraphRightsRows {
@@ -2115,6 +2187,20 @@ function Get-CtgGraphRightsRows {
         foreach ($s in $r.anyOf) { if ($Granted -contains $s) { $match = $s; break } }
         $rows += if ($match) { @{ op = [string]$r.need; ok = $true;  optional = $true; detail = "granted via $match" } }
                  else        { @{ op = [string]$r.need; ok = $false; optional = $true; detail = "optional — grant $($r.anyOf -join ' or ') — $($r.why)" } }
+    }
+    # ...and the other direction: authority granted that the engine never uses. Reported as rows like
+    # any other so it shows up in the same table, but ALWAYS optional=$true — being over-permissioned
+    # is a finding for the client's security team, not a fault in our setup, and must never fail the
+    # test. ok=$false so it reads as "needs attention" rather than a tick.
+    foreach ($s in Get-CtgGraphSurplusRoles $Granted) {
+        $rows += @{
+            op       = if ($s.escalation) { "OVER-PERMISSIONED: $($s.role)" } else { "not needed: $($s.role)" }
+            ok       = $false
+            optional = $true
+            surplus  = $true
+            detail   = if ($s.escalation) { "the engine never needs this — $($s.why). Raise it with the client; removing it is their call (the app registration may be shared)" }
+                       else               { $s.why }
+        }
     }
     $rows
 }
@@ -2861,12 +2947,19 @@ while ($true) {
                             $mod = Repair-CtgMissingModule $missing
                             if ($mod) { Set-CtgPhase $job.id "installed $mod — retrying $($job.systemKey)"; continue }
                         }
-                        # Self-heal a STALE app-only Graph token: a RequestDenied on m365/entra is often a
-                        # token minted BEFORE consent was granted (the runner connects once per tenant and
-                        # reuses it). Force a fresh token — disconnect (clears the MSAL cache), drop the
-                        # cached connection, reconnect — and retry ONCE. If it's a genuinely missing
-                        # permission this just fails again and the accurate hint below fires.
-                        if ($try -eq 0 -and ($job.systemKey -in @('m365', 'entra')) -and $handler.ContainsKey('Connect') -and
+                        # Self-heal a STALE app-only Graph token: a RequestDenied on a Graph-backed step is
+                        # often a token minted BEFORE consent was granted (the runner connects once per
+                        # tenant and reuses it). Force a fresh token — disconnect (clears the MSAL cache),
+                        # drop the cached connection, reconnect — and retry ONCE. If it's a genuinely
+                        # missing permission this just fails again and the accurate hint below fires.
+                        #
+                        # Gate on the Graph connection GROUP, not a hardcoded @('m365','entra'): every key
+                        # in that group shares the one Graph session, so every one of them can hold the
+                        # stale token — but m365-password-reset, tap and notify were excluded and never
+                        # healed. That bit exactly when it was needed most: an admin grants
+                        # User-PasswordProfile.ReadWrite.All, the operator retries the reset, and it is
+                        # denied by the pre-consent token with no way forward but a manual runner restart.
+                        if ($try -eq 0 -and ($script:ConnectionGroups.graph -contains $job.systemKey) -and $handler.ContainsKey('Connect') -and
                             ([string]$_.Exception.Message -match 'Insufficient privileges|Authorization_RequestDenied|Access(Denied| is denied)')) {
                             Set-CtgPhase $job.id "RequestDenied — refreshing the Graph token (new app-only token) and retrying once"
                             try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }

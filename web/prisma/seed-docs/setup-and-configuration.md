@@ -60,10 +60,13 @@ A Global Administrator user account cannot be used, and never will be able to be
 | Group.ReadWrite.All | Add and remove group memberships. (GroupMember.ReadWrite.All is sufficient if you prefer it.) | Yes |
 | Organization.Read.All | Read license and seat counts, so we can warn before a case fails for want of a seat. | Yes |
 | Domain.Read.All | Read verified email domains. Required for tenants with more than one. | Yes |
-| UserAuthenticationMethod.ReadWrite.All | Offboarding: strip the leaver's registered MFA factors (phone, Authenticator, FIDO2). Without it, a departed user's registered factors remain, and the engine raises a warning rather than failing. | Strongly recommended |
-| Directory.Read.All | Resolve managers by name. | If you set managers |
+| UserAuthenticationMethod.ReadWrite.All | Offboarding: strip the leaver's registered MFA factors (phone, Authenticator, FIDO2). Without it, a departed user's registered factors remain, and the engine raises a warning rather than failing. Also required to issue a Temporary Access Pass on onboarding, which fails outright without it. | Strongly recommended |
+| User-PasswordProfile.ReadWrite.All | Reset an existing user's password. Graph gates changing a password behind this specific role: User.ReadWrite.All covers setting one while *creating* an account, but not changing it afterwards. Without it, "Generate random password" fails with "Insufficient privileges" while the rest of the case succeeds. | If we reset passwords for you |
+| Directory.Read.All | Resolve managers by name. Also satisfies Domain.Read.All and Application.Read.All below, if you would rather grant one broader role than three narrow ones. | If you set managers |
 | Application.Read.All | Lets the app read its own credential expiry, so we can warn you before your client secret lapses. | Optional |
-| Exchange.ManageAsApp | Exchange Online administration. Office 365 Exchange Online API, not Graph. | Only if Exchange is in scope |
+| Mail.Send | Send the onboarding/offboarding notification email, as the mailbox you nominate. Without it, a configured notification silently never arrives. | If you want notifications |
+| Device.ReadWrite.All | Offboarding: disable the leaver's Entra-joined devices. Without it, their device objects stay enabled and the engine raises a warning. | If we disable devices |
+| Exchange.ManageAsApp | Exchange Online administration. Office 365 Exchange Online API, not Graph. Note this one is not sufficient on its own: the app's service principal must also hold the **Exchange Administrator** directory role, and Exchange Online app-only authenticates with a certificate rather than the client secret. | Only if Exchange is in scope |
 
 By design, the application registration is not granted permission to grant itself permissions. It holds neither Application.ReadWrite.All nor AppRoleAssignment.ReadWrite.All. Adding a Graph permission is always a deliberate act by one of your administrators. This is a constraint we impose on ourselves.
 
