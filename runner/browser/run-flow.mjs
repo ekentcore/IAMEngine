@@ -14,6 +14,9 @@ import { launch } from "./lib/launch.mjs";
 // Registry of available flows. Each module default-exports async ({ page, input, shot, log }) => result.
 const FLOWS = {
   "spanning-force-sync": () => import("./flows/spanning-force-sync.mjs"),
+  // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
+  // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
+  "connector-steps": () => import("./flows/connector-steps.mjs"),
 };
 
 function readStdin() {

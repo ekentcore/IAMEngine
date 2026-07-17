@@ -168,6 +168,9 @@ Import-Module "$PSScriptRoot/modules/Coretelligent.XMatters/Coretelligent.XMatte
 Import-Module "$PSScriptRoot/modules/Coretelligent.LogicMonitor/Coretelligent.LogicMonitor.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Notify/Coretelligent.Notify.psd1" -Force
 Import-Module "$PSScriptRoot/modules/Coretelligent.Proofpoint/Coretelligent.Proofpoint.psd1" -Force
+# Low-code connectors: ONE generic executor for every custom-* system — it interprets the declarative
+# definition the app injects into the job as config.connector (docs/CONNECTOR_BUILDER.md).
+Import-Module "$PSScriptRoot/modules/Coretelligent.Connector/Coretelligent.Connector.psd1" -Force
 # Browser-automation bridge (shells out to the Node/Playwright sidecar in runner/browser). Loads
 # unconditionally — Test-CtgBrowserAvailable reports whether Node+Playwright are actually installed,
 # and the app's claim gate withholds browser jobs (e.g. spanning-force-sync) from agents that can't run them.
@@ -1436,6 +1439,24 @@ $DISPATCH['tap'] = @{
     Validate = { param($job, $creds) [pscustomobject]@{ System = 'tap'; Ok = $true; Detail = 'TAP is issue-only (self-expiring); nothing to verify' } }
 }
 
+# LOW-CODE CONNECTORS (docs/CONNECTOR_BUILDER.md): a custom-* systemKey has no $DISPATCH entry of its
+# own — the job carries its PUBLISHED definition (config.connector, injected by the app at claim) and
+# this ONE generic handler interprets it. Looked up as the FALLBACK below, after the built-in table,
+# so a connector key can never shadow a hand-written executor. No Connect block: auth is declared in
+# the definition and applied per request (bearer/basic/header/oauth2), so there is no session to pin.
+$CONNECTOR_HANDLER = @{
+    Onboard  = { param($job, $creds)
+        $kind = [string](Get-CtgProp (Get-CtgProp $job.config 'connector') 'kind')
+        if ($kind -eq 'browser') { Invoke-CtgConnectorBrowserLane -Job $job -Creds $creds -Lane 'onboard' }
+        else { Invoke-CtgConnectorOnboarding -User $job.payload -Config $job.config -Credentials $creds -Client $job.client -SystemKey ([string]$job.systemKey) }
+    }
+    Offboard = { param($job, $creds)
+        $kind = [string](Get-CtgProp (Get-CtgProp $job.config 'connector') 'kind')
+        if ($kind -eq 'browser') { Invoke-CtgConnectorBrowserLane -Job $job -Creds $creds -Lane 'offboard' }
+        else { Invoke-CtgConnectorOffboarding -User $job.payload -Config $job.config -Credentials $creds -Client $job.client -SystemKey ([string]$job.systemKey) }
+    }
+}
+
 # Action -> validate, with idempotent auto-retry. On a validation miss we re-run the (idempotent)
 # action and re-validate up to $MaxRevalidate times — this self-heals eventual-consistency lags.
 # A persistent miss is NOT a failure: the job still succeeds; the validation block (ok=$false)
@@ -2630,6 +2651,15 @@ function Invoke-CtgConnectionTests {
             try {
                 $handler = $DISPATCH[$t.systemKey]
                 $probe = $CONNTEST_PROBE[$t.systemKey]
+                # Low-code connector: no built-in probe, but the claim injected the published
+                # definition — run its `test` lane as the probe (config.connector, like the job path).
+                if (-not $handler -and -not $probe -and (Get-CtgProp (Get-CtgProp $t.config 'connector') 'definition')) {
+                    $probe = { param($job, $creds)
+                        $r = Test-CtgConnectorConnection -Config $job.config -Credentials $creds -Client $job.client
+                        if (-not $r.ok) { throw ([string]$r.detail) }
+                        [string]$r.detail
+                    }
+                }
                 $hasConnect = $handler -and $handler.ContainsKey('Connect')
                 if (-not $hasConnect -and -not $probe) { throw "no automated connection test available for '$($t.systemKey)' — verify it manually" }
                 if ($hasConnect) { & $handler.Connect $job $creds; $apiDetail = 'connected' }
@@ -2858,6 +2888,11 @@ while ($true) {
             if ($null -eq $job.config) { $job.config = [pscustomobject]@{} }
             try {
                 $handler = $DISPATCH[$job.systemKey]
+                # Low-code connector fallback: no built-in executor, but the app injected a published
+                # definition at claim — the generic interpreter runs it. Built-ins ALWAYS win above.
+                if (-not $handler -and (Get-CtgProp (Get-CtgProp $job.config 'connector') 'definition')) {
+                    $handler = $CONNECTOR_HANDLER
+                }
                 if (-not $handler) {
                     # No executor for this system: resolve as a manual follow-up, not a failure,
                     # so an uncovered `api` system doesn't kill the whole case.

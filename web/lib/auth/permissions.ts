@@ -16,12 +16,13 @@ export type Permission =
   | "user.manage" // create users, set roles, reset passwords
   | "settings.manage"
   | "feature_request.hide" // hide an implemented request early, or grant it another 7 days on the board
+  | "connector.manage" // author/publish low-code connectors — publish creates a claimable system, so global_admin only
   | "audit.view";
 
 export const ALL_PERMISSIONS: Permission[] = [
   "case.view", "case.import", "case.plan", "case.dispatch", "case.approve_destructive", "case.schedule",
   "client.edit_systems", "client.edit_secrets", "agent.manage", "user.manage", "settings.manage",
-  "feature_request.hide", "audit.view",
+  "feature_request.hide", "connector.manage", "audit.view",
 ];
 
 const CASE_OPS: Permission[] = ["case.view", "case.import", "case.plan", "case.dispatch", "case.schedule"];
@@ -106,5 +107,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "user.manage": "Manage users & roles",
   "settings.manage": "Manage settings",
   "feature_request.hide": "Hide / restore completed feature requests",
+  "connector.manage": "Author & publish low-code connectors",
   "audit.view": "View the audit log",
 };

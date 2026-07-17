@@ -19,7 +19,7 @@ type Item = readonly [string, string];
 
 // Reference + admin pages, grouped for the menu. Role-gated entries are filtered by the flags
 // the server layout passes down (the server stays the authority; this only hides links).
-export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean }): { label: string; items: Item[] }[] {
+export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }): { label: string; items: Item[] }[] {
   const reference: Item[] = [
     ...(flags.showDocs ? ([["/docs", "Documents"]] as const) : []),
     ["/modules", "Modules"],
@@ -31,6 +31,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
   const admin: Item[] = [
     ...(flags.showAudit ? ([["/audit", "Audit"]] as const) : []),
     ...(flags.showUsers ? ([["/users", "Users"]] as const) : []),
+    ...(flags.showConnectors ? ([["/connectors", "Connectors"]] as const) : []),
     ...(flags.showChangelog ? ([["/changelog", "Change log"]] as const) : []),
     ...(flags.showSettings ? ([["/settings", "Settings"]] as const) : []),
   ];
@@ -42,7 +43,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
 
 const isActive = (path: string, href: string) => path === href || path.startsWith(`${href}/`);
 
-export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean }) {
+export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }) {
   const path = usePathname() ?? "";
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);

@@ -571,9 +571,18 @@ export function makeRunnerService(db: PrismaClient) {
       const scope = agent.clientId ? { clientId: agent.clientId } : {};
       const caps = parseCapabilities(agent.capabilities);
       const onPremExclude = agent.clientId ? onPremExclusions(caps) : ALWAYS_ON_PREM_SYSTEMS;
+      // Browser-kind CONNECTORS (custom-…) are browser systems too: they join the capability gate and
+      // the pinning exception exactly like the built-in list. Published-only — a draft never claims.
+      const browserConnectorKeys = (
+        await db.connector.findMany({ where: { status: "published", kind: "browser" }, select: { key: true } })
+      ).map((c) => c.key);
+      const browserSystems = [...BROWSER_SYSTEMS, ...browserConnectorKeys];
       // Browser-automation gate (both central AND client agents): withhold browser-only systems (e.g.
-      // spanning-force-sync) unless the agent reports the 'browser' capability (Node+Playwright installed).
-      const excluded = [...new Set([...onPremExclude, ...browserExclusions(caps)])];
+      // spanning-force-sync + every published browser connector) unless the agent reports the 'browser'
+      // capability (Node+Playwright installed). browserExclusions returns the built-in browser systems
+      // when the cap is absent (empty when present) — so when it fires, the connector keys go too.
+      const builtinBrowserExcluded = browserExclusions(caps); // BROWSER_SYSTEMS when cap absent, else []
+      const excluded = [...new Set([...onPremExclude, ...builtinBrowserExcluded, ...(builtinBrowserExcluded.length ? browserConnectorKeys : [])])];
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
@@ -711,7 +720,7 @@ export function makeRunnerService(db: PrismaClient) {
         // (a client's on-prem agent has no Node/Playwright and is withheld browser systems by the caps
         // gate above), so pinning one to the own agent strands it — claimable by nobody, pending forever.
         // Browser jobs are central-only; never pinned away from central.
-        if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId) && !BROWSER_SYSTEMS.includes(c.systemKey)) continue;
+        if (!agent.clientId && meta && pinnedClientIds.has(meta.clientId) && !browserSystems.includes(c.systemKey)) continue;
         if (missingRequiredSecrets(req(c).secretNames, meta?.secretOverrides, clientMap, parentMap).length > 0) continue; // secrets not set — skip
         // Setup-state gate (enforce mode only): withhold a job whose system's latest conn-test
         // failed, unless attested. singleRun bypasses (an explicit operator-confirmed run).
@@ -916,10 +925,32 @@ export function makeRunnerService(db: PrismaClient) {
         pwByCase.set(j.caseRequestId, pw);
       }
 
+      // LOW-CODE CONNECTORS: a "custom-…" systemKey has no hand-written executor — the generic
+      // Coretelligent.Connector module interprets the PUBLISHED definition, injected here at claim
+      // time as config.connector (same hand-off pattern as mailboxSizeGB/writebackEmail above).
+      // Injected at claim, not plan, so an edit to the definition reaches the very next (re-)run,
+      // and so a draft/archived connector can never execute: no published row → no injection → the
+      // runner's "no executor" fallback resolves the job as a manual follow-up instead.
+      const customKeys = [...new Set(claimed.map((j) => j.systemKey).filter((k) => k.startsWith("custom-")))];
+      const connectorByKey = customKeys.length
+        ? new Map(
+            (
+              await db.connector.findMany({
+                where: { key: { in: customKeys }, status: "published" },
+                select: { key: true, kind: true, definition: true },
+              })
+            ).map((c) => [c.key, c])
+          )
+        : new Map<string, { key: string; kind: string; definition: unknown }>();
+
       return claimed.map((j) => {
         const r = req(j);
         const injectedPw = (j.systemKey === "m365" || j.systemKey === "entra") ? pwByCase.get(j.caseRequestId) : undefined;
         let config = injectedPw ? { ...((r.config as Record<string, unknown> | null) ?? {}), initialPassword: injectedPw } : (r.config ?? null);
+        const connector = connectorByKey.get(j.systemKey);
+        if (connector) {
+          config = { ...((config as Record<string, unknown> | null) ?? {}), connector: { kind: connector.kind, definition: connector.definition } };
+        }
         // Ad-hoc password reset: hand the app-generated value (Job.oneTimePassword — revealed once to
         // the operator, then wiped) to the runner as config.newPassword. Kept on the row across
         // re-claims (lease reclaim) until the reveal/failure wipes it; never persisted into request.
@@ -1174,11 +1205,25 @@ export function makeRunnerService(db: PrismaClient) {
         where: { id: { in: ids }, assignedAgentId: agent.id, status: "running" },
         select: { id: true, systemKey: true, secretNames: true, optionalSecretNames: true, config: true, deep: true, client: { select: { slug: true, primaryDomain: true } } },
       });
+      // Low-code connectors: hand the published definition to the conn-test probe the same way the
+      // job claim does (config.connector), so a connector's `test` lane runs as its connection test.
+      const testCustomKeys = [...new Set(claimed.map((t) => t.systemKey).filter((k) => k.startsWith("custom-")))];
+      const testConnectors = testCustomKeys.length
+        ? new Map(
+            (
+              await db.connector.findMany({ where: { key: { in: testCustomKeys }, status: "published" }, select: { key: true, kind: true, definition: true } })
+            ).map((c) => [c.key, c])
+          )
+        : new Map<string, { key: string; kind: string; definition: unknown }>();
       // `deep` travels to the runner so an interactive probe (a real browser sign-in) runs ONLY on a
       // targeted single-system retest. There is deliberately no capability gate on the claim itself:
       // withholding the test from a browser-less agent would take the ordinary API check down with it.
       // The runner reports "browser not available on this agent" as an unverified rights row instead.
-      return claimed.map((t) => ({ id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, optionalSecretNames: t.optionalSecretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain, config: t.config ?? null, deep: t.deep }));
+      return claimed.map((t) => {
+        const cn = testConnectors.get(t.systemKey);
+        const config = cn ? { ...((t.config as Record<string, unknown> | null) ?? {}), connector: { kind: cn.kind, definition: cn.definition } } : (t.config ?? null);
+        return { id: t.id, systemKey: t.systemKey, secretNames: t.secretNames, optionalSecretNames: t.optionalSecretNames, clientSlug: t.client.slug, primaryDomain: t.client.primaryDomain, config, deep: t.deep };
+      });
     },
 
     // Same push-down broker as a job, scoped to the test's own secretNames (no case overrides).

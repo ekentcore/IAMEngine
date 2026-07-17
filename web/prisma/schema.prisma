@@ -817,6 +817,27 @@ model AppSetting {
 //   leaked_seats — disabled users still holding a licence, i.e. leavers we are still paying for.
 //
 // The findings are a JSON blob rather than a row-per-finding table on purpose: a run is a SNAPSHOT
+// A low-code connector: a declarative definition (docs/CONNECTOR_BUILDER.md) that the generic
+// Coretelligent.Connector executor (kind "http") or the connector-steps browser flow (kind "browser")
+// interprets at run time. Publishing upserts the SystemCatalog row (key = this key, moduleName
+// "Coretelligent.Connector") so clients attach it like any built-in system; the published definition
+// is injected into jobs at claim time as config.connector. The definition is DATA, never code — the
+// runner re-validates it before executing and enforces the definition's host allowlist.
+model Connector {
+  id          String    @id @default(cuid())
+  key         String    @unique // systemKey — always "custom-…" so it can never shadow a built-in
+  name        String
+  kind        String // http | browser
+  status      String    @default("draft") // draft | published | archived
+  definition  Json
+  secretNames String[] // logical secret names the definition references (wired per client in Delinea)
+  notes       String?
+  createdBy   String? // actor label snapshot ("user:jane@core.tech"), never a joinable FK
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  publishedAt DateTime?
+}
+
 // (~200 clients, read whole and rendered whole), never queried across runs, and the two kinds have
 // nothing in common to normalise. See lib/audits/m365-audit.ts for the row shapes.
 //

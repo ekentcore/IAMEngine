@@ -39,6 +39,7 @@ export const MODULES: ModuleEntry[] = [
   { key: "spanning", name: "Spanning Backup", group: "Email security", executor: "built", secret: "spanning", helpSlug: "spanning" },
 
   // --- Apps & access ---
+  { key: "connector", name: "Low-code connectors (custom-*)", group: "Apps & access", executor: "built", note: "ONE generic executor (Coretelligent.Connector) runs every published custom-* connector — declarative http definitions authored in /connectors (docs/CONNECTOR_BUILDER.md). Each connector's SystemCatalog row is created at publish, so individual custom systems don't get rows here." },
   { key: "google-workspace", name: "Google Workspace", group: "Apps & access", executor: "built", secret: "google-admin", helpSlug: "google" },
   { key: "adobe", name: "Adobe", group: "Apps & access", executor: "built", secret: "adobe", note: "spec at docs/modules/adobe.md — needs an in-app guide" },
   { key: "zoom", name: "Zoom", group: "Apps & access", executor: "built", secret: "zoom", helpSlug: "zoom" },
