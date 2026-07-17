@@ -898,6 +898,41 @@ function Invoke-CtgExchangeOffboarding {
         }
     }
 
+    # 1c. Grant the CASE-REQUESTED delegate Full Access (FR #7) ---------------------------------
+    # The offboard intake can name a person ("Enable delegate: yes, access to: Peter Hegland") —
+    # captured as payload.provideMailboxAccessTo and planned onto this job as
+    # config.grantFullAccessTo. Distinct from the profile-static manager delegate above (1b): this
+    # one is per-case, whoever the requestor named, and used to be silently dropped.
+    $reqDelegate = [string](Get-CtgProp $Config 'grantFullAccessTo')
+    if ($reqDelegate) {
+        if (-not $hasExoMailbox) {
+            $actions.Add("WARN the case asks for mailbox access for '$reqDelegate' but $upn is a MailUser (on-prem mailbox) — grant Full Access on-prem")
+        }
+        else {
+            $addr = $reqDelegate
+            # A NAME, not an address — resolve it to a mailbox before granting anything.
+            if ($addr -notmatch '@') {
+                $addr = Resolve-CtgAddressByDisplayName -Name $reqDelegate
+                if ($addr) { $actions.Add("resolved case-requested delegate '$reqDelegate' -> $addr") }
+                else { $actions.Add("WARN the case asks for mailbox access for '$reqDelegate' but no single matching mailbox was found — grant it by hand") }
+            }
+            if ($addr) {
+                $already = @(Get-MailboxPermission -Identity $upn -ErrorAction SilentlyContinue) |
+                    Where-Object { (@($_.AccessRights) -contains 'FullAccess') -and ("$($_.User)" -eq $addr -or "$($_.User)" -like "*$addr*") }
+                if ($already) {
+                    $actions.Add("case-requested delegate $addr already has Full Access — no change")
+                }
+                elseif ($PSCmdlet.ShouldProcess($upn, "Grant $addr Full Access (case-requested)")) {
+                    try {
+                        Add-MailboxPermission -Identity $upn -User $addr -AccessRights FullAccess -AutoMapping:$true -ErrorAction Stop | Out-Null
+                        $actions.Add("granted case-requested delegate $addr Full Access to the mailbox (AutoMapping on)")
+                    }
+                    catch { $actions.Add("WARN could not grant $addr Full Access: $($_.Exception.Message)") }
+                }
+            }
+        }
+    }
+
     # 2. On-request out-of-office --------------------------------------------
     $autoReply = Get-CtgProp $Config 'autoReply'
     $message = if ($autoReply) { Get-CtgProp $autoReply 'message' } else { $null }

@@ -22,10 +22,11 @@
 #   - .gitattributes merge drivers (e.g. `merge=union` on the changelog registry) are a LOCAL git
 #     feature. GitHub's merge ignores them, so a conflict git settles silently here is still a hard
 #     CONFLICTING there. This is the only place those drivers ever run.
-#   - a real conflict gets rolled back and handed to you with the file list, instead of a merge that
-#     half-happened on a server.
-# It never resolves a conflict for you, and never touches a worktree with uncommitted work. Opt out
-# with PRS_NO_BRANCH_SYNC=1.
+#   - a real conflict is resolved HERE — mechanical files (runner/VERSION) automatically, the rest by
+#     walking you through them at a terminal — instead of a merge that half-happened on a server. With
+#     no terminal (or in --all) it rolls back and hands you the file list, untouched.
+# It never touches a worktree with uncommitted work. Opt out of the sync with PRS_NO_BRANCH_SYNC=1, or
+# just of the auto/assisted resolution (always roll back on conflict) with PRS_NO_AUTORESOLVE=1.
 #
 # After a successful merge the script SYNCS THE LOCAL main checkout: it fast-forwards main and runs
 # `npm install` (in web/ and runner/browser/), so the next `next dev` compile can't die on a package
@@ -101,12 +102,102 @@ sync_local_after_merge() {
 # server-side merge ignores it completely, so a conflict git resolves silently here is still a hard
 # CONFLICTING there. Syncing locally and pushing is what makes those drivers do their job.
 #
-# Safe by construction. On a REAL conflict it aborts, leaves the branch byte-for-byte as it was, and
-# prints the files — it never resolves a conflict for you, because "both sides edited this line" needs
-# a human who knows which is right. It touches a worktree only when that worktree is clean. Opt out of
-# the whole thing with PRS_NO_BRANCH_SYNC=1.
+# Conflicts are handled in three tiers, safest first (see resolve_conflicts_in_worktree):
+#   1. MECHANICAL files git only conflicts on by accident — runner/VERSION (take the higher semver).
+#      Always auto-resolved; needs no human.
+#   2. Everything else, when a terminal is attached and this is NOT a --all batch: walk the operator
+#      through each file — keep this PR's side, keep main's side, or open it in $EDITOR. This is the
+#      "ask some questions" path; a semantic conflict that needs BOTH sides (the common case) is what
+#      [e]dit is for, and the loop refuses to continue while conflict markers remain.
+#   3. No terminal (or --all, or the operator quits): abort, leave the branch byte-for-byte as it was,
+#      and print the files + the by-hand recipe — the original behavior.
+# It touches a worktree only when that worktree is clean. Opt out entirely with PRS_NO_BRANCH_SYNC=1;
+# force tier 3 (never resolve, always abort) with PRS_NO_AUTORESOLVE=1.
 #
 # Returns non-zero when the merge cannot proceed, so the caller stops BEFORE un-drafting the PR.
+
+# Echo the higher of two x.y.z versions ($1, $2). Ties echo the value unchanged.
+semver_max() {
+  [[ "$1" == "$2" ]] && { printf '%s\n' "$1"; return; }
+  printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
+}
+
+# Resolve conflicts in the merge sitting in worktree $1 (branch label $2 for messages). Returns 0 when
+# the index is fully resolved (caller then commits), non-zero to abort the whole sync. Never commits.
+resolve_conflicts_in_worktree() {
+  local tmp="$1" branch="$2" f
+  [[ "${PRS_NO_AUTORESOLVE:-}" == "1" ]] && return 1
+
+  # Tier 1 — mechanical. runner/VERSION: both branches bumped it; the higher version supersedes, and
+  # a runner never self-updates DOWN, so max is always the right merge. No judgement needed.
+  if git -C "$tmp" diff --name-only --diff-filter=U | grep -qx 'runner/VERSION'; then
+    local ours theirs win
+    ours=$(git -C "$tmp" show :2:runner/VERSION 2>/dev/null | tr -d '[:space:]')
+    theirs=$(git -C "$tmp" show :3:runner/VERSION 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$ours" && -n "$theirs" ]]; then
+      win=$(semver_max "$ours" "$theirs")
+      # If they tie (both sides set the SAME new version from a lower base — two bundles that don't
+      # know about each other), bump the patch so the merged runner is a distinct build; an agent
+      # already on the tied version would otherwise never pull the merged one.
+      if [[ "$ours" == "$theirs" ]]; then
+        win="${win%.*}.$(( ${win##*.} + 1 ))"
+      fi
+      printf '%s\n' "$win" > "$tmp/runner/VERSION"
+      git -C "$tmp" add runner/VERSION
+      echo "  auto-resolved runner/VERSION -> $win (ours $ours / main $theirs)"
+    fi
+  fi
+
+  # Anything still unresolved?
+  local remaining
+  remaining=$(git -C "$tmp" diff --name-only --diff-filter=U)
+  [[ -z "$remaining" ]] && return 0
+
+  # Tier 2 — interactive, only with a real terminal and outside --all. Without one there is nobody to
+  # ask, so fall through to the caller's abort.
+  if [[ ! -t 1 || ! -r /dev/tty || "${PRS_IN_ALL:-}" == "1" ]]; then
+    return 1
+  fi
+
+  echo
+  echo "branch sync: main and this PR changed the same lines in these files:"
+  printf '%s\n' "$remaining" | sed 's/^/    /'
+  echo "             I'll take you through them one at a time."
+  echo "             ours = this PR (#$PR) · main = what's already on main"
+  echo
+
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    while true; do
+      echo "──── $f ────"
+      git -C "$tmp" --no-pager diff --no-color -- "$f" 2>/dev/null | sed -n '1,60p'
+      echo
+      local ans=""
+      read -r -p "  keep [o]urs (this PR) / [m]ain / [e]dit by hand / [a]bort? " ans < /dev/tty || ans="a"
+      case "$ans" in
+        o|O) git -C "$tmp" checkout --ours -- "$f" && git -C "$tmp" add "$f" && { echo "  kept ours: $f"; break; } ;;
+        m|M) git -C "$tmp" checkout --theirs -- "$f" && git -C "$tmp" add "$f" && { echo "  kept main: $f"; break; } ;;
+        e|E)
+          "${EDITOR:-vi}" "$tmp/$f" < /dev/tty > /dev/tty 2>&1
+          if grep -qE '^(<{7}|={7}|>{7})' "$tmp/$f"; then
+            echo "  $f still has conflict markers — reopen it, or pick ours/main."
+          else
+            git -C "$tmp" add "$f"; echo "  resolved by hand: $f"; break
+          fi
+          ;;
+        a|A) echo "  aborting — nothing was pushed."; return 1 ;;
+        *)   echo "  answer o, m, e, or a." ;;
+      esac
+    done
+  done <<< "$remaining"
+
+  # Belt and braces: never let a half-resolved tree through.
+  if git -C "$tmp" diff --name-only --diff-filter=U | grep -q .; then
+    echo "  some files are still unresolved — aborting."; return 1
+  fi
+  return 0
+}
+
 sync_branch_with_main() {
   local branch="$1"
   [[ "${PRS_NO_BRANCH_SYNC:-}" == "1" ]] && { echo "branch sync: skipped (PRS_NO_BRANCH_SYNC=1)."; return 0; }
@@ -138,8 +229,43 @@ sync_branch_with_main() {
     rm -rf "$tmp"; echo "branch sync: could not check out origin/$branch — leaving it alone."; return 0
   fi
 
+  # Merge. On a clean merge this creates the commit; on a conflict it stops with the index in a merge
+  # state, which resolve_conflicts_in_worktree then either finishes (return 0 -> we commit) or gives up
+  # on (return 1 -> abort, nothing pushed). A `resolved` flag decides whether to push below, so the
+  # push+mergeability-poll lives in exactly one place for both the clean and resolved paths.
+  local resolved=""
   if git -C "$tmp" merge --no-edit -m "Merge origin/main into $branch (prs.sh: catch the PR up before merging)" origin/main >/dev/null 2>&1; then
-    echo "branch sync: merged cleanly — pushing"
+    resolved="clean"
+  elif resolve_conflicts_in_worktree "$tmp" "$branch"; then
+    if git -C "$tmp" commit --no-edit -m "Merge origin/main into $branch (prs.sh: resolved conflicts before merging)" >/dev/null 2>&1; then
+      echo "branch sync: conflicts resolved."
+      resolved="resolved"
+    else
+      echo "branch sync: could not commit the resolved merge — aborting."
+      git -C "$tmp" merge --abort 2>/dev/null || true
+      rc=1
+    fi
+  else
+    # Nobody could resolve it here (no terminal, --all batch, or the operator quit). Leave GitHub
+    # untouched and hand over the by-hand recipe — the original tier-3 behavior.
+    local conflicts; conflicts=$(git -C "$tmp" diff --name-only --diff-filter=U 2>/dev/null)
+    git -C "$tmp" merge --abort 2>/dev/null || true
+    echo
+    echo "branch sync: main and this PR changed the same lines, and I couldn't resolve them here"
+    echo "             (no terminal to ask at, a --all batch, or you quit)."
+    echo "  conflicting:"
+    echo "$conflicts" | sed 's/^/    /'
+    echo "  resolve it with:"
+    echo "    gh pr checkout $PR && git fetch origin main && git merge origin/main"
+    echo "    # fix the files, then:  git commit && git push  — and re-run this script."
+    echo "  or re-run this script from a terminal to be walked through it."
+    echo
+    echo "  (nothing was pushed — the branch on GitHub is exactly as it was)"
+    rc=1
+  fi
+
+  if [[ -n "$resolved" ]]; then
+    [[ "$resolved" == "clean" ]] && echo "branch sync: merged cleanly — pushing" || echo "branch sync: pushing the resolved merge"
     if git -C "$tmp" push -q origin "HEAD:refs/heads/$branch" 2>/dev/null; then
       echo "branch sync: '$branch' now contains main."
       # GitHub needs a moment to recompute mergeability after the push; merging against a stale
@@ -155,19 +281,6 @@ sync_branch_with_main() {
       echo "               gh pr checkout $PR && git fetch origin main && git merge origin/main && git push"
       rc=1
     fi
-  else
-    local conflicts; conflicts=$(git -C "$tmp" diff --name-only --diff-filter=U 2>/dev/null)
-    echo
-    echo "branch sync: main and this PR changed the same lines. Git can't resolve that, and neither"
-    echo "             should a script — it needs someone who knows which side is right."
-    echo "  conflicting:"
-    echo "$conflicts" | sed 's/^/    /'
-    echo "  resolve it with:"
-    echo "    gh pr checkout $PR && git fetch origin main && git merge origin/main"
-    echo "    # fix the files, then:  git commit && git push  — and re-run this script."
-    echo
-    echo "  (nothing was pushed — the branch on GitHub is exactly as it was)"
-    rc=1
   fi
 
   # The merge happened in a scratch worktree, so cleanup is the whole rollback: nothing was pushed on

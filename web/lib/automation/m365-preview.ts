@@ -11,10 +11,14 @@ type M365Config = {
   blockSignIn?: boolean;
   removeLicense?: unknown;
   removeAllGroups?: boolean;
-  // Offboard hardening. Both default to ON — only an explicit `false` turns them off, so the preview
+  // Offboard hardening. All default to ON — only an explicit `false` turns them off, so the preview
   // must mirror that (`!== false`), not treat "absent" as "off".
   revokeSessions?: boolean;
   removeMfaMethods?: boolean;
+  removeManager?: boolean;
+  // OneDrive offboard (FR #8/#9): delegate injected per-case by the planner; archive target static.
+  oneDriveGrantAccessTo?: string | null;
+  oneDriveBackup?: { target?: string } | null;
 };
 
 type Identity = {
@@ -103,8 +107,17 @@ function offboard(config: M365Config, _identity: Identity, _domain: string, user
       `Get-MgUserAuthenticationMethod -UserId $UserPrincipalName | Where-Object { $_.AdditionalProperties['@odata.type'] -ne '#microsoft.graph.passwordAuthenticationMethod' } | ForEach-Object { <# Remove-MgUserAuthentication<Type>Method per method type #> }`
     );
   }
+  if (config.removeManager !== false) {
+    lines.push("", "# clear the manager link (AD-synced users: the AD step clears it on-prem instead)", `Remove-MgUserManagerByRef -UserId $UserPrincipalName`);
+  }
   if (config.removeAllGroups) {
     lines.push("", "# remove from all groups", `Get-MgUserMemberOf -UserId $UserPrincipalName | ForEach-Object { Remove-MgGroupMemberByRef -GroupId $_.Id -DirectoryObjectId (Get-MgUser -UserId $UserPrincipalName).Id }`);
+  }
+  if (config.oneDriveGrantAccessTo) {
+    lines.push("", "# grant the case-requested delegate access to the whole OneDrive (name resolved at run time)", `POST /drives/<leaver's drive>/items/root/invite { recipients: ["${config.oneDriveGrantAccessTo}"], roles: ["write"] }`);
+  }
+  if (config.oneDriveBackup?.target) {
+    lines.push("", `# archive the OneDrive into 'Archive - <name>' on ${config.oneDriveBackup.target} (server-side Graph copies; source left for account deletion)`, `POST /drives/<leaver's drive>/items/<each root item>/copy { parentReference: <target drive> }`);
   }
   if (config.removeLicense) {
     lines.push("", "# reclaim licenses (after mailbox conversion, per ordering rules)", `Set-MgUserLicense -UserId $UserPrincipalName -AddLicenses @() -RemoveLicenses (Get-MgUserLicenseDetail -UserId $UserPrincipalName).SkuId`);

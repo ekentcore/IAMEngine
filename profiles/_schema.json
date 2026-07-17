@@ -368,7 +368,9 @@
       "properties": {
         "blockSignIn":    { "type": "boolean" },
         "removeAllGroups":{ "type": "boolean" },
-        "oneDriveBackup": { "type": "object" },
+        "removeManager":  { "type": "boolean", "description": "Clear the user's manager link in Entra (default true). AD-synced users are routed to the AD step, which clears it on-prem." },
+        "oneDriveBackup": { "type": "object", "description": "{ target }: archive the leaver's OneDrive into an 'Archive - <name>' folder on the target — a user email (their OneDrive) or a SharePoint site URL. Server-side Graph copies; the source is left for account deletion." },
+        "oneDriveDelegateAccess": { "type": "boolean", "description": "Grant the case-requested delegate access to the leaver's OneDrive (default true when the case names one)." },
         "mailbox":        { "type": "object" },
         "removeLicense":  { "type": ["object", "boolean"], "description": "true = remove all licenses; object = conditional (e.g. { exceptWhen: 'mailbox above 50GB' }). The module honors the mailbox-size threshold either way." }
       }

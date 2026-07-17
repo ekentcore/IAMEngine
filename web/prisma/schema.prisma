@@ -414,6 +414,11 @@ model CaseRequest {
   // Soft-delete: a case moved to the trash (removed from the list). Restorable for 30 days, then
   // purged. Excluded from the active list and from runner claims while trashed.
   deletedAt            DateTime?
+  // Operator dismissed this case's WARNINGS ("I finished the remaining steps by hand") — the run
+  // report shows the steps as accepted and the cases list stops painting the case orange. Cleared
+  // automatically when a new real (non-verify) result lands, so fresh problems resurface.
+  warningsDismissedAt  DateTime?
+  warningsDismissedBy  String?
   jobs                 Job[]
 
   @@index([deletedAt])

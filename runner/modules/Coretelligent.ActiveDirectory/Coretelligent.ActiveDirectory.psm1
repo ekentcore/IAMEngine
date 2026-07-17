@@ -1001,12 +1001,19 @@ function Invoke-CtgADPasswordReset {
         try { Set-ADAccountPassword -Identity $sam -Reset -NewPassword $secure -ErrorAction Stop @AdConnection }
         catch { throw "resetting the password for '$sam': $($_.Exception.Message)" }
         $actions.Add("reset password for $sam (shown once to the operator, never stored)")
-        try {
-            Set-ADUser -Identity $sam -ChangePasswordAtLogon $true -ErrorAction Stop @AdConnection
-            $actions.Add("must change password at next logon")
-        } catch {
-            # The reset DID land — a policy that forbids the flag (e.g. password-never-expires) is a warning, not a failure.
-            $actions.Add("WARN could not require change-at-next-logon: $($_.Exception.Message)")
+        # Default ON; the operator can untick "require change at next sign-in" when they still have
+        # to log in AS the user (equipment setup) before handing the account over (FR #14).
+        if ((Get-CtgProp $Config 'requireChangeAtSignIn') -eq $false) {
+            $actions.Add("change-at-next-logon NOT required — operator choice")
+        }
+        else {
+            try {
+                Set-ADUser -Identity $sam -ChangePasswordAtLogon $true -ErrorAction Stop @AdConnection
+                $actions.Add("must change password at next logon")
+            } catch {
+                # The reset DID land — a policy that forbids the flag (e.g. password-never-expires) is a warning, not a failure.
+                $actions.Add("WARN could not require change-at-next-logon: $($_.Exception.Message)")
+            }
         }
     }
     [pscustomobject]@{ System = 'ad-password-reset'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }

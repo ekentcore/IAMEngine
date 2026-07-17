@@ -1085,7 +1085,11 @@ $DISPATCH = @{
             Connect-CtgM365 -Credential $creds['m365-admin'].Credential -TenantId $tenant
         }
         Onboard  = { param($job, $creds)
-            $r = Invoke-CtgM365Onboarding -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds)
+            # Per-client password policy: profile password.requireChangeAtSignIn (injected by the app
+            # as config.requireChangeAtSignIn; default true). FR #14 — some clients set up equipment
+            # logged in AS the user before handover, so force-change-at-first-sign-in is optional.
+            $rcas = (Get-CtgProp $job.config 'requireChangeAtSignIn') -ne $false
+            $r = Invoke-CtgM365Onboarding -User $job.payload -Config $job.config -InitialPassword (Resolve-CtgInitialPassword -Job $job -Creds $creds) -RequireChangeAtSignIn:$rcas
             # Finish over Exchange Online with the SAME m365-admin app (cert) — no separate Exchange
             # system needed: the DLs Graph couldn't write, plus (when mirroring) the mirror user's DLs
             # and shared-mailbox permissions. One EXO connection, best-effort.

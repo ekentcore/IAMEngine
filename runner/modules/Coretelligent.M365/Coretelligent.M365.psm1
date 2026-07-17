@@ -1055,8 +1055,50 @@ function Invoke-CtgM365Onboarding {
         DeferredDistributionGroups = $deferredDls.ToArray()
         # On a seat shortage, return the tenant's SKU inventory so the app can offer a license picker.
         AvailableLicenses = if ($seatShortage) { Get-CtgM365LicenseInventory } else { @() }
+        # Explicit "the user was left UNLICENSED" flag: the app holds the license-dependent steps
+        # (Mimecast/Spanning discover users via the mailbox, which an unlicensed user doesn't have).
+        SeatShortage = [bool]$seatShortage
         Actions = $actions.ToArray()
     }
+}
+
+# --- OneDrive (Graph drives) helpers — FR #8 / FR #9 --------------------------------------------
+# Internal (not exported). All Graph-drive access goes through Invoke-MgGraphRequest: the drive
+# cmdlets live in yet another Microsoft.Graph submodule and these three calls don't justify the
+# load-time dependency.
+
+# The user's OneDrive drive id + web URL, or $null when none is provisioned (never signed in to
+# OneDrive). Throws on anything that is NOT "no drive" — a throttle must not read as "no OneDrive".
+function Get-CtgUserDrive {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$UserId)
+    try {
+        $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$UserId/drive?`$select=id,webUrl" -ErrorAction Stop
+        return @{ Id = [string](Get-CtgProp $d 'id'); WebUrl = [string](Get-CtgProp $d 'webUrl') }
+    }
+    catch {
+        if ("$($_.Exception.Message)" -match 'itemNotFound|ResourceNotFound|mysite not found|\b404\b') { return $null }
+        throw
+    }
+}
+
+# Resolve an archive TARGET to a drive: a user email -> their OneDrive; a SharePoint site URL ->
+# that site's default document library. Anything else is a config error and throws with the rule.
+function Resolve-CtgDriveTarget {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Target)
+    if ($Target -match '^https?://') {
+        $u = [uri]$Target
+        $sitePath = $u.AbsolutePath.TrimEnd('/')
+        $site = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$($u.Host):$($sitePath)" -ErrorAction Stop
+        $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$(Get-CtgProp $site 'id')/drive?`$select=id,webUrl" -ErrorAction Stop
+        return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "SharePoint $sitePath" }
+    }
+    if ($Target -match '@') {
+        $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$Target/drive?`$select=id,webUrl" -ErrorAction Stop
+        return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "the OneDrive of $Target" }
+    }
+    throw "unrecognized OneDrive archive target '$Target' — use a user email or a SharePoint site URL"
 }
 
 function Invoke-CtgM365Offboarding {
@@ -1070,7 +1112,8 @@ function Invoke-CtgM365Offboarding {
         Normalized user object; must carry UserPrincipalName.
     .PARAMETER Config
         The 'config' block from the m365 system's offboard lane: blockSignIn, removeAllGroups,
-        oneDriveBackup{...}, mailbox{sizeThresholdGB,aboveThreshold}, removeLicense{...}.
+        removeManager, oneDriveBackup{target}, oneDriveGrantAccessTo (per-case, injected by the
+        planner from the intake delegate), mailbox{sizeThresholdGB,aboveThreshold}, removeLicense{...}.
     .PARAMETER MailboxSizeGB
         Current mailbox size (from Exchange upstream); drives the keep-license threshold.
     .OUTPUTS
@@ -1197,6 +1240,52 @@ function Invoke-CtgM365Offboarding {
                 $actions.Add("revoked sign-in sessions (issued tokens invalidated)")
             }
             catch { $actions.Add("WARN could not revoke sign-in sessions: $($_.Exception.Message)") }
+        }
+    }
+
+    # 2d. Clear the manager relationship ----
+    # The AD lane clears the manager on-prem (Set-ADUser -Clear manager), but a CLOUD-MASTERED user
+    # has no AD lane, so nothing ever removed the link (FR #12) — the leaver kept showing under their
+    # manager in the org chart. Capture WHO it was BEFORE clearing (the run report should name the
+    # person, same as AD, and Exchange's manager-delegate fallback can use it on a re-run), then
+    # delete the ref. An AD-SYNCED user's manager is on-prem-mastered — Graph refuses the write —
+    # so route it to the AD step instead of erroring.
+    $managerInfo = $null
+    if ((Get-CtgProp $Config 'removeManager') -ne $false) {
+        # 404 = genuinely no manager. A throttle/transient must NOT read as "none" — that would skip
+        # the clear silently and record a definitive "no manager set" that isn't true. Retry, then WARN.
+        $mgrObj = $null; $mgrUnreadable = $false
+        for ($mgrTry = 1; $mgrTry -le 3; $mgrTry++) {
+            try { $mgrObj = Get-MgUserManager -UserId $userId -ErrorAction Stop; $mgrUnreadable = $false; break }
+            catch {
+                if ("$($_.Exception.Message)" -match 'Request_ResourceNotFound|does not exist|\b404\b') { $mgrUnreadable = $false; break }
+                $mgrUnreadable = $true
+                if ($mgrTry -lt 3) { Start-Sleep -Seconds ($mgrTry * 2) }
+            }
+        }
+        if ($mgrUnreadable) {
+            $actions.Add("WARN could not read $upn's manager (throttled?) — the link may STILL BE SET; re-run this step to clear it")
+        }
+        elseif (-not $mgrObj) {
+            $actions.Add("no manager set — nothing to clear")
+        }
+        else {
+            $mgrAp = $mgrObj.AdditionalProperties
+            $mgrName = [string]((Get-CtgProp $mgrAp 'displayName') ?? $mgrObj.Id)
+            $mgrMail = [string]((Get-CtgProp $mgrAp 'mail') ?? (Get-CtgProp $mgrAp 'userPrincipalName'))
+            $managerInfo = @{ Name = $mgrName; Email = $mgrMail }
+            $synced = $false
+            try { $synced = [bool](Get-CtgProp (Get-MgUser -UserId $userId -Property 'OnPremisesSyncEnabled' -ErrorAction Stop) 'OnPremisesSyncEnabled') } catch { $synced = $false }
+            if ($synced) {
+                $actions.Add("manager '$mgrName' is on-prem-mastered (AD-synced user) — the AD step clears it on-prem")
+            }
+            elseif ($PSCmdlet.ShouldProcess($upn, "Clear manager $mgrName")) {
+                try {
+                    Invoke-CtgM365Write { Remove-MgUserManagerByRef -UserId $userId }
+                    $actions.Add("cleared manager: $mgrName$(if ($mgrMail) { " <$mgrMail>" })")
+                }
+                catch { $actions.Add("WARN could not clear manager '$mgrName' (STILL SET): $($_.Exception.Message)") }
+            }
         }
     }
 
@@ -1409,9 +1498,126 @@ function Invoke-CtgM365Offboarding {
         catch { $actions.Add("WARN could not enumerate Entra devices: $($_.Exception.Message)") }
     }
 
-    # 4. OneDrive backup — flagged for the data-transfer step (not done inline) -
-    $oneDrive = Get-CtgProp $Config 'oneDriveBackup'
-    if ($oneDrive) { $actions.Add("OneDrive backup required -> $((Get-CtgProp $oneDrive 'target'))") }
+    # 4. OneDrive — delegate access (FR #8) + archive to a target (FR #9) -----------------------
+    # Both FAIL-SOFT: a OneDrive problem must never abort the containment above (sign-in blocked,
+    # sessions revoked, groups removed). Needs the Files.ReadWrite.All app role — the warning names
+    # it when Graph refuses.
+    $odDelegate = [string](Get-CtgProp $Config 'oneDriveGrantAccessTo')   # per-case, from the intake delegate
+    $oneDrive = Get-CtgProp $Config 'oneDriveBackup'                       # profile-static { target }
+    $odRetryAfterMinutes = $null   # set when archive copies are in flight — the app re-runs to confirm
+    if ($odDelegate -or $oneDrive) {
+        $drive = $null
+        $driveReadFailed = $false
+        try { $drive = Get-CtgUserDrive -UserId $userId }
+        catch { $driveReadFailed = $true; $actions.Add("WARN could not read $upn's OneDrive (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+        if (-not $drive -and -not $driveReadFailed) {
+            $actions.Add("no OneDrive provisioned for $upn — nothing to grant or archive")
+        }
+        # 4a. Grant the case-requested delegate access to the whole OneDrive (FR #8).
+        if ($drive -and $odDelegate) {
+            # Resolve-CtgEntraUser handles BOTH forms (email/UPN exact, else display-name variants)
+            # and returns the Graph default property set — which includes Mail/UserPrincipalName.
+            # (Resolve-CtgM365User's default -Property selects neither, which read as "not found".)
+            $dUser = Resolve-CtgEntraUser -Identity $odDelegate
+            $dMail = if ($dUser) { [string]((Get-CtgProp $dUser 'Mail') ?? (Get-CtgProp $dUser 'UserPrincipalName')) } else { $null }
+            if (-not $dMail) {
+                $actions.Add("WARN the case asks for OneDrive access for '$odDelegate' but no matching user was found — grant it by hand")
+            }
+            else {
+                try {
+                    $perms = @(Get-CtgProp (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/items/root/permissions" -ErrorAction Stop) 'value')
+                    $already = $perms | Where-Object {
+                        $ids = @(Get-CtgProp $_ 'grantedToIdentitiesV2') + @(Get-CtgProp $_ 'grantedToV2')
+                        @($ids | ForEach-Object { [string](Get-CtgProp (Get-CtgProp $_ 'user') 'email') }) -contains $dMail
+                    }
+                    if ($already) {
+                        $actions.Add("delegate $dMail already has access to $upn's OneDrive — no change")
+                    }
+                    elseif ($PSCmdlet.ShouldProcess($upn, "Grant $dMail access to OneDrive")) {
+                        $null = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/items/root/invite" -Body @{
+                            recipients = @(@{ email = $dMail }); roles = @('write'); requireSignIn = $true; sendInvitation = $false
+                        } -ErrorAction Stop
+                        $actions.Add("granted delegate $dMail access to $upn's OneDrive -> $($drive.WebUrl)")
+                    }
+                }
+                catch { $actions.Add("WARN could not grant $dMail access to $upn's OneDrive (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+            }
+        }
+        # 4b. Archive the OneDrive into the configured target (FR #9): server-side Graph COPIES of
+        # every root item into an "Archive - <name>" folder on the target drive. Copies run to
+        # completion on Microsoft's side once initiated; the source is left intact (it goes when the
+        # account does), so a re-run is safe — an already-copied item answers nameAlreadyExists and
+        # is counted as done.
+        if ($drive -and $oneDrive) {
+            $target = [string](Get-CtgProp $oneDrive 'target')
+            if (-not $target) {
+                $actions.Add("WARN oneDriveBackup is set but has no target (user email or SharePoint site URL) — nothing archived")
+            }
+            else {
+                try {
+                    $dest = Resolve-CtgDriveTarget -Target $target
+                    $folderName = "Archive - " + ([string]((Get-CtgProp $existing 'DisplayName') ?? $upn))
+                    $folder = $null
+                    try { $folder = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/drives/$($dest.DriveId)/root:/$([uri]::EscapeDataString($folderName))" -ErrorAction Stop }
+                    catch {
+                        if ("$($_.Exception.Message)" -notmatch 'itemNotFound|\b404\b') { throw }
+                        if ($PSCmdlet.ShouldProcess($target, "Create archive folder '$folderName'")) {
+                            $folder = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/drives/$($dest.DriveId)/root/children" -Body @{ name = $folderName; folder = @{}; '@microsoft.graph.conflictBehavior' = 'fail' } -ErrorAction Stop
+                        }
+                    }
+                    if ($folder) {
+                        # Graph /copy is ASYNC (202; completion and failures happen server-side and
+                        # are NOT visible here). So done-ness is verified by LISTING the destination:
+                        # an item already present is done and skipped; anything just initiated makes
+                        # the step auto-re-run (RetryAfterMinutes) until a run finds nothing left to
+                        # start — only then does the archive read complete.
+                        $doneNames = @{}
+                        $du = "https://graph.microsoft.com/v1.0/drives/$($dest.DriveId)/items/$(Get-CtgProp $folder 'id')/children?`$select=name"
+                        while ($du) {
+                            $dp = Invoke-MgGraphRequest -Method GET -Uri $du -ErrorAction Stop
+                            foreach ($di in @(Get-CtgProp $dp 'value')) { $doneNames[[string](Get-CtgProp $di 'name')] = $true }
+                            $du = [string](Get-CtgProp $dp '@odata.nextLink')
+                        }
+                        $initiated = 0; $alreadyDone = 0; $failed = 0
+                        $uri = "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/root/children?`$select=id,name"
+                        while ($uri) {
+                            $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+                            foreach ($item in @(Get-CtgProp $page 'value')) {
+                                $iname = [string](Get-CtgProp $item 'name')
+                                if ($doneNames.ContainsKey($iname)) { $alreadyDone++; continue }
+                                if (-not $PSCmdlet.ShouldProcess($iname, "Copy to '$folderName' on $($dest.Label)")) { continue }
+                                try {
+                                    $null = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/items/$(Get-CtgProp $item 'id')/copy" -Body @{
+                                        parentReference = @{ driveId = $dest.DriveId; id = [string](Get-CtgProp $folder 'id') }
+                                    } -ErrorAction Stop
+                                    $initiated++
+                                }
+                                catch {
+                                    if ("$($_.Exception.Message)" -match 'nameAlreadyExists') { $alreadyDone++ }
+                                    else { $failed++; $actions.Add("WARN OneDrive archive: could not copy '$iname': $($_.Exception.Message)") }
+                                }
+                            }
+                            $uri = [string](Get-CtgProp $page '@odata.nextLink')
+                        }
+                        if ($initiated -gt 0) {
+                            # In flight — NOT done. The re-run (auto, via RetryAfterMinutes) is what
+                            # confirms each copy actually landed; claiming completion here would hide
+                            # a server-side copy failure until after the account (and source) is gone.
+                            $odRetryAfterMinutes = 10
+                            $actions.Add("OneDrive archive -> '$folderName' on $($dest.Label): $initiated cop$(if ($initiated -eq 1) { 'y' } else { 'ies' }) initiated (server-side)$(if ($alreadyDone) { ", $alreadyDone already archived" })$(if ($failed) { ", $failed FAILED to start" }) — auto-re-running to confirm every item lands")
+                        }
+                        elseif ($failed -gt 0) {
+                            $actions.Add("WARN OneDrive archive -> '$folderName' on $($dest.Label): $failed item(s) could not start copying ($alreadyDone archived)")
+                        }
+                        else {
+                            $actions.Add("OneDrive archive complete: all $alreadyDone item(s) present in '$folderName' on $($dest.Label)")
+                        }
+                    }
+                }
+                catch { $actions.Add("WARN OneDrive archive to '$target' did not run (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+            }
+        }
+    }
 
     # 5. License removal — honor the mailbox size threshold. GROUP-BASED LICENSING: a license assigned
     # via a GROUP can't be removed directly ("User license is inherited from a group membership and it
@@ -1634,6 +1840,12 @@ function Invoke-CtgM365Offboarding {
         # MfaMethods = the KINDS of second factor that were registered and removed (e.g. "phone",
         # "microsoftAuthenticator"). Types only — a phone number is PII and never lands in evidence.
         Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence); MfaMethods = @($mfaRemoved) }
+        # Who the manager WAS (captured before the clear) — same contract as the AD step's Manager,
+        # so the app can hand it to Exchange's manager-delegate fallback on a re-run.
+        Manager  = $managerInfo
+        # OneDrive archive copies still in flight: the app's auto-retry re-runs this step until a
+        # pass finds every item already in the destination (see 4b).
+        RetryAfterMinutes = $odRetryAfterMinutes
         Actions  = $actions.ToArray()
     }
 }
@@ -1666,7 +1878,7 @@ function Confirm-CtgM365 {
     }
 
     # Transient-aware lookup: don't let a throttle/timeout false-report "user exists = false" (a MISS).
-    $u = Resolve-CtgM365User -Upn $upn -Property @('Id', 'AccountEnabled', 'UserPrincipalName')
+    $u = Resolve-CtgM365User -Upn $upn -Property @('Id', 'AccountEnabled', 'UserPrincipalName', 'OnPremisesSyncEnabled')
     $exists = [bool]$u
 
     if ($Action -eq 'onboard') {
@@ -1802,6 +2014,20 @@ function Confirm-CtgM365 {
                 }).Count
             & $add 'cloud groups removed' $true ([bool]($remaining -eq 0))
         }
+        # Manager cleared — cloud-mastered users only: a synced user's manager is AD-mastered and
+        # legitimately remains in Entra until the AD clear syncs up, so checking it here would
+        # false-miss every hybrid offboard.
+        if ($exists -and (Get-CtgProp $Config 'removeManager') -ne $false -and (Get-CtgProp $u 'OnPremisesSyncEnabled') -ne $true) {
+            # 404 = cleared. A transient read failure is UNKNOWN — recording it as pass would be a
+            # false green on the exact thing this check exists to catch, so skip the check instead.
+            $mgrStill = $null; $mgrKnown = $true
+            try { $mgrStill = Get-MgUserManager -UserId $u.Id -ErrorAction Stop }
+            catch {
+                if ("$($_.Exception.Message)" -match 'Request_ResourceNotFound|does not exist|\b404\b') { $mgrStill = $null }
+                else { $mgrKnown = $false }
+            }
+            if ($mgrKnown) { & $add 'manager cleared' $true ([bool](-not $mgrStill)) }
+        }
     }
 
     $all = @($checks)
@@ -1894,6 +2120,9 @@ function Invoke-CtgM365PasswordReset {
         throw "'$upn' is AD-synced (directory-synced) — reset the password on the Active Directory line instead; Entra rejects cloud resets for synced users unless password write-back is enabled"
     }
     $actions = [System.Collections.Generic.List[string]]::new()
+    # Default ON; the operator can untick "require change at next sign-in" when they still have to
+    # log in AS the user (equipment setup) before handing the account over (FR #14).
+    $requireChange = (Get-CtgProp $Config 'requireChangeAtSignIn') -ne $false
     if ($PSCmdlet.ShouldProcess($upn, "Reset password")) {
         try {
             # Through the retry seam like every other Graph write in this module. It matters MORE here
@@ -1901,7 +2130,7 @@ function Invoke-CtgM365PasswordReset {
             # throttle or a gateway blip cannot be re-run — the operator has to dispatch a whole new
             # reset. Authorization_RequestDenied is not transient, so the permission hint below still
             # fires on the first attempt rather than after four.
-            Invoke-CtgM365Write { Update-MgUser -UserId $u.Id -PasswordProfile @{ Password = $newPassword; ForceChangePasswordNextSignIn = $true } -ErrorAction Stop }
+            Invoke-CtgM365Write { Update-MgUser -UserId $u.Id -PasswordProfile @{ Password = $newPassword; ForceChangePasswordNextSignIn = $requireChange } -ErrorAction Stop }
         } catch {
             $msg = [string]$_.Exception.Message
             # Graph treats passwordProfile as a PRIVILEGED write with its own app role. User.ReadWrite.All
@@ -1918,7 +2147,8 @@ function Invoke-CtgM365PasswordReset {
             }
             throw "resetting the password for '$upn': $msg"
         }
-        $actions.Add("reset password for $upn (must change at next sign-in; shown once to the operator, never stored)")
+        $suffix = if ($requireChange) { 'must change at next sign-in' } else { 'change at next sign-in NOT required — operator choice' }
+        $actions.Add("reset password for $upn ($suffix; shown once to the operator, never stored)")
     }
     [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
 }

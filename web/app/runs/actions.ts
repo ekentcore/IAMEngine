@@ -87,3 +87,48 @@ export async function reopenOutcomes(fingerprint: string): Promise<Result> {
     return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
   }
 }
+
+// Case-level "dismiss warnings" (FR #13): the operator finished the remaining steps by hand on a
+// completed case and the leftover warnings are answered. Stamps the case, and resolves the case's
+// unresolved WARNING outcomes in the run log (failed outcomes keep their explicit per-step accept —
+// a bulk dismissal must never quietly unblock a real failure). Cleared automatically when a new
+// real result lands on the case (runner-service.recordResult).
+export async function dismissCaseWarnings(caseId: string): Promise<Result> {
+  try {
+    const me = await requirePermission("case.dispatch");
+    if (!caseId) return { ok: false, error: "no case" };
+    await db.caseRequest.update({ where: { id: caseId }, data: { warningsDismissedAt: new Date(), warningsDismissedBy: me.email } });
+    // resolvedBy is tagged so ↺ restore can un-resolve exactly what THIS dismissal resolved —
+    // never a line the operator ignored individually before it.
+    const r = await db.runOutcome.updateMany({
+      where: { caseRequestId: caseId, verdict: "warning", resolvedAt: null },
+      data: { resolvedAt: new Date(), resolvedBy: `case-dismiss:${me.email}` },
+    });
+    await db.auditLog.create({ data: { actor: `user:${me.email}`, action: "case.warnings.dismiss", caseRequestId: caseId, detail: { outcomesResolved: r.count } } });
+    revalidatePath(`/cases/${caseId}`);
+    revalidatePath("/cases");
+    return { ok: true, count: r.count };
+  } catch (e) {
+    return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
+  }
+}
+
+export async function restoreCaseWarnings(caseId: string): Promise<Result> {
+  try {
+    const me = await requirePermission("case.dispatch");
+    if (!caseId) return { ok: false, error: "no case" };
+    await db.caseRequest.update({ where: { id: caseId }, data: { warningsDismissedAt: null, warningsDismissedBy: null } });
+    // Un-resolve exactly the run-log lines the dismissal resolved (tagged case-dismiss:) — without
+    // this, the per-fingerprint accept pass keeps every step verified and restore is a silent no-op.
+    const r = await db.runOutcome.updateMany({
+      where: { caseRequestId: caseId, resolvedBy: { startsWith: "case-dismiss:" }, resolvedAt: { not: null } },
+      data: { resolvedAt: null, resolvedBy: null },
+    });
+    await db.auditLog.create({ data: { actor: `user:${me.email}`, action: "case.warnings.restore", caseRequestId: caseId, detail: { outcomesReopened: r.count } } });
+    revalidatePath(`/cases/${caseId}`);
+    revalidatePath("/cases");
+    return { ok: true, count: r.count };
+  } catch (e) {
+    return { ok: false, error: e instanceof AuthError ? e.message : "failed" };
+  }
+}

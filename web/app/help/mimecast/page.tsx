@@ -33,20 +33,22 @@ export default function MimecastSetupPage() {
         <li>Sign in to the client&rsquo;s <b>Mimecast Administration Console</b> as an admin.</li>
         <li>Go to <b>Integrations → API and Platform Integrations</b>.</li>
         <li><b>Add API Application</b> → name it <code>iam-engine — &lt;client&gt;</code>, category <b>SIEM/Integration</b>,
-          fill the contact details, and <b>enable</b> it. (New applications can take a few minutes to activate.)</li>
+          set the point of contact to <b>Coretelligent</b> with email <code>&lt;coreid&gt;@help.support.tech</code>
+          {" "}(the client&rsquo;s core id, e.g. <code>core1234@help.support.tech</code>), and <b>enable</b> it.
+          (New applications can take a few minutes to activate.)</li>
         <li>Open the application → <b>Manage API 2.0 credentials</b> → <b>Generate</b> → copy the
           {" "}<b>Client ID</b> and <b>Client Secret</b> (the secret is shown once).</li>
       </ol>
       <h2>2. Set its role + products</h2>
       <p className="note">
         The application acts with the <b>role</b> and <b>products</b> you grant it. Set the role to
-        {" "}<b>Basic Administrator</b> or <b>Help Desk Administrator</b>, and enable these <b>four products</b>:
+        {" "}<b>Basic Administrator</b> or <b>Help Desk Administrator</b>, and enable these <b>three products</b>:
       </p>
       <ul>
         <li><b>Account Management</b> — read the account</li>
         <li><b>Domain Management</b> — read internal domains</li>
-        <li><b>Directory (Sync) Management</b> — list sync connections + trigger a sync, manage groups</li>
-        <li><b>User &amp; Group Management</b> — read / create users. <b>Required.</b> Without it, every user call fails
+        <li><b>User &amp; Group Management</b> — read / create users, list sync connections + trigger a directory
+          sync, manage group membership. <b>Required.</b> Without it, every user call fails
           with <code>app_forbidden</code> (&ldquo;resource or method … does not exist in any product assigned to the
           application&rdquo;).</li>
       </ul>

@@ -38,3 +38,34 @@ test("onboard is unchanged by offboard rules (no removeGroups leaks in)", () => 
   assert.equal(cfg.removeGroups, undefined);
   assert.deepEqual(cfg.groups, ["New-Hire-ALL"]); // onboard globals applied
 });
+
+// FR #7: the intake names WHO gets access to the leaver's mailbox (provideMailboxAccessTo) —
+// planned onto the exchange job as grantFullAccessTo. Previously captured and dropped.
+test("offboard hands the case-requested mailbox delegate to the exchange job", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 1, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: { convertToShared: {} } };
+  const out = resolvePlannedConfigs(client, { userToOffboard: "Matt Halski", provideMailboxAccessTo: "Peter Hegland" }, "offboard", [job({}), exchange]);
+  const ex = out.find((j) => j.systemKey === "exchange")!.config as Record<string, unknown>;
+  assert.equal(ex.grantFullAccessTo, "Peter Hegland");
+  assert.deepEqual(ex.convertToShared, {}); // existing lane config preserved
+  // the AD job is untouched
+  assert.equal((out.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).grantFullAccessTo, undefined);
+});
+
+test("offboard delegate injection works for a v2.0 client (no personas/globals) and skips blanks", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: "Peter Hegland" }, "offboard", [exchange]);
+  assert.equal((out[0].config as Record<string, unknown>).grantFullAccessTo, "Peter Hegland");
+  const none = resolvePlannedConfigs({}, { provideMailboxAccessTo: "  " }, "offboard", [exchange]);
+  assert.equal((none[0].config as Record<string, unknown>).grantFullAccessTo, undefined);
+});
+
+// FR #8: the same case-named delegate also gets the leaver's OneDrive (m365/entra lane), unless
+// the client opted out with oneDriveDelegateAccess: false.
+test("offboard delegate also lands on the m365 job as the OneDrive grant", () => {
+  const m365: PlannedJob = { systemKey: "m365", sequence: 1, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: "Peter Hegland" }, "offboard", [m365]);
+  assert.equal((out[0].config as Record<string, unknown>).oneDriveGrantAccessTo, "Peter Hegland");
+  const optedOut: PlannedJob = { ...m365, config: { oneDriveDelegateAccess: false } };
+  const none = resolvePlannedConfigs({}, { provideMailboxAccessTo: "Peter Hegland" }, "offboard", [optedOut]);
+  assert.equal((none[0].config as Record<string, unknown>).oneDriveGrantAccessTo, undefined);
+});

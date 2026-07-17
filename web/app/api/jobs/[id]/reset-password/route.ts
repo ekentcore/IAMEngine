@@ -16,8 +16,13 @@ import { recordAudit } from "@/lib/auth/audit";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: { id: string } }) {
   const _g = await guard("case.dispatch"); if (_g.res) return _g.res;
+  // Optional body: { requireChangeAtSignIn?: boolean } — the operator's per-reset choice (FR #14).
+  // Default true; explicitly false means "I still have to log in as this user (equipment setup)".
+  let body: { requireChangeAtSignIn?: unknown } = {};
+  try { body = await req.json(); } catch { /* empty body = defaults */ }
+  const requireChangeAtSignIn = body.requireChangeAtSignIn !== false;
   if (!(await jobInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const src = await db.job.findUnique({
@@ -42,6 +47,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   // initial-password knobs are dropped so the executor can't confuse this with an onboard.
   const srcReq = (src.request ?? {}) as Record<string, unknown>;
   const { initialPassword: _ip, initialPasswordSecret: _ips, ...config } = (srcReq.config ?? {}) as Record<string, unknown>;
+  config.requireChangeAtSignIn = requireChangeAtSignIn;
   // Insert ABOVE the case-resolution step (which must stay last) rather than appending at the end.
   const job = await db.$transaction(async (tx) => {
     const sequence = await insertStepSequence(tx, src.caseRequestId);
@@ -55,6 +61,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     });
   });
   // The audit records the dispatch, never the value.
-  await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey } });
+  await recordAudit("job.password_reset.dispatch", { user: _g.user, jobId: job.id, caseRequestId: src.caseRequestId, clientId: src.case.clientId, detail: { systemKey: resetKey, fromLine: src.systemKey, requireChangeAtSignIn } });
   return NextResponse.json({ ok: true, jobId: job.id });
 }

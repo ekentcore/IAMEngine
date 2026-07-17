@@ -196,6 +196,27 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'granted manager boss@61commodities.com Full Access'
     }
 
+    # FR #7: the intake names a delegate ("provide mailbox access to Peter Hegland") — planned onto
+    # the config as grantFullAccessTo. The NAME is resolved to a mailbox before anything is granted.
+    It 'grants the case-requested delegate Full Access, resolving a display name' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Resolve-CtgAddressByDisplayName -ModuleName Coretelligent.Exchange -MockWith { 'phegland@61commodities.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = 'Peter Hegland' })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'phegland@61commodities.com' -and @($AccessRights) -contains 'FullAccess' -and $AutoMapping }
+        ($r.Actions -join ' ') | Should -Match "resolved case-requested delegate 'Peter Hegland'"
+    }
+
+    It 'warns (and grants nothing) when the case-requested delegate name matches no single mailbox' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Resolve-CtgAddressByDisplayName -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = 'Pete Hegland' })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'WARN the case asks for mailbox access'
+    }
+
     It 'is idempotent — no re-grant when the manager already has Full Access' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ User = 'boss@61commodities.com'; AccessRights = @('FullAccess') }) }

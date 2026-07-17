@@ -38,19 +38,42 @@ const DIRECTORY_SYSTEMS = new Set(["active-directory", "entra", "m365", "exchang
 function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unknown>, planned: PlannedJob[]): PlannedJob[] {
   const globalsOff = (client.globalsOffboard ?? null) as Record<string, Record<string, unknown>> | null;
   const personas = (client.personas ?? null) as Record<string, unknown> | null;
-  if (!globalsOff && !personas) return planned;
-  const { context, persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
-  const personaOff = (persona?.def as { offboardSystems?: Record<string, unknown> } | undefined)?.offboardSystems ?? null;
-  return planned.map((j) => {
-    const gOff = globalsOff?.[j.systemKey] ?? null;
-    const pOff = (personaOff?.[j.systemKey] as Record<string, unknown> | undefined) ?? null;
-    if (!gOff && !pOff) return j;
-    const off = resolveSystemConfig(j.systemKey, { globals: gOff as never, persona: pOff as never, own: null }, context);
-    const cfg: Record<string, unknown> = { ...((j.config as Record<string, unknown> | null) ?? {}) };
-    if (Array.isArray(off.groups) && off.groups.length) cfg.removeGroups = off.groups;
-    if (typeof off.ou === "string" && off.ou) cfg.moveToOu = off.ou;
-    if (off.attributes && typeof off.attributes === "object" && Object.keys(off.attributes as object).length) cfg.offboardAttributes = off.attributes;
-    return { ...j, config: cfg };
+  const resolved = (() => {
+    if (!globalsOff && !personas) return planned;
+    const { context, persona } = buildPlanContext(payload, { personas: personas as never, locations: client.locations as never });
+    const personaOff = (persona?.def as { offboardSystems?: Record<string, unknown> } | undefined)?.offboardSystems ?? null;
+    return planned.map((j) => {
+      const gOff = globalsOff?.[j.systemKey] ?? null;
+      const pOff = (personaOff?.[j.systemKey] as Record<string, unknown> | undefined) ?? null;
+      if (!gOff && !pOff) return j;
+      const off = resolveSystemConfig(j.systemKey, { globals: gOff as never, persona: pOff as never, own: null }, context);
+      const cfg: Record<string, unknown> = { ...((j.config as Record<string, unknown> | null) ?? {}) };
+      if (Array.isArray(off.groups) && off.groups.length) cfg.removeGroups = off.groups;
+      if (typeof off.ou === "string" && off.ou) cfg.moveToOu = off.ou;
+      if (off.attributes && typeof off.attributes === "object" && Object.keys(off.attributes as object).length) cfg.offboardAttributes = off.attributes;
+      return { ...j, config: cfg };
+    });
+  })();
+
+  // Case-requested delegate (FR #7 + FR #8): the intake captures WHO should get access to the
+  // leaver's mailbox (payload.provideMailboxAccessTo, a display name from "Enable delegate") but
+  // nothing ever consumed it — only the profile-static manager delegate ran. Hand it to the
+  // exchange step (Full Access, name resolved at run time) and to the m365/entra step (OneDrive
+  // access — the same person the ticket named; opt out per client with
+  // oneDriveDelegateAccess: false on the m365 offboard config).
+  const delegate = typeof payload.provideMailboxAccessTo === "string" && payload.provideMailboxAccessTo.trim()
+    ? payload.provideMailboxAccessTo.trim() : null;
+  if (!delegate) return resolved;
+  return resolved.map((j) => {
+    if (j.systemKey === "exchange") {
+      return { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), grantFullAccessTo: delegate } };
+    }
+    if (j.systemKey === "m365" || j.systemKey === "entra") {
+      const cfg = (j.config as Record<string, unknown> | null) ?? {};
+      if (cfg.oneDriveDelegateAccess === false) return j;
+      return { ...j, config: { ...cfg, oneDriveGrantAccessTo: delegate } };
+    }
+    return j;
   });
 }
 
@@ -114,13 +137,85 @@ export function resolvePlannedConfigs(
         return { ...j, config: cfg };
       });
 
-  const withMirror = !mirror
+  // Requestor-picked groups from the ticket (FR #4): email distribution lists + security groups.
+  // The intake captured them (payload.emailDistroGroups / payload.securityGroups) and the preview
+  // showed them, but nothing ever merged them into a job's config — a non-default DL the requestor
+  // added to the case was silently dropped. Same union rule as location groups. DLs go to the
+  // m365/entra lane (the exchange namedGroups handoff below routes mail-enabled ones to EXO, which
+  // is the only lane that can add DL members); security groups go to every directory lane — they
+  // may live on-prem (AD) or in the cloud (Graph), and each runner adds the ones it actually has.
+  const strList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x.trim() : "")).filter((x) => x !== "") : [];
+  // Requestor free-text must NEVER add someone to a privileged group: the runner binds as SYSTEM on
+  // a DC, and a form field saying "Domain Admins" would otherwise make the hire a domain admin on
+  // day one with no approval gate. Same well-known list the AD offboard's Test-CtgADProtectedGroup
+  // refuses to strip — the add path has to be at least as careful as the remove path.
+  const PROTECTED_GROUPS = new Set([
+    "domain admins", "enterprise admins", "schema admins", "administrators",
+    "account operators", "backup operators", "server operators", "print operators",
+    "group policy creator owners", "dnsadmins", "key admins", "enterprise key admins",
+  ].map((g) => g.toLowerCase()));
+  const safeGroups = (list: string[]): string[] => list.filter((g) => !PROTECTED_GROUPS.has(g.toLowerCase()));
+  const unionGroups = (cfg: Record<string, unknown>, add: string[]): void => {
+    const base = Array.isArray(cfg.groups) ? [...(cfg.groups as unknown[])] : [];
+    const seen = new Set(base.map((g) => String(g).toLowerCase()));
+    for (const g of add) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
+    cfg.groups = base;
+  };
+  const reqDls = safeGroups(strList(payload.emailDistroGroups));
+  const reqSec = safeGroups(strList(payload.securityGroups));
+  // No Graph lane planned (exchange-only client): the namedGroups handoff below has nothing to read
+  // from, so hand the DLs to the exchange job directly.
+  const hasGraphLane = withLoc.some((j) => j.systemKey === "m365" || j.systemKey === "entra");
+  // Security groups go to ONE lane — the directory that masters them. On an AD-synced client that's
+  // AD (the membership syncs up); adding them to the Graph lane too made every such onboard land
+  // orange, because Graph refuses the write on an on-prem-synced group and the WARN parks the case.
+  const hasAdLane = withLoc.some((j) => j.systemKey === "active-directory");
+  const withRequested = (reqDls.length === 0 && reqSec.length === 0)
     ? withLoc
-    : withLoc.map((j) =>
+    : withLoc.map((j) => {
+        const wantsDls = reqDls.length > 0 && (j.systemKey === "m365" || j.systemKey === "entra");
+        const wantsSec = reqSec.length > 0 && (hasAdLane
+          ? j.systemKey === "active-directory"
+          : (j.systemKey === "m365" || j.systemKey === "entra"));
+        const exchangeFallback = reqDls.length > 0 && !hasGraphLane && j.systemKey === "exchange";
+        if (!wantsDls && !wantsSec && !exchangeFallback) return j;
+        const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
+        if (wantsDls || wantsSec) unionGroups(cfg, [...(wantsSec ? reqSec : []), ...(wantsDls ? reqDls : [])]);
+        if (exchangeFallback) {
+          const base = Array.isArray(cfg.namedGroups) ? [...(cfg.namedGroups as unknown[])] : [];
+          const seen = new Set(base.map((g) => String(g).toLowerCase()));
+          for (const g of reqDls) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
+          cfg.namedGroups = base;
+        }
+        return { ...j, config: cfg };
+      });
+
+  const withMirror = !mirror
+    ? withRequested
+    : withRequested.map((j) =>
         DIRECTORY_SYSTEMS.has(j.systemKey)
           ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
           : j
       );
+
+  // Re-hire (FR #3): "Is this a Re-Hire = Yes" means the person USED to exist here, so an executor
+  // finding a same-name account is the EXPECTED outcome — adopt it (enable, stamp, reconcile)
+  // instead of pausing the case with a username-collision decision. m365/entra ONLY: there, the
+  // executor consults the policy strictly INSIDE its name-matched branch, so "adopt" can never take
+  // over a different person's account. AD and Google already auto-adopt a name-matched account with
+  // no policy at all — for them "adopt" is the operator's FORCE override that skips the name check
+  // entirely, and a plan-injected default would let a rehire hijack an unrelated live account.
+  // A policy the client or an operator already set wins over this default.
+  const ADOPTING_SYSTEMS = new Set(["m365", "entra"]);
+  const withRehire = payload.isRehire !== true
+    ? withMirror
+    : withMirror.map((j) => {
+        if (!ADOPTING_SYSTEMS.has(j.systemKey)) return j;
+        const cfg = (j.config as Record<string, unknown> | null) ?? {};
+        if (cfg.usernameCollisionPolicy) return j;
+        return { ...j, config: { ...cfg, usernameCollisionPolicy: "adopt" } };
+      });
 
   // Per-client M365 licensing rules: ADD the intake-selected license(s) (e.g. needsComputer → E5 else
   // E1) to the client's base config.licenses — UNION, so a static add-on like "Defender for Office 365"
@@ -130,8 +225,8 @@ export function resolvePlannedConfigs(
     && payload.productLicenses.some((x) => typeof x === "string" && x.trim() !== "");
   const licenseName = (l: unknown): string => (typeof l === "string" ? l : String((l as { name?: unknown; skuId?: unknown })?.name ?? (l as { skuId?: unknown })?.skuId ?? ""));
   const withLicenses = explicitLicenses
-    ? withMirror
-    : withMirror.map((j) => {
+    ? withRehire
+    : withRehire.map((j) => {
         if (j.systemKey !== "m365") return j;
         const cfg = (j.config as Record<string, unknown> | null) ?? {};
         const ruleLicenses = evaluateLicenseRules((cfg as { licenseRules?: unknown }).licenseRules, context);

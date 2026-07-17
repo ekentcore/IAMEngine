@@ -14,6 +14,8 @@ export const VARS = [
   "title", "department", "jobTitle", "employmentType", "isRehire", "role.name", "manager", "startDate", "officeLocation",
   // yes/no intake fields — compare with "is" and a Yes/No (or true/false) value, e.g. needsComputer is Yes
   "needsComputer", "clientProvidingAsset", "dockingStation", "keyboardMouse", "monitorStands",
+  // phone: phoneRequested = office line OR cell phone requested (the usual "add a Teams license" hook)
+  "phoneRequested", "officeLineRequired", "cellPhoneRequired",
   // location (matched from the office) + country
   "location.name", "location.city", "location.state", "location.zip", "location.timezone",
   "country.short", "country.name", "country.code",
@@ -25,7 +27,10 @@ export const VARS = [
 ];
 
 // Intake fields that are yes/no booleans — used to offer Yes/No on the value side.
-export const BOOL_VARS = new Set(["needsComputer", "clientProvidingAsset", "dockingStation", "keyboardMouse", "monitorStands", "isRehire"]);
+export const BOOL_VARS = new Set([
+  "needsComputer", "clientProvidingAsset", "dockingStation", "keyboardMouse", "monitorStands", "isRehire",
+  "phoneRequested", "officeLineRequired", "cellPhoneRequired",
+]);
 
 // Common AD / Entra attribute names to SET (the "then set …" side). Free text still allowed — this
 // is only autocomplete. A static seed; AD discovery (later) can replace it with the DC's real schema.

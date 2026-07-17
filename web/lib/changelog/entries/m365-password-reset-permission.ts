@@ -17,6 +17,6 @@ export const entry: ChangelogEntry = {
     "Grant it in Entra -> App registrations -> API permissions -> Microsoft Graph -> Application permissions -> User-PasswordProfile.ReadWrite.All, then Grant admin consent. A token minted before the consent keeps the old permissions, but the runner now refreshes it by itself, so granting is enough",
     "New, and the reverse question: the connection test and the fleet audit now also report what an app registration holds that we never use. Being over-permissioned never fails a test - a permission we don't use isn't a fault in our setup, and the app registration may be shared with tooling that isn't ours - but you can now see it, and it names what each role actually permits rather than just listing it",
     "It found more than expected. Five clients' credentials can add credentials to ANY app registration in their tenant (Application.ReadWrite.All), and four can assign directory roles - which means making themselves Global Administrator (RoleManagement.ReadWrite.Directory). Two hold full access to every mailbox in the tenant. Three of those clients are simultaneously MISSING permissions they need: they cannot create a user, but they could make themselves a tenant admin. Worth raising with each client - removing one is their call, not ours",
-    "Agents pick this up on runner 1.68.0",
+    "Agents pick this up on Runner 1.69.0",
   ],
 };

@@ -23,7 +23,16 @@ export type JobLite = {
   // run-log outcome). A failed-but-accepted step counts as satisfied for the dependency gate, so
   // downstream steps proceed (e.g. accept a failed directory-sync -> m365 stops waiting on it).
   accepted?: boolean;
+  // Human-readable reason this job is HELD from dispatch even though its dependency gate is open
+  // (request.hold, e.g. "waiting for an M365 license" after the user was created unlicensed).
+  // Set/cleared event-driven by recordResult; a single-step run bypasses it (explicit operator call).
+  hold?: string | null;
 };
+
+// Systems that can only ever succeed for a LICENSED M365 user: they discover the user via the
+// mailbox, which an unlicensed user does not have. Held while the m365/entra step reports a seat
+// shortage (FR #5) — dispatching them would just burn their retry budget on a guaranteed failure.
+export const LICENSE_DEPENDENT_SYSTEMS = ["mimecast", "spanning"];
 
 const OPEN: JobStatus[] = ["pending", "dispatched", "running"];
 // Only "completed" truly blocks claiming. A "failed" case must NOT block its still-pending jobs: a
@@ -38,6 +47,7 @@ const TERMINAL_CASE: CaseStatus[] = ["completed"];
 export function isClaimable(job: JobLite, caseJobs: JobLite[], caseStatus: CaseStatus): boolean {
   if (TERMINAL_CASE.includes(caseStatus)) return false;
   if (job.requiresApproval && !job.approved) return false;
+  if (job.hold) return false; // held (e.g. waiting for an M365 license) — cleared by recordResult
   return dependencyGateOpen(job, caseJobs);
 }
 

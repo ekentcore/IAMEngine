@@ -268,7 +268,8 @@ function Invoke-CtgGoogleOnboarding {
             name         = @{ givenName = $User.FirstName; familyName = $User.LastName }
             password     = (ConvertFrom-SecureString $InitialPassword -AsPlainText)
             orgUnitPath  = $ou
-            changePasswordAtNextLogin = $true
+            # Per-client password policy (profile password.requireChangeAtSignIn, default true).
+            changePasswordAtNextLogin = ((Get-CtgProp $Config 'requireChangeAtSignIn') -ne $false)
         }
         Invoke-CtgGoogleApi -Method POST -Path '/users' -Body $body | Out-Null
         $actions.Add("created Google user: $email in $ou")
@@ -454,11 +455,15 @@ function Invoke-CtgGooglePasswordReset {
     $u = Get-CtgGoogleUser -Email $email
     if (-not $u) { throw "Google user '$email' not found — password not reset" }
     $actions = [System.Collections.Generic.List[string]]::new()
+    # Default ON; the operator can untick "require change at next sign-in" when they still have to
+    # log in AS the user (equipment setup) before handing the account over (FR #14).
+    $requireChange = (Get-CtgProp $Config 'requireChangeAtSignIn') -ne $false
     if ($PSCmdlet.ShouldProcess($email, "Reset password")) {
         try {
-            $null = Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ password = $newPassword; changePasswordAtNextLogin = $true }
+            $null = Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ password = $newPassword; changePasswordAtNextLogin = $requireChange }
         } catch { throw "resetting the password for '$email': $($_.Exception.Message)" }
-        $actions.Add("reset password for $email (must change at next login; shown once to the operator, never stored)")
+        $suffix = if ($requireChange) { 'must change at next login' } else { 'change at next login NOT required — operator choice' }
+        $actions.Add("reset password for $email ($suffix; shown once to the operator, never stored)")
     }
     [pscustomobject]@{ System = 'google-password-reset'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }

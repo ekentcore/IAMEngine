@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
-import { resolveOutcomes, reopenOutcomes } from "@/app/runs/actions";
+import { resolveOutcomes, reopenOutcomes, dismissCaseWarnings, restoreCaseWarnings } from "@/app/runs/actions";
 import { ResolutionModal } from "./resolution-modal";
 import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-password-button";
 import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
@@ -857,6 +857,23 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           {live && <span className="muted"> · refreshing…</span>}
         </p>
         <div className="toolbar">
+          {/* FR #13: on a done case with leftover warnings the operator answered by hand, dismiss
+              them all at once — the case stops reading orange here and on the list. A new real
+              result clears the dismissal server-side, so fresh problems resurface. */}
+          {s.warnings > 0 && !report.warningsDismissed && ["completed", "failed"].includes(report.caseStatus) && (
+            <button
+              onClick={async () => { await dismissCaseWarnings(caseId); await refresh(); }}
+              title="Mark every warning on this case as handled — you finished the remaining steps manually. The case stops showing orange; a new run re-opens warnings."
+            >
+              ✓ Dismiss warnings
+            </button>
+          )}
+          {report.warningsDismissed && (
+            <span className="note" title={`dismissed by ${report.warningsDismissed.by ?? "unknown"}`}>
+              warnings dismissed{" "}
+              <button onClick={async () => { await restoreCaseWarnings(caseId); await refresh(); }} title="Bring the dismissed warnings back">↺ restore</button>
+            </span>
+          )}
           <button onClick={() => setOpen(new Set(report.steps.map((st) => st.seq)))} title="Expand every step">Expand all</button>
           <button onClick={() => setOpen(new Set())} title="Collapse every step">Collapse all</button>
           <button onClick={verifyAll} disabled={busy === "verify"} title="Re-run every step's read-only validation to confirm the whole account is correct — no changes are made">

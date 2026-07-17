@@ -28,7 +28,7 @@ function Overlay({ onBackdropClick, children }: { onBackdropClick?: () => void; 
 
 // The one-time reveal popup: polls the reveal endpoint while the reset job runs, then shows the
 // password once with Copy. Shared by the generate flow and the reset line's re-reveal.
-function RevealDialog({ resetJobId, systemName, onClose }: { resetJobId: string; systemName: string; onClose: () => void }) {
+function RevealDialog({ resetJobId, systemName, onClose, requireChange }: { resetJobId: string; systemName: string; onClose: () => void; requireChange?: boolean }) {
   const [state, setState] = useState<{ pw?: string; status?: string; error?: string }>({ status: "pending" });
   const done = useRef(false);
 
@@ -58,7 +58,15 @@ function RevealDialog({ resetJobId, systemName, onClose }: { resetJobId: string;
       <h2 style={{ margin: "0 0 0.25rem" }}>New password — {systemName}</h2>
       {state.pw ? (
         <>
-          <p className="note" style={{ color: "#b3261e", marginTop: 0 }}>⚠ Shown once. Save it now — it can&rsquo;t be shown again. The user must change it at next sign-in.</p>
+          <p className="note" style={{ color: "#b3261e", marginTop: 0 }}>
+            {/* Only assert the change-at-sign-in behavior when this dialog KNOWS it: the re-reveal
+                path (RevealResetPasswordButton) doesn't carry the generate-time choice, and telling
+                the operator "the user must change it" about a password that keeps working would be
+                a false safety claim. */}
+            ⚠ Shown once. Save it now — it can&rsquo;t be shown again.
+            {requireChange === false ? " Change at next sign-in was NOT required — reset again once equipment setup is done if it was exposed." : ""}
+            {requireChange === true ? " The user must change it at next sign-in." : ""}
+          </p>
           <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0.6rem 0" }}>
             <code style={{ fontSize: 16, padding: "0.35rem 0.6rem", border: "1px solid var(--line)", borderRadius: 6, userSelect: "all" }}>{state.pw}</code>
             {/* Shown once and gone on "I saved it" — a copy that quietly did nothing (which is what
@@ -96,11 +104,18 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
   const [busy, setBusy] = useState(false);
   const [resetJobId, setResetJobId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // FR #14: default ON; untick when a tech still has to log in AS the user (equipment setup)
+  // before handing the account over — a forced change at first sign-in would land on the tech.
+  const [requireChange, setRequireChange] = useState(true);
 
   async function dispatch() {
     setBusy(true); setErr(null);
     try {
-      const r = await fetch(`/api/jobs/${jobId}/reset-password`, { method: "POST" });
+      const r = await fetch(`/api/jobs/${jobId}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requireChangeAtSignIn: requireChange }),
+      });
       const d = (await r.json().catch(() => ({}))) as { jobId?: string; error?: string };
       if (!r.ok || !d.jobId) { setErr(d.error ?? `failed (${r.status})`); return; }
       setConfirming(false);
@@ -124,9 +139,18 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
         <Overlay onBackdropClick={() => setConfirming(false)}>
           <h2 style={{ margin: "0 0 0.25rem" }}>Generate random password — {systemName}</h2>
           <p className="note" style={{ marginTop: 0 }}>
-            This sets a <b>new random password</b> on the account in {systemName} right now — the current password stops working,
-            and the user must change it at next sign-in. The new password is shown <b>once</b>, then wiped for security; it cannot be recalled.
+            This sets a <b>new random password</b> on the account in {systemName} right now — the current password stops working.
+            The new password is shown <b>once</b>, then wiped for security; it cannot be recalled.
           </p>
+          <label className="note" style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.4rem 0" }}>
+            <input type="checkbox" checked={requireChange} onChange={(e) => setRequireChange(e.target.checked)} />
+            Require the user to change this password at next sign-in
+          </label>
+          {!requireChange && (
+            <p className="note" style={{ marginTop: 0 }}>
+              The password stays as generated — for setting up equipment logged in as the user. Hand it over securely, and reset again if it was exposed.
+            </p>
+          )}
           {err && <p className="note" style={{ color: "#b3261e" }}>{err}</p>}
           <div className="toolbar" style={{ justifyContent: "flex-end", gap: 8 }}>
             <button onClick={() => setConfirming(false)}>Cancel</button>
@@ -134,7 +158,7 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
           </div>
         </Overlay>
       )}
-      {resetJobId && <RevealDialog resetJobId={resetJobId} systemName={systemName} onClose={() => setResetJobId(null)} />}
+      {resetJobId && <RevealDialog resetJobId={resetJobId} systemName={systemName} requireChange={requireChange} onClose={() => setResetJobId(null)} />}
     </>
   );
 }

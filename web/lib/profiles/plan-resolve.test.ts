@@ -226,3 +226,77 @@ test("personaSystemKeys: offboard is the union of systems + offboardSystems (gra
   const off = personaSystemKeys(c, { department: "Ops" }, "offboard");
   assert.deepEqual([...off].sort(), ["pagerduty", "xmatters"]);
 });
+
+// FR #4: the requestor's ticket-picked DLs / security groups were captured on the payload but
+// never merged into any job config — a non-default DL added to the case was silently dropped.
+test("requested email DLs land on the m365 job and flow to exchange namedGroups", () => {
+  const planned = [job("m365", { groups: ["Static Team"] }), job("exchange", {})];
+  const p = { ...payload, emailDistroGroups: ["Administrative Ops", "New York", "static team"] };
+  const resolved = resolvePlannedConfigs({}, p, "onboard", planned);
+  const m365 = resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>;
+  // unioned, case-insensitively de-duped against the client's static groups
+  assert.deepEqual(m365.groups, ["Static Team", "Administrative Ops", "New York"]);
+  const exch = resolved.find((j) => j.systemKey === "exchange")!.config as Record<string, unknown>;
+  assert.deepEqual(exch.namedGroups, ["Static Team", "Administrative Ops", "New York"]);
+});
+
+test("requested security groups land on the MASTERING lane only: AD when planned, else Graph", () => {
+  // Hybrid client (AD lane planned): AD masters security groups; adding them to Graph too made
+  // every onboard land orange (Graph refuses the write on an on-prem-synced group -> WARN).
+  const hybrid = resolvePlannedConfigs({}, { ...payload, securityGroups: ["SG-Finance"] }, "onboard",
+    [job("active-directory", {}), job("m365", {}), job("exchange", {})]);
+  assert.deepEqual((hybrid.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).groups, ["SG-Finance"]);
+  assert.equal((hybrid.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, undefined);
+  assert.equal((hybrid.find((j) => j.systemKey === "exchange")!.config as Record<string, unknown>).groups, undefined);
+  // Cloud-only client: the Graph lane owns them.
+  const cloud = resolvePlannedConfigs({}, { ...payload, securityGroups: ["SG-Finance"] }, "onboard", [job("m365", {})]);
+  assert.deepEqual((cloud.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["SG-Finance"]);
+});
+
+test("exchange-only client (no Graph lane): requested DLs go straight to exchange namedGroups", () => {
+  const planned = [job("exchange", { namedGroups: ["Existing DL"] })];
+  const p = { ...payload, emailDistroGroups: ["New York", "existing dl"] };
+  const resolved = resolvePlannedConfigs({}, p, "onboard", planned);
+  const exch = resolved.find((j) => j.systemKey === "exchange")!.config as Record<string, unknown>;
+  assert.deepEqual(exch.namedGroups, ["Existing DL", "New York"]);
+});
+
+test("no requested groups → configs untouched", () => {
+  const planned = [job("m365", { groups: ["Static Team"] })];
+  const resolved = resolvePlannedConfigs({}, { ...payload }, "onboard", planned);
+  assert.deepEqual((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["Static Team"]);
+});
+
+// FR #3: a re-hire's old account is the EXPECTED find — adopt it instead of pausing the case
+// with a username-collision decision. m365/entra ONLY: their executor consults the policy inside
+// its name-matched branch. AD/Google auto-adopt a name match already, and for them "adopt" is the
+// operator's FORCE override that skips the name check — a plan-injected default there would let a
+// rehire take over a different person's live account.
+test("isRehire → m365/entra default to adopt; AD/Google (force-override semantics) do NOT", () => {
+  const planned = [job("active-directory", {}), job("m365", {}), job("entra", {}), job("google-workspace", {}), job("exchange", {}), job("servicenow", {})];
+  const resolved = resolvePlannedConfigs({}, { ...payload, isRehire: true }, "onboard", planned);
+  for (const k of ["m365", "entra"]) {
+    assert.equal((resolved.find((j) => j.systemKey === k)!.config as Record<string, unknown>).usernameCollisionPolicy, "adopt", k);
+  }
+  for (const k of ["active-directory", "google-workspace", "exchange"]) {
+    assert.equal((resolved.find((j) => j.systemKey === k)!.config as Record<string, unknown>).usernameCollisionPolicy, undefined, k);
+  }
+});
+
+test("isRehire does not override an explicit collision policy, and non-rehires get none", () => {
+  const planned = [job("m365", { usernameCollisionPolicy: "new" })];
+  const resolved = resolvePlannedConfigs({}, { ...payload, isRehire: true }, "onboard", planned);
+  assert.equal((resolved[0].config as Record<string, unknown>).usernameCollisionPolicy, "new");
+  const noRehire = resolvePlannedConfigs({}, { ...payload, isRehire: false }, "onboard", [job("m365", {})]);
+  assert.equal((noRehire[0].config as Record<string, unknown>).usernameCollisionPolicy, undefined);
+});
+
+// Security: requestor free-text can NEVER add someone to a privileged group — the runner binds as
+// SYSTEM on a DC, and "Domain Admins" in a form field must not make a hire a domain admin.
+test("requested privileged groups are filtered out of the plan", () => {
+  const planned = [job("active-directory", {}), job("m365", {})];
+  const p = { ...payload, securityGroups: ["Domain Admins", "SG-Finance", "enterprise admins"], emailDistroGroups: ["Administrators", "Team"] };
+  const resolved = resolvePlannedConfigs({}, p, "onboard", planned);
+  assert.deepEqual((resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).groups, ["SG-Finance"]);
+  assert.deepEqual((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["Team"]);
+});

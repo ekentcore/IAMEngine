@@ -565,7 +565,15 @@ export function makeCaseRepository(db: PrismaClient) {
       // cases only) rather than selecting every job's full result/validation JSON in the list query
       // above: result envelopes carry evidence snapshots and action lists, and the list is
       // unpaginated, so dragging them all in grows the page's DB transfer with all-time history.
-      const completedIds = rows.filter((r) => r.status === "completed").map((r) => r.id);
+      const allCompletedIds = rows.filter((r) => r.status === "completed").map((r) => r.id);
+      // Case-level warning dismissal (FR #13): the operator finished the leftovers by hand and
+      // dismissed the warnings — the list must stop painting the case orange, same as the report.
+      const dismissedIds = allCompletedIds.length
+        ? new Set(
+            (await db.caseRequest.findMany({ where: { id: { in: allCompletedIds }, warningsDismissedAt: { not: null } }, select: { id: true } })).map((c) => c.id)
+          )
+        : new Set<string>();
+      const completedIds = allCompletedIds.filter((id) => !dismissedIds.has(id));
       const warnJobs = completedIds.length
         ? await db.job.findMany({
             where: { caseRequestId: { in: completedIds }, status: "succeeded" },

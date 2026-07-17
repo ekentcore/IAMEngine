@@ -66,3 +66,14 @@ test("buildPlanContext: no persona/location data still yields a usable context",
   assert.equal(context.first, "A");
   assert.equal((context.role as undefined), undefined);
 });
+
+test("buildPlanContext: phoneRequested derives from either phone intake flag", () => {
+  const none = buildPlanContext({}, {}).context;
+  assert.equal(none.phoneRequested, false);
+  const office = buildPlanContext({ officeLineRequired: true }, {}).context;
+  assert.equal(office.phoneRequested, true);
+  const cell = buildPlanContext({ cellPhoneRequired: true }, {}).context;
+  assert.equal(cell.phoneRequested, true);
+  // the raw flags still pass through for rules that target one specifically
+  assert.equal(office.officeLineRequired, true);
+});

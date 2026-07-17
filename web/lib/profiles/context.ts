@@ -57,6 +57,14 @@ export function buildPlanContext(
 
   const context: PlanContext = {
     ...payload, // pass through intake booleans (avd, perimeter, …) and any raw fields
+    // "was a phone requested?" — either intake flag. One token so a rule (e.g. add a Teams
+    // license) doesn't have to OR the two raw fields, and doesn't silently miss one of them.
+    // Falsy-aware like the condition evaluator (conditions.ts BOOL_FALSE): intake booleans can
+    // arrive as the STRING "No"/"false", and Boolean("No") is true.
+    phoneRequested: [payload.officeLineRequired, payload.cellPhoneRequired].some((v) =>
+      v === true || (typeof v === "number" && v !== 0) ||
+      (typeof v === "string" && v.trim() !== "" && !["false", "no", "0", "off"].includes(v.trim().toLowerCase()))
+    ),
     first: s("firstName"),
     last: s("lastName"),
     title: s("jobTitle") ?? s("title"),

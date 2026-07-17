@@ -201,3 +201,13 @@ test("offboardCandidateQuery: the name we searched for, or null", () => {
   assert.equal(offboardCandidateQuery({ candidateQuery: "" }), null);
   assert.equal(offboardCandidateQuery({}), null);
 });
+
+// FR #5: an unlicensed M365 user has no mailbox, so Mimecast/Spanning can never discover them —
+// recordResult holds those jobs (request.hold) and clears the hold on a licensed re-run.
+test("isClaimable: a held job is not claimable even with its gate open", () => {
+  const t = j({ id: "mimecast", sequence: 1, hold: "waiting for an M365 license" });
+  assert.equal(isClaimable(t, [j({ id: "m365", sequence: 0, status: "succeeded" }), t], "running"), false);
+  // hold cleared -> claimable again
+  const cleared = { ...t, hold: null };
+  assert.equal(isClaimable(cleared, [j({ id: "m365", sequence: 0, status: "succeeded" }), cleared], "running"), true);
+});

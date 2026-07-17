@@ -3,7 +3,7 @@
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, CaseStatus, JobStatus, Mode, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite, type SetupGatePolicy } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, LICENSE_DEPENDENT_SYSTEMS, type JobLite, type SetupGatePolicy } from "./runner-logic";
 import { getAppSetting } from "../settings";
 
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
@@ -610,10 +610,10 @@ export function makeRunnerService(db: PrismaClient) {
       });
       const acceptedSet = new Set(acceptedOutcomes.map((o) => `${o.caseRequestId}|${o.systemKey}`));
       const lite = (j: { id: string; caseRequestId: string; systemKey: string; sequence: number; mode: JobLite["mode"]; status: JobLite["status"]; request: unknown }): JobLite => {
-        const r = req(j) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown };
+        const r = req(j) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown; hold?: unknown };
         const deps = Array.isArray(r.dependsOn) ? (r.dependsOn as unknown[]).filter((d): d is string => typeof d === "string") : null;
         const accepted = j.status === "failed" && acceptedSet.has(`${j.caseRequestId}|${j.systemKey}`);
-        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps, accepted };
+        return { id: j.id, systemKey: j.systemKey, sequence: j.sequence, mode: j.mode, status: j.status, requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps, accepted, hold: typeof r.hold === "string" ? r.hold : null };
       };
       const byCase = new Map<string, JobLite[]>();
       for (const j of allJobs) {
@@ -768,7 +768,7 @@ export function makeRunnerService(db: PrismaClient) {
       });
       const claimed = await db.job.findMany({
         where: { id: { in: eligible }, assignedAgentId: agent.id, status: "dispatched" },
-        include: { case: { include: { client: { select: { slug: true, primaryDomain: true, backbone: true } } } } },
+        include: { case: { include: { client: { select: { slug: true, primaryDomain: true, backbone: true, identity: true } } } } },
         orderBy: { sequence: "asc" },
       });
       await db.auditLog.create({ data: { actor: `agent:${agent.id}`, action: "job.claim", detail: { count: claimed.length, jobIds: claimed.map((c) => c.id), clients: [...new Set(claimed.map((c) => c.case.client.slug))] } } });
@@ -812,11 +812,15 @@ export function makeRunnerService(db: PrismaClient) {
       ];
       const managerByCase = new Map<string, string>();
       if (exchangeOffboardCaseIds.length > 0) {
-        const adJobs = await db.job.findMany({
-          where: { caseRequestId: { in: exchangeOffboardCaseIds }, systemKey: "active-directory", status: "succeeded" },
-          select: { caseRequestId: true, result: true },
+        // AD is authoritative when it ran; m365/entra capture the same link for cloud-only clients,
+        // which have no AD step at all. Sorted so AD wins when both exist.
+        const dirJobs = await db.job.findMany({
+          where: { caseRequestId: { in: exchangeOffboardCaseIds }, systemKey: { in: ["active-directory", "m365", "entra"] }, status: "succeeded" },
+          select: { caseRequestId: true, systemKey: true, result: true },
         });
-        for (const a of adJobs) {
+        dirJobs.sort((a, b) => (a.systemKey === "active-directory" ? 0 : 1) - (b.systemKey === "active-directory" ? 0 : 1));
+        for (const a of dirJobs) {
+          if (managerByCase.has(a.caseRequestId)) continue;
           // The runner emits PascalCase result keys (Manager.Email); tolerate lowercase too.
           const res = (a.result ?? {}) as { Manager?: unknown; manager?: unknown };
           const m = (res.Manager ?? res.manager) as { Email?: unknown; email?: unknown } | null;
@@ -921,6 +925,17 @@ export function makeRunnerService(db: PrismaClient) {
         // re-claims (lease reclaim) until the reveal/failure wipes it; never persisted into request.
         if (PASSWORD_RESET_SYSTEM_KEYS.includes(j.systemKey) && j.oneTimePassword) {
           config = { ...((config as Record<string, unknown> | null) ?? {}), newPassword: j.oneTimePassword };
+        }
+        // Per-client "must change password at first sign-in" (FR #14): the profile's
+        // password.requireChangeAtSignIn (schema default true) reaches the executors as
+        // config.requireChangeAtSignIn. Only fills the gap — a value already on the job config
+        // (an operator's per-reset choice, or a plan-time setting) wins.
+        if (j.case.action === "onboard" && ["m365", "entra", "google-workspace"].includes(j.systemKey)) {
+          const cfgNow = (config ?? {}) as Record<string, unknown>;
+          if (cfgNow.requireChangeAtSignIn === undefined) {
+            const idPw = ((j.case.client as { identity?: unknown }).identity as { password?: { requireChangeAtSignIn?: unknown } } | null)?.password;
+            if (typeof idPw?.requireChangeAtSignIn === "boolean") config = { ...cfgNow, requireChangeAtSignIn: idPw.requireChangeAtSignIn };
+          }
         }
         // Mailbox facts from the Exchange step, so the license removal can honour "convert first".
         const mbx = (j.systemKey === "m365" || j.systemKey === "entra") && j.case.action === "offboard"
@@ -1462,6 +1477,46 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // FR #5: an m365/entra onboard that SUCCEEDED but left the user UNLICENSED (seat shortage is a
+      // WARN, not a failure) cannot feed the license-dependent systems — an unlicensed user has no
+      // mailbox, so Mimecast/Spanning would never discover them and would burn their entire ~4h retry
+      // budget on a guaranteed failure. Hold those siblings; a later licensed re-run clears the hold
+      // (the license-picker → re-run path), and the claim gate dispatches them then.
+      if (!req(job).validateOnly && job.case.action === "onboard" && (job.systemKey === "m365" || job.systemKey === "entra") && status === "succeeded") {
+        const res = (input.result ?? {}) as { SeatShortage?: unknown; seatShortage?: unknown; AvailableLicenses?: unknown };
+        // Older runners don't send the explicit flag; the inventory is only ever returned on shortage.
+        const shortage = res.SeatShortage === true || res.seatShortage === true
+          || (Array.isArray(res.AvailableLicenses) && res.AvailableLicenses.length > 0);
+        // Only the lane that OWNS licensing may RELEASE a hold: when a client models both m365 and
+        // entra, the licence-less sibling lane also succeeds (shortage=false, trivially) and would
+        // otherwise free mimecast/spanning while the user is still unlicensed. Setting a hold has
+        // no such risk — a shortage report is authoritative whichever lane saw it.
+        const jobCfg = (req(job).config ?? {}) as { licenses?: unknown; defaultLicenses?: unknown };
+        const ownsLicensing = (Array.isArray(jobCfg.licenses) && jobCfg.licenses.length > 0)
+          || (Array.isArray(jobCfg.defaultLicenses) && jobCfg.defaultLicenses.length > 0);
+        const dependents = await db.job.findMany({
+          where: { caseRequestId: job.caseRequestId, systemKey: { in: LICENSE_DEPENDENT_SYSTEMS }, status: "pending" },
+          select: { id: true, systemKey: true, request: true },
+        });
+        const flipped: string[] = [];
+        for (const s of dependents) {
+          const reqJson = { ...((s.request ?? {}) as Record<string, unknown>) };
+          const held = typeof reqJson.hold === "string";
+          if (shortage && !held) {
+            reqJson.hold = "waiting for an M365 license — the user was created unlicensed (no free seats). Pick a license on the m365 step and re-run it; this step then proceeds on its own.";
+            await db.job.update({ where: { id: s.id }, data: { request: reqJson as Prisma.InputJsonValue } });
+            flipped.push(s.systemKey);
+          } else if (!shortage && held && ownsLicensing) {
+            delete reqJson.hold;
+            await db.job.update({ where: { id: s.id }, data: { request: reqJson as Prisma.InputJsonValue } });
+            flipped.push(s.systemKey);
+          }
+        }
+        if (flipped.length) {
+          await db.auditLog.create({ data: { actor: "system", action: shortage ? "job.hold.license" : "job.hold.release", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systems: flipped } } });
+        }
+      }
+
       // "Run this step only" (and ad-hoc actions) record the outcome but do NOT cascade the CASE — no
       // case-status advance, no auto-verify sweep. The case stays paused; the operator resumes to
       // continue the normal run. (The shared outcome log + work-note below still run for both paths.)
@@ -1519,6 +1574,17 @@ export function makeRunnerService(db: PrismaClient) {
         });
         await db.auditLog.create({
           data: { actor: "system", action: "case.offboard_target.ambiguous", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey, candidates: candidates.length, query: offboardCandidateQuery(input.result) } },
+        });
+      }
+
+      // A NEW real result after a case-level warning dismissal (FR #13) re-opens the case's
+      // warnings: fresh problems must not hide behind an old "I finished it by hand" stamp — the
+      // same resurfacing rule the run log applies to "Fixed" lines. Ad-hoc actions (password reset,
+      // force-sync) are NOT case work and must not resurface answered warnings.
+      if (!req(job).validateOnly && !isAdhoc) {
+        await db.caseRequest.updateMany({
+          where: { id: job.caseRequestId, warningsDismissedAt: { not: null } },
+          data: { warningsDismissedAt: null, warningsDismissedBy: null },
         });
       }
 

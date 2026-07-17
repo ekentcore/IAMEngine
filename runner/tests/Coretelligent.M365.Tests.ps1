@@ -19,9 +19,12 @@ BeforeAll {
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
     function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation, $PasswordProfile) }
     function global:Set-MgUserManagerByRef { param($UserId, $BodyParameter) }
+    function global:Get-MgUserManager { param($UserId) }
+    function global:Remove-MgUserManagerByRef { param($UserId) }
     function global:Get-MgUserMemberOf { param($UserId, [switch]$All) }
     function global:Remove-MgGroupMemberByRef { param($GroupId, $DirectoryObjectId) }
     function global:Get-MgUserDefaultDrive {}
+    function global:Invoke-MgGraphRequest { param($Method, $Uri, $Body, $ErrorAction) }
     function global:Revoke-MgUserSignInSession { param($UserId) }
     function global:Get-MgUserRegisteredDevice { param($UserId, [switch]$All) }
     function global:Update-MgDevice { param($DeviceId, $AccountEnabled) }
@@ -324,6 +327,8 @@ Describe 'Invoke-CtgM365Offboarding' {
         }
         Mock Remove-MgUserAuthenticationPhoneMethod -ModuleName Coretelligent.M365 -MockWith { }
         Mock Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserManager -ModuleName Coretelligent.M365 -MockWith { $null }   # no manager set by default
+        Mock Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
     }
 
     It 'resolves the offboard target by display name when the case has no UPN' {
@@ -429,6 +434,117 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
         Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 1 -Exactly
         ($r.Actions -join ' ') | Should -Match 'revoked sign-in sessions'
+    }
+
+    # FR #12 (UM0029777): a cloud-mastered leaver kept their manager forever — only the AD lane
+    # cleared the link, and a cloud-only client has no AD lane.
+    It 'clears the manager on a cloud-mastered user and captures who it was' {
+        Mock Get-MgUserManager -ModuleName Coretelligent.M365 -MockWith {
+            [pscustomobject]@{ Id = 'mgr-1'; AdditionalProperties = @{ displayName = 'Dana Boss'; mail = 'dboss@x.com' } }
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        Should -Invoke Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'cleared manager: Dana Boss'
+        $r.Manager.Email | Should -Be 'dboss@x.com'
+    }
+
+    It 'routes the manager clear to the AD step for an AD-synced user (Graph would refuse the write)' {
+        Mock Get-MgUserManager -ModuleName Coretelligent.M365 -MockWith {
+            [pscustomobject]@{ Id = 'mgr-1'; AdditionalProperties = @{ displayName = 'Dana Boss'; mail = 'dboss@x.com' } }
+        }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Property -eq 'OnPremisesSyncEnabled' } -MockWith {
+            [pscustomobject]@{ Id = 'uid-1'; OnPremisesSyncEnabled = $true }
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        Should -Invoke Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'on-prem-mastered'
+        # Still captured as evidence — the app hands it to Exchange's manager-delegate fallback.
+        $r.Manager.Name | Should -Be 'Dana Boss'
+    }
+
+    It 'reports "no manager set" (and no write) when the user has no manager' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        Should -Invoke Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'no manager set'
+        $r.Manager | Should -BeNullOrEmpty
+    }
+
+    # FR #8: the case-named delegate gets access to the leaver's whole OneDrive (planner injects
+    # config.oneDriveGrantAccessTo from the intake's provideMailboxAccessTo).
+    It 'grants the case-requested delegate access to the OneDrive' {
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'd1'; Mail = 'phegland@x.com'; UserPrincipalName = 'phegland@x.com' } }
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-1'; webUrl = 'https://contoso-my.sharepoint.com/personal/jdoe' } }
+            if ($Uri -match '/permissions$') { return @{ value = @() } }
+            if ($Uri -match '/invite$') { return @{ value = @() } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveGrantAccessTo = 'phegland@x.com' }) -MailboxSizeGB 10
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $Method -eq 'POST' -and $Uri -match '/invite$' }
+        ($r.Actions -join ' ') | Should -Match 'granted delegate phegland@x.com access'
+    }
+
+    It 'reports "no OneDrive provisioned" instead of failing when the leaver has no drive' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith { throw 'itemNotFound: mysite not found' }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveGrantAccessTo = 'phegland@x.com' }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no OneDrive provisioned'
+    }
+
+    # FR #9: archive the OneDrive into the configured target. Graph /copy is ASYNC, so done-ness is
+    # verified by LISTING the destination: items already there are skipped, anything just initiated
+    # schedules an auto-re-run (RetryAfterMinutes) that later confirms completion.
+    It 'archives the OneDrive to the target: skips items already in the archive, re-runs to confirm the rest' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/users/archives@x.com/drive') { return @{ id = 'drv-dst'; webUrl = 'https://od/arch' } }
+            if ($Uri -match '/root:/Archive') { throw 'itemNotFound' }
+            if ($Method -eq 'POST' -and $Uri -match '/drives/drv-dst/root/children') { return @{ id = 'fold-1' } }
+            if ($Uri -match '/drives/drv-dst/items/fold-1/children') { return @{ value = @(@{ name = 'Budget.xlsx' }) } }   # already archived
+            if ($Uri -match '/drives/drv-src/root/children') { return @{ value = @(@{ id = 'i1'; name = 'Documents' }, @{ id = 'i2'; name = 'Budget.xlsx' }) } }
+            if ($Uri -match '/copy$') { return $null }   # 202, async
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'archives@x.com' } }) -MailboxSizeGB 10
+        # only the item MISSING from the destination is copied; the present one is never re-copied
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $Uri -match '/items/i1/copy$' }
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/items/i2/copy$' }
+        ($r.Actions -join ' ') | Should -Match '1 copy initiated'
+        ($r.Actions -join ' ') | Should -Match '1 already archived'
+        $r.RetryAfterMinutes | Should -Be 10   # in flight -> the app re-runs to confirm
+    }
+
+    It 'reports the archive COMPLETE (and schedules no re-run) once every item is in the destination' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/users/archives@x.com/drive') { return @{ id = 'drv-dst'; webUrl = 'https://od/arch' } }
+            if ($Uri -match '/root:/Archive') { return @{ id = 'fold-1' } }
+            if ($Uri -match '/drives/drv-dst/items/fold-1/children') { return @{ value = @(@{ name = 'Documents' }, @{ name = 'Budget.xlsx' }) } }
+            if ($Uri -match '/drives/drv-src/root/children') { return @{ value = @(@{ id = 'i1'; name = 'Documents' }, @{ id = 'i2'; name = 'Budget.xlsx' }) } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'archives@x.com' } }) -MailboxSizeGB 10
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+        ($r.Actions -join ' ') | Should -Match 'OneDrive archive complete: all 2 item'
+        $r.RetryAfterMinutes | Should -BeNullOrEmpty
+    }
+
+    It 'warns (fail-soft) when the OneDrive archive target is missing or unusable' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{} }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'WARN oneDriveBackup is set but has no target'
+        $bad = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'not-a-target' } }) -MailboxSizeGB 10
+        ($bad.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'not-a-target' did not run"
+    }
+
+    It 'honors removeManager: false (does not even read the manager)' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; removeManager = $false }) -MailboxSizeGB 10
+        Should -Invoke Get-MgUserManager -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        Should -Invoke Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 0 -Exactly
     }
 
     It 'does not revoke sessions when revokeSessions is false' {
@@ -1241,6 +1357,18 @@ Describe 'Invoke-CtgM365PasswordReset' {
             $UserId -eq 'u1' -and $PasswordProfile.Password -eq 'Xy7#kQ9pLm2$Wn4v' -and $PasswordProfile.ForceChangePasswordNextSignIn -eq $true
         }
         ($r | ConvertTo-Json -Depth 6) | Should -Not -Match ([regex]::Escape('Xy7#kQ9pLm2$Wn4v'))
+    }
+
+    # FR #14: the operator can untick "require change at next sign-in" (equipment setup logged in
+    # as the user). Explicit false only — absent still forces the change.
+    It 'honors requireChangeAtSignIn: false (no forced change at next sign-in)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'u1'; UserPrincipalName = 'jdoe@x.com'; OnPremisesSyncEnabled = $false } }
+        $cfg = [pscustomobject]@{ newPassword = 'Xy7#kQ9pLm2$Wn4v'; requireChangeAtSignIn = $false }
+        $r = Invoke-CtgM365PasswordReset -User $user -Config $cfg
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter {
+            $PasswordProfile.ForceChangePasswordNextSignIn -eq $false
+        }
+        ($r.Actions -join ' ') | Should -Match 'NOT required'
     }
 
     It 'refuses an AD-synced user and points the operator at Active Directory' {

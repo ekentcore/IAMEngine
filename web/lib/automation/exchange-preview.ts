@@ -7,6 +7,10 @@ type ExchangeConfig = {
   autoReply?: { message?: string } | null;
   forwarding?: { address?: string; keepCopy?: boolean } | null;
   blockMobileDevices?: boolean;
+  // Profile-static: grant the MANAGER Full Access (true = case's manager; string = explicit address).
+  delegateManagerFullAccess?: boolean | string | null;
+  // Case-requested delegate from the intake ("Enable delegate: … access to <person>") — FR #7.
+  grantFullAccessTo?: string | null;
 };
 
 type ExchangeOnboardConfig = {
@@ -31,6 +35,11 @@ export function previewExchange(action: "onboard" | "offboard", config: unknown,
     const t = cfg.convertToShared.skipIfMailboxOverGB ?? 50;
     lines.push("", `# convert to shared unless over ${t} GB (then keep it a licensed user mailbox)`, `if ($SizeGB -le ${t}) { Set-Mailbox -Identity $Upn -Type Shared }`);
   }
+  if (cfg.delegateManagerFullAccess) {
+    const who = typeof cfg.delegateManagerFullAccess === "string" ? `"${cfg.delegateManagerFullAccess}"` : "$ManagerEmail  # the case's manager";
+    lines.push("", "# grant the manager Full Access (retrieve mail; AutoMapping adds it to their Outlook)", `Add-MailboxPermission -Identity $Upn -User ${who} -AccessRights FullAccess -AutoMapping:$true`);
+  }
+  if (cfg.grantFullAccessTo) lines.push("", "# grant the CASE-REQUESTED delegate Full Access (name resolved to a mailbox at run time)", `Add-MailboxPermission -Identity $Upn -User "${cfg.grantFullAccessTo}" -AccessRights FullAccess -AutoMapping:$true`);
   if (cfg.autoReply?.message) lines.push("", "# set out-of-office", `Set-MailboxAutoReplyConfiguration -Identity $Upn -AutoReplyState Enabled -InternalMessage "${cfg.autoReply.message}" -ExternalMessage "${cfg.autoReply.message}"`);
   if (cfg.forwarding?.address) lines.push("", "# forwarding", `Set-Mailbox -Identity $Upn -ForwardingSmtpAddress "${cfg.forwarding.address}" -DeliverToMailboxAndForward:$${cfg.forwarding.keepCopy ? "true" : "false"}`);
   if (cfg.blockMobileDevices !== false) lines.push("", "# block ActiveSync + OWA", `Set-CASMailbox -Identity $Upn -ActiveSyncEnabled $false -OWAEnabled $false`);

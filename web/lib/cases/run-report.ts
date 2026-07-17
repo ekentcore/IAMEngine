@@ -101,6 +101,9 @@ export type RunReport = {
   finishedAt: string | null;
   steps: RunReportStep[];
   summary: { succeeded: number; warnings: number; failed: number; skipped: number; manual: number; needsApproval: number; pending: number; running: number };
+  // Operator dismissed this case's warnings ("finished the remaining steps by hand") — FR #13.
+  // Warning steps render accepted/verified; a new real result clears the dismissal server-side.
+  warningsDismissed: { at: string; by: string | null } | null;
 };
 
 type JobRow = {
@@ -329,15 +332,23 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     // (planned before deps were persisted) wait on every earlier api job.
     let pendingReason: string | null = null;
     if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
-      const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
-      const accepted = input.acceptedSystemKeys ?? new Set<string>();
-      const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped" && !accepted.has(o.systemKey);
-      const blockers = Array.isArray(deps)
-        ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
-        : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
-      pendingReason = blockers.length
-        ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
-        : "ready — waiting for a runner to claim it";
+      // An explicit HOLD (request.hold, e.g. "waiting for an M365 license" after the user was
+      // created unlicensed) outranks the dependency explanation — the gate may be open and the
+      // step still deliberately not dispatched.
+      const hold = ((j.request ?? {}) as { hold?: unknown }).hold;
+      if (typeof hold === "string" && hold) {
+        pendingReason = hold;
+      } else {
+        const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
+        const accepted = input.acceptedSystemKeys ?? new Set<string>();
+        const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped" && !accepted.has(o.systemKey);
+        const blockers = Array.isArray(deps)
+          ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
+          : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
+        pendingReason = blockers.length
+          ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
+          : "ready — waiting for a runner to claim it";
+      }
     }
     const phaseTrail = phaseTrailOf(j.progress);
     // Only show a "current phase" while the step is actually in flight — a finished step's last
@@ -396,6 +407,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     caseStatus: input.caseStatus,
     verifiedAt: input.verifiedAt ?? null,
     credsMissing: [], // filled in by loadRunReport (needs the client's Delinea secrets)
+    warningsDismissed: null, // filled in by loadRunReport (lives on the CaseRequest row)
     needsInfo: (() => {
       const uf = input.payload.unknownFields;
       const fields = Array.isArray(uf)
@@ -545,6 +557,20 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       st.accepted = true;
       if (st.verdict === "warning") { report.summary.warnings--; report.summary.succeeded++; st.verdict = "verified"; }
       else if (st.verdict === "failed") { report.summary.failed--; report.summary.succeeded++; st.verdict = "verified"; }
+    }
+  }
+
+  // Case-level warning dismissal (FR #13): the operator finished the remaining steps by hand and
+  // dismissed the leftover warnings. Warning steps read accepted/verified (failed steps still need
+  // their explicit per-step accept — a dismissal must not quietly unblock a real failure).
+  if (c.warningsDismissedAt) {
+    report.warningsDismissed = { at: c.warningsDismissedAt.toISOString(), by: c.warningsDismissedBy ?? null };
+    for (const st of report.steps) {
+      if (st.verdict !== "warning") continue;
+      st.accepted = true;
+      report.summary.warnings--;
+      report.summary.succeeded++;
+      st.verdict = "verified";
     }
   }
 
