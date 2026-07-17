@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker } from "./decision-markers";
+import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker, mailboxPurgeLines } from "./decision-markers";
 
 // The string the RUNNER actually emits, copied verbatim from
 // runner/modules/Coretelligent.M365/Coretelligent.M365.psm1 (the mailbox_oversize branch), with the
@@ -79,9 +79,44 @@ test("Convert is offered under the cap and withheld at or over it", () => {
   assert.equal(at("2.74"), true, "the real UM0029840 mailbox — convertible");
   assert.equal(at("50"), true, "exactly at the cap is still convertible");
   assert.equal(at("50.1"), false, "over the cap it cannot become shared — that's the oversize question");
-  assert.equal(at("0"), false, "0 means the size was never read, not an empty mailbox");
+  // Runner >= 1.69.0 sends $null-not-injected as "unknown" and a real empty mailbox as 0 — so 0 is a
+  // KNOWN, convertible size now. (The old 0-sentinel hid Convert for exactly the cheapest mailboxes.)
+  assert.equal(at("0"), true, "a real empty mailbox is known and convertible");
+  assert.equal(at("-1"), false, "negative is garbage, never offer");
 });
 
 test("not-converted markers are recognised so the log can hide them", () => {
   assert.equal(isDecisionMarker(NOT_CONVERTED_LINE), true);
+});
+
+// Mail-destroying "license removed" lines fire the mailboxPurge chat event (runner-service). All
+// three runner variants must match; ordinary removal/warn lines must not.
+test("mailboxPurgeLines finds the mail-destroying removal lines — but only when a licence actually came off", () => {
+  const FREED = "freed 2 directly-assigned license(s): SPE_E5, ENTERPRISEPACK";
+  const destroys = [
+    "license removed by operator decision — the mailbox is 61.2 GB, over the 50 GB cap, so it could never become shared. Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Archive it now if it is needed.",
+    // The $null-size re-run variant (the size wasn't re-injected on the removal re-run) — reworded in
+    // the same batch; pin it so a regex tightening can't silently drop the alert for the common path.
+    "license removed by operator decision — the mailbox is over the 50 GB cap (size not re-read on this run), so it could never become shared. Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Archive it now if it is needed.",
+    "license removed by operator decision — the mailbox was NOT converted to shared, so Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Chosen on the case in preference to converting the mailbox or keeping the seat.",
+    "license removed on a mailbox that was NOT converted to shared — this client is configured to allow it (removeLicense.allowWithoutConvert). Exchange will DELETE this mailbox once its 30-day grace expires: the mail is not recoverable after that. Archive it now if it is needed.",
+  ];
+  const benign = [
+    "license kept here by design — it is removed in the entra step, after the mailbox is converted to shared",
+    "WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides.",
+    "license KEPT by operator decision — the mailbox was not converted to shared, and both the licence and the mailbox are being left as they are. The seat stays assigned.",
+  ];
+  const hits = mailboxPurgeLines({ Actions: [...destroys, ...benign, FREED] });
+  assert.deepEqual(hits, destroys);
+  assert.deepEqual(mailboxPurgeLines(null), []);
+  assert.deepEqual(mailboxPurgeLines({ actions: [destroys[0], FREED] }), [destroys[0]]); // lower-case key too
+});
+
+// The announcement line is emitted on ENTERING the decided branch, before Set-MgUserLicense — a
+// group-inherited rejection or an idempotent re-run re-emits it with nothing removed. No freed
+// line = no alert, or chat gets a fresh (wrong) 30-day clock on every re-run.
+test("no 'freed N' line — announcement alone must NOT fire the purge alert", () => {
+  const announce = "license removed on a mailbox that was NOT converted to shared — this client is configured to allow it (removeLicense.allowWithoutConvert). Exchange will DELETE this mailbox once its 30-day grace expires: the mail is not recoverable after that. Archive it now if it is needed.";
+  assert.deepEqual(mailboxPurgeLines({ Actions: [announce, "no licenses to remove"] }), []);
+  assert.deepEqual(mailboxPurgeLines({ Actions: [announce, "WARN license NOT removed — Microsoft rejected the removal because the license is inherited from a GROUP membership"] }), []);
 });

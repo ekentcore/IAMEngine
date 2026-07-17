@@ -730,7 +730,10 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
     if (!jobId) return;
     setBusy(`approve-${stepSeq}`);
     try {
-      await fetch(`/api/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const r = await fetch(`/api/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      // Surface a refusal — middleware 503s approvals while operator auth is off, and a silent
+      // swallow here would make the Approve button read as broken with the step still gated.
+      if (!r.ok) alert((await r.json().catch(() => null))?.error ?? "could not approve the step");
       await refresh();
     } finally {
       setBusy(null);
@@ -740,7 +743,12 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   async function verifyAll() {
     setBusy("verify");
     try {
-      await fetch(`/api/cases/${caseId}/verify`, { method: "POST" });
+      const r = await fetch(`/api/cases/${caseId}/verify`, { method: "POST" });
+      const d = (await r.json().catch(() => null)) as { error?: string; verifying?: number; note?: string } | null;
+      // A silent no-op reads as "checked and fine" — say when nothing was verifiable (e.g. every
+      // automated step was skipped), and surface refusals.
+      if (!r.ok) alert(d?.error ?? "could not start the verify pass");
+      else if (d?.verifying === 0) alert(d?.note ?? "no automated steps to verify — nothing was re-checked");
       await refresh();
     } finally {
       setBusy(null);
@@ -807,7 +815,14 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           <div suppressHydrationWarning>
             {verifying
               ? <><span style={{ display: "inline-block", animation: "pulse 1.2s ease-in-out infinite" }}>🔎</span> Verifying the account — re-checking accounts, licensing, mirroring & access…</>
-              : <>🔎 Account verified {report.verifiedAt && new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0 ? `${s.failed} failed, ${s.warnings} warning to review before resolving` : "all checks passed; safe to resolve the case"}</>}
+              : <>🔎 Account verified {report.verifiedAt && new Date(report.verifiedAt).toLocaleString()} — {s.failed > 0 || s.warnings > 0
+                  ? `${s.failed} failed, ${s.warnings} warning to review before resolving`
+                  : s.skipped > 0
+                    // Skipped steps never ran and are deliberately NOT re-validated (a validator pass
+                    // must not launder a never-executed teardown into green) — so a green verify can't
+                    // claim "all checks passed" over them.
+                    ? `the checks that ran passed, but ${s.skipped} step(s) were SKIPPED and never ran — review them before resolving`
+                    : "all checks passed; safe to resolve the case"}</>}
           </div>
           {/* Mirror coverage only makes sense once the sweep has produced fresh validation. */}
           {!verifying && mirrorCheck && (

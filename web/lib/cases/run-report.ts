@@ -10,7 +10,8 @@ import { missingRequiredSecrets, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "
 import { parseCapabilities, agentCanRun, BROWSER_SYSTEMS } from "../runner/capabilities";
 import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
-import { offboardCandidatesOf, offboardCandidateQuery, type OffboardCandidate } from "../jobs/runner-service";
+import { offboardCandidatesOf, offboardCandidateQuery, acceptedKeysFor, type OffboardCandidate } from "../jobs/runner-service";
+import { blockingJobs, type JobLite } from "../jobs/runner-logic";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying" | "retrying";
 
@@ -101,9 +102,6 @@ export type RunReport = {
   finishedAt: string | null;
   steps: RunReportStep[];
   summary: { succeeded: number; warnings: number; failed: number; skipped: number; manual: number; needsApproval: number; pending: number; running: number };
-  // Operator dismissed this case's warnings ("finished the remaining steps by hand") — FR #13.
-  // Warning steps render accepted/verified; a new real result clears the dismissal server-side.
-  warningsDismissed: { at: string; by: string | null } | null;
 };
 
 type JobRow = {
@@ -294,6 +292,21 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
   const jobs = [...input.jobs].sort((a, b) => a.sequence - b.sequence);
   const summary = { succeeded: 0, warnings: 0, failed: 0, skipped: 0, manual: 0, needsApproval: 0, pending: 0, running: 0 };
 
+  // The claim-gate view of every job, computed ONCE (the report is rebuilt on every case-page poll;
+  // per-pending-step remapping was quadratic). Used by the pendingReason line below.
+  const acceptedKeys = input.acceptedSystemKeys ?? new Set<string>();
+  const liteOf = (o: JobRow): JobLite => {
+    const r = (o.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; dependsOn?: unknown };
+    const deps = Array.isArray(r.dependsOn) ? (r.dependsOn as unknown[]).filter((d): d is string => typeof d === "string") : null;
+    return {
+      id: o.id ?? "", systemKey: o.systemKey, sequence: o.sequence,
+      mode: o.mode as JobLite["mode"], status: o.status as JobLite["status"],
+      requiresApproval: Boolean(r.requiresApproval), approved: Boolean(r.approved), dependsOn: deps,
+      accepted: o.status === "failed" && acceptedKeys.has(o.systemKey),
+    };
+  };
+  const lites = jobs.map(liteOf);
+
   const steps: RunReportStep[] = jobs.map((j, i) => {
     const validation = normalizeValidation(j.validation);
     const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean; intent?: "disable" | "destructive" | null; autoStopped?: boolean };
@@ -327,28 +340,16 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else summary.pending++;
 
     const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
-    // Why is a pending api step not running yet? Same gating rule as the runner's claim
-    // (blockingJobs): a job with persisted dependsOn waits ONLY on those systems; legacy jobs
-    // (planned before deps were persisted) wait on every earlier api job.
+    // Why is a pending api step not running yet? THE gating rule is the runner's claim gate
+    // (blockingJobs) — reused here, not mirrored, so the report can never disagree with what the
+    // runner will actually do (the old hand-rolled copy counted ad-hoc jobs as blockers the claim
+    // gate ignores, and applied "accepted" to steps that hadn't failed).
     let pendingReason: string | null = null;
     if (j.status === "pending" && j.mode === "api" && verdict === "pending") {
-      // An explicit HOLD (request.hold, e.g. "waiting for an M365 license" after the user was
-      // created unlicensed) outranks the dependency explanation — the gate may be open and the
-      // step still deliberately not dispatched.
-      const hold = ((j.request ?? {}) as { hold?: unknown }).hold;
-      if (typeof hold === "string" && hold) {
-        pendingReason = hold;
-      } else {
-        const deps = ((j.request ?? {}) as { dependsOn?: unknown }).dependsOn;
-        const accepted = input.acceptedSystemKeys ?? new Set<string>();
-        const unmetBlocker = (o: JobRow) => o.mode === "api" && o.status !== "succeeded" && o.status !== "skipped" && !accepted.has(o.systemKey);
-        const blockers = Array.isArray(deps)
-          ? jobs.filter((o) => unmetBlocker(o) && (deps as unknown[]).includes(o.systemKey))
-          : jobs.filter((o) => unmetBlocker(o) && o.sequence < j.sequence);
-        pendingReason = blockers.length
-          ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
-          : "ready — waiting for a runner to claim it";
-      }
+      const blockers = blockingJobs(liteOf(j), lites);
+      pendingReason = blockers.length
+        ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
+        : "ready — waiting for a runner to claim it";
     }
     const phaseTrail = phaseTrailOf(j.progress);
     // Only show a "current phase" while the step is actually in flight — a finished step's last
@@ -407,7 +408,6 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     caseStatus: input.caseStatus,
     verifiedAt: input.verifiedAt ?? null,
     credsMissing: [], // filled in by loadRunReport (needs the client's Delinea secrets)
-    warningsDismissed: null, // filled in by loadRunReport (lives on the CaseRequest row)
     needsInfo: (() => {
       const uf = input.payload.unknownFields;
       const fields = Array.isArray(uf)
@@ -525,10 +525,8 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
   const names = new Map(catalog.map((sc) => [sc.key, sc.name]));
 
   // systemKeys whose FAILED run was accepted ("ignore warning") — they no longer block dependents,
-  // matching the claim gate, so a step waiting only on an accepted failure reads "ready".
-  const acceptedSystemKeys = new Set(
-    (await db.runOutcome.findMany({ where: { caseRequestId: c.id, status: "failed", resolvedAt: { not: null } }, select: { systemKey: true } })).map((o) => o.systemKey)
-  );
+  // matching the claim gate. Same helper the claim gate uses, so the definition can never fork.
+  const acceptedSystemKeys = await acceptedKeysFor(db, c.id);
 
   const report = buildRunReport({
     caseId: c.id,
@@ -557,20 +555,6 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
       st.accepted = true;
       if (st.verdict === "warning") { report.summary.warnings--; report.summary.succeeded++; st.verdict = "verified"; }
       else if (st.verdict === "failed") { report.summary.failed--; report.summary.succeeded++; st.verdict = "verified"; }
-    }
-  }
-
-  // Case-level warning dismissal (FR #13): the operator finished the remaining steps by hand and
-  // dismissed the leftover warnings. Warning steps read accepted/verified (failed steps still need
-  // their explicit per-step accept — a dismissal must not quietly unblock a real failure).
-  if (c.warningsDismissedAt) {
-    report.warningsDismissed = { at: c.warningsDismissedAt.toISOString(), by: c.warningsDismissedBy ?? null };
-    for (const st of report.steps) {
-      if (st.verdict !== "warning") continue;
-      st.accepted = true;
-      report.summary.warnings--;
-      report.summary.succeeded++;
-      st.verdict = "verified";
     }
   }
 

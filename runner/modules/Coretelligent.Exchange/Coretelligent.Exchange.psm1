@@ -721,7 +721,7 @@ function Invoke-CtgExchangeOffboarding {
         Write-CtgStep "$($resolved.MatchCount) recipients match '$($resolved.DisplayName)' — ambiguous, stopping"
         $actions.Add("WARN $($resolved.MatchCount) recipients match display name '$($resolved.DisplayName)' — pick the right one on the case. Nothing done.")
         return [pscustomobject]@{
-            System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = 0
+            System = 'exchange'; Status = 'ok'; Upn = ''; MailboxSizeGB = $null   # size never read — 0 would read as 'known empty'
             Actions = $actions.ToArray()
             Candidates = @(Get-CtgExchangeOffboardCandidates -Name $resolved.DisplayName)
             CandidateQuery = [string]$resolved.DisplayName
@@ -741,7 +741,7 @@ function Invoke-CtgExchangeOffboarding {
         if ($cands.Count -gt 0) {
             $actions.Add("WARN no exact match for '$($resolved.DisplayName)' — $($cands.Count) similar recipient(s) found; pick the right one on the case. Nothing done.")
             return [pscustomobject]@{
-                System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0
+                System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = $null   # size never read — 0 would read as 'known empty'
                 Actions = $actions.ToArray()
                 Candidates = $cands
                 CandidateQuery = [string]$resolved.DisplayName
@@ -749,7 +749,7 @@ function Invoke-CtgExchangeOffboarding {
             }
         }
         $actions.Add("WARN no user identity on the case (no UPN, and no display-name match) — set the offboard target's email/UPN on the case, then re-run. Nothing done.")
-        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = 0; Actions = $actions.ToArray() }
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = $null; Actions = $actions.ToArray() }  # size never read
     }
     if ($resolved.DisplayName) { $actions.Add("resolved offboard target by display name '$($resolved.DisplayName)' -> $upn"); Write-CtgStep "resolved '$($resolved.DisplayName)' -> '$upn'" }
     Write-CtgStep "running: Get-MailboxStatistics -Identity '$upn' (mailbox size)"

@@ -1116,6 +1116,9 @@ function Invoke-CtgM365Offboarding {
         planner from the intake delegate), mailbox{sizeThresholdGB,aboveThreshold}, removeLicense{...}.
     .PARAMETER MailboxSizeGB
         Current mailbox size (from Exchange upstream); drives the keep-license threshold.
+        $null (the default) means the size was never injected — the app only hands it down when the
+        Exchange step read one. NOT 0: a genuinely empty mailbox is a real, convertible 0.00 GB, and
+        the old 0-sentinel made it report "size unknown" and hid the Convert answer from the picker.
     .OUTPUTS
         Result object with Status, an Evidence snapshot (groups removed), and an Actions log.
     #>
@@ -1123,7 +1126,7 @@ function Invoke-CtgM365Offboarding {
     param(
         [Parameter(Mandatory)][pscustomobject]$User,
         [Parameter(Mandatory)][pscustomobject]$Config,
-        [double]$MailboxSizeGB = 0,
+        [System.Nullable[double]]$MailboxSizeGB = $null,
         # Which lane is running this — 'm365' or its 'entra' alias (the same executor serves both).
         # A profile can name the step that owns the license removal (removeLicense.removedBy), so the
         # executor has to know which one it currently IS.
@@ -1734,11 +1737,12 @@ function Invoke-CtgM365Offboarding {
             # resolve it, exactly as the oversize branch does. NOT a throw, for the same reason: the
             # containment above (sign-in blocked, sessions revoked, groups removed) already happened.
             #
-            # sizeGB is the app's injected mailboxSizeGB, which is absent (so this param defaults to 0)
+            # sizeGB is the app's injected mailboxSizeGB, which is absent (so this param stays $null)
             # precisely when Exchange could not READ the size. Report that as unknown rather than as
             # "0 GB": the report uses it to decide whether converting is even offerable, and Exchange
-            # refuses to convert a mailbox it cannot prove is under the cap.
-            $sizeLabel = if ($MailboxSizeGB -gt 0) { [string]$MailboxSizeGB } else { 'unknown' }
+            # refuses to convert a mailbox it cannot prove is under the cap. The sentinel is $null,
+            # NOT 0 — a real empty mailbox is 0.00 GB, known and convertible, and must say so.
+            $sizeLabel = if ($null -ne $MailboxSizeGB) { [string]$MailboxSizeGB } else { 'unknown' }
             $actions.Add("DECISION_NEEDED:mailbox_not_converted | The mailbox was never converted to a shared mailbox, so the licence cannot be removed safely — Exchange deletes an unlicensed, unconverted mailbox once its 30-day grace expires. Converting it keeps the mail AND frees the seat. Removing the licence without converting frees the seat but the mail is GONE after the grace. Leaving both alone keeps the mail and keeps paying for the seat. | sizeGB=$sizeLabel | thresholdGB=$threshold")
             $actions.Add("WARN license KEPT — the mailbox was NOT converted to shared. Removing the license would let Exchange purge the mailbox after its 30-day grace, so the license stays until a human decides. Choose on the case: convert it and remove the licence, remove the licence anyway (the mail is lost), or leave both alone.")
         }
@@ -1755,10 +1759,18 @@ function Invoke-CtgM365Offboarding {
             # happened is still said in full, still in the AuditLog row and the ServiceNow work note: a
             # destroyed mailbox is recorded loudly, it just isn't recorded as an open question.
             if ($mayRemoveWithoutConvert -and $convertedKnown -and -not $converted) {
+                # WORDING CONTRACT: the app fires its "Mailbox purge scheduled" chat alert off these
+                # three lines — they must start with "license removed" and contain "DELETE"
+                # (web/lib/cases/decision-markers.ts isMailboxPurgeAction, pinned verbatim in its
+                # tests). Reword them and the alert silently stops fleet-wide.
                 # Oversize is named FIRST: when the mailbox really is over the cap, that is the reason
                 # that matters — the mail could never have been saved, whatever anyone chose.
                 if ($oversizePolicy -eq 'remove') {
-                    $actions.Add("license removed by operator decision — the mailbox is $MailboxSizeGB GB, over the $threshold GB cap, so it could never become shared. Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Archive it now if it is needed.")
+                    # $MailboxSizeGB can be $null on THIS re-run (the size wasn't re-injected) even
+                    # though the oversize decision was asked with one — a bare interpolation would
+                    # write "the mailbox is  GB" into the AuditLog and the ServiceNow work note.
+                    $sizeText = if ($null -ne $MailboxSizeGB) { "$MailboxSizeGB GB, over the $threshold GB cap" } else { "over the $threshold GB cap (size not re-read on this run)" }
+                    $actions.Add("license removed by operator decision — the mailbox is $sizeText, so it could never become shared. Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Archive it now if it is needed.")
                 }
                 elseif ($notConvertedPolicy -eq 'remove') {
                     $actions.Add("license removed by operator decision — the mailbox was NOT converted to shared, so Exchange will DELETE it once its 30-day grace expires and the mail is not recoverable after that. Chosen on the case in preference to converting the mailbox or keeping the seat.")

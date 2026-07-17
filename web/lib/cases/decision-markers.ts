@@ -49,8 +49,38 @@ export function canConvert(d: MailboxNotConvertedDecision): boolean {
   const size = Number(d.sizeGB);
   const threshold = Number(d.thresholdGB);
   if (!Number.isFinite(size) || !Number.isFinite(threshold)) return false; // "unknown" -> NaN -> no
-  return size > 0 && size <= threshold;
+  // A real 0.00 GB is a KNOWN size (the runner's not-injected sentinel is $null -> "unknown" -> NaN
+  // above, never 0) — an empty mailbox is exactly the cheapest one to convert, so offer it.
+  return size >= 0 && size <= threshold;
 }
 
 // Markers are for the pickers, not for people: every one is emitted alongside a human-readable line.
 export const isDecisionMarker = (line: string): boolean => line.startsWith("DECISION_NEEDED:");
+
+// A licence came off a mailbox that was never converted to shared — Exchange will PURGE it when the
+// 30-day grace expires. The step lands verified-green by design (the outcome was DECIDED: a client
+// opt-out or an operator's picker answer, and "decided ≠ unresolved"), but an irreversible purge
+// clock starting must not be knowable only by opening the case — recordResult fires a chat
+// notification off these lines. All three runner variants (operator oversize decision, operator
+// not-converted decision, client allowWithoutConvert) start "license removed" and say DELETE.
+export const isMailboxPurgeAction = (line: string): boolean => /^license removed\b.*\bDELETE\b/s.test(line);
+
+const actionLines = (result: unknown): string[] => {
+  const actions = (result as { Actions?: unknown; actions?: unknown } | null | undefined);
+  const raw = actions?.Actions ?? actions?.actions;
+  return Array.isArray(raw) ? raw.filter((a): a is string => typeof a === "string") : [];
+};
+
+/**
+ * The mail-destroying action lines in a job result's Actions array — ONLY when a licence actually
+ * came off in this run. The "license removed …" announcement is emitted when the runner ENTERS the
+ * decided branch, before Set-MgUserLicense: a group-inherited rejection, an idempotent re-run with
+ * the seat already gone, or an auto-retry attempt all re-emit it with nothing removed. The
+ * "freed N directly-assigned license(s)" line is the actual-removal signal, so requiring both keeps
+ * the purge alert to the one run that started the 30-day clock.
+ */
+export function mailboxPurgeLines(result: unknown): string[] {
+  const lines = actionLines(result);
+  if (!lines.some((a) => /^freed \d+ directly-assigned license/.test(a))) return [];
+  return lines.filter(isMailboxPurgeAction);
+}

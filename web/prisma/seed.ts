@@ -2,14 +2,30 @@
 // profiles/generated/*.json (KB-generated drafts). Generated profiles only ENRICH existing
 // roster clients (matched by slug during generation) — they never create new clients and
 // never clobber a hand-authored profile.
-// Run via: npx prisma db seed
+// DB-EDIT GUARD: ClientSystem rows, Secret references, client plan blocks (personas/globals/
+// locations), and existing runbooks that differ from the profile are treated as DB-edited and
+// KEPT (the Edit-systems UI, the fleet sweeps, the Delinea rewiring, the rules editor and the KB
+// fetch pipeline all write state the profiles don't have); pass --force to overwrite. See
+// lib/clients/seed-guard.ts.
+// Run via: npx prisma db seed   (for --force: npx tsx prisma/seed.ts --force)
 import { PrismaClient, Prisma } from "@prisma/client";
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { parseRunbookText } from "../lib/clients/runbook-parse";
+import { clientSystemMatches, stableEqual, type SeedSystemFields } from "../lib/clients/seed-guard";
 import { seedDocuments } from "./seed-docs";
 
 const prisma = new PrismaClient();
+// RESEED PROTECTION: ClientSystem rows whose current values differ from the profile are treated as
+// DB-edited (Edit-systems OUs, the licence sweep's offboard config, mailbox policies — none of it
+// lives in the profile JSON) and are KEPT. --force overwrites them back to profile values. Rows that
+// already match are a no-op either way. Invoke directly for the flag: `npx tsx prisma/seed.ts --force`
+// (`prisma db seed` does not forward args).
+const FORCE = process.argv.includes("--force");
+const keptRows: Array<{ client: string; systemKey: string }> = [];
+const keptSecrets: Array<{ client: string; name: string }> = [];
+const keptClientFields: Array<{ client: string; field: string }> = [];
+let keptRunbooks = 0;
 const PROFILES = join(process.cwd(), "..", "profiles");
 // Generated drafts are produced by tools/profile-generator (the canonical generator) into
 // profiles/_drafts/. Pass 2 enriches existing roster clients from these.
@@ -62,13 +78,33 @@ function stripSuffix(n: string): string {
 }
 
 async function upsertSecretsAndSystems(clientId: string, p: any): Promise<void> {
+  const clientLabel = p.client?.name ?? p.client?.id ?? clientId;
+  // Secrets get the same protection as systems: DB-side rewires (the Delinea recovery re-pointed
+  // 319 slots directly in the DB; the app UI wires more) are NOT in the profile JSON, and a reseed
+  // that rewrote externalId would silently send jobs to a stale — or another tenant's — secret.
+  const existingSecrets = await prisma.secret.findMany({ where: { clientId }, select: { name: true, externalId: true, label: true } });
+  const secretByName = new Map(existingSecrets.map((s) => [s.name, s]));
   for (const [secName, ref] of Object.entries<any>(p.secrets ?? {})) {
-    await prisma.secret.upsert({
-      where: { clientId_name: { clientId, name: secName } },
-      update: { externalId: ref.id, label: ref.label ?? null },
-      create: { clientId, name: secName, provider: ref.provider, externalId: ref.id, label: ref.label ?? null },
-    });
+    const ex = secretByName.get(secName);
+    if (!ex) {
+      // upsert with an empty update: atomic against a row appearing since the fetch (left as-is).
+      await prisma.secret.upsert({
+        where: { clientId_name: { clientId, name: secName } },
+        update: {},
+        create: { clientId, name: secName, provider: ref.provider, externalId: ref.id, label: ref.label ?? null },
+      });
+      continue;
+    }
+    if (ex.externalId === ref.id && (ex.label ?? null) === (ref.label ?? null)) continue;
+    if (!FORCE) { keptSecrets.push({ client: clientLabel, name: secName }); continue; }
+    await prisma.secret.update({ where: { clientId_name: { clientId, name: secName } }, data: { externalId: ref.id, label: ref.label ?? null } });
   }
+  // One fetch for the client's rows instead of one per system — a full reseed touches ~200 clients.
+  const existingRows = await prisma.clientSystem.findMany({
+    where: { clientId },
+    select: { systemKey: true, mode: true, onboardWhen: true, offboardWhen: true, dependsOn: true, requiresApproval: true, captureEvidence: true, secretNames: true, config: true },
+  });
+  const rowByKey = new Map(existingRows.map((r) => [r.systemKey, r]));
   for (const s of p.systems) {
     // Build the full field set once so create and update can't drift apart.
     const fields = {
@@ -92,12 +128,43 @@ async function upsertSecretsAndSystems(clientId: string, p: any): Promise<void> 
         ...(s.runLast ? { runLast: true } : {}),
       },
     };
-    await prisma.clientSystem.upsert({
-      where: { clientId_systemKey: { clientId, systemKey: s.key } },
-      update: fields,
-      create: { clientId, systemKey: s.key, ...fields },
-    });
+    const existing = rowByKey.get(s.key);
+    if (!existing) {
+      // upsert with an empty update: atomic against a row appearing since the fetch (left as-is).
+      await prisma.clientSystem.upsert({
+        where: { clientId_systemKey: { clientId, systemKey: s.key } },
+        update: {},
+        create: { clientId, systemKey: s.key, ...fields },
+      });
+      continue;
+    }
+    if (clientSystemMatches(existing as SeedSystemFields, fields as SeedSystemFields)) continue; // already what we'd write
+    if (!FORCE) { keptRows.push({ client: clientLabel, systemKey: s.key }); continue; } // DB-edited — keep it
+    await prisma.clientSystem.update({ where: { clientId_systemKey: { clientId, systemKey: s.key } }, data: fields });
   }
+}
+
+// The plan-time JSON blocks (personas/globals/locations) the seed may write for this client: a
+// profile value only lands when the DB column is empty, still equals it, or --force is passed —
+// the Roles & rules editor persists edits into these columns without any editedFields stamp, so
+// "differs from the profile" is the only provenance a reseed has.
+function protectedPlanBlocks(
+  p: any,
+  existing: { personas?: unknown; globals?: unknown; locations?: unknown } | null,
+  clientLabel: string
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of ["personas", "globals", "locations"] as const) {
+    const fromProfile = p[field];
+    if (fromProfile === undefined || fromProfile === null) continue; // profile says nothing — column left as-is
+    const inDb = existing?.[field] ?? null;
+    if (inDb !== null && !stableEqual(inDb, fromProfile) && !FORCE) {
+      keptClientFields.push({ client: clientLabel, field });
+      continue;
+    }
+    out[field] = fromProfile;
+  }
+  return out;
 }
 
 // Drop fields a human edited in the UI (Client.editedFields) from a seed update, so a reseed
@@ -117,9 +184,11 @@ async function applyAuthored(p: any): Promise<string | null> {
   if (p.schemaVersion !== "2.0" && p.schemaVersion !== "2.1") return null;
   const backbone = backboneMap[p.identity.backbone];
   if (!backbone) { console.warn(`skip ${p.client.id}: unknown backbone "${p.identity.backbone}"`); return null; }
-  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true, emailDomainLocked: true } });
-  // v2.1 plan-time blocks (undefined for v2.0 profiles → column left null)
-  const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
+  const existing = await prisma.client.findUnique({ where: { slug: p.client.id }, select: { editedFields: true, emailDomainLocked: true, personas: true, globals: true, locations: true } });
+  // v2.1 plan-time blocks (undefined for v2.0 profiles → column left null). The Roles & rules editor
+  // writes these columns in-app WITHOUT stamping editedFields — so a DB value that differs from the
+  // profile is a rules-editor edit and is KEPT unless --force (same rule as ClientSystem config).
+  const planBlocks = protectedPlanBlocks(p, existing ?? null, p.client.id);
   // Don't overwrite an email domain a human locked in the UI.
   const emailDomain = existing?.emailDomainLocked ? undefined : (p.client.emailDomain ?? undefined);
   const intakeSource = p.client.intakeSource ?? undefined; // "incident" for internal clients (Coretelligent)
@@ -139,6 +208,9 @@ async function applyAuthored(p: any): Promise<string | null> {
     for (const action of ["onboard", "offboard"] as const) {
       const text = (p.runbook as Record<string, unknown>)[action];
       if (typeof text !== "string" || !text.trim()) continue;
+      // Runbooks are rebuilt IN-APP too (the KB fetch pipeline writes RunbookSection directly), so an
+      // existing runbook is kept on a reseed — replacing it needs --force, same as the config guard.
+      if (!FORCE && (await prisma.runbookSection.count({ where: { clientId: client.id, action } })) > 0) { keptRunbooks++; continue; }
       const sections = parseRunbookText(text);
       await prisma.runbookSection.deleteMany({ where: { clientId: client.id, action } });
       if (sections.length) {
@@ -160,10 +232,14 @@ async function main() {
   }
 
   // Optional single-client target: `tsx prisma/seed.ts <profile-slug>` re-seeds JUST that authored
-  // profile (e.g. after correcting one client's OU/groups) and SKIPS the generated pass — so it can't
-  // revert other clients' in-app config edits. No arg = full seed (all profiles + generated).
-  const only = (process.argv[2] ?? "").replace(/\.json$/i, "").toLowerCase();
+  // profile and SKIPS the generated pass — so it can't revert other clients' in-app config edits.
+  // The DB-edit guard applies here too: rows differing from the profile are KEPT and reported. To
+  // push a corrected profile value over a differing row, add --force (scoped to this one client:
+  // `npx tsx prisma/seed.ts <profile-slug> --force`). No arg = full seed (all profiles + generated).
+  // Flags (--force) are not slugs — the first non-flag arg is the optional profile target.
+  const only = (process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "").replace(/\.json$/i, "").toLowerCase();
   if (only) console.log(`single-client seed: ${only} (generated pass skipped)`);
+  if (FORCE) console.log(`--force: DB-edited ClientSystem rows WILL be overwritten with profile values`);
 
   // Pass 1: hand-authored profiles (authoritative). Collect their client ids to protect them
   // (by id, not name) from the generated pass.
@@ -182,8 +258,9 @@ async function main() {
   // authored systems but STILL gets its KB runbook (the steps are informational).
   let enriched = 0, curatedRb = 0, nonV2 = 0, unmatched = 0, runbook = 0;
   if (!only && existsSync(GENERATED)) {
-    const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true, editedFields: true } });
+    const clients = await prisma.client.findMany({ select: { id: true, name: true, primaryDomain: true, editedFields: true, personas: true, globals: true, locations: true } });
     const editedById = new Map(clients.map((c) => [c.id, c.editedFields]));
+    const planById = new Map(clients.map((c) => [c.id, { personas: c.personas, globals: c.globals, locations: c.locations }]));
     const byName = new Map<string, string>();
     const byDomain = new Map<string, string>();
     const strippedGroups = new Map<string, Set<string>>();
@@ -211,8 +288,9 @@ async function main() {
       } else {
         const backbone = backboneMap[p.identity.backbone];
         // v2.1 plan-time blocks the extractor recovered (groups/attributes -> globals, plus
-        // personas/locations). undefined for a v2.0 draft → column left as-is.
-        const planBlocks = { personas: p.personas ?? undefined, globals: p.globals ?? undefined, locations: p.locations ?? undefined };
+        // personas/locations). Absent for a v2.0 draft → column left as-is; a DB value the rules
+        // editor changed is KEPT unless --force (protectedPlanBlocks).
+        const planBlocks = protectedPlanBlocks(p, planById.get(clientId) ?? null, p.client.name ?? p.client.id);
         const update = stripEdited({ ...(backbone ? { backbone } : {}), pod: p.client.pod ?? undefined, identity: p.identity ?? undefined, ...planBlocks }, editedById.get(clientId) ?? []);
         await prisma.client.update({ where: { id: clientId }, data: update });
         await upsertSecretsAndSystems(clientId, p);
@@ -224,12 +302,34 @@ async function main() {
   }
 
   await seedDocuments(prisma);
+
+  if (keptRows.length) {
+    console.log(`\nKEPT ${keptRows.length} ClientSystem row(s) whose DB values differ from the profile (DB-side edits win on a reseed):`);
+    const byClient = new Map<string, string[]>();
+    for (const r of keptRows) (byClient.get(r.client) ?? byClient.set(r.client, []).get(r.client)!).push(r.systemKey);
+    for (const [client, keys] of byClient) console.log(`  ${client}: ${keys.join(", ")}`);
+  }
+  if (keptSecrets.length) {
+    console.log(`\nKEPT ${keptSecrets.length} Secret reference(s) that differ from the profile (DB-side rewires win):`);
+    for (const s of keptSecrets) console.log(`  ${s.client}: ${s.name}`);
+  }
+  if (keptClientFields.length) {
+    console.log(`\nKEPT ${keptClientFields.length} client plan block(s) (personas/globals/locations) that differ from the profile (rules-editor edits win):`);
+    for (const f of keptClientFields) console.log(`  ${f.client}: ${f.field}`);
+  }
+  if (keptRunbooks) console.log(`\nKEPT ${keptRunbooks} existing runbook(s) (in-app rebuilds win over the on-disk drafts).`);
+  if (keptRows.length || keptSecrets.length || keptClientFields.length || keptRunbooks) {
+    console.log(`Re-run with --force (npx tsx prisma/seed.ts [profile] --force) to overwrite the kept values with profile values.`);
+  }
 }
 
 // Load <slug>.runbook.json (the full step-by-step, modeled + unmodeled) into RunbookSection.
 async function loadRunbook(clientDbId: string, slug: string): Promise<number> {
   const path = join(GENERATED, `${slug}.runbook.json`);
   if (!existsSync(path)) return 0;
+  // A runbook already in the DB may have been rebuilt in-app (KB fetch pipeline) — the on-disk draft
+  // is the STALER copy then. Keep the DB version on a reseed; replacing it needs --force.
+  if (!FORCE && (await prisma.runbookSection.count({ where: { clientId: clientDbId } })) > 0) { keptRunbooks++; return 0; }
   const items = JSON.parse(readFileSync(path, "utf8")) as Array<{
     action: string; seq: number; systemKey: string | null; title: string; status: string; guess: string | null; steps: string[]; kbArticle?: string | null; artifacts?: unknown[];
   }>;

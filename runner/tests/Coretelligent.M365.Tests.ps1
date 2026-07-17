@@ -845,7 +845,7 @@ Describe 'Invoke-CtgM365Offboarding' {
         ($r.Actions -join ' ') | Should -Not -Match 'DECISION_NEEDED:mailbox_oversize'          # under the cap: not that question
     }
 
-    # The size is the app's injected mailboxSizeGB, absent (param defaults to 0) exactly when Exchange
+    # The size is the app's injected mailboxSizeGB, absent (param stays $null) exactly when Exchange
     # could not READ it. It must not be reported as "0 GB": the report keys the Convert button off this,
     # and Exchange refuses to convert a mailbox it cannot prove is under the cap — so offering Convert
     # on an unknown size would be a button guaranteed to fail.
@@ -853,6 +853,16 @@ Describe 'Invoke-CtgM365Offboarding' {
         $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $false }
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config
         ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_not_converted \|.*sizeGB=unknown \| thresholdGB=50'
+    }
+
+    # The inverse guard: a genuinely EMPTY mailbox is a real, known 0.00 GB — under the cap and
+    # convertible. The old 0-sentinel conflated it with "unreadable", so the picker hid the Convert
+    # answer for exactly the mailboxes that are cheapest to convert.
+    It 'reports a real 0 GB mailbox as sizeGB=0, not unknown' {
+        $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $false }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $config -MailboxSizeGB 0
+        ($r.Actions -join ' ') | Should -Match 'DECISION_NEEDED:mailbox_not_converted \|.*sizeGB=0 \| thresholdGB=50'
+        ($r.Actions -join ' ') | Should -Not -Match 'sizeGB=unknown'
     }
 
     It 'removes the license when the operator answered "remove" on the not-converted decision' {

@@ -8,7 +8,7 @@ export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
 // "announcement" is manual-only (change-log sends): it never fires from triggers, bypasses the
 // master switch + event toggles like a test send, and deliberately has no NOTIF_EVENTS toggle row.
-export type NotifEvent = "caseFailed" | "stepFailed" | "stepWarning" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "announcement";
+export type NotifEvent = "caseFailed" | "stepFailed" | "stepWarning" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "mailboxPurge" | "announcement";
 export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
@@ -22,6 +22,10 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   { key: "connTestFailed", label: "Connection test failed (scheduled sweep)" },
   { key: "credExpiring", label: "Credential expiring" },
   { key: "backupFailed", label: "Nightly database backup failed" },
+  // A licence came off an UNCONVERTED mailbox (client opt-out or an operator's picker answer): the
+  // step is verified-green by design — decided is not unresolved — but Exchange will purge the mail
+  // after the 30-day grace, and an irreversible clock starting must reach chat, not just the case.
+  { key: "mailboxPurge", label: "Mailbox purge scheduled (license removed without convert)" },
 ];
 
 // kind drives the sender + the form fields (webhook URL vs Zoom URL+token vs email recipients).
@@ -66,7 +70,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
     zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
     email: { default: emptyEmail(), restricted: emptyEmail() },
   },
-  events: { caseFailed: true, stepFailed: true, stepWarning: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, announcement: true },
+  events: { caseFailed: true, stepFailed: true, stepWarning: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, mailboxPurge: true, announcement: true },
   credExpiryDays: 30,
 };
 

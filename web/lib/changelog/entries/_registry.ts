@@ -84,5 +84,6 @@ export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";
 export { entry as systemsEditorKb } from "./systems-editor-kb";
+export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
 export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-holds-mimecast-spanning";
 export { entry as v2Offboarding } from "./v2-offboarding";

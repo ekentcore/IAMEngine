@@ -16,9 +16,15 @@
 //     exchange  convert the mailbox to SHARED (skipped over 50GB)
 //     entra     remove the licence        <- dependsOn: [exchange]
 //
-// `entra` is the same executor as `m365` (an alias), so it is the natural "later" lane. A client with
-// no entra lane keeps the licence removal on m365 and relies on the runtime guard (mailboxConvertPending)
-// to keep it safe — it warns instead of destroying the mailbox, and is listed below as NEEDS-REORDER.
+// `entra` is the same executor as `m365` (an alias), so it is the natural "later" lane.
+//
+// HAS-EXCHANGE-STEP PRECONDITION (2026-07-16): a client with NO exchange offboard step gets NO
+// removeLicense at all. The runtime guard (mailboxConvertPending/mailboxConverted) only exists when
+// the app finds an exchange step in the plan to derive it from — with no exchange step the keys are
+// never injected, the guard can never fire, and an unguarded removeLicense purges the unconverted
+// mailbox with no warning (this shipped to 11 live clients before the precondition existed). Those
+// clients are listed as BLOCKED/WITHHELD until an exchange step exists or the client opts out via
+// removeLicense.allowWithoutConvert.
 //
 // EVIDENCE-DRIVEN: a client only gets `removeLicense` if its runbook asks for it, and `convertToShared`
 // if its runbook mentions a shared mailbox. We do not invent policy for a client.
@@ -96,6 +102,14 @@ function runbookText(slug, name) {
   try { return JSON.stringify(JSON.parse(readFileSync(join(DRAFTS, hit), "utf8"))); } catch { return null; }
 }
 
+// Say it OUT LOUD when the drafts are unreadable: runbook intent (wantsLicence/wantsShared) all reads
+// false then, so the sweep can only run its config-driven repairs. A silent no-op here once read as
+// "fleet clean" over live destructive config.
+try { readdirSync(DRAFTS); } catch {
+  console.error(`WARNING: runbook drafts not readable at ${DRAFTS} — intent cannot be derived, so nothing new will be configured.`);
+  console.error(`         Config-driven repairs (stripping unguarded removeLicense) still run. Pass --drafts=<path> for the full sweep.\n`);
+}
+
 const clients = await db.client.findMany({
   select: { id: true, slug: true, name: true, systems: { select: { id: true, systemKey: true, dependsOn: true, config: true, offboardWhen: true, secretNames: true } } },
   orderBy: { slug: "asc" },
@@ -121,17 +135,28 @@ for (const c of clients) {
   // Convert whenever we take the licence off. A client that has explicitly opted out
   // (removeLicense.allowWithoutConvert) keeps its own answer — the override exists to be respected,
   // and a sweep that overwrote it would just re-break the client on its next run.
+  // Read the opt-out off the RAW entra row (anySys), not the offboard-enabled one: a flag recorded on
+  // a row whose offboardWhen was later set to 'never' is still the client's answer, and missing it
+  // here both clobbers the only record of it (the re-enable write replaces config wholesale) and
+  // withholds a removal the client explicitly authorized.
   const optedOut = Boolean(
     ((m365.config ?? {}).offboard ?? {}).removeLicense?.allowWithoutConvert ||
-    ((entra?.config ?? {}).offboard ?? {}).removeLicense?.allowWithoutConvert,
+    ((entraRow?.config ?? {}).offboard ?? {}).removeLicense?.allowWithoutConvert,
   );
   const wantsShared = optedOut ? false : (CONVERT_BY_DEFAULT ? wantsLicence : mentionsShared);
   const needsApproval = policy?.mode === "approval";
   const ob = (s) => ((s?.config ?? {}).offboard ?? null);
-  const hasLicence = Boolean(ob(m365)?.removeLicense || ob(entra)?.removeLicense);
+  // hasLicence must see the RAW entra row too: a disabled entra lane still carries config a re-enable
+  // would resurrect, and the danger test below must not go blind to it.
+  const hasLicence = Boolean(ob(m365)?.removeLicense || ob(entraRow)?.removeLicense);
   const hasConvert = Boolean(ob(exchange)?.convertToShared);
 
-  if (!wantsLicence && !wantsShared) continue;          // runbook asks for neither (or forbids it) — leave alone
+  // DANGEROUS CONFIG IS REPAIRED UNCONDITIONALLY. The strip of an unguarded removeLicense must never
+  // depend on the runbook drafts being present/matchable — a missing drafts dir made the whole repair
+  // a silent no-op that printed "clients needing work: 0" over 11 live destructive configs. Evidence
+  // gates what we ADD, never what we make safe.
+  const dangerous = hasLicence && !exchange && !optedOut;
+  if (!wantsLicence && !wantsShared && !dangerous) continue; // runbook asks for neither (or forbids it), nothing dangerous — leave alone
   // The defect this sweep created and now repairs: the licence may only move to the LATER lane when a
   // conversion is actually configured to happen there. Deferring it behind a conversion that will
   // never run is not caution, it is a deadlock — and it reads as caution in the log, which is why it
@@ -140,7 +165,12 @@ for (const c of clients) {
   // "Already correct" must ALSO mean no dependency cycle — exchange depending on entra while entra
   // depends on exchange deadlocks the plan, and that is not a state we may skip over.
   const cycle = Boolean(exchange && entra && exchange.dependsOn.includes("entra") && entra.dependsOn.includes("exchange"));
-  if (hasLicence && hasConvert && entra && entra.dependsOn.includes("exchange") && !cycle) continue; // already correct
+  // "Already correct" must ALSO mean the m365 row's own removeLicense (if any) is the defer marker or
+  // an explicit opt-out — an early unguarded {} on m365 alongside a correct entra/exchange setup runs
+  // FIRST and trips the convert-pending guard on every offboard forever.
+  const m365rl = ob(m365)?.removeLicense;
+  const m365LaneSafe = !m365rl || m365rl.defer === true || (m365rl.removedBy && m365rl.removedBy !== "m365") || m365rl.allowWithoutConvert === true;
+  if (hasLicence && hasConvert && entra && entra.dependsOn.includes("exchange") && !cycle && m365LaneSafe) continue; // already correct
 
   // The lane that OWNS the licence removal. `entra` is the same executor as m365, and 108 clients
   // already carry it as an offboard-only lane — so when a client needs "licence AFTER the mailbox" but
@@ -154,10 +184,17 @@ for (const c of clients) {
   const licenceLane = wantsShared && (entra || needsEntraLane) && exchange ? "entra" : "m365";
   plan.push({
     client: c, m365, exchange, entra, entraRow, licenceLane, policy, needsApproval, needsEntraLane,
-    wantsLicence, wantsShared, hasLicence, hasConvert,
+    wantsLicence, wantsShared, hasLicence, hasConvert, optedOut,
     noRunbook: !rb,
-    // Only left on m365 when there is no exchange step to order against at all.
-    needsReorder: wantsShared && wantsLicence && !exchange,
+    // HAS-EXCHANGE-STEP PRECONDITION: with no exchange offboard step in the plan, the app never
+    // injects mailboxConverted/mailboxConvertPending onto the m365 job — so the runner's convert
+    // guard NEVER fires and an unguarded removeLicense purges the unconverted mailbox with no
+    // warning (this shipped to 11 live clients before the precondition existed). Licence removal
+    // is WITHHELD for these clients until an exchange step exists or the client explicitly opts
+    // out (removeLicense.allowWithoutConvert). `dangerous` (config present, evidence or not) is
+    // part of the trigger so the repair runs even when the runbook drafts are unreadable.
+    blockedNoExchange: (wantsLicence || dangerous) && !exchange && !optedOut,
+    dangerous,
   });
 }
 
@@ -179,20 +216,54 @@ const reorder = [];
 for (const p of plan) {
   const { client: c, m365, exchange, entra, licenceLane } = p;
   const writes = [];
+  // A client we know is DANGEROUS but whose runbook we could not read gets repaired and NOTHING else:
+  // writing containment defaults for a client whose intent is unreadable would be inventing policy.
+  const stripOnly = p.dangerous && !p.wantsLicence && !p.wantsShared;
 
   // 1. m365 — containment. It owns the licence ONLY when there is no later lane.
   const m365cfg = { ...(m365.config ?? {}) };
   const m365ob = { ...((m365cfg.offboard ?? {})) };
-  m365ob.blockSignIn = true;
-  m365ob.removeAllGroups = true;
-  m365ob.mailbox = { sizeThresholdGB: THRESHOLD_GB };
-  if (p.wantsLicence) {
-    m365ob.removeLicense = licenceLane === "entra"
-      ? { defer: true, removedBy: "entra", note: "Removed in the Entra step, after the mailbox is converted to shared." }
-      : {};   // no later lane — the runtime guard protects the ordering
+  if (!stripOnly) {
+    m365ob.blockSignIn = true;
+    m365ob.removeAllGroups = true;
+    m365ob.mailbox = { sizeThresholdGB: THRESHOLD_GB };
+  }
+  if (p.blockedNoExchange) {
+    // No exchange offboard step => the app injects no mailboxConverted/-Pending keys => the runner's
+    // convert guard cannot fire. An unguarded removeLicense here is silently destructive, so STRIP
+    // it (repairing the 11 clients the previous sweep wrote it to) and leave the licence alone.
+    delete m365ob.removeLicense;
+  }
+  else if (p.wantsLicence) {
+    if (licenceLane === "entra") {
+      m365ob.removeLicense = { defer: true, removedBy: "entra", note: "Removed in the Entra step, after the mailbox is converted to shared." };
+    } else {
+      // m365 owns the removal (the client opted out of converting). Keep the client's own keys —
+      // clobbering with {} is what used to erase allowWithoutConvert — but DROP stale routing keys
+      // (defer/removedBy/note) from an earlier entra-lane pass: leaving defer:true on the owning
+      // lane strands the licence behind a step that will never run. And the opt-out must land HERE,
+      // on the object the runner actually reads, even when it was recorded on the entra row.
+      const prev = m365ob.removeLicense && typeof m365ob.removeLicense === "object" ? m365ob.removeLicense : {};
+      const { defer: _defer, removedBy: _removedBy, note: _note, ...keep } = prev;
+      if (p.optedOut) keep.allowWithoutConvert = true;
+      m365ob.removeLicense = keep;
+    }
   }
   m365cfg.offboard = m365ob;
   writes.push({ row: m365, data: { config: m365cfg } });
+
+  // 1b. The entra row (enabled OR disabled) can carry its own removeLicense from an earlier pass. On a
+  // blocked client it is just as unguarded as m365's — the withhold is a lie if it survives here.
+  if (p.blockedNoExchange) {
+    const enRow = p.entra ?? p.entraRow;
+    if (enRow && ((enRow.config ?? {}).offboard ?? {}).removeLicense) {
+      const enCfg = { ...(enRow.config ?? {}) };
+      const enOb = { ...((enCfg.offboard ?? {})) };
+      delete enOb.removeLicense;
+      enCfg.offboard = enOb;
+      writes.push({ row: enRow, data: { config: enCfg } });
+    }
+  }
 
   // 2. exchange — convert to shared, when the runbook asks for it.
   if (p.wantsShared && exchange) {
@@ -241,13 +312,14 @@ for (const p of plan) {
     writes.push({ row: entra, data });
   }
 
-  if (p.needsReorder) reorder.push(c.slug);
-  let tag = p.needsReorder ? "  [no exchange step — licence on m365, runtime guard protects it]" : "";
+  if (p.blockedNoExchange) reorder.push(c.slug);
+  let tag = p.blockedNoExchange ? "  [BLOCKED: no exchange offboard step — licence removal withheld (guard can't fire without one)]" : "";
+  if (stripOnly) tag += "  [runbook unreadable — strip only, nothing new configured]";
   if (p.needsEntraLane) tag += "  [+creates the entra lane]";
   if (p.needsApproval) tag += "  [approval-gated]";
   if (p.policy) tag += `  [POLICY: ${p.policy.why}]`;
-  const what = p.wantsLicence ? `licence->${licenceLane}` : "NO licence removal";
-  console.log(`${c.slug.padEnd(18)} ${c.name.slice(0, 36).padEnd(38)} ${what}${p.wantsShared ? " +convert" : ""}${tag}`);
+  const what = p.blockedNoExchange ? "licence removal WITHHELD" : p.wantsLicence ? `licence->${licenceLane}` : "NO licence removal";
+  console.log(`${c.slug.padEnd(18)} ${c.name.slice(0, 36).padEnd(38)} ${what}${p.wantsShared && exchange ? " +convert" : ""}${tag}`);
 
   if (APPLY) {
     for (const w of writes) {
@@ -259,5 +331,12 @@ for (const p of plan) {
 }
 
 console.log(`\n${APPLY ? `APPLIED to ${applied} client(s).` : "dry run — nothing written. Re-run with --apply."}`);
-if (reorder.length) console.log(`no entra lane (licence kept on m365, guarded at runtime): ${reorder.join(", ")}`);
+if (reorder.length) console.log(`licence removal WITHHELD — no exchange offboard step, so the convert guard can never fire.\nAdd an exchange step (or an explicit removeLicense.allowWithoutConvert opt-out) and re-run: ${reorder.join(", ")}`);
+if (APPLY && applied) {
+  // Job.request.config is snapshotted at PLAN time — this sweep changes ClientSystem only, so a case
+  // planned BEFORE it still carries the old config and runs with it. The repair is not complete until
+  // those are re-planned; saying so here is the difference between "fixed" and "looks fixed".
+  console.log(`\nNOTE: already-planned cases still carry the OLD config in their job snapshots (config is copied at PLAN time).`);
+  console.log(`      RE-PLAN any open offboard case for the clients above, or the sweep changes won't apply to it.`);
+}
 await db.$disconnect();

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isRunnerApi, isRunnerBootstrap, isSecretBearing } from "./runner-paths";
+import { isRunnerApi, isRunnerBootstrap, isSecretBearing, isDestructiveApproval } from "./runner-paths";
 
 // The regression these tests exist for: /api/runner/* used to be blanket-exempt from BOTH the bearer
 // gate and the session gate ("runner bundle download — open"). Two credential-carrying routes were
@@ -72,6 +72,32 @@ test("every secret-bearing route is also a bearer-gated runner API", () => {
 test("the operator surface is not mistaken for a runner API", () => {
   for (const p of ["/api/cases/abc/dispatch", "/api/clients/acme/secrets", "/api/health", "/clients"]) {
     assert.equal(isRunnerApi(p), false, `${p} is operator surface`);
+    assert.equal(isRunnerBootstrap(p), false);
+  }
+});
+
+// With AUTH_ENABLED off, guard() passes callers through as a synthetic system admin — so the
+// destructive-approval routes would let anyone on the network release a destructive offboard step
+// with a fabricated approver. The middleware fails these closed regardless of the auth cutover.
+test("destructive-approval routes are identified so they fail closed while auth is off", () => {
+  assert.equal(isDestructiveApproval("/api/jobs/abc123/approve"), true);
+  assert.equal(isDestructiveApproval("/api/cases/abc123/hard-match"), true);
+});
+
+test("ordinary operator routes are NOT destructive approvals — auth-off keeps working for them", () => {
+  for (const p of [
+    "/api/jobs/abc123/rerun", "/api/jobs/abc123/complete", "/api/jobs/abc123/run-single",
+    "/api/jobs/abc123/procurement", "/api/cases/abc123/pause", "/api/cases/abc123/verify",
+    "/api/jobs/approve", // no job id — not the approve route
+    "/cases",
+  ]) {
+    assert.equal(isDestructiveApproval(p), false, `${p} must not fail closed`);
+  }
+});
+
+test("destructive approvals are operator surface, never runner API or bootstrap", () => {
+  for (const p of ["/api/jobs/abc123/approve", "/api/cases/abc123/hard-match"]) {
+    assert.equal(isRunnerApi(p), false);
     assert.equal(isRunnerBootstrap(p), false);
   }
 });

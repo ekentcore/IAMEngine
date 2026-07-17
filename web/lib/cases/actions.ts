@@ -47,19 +47,22 @@ export async function cancelCase(db: PrismaClient, id: string, user: ActingUser 
   return { ok: true, result: { stopped } };
 }
 
-// The automated (api) steps that "Verify everything" re-validates: terminal, non-ad-hoc. Ad-hoc
-// password resets have no validator, so the no-validator sweep would flip even a FAILED reset to a
-// fresh "succeeded" — exclude them. Shared so verifyCase and the bulk validity filter agree.
+// The automated (api) steps that "Verify everything" re-validates: terminal-and-RAN, non-ad-hoc.
+// Ad-hoc password resets have no validator, so the no-validator sweep would flip even a FAILED reset
+// to a fresh "succeeded" — exclude them. SKIPPED steps are excluded too: a skipped step never ran,
+// and re-queuing it as a validate-only job flips it to verified-green — a teardown that never
+// happened reading as done. Shared so verifyCase and the bulk validity filter agree.
 export function verifiableJobs<T extends { mode: Mode; status: JobStatus; systemKey: string }>(jobs: T[]): T[] {
-  return jobs.filter((j) => j.mode === "api" && ["succeeded", "failed", "skipped"].includes(j.status) && !ADHOC_SYSTEM_KEYS.includes(j.systemKey));
+  return jobs.filter((j) => j.mode === "api" && ["succeeded", "failed"].includes(j.status) && !ADHOC_SYSTEM_KEYS.includes(j.systemKey));
 }
 
-// Reset every terminal automated step to a pending validate-only job and reopen the case so the claim
-// loop re-runs the read-only validator. No mutation is re-run.
+// Reset every RAN terminal automated step (succeeded/failed — never skipped, see verifiableJobs) to a
+// pending validate-only job and reopen the case so the claim loop re-runs the read-only validator.
+// No mutation is re-run.
 export async function verifyCase(db: PrismaClient, id: string, user: ActingUser | null | undefined): Promise<CaseMutationResult> {
   const c = await db.caseRequest.findUnique({
     where: { id },
-    select: { id: true, jobs: { select: { id: true, systemKey: true, mode: true, status: true, request: true, error: true } } },
+    select: { id: true, jobs: { select: { id: true, systemKey: true, mode: true, status: true, request: true, error: true, validation: true } } },
   });
   if (!c) return { ok: false, notFound: true };
   const targets = verifiableJobs(c.jobs);
@@ -67,7 +70,17 @@ export async function verifyCase(db: PrismaClient, id: string, user: ActingUser 
 
   await db.$transaction(
     targets.map((j) => {
-      const req = { ...((j.request ?? {}) as Record<string, unknown>), validateOnly: true };
+      // priorStatus/priorError/priorValidation let the case-failure sweep ROLL BACK a verify job
+      // that never got to run (one validator failing mid-pass fails the case) — without the stamp,
+      // the interrupted pass either rewrote real successes into "skipped" or left live verify jobs
+      // running on a "failed" case. Stale stamps from an earlier pass are dropped first (the spread
+      // would otherwise carry an old priorError/priorValidation under a fresh priorStatus).
+      const req = { ...((j.request ?? {}) as Record<string, unknown>) };
+      delete req.priorStatus; delete req.priorError; delete req.priorValidation;
+      req.validateOnly = true;
+      req.priorStatus = j.status;
+      if (j.error) req.priorError = j.error;
+      if (j.validation) req.priorValidation = j.validation;
       return db.job.update({
         where: { id: j.id },
         data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: req as Prisma.InputJsonValue },
@@ -99,7 +112,7 @@ export type CaseValidityState = {
   paused: boolean; // pausedAt != null
   scheduled: boolean; // pausedReason === "scheduled" — held with a FUTURE auto-resume time
   hasInflight: boolean; // has dispatched/running jobs (cancel stops these even on a paused case)
-  hasVerifiable: boolean; // has terminal automated (non-ad-hoc) steps to re-validate
+  hasVerifiable: boolean; // has RAN terminal automated (non-ad-hoc, non-skipped) steps to re-validate
 };
 
 // Pure: is `action` sensible for a case in this state? The bulk route skips invalid cases with the

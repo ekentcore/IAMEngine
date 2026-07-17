@@ -25,7 +25,16 @@ export async function requireUser(): Promise<ActingUser> {
 }
 
 export async function requirePermission(perm: Permission): Promise<ActingUser> {
-  if (!authEnabled()) return SYSTEM;
+  // Destructive approvals fail CLOSED even while auth is off: passing SYSTEM through here is what
+  // let anyone on the network release a destructive offboard step under a fabricated approver name.
+  // This is the authoritative gate (it covers routes AND server actions, and no middleware path
+  // trick can reach around it); the middleware's isDestructiveApproval 503 is defense-in-depth.
+  if (!authEnabled()) {
+    if (perm === "case.approve_destructive") {
+      throw new AuthError(403, "operator auth is not enabled — a destructive approval needs an authenticated approver. Set AUTH_ENABLED=true.");
+    }
+    return SYSTEM;
+  }
   const ctx = await getActingContext();
   if (!ctx.user) throw new AuthError(401, "not signed in");
   // View-as impersonation is READ-ONLY: block every mutation while impersonating so nothing can be

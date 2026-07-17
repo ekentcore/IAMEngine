@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CaseStatus, JobStatus, Mode } from "@prisma/client";
-import { caseActionValidity, isBulkAction, BULK_ACTIONS, bulkCaseDecision, type CaseValidityState, type BulkCaseRow } from "./actions";
+import { caseActionValidity, isBulkAction, BULK_ACTIONS, bulkCaseDecision, verifiableJobs, type CaseValidityState, type BulkCaseRow } from "./actions";
 
 const state = (o: Partial<CaseValidityState>): CaseValidityState => ({
   status: (o.status ?? "queued") as CaseStatus,
@@ -121,4 +121,28 @@ test("bulkCaseDecision: cancel sees in-flight jobs via the row's job projection"
 test("isBulkAction accepts the four actions and rejects anything else", () => {
   for (const a of BULK_ACTIONS) assert.equal(isBulkAction(a), true, a);
   for (const bad of ["trash", "delete", "", "Dispatch", 3, null, undefined]) assert.equal(isBulkAction(bad), false, String(bad));
+});
+
+// ── verifiableJobs — what "Verify everything" may re-queue as a validate-only pass ────────────────
+const vj = (systemKey: string, status: JobStatus, mode: Mode = "api") => ({ mode, status, systemKey });
+
+test("verifiableJobs: succeeded and failed automated steps are verifiable", () => {
+  const jobs = [vj("m365", "succeeded"), vj("exchange", "failed")];
+  assert.deepEqual(verifiableJobs(jobs).map((j) => j.systemKey), ["m365", "exchange"]);
+});
+
+test("verifiableJobs: a SKIPPED step is not verifiable — it never ran, and a validate-only pass would flip it to verified-green", () => {
+  // The case-failure sweep skips pending steps; "Verify everything" must not launder them into done.
+  const jobs = [vj("m365", "succeeded"), vj("egnyte", "skipped")];
+  assert.deepEqual(verifiableJobs(jobs).map((j) => j.systemKey), ["m365"]);
+});
+
+test("verifiableJobs: ad-hoc, manual, and in-flight steps are excluded", () => {
+  const jobs = [
+    vj("m365-password-reset", "failed"), // ad-hoc: no validator — the sweep would flip a FAILED reset to succeeded
+    vj("hardware", "succeeded", "manual"),
+    vj("m365", "running"),
+    vj("mimecast", "pending"),
+  ];
+  assert.deepEqual(verifiableJobs(jobs), []);
 });

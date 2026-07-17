@@ -195,3 +195,47 @@ test("an api step is unaffected by the manual-note path", () => {
   const r = buildRunReport(input());
   assert.deepEqual(r.steps[0].actions, ["created user jane.doe@acme.com"]);
 });
+
+// The pending-blocker line reuses the claim gate (blockingJobs) — the report must agree with what
+// the runner will actually do. The old hand-rolled mirror counted ad-hoc jobs as blockers.
+test("a pending ad-hoc job is NOT reported as a blocker (the claim gate ignores it)", () => {
+  const rr = buildRunReport(input({
+    jobs: [
+      { systemKey: "m365", sequence: 0, mode: "api", status: "succeeded", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+      // Ad-hoc password reset riding the job table, still pending — invisible to the gate.
+      { systemKey: "m365-password-reset", sequence: 1, mode: "api", status: "pending", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+      { systemKey: "mimecast", sequence: 2, mode: "api", status: "pending", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+    ],
+    names: new Map([["m365", "Microsoft 365"], ["m365-password-reset", "Password reset (M365)"], ["mimecast", "Mimecast"]]),
+    caseStatus: "running",
+  }));
+  const mimecast = rr.steps.find((s) => s.systemKey === "mimecast");
+  assert.equal(mimecast?.pendingReason, "ready — waiting for a runner to claim it");
+});
+
+test("an operator-accepted FAILED dependency no longer blocks (matches the claim gate)", () => {
+  const rr = buildRunReport(input({
+    jobs: [
+      { systemKey: "directory-sync", sequence: 0, mode: "api", status: "failed", request: {}, result: null, validation: null, error: "sync broken", startedAt: null, finishedAt: null },
+      { systemKey: "mimecast", sequence: 1, mode: "api", status: "pending", request: { dependsOn: ["directory-sync"] }, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+    ],
+    names: new Map([["directory-sync", "Entra Connect sync"], ["mimecast", "Mimecast"]]),
+    caseStatus: "running",
+    acceptedSystemKeys: new Set(["directory-sync"]),
+  }));
+  const mimecast = rr.steps.find((s) => s.systemKey === "mimecast");
+  assert.equal(mimecast?.pendingReason, "ready — waiting for a runner to claim it");
+});
+
+test("a real unmet api dependency still reads as a blocker", () => {
+  const rr = buildRunReport(input({
+    jobs: [
+      { systemKey: "m365", sequence: 0, mode: "api", status: "running", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+      { systemKey: "mimecast", sequence: 1, mode: "api", status: "pending", request: { dependsOn: ["m365"] }, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+    ],
+    names: new Map([["m365", "Microsoft 365"], ["mimecast", "Mimecast"]]),
+    caseStatus: "running",
+  }));
+  const mimecast = rr.steps.find((s) => s.systemKey === "mimecast");
+  assert.equal(mimecast?.pendingReason, "waiting for Microsoft 365 to finish first");
+});

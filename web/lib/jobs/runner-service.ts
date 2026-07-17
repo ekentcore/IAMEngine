@@ -29,6 +29,7 @@ import { sweepServiceNowIntake } from "./intake-sweep";
 import { postWorkNote, writeBackEnabled } from "../servicenow/worknote";
 import { snConfigFromEnv } from "../servicenow/gateway";
 import { jobOutcome } from "../cases/run-report";
+import { mailboxPurgeLines } from "../cases/decision-markers";
 import { fireNotification } from "../notifications/sender";
 import { parseClientOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
@@ -136,12 +137,17 @@ export async function acceptedKeysFor(db: PrismaClient, caseRequestId: string): 
   return new Set(rows.map((r) => r.systemKey));
 }
 
-type CaseJobRow = { id: string; systemKey: string; sequence: number; mode: Mode; status: JobStatus; request: Prisma.JsonValue };
+type CaseJobRow = { id: string; systemKey: string; sequence: number; mode: Mode; status: JobStatus; singleRun: boolean; request: Prisma.JsonValue; validation: Prisma.JsonValue };
 
 // The ONE place a case's badge is derived from the database — so no caller can forget the
 // accepted-failure overlay and pin a case at "failed" whose every step reads green on the case page.
+// (singleRun jobs are NOT excluded here: three parallel deriveCaseStatus call sites don't exclude
+// them either, and an exclusion made a failed case read "completed" while its only failed step's
+// single-step re-run was pending. The narrow pinning edge that motivated an exclusion — a pending
+// singleRun job holding a case at "running" after its real failures were accepted — is accepted as
+// the lesser problem and documented in the PR.)
 async function caseStatusFrom(db: PrismaClient, caseRequestId: string): Promise<{ caseJobs: CaseJobRow[]; caseStatus: CaseStatus }> {
-  const caseJobs = await db.job.findMany({ where: { caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true } });
+  const caseJobs = await db.job.findMany({ where: { caseRequestId }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, singleRun: true, request: true, validation: true } });
   const accepted = await acceptedKeysFor(db, caseRequestId);
   const caseStatus = deriveCaseStatus(
     caseJobs.map((j) => ({
@@ -153,15 +159,69 @@ async function caseStatusFrom(db: PrismaClient, caseRequestId: string): Promise<
   return { caseJobs, caseStatus };
 }
 
-// Re-derive a case's status from its jobs and persist it; on failure, cancel the still-pending jobs
-// (their dependency gate can never open behind a failed predecessor). Shared by the wedged-job reclaim,
-// the operator Stop, and accepting/un-accepting a failure, so they all advance the case exactly like a
-// real job result does.
-export async function refreshCaseStatus(db: PrismaClient, caseRequestId: string) {
-  const { caseStatus } = await caseStatusFrom(db, caseRequestId);
-  if (caseStatus === "failed") {
-    await db.job.updateMany({ where: { caseRequestId, status: "pending" }, data: { status: "skipped" } });
+// CASE-FAILURE SWEEP — the case just derived "failed"; quiesce its remaining PENDING work.
+//   - ordinary case steps -> "skipped": their gate sits behind the failure (a re-plan or re-run
+//     revives them; see the run report's Re-run).
+//   - queued verify jobs (request.validateOnly) -> ROLLED BACK to the priorStatus/priorError that
+//     verifyCase stamped when it reset them. Skipping them rewrote real successes into "never
+//     done"; leaving them pending kept a "failed" case executing (Stop didn't quiesce, one blip
+//     produced N duplicate caseFailed alerts). A pre-stamp legacy verify job falls back to
+//     "skipped" — never to an invented success.
+//   - ad-hoc actions and "run this step only" resets -> untouched (operator side-actions, not case
+//     work; an unrelated case failure must not cancel them behind the operator's back).
+// Works off the caller's job snapshot with write-time guards (status must still be pending); a job
+// that flips to pending mid-derive is caught by the next failed re-derivation, which re-runs this.
+async function sweepPendingCaseWork(db: PrismaClient, caseRequestId: string, caseJobs: CaseJobRow[]): Promise<void> {
+  const restored: string[] = [];
+  for (const j of caseJobs) {
+    if (j.status !== "pending" || req(j).validateOnly !== true) continue;
+    const r = { ...((j.request ?? {}) as Record<string, unknown>) };
+    const prior = typeof r.priorStatus === "string" ? r.priorStatus : null;
+    const priorError = typeof r.priorError === "string" ? r.priorError : null;
+    const priorValidation = r.priorValidation; // stashed at reset so a warning verdict survives the round trip
+    delete r.validateOnly; delete r.priorStatus; delete r.priorError; delete r.priorValidation;
+    const status = (prior === "succeeded" || prior === "failed" ? prior : "skipped") as JobStatus;
+    const u = await db.job.updateMany({
+      // Two write-time guards: still pending (claimed since the snapshot -> leave it to the runner)
+      // AND still a verify job — requeueJob can convert a queued verify into a full re-run (the
+      // mailbox-decision answer) without changing status, and rolling THAT back would silently
+      // discard the operator's answer with a stale request.
+      where: { id: j.id, status: "pending", request: { path: ["validateOnly"], equals: true } },
+      data: {
+        status,
+        error: status === "failed" ? priorError : null,
+        validation: priorValidation === undefined || priorValidation === null ? Prisma.DbNull : (priorValidation as Prisma.InputJsonValue),
+        assignedAgentId: null,
+        request: r as Prisma.InputJsonValue,
+      },
+    });
+    if (u.count) restored.push(j.systemKey);
   }
+  const toSkip = caseJobs
+    .filter((j) => j.status === "pending" && !j.singleRun && !ADHOC_SYSTEM_KEYS.includes(j.systemKey) && req(j).validateOnly !== true)
+    .map((j) => j.id);
+  const skipped = toSkip.length
+    ? await db.job.updateMany({ where: { id: { in: toSkip }, status: "pending", singleRun: false }, data: { status: "skipped" } })
+    : { count: 0 };
+  // The status flips above are invisible otherwise — say in the audit trail WHICH sweep did this
+  // and why (every job status change is supposed to leave a trace).
+  if (restored.length || skipped.count) {
+    await db.auditLog.create({
+      data: {
+        actor: "system:case-failed-sweep", action: "job.failure_sweep", caseRequestId,
+        detail: { skippedPending: skipped.count, restoredVerify: restored },
+      },
+    });
+  }
+}
+
+// Re-derive a case's status from its jobs and persist it; on failure, quiesce the still-pending case
+// work (skip ordinary steps, roll queued verify jobs back — see sweepPendingCaseWork). Shared by the
+// wedged-job reclaim, the operator Stop, and accepting/un-accepting a failure, so they all advance
+// the case exactly like a real job result does.
+export async function refreshCaseStatus(db: PrismaClient, caseRequestId: string) {
+  const { caseJobs, caseStatus } = await caseStatusFrom(db, caseRequestId);
+  if (caseStatus === "failed") await sweepPendingCaseWork(db, caseRequestId, caseJobs);
   await db.caseRequest.update({ where: { id: caseRequestId }, data: { status: caseStatus } });
   return caseStatus;
 }
@@ -1573,11 +1633,10 @@ export function makeRunnerService(db: PrismaClient) {
       const derived = await caseStatusFrom(db, job.caseRequestId);
       const caseJobs = derived.caseJobs;
       caseStatus = derived.caseStatus;
-      // On case failure, cancel the still-pending jobs so they aren't orphaned forever
-      // (their dependency gate could never open behind a failed predecessor anyway).
-      if (caseStatus === "failed") {
-        await db.job.updateMany({ where: { caseRequestId: job.caseRequestId, status: "pending" }, data: { status: "skipped" } });
-      }
+      // On case failure, quiesce the still-pending case work (skip ordinary steps, roll queued
+      // verify jobs back to their pre-verify state, leave operator side-actions alone) — one shared
+      // sweep, so this and refreshCaseStatus can never drift apart. See sweepPendingCaseWork.
+      if (caseStatus === "failed") await sweepPendingCaseWork(db, job.caseRequestId, caseJobs);
 
       // Auto-verify: when the automated work first finishes, run a read-only validation sweep across
       // every step (re-run each Confirm-Ctg*) once — confirming accounts/licensing/mirroring/access
@@ -1594,9 +1653,18 @@ export function makeRunnerService(db: PrismaClient) {
             // Re-validate every succeeded automated step that has a validator (skip servicenow/case-resolution).
             const sweep = caseJobs.filter((j) => j.mode === "api" && j.status === "succeeded" && !["servicenow", "case-resolution", ...ADHOC_SYSTEM_KEYS].includes(j.systemKey));
             if (sweep.length) {
-              await db.$transaction(sweep.map((j) =>
-                db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: { ...((j.request ?? {}) as object), validateOnly: true } as Prisma.InputJsonValue } })
-              ));
+              await db.$transaction(sweep.map((j) => {
+                // Stamp the rollback markers EXACTLY like verifyCase does — without them an
+                // interrupted auto-verify pass rolled real successes back to "skipped" (the
+                // legacy fallback), the very bug the rollback exists to prevent. Stale stamps
+                // from an earlier pass are dropped first so they can't resurrect an old state.
+                const r = { ...((j.request ?? {}) as Record<string, unknown>) };
+                delete r.priorStatus; delete r.priorError; delete r.priorValidation;
+                r.validateOnly = true;
+                r.priorStatus = j.status; // always "succeeded" here (the sweep filters on it)
+                if (j.validation) r.priorValidation = j.validation;
+                return db.job.update({ where: { id: j.id }, data: { status: "pending", assignedAgentId: null, validation: Prisma.DbNull, progress: Prisma.DbNull, error: null, finishedAt: null, request: r as Prisma.InputJsonValue } });
+              }));
               caseStatus = "running"; // verifying
               await db.auditLog.create({ data: { actor: "system", action: "case.auto_verify", caseRequestId: job.caseRequestId, detail: { steps: sweep.length } } });
             } else {
@@ -1660,6 +1728,18 @@ export function makeRunnerService(db: PrismaClient) {
         });
         const actor = runAudit?.actor ? runAudit.actor.replace(/^user:/, "") : null;
         const at = new Date().toISOString();
+        // A licence removed off an UNCONVERTED mailbox is a DECIDED outcome (client opt-out or an
+        // operator's picker answer) — the step lands verified-green, no WARN, by the "decided is not
+        // unresolved" rule. But it starts Exchange's irreversible 30-day purge clock, and that must
+        // reach chat rather than live only inside the case: whoever needs the mail archived has 30
+        // days, starting now, whether or not anyone re-opens the run report.
+        // mailboxPurgeLines only matches when a licence actually came off IN THIS RUN (the "freed N"
+        // signal), so idempotent re-runs and group-inherited rejections don't re-alert; the
+        // !retryScheduled guard mirrors stepWarning — an auto-retrying step must not spam per attempt.
+        const purge = status === "succeeded" && !retryScheduled ? mailboxPurgeLines(input.result) : [];
+        if (purge.length) {
+          await fireNotification({ event: "mailboxPurge", title: `Mailbox purge scheduled: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: purge.join("\n"), url });
+        }
         if (status === "failed") {
           await fireNotification({ event: "stepFailed", title: `Step failed: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: input.error ?? null, url });
         } else if (verdict === "warning" && !retryScheduled) {

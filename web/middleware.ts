@@ -11,11 +11,12 @@
 //   3. OPERATOR SURFACE — everything else (pages + the operator API, incl. the job-action routes
 //      approve/rerun/procurement/complete). When AUTH_ENABLED, require a session cookie's PRESENCE;
 //      validity + per-permission checks happen server-side. x-pathname is forwarded so the layout
-//      can skip enforcement on /login.
+//      can skip enforcement on /login. EXCEPTION: the destructive-approval routes (job approve, AD
+//      hard-match) fail CLOSED when AUTH_ENABLED is off — see isDestructiveApproval.
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { V2_COOKIE, V2_ROUTES, V2_CANONICAL } from "./lib/v2";
-import { isRunnerApi, isRunnerBootstrap, isSecretBearing } from "./lib/auth/runner-paths";
+import { isRunnerApi, isRunnerBootstrap, isSecretBearing, isDestructiveApproval } from "./lib/auth/runner-paths";
 
 const PUBLIC = ["/login", "/api/auth"];
 const SESSION_COOKIE = "iam_session";
@@ -61,7 +62,19 @@ export function middleware(req: NextRequest) {
 
   if (isRunnerBootstrap(pathname)) return pass(); // runner bundle download / installer — open by necessity (no token yet)
   if (pathname === "/api/agents" && req.method === "POST") return pass(); // agent enrollment — gated in-handler by the enroll token (no operator cookie / no bearer)
-  if (process.env.AUTH_ENABLED !== "true") return v2Redirect(req, pathname) ?? pass();
+  if (process.env.AUTH_ENABLED !== "true") {
+    // Destructive approvals fail CLOSED while operator auth is off. With auth off, guard() passes
+    // every caller through as a synthetic system admin — so these routes would let anyone on the
+    // network release a destructive offboard step under a fabricated approver name. An approval whose
+    // approver can't be authenticated is not an approval.
+    if (isDestructiveApproval(pathname)) {
+      return NextResponse.json(
+        { error: "operator auth is not enabled — a destructive approval needs an authenticated approver. Set AUTH_ENABLED=true." },
+        { status: 503 },
+      );
+    }
+    return v2Redirect(req, pathname) ?? pass();
+  }
   if (PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return pass();
 
   if (req.cookies.get(SESSION_COOKIE)?.value) return v2Redirect(req, pathname) ?? pass();

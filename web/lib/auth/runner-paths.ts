@@ -1,4 +1,6 @@
-// Which request paths are MACHINE endpoints (bearer-gated) vs the small OPEN bootstrap surface.
+// Which request paths are MACHINE endpoints (bearer-gated) vs the small OPEN bootstrap surface —
+// plus one OPERATOR-surface classifier (isDestructiveApproval) for the routes that must fail closed
+// while operator auth is off.
 //
 // This is the app's outermost trust boundary, so it lives in lib/ where the test suite can reach it
 // (middleware.ts is outside the `lib/**/*.test.ts` glob — a regression there would ship unnoticed).
@@ -51,4 +53,16 @@ export function isSecretBearing(p: string): boolean {
     /^\/api\/runner\/conn-tests\/[^/]+\/credential$/.test(p) ||
     p === "/api/runner/cloud-groups/claim"
   );
+}
+
+/**
+ * Operator routes that RELEASE DESTRUCTIVE work: approving a requiresApproval offboard step and the
+ * AD hard-match write (the two `case.approve_destructive` surfaces). These fail closed even while
+ * operator auth is off: with AUTH_ENABLED != "true" the server-side guards pass every caller through
+ * as a synthetic system admin, so without this check anyone on the network could approve a
+ * destructive step with a fabricated approver name in the body. "Auth not enabled yet" must never
+ * mean "destructive approvals are anonymous" — same reasoning as the secret-bearing routes above.
+ */
+export function isDestructiveApproval(p: string): boolean {
+  return /^\/api\/jobs\/[^/]+\/approve$/.test(p) || /^\/api\/cases\/[^/]+\/hard-match$/.test(p);
 }

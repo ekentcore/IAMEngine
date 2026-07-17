@@ -1108,10 +1108,12 @@ $DISPATCH = @{
             }
             $r
         }
-        # -MailboxSizeGB is what makes the executor's "keep the license on a big mailbox" rule work. It
-        # was never passed before, so it always defaulted to 0 and the rule could never fire. The app
-        # hands the size down from the Exchange step's result at claim time (config.mailboxSizeGB).
-        Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB ([double]((Get-CtgProp $job.config 'mailboxSizeGB') ?? 0)) }
+        # -MailboxSizeGB is what makes the executor's "keep the license on a big mailbox" rule work.
+        # The app hands the size down from the Exchange step's result at claim time
+        # (config.mailboxSizeGB). Absent means NOT READ and must stay $null — coercing it to 0 made a
+        # real empty mailbox indistinguishable from an unreadable one, and the report hid the Convert
+        # answer for both. The [System.Nullable[double]] parameter binds $null and JSON numbers as-is.
+        Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB (Get-CtgProp $job.config 'mailboxSizeGB') }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
     'active-directory' = @{
