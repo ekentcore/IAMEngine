@@ -13,6 +13,7 @@ import { deriveSecretRows } from "@/lib/secrets/wiring";
 import { delineaConfigured, delineaConfigFromEnv } from "@/lib/secrets/delinea";
 import { delineaWriteSummary } from "@/lib/secrets/delinea-templates";
 import { buildSetupSteps } from "@/lib/clients/setup-steps";
+import { clientRunnerReachability, type RunnerReach } from "@/lib/runner/reachability";
 import type { ConnTestState } from "@/lib/clients/readiness";
 import { SetupWizard } from "./_components/setup-wizard";
 
@@ -40,6 +41,10 @@ export default async function ClientSetupPage({ params }: { params: { slug: stri
   const systemKeys = readiness?.systems.map((s) => s.systemKey) ?? [];
   const initialConn: Record<string, ConnTestState> = Object.fromEntries((readiness?.systems ?? []).map((s) => [s.systemKey, s.test]));
 
+  // Runner reachability per system — the "can we even live-test this credential" signal the wizard shows
+  // for on-prem steps (the operator's "test comms to the runner"). Cheap: one agent query for the client.
+  const reach: Record<string, RunnerReach> = systemKeys.length > 0 ? await clientRunnerReachability(db, client.id, systemKeys) : {};
+
   if (steps.length === 0) {
     return (
       <main>
@@ -60,6 +65,7 @@ export default async function ClientSetupPage({ params }: { params: { slug: stri
       steps={steps}
       systemKeys={systemKeys}
       initialConn={initialConn}
+      reach={reach}
       delineaConfigured={delineaConfigured(delineaConfigFromEnv())}
       write={delineaWriteSummary({ slug: client.slug, clientFolderId: client.delineaFolderId, secretNames: steps.map((s) => s.secretName) })}
     />

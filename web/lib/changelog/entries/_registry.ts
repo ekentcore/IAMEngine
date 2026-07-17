@@ -47,6 +47,7 @@ export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";
 export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missing";
+export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as importClientsByCoreid } from "./import-clients-by-coreid";
 export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";
 export { entry as llmModelAwareRequests } from "./llm-model-aware-requests";

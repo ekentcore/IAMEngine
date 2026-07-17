@@ -16,6 +16,7 @@ import { secretIsSet } from "@/lib/secrets/wiring";
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
 import type { SetupStep } from "@/lib/clients/setup-steps";
 import type { ConnTestState } from "@/lib/clients/readiness";
+import type { RunnerReach } from "@/lib/runner/reachability";
 import type { DelineaWriteSummary } from "@/lib/secrets/delinea-templates";
 import { CreateInDelineaForm, createDisabledReason } from "@/app/clients/_components/create-in-delinea";
 
@@ -32,6 +33,7 @@ export function SetupWizard({
   steps,
   systemKeys,
   initialConn,
+  reach,
   delineaConfigured,
   write,
 }: {
@@ -40,6 +42,7 @@ export function SetupWizard({
   steps: SetupStep[];
   systemKeys: string[]; // every credentialed api system, for live-test bookkeeping
   initialConn: Record<string, ConnTestState>; // latest live-test state per systemKey (seed)
+  reach?: Record<string, RunnerReach>; // runner reachability per systemKey (the "test comms to the runner" signal)
   delineaConfigured: boolean;
   write?: DelineaWriteSummary;
 }) {
@@ -313,6 +316,7 @@ export function SetupWizard({
                 st={state[active.secretName]}
                 connStatus={connStatusFor(active)}
                 conn={conn}
+                reach={reach}
                 wired={isWired(active)}
                 delineaConfigured={delineaConfigured}
                 write={write}
@@ -392,7 +396,7 @@ function Badge({ children, color, bg, title }: { children: React.ReactNode; colo
 }
 
 function StepCard({
-  slug, step, st, connStatus, conn, wired, delineaConfigured, write,
+  slug, step, st, connStatus, conn, reach, wired, delineaConfigured, write,
   onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated,
 }: {
   slug: string;
@@ -400,6 +404,7 @@ function StepCard({
   st: StepState;
   connStatus: "pending" | "running" | "ok" | "fail" | "not_needed" | "untested";
   conn: Record<string, ConnResult>;
+  reach?: Record<string, RunnerReach>;
   wired: boolean;
   delineaConfigured: boolean;
   write?: DelineaWriteSummary;
@@ -412,13 +417,25 @@ function StepCard({
   onNext: () => void;
   onCreated: (externalId: string) => void;
 }) {
-  const [creating, setCreating] = useState(false);
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
   // "Create in Delinea" capability: instance write account + a template for this secret (folder is
   // collected inline). Absent write summary → not available.
   const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId } : null;
   const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
   const createReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
+  // Lead with entering the credentials: a fresh, not-yet-wired step opens straight into the create form
+  // so "type the fields → test → write" is the front-and-center path. Paste-an-existing-id stays below.
+  const [creating, setCreating] = useState(() => canCreate && !hasValue && !st.notNeeded);
+
+  // Runner reachability for this step's systems — the "test comms to the runner" signal. Only meaningful
+  // for a step that runs on the client's OWN agent (on-prem AD/exchange): a cloud step is served centrally.
+  const stepReach = step.systemKeys.map((k) => reach?.[k]).filter((r): r is RunnerReach => !!r);
+  const onPremReach = stepReach.filter((r) => r.needsOwnAgent);
+  const runnerLine = onPremReach.length > 0
+    ? onPremReach.every((r) => r.servable)
+      ? { ok: true as const, text: "Runner online for this client — its connection test can run now." }
+      : { ok: false as const, text: onPremReach.map((r) => r.reason).find(Boolean) ?? "No runner online for this client — its connection test can't run until one connects." }
+    : null;
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.2rem" }}>
       <div className="row-between" style={{ alignItems: "baseline" }}>
@@ -454,6 +471,24 @@ function StepCard({
             <p className="note" style={{ marginTop: 14 }}>Plain username + password credential — no extra vendor setup.</p>
           )}
 
+          {/* Runner comms — for on-prem steps, whether the client's own agent is reachable to test this
+              credential (the app can't bind AD itself, so a reachable runner IS the pre-write signal). */}
+          {runnerLine && (
+            <p
+              className="note"
+              style={{
+                marginTop: 12,
+                border: "1px solid var(--line-2)",
+                borderRadius: 8,
+                padding: "0.45rem 0.65rem",
+                color: runnerLine.ok ? "var(--ok-fg)" : "var(--warn-fg)",
+                background: runnerLine.ok ? "var(--ok-bg)" : "var(--warn-bg)",
+              }}
+            >
+              {runnerLine.ok ? "✓ " : "⚠ "}{runnerLine.text}
+            </p>
+          )}
+
           {/* Exact fields to collect */}
           {step.fieldRequirements.length > 0 && (
             <div style={{ marginTop: 14 }}>
@@ -462,10 +497,11 @@ function StepCard({
                 {step.fieldRequirements.map((f) => {
                   const missing = st.field.status === "ok" && st.field.missingFields?.includes(f.label);
                   return (
-                    <li key={f.label} style={{ fontSize: 13, color: missing ? "var(--warn-fg)" : "var(--fg)" }}>
+                    <li key={f.label} style={{ fontSize: 13, color: missing ? "var(--warn-fg)" : "var(--fg)", marginBottom: f.hint ? 4 : 0 }}>
                       {f.label}
                       {f.optional && <span className="muted"> (optional)</span>}
                       <span className="muted" style={{ fontSize: 11 }}> — e.g. {f.anyOf.slice(0, 3).join(" / ")}</span>
+                      {f.hint && <span className="muted" style={{ display: "block", fontSize: 11 }}>{f.hint}</span>}
                     </li>
                   );
                 })}
@@ -473,10 +509,26 @@ function StepCard({
             </div>
           )}
 
-          {/* Paste the Delinea reference */}
+          {/* PRIMARY path — enter the credential's fields, test them, and create it in Delinea. Opens by
+              default for a fresh (not-yet-wired) step so the walkthrough leads with entering credentials. */}
+          {cap && creating && (
+            <div style={{ marginTop: 16 }}>
+              <CreateInDelineaForm
+                slug={slug}
+                secretName={step.secretName}
+                fieldRequirements={step.fieldRequirements}
+                capability={cap}
+                onCreated={(id) => { setCreating(false); onCreated(id); }}
+                onCancel={() => setCreating(false)}
+              />
+            </div>
+          )}
+
+          {/* SECONDARY path — already have a Delinea secret id? paste it. Also hosts Save / Not-needed and
+              the toggle that (re)opens the create form. */}
           <div style={{ marginTop: 16 }}>
             <label className="note" htmlFor={`sec-${step.secretName}`} style={{ display: "block", marginBottom: 4 }}>
-              Delinea secret id for <code>{step.secretName}</code>
+              {creating ? <>Or, if you already have one, paste its Delinea secret id</> : <>Delinea secret id for <code>{step.secretName}</code></>}
             </label>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <input
@@ -492,27 +544,19 @@ function StepCard({
               <button onClick={onMarkNotNeeded} style={{ fontSize: 13 }} title="Its module is handled as a manual step — won't block a case">
                 Mark not needed
               </button>
-              <button
-                onClick={() => setCreating((c) => !c)}
-                disabled={!canCreate}
-                title={canCreate ? "Create this secret in Delinea and wire its id" : createReason ?? undefined}
-                style={{ fontSize: 13 }}
-              >
-                {creating ? "Close" : "Create in Delinea…"}
-              </button>
+              {!creating && (
+                <button
+                  onClick={() => setCreating(true)}
+                  disabled={!canCreate}
+                  title={canCreate ? "Enter the credential's fields; the app tests them and creates the secret in Delinea" : createReason ?? undefined}
+                  style={{ fontSize: 13 }}
+                >
+                  Enter credentials &amp; create…
+                </button>
+              )}
               {st.saved === false && <span className="note muted">unsaved</span>}
             </div>
             {st.saveMsg && <p className="note danger" style={{ marginTop: 6 }}>{st.saveMsg}</p>}
-            {creating && cap && (
-              <CreateInDelineaForm
-                slug={slug}
-                secretName={step.secretName}
-                fieldRequirements={step.fieldRequirements}
-                capability={cap}
-                onCreated={(id) => { setCreating(false); onCreated(id); }}
-                onCancel={() => setCreating(false)}
-              />
-            )}
           </div>
 
           {/* App-side field-shape result */}
