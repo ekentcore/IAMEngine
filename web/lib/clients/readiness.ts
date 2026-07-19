@@ -142,13 +142,17 @@ export function computeClientReadiness(input: ReadinessInput): ClientReadiness {
     const summary = manual ? `All ${systemsTotal} systems ready (${manual} via manual steps).` : `All ${systemsTotal} systems wired and tested.`;
     return { tier: "ready", label: "ready", summary, systemsTotal, systemsReady, systemsWired, systems };
   }
-  // Partial: spell out what's holding it back so the badge tooltip is actionable.
+  // Partial: spell out what's holding it back so the badge tooltip is actionable. `systemsReady` is
+  // the headline number, but it can read as 0 even when every system is wired and simply untested —
+  // the amber badge would then correlate with nothing visible. Lead with the wired count too so "0 of
+  // N ready" always sits next to the number that explains it (wired but not yet tested).
   const missing = systems.filter((s) => !s.wired).length;
   const untested = systems.filter((s) => s.wired && s.test === "untested").length;
   const failing = systems.filter((s) => s.wired && s.test === "fail").length;
   const rightsMissing = systems.filter((s) => s.setup.rights === "failed").length;
   const parts = [
     `${systemsReady} of ${systemsTotal} ready`,
+    `${systemsWired} wired`,
     missing ? `${missing} missing creds` : "",
     untested ? `${untested} untested` : "",
     failing ? `${failing} failing` : "",

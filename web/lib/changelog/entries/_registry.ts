@@ -55,6 +55,7 @@ export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
 export { entry as featureRequestNumbersAndAutoHide } from "./feature-request-numbers-and-auto-hide";
 export { entry as featureRequestsMenuBadgeLiveCounts } from "./feature-requests-menu-badge-live-counts";
 export { entry as featureRequestsOwnPage } from "./feature-requests-own-page";
+export { entry as fleetAuditNamesNewlines } from "./fleet-audit-names-newlines";
 export { entry as fleetAuditPermsAndLeakedSeats } from "./fleet-audit-perms-and-leaked-seats";
 export { entry as fleetReportRestrictedRouting } from "./fleet-report-restricted-routing";
 export { entry as foundation } from "./foundation";
@@ -97,6 +98,7 @@ export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-a
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
 export { entry as pr7Pr10Batch } from "./pr7-pr10-batch";
 export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrations-and-worktree-retire";
+export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";
 export { entry as requestedGroupsReachThePlan } from "./requested-groups-reach-the-plan";
 export { entry as runLogFixedLinesPopulate } from "./run-log-fixed-lines-populate";

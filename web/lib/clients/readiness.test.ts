@@ -157,6 +157,23 @@ test("setup vector: not-needed systems mark preflight/test/rights as not_needed 
   assert.equal(v.complete, true);
 });
 
+// systemsReady=0 while wired>0 (wired but nothing has tested ok yet) still lands in "partial", not
+// "not_set_up" (that split is keyed off systemsWired, unchanged) - but the summary must surface the
+// wired count so the amber badge correlates with a visible number instead of a bare "0 of N ready".
+test("partial: systemsReady 0 with systems wired reads as wired-but-untested, not a bare 0 of N", () => {
+  const r = computeClientReadiness({
+    systems: [sys("m365", ["m365-admin"]), sys("mimecast", ["mimecast"])],
+    secretExternalIds: new Map([["m365-admin", "111"], ["mimecast", "222"]]),
+    testBySystem: new Map(), // both wired, neither tested yet
+  });
+  assert.equal(r.tier, "partial");
+  assert.equal(r.systemsReady, 0);
+  assert.equal(r.systemsWired, 2);
+  assert.match(r.summary, /0 of 2 ready/);
+  assert.match(r.summary, /2 wired/);
+  assert.match(r.summary, /2 untested/);
+});
+
 test("partial summary names rights gaps", () => {
   const r = computeClientReadiness({
     systems: [sys("m365", ["m365-admin"]), sys("zoom", ["zoom"])],

@@ -72,13 +72,13 @@ export default async function AuditsPage({ searchParams }: { searchParams: Audit
           {permissions.unverified.length > 0 && (
             <p className="note" style={{ fontSize: 12, color: "#b45309" }}>
               {permissions.unverified.length} client(s) could not be fully read (Graph throttling) and are excluded above —
-              re-run to confirm: {permissions.unverified.map((r) => r.slug).join(", ")}
+              re-run to confirm: {permissions.unverified.map((r) => r.client || r.slug).join(", ")}
             </p>
           )}
           {permissions.noCred.length > 0 && (
             <p className="note" style={{ fontSize: 12 }}>
               {permissions.noCred.length} client(s) have no usable credential, so nothing could be checked:{" "}
-              {permissions.noCred.map((r) => r.slug).join(", ")}
+              {permissions.noCred.map((r) => r.client || r.slug).join(", ")}
             </p>
           )}
         </>

@@ -81,7 +81,8 @@ const db = new PrismaClient();
     console.log(`\nOr non-interactively, as an admin in that tenant (Graph resource app id ${GRAPH_RESOURCE_APP_ID}):`);
     for (const p of pivot) {
       const id = GRAPH_APP_ROLE_IDS[p.role];
-      console.log(`\n  ${p.role}${p.optional ? " (optional)" : ""} — ${p.clients.length} client(s): ${p.clients.map((c) => c.slug).join(", ")}`);
+      console.log(`\n  ${p.role}${p.optional ? " (optional)" : ""} — ${p.clients.length} client(s):`);
+      for (const c of p.clients) console.log(`    - ${c.client || c.slug}`);
       if (id) {
         console.log(`    $sp    = Get-MgServicePrincipal -Filter "appId eq '<the app id>'"`);
         console.log(`    $graph = Get-MgServicePrincipal -Filter "appId eq '${GRAPH_RESOURCE_APP_ID}'"`);
@@ -92,11 +93,11 @@ const db = new PrismaClient();
   // The reverse pivot: who holds authority the engine never needs. Escalation roles are listed with
   // WHAT they permit rather than just named — "RoleManagement.ReadWrite.Directory" means nothing to
   // most readers; "can make itself Global Administrator" ends the conversation.
-  const byEscalation = new Map<string, { why: string; slugs: string[] }>();
+  const byEscalation = new Map<string, { why: string; clients: { slug: string; client: string }[] }>();
   for (const r of rows) {
     for (const s of r.surplus.filter((x) => x.escalation)) {
-      const e = byEscalation.get(s.role) ?? { why: s.why, slugs: [] };
-      e.slugs.push(r.slug);
+      const e = byEscalation.get(s.role) ?? { why: s.why, clients: [] };
+      e.clients.push({ slug: r.slug, client: r.client });
       byEscalation.set(s.role, e);
     }
   }
@@ -104,8 +105,9 @@ const db = new PrismaClient();
     console.log(`\n${"—".repeat(78)}`);
     console.log(`OVER-PERMISSIONED — these credentials hold authority this engine never uses.`);
     console.log(`Each is a standing escalation primitive on a secret a runner reads at execution time.`);
-    for (const [role, e] of [...byEscalation].sort((a, b) => b[1].slugs.length - a[1].slugs.length)) {
-      console.log(`\n  ${role} — ${e.slugs.length} client(s): ${e.slugs.join(", ")}`);
+    for (const [role, e] of [...byEscalation].sort((a, b) => b[1].clients.length - a[1].clients.length)) {
+      console.log(`\n  ${role} — ${e.clients.length} client(s):`);
+      for (const c of e.clients) console.log(`    - ${c.client || c.slug}`);
       console.log(`    ${e.why}`);
     }
     console.log(`\n  Removing one is a client-side decision — the app registration may be shared with`);
@@ -113,5 +115,8 @@ const db = new PrismaClient();
   }
 
   const unverified = rows.filter((r) => r.status === "unverified");
-  if (unverified.length) console.log(`\n${unverified.length} client(s) could not be fully read (Graph throttling) — re-run for those: ${unverified.map((r) => r.slug).join(", ")}`);
+  if (unverified.length) {
+    console.log(`\n${unverified.length} client(s) could not be fully read (Graph throttling) — re-run for those:`);
+    for (const r of unverified) console.log(`  - ${r.client || r.slug}`);
+  }
 })().catch(async (e) => { console.error(e); await db.$disconnect(); process.exit(1); });
