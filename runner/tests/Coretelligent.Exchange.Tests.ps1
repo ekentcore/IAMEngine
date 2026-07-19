@@ -56,7 +56,7 @@ Describe 'Invoke-CtgExchangeSharedMailboxMirror' {
         Should -Invoke Add-RecipientPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'sales@x.com' -and $Trustee -eq 'new@x.com' } -Times 1
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'sales@x.com' -and $GrantSendOnBehalfTo['Add'] -eq 'new@x.com' } -Times 1
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'it@x.com' } -Times 0 -Exactly  # mirror had nothing on IT
-        ($acts -join ' ') | Should -Match 'FullAccess: Sales'
+        ($acts -join ' ') | Should -Match 'granted FullAccess on shared mailbox sales@x.com \(Sales\) — mirrored from mirror@x.com'
     }
 
     It 'is idempotent — skips a permission the target already holds' {

@@ -259,6 +259,26 @@ if ($exoAvail) {
     Import-Module "$PSScriptRoot/modules/Coretelligent.Exchange/Coretelligent.Exchange.psd1" -Force
 }
 
+# Self-heal PnP.PowerShell if it's absent — mirrors Install-CtgExoPin above. PnP powers
+# Grant-CtgSharePointSiteAccess (offboard hand-off: a leaver's manager/delegate gets full access to
+# their OneDrive/SharePoint content). Best-effort and fail-soft: a host with no gallery access simply
+# never loads Coretelligent.SharePoint, and the app's claim gate withholds those grants from it —
+# nothing else in the runner depends on PnP being present.
+# Returns whether PnP.PowerShell is available once installation is attempted, so callers don't have
+# to re-scan -ListAvailable themselves (Fix 3 — this used to run that scan, then the caller ran it
+# again immediately after to set $pnpAvail).
+function Install-CtgPnPModule {
+    $avail = Get-Module -ListAvailable -Name PnP.PowerShell -ErrorAction SilentlyContinue
+    if ($avail) { return $true }
+    Write-Warning "PnP.PowerShell not installed — installing it so SharePoint/OneDrive full-access grants can run (offboard hand-off). Best-effort; a host with no gallery access will skip SharePoint grants."
+    Initialize-CtgGallery
+    try { Install-Module PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop; Write-Host "  installed PnP.PowerShell" -ForegroundColor Yellow }
+    catch { Write-Warning "  could not install PnP.PowerShell: $($_.Exception.Message)" }
+    [bool](Get-Module -ListAvailable -Name PnP.PowerShell -ErrorAction SilentlyContinue)
+}
+$pnpAvail = Install-CtgPnPModule
+if ($pnpAvail) { Import-Module "$PSScriptRoot/modules/Coretelligent.SharePoint/Coretelligent.SharePoint.psd1" -Force }
+
 # Safe property/key read at the RUNNER scope. Each Coretelligent module has its own private copy of
 # this helper, but those aren't exported — so a script-scope call (e.g. reading $job.config) must use
 # this one. Without it, the call is an unresolved command that the dependency guard below mistakes for
@@ -1122,7 +1142,51 @@ $DISPATCH = @{
         # (config.mailboxSizeGB). Absent means NOT READ and must stay $null — coercing it to 0 made a
         # real empty mailbox indistinguishable from an unreadable one, and the report hid the Convert
         # answer for both. The [System.Nullable[double]] parameter binds $null and JSON numbers as-is.
-        Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB (Get-CtgProp $job.config 'mailboxSizeGB') }
+        Offboard = { param($job, $creds)
+            $r = Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB (Get-CtgProp $job.config 'mailboxSizeGB')
+            # SharePoint/OneDrive full-access hand-off (Task 5): the named delegate becomes a
+            # site-collection admin on the leaver's OneDrive site + any configured SharePoint sites,
+            # via PnP app-only auth with the SAME m365-admin cert the EXO lane uses. That cert +
+            # AppId + tenant only exist HERE at dispatch level — Invoke-CtgM365Offboarding gets no
+            # creds — so this runs AFTER the offboard executor returns and its action lines are
+            # merged into the executor's own $r.Actions (mind the result shape: $r is a
+            # pscustomobject with an Actions array; append and reassign, don't replace).
+            # ENTIRELY fail-soft: PnP.PowerShell being absent ($pnpAvail, set by Task 4's
+            # Install-CtgPnPModule gate above) or any grant failing must never fail the offboard —
+            # the containment work above (block sign-in, remove groups/license) already ran.
+            #
+            # offboard-review Fix 1 (SECURITY): Invoke-CtgM365Offboarding can return Status='ok' having
+            # done NOTHING — an ambiguous display-name match (2+ users), a near-miss, or no match at
+            # all all return early without a UserId, because a human has to pick the right person
+            # first. Granting SharePoint/OneDrive access off THAT would hand a leaver's site to the
+            # delegate for the wrong (or no) person — gate the whole hand-off on a genuinely resolved
+            # offboard. Test-CtgOffboardResolved / Invoke-CtgSharePointOffboardGrant live in the
+            # Coretelligent.SharePoint module, which is only IMPORTED when $pnpAvail is true (see the
+            # Install-CtgPnPModule gate above) — so the $pnpAvail check must stay the OUTER gate; calling
+            # either function first would throw "term not recognized" on a host with no PnP.
+            $spDelegate = [string](Get-CtgProp $job.config 'oneDriveGrantAccessTo')
+            if ($pnpAvail -and $spDelegate) {
+                if (-not (Test-CtgOffboardResolved $r)) {
+                    $r.Actions = @($r.Actions) + "SharePoint hand-off skipped — offboard unresolved (ambiguous match, no match, or user not found; pick the right user on the case, then re-run)"
+                }
+                else {
+                    $spActions = [System.Collections.Generic.List[string]]::new()
+                    try {
+                        $certArgs = Get-CtgExoCertArgs $creds['m365-admin']
+                        $appId = Get-CtgM365AppId $creds
+                        $tenant = Get-CtgTenantDomain $job $creds
+                        # offboard-review Fix 2: delegate-name resolution + the OneDrive/site grants
+                        # themselves live in Invoke-CtgSharePointOffboardGrant (Coretelligent.SharePoint.psm1)
+                        # so they're unit-testable — Start-IamRunner.ps1 has a mandatory param block and a
+                        # main polling loop and can't be dot-sourced for Pester.
+                        foreach ($a in (Invoke-CtgSharePointOffboardGrant -Job $job -AppId $appId -Tenant $tenant -CertArgs $certArgs)) { $spActions.Add($a) }
+                    }
+                    catch { $spActions.Add("WARN SharePoint/OneDrive full-access grant did not run: $($_.Exception.Message)") }
+                    if ($spActions.Count -gt 0) { $r.Actions = @($r.Actions) + $spActions.ToArray() }
+                }
+            }
+            $r
+        }
         Change   = { param($job, $creds) Invoke-CtgM365Change -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
@@ -2156,6 +2220,9 @@ $script:GRAPH_OPTIONAL_CAPS = @(
     # does NOT degrade gracefully like the caps above — the step fails outright.
     @{ need = "reset a cloud user's password (the 'Generate random password' action)"; anyOf = @('User-PasswordProfile.ReadWrite.All')
        why  = "without it Graph denies the reset with 'Authorization_RequestDenied'; an onboard that CREATES the account sets its password as part of the create and is not affected" }
+    # Grants a delegate access to a leaver's OneDrive on offboard.
+    @{ need = "grant a delegate access to a leaver's OneDrive on offboard"; anyOf = @('Files.ReadWrite.All', 'Sites.ReadWrite.All')
+       why  = "without it the offboard OneDrive delegate hand-off fails with a permission error; the step warns and continues" }
 )
 function Get-CtgGraphScopeGaps {
     param([string[]]$Granted)
@@ -2178,6 +2245,18 @@ $script:GRAPH_ESCALATION_ROLES = @{
     'Sites.FullControl.All'                  = 'full control of every SharePoint site in the tenant'
 }
 # Roles on OTHER resources the engine genuinely uses, so the surplus check doesn't call them unused.
+#
+# Sites.FullControl.All is deliberately NOT here. The Office 365 SharePoint Online app role of that
+# name is what the offboard PnP site-collection-admin hand-off needs (Graph can't make a user a
+# site-collection admin), and clients who wire that up genuinely grant it — but this model matches
+# granted roles by NAME only, with no idea which API resource (Graph vs SharePoint Online) issued the
+# grant. Microsoft Graph also exposes an app role literally named "Sites.FullControl.All" that grants
+# full control of every SharePoint site via Graph — a real escalation, unrelated to the narrower
+# SharePoint-resource grant. Moving this here (as a prior change did) makes the surplus scan blind to
+# that Graph-resource escalation wherever it's actually present. Leaving it in
+# $script:GRAPH_ESCALATION_ROLES is the safe default: clients using the SharePoint hand-off will see it
+# flagged as extra-access (a known false positive documented in web/app/help/cloud-auth) — verify
+# against the offboard result rather than removing it from escalation again.
 $script:USED_NON_GRAPH_ROLES = @('Exchange.ManageAsApp')
 
 # What is granted that the engine does NOT need — the opposite question to Get-CtgGraphScopeGaps, and

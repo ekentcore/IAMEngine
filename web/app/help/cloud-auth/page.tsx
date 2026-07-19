@@ -107,6 +107,13 @@ export default function CloudAuthSetupPage({ searchParams }: { searchParams?: { 
         <li>{!hybrid && <b>(distribution lists only) </b>}<code>Exchange.ManageAsApp</code> is <b>not enough on its own</b>: the app’s <b>service principal</b> must also hold the <b>Exchange Administrator</b> directory role (Entra → Roles and administrators → Exchange Administrator → Add assignments → pick the app). A permission grant without the role still returns “access denied” on every mailbox cmdlet. Exchange Online app-only is also <b>certificate</b>-based — the client secret does not authenticate it.</li>
       </ul>
 
+      <h3>SharePoint Online — a different API, not Microsoft Graph</h3>
+      <ul>
+        <li><b>APIs my organization uses</b> → <b>Office 365 SharePoint Online</b> → Application permissions → <code>Sites.FullControl.All</code> — only if this client uses the offboard SharePoint / OneDrive full-access hand-off. The engine adds the delegate as a site-collection administrator via PnP, which Graph cannot do; this is the SharePoint-resource role, not the Graph one.</li>
+        <li><code>Sites.FullControl.All</code> here is broad (full control of every site) — grant it only for clients that use this hand-off.</li>
+        <li className="note"><b>Expect a false positive.</b> The connection test's over-permissioning scan matches granted roles by name only — it has no way to tell this SharePoint-resource <code>Sites.FullControl.All</code> apart from the identically-named Microsoft Graph app role (which really is a tenant-wide escalation). So for any client using this hand-off, the scan <b>will</b> report <code>Sites.FullControl.All</code> as an extra-access / escalation finding. That is expected — don't "fix" it by revoking the grant or by changing the scan's classification; verify what actually happened against the offboard result instead.</li>
+      </ul>
+
       <h3>Granting them</h3>
       <ul>
         <li className="note">Adding a permission is always a MANUAL admin step — the app registration cannot grant itself new permissions (that would need <code>Application.ReadWrite.All</code> + <code>AppRoleAssignment.ReadWrite.All</code>, which we deliberately do not hold). Portal: API permissions → Add → Grant admin consent. Or a Global Admin can run: <code>Add-MgApplicationApiPermission</code> equivalents via Graph PowerShell — e.g. add the <code>Domain.Read.All</code> app role (id <code>dbb9058a-0e50-45d7-ae91-66909b5d4664</code>) to the app’s requiredResourceAccess and then <code>New-MgServicePrincipalAppRoleAssignment</code> to consent.</li>

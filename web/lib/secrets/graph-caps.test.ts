@@ -82,6 +82,7 @@ test("app-role ids are the APPLICATION ids, not delegated scopes or a neighbouri
     "Application.Read.All": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
     "Mail.Send": "b633e1c5-b582-4048-a93e-9f11b44c7e96",
     "Device.ReadWrite.All": "1138cb37-bd11-4084-a2b7-9f71582aeddb",
+    "Files.ReadWrite.All": "75359482-378d-4052-8f01-80520e7db3cd",
   });
   // The delegated twins of roles we hand out — never let one of these creep back in. Each grants
   // nothing to an app-only credential while looking perfectly consented.
@@ -183,6 +184,24 @@ test("Exchange.ManageAsApp is used, not surplus — it is simply not a Graph rol
   assert.deepEqual(graphSurplusRoles([...NARROW, "Exchange.ManageAsAppV2"]).map((r) => r.role), ["Exchange.ManageAsAppV2"]);
 });
 
+// Sites.FullControl.All must stay an escalation role, even though the SAME NAME is also the
+// SharePoint-resource app role the offboard PnP site-collection-admin hand-off genuinely needs (Graph
+// can't make a user a site-collection admin). The caps model matches granted roles by NAME only — it
+// has no notion of which API resource (Graph vs SharePoint Online) issued a grant — so there is no way
+// to tell "SharePoint's Sites.FullControl.All" apart from Microsoft Graph's own app role of the same
+// name, which grants full control of every SharePoint site in the tenant via Graph: a genuine
+// escalation. A prior change moved this into USED_NON_GRAPH_ROLES to silence the (correct, SharePoint
+// hand-off) false positive; that made a real Graph-resource Sites.FullControl.All grant invisible to
+// the surplus scan too. Keeping it in GRAPH_ESCALATION_ROLES is the safe default: clients using the
+// SharePoint hand-off see a known false positive (documented in web/app/help/cloud-auth) instead of a
+// genuine escalation going unflagged fleet-wide.
+test("Sites.FullControl.All is treated as escalation (name-only model can't tell it apart from the Graph-resource grant)", () => {
+  assert.ok(GRAPH_ESCALATION_ROLES["Sites.FullControl.All"], "Sites.FullControl.All must be listed as an escalation role");
+  const s = graphSurplusRoles([...NARROW, "Sites.FullControl.All"]);
+  assert.deepEqual(s.map((r) => r.role), ["Sites.FullControl.All"]);
+  assert.ok(s[0].escalation, "must be reported as escalation, not as a used/redundant role");
+});
+
 test("holding an optional permission is not surplus — it is the feature working as intended", () => {
   assert.deepEqual(graphSurplusRoles([...NARROW, "User-PasswordProfile.ReadWrite.All", "Mail.Send"]), []);
 });
@@ -215,6 +234,7 @@ test("the cap sets match the runner's copy (hand-synced — update both)", () =>
     ["Application.Read.All", "Application.ReadWrite.All", "Directory.Read.All", "Directory.ReadWrite.All"],
     ["Mail.Send"],
     ["Device.ReadWrite.All", "Directory.ReadWrite.All"],
+    ["Files.ReadWrite.All", "Sites.ReadWrite.All"],
   ]);
 });
 
@@ -233,6 +253,7 @@ test("the optional caps cover every feature-gated Graph call the runner makes", 
     /secret\/certificate expires/, //   GET /applications              :1925
     /notification email/, //     Send-MgUserMail                       Coretelligent.Notify.psm1:54
     /Entra-joined devices/, //   Update-MgDevice -AccountEnabled       :1394
+    /OneDrive.*delegate|delegate.*OneDrive/, // offboard OneDrive delegate hand-off
   ]) {
     assert.match(needs, feature, `no optional cap covers ${feature} — a feature that can fail for want of a permission nobody asked for`);
   }

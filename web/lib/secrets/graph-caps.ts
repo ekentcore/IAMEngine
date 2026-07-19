@@ -98,6 +98,11 @@ export const GRAPH_OPTIONAL_CAPS: readonly GraphCap[] = [
     anyOf: ["Device.ReadWrite.All", "Directory.ReadWrite.All"],
     why: "without it the leaver's Entra device objects stay enabled; the offboard warns and continues. Only clients with disableDevices configured are affected",
   },
+  {
+    need: "grant a delegate access to a leaver's OneDrive on offboard",
+    anyOf: ["Files.ReadWrite.All", "Sites.ReadWrite.All"],
+    why: "without it the offboard OneDrive delegate hand-off fails with a permission error; the step warns and continues",
+  },
 ];
 
 // The Entra portal needs an app-role ID, not a name, to grant a permission non-interactively. Only
@@ -119,6 +124,7 @@ export const GRAPH_APP_ROLE_IDS: Readonly<Record<string, string>> = {
   "Application.Read.All": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
   "Mail.Send": "b633e1c5-b582-4048-a93e-9f11b44c7e96",
   "Device.ReadWrite.All": "1138cb37-bd11-4084-a2b7-9f71582aeddb",
+  "Files.ReadWrite.All": "75359482-378d-4052-8f01-80520e7db3cd",
 };
 
 // The Microsoft Graph resource app id — the service principal that owns all of the roles above.
@@ -179,8 +185,21 @@ export const GRAPH_ESCALATION_ROLES: Readonly<Record<string, string>> = {
 
 // Roles on OTHER resources (not Graph) that the engine genuinely uses, so the surplus check does not
 // report them as unused. Exchange Online app-only auth needs Exchange.ManageAsApp — see
-// Connect-CtgExchange. Deliberately narrow: the Exchange.*V2 / AdminAPI variants are NOT listed,
-// because we do not call them and a client's team should be told so.
+// Connect-CtgExchange.
+//
+// Sites.FullControl.All is deliberately NOT listed here. The Office 365 SharePoint Online app role of
+// that name is what the offboard PnP site-collection-admin hand-off needs (Graph cannot make a user a
+// site-collection admin), and it IS genuinely used by clients who wire up that hand-off — but the caps
+// model matches granted roles by NAME only, with no notion of which API resource (Graph vs SharePoint
+// Online) issued the grant. Microsoft Graph also exposes an app role named literally
+// "Sites.FullControl.All" that grants full control of every SharePoint site in the tenant via Graph —
+// a genuine escalation, unrelated to the narrower SharePoint-resource grant the offboard hand-off asks
+// for. Reclassifying this as a "used" role (as a prior change here did) makes the surplus scan blind to
+// that Graph-resource escalation on any tenant where it is actually present, because the model cannot
+// tell the two apart. Keeping it in GRAPH_ESCALATION_ROLES is the safe default: clients using the
+// SharePoint hand-off will see it flagged as extra-access/escalation (a known false positive, documented
+// in web/app/help/cloud-auth) — verify against the offboard result rather than "fixing" this again by
+// removing it from escalation.
 const USED_NON_GRAPH_ROLES: readonly string[] = ["Exchange.ManageAsApp"];
 
 export type SurplusRole = {

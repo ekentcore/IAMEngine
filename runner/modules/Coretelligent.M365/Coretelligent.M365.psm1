@@ -62,6 +62,26 @@ function Write-CtgM365Step([string]$Message) {
     if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
 }
 
+function Get-CtgGraphError {
+    # Extract the real Microsoft Graph error (code + message + HTTP status) from a caught
+    # Invoke-MgGraphRequest error record. Graph puts the JSON body in $_.ErrorDetails.Message;
+    # fall back to the response stream, then the bare exception message.
+    param([Parameter(Mandatory)]$ErrorRecord)
+    $status = 0
+    try { $status = [int]$ErrorRecord.Exception.Response.StatusCode } catch {}
+    $raw = ''
+    try { if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $raw = [string]$ErrorRecord.ErrorDetails.Message } } catch {}
+    if (-not $raw) { try { $raw = [string]$ErrorRecord.Exception.Message } catch {} }
+    $code = ''; $message = $raw
+    try {
+        $j = $raw | ConvertFrom-Json -ErrorAction Stop
+        $inner = if ($j.PSObject.Properties['error']) { $j.error } else { $j }
+        if ($inner.PSObject.Properties['code'])    { $code = [string]$inner.code }
+        if ($inner.PSObject.Properties['message']) { $message = [string]$inner.message }
+    } catch { } # not JSON — keep the raw text as the message
+    [pscustomobject]@{ Status = $status; Code = $code; Message = $message }
+}
+
 function Test-CtgGraphNotFoundMessage([string]$Message) {
     $Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b'
 }
@@ -1063,12 +1083,14 @@ function Invoke-CtgM365Onboarding {
 }
 
 # --- OneDrive (Graph drives) helpers — FR #8 / FR #9 --------------------------------------------
-# Internal (not exported). All Graph-drive access goes through Invoke-MgGraphRequest: the drive
-# cmdlets live in yet another Microsoft.Graph submodule and these three calls don't justify the
-# load-time dependency.
+# Resolve-CtgDriveTarget is internal (not exported). All Graph-drive access goes through
+# Invoke-MgGraphRequest: the drive cmdlets live in yet another Microsoft.Graph submodule and these
+# calls don't justify the load-time dependency.
 
 # The user's OneDrive drive id + web URL, or $null when none is provisioned (never signed in to
 # OneDrive). Throws on anything that is NOT "no drive" — a throttle must not read as "no OneDrive".
+# Exported (Task 5): the dispatch-level SharePoint/OneDrive full-access grant (Start-IamRunner.ps1)
+# needs the leaver's drive webUrl to derive the OneDrive site URL, and it runs outside this module.
 function Get-CtgUserDrive {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$UserId)
@@ -1512,7 +1534,11 @@ function Invoke-CtgM365Offboarding {
         $drive = $null
         $driveReadFailed = $false
         try { $drive = Get-CtgUserDrive -UserId $userId }
-        catch { $driveReadFailed = $true; $actions.Add("WARN could not read $upn's OneDrive (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+        catch {
+            $ge = Get-CtgGraphError $_
+            $hint = if ($ge.Status -eq 403 -or $ge.Code -match 'Authorization_RequestDenied') { " — the m365-admin app registration needs the Files.ReadWrite.All application role (grant + admin-consent)" } else { "" }
+            $driveReadFailed = $true; $actions.Add("WARN could not read $upn's OneDrive: $($ge.Code) $($ge.Message)$hint")
+        }
         if (-not $drive -and -not $driveReadFailed) {
             $actions.Add("no OneDrive provisioned for $upn — nothing to grant or archive")
         }
@@ -1543,7 +1569,11 @@ function Invoke-CtgM365Offboarding {
                         $actions.Add("granted delegate $dMail access to $upn's OneDrive -> $($drive.WebUrl)")
                     }
                 }
-                catch { $actions.Add("WARN could not grant $dMail access to $upn's OneDrive (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+                catch {
+                    $ge = Get-CtgGraphError $_
+                    $hint = if ($ge.Status -eq 403 -or $ge.Code -match 'Authorization_RequestDenied') { " — the m365-admin app registration needs the Files.ReadWrite.All application role (grant + admin-consent)" } else { "" }
+                    $actions.Add("WARN could not grant $dMail access to $upn's OneDrive: $($ge.Code) $($ge.Message)$hint")
+                }
             }
         }
         # 4b. Archive the OneDrive into the configured target (FR #9): server-side Graph COPIES of
@@ -2334,4 +2364,4 @@ function Get-CtgAppCredentialExpiry {
     @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Resolve-CtgEntraUser, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry, Get-CtgGraphError, Get-CtgUserDrive
