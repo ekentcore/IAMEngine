@@ -2331,6 +2331,140 @@ function Invoke-CtgM365PasswordReset {
     [pscustomobject]@{ System = 'm365-password-reset'; Status = 'ok'; Upn = $upn; Actions = $actions.ToArray() }
 }
 
+# ── Entra device-code sign-in (browser) ──────────────────────────────────────────────────────────
+# Ad-hoc "complete an Entra device-code sign-in" (browser automation): drives microsoft.com/devicelogin
+# as a Global Admin to complete a device-code OAuth flow headlessly, via the 'entra-devicecode' browser
+# flow (Coretelligent.Browser -> the Node/Playwright sidecar). That flow reuses the SAME MS-SSO login
+# machinery spanning-force-sync's browser flow uses (runner/browser/lib/ms-sso-login.mjs), because both
+# sit through the identical Microsoft sign-in + MFA + KMSI sequence — only the page before it (device-
+# code entry vs a portal's "Log in with Microsoft" button) differs. LIVE-VALIDATION PENDING (see the
+# flow file's header) — this is faithful, parse-clean code exercised against Microsoft's documented
+# device-login page, not yet the live console.
+
+# Field-synonym picker over a brokered secret's Fields hashtable (the $pick pattern used across the
+# modules — see Get-CtgSpanningSecretField). Kept local since this module is the only current consumer
+# of the m365-global-admin secret's field synonyms.
+function Get-CtgEntraDeviceCodeSecretField {
+    param($Secret, [Parameter(Mandatory)][string[]]$Names)
+    if (-not $Secret) { return $null }
+    $fields = Get-CtgProp $Secret 'Fields'
+    foreach ($n in $Names) {
+        if ($fields -and ($fields -is [System.Collections.IDictionary]) -and $fields.ContainsKey($n) -and $fields[$n]) { return $fields[$n] }
+    }
+    return $null
+}
+
+# The ONE place that decides what may be typed into Microsoft's device-code sign-in box. Returns
+# @{ Ok; Username; Password; Reason }. Field synonyms mirror web/lib/secrets/field-requirements.ts's
+# 'm365-global-admin' entry (Username/AdminEmail/AdminUser/Email/UPN/User + Password/AdminPassword) —
+# an interactive M365 admin login (an email + that account's password), never the app-registration
+# clientId/clientSecret pair this module's Graph API connection (Connect-CtgM365) uses elsewhere.
+function Resolve-CtgEntraDeviceCodeLogin {
+    param($Secret, [string]$SecretName = 'm365-global-admin')
+    $username = Get-CtgEntraDeviceCodeSecretField $Secret @('Username', 'AdminEmail', 'AdminUser', 'Email', 'UPN', 'User')
+    $password = Get-CtgEntraDeviceCodeSecretField $Secret @('Password', 'AdminPassword')
+    # A pscredential is a username+password pair by construction — a legitimate sign-in shape.
+    if (-not $username -and -not $password) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) {
+            $username = $cred.UserName
+            try { $password = $cred.GetNetworkCredential().Password } catch { }
+        }
+    }
+    if (-not $username -or -not $password) {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "no '$SecretName' secret is wired with a Global Admin email + password (fields Username/Password, or AdminEmail/AdminPassword) — wire one in Delinea, and enable One-Time Password on it so Delinea can supply the MFA code." }
+    }
+    # The rejected VALUE is never echoed: by this guard's own premise it is credential material out of
+    # Delinea, and everything here lands in an AuditLog row and a ServiceNow work note (CLAUDE.md:
+    # secrets never live in the app). Naming the field is enough for an operator to fix it.
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "the brokered '$SecretName' username is not an email/UPN, so it cannot be an M365 sign-in. Set the secret's Username to a Global Admin's email address. The value is not repeated here because it may be credential material." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $username; Password = $password; Reason = $null }
+}
+
+function Invoke-CtgEntraDeviceCode {
+    <#
+    .SYNOPSIS
+        Complete a Microsoft device-code sign-in (microsoft.com/devicelogin) headlessly, as a Global
+        Admin, so an Entra device-code OAuth flow finishes without an operator sitting at the prompt.
+    .DESCRIPTION
+        Resolves the Global Admin username/password from the brokered 'm365-global-admin' secret,
+        builds the 'entra-devicecode' browser flow's input (device code + credentials + MFA sources),
+        runs it, and maps the result to the runner's result contract. Never throws for a browser-side
+        failure (missing browser, bad credentials, unautomatable MFA) — those come back as a WARN
+        action line, since this is a convenience automation and the operator can complete the device
+        sign-in manually meanwhile. Idempotent in the sense that re-running it is harmless (a stale/
+        already-consumed device code just fails the sign-in cleanly).
+    .PARAMETER SecretName
+        Which brokered secret $Secret came from — used ONLY to make the "wire a secret" guidance name
+        the right Delinea entry.
+    .PARAMETER OtpRequest
+        PREFERRED: @{ url; token; agentId; secretName } — the app endpoint the browser flow calls to
+        mint a Delinea one-time password AT THE MFA PROMPT (mirrors Invoke-CtgSpanningForceSync).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret
+        ,
+        [string]$SecretName = 'm365-global-admin'
+        ,
+        # NOT Mandatory: a job dispatched without config.userCode resolves this to $null via
+        # Get-CtgProp, and PowerShell parameter binding would throw an opaque "Cannot bind argument"
+        # BEFORE the graceful guard below ever runs. Let binding succeed and let the guard produce the
+        # actionable message instead.
+        [AllowNull()][AllowEmptyString()][string]$UserCode
+        ,
+        [hashtable]$OtpRequest
+        ,
+        # LEGACY: a pre-minted code, subject to the staleness -OtpRequest avoids. Kept so tests can
+        # drive the MFA path without a vault.
+        [string]$OtpCode
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($UserCode)) { throw "entra-devicecode: no device code was supplied (config.userCode) — set it on the job and re-run." }
+    # $Config is accepted for interface symmetry with the other executors but not read here (the
+    # device code and OTP request are passed explicitly as -UserCode/-OtpRequest) — never dereferenced,
+    # so a $null $Config (e.g. a hand-built job payload that omits config) is already safe.
+
+    $login = Resolve-CtgEntraDeviceCodeLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) {
+        $actions.Add("WARN could not complete the Entra device-code sign-in — $($login.Reason) Complete the sign-in manually meanwhile.")
+        return [pscustomobject]@{ System = 'entra-devicecode'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+    $username = $login.Username
+    $password = $login.Password
+
+    if ($OtpRequest) { $actions.Add("one-time password will be minted by Delinea at the MFA prompt") }
+    # LEGACY fallback: a TOTPSeed field on the secret. Storing a PERMANENT seed where a 30-second code
+    # would do is strictly worse — prefer enabling One-Time Password on the Delinea secret instead.
+    $totpSeed = Get-CtgEntraDeviceCodeSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest -and -not $OtpCode) { $actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
+
+    $params = @{ userCode = $UserCode }
+    if ($OtpRequest) { $params['otp']      = $OtpRequest }
+    if ($OtpCode)    { $params['otpCode']  = $OtpCode }
+    if ($totpSeed)   { $params['totpSeed'] = $totpSeed }
+    $flowInput = @{ username = $username; password = $password; params = $params }
+    # -TimeoutSeconds 300: browser launch + the device-login page + Microsoft SSO + MFA (which can wait
+    # out a TOTP window) + the final consent page all have to fit inside this budget.
+    $res = Invoke-CtgBrowserFlow -Flow 'entra-devicecode' -InputObject $flowInput -TimeoutSeconds 300
+
+    if ($res.ok) {
+        $msg = if ($res.message) { $res.message } else { "completed the Entra device-code sign-in" }
+        $actions.Add($msg)
+        return [pscustomobject]@{ System = 'entra-devicecode'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+
+    # Not ok — surface as a WARN (warning verdict), including any screenshot evidence path. A convenience
+    # automation shouldn't fail the case; the operator can complete the device sign-in manually.
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    $actions.Add("WARN Entra device-code sign-in could not complete — $err$ev")
+    [pscustomobject]@{ System = 'entra-devicecode'; Status = 'ok'; Actions = $actions.ToArray() }
+}
+
 # The nearest expiry of THIS app registration's own secret/cert, so the connection test can warn
 # before onboarding starts failing with an expired credential. Needs Application.Read.All (the app
 # already needs it to read its granted roles); returns $null + a note when it can't read it, never
@@ -2364,4 +2498,4 @@ function Get-CtgAppCredentialExpiry {
     @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Resolve-CtgEntraUser, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry, Get-CtgGraphError, Get-CtgUserDrive
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Resolve-CtgEntraUser, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry, Get-CtgGraphError, Get-CtgUserDrive, Invoke-CtgEntraDeviceCode

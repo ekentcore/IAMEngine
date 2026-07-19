@@ -191,6 +191,52 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
   }
 }
 
+// PUT a single field's value onto an EXISTING secret. createSecret is find-or-create — when it
+// reuses an already-existing same-named secret it does NOT write fields, so this is what actually
+// pushes current values onto a secret that already exists (and, called right after a fresh create,
+// is a harmless same-value overwrite of what create's stub-fill already set).
+//
+// Attempts EVERY field, even after an earlier one fails — a torn write (some fields land, some don't)
+// must be reported per-field, not silently truncated at the first failure. This matters most for
+// OPTIONAL fields (e.g. the cert fields on a password-only Secret Server template, which legitimately
+// has no matching slug and 400s on PUT): the caller needs to know exactly which field(s) failed so it
+// can decide whether that's fatal (a required field) or a warning (an optional one) — see
+// writeProvisionedM365App. `ok` here is true only when every attempted field succeeded; a caller that
+// wants to distinguish required-vs-optional failures reads `results` itself.
+// Never throws to the caller — returns a readable error per field. Does NOT log the values it sends.
+export async function updateSecretFields(
+  cfg: DelineaConfig,
+  externalId: string,
+  fields: Record<string, string>,
+  token: string,
+  fetcher: Fetcher = defaultFetcher
+): Promise<{ ok: boolean; results: { slug: string; ok: boolean; error?: string }[]; error?: string }> {
+  const results: { slug: string; ok: boolean; error?: string }[] = [];
+  for (const [slug, value] of Object.entries(fields)) {
+    try {
+      const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}/fields/${encodeURIComponent(slug)}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        results.push({ slug, ok: false, error: `access denied updating field "${slug}" — the write account needs Edit on this secret in Delinea` });
+        continue;
+      }
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { message?: string } | null;
+        results.push({ slug, ok: false, error: `Delinea ${res.status} updating field "${slug}"${d?.message ? ` — ${d.message}` : ""}` });
+        continue;
+      }
+      results.push({ slug, ok: true });
+    } catch (e) {
+      results.push({ slug, ok: false, error: (e as Error).message });
+    }
+  }
+  const ok = results.every((r) => r.ok);
+  return { ok, results, error: ok ? undefined : results.filter((r) => !r.ok).map((r) => r.error).join("; ") };
+}
+
 // --- One-time password (TOTP) ------------------------------------------------------------------
 // Secret Server HOLDS the authenticator seed when "one-time password" is enabled on the secret /
 // template, and mints the current code on demand. So we never store a seed in a custom field and

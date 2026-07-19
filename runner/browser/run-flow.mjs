@@ -14,6 +14,9 @@ import { launch } from "./lib/launch.mjs";
 // Registry of available flows. Each module default-exports async ({ page, input, shot, log }) => result.
 const FLOWS = {
   "spanning-force-sync": () => import("./flows/spanning-force-sync.mjs"),
+  // Complete Microsoft's device-login page (microsoft.com/devicelogin) as a Global Admin, reusing
+  // the shared MS-SSO login lib (lib/ms-sso-login.mjs). LIVE-VALIDATION PENDING — see the flow file.
+  "entra-devicecode": () => import("./flows/entra-devicecode.mjs"),
   // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
   // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
   "connector-steps": () => import("./flows/connector-steps.mjs"),

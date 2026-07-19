@@ -59,6 +59,54 @@ export async function graphGet<T>(
   return last;
 }
 
+// A Graph POST/PATCH with the same backoff/timeout as graphGet. Returns the parsed body (or null
+// on 204/empty). Adds Content-Type: application/json.
+//
+// Retry is METHOD-AWARE, because unlike a GET a write is not automatically safe to repeat. 429 means
+// the request was rejected before Graph did anything with it, so it is always safe to retry. A 5xx or
+// a lost response (network/timeout — status 0 in the catch below) is AMBIGUOUS: the write may already
+// have landed. For an idempotent PATCH that ambiguity is harmless to retry (re-applying the same state
+// is a no-op). For a non-idempotent POST (e.g. addPassword, appRoleAssignedTo) retrying on that
+// ambiguity risks double-creating — so a POST returns the error immediately instead of retrying 5xx or
+// a lost response.
+export async function graphSend<T>(
+  token: string,
+  method: "POST" | "PATCH",
+  url: string,
+  body: unknown,
+  fetcher: GraphFetch = fetch,
+  opts: GraphRetryOpts = {}
+): Promise<{ ok: true; status: number; body: T | null } | { ok: false; status: number; error: string }> {
+  const maxAttempts = opts.maxAttempts ?? 4;
+  const backoff = opts.backoff ?? DEFAULT_BACKOFF;
+  let last = { ok: false as const, status: 0, error: "no attempt made" };
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await sleep(backoff(attempt));
+    try {
+      const res = await fetcher(url.startsWith("http") ? url : `${GRAPH}${url}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.ok) {
+        const text = await res.text().catch(() => "");
+        return { ok: true, status: res.status, body: text ? (JSON.parse(text) as T) : null };
+      }
+      const text = await res.text().catch(() => "");
+      last = { ok: false, status: res.status, error: text.slice(0, 300) || `HTTP ${res.status}` };
+      const retryable = res.status === 429 || (method === "PATCH" && RETRYABLE.test(String(res.status)));
+      if (!retryable) return last;
+    } catch (e) {
+      // Network/timeout: the response is LOST — we cannot tell whether the write landed. Only retry
+      // for the idempotent method.
+      last = { ok: false, status: 0, error: (e as Error).message };
+      if (method !== "PATCH") return last;
+    }
+  }
+  return last;
+}
+
 type AppRoleAssignment = { appRoleId?: string; resourceId?: string };
 type AppRole = { id?: string; value?: string };
 

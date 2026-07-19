@@ -10,7 +10,10 @@ import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 // the case machinery never confuses the ad-hoc browser action with the real backup-license step.
 export const SPANNING_FORCE_SYNC_KEY = "spanning-force-sync";
 
-export const ADHOC_SYSTEM_KEYS = [...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY])];
+// The systemKey for the ad-hoc "Entra device code" browser flow.
+export const ENTRA_DEVICECODE_KEY = "entra-devicecode";
+
+export const ADHOC_SYSTEM_KEYS = [...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY])];
 
 export function isAdhocSystemKey(systemKey: string): boolean {
   return ADHOC_SYSTEM_KEYS.includes(systemKey);

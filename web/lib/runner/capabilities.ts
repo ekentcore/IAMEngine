@@ -64,7 +64,7 @@ export function onPremExclusions(caps: string[] | null): string[] {
 // client — that doesn't report it. Unlike the on-prem gate, a legacy/non-reporting agent (caps null)
 // is ALSO withheld: it definitionally lacks the (newer) browser harness, and these keys are new, so
 // no rollout is stranded. Extend this set when a new browser flow is added.
-export const BROWSER_SYSTEMS = ["spanning-force-sync"];
+export const BROWSER_SYSTEMS = ["spanning-force-sync", "entra-devicecode"];
 
 // The browser system keys to WITHHOLD from an agent's claim query: none if it reports "browser", else all.
 export function browserExclusions(caps: string[] | null): string[] {

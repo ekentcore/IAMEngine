@@ -26,10 +26,20 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   // "Entra Azure AD Account" template calls them Username/Password, while "Automation - Azure App"
   // calls the same pair appID/Secret. If this list and the runner's ever diverge, the Test goes green
   // on a credential the runner can't use (or red on one it can) — keep them in lockstep.
+  //
+  // The three cert fields below are ADDITIVE — appended for the auto-provisioned app registration
+  // (Phase 3: writeProvisionedM365App), which also mints an Exchange Online app-only certificate
+  // alongside the client secret. They're `optional: true` so a pre-existing password-only m365-admin
+  // secret (the vast majority of the fleet) still passes checkFieldShape unchanged — the runner's
+  // `exchange` secret is the one that actually requires a cert; here it's just where the auto-issued
+  // cert lands so it lives next to the credential it belongs to.
   "m365-admin": [
     { label: "admin username / app id", anyOf: ["Username", "appID", "AppId", "ApplicationId", "ClientId"], hint: "Entra admin → App registrations → your app → Overview → Application (client) ID (a GUID, not a person's login)" },
     { label: "admin password / client secret", anyOf: ["Password", "Secret", "ClientSecret", "AppSecret"], hint: "the app registration → Certificates & secrets → New client secret → copy the Value (shown once)" },
     { label: "tenant id / domain", anyOf: ["TenantId", "Tenant", "Domain"], orClientDomain: true, hint: "same Overview page → Directory (tenant) ID; or leave blank to use the client's primary domain" },
+    { label: "certificate (base64 pfx)", anyOf: ["CertificateBase64", "CertificatePfxBase64", "Certificate"], optional: true, hint: "app registration cert as base64 PFX (auto-provisioned; used for Exchange app-only)" },
+    { label: "certificate password", anyOf: ["CertificatePassword", "CertPassword"], optional: true, hint: "password protecting the base64 PFX above (auto-generated at provisioning)" },
+    { label: "certificate thumbprint", anyOf: ["CertificateThumbprint", "Certificate Thumbprint", "Thumbprint"], optional: true, hint: "SHA-1 thumbprint of the app cert" },
   ],
   // Exchange Online: app-only certificate auth — AppId (the secret username) + a cert. The cert is
   // either a Windows-store thumbprint OR a base64 .pfx (cross-platform: macOS/Linux central runners).
@@ -98,6 +108,20 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   "spanning-portal": [
     { label: "M365 admin email", anyOf: ["Username", "PortalUsername", "AdminUser", "AdminEmail", "Email", "User"] },
     { label: "that account's password", anyOf: ["Password", "PortalPassword", "AdminPassword"] },
+  ],
+  // M365 Global Admin interactive sign-in — the credential the device-code browser flow logs in WITH.
+  // This is an interactive M365 admin login (an email + that account's password), NOT the app
+  // registration credentials above (app id + client secret). It is used for automated browser
+  // authentication flows that require user context (e.g. device-code OAuth).
+  //
+  // MFA: enable One-Time Password on the Delinea secret — the runner mints the code AT the prompt, so
+  // the seed never leaves the vault. It must be a TOTP/software token; push or phone-call MFA can't be
+  // automated and the sign-in will simply time out at the prompt.
+  //
+  // Synonyms mirror the runner's pick order for interactive GA sign-in flows.
+  "m365-global-admin": [
+    { label: "M365 Global Admin email (UPN)", anyOf: ["Username", "AdminEmail", "AdminUser", "Email", "UPN", "User"] },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword"] },
   ],
   // Proofpoint Essentials API: admin email + password (sent as X-User / X-Password). The org domain
   // for the /orgs/{domain} path is satisfied by a Domain field OR the client's primary domain.

@@ -1510,6 +1510,25 @@ $DISPATCH['spanning-force-sync'] = @{
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
 
+# Ad-hoc "complete an Entra device-code sign-in" (browser automation): drives microsoft.com/devicelogin
+# as a Global Admin to complete a device-code OAuth flow headlessly, reusing the SAME MS-SSO login
+# machinery spanning-force-sync's browser flow uses (runner/browser/lib/ms-sso-login.mjs) — only the
+# page before it (device-code entry vs a portal's "Log in with Microsoft" button) differs. Rides the
+# 'm365-global-admin' secret (an interactive GA email + password, NOT the Graph app registration); no
+# Connect lane (the browser flow does its own Microsoft sign-in). One executor serves both lanes.
+# Withheld from agents that don't report the 'browser' capability (see $script:RunnerCapabilities
+# below). LIVE-VALIDATION PENDING (see runner/browser/flows/entra-devicecode.mjs header) — faithful,
+# parse-clean code exercised against Microsoft's documented device-login page, not yet the live console.
+$DISPATCH['entra-devicecode'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'm365-global-admin'
+        Invoke-CtgEntraDeviceCode -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -UserCode (Get-CtgProp $job.config 'userCode') `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['entra-devicecode'].Offboard = $DISPATCH['entra-devicecode'].Onboard
+
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
 $DISPATCH['tap'] = @{

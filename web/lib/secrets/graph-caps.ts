@@ -132,7 +132,9 @@ export const GRAPH_RESOURCE_APP_ID = "00000003-0000-0000-c000-000000000000";
 
 export type CapRow = { need: string; anyOf: string[]; ok: boolean; optional: boolean; why?: string };
 
-function satisfied(cap: GraphCap, granted: readonly string[]): boolean {
+// Exported so callers that need the same anyOf-satisfaction logic against a bare `{ anyOf }` shape
+// (provision-m365-app.ts's admin-consent + optionalGaps checks) don't have to re-implement it.
+export function satisfied(cap: GraphCap, granted: readonly string[]): boolean {
   const have = new Set(granted.map((g) => g.toLowerCase()));
   return cap.anyOf.some((r) => have.has(r.toLowerCase()));
 }

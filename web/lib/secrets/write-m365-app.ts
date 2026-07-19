@@ -1,0 +1,238 @@
+// Phase 3: write a freshly-provisioned Entra app registration's credentials back into Delinea under
+// the client, as the `m365-admin` secret (extended with cert fields — see field-requirements.ts).
+//
+// Orchestrates the write-path primitives that already exist (createSecret, updateSecretFields, the
+// delineaWriteConfigured gate, the value probe) rather than adding new Delinea plumbing:
+//   1. reconcile — provisionM365App only returns clientSecret/certBase64 when it ISSUED a new one this
+//      run (a "kept existing, still valid" run returns neither). Nothing new -> nothing to write; the
+//      caller keeps whatever is already vaulted.
+//   2. validate — a newly issued client secret is proven against Entra (the same client-credentials
+//      grant the runner performs) BEFORE it's vaulted. A cert-only issue has no analogous cheap probe
+//      here, so it's skipped; the runner's own connection test verifies it later.
+//   3. gate — the same delineaWriteConfigured() check the manual create route uses (write account +
+//      folder + template all present for this client/secret).
+//   4. map our field LABELS -> Secret Server slugs via templateFor().fieldMap, writing only the labels
+//      this provision run actually has values for (never an undefined value).
+//   5. createSecret (find-or-create) to get an id, then updateSecretFields to push the current values —
+//      covers both "brand new secret" and "secret already existed" with one write path.
+//   6. persist the vault REFERENCE (never a value) onto the client, self-learning the folder id.
+//
+// Web-only. db/fetch/env are injected so this is fully unit-testable with no real Delinea/network —
+// the dev environment lacks DELINEA_WRITE_*, so this path is unit-tested only here and live-validated
+// by the operator once a write account + folder + template are configured.
+import type { PrismaClient } from "@prisma/client";
+import { createSecret, updateSecretFields, getDelineaToken, type Fetcher } from "./delinea";
+import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor } from "./delinea-templates";
+import { probeEntraClientCredentials } from "./m365-credential";
+import { makeClientRepository } from "@/lib/clients/repository";
+import type { ProvisionResult } from "./provision-m365-app";
+
+export type WriteClientInput = { id: string; slug: string; name: string; delineaFolderId?: string | null; primaryDomain?: string | null };
+export type WriteInput = { client: WriteClientInput; provision: ProvisionResult; secretName?: string /* default "m365-admin" */ };
+
+type Env = Record<string, string | undefined>;
+export type WriteDeps = { db: PrismaClient; fetch?: Fetcher; env?: Env };
+
+export type WriteResult = {
+  ok: boolean;
+  externalId?: string;
+  created?: boolean;
+  updated?: boolean;
+  wroteCreds: boolean;
+  error?: string;
+  hint?: string;
+  // The app registration reports a valid credential (credState "kept-valid") but the vault holds
+  // nothing for it — the stranded/unrecoverable case (see credState doc + Finding 1). Never ok:true.
+  stranded?: boolean;
+  // Optional-field write failures that did NOT fail the run (e.g. a password-only template legitimately
+  // has no certificate slug) — surfaced so an operator can see what quietly didn't get vaulted.
+  warnings?: string[];
+};
+
+// The template field LABELS (from field-requirements.ts's m365-admin entry) mapped to the ProvisionResult
+// value that fills them — undefined when this run issued nothing for that field, so it's never written.
+function labeledValues(provision: ProvisionResult): Record<string, string | undefined> {
+  return {
+    "admin username / app id": provision.appId,
+    "admin password / client secret": provision.clientSecret,
+    "tenant id / domain": provision.tenantId,
+    "certificate (base64 pfx)": provision.certBase64,
+    "certificate password": provision.certPassword,
+    "certificate thumbprint": provision.certThumbprint,
+  };
+}
+
+// REQUIRED: the app cannot authenticate at all without these — a failure writing any of them fails the
+// whole run. Everything else (the cert fields) is OPTIONAL/best-effort: a password-only Secret Server
+// template legitimately has no certificate slug, and that must never fail an otherwise-good write —
+// see Finding 5.
+const REQUIRED_LABELS = new Set(["admin username / app id", "admin password / client secret", "tenant id / domain"]);
+
+// Which Secret Server slugs (from this run's field map) are required vs. optional, so a per-field
+// write result can be judged accordingly.
+function slugBuckets(tmpl: { fieldMap: Record<string, string> }): { requiredSlugs: Set<string>; optionalSlugs: Set<string> } {
+  const requiredSlugs = new Set<string>();
+  const optionalSlugs = new Set<string>();
+  for (const [label, slug] of Object.entries(tmpl.fieldMap)) {
+    if (REQUIRED_LABELS.has(label)) requiredSlugs.add(slug);
+    else optionalSlugs.add(slug);
+  }
+  return { requiredSlugs, optionalSlugs };
+}
+
+// Turn updateSecretFields' per-field results into a required-vs-optional verdict: any REQUIRED field
+// failing fails the whole write; an OPTIONAL field failing is downgraded to a warning string.
+function judgeFieldWrite(
+  updated: { ok: boolean; results: { slug: string; ok: boolean; error?: string }[]; error?: string },
+  buckets: { requiredSlugs: Set<string>; optionalSlugs: Set<string> }
+): { ok: true; warnings: string[] } | { ok: false; error: string } {
+  const requiredFails = updated.results.filter((r) => buckets.requiredSlugs.has(r.slug) && !r.ok);
+  const optionalFails = updated.results.filter((r) => buckets.optionalSlugs.has(r.slug) && !r.ok);
+  if (requiredFails.length > 0) {
+    return { ok: false, error: requiredFails.map((r) => r.error).filter(Boolean).join("; ") || updated.error || "Delinea field update failed" };
+  }
+  const warnings = optionalFails.map(
+    (r) => `optional field "${r.slug}" was not written (${r.error ?? "unknown error"}) — the template likely doesn't support it; the credential is still usable without it`
+  );
+  return { ok: true, warnings };
+}
+
+export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps): Promise<WriteResult> {
+  const { client, provision } = input;
+  const secretName = input.secretName ?? "m365-admin";
+  const fetcher = deps.fetch;
+  const env = deps.env ?? process.env;
+
+  // 1. credState gate — decide trustworthiness BEFORE looking at whether a value string happens to be
+  // present. Never infer from clientSecret/certBase64 alone (see CredState doc in provision-m365-app.ts).
+  if (provision.credState === "unverified") {
+    return {
+      ok: false,
+      wroteCreds: false,
+      error: "could not verify the app registration's credentials (transient Graph error); not treating this as set up",
+    };
+  }
+
+  // Finding 6: never repoint the client's vaulted secret at a newly-created app that isn't fully
+  // provisioned yet — that would break a currently-working credential by pointing the vault row at a
+  // half-provisioned app. Optional-cap gaps are fine; a REQUIRED gap or an unverified grant is not.
+  if (provision.created && (!provision.verified || provision.gaps.length > 0)) {
+    return {
+      ok: false,
+      wroteCreds: false,
+      error: `app registration has unmet required Graph permissions (gaps: ${provision.gaps.join(", ") || "unverified"}); not vaulting/repointing`,
+    };
+  }
+
+  if (provision.credState === "kept-valid") {
+    // Genuinely nothing new to write UNLESS the vault has no row for this client at all — that's the
+    // stranded case: the app reports a valid credential, but we hold none of it. The one-time secret
+    // value from whenever it WAS issued is unrecoverable; the only fix is to rotate/re-issue.
+    const existingRow = await deps.db.secret.findUnique({
+      where: { clientId_name: { clientId: client.id, name: secretName } },
+      select: { externalId: true },
+    });
+    if (!existingRow?.externalId) {
+      return {
+        ok: false,
+        wroteCreds: false,
+        stranded: true,
+        error:
+          "the app registration reports a valid credential but none is vaulted — it was likely issued on a prior run whose vault write failed; the app's credential must be rotated/re-issued manually (the prior one-time secret is unrecoverable)",
+        hint: "re-run setup to force a credential rotation (the app registration's existing secret/cert cannot be re-read — only a fresh issue can be vaulted)",
+      };
+    }
+    return { ok: true, wroteCreds: false };
+  }
+
+  // From here: provision.credState === "issued" — a new secret and/or cert was minted this run and
+  // must be vaulted (it's the only copy). Proceed as before.
+
+  // 2. Validate a newly issued client secret against Entra before vaulting it — refuse to write a
+  // credential we just proved doesn't authenticate. A cert-only issue has no probe here (skip).
+  if (provision.clientSecret) {
+    const probe = await probeEntraClientCredentials(provision.tenantId, provision.appId, provision.clientSecret, (fetcher as unknown as typeof fetch) ?? fetch);
+    if (!probe.ok) {
+      return { ok: false, wroteCreds: false, error: probe.error ?? "the newly issued client secret failed a live test against Entra", hint: probe.hint };
+    }
+  }
+
+  // 3. Gate: the app can only write when a write account + this client's folder + a template id for
+  // this secret are all configured. Same check the manual create route uses.
+  const cap = delineaWriteConfigured({ slug: client.slug, secretName, clientFolderId: client.delineaFolderId, env });
+  if (!cap.ok) {
+    return { ok: false, wroteCreds: false, error: `Delinea write not configured — ${cap.missing.join("; ")}` };
+  }
+
+  const folderId = folderIdFor(client.slug, client.delineaFolderId, env)!; // cap.ok guarantees non-null
+  const tmpl = templateFor(secretName, env)!; // cap.ok guarantees a template
+  const buckets = slugBuckets(tmpl);
+
+  // 4. Map labels -> Secret Server slugs, skipping any label whose value is undefined this run.
+  const fields: Record<string, string> = {};
+  for (const [label, value] of Object.entries(labeledValues(provision))) {
+    if (value === undefined) continue;
+    const slug = tmpl.fieldMap[label];
+    if (slug) fields[slug] = value;
+  }
+
+  const cfg = delineaWriteConfigFromEnv(env);
+  let token: string;
+  try {
+    token = await getDelineaToken(cfg, fetcher);
+  } catch (e) {
+    return { ok: false, wroteCreds: false, error: `Delinea write auth failed — ${(e as Error).message}` };
+  }
+
+  // Does the client already have a Secret row for this name? If so, its externalId is the Delinea
+  // secret we already vaulted — go straight at it. This is what makes the write robust to a naming
+  // mismatch against createSecret's name-based dedup search (e.g. a secret created via the manual UI is
+  // named `${client.name} — ${secretName}`, not `${client.slug} — ${secretName}`): searching by name
+  // could miss it and createSecret would mint a SECOND, orphaned secret. Going by the known externalId
+  // can't ever duplicate.
+  const existingRow = await deps.db.secret.findUnique({
+    where: { clientId_name: { clientId: client.id, name: secretName } },
+    select: { externalId: true },
+  });
+
+  let externalId: string;
+  let created: boolean;
+  let warnings: string[] = [];
+  if (existingRow?.externalId) {
+    // 5a. Already vaulted — update the known secret in place. No name search, no create call, so this
+    // can never mint a duplicate regardless of what the secret happens to be named in Secret Server.
+    externalId = existingRow.externalId;
+    created = false;
+    const updated = await updateSecretFields(cfg, externalId, fields, token, fetcher);
+    const verdict = judgeFieldWrite(updated, buckets);
+    if (!verdict.ok) {
+      return { ok: false, wroteCreds: false, error: verdict.error };
+    }
+    warnings = verdict.warnings;
+  } else {
+    // 5b. No local row — create it fresh. Name it the same way the manual create route does
+    // (`${client.name} — ${secretName}`) so a later manual lookup agrees with what we just created.
+    const ssName = `${client.name} — ${secretName}`;
+    const createdSecret = await createSecret(cfg, { name: ssName, folderId, templateId: tmpl.templateId, fields }, token, fetcher);
+    if (!createdSecret.ok || !createdSecret.id) {
+      return { ok: false, wroteCreds: false, error: createdSecret.error ?? "Delinea create failed" };
+    }
+    externalId = createdSecret.id;
+    created = true;
+    const updated = await updateSecretFields(cfg, externalId, fields, token, fetcher);
+    const verdict = judgeFieldWrite(updated, buckets);
+    if (!verdict.ok) {
+      return { ok: false, wroteCreds: false, error: verdict.error };
+    }
+    warnings = verdict.warnings;
+  }
+
+  // 6. Persist the vault REFERENCE (never a value): self-learn the folder if the client had none, then
+  // wire the secret id onto the client the same way the manual create route does.
+  if (folderId && !client.delineaFolderId) {
+    await deps.db.client.update({ where: { id: client.id }, data: { delineaFolderId: folderId } });
+  }
+  await makeClientRepository(deps.db).upsertSecrets(client.id, [{ name: secretName, externalId }]);
+
+  return { ok: true, externalId, created, updated: !created, wroteCreds: true, warnings: warnings.length > 0 ? warnings : undefined };
+}
