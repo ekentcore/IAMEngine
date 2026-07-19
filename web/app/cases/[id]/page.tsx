@@ -15,6 +15,9 @@ import { writeBackEnabled } from "@/lib/servicenow/worknote";
 import { PlaybookView } from "../_components/playbook-view";
 import { CaseSecretsPanel } from "../_components/case-secrets-panel";
 import { RunReportView } from "../_components/run-report-view";
+import { ChangePreview } from "../_components/change-preview";
+import { buildChangeDiffs } from "@/lib/cases/change-service";
+import type { ChangePayload } from "@/lib/cases/change-types";
 import { ReplanButton } from "../_components/replan-button";
 import { CaseDomainSelect } from "../_components/case-domain-select";
 import { RescanButton } from "../_components/rescan-button";
@@ -81,7 +84,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // Re-plan is always available: before dispatch it's a full re-plan; once started it runs
   // incrementally (kept steps survive, new/changed systems get fresh jobs).
   const started = hasStartedJobs(c.jobs);
-  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, initialPassword: true, scheduledFor: true } });
+  const caseMeta = await db.caseRequest.findUnique({ where: { id: params.id }, select: { pausedAt: true, pausedReason: true, initialPassword: true, scheduledFor: true } });
   const paused = Boolean(caseMeta?.pausedAt);
   // Mirror the reveal route's guard (case.dispatch, no impersonation) so read-only roles don't see
   // a button the server will 403 — the route stays the real boundary.
@@ -107,6 +110,19 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
         override: domainRow.emailDomainOverride,
       }
     : null;
+  // A "change" (mover) case held for review: compute the per-system add/remove diff server-side so
+  // the ChangePreview modal can let the operator pick scoped/full/add-only before anything dispatches.
+  // Mirrors createChangeCase's own client fetch (buildChangeDiffs takes the SAME clientForPlanning
+  // shape uncast there); "review" is the exact hold reason change-service.ts sets on an unconfirmed mover.
+  const changePreviewDiffs = c.action === "change" && caseMeta?.pausedReason === "review"
+    ? await (async () => {
+        const planClient = await makeCaseRepository(db).clientForPlanning(c.client.slug);
+        if (!planClient) return null;
+        const diffs = buildChangeDiffs(planClient, c.payload as unknown as ChangePayload);
+        return diffs.map((d) => ({ systemKey: d.systemKey, add: d.add, removeGroups: d.removeGroups, moveToOu: d.moveToOu }));
+      })()
+    : null;
+
   // Hybrid duplicate flag: the consistency check flagged an unlinked/duplicate risk, and no hard-match
   // has been dispatched yet → offer the operator-confirmed "Link" action.
   const dJobs = await db.job.findMany({ where: { caseRequestId: params.id, systemKey: { in: ["ad-consistency-check", "ad-hard-match"] } }, select: { systemKey: true, result: true } });
@@ -157,6 +173,8 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           {scheduledForIso && <> It resumes automatically at <LocalDateTime iso={scheduledForIso} />.</>}
         </p>
       )}
+
+      {changePreviewDiffs && <ChangePreview caseId={c.id} diffs={changePreviewDiffs} />}
 
       <div style={{ margin: "0.5rem 0 1rem" }}>
         <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={started} />

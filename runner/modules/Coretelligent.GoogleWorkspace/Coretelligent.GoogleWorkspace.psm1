@@ -468,4 +468,62 @@ function Invoke-CtgGooglePasswordReset {
     [pscustomobject]@{ System = 'google-password-reset'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset
+function Invoke-CtgGoogleChange {
+    <#
+    .SYNOPSIS
+        Change/mover lane for Google Workspace: add/remove group membership by name, with an optional
+        full reconcile — the Google-side moves a role/department change can require without a full
+        onboard/offboard.
+    .NOTES
+        groups (add) skips a membership the user already has (idempotent, checked against
+        Get-CtgGoogleUserGroups) — a benign "already in group" skip, not a WARN. removeGroups removes
+        only names the user is actually in; a name they're not in is also a benign skip (not a member
+        either way). reconcileGroups+desiredGroups: remove every CURRENT group not in desiredGroups
+        (case-insensitive), instead of the named removeGroups list. Every add/remove call is
+        try/catch'd: a REAL failure produces a WARN action, never an unconditional success line.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $email = [string]((Get-CtgProp $User 'email') ?? (Get-CtgProp $User 'PrimaryEmail') ?? (Get-CtgProp $User 'UserPrincipalName'))
+    if (-not $email) { throw "Invoke-CtgGoogleChange: no email on the target user" }
+    $current = @(Get-CtgGoogleUserGroups -Email $email)
+
+    # ADD by name — skip a membership the user already has (idempotent).
+    foreach ($g in @(Get-CtgProp $Config 'groups' | Where-Object { $_ })) {
+        if ($current -contains $g) { $actions.Add("already in group: $g"); continue }
+        if (-not $PSCmdlet.ShouldProcess($g, "Add $email to group")) { continue }
+        try {
+            Invoke-CtgGoogleApi -Method POST -Path "/groups/$g/members" -Body @{ email = $email; role = 'MEMBER' } | Out-Null
+            $actions.Add("added to group: $g")
+        }
+        catch { $actions.Add("WARN could not add to group $g`: $($_.Exception.Message)") }
+    }
+
+    # REMOVE — either a named list (only groups the user is actually in) or, when reconcileGroups is
+    # set, every CURRENT group not in desiredGroups (case-insensitive full reconcile).
+    $reconcile = (Get-CtgProp $Config 'reconcileGroups') -eq $true
+    $toRemove = if ($reconcile) {
+        $desired = @(Get-CtgProp $Config 'desiredGroups' | Where-Object { $_ } | ForEach-Object { "$_".ToLower() })
+        @($current | Where-Object { $desired -notcontains "$_".ToLower() })
+    }
+    else {
+        $named = @(Get-CtgProp $Config 'removeGroups' | Where-Object { $_ })
+        @($named | Where-Object { $current -contains $_ })
+    }
+    foreach ($g in $toRemove) {
+        if (-not $PSCmdlet.ShouldProcess($g, "Remove $email from group")) { continue }
+        try {
+            Invoke-CtgGoogleApi -Method DELETE -Path "/groups/$g/members/$email" | Out-Null
+            $actions.Add("removed from group: $g")
+        }
+        catch { $actions.Add("WARN could not remove from group $g`: $($_.Exception.Message)") }
+    }
+
+    [pscustomobject]@{ System = 'google-workspace'; Status = 'ok'; Actions = @($actions) }
+}
+
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange

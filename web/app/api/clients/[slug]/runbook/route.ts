@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { auditActor } from "@/lib/auth/audit";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
-import type { Action } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { saveRunbook } from "@/lib/clients/runbook-repo";
@@ -15,7 +14,7 @@ import { CATALOG } from "@/lib/generator/system-map";
 
 export const dynamic = "force-dynamic";
 
-const isAction = (a: unknown): a is Action => a === "onboard" || a === "offboard";
+const isAction = (a: unknown): a is "onboard" | "offboard" => a === "onboard" || a === "offboard";
 const KNOWN = new Set(Object.keys(CATALOG));
 
 // Validate + normalize edited sections sent back from the editor (after reordering steps/sections),

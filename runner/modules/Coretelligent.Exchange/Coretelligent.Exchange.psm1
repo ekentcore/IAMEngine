@@ -1128,4 +1128,77 @@ function Invoke-CtgExchangeDefaultMailboxAccess {
     return $actions.ToArray()
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+function Invoke-CtgExchangeChange {
+    <#
+    .SYNOPSIS
+        Change/mover lane for Exchange: add/remove distribution-list & 365-group membership by NAME,
+        and grant/revoke shared-mailbox FullAccess — the Exchange-side moves a role/department change
+        can require without a full onboard/offboard.
+    .NOTES
+        namedGroups (add) reuses the existing onboard helper (Invoke-CtgExchangeNamedGroups) as-is.
+        removeNamedGroups/addSharedMailboxes/removeSharedMailboxes are new for Task 12. Every remove/
+        revoke is try/catch'd (-ErrorAction Stop): a real failure is a WARN action, never a silent
+        false-success; a not-found name is a benign skip (not a WARN) since it's not a member either
+        way. Grants use the same param style as the mirror/default-mailbox-access helpers above.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $upn = [string]((Get-CtgProp $User 'UserPrincipalName') ?? (Get-CtgProp $User 'PrimarySmtpAddress') ?? (Get-CtgProp $User 'email'))
+    if (-not $upn) { throw "Invoke-CtgExchangeChange: no UPN/PrimarySmtpAddress on the target user" }
+
+    # ADD DL / 365-group by name — reuse the onboard helper as-is (it already warns on not-found /
+    # skips dir-synced groups / picks Add-DistributionGroupMember vs Add-UnifiedGroupLinks).
+    $addNamed = @(Get-CtgProp $Config 'namedGroups' | Where-Object { $_ })
+    if ($addNamed.Count) { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser $upn -Groups $addNamed)) { $actions.Add($a) } }
+
+    # REMOVE DL / 365-group by name (new). RecipientTypeDetails distinguishes a Unified (365) group
+    # from a DL / mail-enabled security group — same field the add-path helper keys off of.
+    foreach ($g in @(Get-CtgProp $Config 'removeNamedGroups' | Where-Object { $_ })) {
+        $r = Get-Recipient -Identity $g -ErrorAction SilentlyContinue
+        if (-not $r) { $actions.Add("group not found: $g"); Write-CtgStep "✗ group not found in EXO: $g"; continue }
+        $type = [string](Get-CtgProp $r 'RecipientTypeDetails')
+        if ($type -eq 'GroupMailbox') {
+            if (-not $PSCmdlet.ShouldProcess($g, "Remove $upn from 365 group")) { continue }
+            try {
+                Remove-UnifiedGroupLinks -Identity $r.Identity -LinkType Members -Links $upn -Confirm:$false -ErrorAction Stop
+                $actions.Add("removed from 365 group: $g"); Write-CtgStep "✓ removed from 365 group: $g"
+            }
+            catch { $actions.Add("WARN could not remove from 365 group $g`: $($_.Exception.Message)"); Write-CtgStep "✗ 365 group $g — $($_.Exception.Message)" }
+        }
+        else {
+            if (-not $PSCmdlet.ShouldProcess($g, "Remove $upn from distribution list")) { continue }
+            try {
+                Remove-DistributionGroupMember -Identity $r.Identity -Member $upn -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop
+                $actions.Add("removed from distribution list: $g"); Write-CtgStep "✓ removed from distribution list: $g"
+            }
+            catch { $actions.Add("WARN could not remove from distribution list $g`: $($_.Exception.Message)"); Write-CtgStep "✗ DL $g — $($_.Exception.Message)" }
+        }
+    }
+
+    # Shared-mailbox FullAccess grant / revoke (new). Same param style as the mirror/default-access
+    # helpers above (-InheritanceType All -AutoMapping:$true on grant).
+    foreach ($mbx in @(Get-CtgProp $Config 'addSharedMailboxes' | Where-Object { $_ })) {
+        if (-not $PSCmdlet.ShouldProcess($mbx, "Grant $upn FullAccess")) { continue }
+        try {
+            Add-MailboxPermission -Identity $mbx -User $upn -AccessRights FullAccess -InheritanceType All -AutoMapping:$true -Confirm:$false -ErrorAction Stop | Out-Null
+            $actions.Add("granted FullAccess on: $mbx"); Write-CtgStep "✓ FullAccess: $mbx"
+        }
+        catch { $actions.Add("WARN could not grant FullAccess on $mbx`: $($_.Exception.Message)"); Write-CtgStep "✗ FullAccess grant $mbx — $($_.Exception.Message)" }
+    }
+    foreach ($mbx in @(Get-CtgProp $Config 'removeSharedMailboxes' | Where-Object { $_ })) {
+        if (-not $PSCmdlet.ShouldProcess($mbx, "Revoke $upn FullAccess")) { continue }
+        try {
+            Remove-MailboxPermission -Identity $mbx -User $upn -AccessRights FullAccess -Confirm:$false -ErrorAction Stop | Out-Null
+            $actions.Add("revoked FullAccess on: $mbx"); Write-CtgStep "✓ revoked FullAccess: $mbx"
+        }
+        catch { $actions.Add("WARN could not revoke FullAccess on $mbx`: $($_.Exception.Message)"); Write-CtgStep "✗ FullAccess revoke $mbx — $($_.Exception.Message)" }
+    }
+
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
+}
+
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

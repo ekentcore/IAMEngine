@@ -320,6 +320,102 @@ function Invoke-CtgADOnboarding {
     [pscustomobject]@{ System = 'active-directory'; Status = 'ok'; Sam = $sam; Ou = $ouPath; Actions = $actions.ToArray() }
 }
 
+# Change/mover lane: apply a delta to an EXISTING AD user — add groups, remove groups (by name or
+# by full reconcile against a desired set), move OU, set attributes. Reuses the same primitives as
+# onboarding/offboarding (Resolve-CtgAdGroup for a fuzzy group-name miss, Test-CtgADProtectedGroup to
+# refuse stripping a privileged group, Set-CtgADAttributes for the attribute map). Idempotent: adding
+# an already-held group or removing one the user isn't in just narrates, never throws.
+function Invoke-CtgADChange {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        # Brokered AD auth (Option 2): @{ Server=<dc>; Credential=<pscred> } — splatted onto every AD
+        # cmdlet so the runner authenticates as the ad-dc account rather than its own process identity.
+        [hashtable]$AdConnection = @{}
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $sam = [string]((Get-CtgProp $User 'SamAccountName') ?? (Get-CtgProp $User 'sam'))
+    if (-not $sam) { throw "Invoke-CtgADChange: no SamAccountName on the target user" }
+
+    # ADD ------------------------------------------------------------------
+    foreach ($g in @(Get-CtgProp $Config 'groups')) {
+        if (-not $g) { continue }
+        if (Test-CtgADProtectedGroup -Group ([pscustomobject]@{ Name = $g }) -Config $Config) { $actions.Add("refused protected group: $g"); continue }
+        if ($PSCmdlet.ShouldProcess($sam, "Add to group $g")) {
+            try { Add-ADGroupMember -Identity $g -Members $sam -ErrorAction Stop @AdConnection; $actions.Add("added to group: $g") }
+            catch {
+                if ($_.Exception.Message -match 'already a member') { $actions.Add("already in group: $g") }
+                else {
+                    # Group name likely off by spacing/punctuation — retry against a normalized match
+                    # before giving up (mirrors Invoke-CtgADOnboarding's group-add fallback).
+                    $resolved = Resolve-CtgAdGroup -Name $g -AdConnection $AdConnection
+                    if ($resolved) {
+                        try { Add-ADGroupMember -Identity $resolved.DistinguishedName -Members $sam -ErrorAction Stop @AdConnection; $actions.Add("added to group: $($resolved.Name) (matched config '$g')") }
+                        catch {
+                            if ($_.Exception.Message -match 'already a member') { $actions.Add("already in group: $($resolved.Name) (matched '$g')") }
+                            else { $actions.Add("WARN could not add to group '$($resolved.Name)' (matched '$g'): $($_.Exception.Message)") }
+                        }
+                    } else { $actions.Add("WARN group not found in AD: '$g' (no unique space/punctuation match — check the name in the rules editor)") }
+                }
+            }
+        }
+    }
+
+    # REMOVE by name, and/or full reconcile to desiredGroups -----------------
+    $removeNames = @(Get-CtgProp $Config 'removeGroups' | Where-Object { $_ })
+    $reconcile = (Get-CtgProp $Config 'reconcileGroups') -eq $true
+    if ($removeNames.Count -or $reconcile) {
+        $memberships = @(Get-ADPrincipalGroupMembership -Identity $sam -ErrorAction SilentlyContinue @AdConnection)
+        $desired = @(Get-CtgProp $Config 'desiredGroups' | ForEach-Object { "$_".ToLower() })
+        foreach ($g in $memberships) {
+            $name = [string]$g.Name
+            if ($name -ieq 'Domain Users') { continue }
+            $isNamedForRemoval = [bool]($removeNames | Where-Object { $_ -ieq $name })
+            if (Test-CtgADProtectedGroup -Group $g -Config $Config) {
+                if ($isNamedForRemoval) { $actions.Add("refused protected group: $name") }
+                continue
+            }
+            $shouldRemove = if ($reconcile) { -not ($desired -contains $name.ToLower()) } else { $isNamedForRemoval }
+            if (-not $shouldRemove) { continue }
+            $gid = if ($g.DistinguishedName) { $g.DistinguishedName } else { $g.Name }
+            if ($PSCmdlet.ShouldProcess($sam, "Remove from group $name")) {
+                # -ErrorAction Stop so a failed removal is surfaced, not silently logged as success
+                # (mirrors Invoke-CtgADOffboarding's removeAllGroups path).
+                try {
+                    Remove-ADGroupMember -Identity $gid -Members $sam -Confirm:$false -ErrorAction Stop @AdConnection
+                    $actions.Add("removed from group: $name")
+                } catch {
+                    $actions.Add("WARN could not remove from group $($name): $($_.Exception.Message)")
+                }
+            }
+        }
+        # A removeGroups entry the user isn't actually in — surface it rather than silently no-op.
+        $memberNames = @($memberships | ForEach-Object { [string]$_.Name })
+        foreach ($n in $removeNames) { if (-not ($memberNames -contains $n)) { $actions.Add("not a member of $n (skip)") } }
+    }
+
+    # OU move ------------------------------------------------------------
+    $targetOu = Get-CtgProp $Config 'moveToOu'
+    if ($targetOu) {
+        if ("$targetOu" -notmatch '(?i)dc=') { $actions.Add("skipped move: '$targetOu' is not a full OU DN (expected OU=…,DC=…)") }
+        else {
+            $existing = Get-ADUser -Identity $sam -ErrorAction Stop @AdConnection
+            if ($PSCmdlet.ShouldProcess($sam, "Move to $targetOu")) {
+                Move-ADObject -Identity $existing.DistinguishedName -TargetPath $targetOu @AdConnection
+                $actions.Add("moved to $targetOu")
+            }
+        }
+    }
+
+    # Attributes -----------------------------------------------------------
+    foreach ($a in (Set-CtgADAttributes -Identity $sam -Attributes (Get-CtgProp $Config 'attributes') -AdConnection $AdConnection)) {
+        $actions.Add("set attribute: $a")
+    }
+
+    [pscustomobject]@{ System = 'active-directory'; Status = 'ok'; Sam = $sam; Actions = $actions.ToArray() }
+}
+
 function Test-CtgADProtectedGroup {
     # Is this group a privileged group to NEVER strip on offboard? Used by BOTH the executor (skip
     # removal) and the validator (don't count as a miss):
@@ -1147,4 +1243,4 @@ function Test-CtgAdOuCreateUserRight {
     }
 }
 
-Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD, Test-CtgAdCreateUserAce, Get-CtgAdAccountSids, Test-CtgAdOuCreateUserRight
+Export-ModuleMember -Function Invoke-CtgADOnboarding, Invoke-CtgADOffboarding, Invoke-CtgADChange, Invoke-CtgADEmailWriteback, Confirm-CtgADEmailWriteback, Invoke-CtgADConsistencyCheck, Invoke-CtgADHardMatch, Invoke-CtgADPasswordReset, Set-CtgADAttributes, Get-CtgMirrorGroups, Test-CtgCondition, Resolve-CtgOuPath, Confirm-CtgAD, Test-CtgAdCreateUserAce, Get-CtgAdAccountSids, Test-CtgAdOuCreateUserRight

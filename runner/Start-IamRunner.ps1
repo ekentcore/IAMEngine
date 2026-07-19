@@ -1123,11 +1123,13 @@ $DISPATCH = @{
         # real empty mailbox indistinguishable from an unreadable one, and the report hid the Convert
         # answer for both. The [System.Nullable[double]] parameter binds $null and JSON numbers as-is.
         Offboard = { param($job, $creds) Invoke-CtgM365Offboarding -User $job.payload -Config $job.config -SystemKey ([string]$job.systemKey) -MailboxSizeGB (Get-CtgProp $job.config 'mailboxSizeGB') }
+        Change   = { param($job, $creds) Invoke-CtgM365Change -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgM365 -User $job.payload -Config $job.config -Action $job.action }
     }
     'active-directory' = @{
         Onboard  = { param($job, $creds) Invoke-CtgADOnboarding  -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
         Offboard = { param($job, $creds) Invoke-CtgADOffboarding -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
+        Change   = { param($job, $creds) Invoke-CtgADChange -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) }
         Validate = { param($job, $creds) Confirm-CtgAD -User (Add-ClientContext $job) -Config $job.config -Action $job.action -AdConnection (New-CtgAdConnection $creds) }
     }
     # Write the cloud-assigned email back into AD's `mail` attribute (onboard only). Runs on the client
@@ -1172,6 +1174,7 @@ $DISPATCH = @{
         # brokered — take .Credential only when present, else $null (Invoke-/Confirm- run locally).
         Onboard  = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential (Get-CtgAdDcCredential $creds) }
         Offboard = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential (Get-CtgAdDcCredential $creds) }
+        Change   = { param($job, $creds) Invoke-CtgDirectorySync -Config $job.config -Credential (Get-CtgAdDcCredential $creds) }
         Validate = { param($job, $creds) Confirm-CtgDirectorySync -User $job.payload -Config $job.config -Action $job.action -Credential (Get-CtgAdDcCredential $creds) }
     }
     'exchange' = @{
@@ -1247,6 +1250,7 @@ $DISPATCH = @{
             Invoke-CtgExchangeOffboarding -User $job.payload -Config $job.config -TriggerSync $trigger
         }
         Validate = { param($job, $creds) Confirm-CtgExchange -User $job.payload -Config $job.config -Action $job.action }
+        Change   = { param($job, $creds) Invoke-CtgExchangeChange -User $job.payload -Config $job.config }
     }
     'zoom' = @{
         Connect  = { param($job, $creds) Use-CtgZoomSecret -Job $job -Creds $creds }
@@ -1328,6 +1332,7 @@ $DISPATCH = @{
         Connect  = { param($job, $creds) Use-CtgGoogleSecret -Job $job -Creds $creds }
         Onboard  = { param($job, $creds) Invoke-CtgGoogleOnboarding  -User $job.payload -Config $job.config -InitialPassword (New-CtgCompliantPassword) }
         Offboard = { param($job, $creds) Invoke-CtgGoogleOffboarding -User $job.payload -Config $job.config }
+        Change   = { param($job, $creds) Invoke-CtgGoogleChange -User $job.payload -Config $job.config }
         Validate = { param($job, $creds) Confirm-CtgGoogle -User $job.payload -Config $job.config -Action $job.action }
     }
     'salesforce' = @{
@@ -2936,7 +2941,11 @@ while ($true) {
                     $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no executor for $($job.systemKey) — manual follow-up" }
                     continue
                 }
-                $fn = if ($job.action -eq 'offboard') { $handler.Offboard } else { $handler.Onboard }
+                $fn = switch ($job.action) {
+                    'offboard' { $handler.Offboard }
+                    'change'   { if ($handler.ContainsKey('Change')) { $handler.Change } else { $null } }
+                    default    { $handler.Onboard }
+                }
                 if (-not $fn) {
                     $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'skipped'; error = "no $($job.action) lane for $($job.systemKey) — manual follow-up" }
                     continue

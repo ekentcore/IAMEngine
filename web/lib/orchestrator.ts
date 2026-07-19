@@ -270,8 +270,9 @@ export function planCase(
       secretNames: s.systemKey === "sentinelone" && !jobSecretNames.includes("m365-admin")
         ? [...jobSecretNames, "m365-admin"]
         : jobSecretNames,
-      // The runner needs only this action's resolved config, not the whole blob.
-      config: cfg ? (cfg[action] ?? null) : null,
+      // The runner needs only this action's resolved config, not the whole blob. planCase is only
+      // ever invoked for onboard/offboard (change has its own planner) — cfg only has those two keys.
+      config: cfg ? (cfg[action as "onboard" | "offboard"] ?? null) : null,
     };
   });
 }

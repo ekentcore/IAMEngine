@@ -40,6 +40,7 @@ enum Lifecycle {
 enum Action {
   onboard
   offboard
+  change
 }
 
 enum CaseStatus {

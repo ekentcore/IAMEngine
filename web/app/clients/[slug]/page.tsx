@@ -19,6 +19,7 @@ import { SyncSystemsButton } from "../_components/sync-systems-button";
 import { EmailDomainsEditor } from "../_components/email-domains-editor";
 import { SetupStageChips } from "../_components/setup-stage-chips";
 import { ReplanCasesButton } from "../_components/replan-cases-button";
+import { ChangeCaseDialog } from "../_components/change-case-dialog";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { GenerateRunbookButton } from "../_components/generate-runbook-button";
@@ -165,16 +166,29 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
   // Flat set of discovered names for the display split of un-migrated locations (groups vs printers).
   const discoveredGroupNames = [...new Set(knownGroups.map((g) => g.name))];
 
+  // Persona/location names + discovered AD folders — feed the "Change / move user" dialog (mover
+  // persona/location pickers + ad-hoc OU move picker). Same v21 blocks RolesRulesView already reads.
+  const personaNames = Object.keys((v21?.personas as Record<string, unknown> | null) ?? {});
+  const locationNames = Object.keys((v21?.locations as Record<string, unknown> | null) ?? {});
+  const adOus = Array.isArray((v21?.adObjects as { ous?: unknown } | null)?.ous)
+    ? ((v21!.adObjects as { ous: unknown[] }).ous.filter((x): x is string => typeof x === "string"))
+    : [];
+
   // Account hierarchy: a child with no systems of its own plans with its PARENT's runbook (see
   // clientForPlanning). Surface that here so an "empty" child isn't mistaken for unmodeled — but
   // ONLY while the link is intact: a child that broke it plans from its own systems, so claiming
   // the parent's runbook covers it would be a lie (its cases would plan zero jobs).
   const parentInfo = client.systems.length === 0 && client.inheritParentSystems ? parent : null;
 
-  const runbook = await db.runbookSection.findMany({
+  // RunbookSection rows only ever exist for onboard/offboard (change has no runbook — it uses a
+  // separate planner); narrow here so downstream onboard/offboard-keyed lookups stay typed.
+  const runbookAll = await db.runbookSection.findMany({
     where: { clientId: client.id },
     orderBy: [{ action: "asc" }, { seq: "asc" }],
   });
+  const runbook = runbookAll.filter(
+    (r): r is typeof r & { action: "onboard" | "offboard" } => r.action !== "change"
+  );
 
   // Secret wiring: every secretName the systems reference + the saved Delinea references (with id).
   const wiring = await makeClientRepository(db).secretsWiring(params.slug);
@@ -292,6 +306,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
           <EditSystemsButton slug={client.slug} />
+          <ChangeCaseDialog slug={client.slug} personas={personaNames} locations={locationNames} knownGroups={cloudGroupList} ous={adOus} />
           {readiness && readiness.tier !== "no_systems" && (
             <Link href={`/clients/${client.slug}/setup`}><button>Guided setup</button></Link>
           )}

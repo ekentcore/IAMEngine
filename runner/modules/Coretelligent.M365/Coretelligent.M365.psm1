@@ -1862,6 +1862,142 @@ function Invoke-CtgM365Offboarding {
     }
 }
 
+function Invoke-CtgM365Change {
+    <#
+    .SYNOPSIS
+        The m365/entra change ("mover") lane: add/remove Entra cloud groups by NAME and add/remove
+        licenses, for a user who is already onboarded. On-prem-mastered (AD-synced) groups are the
+        active-directory lane's job — this only ever writes cloud groups via Graph.
+    .PARAMETER User
+        Same shape Invoke-CtgM365Offboarding accepts: a UPN/email, or (ServiceNow UM payloads) only a
+        display name — resolved the SAME way (Resolve-CtgM365Upn) so every lane agrees on who "the
+        user" is.
+    .PARAMETER Config
+        The 'config' block for this change job: groups (add by name), removeGroups (remove by name),
+        licenses (add by name/skuId), removeLicenses (remove by name/skuId), plus reconcileGroups
+        (bool) + desiredGroups (name keep-list) — when reconcileGroups is true, every current cloud
+        group NOT in desiredGroups is removed (case-insensitive), same semantics as
+        Invoke-CtgGoogleChange/Invoke-CtgADChange's reconcile. On-prem-synced, mail-enabled/DL, and
+        dynamic groups are never touched by reconcile — those lanes own them.
+    .OUTPUTS
+        [pscustomobject]@{ System='m365'; Status='ok'; Actions=@(...) }
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][pscustomobject]$Config
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+
+    # Resolve-CtgM365Upn returns a plain UPN STRING (the same resolver Offboard/Confirm use — a
+    # ServiceNow payload can carry only a display name), not an object; look the user up ourselves to
+    # get the Entra object id group/license writes need.
+    $upn = [string](Resolve-CtgM365Upn $User)
+    if ([string]::IsNullOrWhiteSpace($upn)) { throw "Invoke-CtgM365Change: could not resolve the target user in Entra" }
+    $existing = Get-MgUser -Filter "userPrincipalName eq '$($upn -replace "'", "''")'" -ErrorAction SilentlyContinue
+    if (-not $existing) { throw "Invoke-CtgM365Change: user '$upn' not found in Entra" }
+    $userId = [string]$existing.Id
+
+    # ADD groups (cloud, by name) ---------------------------------------------------------------
+    foreach ($g in @(Get-CtgProp $Config 'groups' | Where-Object { $_ })) {
+        $res = Resolve-CtgEntraGroupId ([string]$g)
+        if ($res.Error -or -not $res.Id) { $actions.Add("WARN group not found: $g$(if ($res.Error) { " ($($res.Error))" })"); continue }
+        if ($PSCmdlet.ShouldProcess($upn, "Add to group $g")) {
+            $err = Add-CtgGroupMember -GroupId $res.Id -UserId $userId -GroupVerified
+            if ($err) { $actions.Add("add group $g failed: $err") } else { $actions.Add("added to group: $g") }
+        }
+    }
+
+    # REMOVE groups (cloud, by name) — NEW here: the offboard module only does all-or-nothing
+    # removeAllGroups; this removes named groups one at a time while the user stays employed.
+    # Audit-integrity: wrap the Graph call so a REAL failure logs a WARN, never a silent/false
+    # "removed" line; an idempotent not-found (already not a member) is a benign skip, not a WARN.
+    foreach ($g in @(Get-CtgProp $Config 'removeGroups' | Where-Object { $_ })) {
+        $res = Resolve-CtgEntraGroupId ([string]$g)
+        if ($res.Error -or -not $res.Id) { $actions.Add("WARN group not found: $g$(if ($res.Error) { " ($($res.Error))" })"); continue }
+        if ($PSCmdlet.ShouldProcess($upn, "Remove from group $g")) {
+            try {
+                Remove-MgGroupMemberByRef -GroupId $res.Id -DirectoryObjectId $userId -ErrorAction Stop
+                $actions.Add("removed from group: $g")
+            }
+            catch {
+                $msg = [string]$_.Exception.Message
+                if (Test-CtgGraphNotFoundMessage $msg) { $actions.Add("not a member of $g (skip)") }
+                else { $actions.Add("WARN could not remove from group $g`: $msg") }
+            }
+        }
+    }
+
+    # RECONCILE groups (remove current − desired) — gated on config.reconcileGroups. A cloud-only
+    # (entra-backbone) client has no AD lane to prune stale groups on a "full" mover, so without this
+    # a full-mode change silently removed NO cloud groups (removeGroups is empty in full mode —
+    # reconcile is the only removal mechanism there). Mirrors Invoke-CtgGoogleChange's reconcile
+    # (remove current − desired, case-insensitive keep-list) and reuses the SAME group classification
+    # Invoke-CtgM365Offboarding's evidence/removeAllGroups block already computes from
+    # Get-MgUserMemberOf (~line 1210-1222): on-prem-synced (AD lane owns it), mail-enabled/DL
+    # (Exchange lane owns it), and dynamic (rule-managed, can't remove a member) are skipped — those
+    # three classes are never this lane's to write. A role-assignable/privileged group isn't
+    # special-cased here either, matching the offboard path: Graph itself denies the write and the
+    # try/catch below turns that into a WARN, never a silent/false "removed" line.
+    if ((Get-CtgProp $Config 'reconcileGroups') -eq $true) {
+        $desiredGroups = @(Get-CtgProp $Config 'desiredGroups' | Where-Object { $_ } | ForEach-Object { [string]$_ })
+        $desiredSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$desiredGroups, [System.StringComparer]::OrdinalIgnoreCase)
+        $currentGroups = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
+            Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }
+        foreach ($g in $currentGroups) {
+            $ap = $g.AdditionalProperties
+            $gName = [string](Get-CtgProp $ap 'displayName')
+            if ([bool](Get-CtgProp $ap 'onPremisesSyncEnabled')) { continue }   # AD lane owns it
+            if ([bool](Get-CtgProp $ap 'mailEnabled')) { continue }            # Exchange lane owns it
+            if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { continue }  # rule-managed
+            if ($desiredSet.Contains($gName)) { continue }  # keep-listed
+            if ($PSCmdlet.ShouldProcess($upn, "Remove from group $gName (reconcile)")) {
+                try {
+                    Remove-MgGroupMemberByRef -GroupId $g.Id -DirectoryObjectId $userId -ErrorAction Stop
+                    $actions.Add("removed from group: $gName")
+                }
+                catch {
+                    $msg = [string]$_.Exception.Message
+                    if (Test-CtgGraphNotFoundMessage $msg) { $actions.Add("already not a member of $gName (skipped)") }
+                    else { $actions.Add("WARN could not remove from group $gName`: $msg") }
+                }
+            }
+        }
+    }
+
+    # ADD licenses (by name/skuId) --------------------------------------------------------------
+    foreach ($l in @(Get-CtgProp $Config 'licenses' | Where-Object { $_ })) {
+        $name = if ($l -is [string]) { $l } else { [string]((Get-CtgProp $l 'name') ?? (Get-CtgProp $l 'skuId')) }
+        $sku = Resolve-CtgSkuId $l
+        if (-not $sku) { $actions.Add("WARN license not in tenant: $name"); continue }
+        if ($PSCmdlet.ShouldProcess($upn, "Add license $name")) {
+            try {
+                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $sku }) -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+                $actions.Add("added license: $name")
+            }
+            catch { $actions.Add("WARN could not add license $name`: $($_.Exception.Message)") }
+        }
+    }
+
+    # REMOVE licenses (by name/skuId) -----------------------------------------------------------
+    # Audit-integrity: same pattern as the group removal above — a real Graph failure (e.g. a
+    # group-inherited license Graph refuses to strip directly) logs a WARN, not a false "removed".
+    foreach ($l in @(Get-CtgProp $Config 'removeLicenses' | Where-Object { $_ })) {
+        $name = if ($l -is [string]) { $l } else { [string]((Get-CtgProp $l 'name') ?? (Get-CtgProp $l 'skuId')) }
+        $sku = Resolve-CtgSkuId $l
+        if (-not $sku) { $actions.Add("WARN license not in tenant: $name"); continue }
+        if ($PSCmdlet.ShouldProcess($upn, "Remove license $name")) {
+            try {
+                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses @($sku) -ErrorAction Stop } | Out-Null
+                $actions.Add("removed license: $name")
+            }
+            catch { $actions.Add("WARN could not remove license $name`: $($_.Exception.Message)") }
+        }
+    }
+
+    [pscustomobject]@{ System = 'm365'; Status = 'ok'; Actions = $actions.ToArray() }
+}
+
 function Confirm-CtgM365 {
     <#
     .SYNOPSIS
@@ -2198,4 +2334,4 @@ function Get-CtgAppCredentialExpiry {
     @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry
+Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry
