@@ -57,7 +57,11 @@ function rightsBadge(t: Test): { text: string; color: string } {
   const s = summarizeRights(t.rights);
   if (s.state === "unknown") return { text: "—", color: "var(--muted)" };
   const opt = s.optionalMissing > 0 ? ` +${s.optionalMissing} optional` : "";
-  const extra = s.surplus > 0 ? ` · ${s.surplus} not needed` : "";
+  // Extra Access = over-permissioned (the reverse finding from a missing optional). Never blocking —
+  // it rides beside the badge's own color, which is still driven only by the required ops below.
+  // When any surplus row is an escalation risk (e.g. could self-assign Global Admin), call that out.
+  const extra =
+    s.surplus > 0 ? ` · Extra Access: ${s.surplus}${s.escalation > 0 ? ` (${s.escalation} risky)` : ""}` : "";
   if (s.state === "verified") return { text: `✓ ${s.total}/${s.total} ops${opt}${extra}`, color: "#15803d" };
   if (s.state === "missing") return { text: `✗ missing ${s.missing}${opt}${extra}`, color: "#b91c1c" };
   return { text: `? ${s.unverified} unverified${opt}${extra}`, color: "#92400e" };
@@ -189,6 +193,29 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
                         <table style={{ margin: "0.3rem 0 0.3rem 1rem", width: "auto" }}>
                           <tbody>
                             {(t.rights ?? []).map((r) => {
+                              // Extra Access rows (surplus=true) are the OPPOSITE finding from a missing
+                              // optional permission — the credential HAS this and we never use it — so
+                              // they get their own mark/chip, never the "○ (optional)" missing styling.
+                              // An escalation risk (e.g. can self-assign Global Admin) is a stronger
+                              // warning; a benign unused grant is muted.
+                              if (r.surplus) {
+                                const mark = r.escalation ? "⚠" : "＋";
+                                const color = r.escalation ? "#b45309" : "var(--muted)";
+                                return (
+                                  <tr key={r.op}>
+                                    <td style={{ paddingRight: "0.8rem" }}>
+                                      <span style={{ color }}>{mark}</span> {r.op}
+                                      <span
+                                        className={r.escalation ? undefined : "muted"}
+                                        style={{ fontSize: 11, marginLeft: 6, color: r.escalation ? color : undefined, fontWeight: r.escalation ? 600 : undefined }}
+                                      >
+                                        {r.escalation ? "Extra Access — risk" : "Extra Access · unused"}
+                                      </span>
+                                    </td>
+                                    <td className="muted" style={{ whiteSpace: "normal" }}>{r.detail}</td>
+                                  </tr>
+                                );
+                              }
                               // A missing optional permission is amber "○" (a note), not red "✗" — it
                               // does not fail the test, so it must not read like a failure.
                               const optMiss = r.optional && r.ok === false;

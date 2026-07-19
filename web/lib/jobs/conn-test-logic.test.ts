@@ -69,16 +69,16 @@ test("summarizeRights: verified / missing / unverified / unknown", () => {
   assert.deepEqual(summarizeRights([]), { state: "unknown" });
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: true, detail: "" }, { op: "b", ok: true, detail: "" }]),
-    { state: "verified", total: 2, optionalMissing: 0, surplus: 0 }
+    { state: "verified", total: 2, optionalMissing: 0, surplus: 0, escalation: 0 }
   );
   // any definite miss wins over unverified
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: false, detail: "" }, { op: "b", ok: null, detail: "" }]),
-    { state: "missing", missing: 1, total: 2, optionalMissing: 0, surplus: 0 }
+    { state: "missing", missing: 1, total: 2, optionalMissing: 0, surplus: 0, escalation: 0 }
   );
   assert.deepEqual(
     summarizeRights([{ op: "a", ok: true, detail: "" }, { op: "b", ok: null, detail: "" }]),
-    { state: "unverified", unverified: 1, total: 2, optionalMissing: 0, surplus: 0 }
+    { state: "unverified", unverified: 1, total: 2, optionalMissing: 0, surplus: 0, escalation: 0 }
   );
 });
 
@@ -89,7 +89,7 @@ test("summarizeRights: a missing OPTIONAL op is noted, never a failure", () => {
       { op: "create users", ok: true, detail: "" },
       { op: "remove MFA", ok: false, detail: "", optional: true },
     ]),
-    { state: "verified", total: 1, optionalMissing: 1, surplus: 0 }
+    { state: "verified", total: 1, optionalMissing: 1, surplus: 0, escalation: 0 }
   );
   // a granted optional doesn't inflate the required total, and isn't counted as missing.
   assert.deepEqual(
@@ -97,7 +97,7 @@ test("summarizeRights: a missing OPTIONAL op is noted, never a failure", () => {
       { op: "create users", ok: true, detail: "" },
       { op: "remove MFA", ok: true, detail: "", optional: true },
     ]),
-    { state: "verified", total: 1, optionalMissing: 0, surplus: 0 }
+    { state: "verified", total: 1, optionalMissing: 0, surplus: 0, escalation: 0 }
   );
   // a real required miss still wins, and the optional miss is reported alongside it.
   assert.deepEqual(
@@ -105,7 +105,7 @@ test("summarizeRights: a missing OPTIONAL op is noted, never a failure", () => {
       { op: "create users", ok: false, detail: "" },
       { op: "remove MFA", ok: false, detail: "", optional: true },
     ]),
-    { state: "missing", missing: 1, total: 1, optionalMissing: 1, surplus: 0 }
+    { state: "missing", missing: 1, total: 1, optionalMissing: 1, surplus: 0, escalation: 0 }
   );
 });
 
@@ -164,4 +164,55 @@ test("the rights cap fits a real tenant's rows — 3 required + 7 optional + sur
   // Was 20; coretelligent alone reports ~17 and a silent slice drops findings off the end.
   const many = Array.from({ length: 30 }, (_, i) => ({ op: `op${i}`, ok: true, detail: "" }));
   assert.equal(parseRights(many)!.length, 30);
+});
+
+// ── Escalation (a subset of surplus that is a genuine privilege-escalation risk) ────────────────────
+
+test("parseRights: derives escalation from the op prefix and strips the known prefix", () => {
+  const rows = parseRights([
+    { op: "OVER-PERMISSIONED: RoleManagement.ReadWrite.Directory", ok: false, detail: "can self-assign Global Admin", surplus: true },
+    { op: "not needed: Files.Read.All", ok: false, detail: "unused", surplus: true },
+  ])!;
+  assert.equal(rows[0].op, "RoleManagement.ReadWrite.Directory");
+  assert.equal(rows[0].escalation, true);
+  assert.equal(rows[1].op, "Files.Read.All");
+  assert.equal(rows[1].escalation, false);
+});
+
+test("parseRights: an explicit wire escalation field wins over the prefix parse", () => {
+  const rows = parseRights([
+    { op: "OVER-PERMISSIONED: X", ok: false, detail: "", surplus: true, escalation: false },
+  ])!;
+  assert.equal(rows[0].escalation, false); // explicit false beats the prefix's implied true
+});
+
+test("parseRights: a non-surplus row is never given an escalation prefix strip", () => {
+  const rows = parseRights([{ op: "OVER-PERMISSIONED: looks like a prefix but isn't surplus", ok: true, detail: "" }])!;
+  assert.equal(rows[0].op, "OVER-PERMISSIONED: looks like a prefix but isn't surplus");
+  assert.equal(rows[0].escalation, undefined);
+});
+
+test("a credential can be BOTH under- and over-permissioned at once", () => {
+  const s = summarizeRights(
+    parseRights([
+      { op: "create users", ok: false, detail: "" }, // required, missing
+      { op: "OVER-PERMISSIONED: RoleManagement.ReadWrite.Directory", ok: false, detail: "", surplus: true },
+      { op: "not needed: Files.Read.All", ok: false, detail: "", surplus: true },
+    ])
+  );
+  assert.equal(s.state, "missing");
+  assert.equal(s.state === "missing" && s.missing, 1);
+  assert.equal(s.state === "missing" && s.surplus, 2);
+  assert.equal(s.state === "missing" && s.escalation, 1);
+});
+
+test("summarizeRights: escalation count reflects only escalation surplus rows, not all surplus", () => {
+  const s = summarizeRights([
+    { op: "create users", ok: true, detail: "" },
+    { op: "A", ok: false, detail: "", optional: true, surplus: true, escalation: true },
+    { op: "B", ok: false, detail: "", optional: true, surplus: true, escalation: false },
+    { op: "C", ok: false, detail: "", optional: true, surplus: true },
+  ]);
+  assert.equal(s.state === "verified" && s.surplus, 3);
+  assert.equal(s.state === "verified" && s.escalation, 1);
 });

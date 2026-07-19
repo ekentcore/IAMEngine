@@ -52,6 +52,7 @@ export { entry as exchangeDisconnectExportHotfix } from "./exchange-disconnect-e
 export { entry as exchangeManagerName } from "./exchange-manager-name";
 export { entry as exoPinSelfheal } from "./exo-pin-selfheal";
 export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
+export { entry as extraAccessIndicator } from "./extra-access-indicator";
 export { entry as featureRequestNumbersAndAutoHide } from "./feature-request-numbers-and-auto-hide";
 export { entry as featureRequestsMenuBadgeLiveCounts } from "./feature-requests-menu-badge-live-counts";
 export { entry as featureRequestsOwnPage } from "./feature-requests-own-page";
