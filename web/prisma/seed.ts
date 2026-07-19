@@ -48,7 +48,7 @@ const CATALOG: Array<[string, string, number, string?]> = [
   ["directory-sync", "Entra Connect sync", 2, "Coretelligent.ActiveDirectory"],
   ["mimecast", "Mimecast", 2, "Coretelligent.Mimecast"], ["adobe", "Adobe", 2, "Coretelligent.Adobe"], ["google-workspace", "Google Workspace", 2, "Coretelligent.GoogleWorkspace"],
   ["knowbe4", "KnowBe4", 2, "Coretelligent.KnowBe4"], ["sharepoint", "SharePoint", 3], ["spanning", "Spanning", 3, "Coretelligent.Spanning"],
-  ["zoom", "Zoom", 3, "Coretelligent.Zoom"], ["slack", "Slack", 3], ["egnyte", "Egnyte", 3, "Coretelligent.Egnyte"], ["mdm", "MDM (Addigy/Jamf/Intune)", 3],
+  ["zoom", "Zoom", 3, "Coretelligent.Zoom"], ["slack", "Slack", 3, "Coretelligent.Slack"], ["egnyte", "Egnyte", 3, "Coretelligent.Egnyte"], ["mdm", "MDM (Addigy/Jamf/Intune)", 3],
   ["proofpoint", "Proofpoint", 3], ["dropbox", "Dropbox", 3], ["perimeter81", "Perimeter 81", 3, "Coretelligent.Perimeter81"],
   ["teams", "Teams Phone", 3], ["avd", "Azure Virtual Desktop", 3], ["1password", "1Password", 3, "Coretelligent.1Password"],
   ["tableau", "Tableau", 3], ["notion", "Notion", 3], ["printix", "Printix", 3], ["uniflow", "UniFlow secure printing", 3],

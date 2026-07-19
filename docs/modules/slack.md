@@ -7,6 +7,8 @@ Workspace membership. Some clients run multiple workspaces (e.g. a TM and an IM 
 ### Auth
 Secret: `slack-admin` (SCIM / admin API; often Google SSO).
 
+Shipped: single `slack` SCIM token (single workspace) — see `docs/modules/_BUILD_PLAN.md` if multi-workspace is ever needed.
+
 ### Onboard lane
 `always`/`on-request`. Invite the user to each configured workspace.
 

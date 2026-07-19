@@ -50,7 +50,7 @@ export const MODULES: ModuleEntry[] = [
   { key: "hubspot", name: "HubSpot", group: "Apps & access", executor: "built", secret: "hubspot", helpSlug: "hubspot" },
   { key: "jira", name: "Jira", group: "Apps & access", executor: "built", secret: "jira", helpSlug: "jira" },
   { key: "sharepoint", name: "SharePoint", group: "Apps & access", executor: "planned", secret: "m365-admin" },
-  { key: "slack", name: "Slack", group: "Apps & access", executor: "planned", secret: "slack" },
+  { key: "slack", name: "Slack", group: "Apps & access", executor: "built", secret: "slack", helpSlug: "slack" },
   { key: "teams", name: "Teams Phone", group: "Apps & access", executor: "planned", secret: "teams-admin" },
   { key: "dropbox", name: "Dropbox", group: "Apps & access", executor: "planned", secret: "dropbox" },
   { key: "1password", name: "1Password", group: "Apps & access", executor: "built", secret: "1password", helpSlug: "1password" },
