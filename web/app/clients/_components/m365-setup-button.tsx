@@ -17,6 +17,20 @@ type ClientState = {
   verificationUri?: string | null; skipReason?: string | null;
 };
 
+// Friendly progress text for each stage of the run, so "Setting up…" isn't the only signal while it's
+// in flight. Falls back to a generic "In progress…" for an unmapped/not-yet-set stage.
+const STAGE_LABELS: Record<string, string> = {
+  "device-code-init": "requesting a device code…",
+  "browser-signin": "signing in as the Global Admin…",
+  token: "completing sign-in…",
+  provision: "provisioning the app registration…",
+  write: "vaulting the credential…",
+};
+
+function stageLabel(stage?: string | null): string {
+  return (stage && STAGE_LABELS[stage]) || "In progress…";
+}
+
 export function M365SetupButton({ slug }: { slug: string }) {
   const [busy, setBusy] = useState(false);
   const [state, setState] = useState<ClientState | null>(null);
@@ -99,9 +113,9 @@ export function M365SetupButton({ slug }: { slug: string }) {
           {state.status === "skipped" && `Skipped: ${state.skipReason ?? "not eligible"}.`}
           {state.status === "failed" && `Failed at ${state.stage}: ${state.error ?? "unknown"}${state.warnings?.length ? ` — ${state.warnings[0]}` : ""}`}
           {running && state.userCode && (
-            <> In progress — if MFA needs a hand, sign in at <a href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer">devicelogin</a> with code <code>{state.userCode}</code>.</>
+            <> {stageLabel(state.stage)} If MFA needs a hand, sign in at <a href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer">devicelogin</a> with code <code>{state.userCode}</code>.</>
           )}
-          {running && !state.userCode && " In progress…"}
+          {running && !state.userCode && ` ${stageLabel(state.stage)}`}
         </span>
       )}
       {error && <span className="note" style={{ marginLeft: 8, color: "#b91c1c" }}>{error}</span>}

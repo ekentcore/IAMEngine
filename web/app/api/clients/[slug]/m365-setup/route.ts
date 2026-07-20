@@ -56,7 +56,16 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
   const run = await latestM365SetupRun(db, `client:${client.id}`);
   // The per-client scope key makes this THIS client's own run; the single row is trivially "mine".
   const mine = run?.clients.find((c) => c.clientId === client.id);
-  if (!run || !mine) return NextResponse.json({ run: null });
+  if (!run) return NextResponse.json({ run: null });
+  if (!mine) {
+    // The run row exists but its M365SetupRunClient row hasn't been created yet (a brief race right at
+    // run start). Returning {run:null} here used to make the poller stop entirely — report a
+    // pending/running client status instead so the UI keeps polling until the row shows up.
+    return NextResponse.json({
+      run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },
+      client: { status: run.status === "running" ? "running" : "pending", stage: null },
+    });
+  }
   return NextResponse.json({
     run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },
     client: { status: mine.status, stage: mine.stage, appId: mine.appId, verified: mine.verified, wroteCreds: mine.wroteCreds, error: mine.error, warnings: mine.warnings, userCode: mine.userCode, verificationUri: mine.verificationUri, skipReason: mine.skipReason },

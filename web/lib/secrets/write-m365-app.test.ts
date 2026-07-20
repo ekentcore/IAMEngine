@@ -253,18 +253,71 @@ test("updateSecretFields failure (create path) -> ok:false, nothing persisted", 
   assert.equal(calls.upsert.length, 0);
 });
 
-test("a newly issued client secret that fails the Entra probe is refused — nothing written, nothing persisted", async () => {
+// FIX (propagation tolerance): a newly issued client secret failing the probe with a propagation-class
+// error (AADSTS7000215/invalid_client here) is no longer refused outright — after the retry window it's
+// vaulted anyway with a warning, since the Graph-issued secret is real and refusing to vault it strands
+// it. See the two propagation-retry tests below for the full retry/backoff contract.
+test("a newly issued client secret that fails the Entra probe (propagation-class) is still vaulted, with a warning", async () => {
   const { db, calls } = fakeDb();
   let createCalled = false;
   const f = fetcher({ probeOk: false, capturedCreateFields: () => (createCalled = true) });
   const r = await writeProvisionedM365App(
     { client: CLIENT, provision: provision({ clientSecret: "bad-secret" }) },
-    { db, fetch: f, env: ENV_CONFIGURED }
+    { db, fetch: f, env: ENV_CONFIGURED, sleep: async () => {} }
   );
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /AADSTS7000215|bad secret|invalid_client/);
-  assert.equal(createCalled, false);
-  assert.equal(calls.upsert.length, 0);
+  assert.equal(r.ok, true);
+  assert.equal(r.wroteCreds, true);
+  assert.ok(r.warnings?.some((w) => w.includes("propagation")));
+  assert.equal(createCalled, true);
+  assert.equal(calls.upsert.length, 1);
+});
+
+// FIX (propagation tolerance): the probe transiently fails twice with a propagation-class error, then
+// succeeds on the third attempt — the secret is vaulted as a normal verified write, no warning, and the
+// injected sleep was invoked for each retry gap.
+test("propagation retry: probe fails twice (invalid_client) then succeeds -> vaults, verified, no warning, sleep called", async () => {
+  const { db, calls } = fakeDb();
+  let callCount = 0;
+  let sleepCalls = 0;
+  const f: Fetcher = (async (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    if (url.includes("login.microsoftonline.com")) {
+      callCount++;
+      if (callCount < 3) {
+        return { ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "AADSTS7000215: bad secret" }) } as FetchResponse;
+      }
+      return { ok: true, status: 200, json: async () => ({ access_token: "graph-tok" }) } as FetchResponse;
+    }
+    return fetcher()(url, init);
+  }) as Fetcher;
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_CONFIGURED, sleep: async () => { sleepCalls++; } }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.wroteCreds, true);
+  assert.equal(r.warnings, undefined);
+  assert.equal(callCount, 3);
+  assert.equal(sleepCalls, 2);
+  assert.equal(calls.upsert.length, 1);
+});
+
+// FIX (propagation tolerance): the probe NEVER succeeds (persistent propagation-class failure) — after
+// exhausting the retry window, the secret is vaulted anyway (never stranded) with a warning that says so.
+test("propagation retry: probe always fails (invalid_client) -> vaults anyway with the propagation warning, ok:true wroteCreds:true, never stranded/ok:false", async () => {
+  const { db, calls } = fakeDb();
+  let probeCount = 0;
+  const f = fetcher({ probeOk: false, probeCalled: () => probeCount++ });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_CONFIGURED, sleep: async () => {} }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.wroteCreds, true);
+  assert.equal(r.stranded, undefined);
+  assert.ok(r.warnings, "expected the propagation warning to be surfaced");
+  assert.ok(r.warnings!.some((w) => w.includes("propagation")));
+  assert.equal(probeCount, 6, "should have retried up to the max attempt count");
+  assert.equal(calls.upsert.length, 1);
 });
 
 test("credState kept-valid + already vaulted -> no-op, no Delinea calls at all", async () => {

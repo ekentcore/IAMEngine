@@ -80,6 +80,7 @@ export { entry as m365FleetPermissionReport } from "./m365-fleet-permission-repo
 export { entry as m365PasswordResetPermission } from "./m365-password-reset-permission";
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";
+export { entry as m365SetupPropagationTolerance } from "./m365-setup-propagation-tolerance";
 export { entry as mailboxMirrorNamesSource } from "./mailbox-mirror-names-source";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";

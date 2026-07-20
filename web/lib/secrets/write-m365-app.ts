@@ -23,7 +23,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { createSecret, updateSecretFields, getDelineaToken, type Fetcher } from "./delinea";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor } from "./delinea-templates";
-import { probeEntraClientCredentials } from "./m365-credential";
+import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
 import { makeClientRepository } from "@/lib/clients/repository";
 import type { ProvisionResult } from "./provision-m365-app";
 
@@ -31,7 +31,13 @@ export type WriteClientInput = { id: string; slug: string; name: string; delinea
 export type WriteInput = { client: WriteClientInput; provision: ProvisionResult; secretName?: string /* default "m365-admin" */ };
 
 type Env = Record<string, string | undefined>;
-export type WriteDeps = { db: PrismaClient; fetch?: Fetcher; env?: Env };
+export type WriteDeps = {
+  db: PrismaClient;
+  fetch?: Fetcher;
+  env?: Env;
+  // Injectable for tests — the retry-with-backoff below awaits this between propagation-retry attempts.
+  sleep?: (ms: number) => Promise<void>;
+};
 
 export type WriteResult = {
   ok: boolean;
@@ -97,6 +103,55 @@ function judgeFieldWrite(
   return { ok: true, warnings };
 }
 
+// A brand-new Entra app registration + client secret are not always immediately usable for a
+// client-credentials grant — Entra can take ~30s-3min to propagate a new app registration across its
+// directory replicas. During that window the SAME correct secret fails the probe with a propagation-
+// class error. These are worth retrying; anything else (wrong secret, wrong tenant, wrong app kind) is
+// a genuine, immediate failure and must not be retried or silently vaulted.
+const PROPAGATION_ERROR_CODES = ["AADSTS700016", "AADSTS7000215"];
+const PROPAGATION_ERRORS = new Set(["invalid_client", "unauthorized_client"]);
+
+function isPropagationClassError(probe: EntraProbe): boolean {
+  if (probe.ok) return false;
+  const code = probe.errorCode ?? "";
+  const err = probe.error ?? "";
+  if (PROPAGATION_ERRORS.has(err)) return true;
+  if (PROPAGATION_ERROR_CODES.some((c) => code.includes(c))) return true;
+  // A network/timeout throw lands here with neither an errorCode nor a recognizable terminal `error` —
+  // treat "we couldn't even get a verdict" the same as "propagation", since we can't tell it apart from
+  // Entra being momentarily unreachable during the same window a brand-new app is still propagating.
+  if (!code && !err) return true;
+  return false;
+}
+
+const PROPAGATION_MAX_ATTEMPTS = 6; // ~6 attempts, ~15s apart => ~90s total retry window
+const PROPAGATION_DELAY_MS = 15_000;
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const PROPAGATION_WARNING =
+  "the new credential could not be verified against Entra yet (likely app-registration propagation delay) — it has been vaulted; re-run the client's connection test in a few minutes to confirm";
+
+// Retry the live Entra probe past a propagation delay. Returns the final probe verdict plus a warning
+// when we gave up on a propagation-class failure (never on a genuine/terminal failure — that's still a
+// hard refusal, handled by the caller).
+async function probeWithPropagationRetry(
+  tenantId: string,
+  appId: string,
+  clientSecret: string,
+  fetcher: typeof fetch,
+  sleep: (ms: number) => Promise<void>
+): Promise<{ probe: EntraProbe; propagationWarning?: string }> {
+  let probe = await probeEntraClientCredentials(tenantId, appId, clientSecret, fetcher);
+  let attempts = 1;
+  while (!probe.ok && isPropagationClassError(probe) && attempts < PROPAGATION_MAX_ATTEMPTS) {
+    await sleep(PROPAGATION_DELAY_MS);
+    probe = await probeEntraClientCredentials(tenantId, appId, clientSecret, fetcher);
+    attempts++;
+  }
+  if (probe.ok || !isPropagationClassError(probe)) return { probe };
+  return { probe, propagationWarning: PROPAGATION_WARNING };
+}
+
 export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps): Promise<WriteResult> {
   const { client, provision } = input;
   const secretName = input.secretName ?? "m365-admin";
@@ -150,11 +205,23 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
 
   // 2. Validate a newly issued client secret against Entra before vaulting it — refuse to write a
   // credential we just proved doesn't authenticate. A cert-only issue has no probe here (skip).
+  // A propagation-class failure (brand-new app registration not yet replicated in Entra) is retried
+  // with backoff; if it's STILL unverified after the retry window, vault the secret anyway with a
+  // warning rather than stranding a secret we just minted via Graph this run — see PROPAGATION_WARNING.
+  let propagationWarning: string | undefined;
   if (provision.clientSecret) {
-    const probe = await probeEntraClientCredentials(provision.tenantId, provision.appId, provision.clientSecret, (fetcher as unknown as typeof fetch) ?? fetch);
-    if (!probe.ok) {
+    const sleep = deps.sleep ?? defaultSleep;
+    const { probe, propagationWarning: warning } = await probeWithPropagationRetry(
+      provision.tenantId,
+      provision.appId,
+      provision.clientSecret,
+      (fetcher as unknown as typeof fetch) ?? fetch,
+      sleep
+    );
+    if (!probe.ok && !warning) {
       return { ok: false, wroteCreds: false, error: probe.error ?? "the newly issued client secret failed a live test against Entra", hint: probe.hint };
     }
+    propagationWarning = warning;
   }
 
   // 3. Gate: the app can only write when a write account + this client's folder + a template id for
@@ -197,7 +264,8 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
 
   let externalId: string;
   let created: boolean;
-  let warnings: string[] = [];
+  // Seed with the propagation warning (if any) — a field-write warning, if any, is appended below.
+  let warnings: string[] = propagationWarning ? [propagationWarning] : [];
   if (existingRow?.externalId) {
     // 5a. Already vaulted — update the known secret in place. No name search, no create call, so this
     // can never mint a duplicate regardless of what the secret happens to be named in Secret Server.
@@ -208,7 +276,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     if (!verdict.ok) {
       return { ok: false, wroteCreds: false, error: verdict.error };
     }
-    warnings = verdict.warnings;
+    warnings = warnings.concat(verdict.warnings);
   } else {
     // 5b. No local row — create it fresh. Name it the same way the manual create route does
     // (`${client.name} — ${secretName}`) so a later manual lookup agrees with what we just created.
@@ -224,7 +292,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     if (!verdict.ok) {
       return { ok: false, wroteCreds: false, error: verdict.error };
     }
-    warnings = verdict.warnings;
+    warnings = warnings.concat(verdict.warnings);
   }
 
   // 6. Persist the vault REFERENCE (never a value): self-learn the folder if the client had none, then
