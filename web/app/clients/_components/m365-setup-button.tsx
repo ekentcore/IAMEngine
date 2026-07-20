@@ -322,7 +322,11 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                     <span className="note"> — wired as the <code>m365-admin</code> secret.</span>
                   </div>
                 ) : (
-                  <div className="note">Credential vaulted, but its Delinea id couldn&rsquo;t be read back — check Secret wiring below.</div>
+                  <div className="note" style={{ color: "#8a6d00" }}>
+                    ⚠ No Delinea credential is wired for this client — the app registration exists but its
+                    credential was never vaulted (the wiring still holds a placeholder). Click <b>Set up
+                    again</b> below to create and vault a real one.
+                  </div>
                 )}
                 {/* Exchange Online app-only (Exchange.ManageAsApp + Exchange Administrator role) — its own
                     line so an operator can see whether the Exchange admin grant actually landed. */}
@@ -369,7 +373,14 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
 
             <div className="toolbar" style={{ marginTop: "0.9rem" }}>
               <span className="grow" />
-              {failed && <button type="button" onClick={reRun} disabled={running}>Re-run setup</button>}
+              {/* Re-run is available on BOTH a failed and a completed run — a "done" run still needs a
+                  way back (re-provision to reconcile permissions, rotate a credential, or recover a
+                  client whose vault only ever got a placeholder). */}
+              {(failed || done) && (
+                <button type="button" onClick={reRun} disabled={running}>
+                  {failed ? "Re-run setup" : "Set up again"}
+                </button>
+              )}
               <button type="button" className={done ? "primary" : undefined} onClick={closeModal} disabled={running && !failed && !done}>
                 {running ? "Running…" : "Close"}
               </button>
