@@ -33,6 +33,7 @@ import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { RefreshNameButton } from "../_components/refresh-name-button";
+import { M365SetupButton } from "../_components/m365-setup-button";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { ClientNotifyOverride } from "../_components/client-notify-override";
@@ -306,6 +307,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
           <RefreshNameButton slug={client.slug} />
           <ReplanCasesButton slug={client.slug} />
           <EditSystemsButton slug={client.slug} />
+          <M365SetupButton slug={client.slug} />
           <ChangeCaseDialog slug={client.slug} personas={personaNames} locations={locationNames} knownGroups={cloudGroupList} ous={adOus} />
           {readiness && readiness.tier !== "no_systems" && (
             <Link href={`/clients/${client.slug}/setup`}><button>Guided setup</button></Link>

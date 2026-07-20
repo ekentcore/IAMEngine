@@ -506,7 +506,14 @@ export function makeCaseRepository(db: PrismaClient) {
     // returns the most-recent N (an ops list scans recent cases; a history/pagination UI is the follow-up).
     async listCases(scope: ClientScope = null, limit = 250): Promise<CaseListItem[]> {
       const rows = await db.caseRequest.findMany({
-        where: { deletedAt: null, clientId: clientIdWhere(scope) }, // trashed cases live in the Trash section
+        where: {
+          deletedAt: null,
+          clientId: clientIdWhere(scope), // trashed cases live in the Trash section
+          // Exclude the synthetic onboard case that hosts a lone entra-devicecode browser job
+          // (dispatch-device-code-job.ts) — it's not a real intake case and would just clutter the
+          // queue. Marker-only; a case whose payload lacks the key still matches (path null → not equal).
+          NOT: { payload: { path: ["m365AutoSetup"], equals: true } },
+        },
         orderBy: { createdAt: "desc" },
         take: limit,
         select: {

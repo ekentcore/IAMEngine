@@ -11,6 +11,7 @@ import Link from "next/link";
 import { loadAuditsPage, type AuditsSearchParams } from "./_lib/loader";
 import { ScanButton } from "./_components/scan-button";
 import { PermissionPivotTable } from "./_components/permission-pivot";
+import { M365SetupFleet } from "./_components/m365-setup-fleet";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Fleet audits" };
@@ -122,6 +123,8 @@ export default async function AuditsPage({ searchParams }: { searchParams: Audit
           )}
         </>
       )}
+
+      <M365SetupFleet />
     </main>
   );
 }

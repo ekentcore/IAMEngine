@@ -74,6 +74,7 @@ export { entry as locationGroupsPickerPrinters } from "./location-groups-picker-
 export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-core";
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
+export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
 export { entry as m365DevicecodeAuth } from "./m365-devicecode-auth";
 export { entry as m365FleetPermissionReport } from "./m365-fleet-permission-report";
 export { entry as m365PasswordResetPermission } from "./m365-password-reset-permission";

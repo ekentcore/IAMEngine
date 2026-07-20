@@ -864,3 +864,49 @@ model FleetAudit {
   // "the latest run of this kind" is the only query this table serves.
   @@index([kind, startedAt])
 }
+
+// A run of the automated M365 app-registration setup — one client ("client" scope) or the fleet
+// ("fleet" scope). Mirrors FleetAudit's start/track/read shape; per-client detail lives in
+// M365SetupRunClient. Takes minutes per client, so the work runs detached and the UI polls this row.
+model M365SetupRun {
+  id         String               @id @default(cuid())
+  scope      String // "client" | "fleet"
+  status     String               @default("running") // running | done | failed
+  dryRun     Boolean              @default(false) // fleet eligibility preview — no device-code/provision
+  startedAt  DateTime             @default(now())
+  finishedAt DateTime?
+  startedBy  String? // actor label snapshot ("user:jane@core.tech")
+  total      Int                  @default(0) // clients this run intends to visit
+  completed  Int                  @default(0) // clients reaching any terminal per-client state
+  succeeded  Int                  @default(0)
+  skipped    Int                  @default(0)
+  failed     Int                  @default(0)
+  error      String?
+  clients    M365SetupRunClient[]
+
+  @@index([scope, startedAt]) // "the latest run of this scope"
+}
+
+// One client's outcome within a run. Its stage/warnings mirror SetupResult so the UI can show exactly
+// where it stopped and why (incl. a non-automatable-MFA browser warning).
+model M365SetupRunClient {
+  id              String       @id @default(cuid())
+  run             M365SetupRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId           String
+  clientId        String
+  slug            String
+  name            String
+  status          String       @default("pending") // pending | running | done | skipped | failed
+  stage           String? // SetupResult.stage
+  appId           String?
+  wroteCreds      Boolean?
+  verified        Boolean?
+  skipReason      String? // e.g. "no m365-global-admin secret"
+  error           String?
+  warnings        String[] // SetupResult.browserWarnings (e.g. "WARN MFA push not automatable")
+  userCode        String? // device user-code, surfaced while running for a manual fallback
+  verificationUri String?
+  updatedAt       DateTime     @updatedAt
+
+  @@index([runId])
+}

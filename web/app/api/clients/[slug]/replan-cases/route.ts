@@ -16,7 +16,14 @@ export async function POST(_req: Request, { params }: { params: { id?: string; s
   // scope-gated: can't replan cases of a client you can't see.
   if (!client || !scopeAllows(await currentClientScope(db), client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
   const open = await db.caseRequest.findMany({
-    where: { clientId: client.id, deletedAt: null, status: { notIn: ["completed", "failed"] } },
+    where: {
+      clientId: client.id,
+      deletedAt: null,
+      status: { notIn: ["completed", "failed"] },
+      // Exclude the synthetic onboard case that hosts a lone entra-devicecode browser job
+      // (dispatch-device-code-job.ts) — re-planning it would mangle its single-purpose job.
+      NOT: { payload: { path: ["m365AutoSetup"], equals: true } },
+    },
     select: { id: true },
   });
   const who = auditActor(_g.user, "ui:client-replan");
