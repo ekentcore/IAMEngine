@@ -51,6 +51,12 @@ function Connect-CtgProofpoint {
     )
     if ($BaseUrl) {
         $u = $BaseUrl.TrimEnd('/')
+        # Force HTTPS. Proofpoint Essentials is HTTPS-only; a secret storing a scheme-less host
+        # ("us3.proofpointessentials.com") or an "http://" URL makes Invoke-RestMethod default to
+        # port 80, which Proofpoint black-holes — every call then hangs to the TCP timeout (~75s)
+        # and wedges the single-threaded runner. Normalize to https:// regardless of what's stored.
+        if ($u -match '^http://')       { $u = 'https://' + $u.Substring(7) }
+        elseif ($u -notmatch '^https://') { $u = "https://$u" }
         if ($u -notmatch '/api/v\d+$') { $u = "$u/api/v1" }  # accept a bare host
         $script:PpBaseUrl = $u
     }
@@ -76,6 +82,7 @@ function Invoke-CtgProofpointApi {
         Uri         = "$script:PpBaseUrl$Path"
         Headers     = @{ 'X-User' = $script:PpUser; 'X-Password' = $script:PpPassword; Accept = 'application/json' }
         ContentType = 'application/json'
+        TimeoutSec  = 30   # bound a black-holed host so it can't wedge the runner for the full OS TCP timeout
     }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { Invoke-RestMethod @p }

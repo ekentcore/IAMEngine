@@ -109,6 +109,7 @@ export { entry as optionalCredEmptyLabel } from "./optional-cred-empty-label";
 export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-at-first-login-optional";
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
 export { entry as pr7Pr10Batch } from "./pr7-pr10-batch";
+export { entry as proofpointHttpsSchemeWedge } from "./proofpoint-https-scheme-wedge";
 export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrations-and-worktree-retire";
 export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";

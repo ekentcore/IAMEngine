@@ -440,3 +440,20 @@ Describe 'Resolve-CtgSpanningPortalLogin' {
         $r.Password | Should -Be 'p1'
     }
 }
+
+Describe 'Connect-CtgSpanning BaseUrl scheme normalization' {
+    # A scheme-less or http:// apiURL must never leave the module on port 80 — Spanning is HTTPS-only
+    # and port 80 black-holes, hanging the runner (same failure mode as the Proofpoint wedge).
+    It 'prepends https:// and /external for a scheme-less bare host' {
+        Connect-CtgSpanning -Username 'u' -AccessToken 't' -BaseUrl 'o365-api-us.spanningbackup.com'
+        InModuleScope Coretelligent.Spanning { $script:SpanningApiUrl | Should -Be 'https://o365-api-us.spanningbackup.com/external' }
+    }
+    It 'upgrades an http:// override to https://' {
+        Connect-CtgSpanning -Username 'u' -AccessToken 't' -BaseUrl 'http://o365-api-us.spanningbackup.com/external'
+        InModuleScope Coretelligent.Spanning { $script:SpanningApiUrl | Should -Be 'https://o365-api-us.spanningbackup.com/external' }
+    }
+    It 'leaves a proper https:// override untouched' {
+        Connect-CtgSpanning -Username 'u' -AccessToken 't' -BaseUrl 'https://o365-api-eu.spanningbackup.com/external'
+        InModuleScope Coretelligent.Spanning { $script:SpanningApiUrl | Should -Be 'https://o365-api-eu.spanningbackup.com/external' }
+    }
+}

@@ -60,6 +60,11 @@ function Connect-CtgSpanning {
         # stored just "https://o365-api-us.spanningbackup.com" in apiURL. An explicit /external or
         # legacy /api/v1 suffix is kept as-is.
         $u = $BaseUrl.TrimEnd('/')
+        # Force HTTPS: a scheme-less host ("o365-api-us.spanningbackup.com") or an "http://" apiURL
+        # would make Invoke-RestMethod default to port 80 and hang to the TCP timeout (see the
+        # Proofpoint wedge). Spanning is HTTPS-only, so normalize regardless of what's stored.
+        if ($u -match '^http://')       { $u = 'https://' + $u.Substring(7) }
+        elseif ($u -notmatch '^https://') { $u = "https://$u" }
         if ($u -notmatch '/(external|api/v\d+)$') { $u = "$u/external" }
         $script:SpanningApiUrl = $u
     }

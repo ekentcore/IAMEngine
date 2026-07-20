@@ -109,3 +109,24 @@ Describe 'Confirm-CtgProofpoint' {
         $r.Ok | Should -BeTrue; $r.Present | Should -BeFalse
     }
 }
+
+Describe 'Connect-CtgProofpoint BaseUrl scheme normalization' {
+    # A secret that stores a scheme-less host or an http:// URL must never leave the module pointed at
+    # port 80 — Proofpoint Essentials is HTTPS-only and port 80 black-holes, hanging the runner ~75s.
+    It 'prepends https:// for a scheme-less bare host' {
+        Connect-CtgProofpoint -User 'a@x.com' -Password 'p' -Domain 'x.com' -BaseUrl 'us3.proofpointessentials.com'
+        InModuleScope Coretelligent.Proofpoint { $script:PpBaseUrl | Should -Be 'https://us3.proofpointessentials.com/api/v1' }
+    }
+    It 'upgrades an http:// override to https://' {
+        Connect-CtgProofpoint -User 'a@x.com' -Password 'p' -Domain 'x.com' -BaseUrl 'http://us3.proofpointessentials.com'
+        InModuleScope Coretelligent.Proofpoint { $script:PpBaseUrl | Should -Be 'https://us3.proofpointessentials.com/api/v1' }
+    }
+    It 'leaves an https:// override with /api/v1 untouched' {
+        Connect-CtgProofpoint -User 'a@x.com' -Password 'p' -Domain 'x.com' -BaseUrl 'https://us3.proofpointessentials.com/api/v1'
+        InModuleScope Coretelligent.Proofpoint { $script:PpBaseUrl | Should -Be 'https://us3.proofpointessentials.com/api/v1' }
+    }
+    It 'preserves a non-default api version path' {
+        Connect-CtgProofpoint -User 'a@x.com' -Password 'p' -Domain 'x.com' -BaseUrl 'us3.proofpointessentials.com/api/v2'
+        InModuleScope Coretelligent.Proofpoint { $script:PpBaseUrl | Should -Be 'https://us3.proofpointessentials.com/api/v2' }
+    }
+}
