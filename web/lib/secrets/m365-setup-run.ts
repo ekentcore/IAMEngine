@@ -16,8 +16,17 @@ export function isSetupStale(startedAt: Date, now: Date): boolean {
   return now.getTime() - startedAt.getTime() > M365_SETUP_STALE_AFTER_MS;
 }
 
-export type SetupTarget = { id: string; slug: string; name: string; primaryDomain: string | null; delineaFolderId: string | null };
-export type RunSetupFn = (client: SetupClientInput, tenant: string) => Promise<SetupResult>;
+export type SetupTarget = {
+  id: string;
+  slug: string;
+  name: string;
+  primaryDomain: string | null;
+  delineaFolderId: string | null;
+  // A per-run Global-Admin login reference (a Delinea externalId) from the modal — set on the single
+  // per-client target only; the fleet path never sets this and keeps the persisted-secret path.
+  gaSecretRef?: string;
+};
+export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string) => Promise<SetupResult>;
 
 export type StartArgs = { scope: string; targets: SetupTarget[]; dryRun?: boolean; startedBy: string | null };
 export type RunDeps = {
@@ -97,15 +106,16 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
             await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "skipped", skipReason: eligible ? "dry run — would run (has GA secret)" : "dry run — would skip (no m365-global-admin secret)" } });
             skipped++; completed++; continue;
           }
-          // Real: pre-skip when there's no GA login for the runner to sign in with.
-          if (!(await deps.hasGlobalAdminSecret(t.id))) {
+          // Real: pre-skip when there's no GA login for the runner to sign in with — UNLESS a per-run
+          // gaSecretRef was supplied (the override IS the eligibility; there may be no stored secret).
+          if (!t.gaSecretRef && !(await deps.hasGlobalAdminSecret(t.id))) {
             await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "skipped", skipReason: "no m365-global-admin secret" } });
             skipped++; completed++; continue;
           }
           await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "running" } });
           let res: SetupResult;
           try {
-            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t));
+            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t), t.gaSecretRef);
           } catch (e) {
             res = { ok: false, stage: "error", error: (e as Error).message, actions: [] };
           }

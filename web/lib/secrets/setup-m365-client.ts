@@ -59,7 +59,9 @@ export type SetupDeps = {
   // db.secret.findUnique({ where: { clientId_name: { clientId, name: "m365-global-admin" } } }) !== null
   hasGlobalAdminSecret: (clientId: string) => Promise<boolean>;
   // Creates the synthetic CaseRequest + entra-devicecode Job. See the E4/E5 design spec for the real impl.
-  dispatchDeviceCodeJob: (client: SetupClientInput, userCode: string) => Promise<{ jobId: string }>;
+  // gaSecretRef (a Delinea externalId), when passed, is threaded onto the case's secretOverrides so the
+  // job can broker the GA login WITHOUT a stored client secret.
+  dispatchDeviceCodeJob: (client: SetupClientInput, userCode: string, gaSecretRef?: string) => Promise<{ jobId: string }>;
   getJob: (jobId: string) => Promise<{ status: string; result: unknown; error: string | null }>;
   sleep?: (ms: number) => Promise<void>;
 };
@@ -68,6 +70,10 @@ export type SetupInput = {
   client: SetupClientInput;
   tenant: string;
   caps?: "required" | "required+optional";
+  // A per-run Global-Admin login reference (a Delinea externalId) supplied via the modal — when set, the
+  // override IS the eligibility, so the stored-secret check below is bypassed and nothing gets vaulted
+  // on the client. Undefined on the fleet path, which still requires a stored m365-global-admin secret.
+  gaSecretRef?: string;
 };
 
 export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error";
@@ -132,20 +138,24 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
 
   // 1. Fail fast if there's no Global-Admin login for the runner's device-code broker to use — nothing
   // downstream can work without it, and this avoids minting a device code that will just expire unused.
-  actions.push(`checking for an m365-global-admin secret on ${client.slug}`);
-  const hasGaR = await callDep("hasGlobalAdminSecret", () => deps.hasGlobalAdminSecret(client.id));
-  if (!hasGaR.ok) {
-    actions.push(`error checking for an m365-global-admin secret: ${hasGaR.error}`);
-    return { ok: false, stage: "error", error: hasGaR.error, actions };
-  }
-  if (!hasGaR.value) {
-    actions.push("no m365-global-admin secret found");
-    return {
-      ok: false,
-      stage: "no-ga-secret",
-      error: "client has no m365-global-admin Delinea secret; wire the GA login (UPN+password, OTP enabled) first",
-      actions,
-    };
+  // A gaSecretRef (from the modal) bypasses this entirely — the override IS the eligibility, and there
+  // may be no stored client secret at all (that's the point).
+  if (!input.gaSecretRef) {
+    actions.push(`checking for an m365-global-admin secret on ${client.slug}`);
+    const hasGaR = await callDep("hasGlobalAdminSecret", () => deps.hasGlobalAdminSecret(client.id));
+    if (!hasGaR.ok) {
+      actions.push(`error checking for an m365-global-admin secret: ${hasGaR.error}`);
+      return { ok: false, stage: "error", error: hasGaR.error, actions };
+    }
+    if (!hasGaR.value) {
+      actions.push("no m365-global-admin secret found");
+      return {
+        ok: false,
+        stage: "no-ga-secret",
+        error: "client has no m365-global-admin Delinea secret; wire the GA login (UPN+password, OTP enabled) first",
+        actions,
+      };
+    }
   }
 
   // 2. Mint the device code (userCode + deviceCode) directly against Microsoft — no browser involved yet.
@@ -163,7 +173,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
 
   // 3. Dispatch the browser job that drives the GA sign-in against the userCode we just minted.
   actions.push("dispatching entra-devicecode browser job");
-  const dispatchR = await callDep("dispatchDeviceCodeJob", () => deps.dispatchDeviceCodeJob(client, dc.userCode));
+  const dispatchR = await callDep("dispatchDeviceCodeJob", () => deps.dispatchDeviceCodeJob(client, dc.userCode, input.gaSecretRef));
   if (!dispatchR.ok) {
     actions.push(`dispatching the browser job errored: ${dispatchR.error}`);
     return { ok: false, stage: "error", error: dispatchR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };

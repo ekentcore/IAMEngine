@@ -26,4 +26,18 @@ test("creates a synthetic onboard case then an entra-devicecode job carrying the
   assert.equal(db.created.job.singleRun, true);
   assert.equal(db.created.job.request.config.userCode, "ABCD-EFGH");
   assert.deepEqual(db.created.job.request.secretNames, ["m365-global-admin"]);
+  // no gaSecretRef -> no secretOverrides on the synthetic case
+  assert.equal(db.created.case.secretOverrides, undefined);
+});
+
+test("gaSecretRef provided: the synthetic case's secretOverrides carries it for m365-global-admin", async () => {
+  const db = fakeDb();
+  await dispatchDeviceCodeJob(db, { id: "client-1", slug: "acme", name: "Acme" } as any, "ABCD-EFGH", "delinea-ext-123");
+  assert.deepEqual(db.created.case.secretOverrides, { "m365-global-admin": "delinea-ext-123" });
+});
+
+test("gaSecretRef omitted: the synthetic case has no secretOverrides field at all", async () => {
+  const db = fakeDb();
+  await dispatchDeviceCodeJob(db, { id: "client-1", slug: "acme", name: "Acme" } as any, "ABCD-EFGH");
+  assert.ok(!("secretOverrides" in db.created.case));
 });

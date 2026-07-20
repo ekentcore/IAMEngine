@@ -20,7 +20,7 @@ export function buildSetupDeps(db: PrismaClient): SetupDeps {
       const row = await db.secret.findUnique({ where: { clientId_name: { clientId, name: GA_SECRET_NAME } }, select: { id: true } });
       return row != null;
     },
-    dispatchDeviceCodeJob: (client, userCode) => dispatchDeviceCodeJob(db, client, userCode),
+    dispatchDeviceCodeJob: (client, userCode, gaSecretRef) => dispatchDeviceCodeJob(db, client, userCode, gaSecretRef),
     getJob: async (jobId) => {
       const j = await db.job.findUnique({ where: { id: jobId }, select: { status: true, result: true, error: true } });
       return { status: j?.status ?? "unknown", result: j?.result ?? null, error: j?.error ?? null };

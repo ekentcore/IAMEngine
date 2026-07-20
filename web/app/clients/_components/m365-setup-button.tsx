@@ -4,6 +4,11 @@
 // (device-code Global-Admin sign-in in a runner browser -> Graph app-reg -> Delinea write-back).
 // Starts a detached run and polls its status; shows the device user-code (for a manual fallback) and
 // any browser sign-in warnings (e.g. non-automatable MFA).
+//
+// The button opens a small modal asking for the Global Admin login's Delinea secret id (gaSecretRef).
+// That reference is used TRANSIENTLY for this one run — the API route threads it onto the case's
+// secretOverrides so the runner can broker the GA login without anything ever being vaulted on the
+// client. After setup the client only carries the app-registration's own m365-admin cert credential.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type ClientState = {
@@ -18,6 +23,9 @@ export function M365SetupButton({ slug }: { slug: string }) {
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [gaSecretRef, setGaSecretRef] = useState("");
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -41,24 +49,48 @@ export function M365SetupButton({ slug }: { slug: string }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  function openModal() {
+    setGaSecretRef("");
+    setModalError(null);
+    dialogRef.current?.showModal();
+  }
+
+  function closeModal() {
+    dialogRef.current?.close();
+  }
+
   async function start() {
-    setBusy(true); setError(null); setActive(true);
+    const ref = gaSecretRef.trim();
+    if (!ref) return;
+    setBusy(true); setModalError(null); setError(null); setActive(true);
     try {
-      const r = await fetch(`/api/clients/${slug}/m365-setup`, { method: "POST" });
+      const r = await fetch(`/api/clients/${slug}/m365-setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gaSecretRef: ref }),
+      });
       const d = await r.json().catch(() => ({}));
-      // Surface a 409 reason too (e.g. this client or the fleet already has a run in progress) instead
-      // of swallowing it silently.
-      if (!r.ok) setError(d.reason ?? d.error ?? `failed (${r.status})`);
+      // Surface a 409/422 reason too (e.g. this client or the fleet already has a run in progress, or
+      // no gaSecretRef was given) instead of swallowing it silently.
+      if (!r.ok) {
+        const msg = d.reason ?? d.error ?? `failed (${r.status})`;
+        setModalError(msg);
+        setActive(false);
+        return;
+      }
+      closeModal();
       await load();
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) {
+      setModalError((e as Error).message);
+      setActive(false);
+    } finally { setBusy(false); }
   }
 
   const running = state?.status === "pending" || state?.status === "running";
   return (
     <span>
       <button disabled={busy || running} title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential"
-        onClick={start}>
+        onClick={openModal}>
         {running ? "Setting up…" : busy ? "Starting…" : "Set up M365 automatically"}
       </button>
       {state && (
@@ -73,6 +105,34 @@ export function M365SetupButton({ slug }: { slug: string }) {
         </span>
       )}
       {error && <span className="note" style={{ marginLeft: 8, color: "#b91c1c" }}>{error}</span>}
+
+      <dialog ref={dialogRef} style={{ maxWidth: 480 }}>
+        <h2>Set up M365 automatically</h2>
+        <p className="note">
+          The Delinea secret holding a Global Admin UPN + password with One-Time Password enabled.
+          Used once for the sign-in, never stored on the client.
+        </p>
+        <label style={{ display: "block", fontSize: 14, margin: "0.75rem 0 0.5rem" }}>
+          Global Admin login — Delinea secret ID
+          <input
+            type="text"
+            required
+            autoFocus
+            value={gaSecretRef}
+            disabled={busy}
+            onChange={(e) => setGaSecretRef(e.target.value)}
+            style={{ display: "block", marginTop: 4, width: "100%" }}
+          />
+        </label>
+        {modalError && <p className="note" style={{ color: "#b91c1c" }}>{modalError}</p>}
+        <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+          <span className="grow" />
+          <button type="button" onClick={closeModal} disabled={busy}>Cancel</button>
+          <button type="button" className="primary" onClick={start} disabled={busy || !gaSecretRef.trim()}>
+            {busy ? "Starting…" : "Start"}
+          </button>
+        </div>
+      </dialog>
     </span>
   );
 }

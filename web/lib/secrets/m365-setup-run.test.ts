@@ -58,6 +58,23 @@ test("a browser-signin failure is recorded as failed with the warnings", async (
   assert.equal(db.state.run.failed, 1);
 });
 
+test("a target with gaSecretRef is NOT skipped even when hasGlobalAdminSecret is false, and the ref reaches runSetup", async () => {
+  const db = fakeDb();
+  let calledWith: unknown;
+  const runSetup = async (client: any, tenant: string, gaSecretRef?: string) => {
+    calledWith = gaSecretRef;
+    return { ok: true, stage: "done", appId: "app-x", actions: [] } as any;
+  };
+  const t = { ...targets(1)[0], gaSecretRef: "delinea-ext-123" };
+  await startM365SetupRun(db, { scope: "client:c0", targets: [t], startedBy: null }, {
+    runSetup, hasGlobalAdminSecret: async () => false, detach: (fn) => { void fn(); },
+  });
+  await drain();
+  assert.equal(db.state.clients[0].status, "done");
+  assert.ok(!/m365-global-admin/.test(db.state.clients[0].skipReason ?? ""));
+  assert.equal(calledWith, "delinea-ext-123");
+});
+
 test("dry-run marks eligible clients skipped-preview without calling runSetup", async () => {
   const db = fakeDb();
   const runSetup = async () => { throw new Error("must not run in dry-run"); };

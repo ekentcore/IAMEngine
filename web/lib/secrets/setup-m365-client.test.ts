@@ -77,6 +77,22 @@ test("no GA secret: stage no-ga-secret, dispatchDeviceCodeJob is never called", 
   assert.equal(dispatched, false);
 });
 
+test("gaSecretRef provided: bypasses the no-ga-secret check and is threaded to dispatchDeviceCodeJob", async () => {
+  let calledWith: unknown;
+  const deps = happyDeps({
+    hasGlobalAdminSecret: async () => false,
+    dispatchDeviceCodeJob: async (_client, _userCode, gaSecretRef) => {
+      calledWith = gaSecretRef;
+      return { jobId: "job-1" };
+    },
+  });
+  const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT, gaSecretRef: "delinea-ext-123" }, deps);
+  assert.notEqual(result.stage, "no-ga-secret");
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, "done");
+  assert.equal(calledWith, "delinea-ext-123");
+});
+
 test("device-code init fails: stage device-code-init", async () => {
   const deps = happyDeps({
     startDeviceCode: async () => ({ ok: false, error: "tenant not found" }),

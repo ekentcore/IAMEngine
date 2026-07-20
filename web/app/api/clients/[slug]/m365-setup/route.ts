@@ -17,20 +17,28 @@ async function loadClient(slug: string) {
   return db.client.findUnique({ where: { slug }, select: { id: true, slug: true, name: true, primaryDomain: true, delineaFolderId: true } });
 }
 
-export async function POST(_req: Request, { params }: { params: { slug: string } }) {
+export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   const client = await loadClient(params.slug);
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
   const scope = await currentClientScope(db);
   if (!scopeAllows(scope, client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
 
+  const body = (await req.json().catch(() => ({}))) as { gaSecretRef?: string };
+  // The per-client flow always runs off a per-run GA login reference (never a stored client secret) —
+  // require it here rather than silently falling back to the fleet path's persisted-secret behavior.
+  if (!body.gaSecretRef?.trim()) {
+    return NextResponse.json({ error: "provide the Global Admin login's Delinea secret id" }, { status: 422 });
+  }
+  const gaSecretRef = body.gaSecretRef.trim();
+
   const deps = buildSetupDeps(db);
   const r = await startM365SetupRun(db, {
     scope: `client:${client.id}`,
-    targets: [{ id: client.id, slug: client.slug, name: client.name, primaryDomain: client.primaryDomain, delineaFolderId: client.delineaFolderId }],
+    targets: [{ id: client.id, slug: client.slug, name: client.name, primaryDomain: client.primaryDomain, delineaFolderId: client.delineaFolderId, gaSecretRef }],
     startedBy: auditActor(_g.user, "ui").label,
   }, {
-    runSetup: (c, tenant) => setupM365ForClient({ client: c, tenant }, deps),
+    runSetup: (c, tenant, ref) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref }, deps),
     hasGlobalAdminSecret: deps.hasGlobalAdminSecret,
   });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason, id: r.id }, { status: 409 });

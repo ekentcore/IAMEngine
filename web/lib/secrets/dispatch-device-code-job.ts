@@ -14,7 +14,8 @@ type ClientRef = { id: string };
 export async function dispatchDeviceCodeJob(
   db: PrismaClient,
   client: ClientRef,
-  userCode: string
+  userCode: string,
+  gaSecretRef?: string
 ): Promise<{ jobId: string }> {
   const caseRequest = await db.caseRequest.create({
     data: {
@@ -23,6 +24,10 @@ export async function dispatchDeviceCodeJob(
       createdSource: "api",
       subject: "M365 automated setup (device-code sign-in)",
       payload: { m365AutoSetup: true } as Prisma.InputJsonValue,
+      // A per-run GA login reference from the modal: brokerCredential prefers this case override over
+      // any stored client secret, so the runner's device-code job can sign in WITHOUT anything vaulted
+      // on the client. Omitted entirely for the fleet path, which relies on the stored secret instead.
+      ...(gaSecretRef ? { secretOverrides: { [GA_SECRET_NAME]: gaSecretRef } as Prisma.InputJsonValue } : {}),
     },
     select: { id: true },
   });
