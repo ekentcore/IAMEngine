@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -370,4 +370,26 @@ test("updateSecretFields sends an autoComment on the field PUT (satisfies a requ
     assert.match(u, /\/fields\//);
     assert.match(u, /autoComment=/);
   }
+});
+
+
+test("findChildFolderByName resolves a named child folder under a parent (case-insensitive), else null", async () => {
+  let asked = "";
+  const fetcher: Fetcher = async (url) => {
+    if (url.includes("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "t" }) };
+    asked = url;
+    return { ok: true, status: 200, json: async () => ({ records: [
+      { id: 5614, folderName: "File Storage / Sharing" },
+      { id: 5615, folderName: "Identity Services" },
+    ] }) } as FetchResponse;
+  };
+  const hit = await findChildFolderByName(cfg, 5606, "identity services", "tok", fetcher);
+  assert.equal(hit, "5615");
+  assert.match(asked, /parentFolderId=5606/);
+  // No such child -> null (caller falls back to the parent).
+  const miss: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [{ id: 1, folderName: "Networking" }] }) } as FetchResponse);
+  assert.equal(await findChildFolderByName(cfg, 5606, "Identity Services", "tok", miss), null);
+  // Lookup failure -> null, never throws.
+  const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
+  assert.equal(await findChildFolderByName(cfg, 5606, "Identity Services", "tok", boom), null);
 });

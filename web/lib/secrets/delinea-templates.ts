@@ -108,6 +108,16 @@ export function templateFor(secretName: string, env: Env = process.env): Templat
   return { templateId, fieldMap: { ...defaultFieldMap(secretName), ...override } };
 }
 
+// The subfolder UNDER a client's folder where identity/cloud credentials belong — Coretelligent's Secret
+// Server layout gives every client folder an "Identity Services" child carrying the identity team's view
+// permissions. The M365 auto-setup creates the app-registration credential there rather than in the
+// client ROOT (whose permissions are narrower, so a secret written there reads as "not viewable").
+// Overridable via env; set it empty to disable the redirect and write straight to the client folder.
+export function identitySubfolderName(env: Env = process.env): string {
+  const v = env.DELINEA_IDENTITY_SUBFOLDER;
+  return v !== undefined ? v : "Identity Services";
+}
+
 // DELINEA_FOLDER_MAP — JSON { slug: folderId }.
 function folderMap(env: Env): Record<string, string | number> {
   return parseJson<Record<string, string | number>>(env.DELINEA_FOLDER_MAP) ?? {};

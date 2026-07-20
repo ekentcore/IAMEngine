@@ -21,8 +21,8 @@
 // the dev environment lacks DELINEA_WRITE_*, so this path is unit-tested only here and live-validated
 // by the operator once a write account + folder + template are configured.
 import type { PrismaClient } from "@prisma/client";
-import { createSecret, updateSecretFields, getDelineaToken, type Fetcher } from "./delinea";
-import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor } from "./delinea-templates";
+import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, type Fetcher } from "./delinea";
+import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
 import { makeClientRepository } from "@/lib/clients/repository";
 import type { ProvisionResult } from "./provision-m365-app";
@@ -281,7 +281,11 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // 5b. No local row — create it fresh. Name it the same way the manual create route does
     // (`${client.name} — ${secretName}`) so a later manual lookup agrees with what we just created.
     const ssName = `${client.name} — ${secretName}`;
-    const createdSecret = await createSecret(cfg, { name: ssName, folderId, templateId: tmpl.templateId, fields }, token, fetcher);
+    // Identity credentials belong in the client's "Identity Services" subfolder (correct team view
+    // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child.
+    const subName = identitySubfolderName(env);
+    const createFolderId = (subName && (await findChildFolderByName(cfg, folderId, subName, token, fetcher))) || folderId;
+    const createdSecret = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!createdSecret.ok || !createdSecret.id) {
       return { ok: false, wroteCreds: false, error: createdSecret.error ?? "Delinea create failed" };
     }

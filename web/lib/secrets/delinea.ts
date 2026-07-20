@@ -143,6 +143,30 @@ async function findSecretIdByName(cfg: DelineaConfig, folderId: string | number,
   }
 }
 
+// Find a named child folder directly under `parentFolderId` (e.g. a client's "Identity Services"
+// subfolder, where identity credentials belong with the right team permissions). Returns the child
+// folder id, or null when there's no such child or the lookup fails — callers fall back to the parent so
+// a missing subfolder never blocks a write.
+export async function findChildFolderByName(
+  cfg: DelineaConfig,
+  parentFolderId: string | number,
+  name: string,
+  token: string,
+  fetcher: Fetcher = defaultFetcher
+): Promise<string | null> {
+  const norm = (s: string) => s.trim().toLowerCase();
+  try {
+    const url = `${cfg.baseUrl}/api/v1/folders?filter.parentFolderId=${encodeURIComponent(String(parentFolderId))}&filter.searchText=${encodeURIComponent(name)}&take=100`;
+    const res = await fetcher(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => null)) as { records?: { id?: number | string; folderName?: string; name?: string }[] } | null;
+    const hit = (d?.records ?? []).find((r) => norm(String(r.folderName ?? r.name ?? "")) === norm(name));
+    return hit?.id != null ? String(hit.id) : null;
+  } catch {
+    return null;
+  }
+}
+
 // POST a new secret. `token` is a write-account access token (getDelineaToken with the write config).
 // Never throws to the caller — returns a readable error. Does NOT log the values it sends.
 // Idempotent: if a secret of the same name already exists in the folder, its id is returned instead of
