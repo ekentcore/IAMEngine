@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { GroupMultiselect } from "./group-multiselect";
 import { OuTreePicker } from "./ad-pickers";
@@ -15,6 +15,10 @@ type Props = {
   locations: string[];
   knownGroups: { name: string; type?: string }[];
   ous: string[];
+  // Optional controlled open (e.g. from the client Actions menu). When provided the component renders
+  // no trigger button of its own; left undefined it keeps its own "Change / move user" button.
+  open?: boolean;
+  onClose?: () => void;
 };
 
 type Delta = { op: "add" | "remove"; target: "group" | "dl" | "ou"; value: string };
@@ -24,7 +28,8 @@ function parseList(raw: string): string[] {
   return [...new Set(raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean))];
 }
 
-export function ChangeCaseDialog({ slug, personas, locations, knownGroups, ous }: Props) {
+export function ChangeCaseDialog({ slug, personas, locations, knownGroups, ous, open, onClose }: Props) {
+  const controlled = open !== undefined;
   const ref = useRef<HTMLDialogElement>(null);
   const router = useRouter();
   const [kind, setKind] = useState<"mover" | "adhoc">("mover");
@@ -101,10 +106,20 @@ export function ChangeCaseDialog({ slug, personas, locations, knownGroups, ous }
     }
   }
 
+  // Controlled mode: mirror the parent's `open` onto the native dialog (guarded against re-showing an
+  // already-open dialog or double-closing).
+  useEffect(() => {
+    if (!controlled) return;
+    const dlg = ref.current;
+    if (!dlg) return;
+    if (open && !dlg.open) dlg.showModal();
+    else if (!open && dlg.open) dlg.close();
+  }, [controlled, open]);
+
   return (
     <>
-      <button onClick={() => ref.current?.showModal()}>Change / move user</button>
-      <dialog ref={ref} onClose={reset} style={{ width: "min(560px, 94vw)" }}>
+      {!controlled && <button onClick={() => ref.current?.showModal()}>Change / move user</button>}
+      <dialog ref={ref} onClose={() => { reset(); if (controlled) onClose?.(); }} style={{ width: "min(560px, 94vw)" }}>
         <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
           <h2>Change / move a user</h2>
           <label htmlFor="change-user">User (name or UPN)</label>

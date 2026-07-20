@@ -36,6 +36,7 @@ export { entry as changelogPage } from "./changelog-page";
 export { entry as changelogTimes } from "./changelog-times";
 export { entry as changelogTimesEastern } from "./changelog-times-eastern";
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
+export { entry as clientsActionsMenu } from "./clients-actions-menu";
 export { entry as connectorBuilder } from "./connector-builder";
 export { entry as connectorBrowserSessionAuth } from "./connector-browser-session-auth";
 export { entry as connectorProbeAndHarHosts } from "./connector-probe-and-har-hosts";

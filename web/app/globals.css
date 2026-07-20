@@ -554,6 +554,21 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 }
 .actions-menu button:hover:not(:disabled) { background: var(--bg-soft); border-color: transparent; }
 .actions-menu button.danger { color: var(--err-fg); }
+/* Anchor items in the menu (e.g. Guided setup →) match the button rows. */
+.actions-menu-link {
+  display: block; width: 100%; text-align: left; padding: 6px 10px; font-size: 13px;
+  border-radius: 6px; white-space: nowrap; color: var(--fg); text-decoration: none;
+}
+.actions-menu-link:hover { background: var(--bg-soft); text-decoration: none; }
+/* Hairline divider between groups of menu items. */
+.actions-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+
+/* Client detail header "Actions ▾": full-size trigger + a right-aligned column so the in-place
+   result note and (long-running) M365 setup status stack under the button instead of stretching
+   the header row. */
+.client-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.actions-trigger-lg { white-space: nowrap; }
+.client-actions-result { text-align: right; max-width: 340px; }
 
 /* ── documents (/docs) ──────────────────────────────────────────────────────── */
 button.btn-quiet { background: transparent; box-shadow: none; }

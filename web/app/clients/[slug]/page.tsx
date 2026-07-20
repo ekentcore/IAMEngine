@@ -14,12 +14,10 @@ import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { MODULES } from "@/lib/modules/catalog";
 import { asArtifacts } from "@/lib/runbook/artifacts";
-import { EditSystemsButton } from "../_components/edit-systems-button";
+import { ClientActionsMenu } from "../_components/client-actions-menu";
 import { SyncSystemsButton } from "../_components/sync-systems-button";
 import { EmailDomainsEditor } from "../_components/email-domains-editor";
 import { SetupStageChips } from "../_components/setup-stage-chips";
-import { ReplanCasesButton } from "../_components/replan-cases-button";
-import { ChangeCaseDialog } from "../_components/change-case-dialog";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
 import { GenerateRunbookButton } from "../_components/generate-runbook-button";
@@ -32,8 +30,6 @@ import { MailboxAccessEditor } from "../_components/mailbox-access-editor";
 import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
-import { RefreshNameButton } from "../_components/refresh-name-button";
-import { M365SetupButton } from "../_components/m365-setup-button";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { ClientNotifyOverride } from "../_components/client-notify-override";
@@ -304,14 +300,14 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             />
           )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
-          <RefreshNameButton slug={client.slug} />
-          <ReplanCasesButton slug={client.slug} />
-          <EditSystemsButton slug={client.slug} />
-          <M365SetupButton slug={client.slug} />
-          <ChangeCaseDialog slug={client.slug} personas={personaNames} locations={locationNames} knownGroups={cloudGroupList} ous={adOus} />
-          {readiness && readiness.tier !== "no_systems" && (
-            <Link href={`/clients/${client.slug}/setup`}><button>Guided setup</button></Link>
-          )}
+          <ClientActionsMenu
+            slug={client.slug}
+            personas={personaNames}
+            locations={locationNames}
+            knownGroups={cloudGroupList}
+            ous={adOus}
+            guidedSetupHref={readiness && readiness.tier !== "no_systems" ? `/clients/${client.slug}/setup` : null}
+          />
         </div>
       </div>
 

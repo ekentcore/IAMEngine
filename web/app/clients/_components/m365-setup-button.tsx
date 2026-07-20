@@ -31,7 +31,12 @@ function stageLabel(stage?: string | null): string {
   return (stage && STAGE_LABELS[stage]) || "In progress…";
 }
 
-export function M365SetupButton({ slug }: { slug: string }) {
+// `open`/`onClose` make the setup modal externally controlled (e.g. opened from the client Actions
+// menu). When provided the component renders no trigger button of its own — only the live status,
+// run log and dialogs — so its progress stays visible on the page while the menu is closed. Left
+// undefined, it keeps its original self-triggering "Set up M365 automatically" button.
+export function M365SetupButton({ slug, open, onClose }: { slug: string; open?: boolean; onClose?: () => void }) {
+  const controlled = open !== undefined;
   const [busy, setBusy] = useState(false);
   const [state, setState] = useState<ClientState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +96,16 @@ export function M365SetupButton({ slug }: { slug: string }) {
     dialogRef.current?.close();
   }
 
+  // Controlled mode: mirror the parent's `open` onto the native dialog (guarded so we don't re-show
+  // an already-open dialog or double-close it).
+  useEffect(() => {
+    if (!controlled) return;
+    const dlg = dialogRef.current;
+    if (!dlg) return;
+    if (open && !dlg.open) { setGaSecretRef(""); setModalError(null); dlg.showModal(); }
+    else if (!open && dlg.open) dlg.close();
+  }, [controlled, open]);
+
   async function start() {
     const ref = gaSecretRef.trim();
     if (!ref) return;
@@ -125,10 +140,12 @@ export function M365SetupButton({ slug }: { slug: string }) {
   const hasLog = Boolean(state?.log && state.log.length > 0);
   return (
     <span>
-      <button disabled={busy || running} title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential"
-        onClick={openModal}>
-        {running ? "Setting up…" : busy ? "Starting…" : "Set up M365 automatically"}
-      </button>
+      {!controlled && (
+        <button disabled={busy || running} title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential"
+          onClick={openModal}>
+          {running ? "Setting up…" : busy ? "Starting…" : "Set up M365 automatically"}
+        </button>
+      )}
       {state && (
         <span className="note" style={{ marginLeft: 8 }}>
           {state.status === "done" && (state.verified ? `Done — app ${state.appId ?? ""} configured & verified.` : `Done — app ${state.appId ?? ""} (some permissions still pending).`)}
@@ -172,7 +189,7 @@ export function M365SetupButton({ slug }: { slug: string }) {
         </span>
       )}
 
-      <dialog ref={dialogRef} style={{ maxWidth: 480 }}>
+      <dialog ref={dialogRef} onClose={controlled ? onClose : undefined} style={{ maxWidth: 480 }}>
         <h2>Set up M365 automatically</h2>
         <p className="note">
           The Delinea secret holding a Global Admin UPN + password with One-Time Password enabled.
