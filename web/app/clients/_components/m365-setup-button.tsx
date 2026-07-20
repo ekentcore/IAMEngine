@@ -38,6 +38,8 @@ export function M365SetupButton({ slug }: { slug: string }) {
   const [active, setActive] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const failRef = useRef<HTMLDialogElement>(null);
+  const failShownRef = useRef(false);
   const [gaSecretRef, setGaSecretRef] = useState("");
   const [modalError, setModalError] = useState<string | null>(null);
   // null = no manual choice yet -> defaults open on a terminal failure, closed otherwise. Once the
@@ -66,6 +68,19 @@ export function M365SetupButton({ slug }: { slug: string }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  // A Delinea WRITE failure (terminal "failed" at the write stage) pops a modal explaining what to do:
+  // the app registration was provisioned but its credential couldn't be vaulted. Shown once per run.
+  useEffect(() => {
+    const writeFailed =
+      state?.status === "failed" &&
+      (state.stage === "write" ||
+        (state.stage === "error" && (state.log ?? []).some((l) => /delinea write/i.test(l))));
+    if (writeFailed && !failShownRef.current) {
+      failShownRef.current = true;
+      failRef.current?.showModal();
+    }
+  }, [state]);
+
   function openModal() {
     setGaSecretRef("");
     setModalError(null);
@@ -79,7 +94,7 @@ export function M365SetupButton({ slug }: { slug: string }) {
   async function start() {
     const ref = gaSecretRef.trim();
     if (!ref) return;
-    setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpenOverride(null);
+    setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpenOverride(null); failShownRef.current = false;
     try {
       const r = await fetch(`/api/clients/${slug}/m365-setup`, {
         method: "POST",
@@ -182,6 +197,37 @@ export function M365SetupButton({ slug }: { slug: string }) {
           <button type="button" className="primary" onClick={start} disabled={busy || !gaSecretRef.trim()}>
             {busy ? "Starting…" : "Start"}
           </button>
+        </div>
+      </dialog>
+
+      {/* Pops when the credential was provisioned but the Delinea WRITE failed. The app secret is
+          one-time and server-only, so this is guidance + re-run, not a copyable value. */}
+      <dialog ref={failRef} style={{ maxWidth: 560 }}>
+        <h2>Couldn&rsquo;t save the credential to Delinea</h2>
+        <p className="note" style={{ color: "#b91c1c" }}>{state?.error ?? "The Delinea write failed."}</p>
+        <p className="note">
+          The app registration{state?.appId ? <> (<code>{state.appId}</code>)</> : null} was created, but its
+          credential couldn&rsquo;t be written to the vault. Because the app secret is issued once and isn&rsquo;t
+          shown here, the cleanest fix is to <b>re-run</b> &mdash; that rotates a fresh secret and vaults it.
+        </p>
+        <div style={{ border: "1px solid var(--line, #e8e9ef)", borderRadius: 6, padding: "0.5rem 0.7rem", margin: "0.6rem 0", fontSize: 13 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Or create it by hand in Delinea:</div>
+          <div><span className="note muted" style={{ display: "inline-block", minWidth: 74 }}>Template</span> Entra Azure AD Account</div>
+          <div><span className="note muted" style={{ display: "inline-block", minWidth: 74 }}>Fields</span> Username = the app id{state?.appId ? <> (<code>{state.appId}</code>)</> : null}, Password = a client secret you generate for that app registration, TenantId = the client&rsquo;s tenant/domain</div>
+          <div className="note muted" style={{ marginTop: 4 }}>Then paste the new secret&rsquo;s Delinea id onto this client&rsquo;s m365-admin secret.</div>
+        </div>
+        {state?.log && state.log.length > 0 && (
+          <details style={{ marginTop: 4 }}>
+            <summary className="note" style={{ cursor: "pointer" }}>run log</summary>
+            <pre style={{ marginTop: 4, maxHeight: 200, overflow: "auto", fontSize: 12, fontFamily: "var(--mono, monospace)", background: "var(--bg-soft, #f3f4f8)", padding: "0.5rem", border: "1px solid var(--line, #e8e9ef)", borderRadius: 4 }}>
+              {state.log.join("\n")}
+            </pre>
+          </details>
+        )}
+        <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+          <span className="grow" />
+          <button type="button" onClick={() => failRef.current?.close()}>Close</button>
+          <button type="button" className="primary" onClick={() => { failRef.current?.close(); openModal(); }}>Re-run setup</button>
         </div>
       </dialog>
     </span>
