@@ -9,6 +9,8 @@ import {
   graphSurplusRoles,
   suggestedRole,
   GRAPH_APP_ROLE_IDS,
+  optionalCapChoices,
+  roleNamesForOptionalSelection,
 } from "./graph-caps";
 
 // A tenant that granted the narrow roles rather than the broad ones.
@@ -257,4 +259,41 @@ test("the optional caps cover every feature-gated Graph call the runner makes", 
   ]) {
     assert.match(needs, feature, `no optional cap covers ${feature} — a feature that can fail for want of a permission nobody asked for`);
   }
+});
+
+test("optionalCapChoices: one choice per optional cap, keyed by its suggested role, with the need label", () => {
+  const choices = optionalCapChoices();
+  assert.equal(choices.length, GRAPH_OPTIONAL_CAPS.length);
+  for (let i = 0; i < GRAPH_OPTIONAL_CAPS.length; i++) {
+    assert.equal(choices[i].role, suggestedRole(GRAPH_OPTIONAL_CAPS[i]));
+    assert.equal(choices[i].need, GRAPH_OPTIONAL_CAPS[i].need);
+  }
+  // Every choice role is a real optional suggested role — never a required one leaking in.
+  const required = new Set(GRAPH_REQUIRED_CAPS.map((c) => suggestedRole(c)));
+  for (const c of choices) assert.ok(!required.has(c.role), `${c.role} is a required role, must not be an optional choice`);
+});
+
+test("roleNamesForOptionalSelection: always includes every required role, plus exactly the chosen optional ones", () => {
+  const required = GRAPH_REQUIRED_CAPS.map((c) => suggestedRole(c));
+  // Empty selection = required only.
+  const none = roleNamesForOptionalSelection([]);
+  assert.deepEqual([...none].sort(), [...new Set(required)].sort());
+  // A single optional pick shows up alongside the required set.
+  const pick = suggestedRole(GRAPH_OPTIONAL_CAPS[0]);
+  const one = roleNamesForOptionalSelection([pick]);
+  assert.ok(one.includes(pick));
+  for (const r of required) assert.ok(one.includes(r));
+});
+
+test("roleNamesForOptionalSelection: ignores unknown/garbage selections (can't smuggle in an unrequested role)", () => {
+  const required = new Set(GRAPH_REQUIRED_CAPS.map((c) => suggestedRole(c)));
+  const out = roleNamesForOptionalSelection(["Directory.ReadWrite.All", "not-a-real-role", "AppRoleAssignment.ReadWrite.All"]);
+  // Nothing optional was validly selected, so it collapses to required-only.
+  assert.deepEqual([...out].sort(), [...required].sort());
+});
+
+test("roleNamesForOptionalSelection: is case-insensitive on the selection and dedupes", () => {
+  const pick = suggestedRole(GRAPH_OPTIONAL_CAPS[0]);
+  const out = roleNamesForOptionalSelection([pick.toLowerCase(), pick.toUpperCase()]);
+  assert.equal(out.filter((r) => r.toLowerCase() === pick.toLowerCase()).length, 1);
 });

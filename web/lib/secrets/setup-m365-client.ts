@@ -55,6 +55,7 @@ export type SetupDeps = {
     caps?: "required" | "required+optional";
     issueCreds?: boolean;
     forceReissue?: boolean;
+    optionalRoles?: string[];
   }) => Promise<ProvisionOutcome>;
   writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string }) => Promise<WriteResult>;
   // db.secret.findUnique({ where: { clientId_name: { clientId, name: "m365-global-admin" } } }) !== null
@@ -65,6 +66,11 @@ export type SetupDeps = {
   dispatchDeviceCodeJob: (client: SetupClientInput, userCode: string, gaSecretRef?: string) => Promise<{ jobId: string }>;
   getJob: (jobId: string) => Promise<{ status: string; result: unknown; error: string | null }>;
   sleep?: (ms: number) => Promise<void>;
+  // Progress callback: fired as the run ENTERS each step, so a caller (the run recorder) can persist
+  // live progress for the UI's step tracker. Best-effort — a rejected/slow onStage must never derail
+  // the setup, so the caller swallows its own errors. `browser-signin` carries the device user-code +
+  // verification URL so the UI can show them live for a manual MFA fallback.
+  onStage?: (stage: SetupStage, meta?: { userCode?: string; verificationUri?: string }) => void | Promise<void>;
 };
 
 export type SetupInput = {
@@ -75,6 +81,10 @@ export type SetupInput = {
   // override IS the eligibility, so the stored-secret check below is bypassed and nothing gets vaulted
   // on the client. Undefined on the fleet path, which still requires a stored m365-global-admin secret.
   gaSecretRef?: string;
+  // The operator's opt-in optional Graph permissions from the setup modal, each identified by its
+  // suggestedRole (see graph-caps). Threaded into provisioning; `[]` means required-only, undefined
+  // falls back to the provision default (`caps`). Ignored when `caps` alone is used (fleet path).
+  optionalRoles?: string[];
 };
 
 export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error";
@@ -163,6 +173,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   }
 
   // 2. Mint the device code (userCode + deviceCode) directly against Microsoft — no browser involved yet.
+  await deps.onStage?.("device-code-init");
   actions.push(`starting device-code flow for tenant ${tenant}`);
   const dcR = await callDep("startDeviceCode", () => deps.startDeviceCode(tenant));
   if (!dcR.ok) {
@@ -175,7 +186,9 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
     return { ok: false, stage: "device-code-init", error: dc.error, actions };
   }
 
-  // 3. Dispatch the browser job that drives the GA sign-in against the userCode we just minted.
+  // 3. Dispatch the browser job that drives the GA sign-in against the userCode we just minted. Report
+  // the sign-in step live, carrying the user-code + URL so the UI can offer a manual MFA fallback.
+  await deps.onStage?.("browser-signin", { userCode: dc.userCode, verificationUri: dc.verificationUri });
   actions.push("dispatching entra-devicecode browser job");
   const dispatchR = await callDep("dispatchDeviceCodeJob", () => deps.dispatchDeviceCodeJob(client, dc.userCode, input.gaSecretRef));
   if (!dispatchR.ok) {
@@ -225,8 +238,9 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   }
 
   // 5. Have a Graph token carrying the GA's privileges — provision (or reconcile) the app registration.
+  await deps.onStage?.("provision");
   actions.push("obtained a Graph token — provisioning the app registration");
-  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps }));
+  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles }));
   if (!provR.ok) {
     actions.push(`provisioning errored: ${provR.error}`);
     return { ok: false, stage: "error", error: provR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
@@ -252,6 +266,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // 6. Write whatever new credential material this run issued back to Delinea (a "kept existing, still
   // valid" run writes nothing — see writeProvisionedM365App). writeProvisionedM365App itself refuses to
   // report ok:true unless the credential is genuinely present+valid (credState-aware — see Findings 1/3).
+  await deps.onStage?.("write");
   actions.push("writing provisioned credentials to Delinea");
   const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result }));
   if (!writeR.ok) {
@@ -289,7 +304,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       // it fails too, fall through to a normal failure rather than looping.
       actions.push("the app has a credential that was never vaulted — rotating a fresh secret");
       const recoverProvR = await callDep("provisionM365App", () =>
-        deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, forceReissue: true })
+        deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: true })
       );
       if (!recoverProvR.ok) {
         actions.push(`recovery re-provisioning errored: ${recoverProvR.error}`);

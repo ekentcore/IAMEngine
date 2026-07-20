@@ -160,6 +160,29 @@ export function suggestedRole(cap: GraphCap): string {
   return cap.anyOf[0];
 }
 
+// ── Optional-capability selection (M365 auto-setup opt-in) ───────────────────────────────────────
+// The auto-setup modal lets an operator pick WHICH optional permissions to request + consent, rather
+// than the old all-or-nothing `caps` flag. Each choice is keyed by the least-privileged role it would
+// grant (its suggestedRole) — the stable id threaded back through the run into provisioning.
+export type OptionalCapChoice = { role: string; need: string; why?: string };
+
+// The optional caps offered as a checklist, in table order. `role` is the grant this choice makes.
+export function optionalCapChoices(): OptionalCapChoice[] {
+  return GRAPH_OPTIONAL_CAPS.map((c) => ({ role: suggestedRole(c), need: c.need, why: c.why }));
+}
+
+// The Graph app-role NAMES to grant for a SELECTION of optional caps (identified by suggestedRole),
+// always including every required cap's suggested role. Each selection is normalized to the CANONICAL
+// optional role name (case-insensitive match), so mixed-case or duplicate picks collapse to one and a
+// stale/garbage selection can never smuggle in an unrequested (or required-only) role.
+export function roleNamesForOptionalSelection(selectedOptionalRoles: readonly string[]): string[] {
+  const canonicalByLower = new Map(GRAPH_OPTIONAL_CAPS.map((c) => [suggestedRole(c).toLowerCase(), suggestedRole(c)]));
+  const sel = selectedOptionalRoles
+    .map((r) => canonicalByLower.get(r.toLowerCase()))
+    .filter((r): r is string => !!r);
+  return [...new Set([...GRAPH_REQUIRED_CAPS.map(suggestedRole), ...sel])];
+}
+
 // ── Over-permissioning ───────────────────────────────────────────────────────────────────────────
 //
 // The capability table answers "can this credential do the job?". It says nothing about the opposite

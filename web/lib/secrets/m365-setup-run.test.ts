@@ -75,6 +75,27 @@ test("a target with gaSecretRef is NOT skipped even when hasGlobalAdminSecret is
   assert.equal(calledWith, "delinea-ext-123");
 });
 
+test("runSetup is handed an onStage that live-updates this client's row (stage + device user-code)", async () => {
+  const db = fakeDb();
+  // Emulate the setup core: report a couple of stages before returning, carrying the user-code at sign-in.
+  const runSetup = async (_client: any, _tenant: string, _ref: string | undefined, onStage?: any) => {
+    assert.equal(typeof onStage, "function", "onStage must be passed through");
+    await onStage("device-code-init");
+    assert.equal(db.state.clients[0].stage, "device-code-init");
+    await onStage("browser-signin", { userCode: "ABCD-EFGH", verificationUri: "https://microsoft.com/devicelogin" });
+    assert.equal(db.state.clients[0].stage, "browser-signin");
+    assert.equal(db.state.clients[0].userCode, "ABCD-EFGH");
+    return { ok: true, stage: "done", appId: "app-x", actions: [] } as any;
+  };
+  await startM365SetupRun(db, { scope: "client:c0", targets: targets(1), startedBy: null }, {
+    runSetup, hasGlobalAdminSecret: async () => true, detach: (fn) => { void fn(); },
+  });
+  await drain();
+  // Terminal stage wins after the run resolves.
+  assert.equal(db.state.clients[0].status, "done");
+  assert.equal(db.state.clients[0].stage, "done");
+});
+
 test("dry-run marks eligible clients skipped-preview without calling runSetup", async () => {
   const db = fakeDb();
   const runSetup = async () => { throw new Error("must not run in dry-run"); };

@@ -90,6 +90,7 @@ export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-fl
 export { entry as m365ProvisionExchangeAppOnly } from "./m365-provision-exchange-app-only";
 export { entry as m365SetupAutorecoverRunlog } from "./m365-setup-autorecover-runlog";
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";
+export { entry as m365SetupProgressModal } from "./m365-setup-progress-modal";
 export { entry as m365SetupPropagationTolerance } from "./m365-setup-propagation-tolerance";
 export { entry as mailboxMirrorNamesSource } from "./mailbox-mirror-names-source";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";

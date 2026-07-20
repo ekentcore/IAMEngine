@@ -27,7 +27,10 @@ export type SetupTarget = {
   // per-client target only; the fleet path never sets this and keeps the persisted-secret path.
   gaSecretRef?: string;
 };
-export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string) => Promise<SetupResult>;
+// Live progress reporter: the run recorder passes one in so setupM365ForClient can report each step
+// as it's entered (persisted onto the client row for the UI's step tracker). Best-effort.
+export type StageReporter = (stage: string, meta?: { userCode?: string; verificationUri?: string }) => void | Promise<void>;
+export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string, onStage?: StageReporter) => Promise<SetupResult>;
 
 export type StartArgs = { scope: string; targets: SetupTarget[]; dryRun?: boolean; startedBy: string | null };
 export type RunDeps = {
@@ -114,9 +117,23 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
             skipped++; completed++; continue;
           }
           await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "running" } });
+          // Live step tracker: persist the stage (and, at sign-in, the device user-code + URL) as the
+          // run enters each step. Best-effort — swallow any write error so a progress blip can't derail
+          // the run, and capture `row` in the closure so it targets THIS client's row.
+          const stepRow = row;
+          const onStage: StageReporter = async (stage, meta) => {
+            await db.m365SetupRunClient.update({
+              where: { id: stepRow.id },
+              data: {
+                stage,
+                ...(meta?.userCode ? { userCode: meta.userCode } : {}),
+                ...(meta?.verificationUri ? { verificationUri: meta.verificationUri } : {}),
+              },
+            }).catch(() => {});
+          };
           let res: SetupResult;
           try {
-            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t), t.gaSecretRef);
+            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t), t.gaSecretRef, onStage);
           } catch (e) {
             res = { ok: false, stage: "error", error: (e as Error).message, actions: [] };
           }

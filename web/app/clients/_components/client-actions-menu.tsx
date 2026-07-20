@@ -30,9 +30,10 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
   const [replanBusy, setReplanBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Modal actions — controlled open state for each of the three dialog components.
+  // Modal actions. Systems + Change are controlled open; M365 owns its own dialog lifecycle (it must
+  // stay open through a long-running setup), so the menu just pings an incrementing open signal.
   const [systemsOpen, setSystemsOpen] = useState(false);
-  const [m365Open, setM365Open] = useState(false);
+  const [m365Signal, setM365Signal] = useState(0);
   const [changeOpen, setChangeOpen] = useState(false);
 
   useEffect(() => {
@@ -92,7 +93,7 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
             <div className="actions-menu-sep" />
             <button role="menuitem" onClick={() => { setOpen(false); setSystemsOpen(true); }}>Edit systems</button>
             <button role="menuitem" onClick={() => { setOpen(false); setChangeOpen(true); }}>Change / move user</button>
-            <button role="menuitem" onClick={() => { setOpen(false); setM365Open(true); }}
+            <button role="menuitem" onClick={() => { setOpen(false); setM365Signal((n) => n + 1); }}
               title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential">
               Set up M365 automatically
             </button>
@@ -106,14 +107,15 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
         )}
       </div>
 
-      {/* Persistent status + always-mounted controlled dialogs. Kept outside the popover so the
-          in-place results and (long-running) M365 progress stay visible with the menu closed. */}
+      {/* Persistent result note + always-mounted dialogs, kept outside the popover so the in-place
+          results survive the menu closing and each dialog owns its own lifecycle. M365 shows its live
+          step tracker in its own centered modal. */}
       {result && (
         <span className="note client-actions-result" style={{ color: result.ok ? "#15803d" : "#b91c1c" }}>
           {result.text}
         </span>
       )}
-      <M365SetupButton slug={slug} open={m365Open} onClose={() => setM365Open(false)} />
+      <M365SetupButton slug={slug} openSignal={m365Signal} hideTrigger />
       <SystemsEditor slug={systemsOpen ? slug : null} open={systemsOpen} onClose={() => setSystemsOpen(false)} />
       <ChangeCaseDialog slug={slug} personas={personas} locations={locations} knownGroups={knownGroups} ous={ous}
         open={changeOpen} onClose={() => setChangeOpen(false)} />

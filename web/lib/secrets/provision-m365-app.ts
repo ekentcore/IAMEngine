@@ -7,7 +7,7 @@
 // reads the tenant's own Microsoft Graph service principal instead. That is also self-consistent with
 // readGrantedAppRoles, which resolves the same ids back to names in reverse off the same object.
 import { graphGet, graphSend, readGrantedAppRoles, type GraphFetch, type GraphRetryOpts } from "./graph-app-roles";
-import { GRAPH_RESOURCE_APP_ID, GRAPH_REQUIRED_CAPS, GRAPH_OPTIONAL_CAPS, suggestedRole, graphCapGaps, satisfied } from "./graph-caps";
+import { GRAPH_RESOURCE_APP_ID, GRAPH_REQUIRED_CAPS, GRAPH_OPTIONAL_CAPS, suggestedRole, graphCapGaps, satisfied, roleNamesForOptionalSelection } from "./graph-caps";
 import { generateExoCert } from "../m365/exo-cert";
 import { generatePassword } from "../auth/password";
 
@@ -132,6 +132,11 @@ export type ProvisionInput = {
   // failed AFTER Graph already issued a secret, so the vaulted value is unrecoverable and the only
   // fix is to rotate. Targets the client SECRET only — a valid certificate is still kept as-is.
   forceReissue?: boolean;
+  // An explicit selection of OPTIONAL caps to grant, each identified by its suggestedRole (see
+  // graph-caps.roleNamesForOptionalSelection). When present it wins over `caps`: the app gets every
+  // required role plus exactly the chosen optional roles — the operator's opt-in from the setup modal.
+  // `[]` therefore means required-only. Absent → fall back to the `caps` all-or-nothing default.
+  optionalRoles?: string[];
 };
 
 // credState tells a caller how much to trust the credential material on this result — never infer
@@ -179,7 +184,9 @@ export async function provisionM365App(
 
   const roles = await resolveGraphAppRoleIds(token, fetcher, opts);
   if (!roles.ok) return { ok: false, error: `resolve Graph app roles: ${roles.error}`, actions };
-  const wantRoleNames = chosenRoleNames(caps);
+  // An explicit optional selection (from the setup modal's checklist) wins over the caps flag: grant
+  // required + exactly the chosen optional roles. Absent → the legacy all-or-nothing caps behaviour.
+  const wantRoleNames = input.optionalRoles ? roleNamesForOptionalSelection(input.optionalRoles) : chosenRoleNames(caps);
   // A REQUIRED cap's suggested role failing to resolve is fatal — the app cannot do its job without
   // it. An OPTIONAL cap's suggested role failing to resolve (the tenant's Graph SP simply doesn't
   // carry that app role) must not abort the whole run — skip it with a WARN and grant everything else.

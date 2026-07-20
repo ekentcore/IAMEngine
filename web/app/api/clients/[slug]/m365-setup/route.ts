@@ -24,13 +24,18 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   const scope = await currentClientScope(db);
   if (!scopeAllows(scope, client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const body = (await req.json().catch(() => ({}))) as { gaSecretRef?: string };
+  const body = (await req.json().catch(() => ({}))) as { gaSecretRef?: string; optionalRoles?: unknown };
   // The per-client flow always runs off a per-run GA login reference (never a stored client secret) —
   // require it here rather than silently falling back to the fleet path's persisted-secret behavior.
   if (!body.gaSecretRef?.trim()) {
     return NextResponse.json({ error: "provide the Global Admin login's Delinea secret id" }, { status: 422 });
   }
   const gaSecretRef = body.gaSecretRef.trim();
+  // The operator's opt-in optional Graph permissions (each a suggestedRole). An explicit array — even
+  // [] (required-only) — is honored; a missing/garbage value falls back to the provision default.
+  const optionalRoles = Array.isArray(body.optionalRoles)
+    ? body.optionalRoles.filter((r): r is string => typeof r === "string")
+    : undefined;
 
   const deps = buildSetupDeps(db);
   const r = await startM365SetupRun(db, {
@@ -38,7 +43,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     targets: [{ id: client.id, slug: client.slug, name: client.name, primaryDomain: client.primaryDomain, delineaFolderId: client.delineaFolderId, gaSecretRef }],
     startedBy: auditActor(_g.user, "ui").label,
   }, {
-    runSetup: (c, tenant, ref) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref }, deps),
+    runSetup: (c, tenant, ref, onStage) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref, optionalRoles }, { ...deps, onStage }),
     hasGlobalAdminSecret: deps.hasGlobalAdminSecret,
   });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason, id: r.id }, { status: 409 });
@@ -66,8 +71,20 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
       client: { status: run.status === "running" ? "running" : "pending", stage: null, log: [] },
     });
   }
+  // On a successful run, surface WHICH Delinea secret the credential was vaulted as — read back from the
+  // client's own Secret wiring (name "m365-admin"), which the write step upserts. This is the id an
+  // operator needs to actually use/test the credential; without it a "done" is a dead end. Read only on
+  // done (the row exists by then) and even a "kept existing, still valid" run returns its wired id.
+  let externalId: string | null = null;
+  if (mine.status === "done") {
+    const sec = await db.secret.findUnique({
+      where: { clientId_name: { clientId: client.id, name: "m365-admin" } },
+      select: { externalId: true },
+    });
+    externalId = sec?.externalId ?? null;
+  }
   return NextResponse.json({
     run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },
-    client: { status: mine.status, stage: mine.stage, appId: mine.appId, verified: mine.verified, wroteCreds: mine.wroteCreds, error: mine.error, warnings: mine.warnings, userCode: mine.userCode, verificationUri: mine.verificationUri, skipReason: mine.skipReason, log: mine.log },
+    client: { status: mine.status, stage: mine.stage, appId: mine.appId, verified: mine.verified, wroteCreds: mine.wroteCreds, error: mine.error, warnings: mine.warnings, userCode: mine.userCode, verificationUri: mine.verificationUri, skipReason: mine.skipReason, log: mine.log, externalId },
   });
 }
