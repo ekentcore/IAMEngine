@@ -58,6 +58,7 @@ export { entry as featureRequestsMenuBadgeLiveCounts } from "./feature-requests-
 export { entry as featureRequestsOwnPage } from "./feature-requests-own-page";
 export { entry as fleetAuditNamesNewlines } from "./fleet-audit-names-newlines";
 export { entry as fleetAuditPermsAndLeakedSeats } from "./fleet-audit-perms-and-leaked-seats";
+export { entry as fleetAuditPivotNames } from "./fleet-audit-pivot-names";
 export { entry as fleetReportRestrictedRouting } from "./fleet-report-restricted-routing";
 export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";

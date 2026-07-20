@@ -53,10 +53,15 @@ export function PermissionPivotTable({
             </button>
             {isOpen && (
               <div style={{ padding: "0 12px 12px 36px" }}>
-                <div style={{ fontSize: 12, marginBottom: 8 }}>
+                {/* One client per line, shown by name (CoreID slug on hover) — a long list of missing
+                    clients must stay readable, not run together into one crammed wrapping row. */}
+                <div style={{ fontSize: 12, marginBottom: 8, display: "flex", flexDirection: "column", gap: 2 }}>
                   {p.clients.map((c) => (
-                    <a key={c.slug} href={`/clients/${c.slug}`} style={{ marginRight: 10 }} title={c.client}>
-                      {c.slug}
+                    <a key={c.slug} href={`/clients/${c.slug}`} title={c.slug}>
+                      {c.client || c.slug}
+                      {/* Client name is not unique (only the slug/CoreID is), so keep the CoreID visible
+                          as a muted suffix — two same-named tenants must stay distinguishable at a glance. */}
+                      {c.client ? <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>{c.slug}</span> : null}
                     </a>
                   ))}
                 </div>
