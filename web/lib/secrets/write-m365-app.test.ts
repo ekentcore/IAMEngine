@@ -50,6 +50,9 @@ function fetcher(opts: {
   updateFails?: boolean;
   putFailsForSlugs?: string[]; // simulate a template that 400s PUT for specific slugs only (e.g. no cert field)
   capturedPutUrls?: (urls: string[]) => void;
+  // Raw items served for the kept-valid completeness read (GET /secrets/{id}?autoComment=...).
+  // Unset -> that GET falls through to "unexpected fetch" (read fails -> fail-safe "unknown").
+  vaultItems?: Array<{ slug: string; itemValue?: string | null }>;
 } = {}): Fetcher {
   const putUrls: string[] = [];
   const puts: { slug: string; value: string }[] = [];
@@ -79,6 +82,9 @@ function fetcher(opts: {
         itemValue: "",
       }));
       return { ok: true, status: 200, json: async () => ({ items }) } as FetchResponse;
+    }
+    if (opts.vaultItems && /\/api\/v1\/secrets\/[^/]+\?autoComment=/.test(url) && (!init?.method || init.method === "GET")) {
+      return { ok: true, status: 200, json: async () => ({ items: opts.vaultItems }) } as FetchResponse;
     }
     if (url.match(/\/api\/v1\/secrets$/) && init?.method === "POST") {
       const body = JSON.parse(init.body ?? "{}") as { items: { slug: string; itemValue: string }[] };
@@ -373,6 +379,55 @@ test("issued credState + existing row is a REPLACE_ME placeholder -> CREATE a re
   assert.equal(createCalled, true, "createSecret must run");
   assert.ok(!putUrls.some((u) => u.includes("/secrets/REPLACE_ME/")), "must never PUT fields to secret id 'REPLACE_ME'");
   assert.equal(calls.upsert.length, 1);
+});
+
+// HALF-VAULTED credential (the 56977 case): the vault row is real and the app's creds are valid, but a
+// prior secret-only rotation left the CERT fields empty — and every later run read "kept-valid" and
+// no-op'd, so the missing cert could never self-heal. The kept-valid path now reads the vault row's
+// cert slug and treats template-supported-but-EMPTY as stranded (recovery rotates both + re-vaults).
+test("kept-valid + real row but the vault's cert slug is EMPTY -> stranded (half-vaulted, must rotate to complete)", async () => {
+  const { db } = fakeDb({ existingSecret: { externalId: "56977" } });
+  const f = fetcher({
+    vaultItems: [
+      { slug: "username", itemValue: "app-guid-1" },
+      { slug: "password", itemValue: "some-secret" },
+      { slug: "certificatebase64", itemValue: "" }, // template supports it — never written
+      { slug: "certificatepassword", itemValue: null },
+    ],
+  });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.stranded, true, "an empty cert slug on a supported template = half-vaulted -> stranded");
+  assert.match(r.error ?? "", /no certificate material|certificatebase64/);
+});
+
+test("kept-valid + real row, template has NO cert slug (password-only) -> ok, NOT stranded (Finding 5 semantics)", async () => {
+  const { db } = fakeDb({ existingSecret: { externalId: "SS-pwonly" } });
+  const f = fetcher({
+    vaultItems: [
+      { slug: "username", itemValue: "app-guid-1" },
+      { slug: "password", itemValue: "some-secret" },
+      // no certificate slugs at all — the template legitimately doesn't carry them
+    ],
+  });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-pwonly" });
+});
+
+test("kept-valid + real row, vault read fails -> ok (fail-safe: never churn creds on an unreadable vault)", async () => {
+  const { db } = fakeDb({ existingSecret: { externalId: "SS-unreadable" } });
+  // no vaultItems -> the completeness GET hits 'unexpected fetch' and the check degrades to unknown
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: fetcher(), env: ENV_CONFIGURED }
+  );
+  assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-unreadable" });
 });
 
 test("kept-valid credState + existing row is a REPLACE_ME placeholder -> stranded, ok:false (not a fake 'done' showing REPLACE_ME)", async () => {

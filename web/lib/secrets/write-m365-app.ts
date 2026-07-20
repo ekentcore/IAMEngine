@@ -153,6 +153,36 @@ async function probeWithPropagationRetry(
   return { probe, propagationWarning: PROPAGATION_WARNING };
 }
 
+// How the vaulted secret's CERT field reads, by slug, from a raw Secret Server secret read:
+//   "present"     — the cert slug exists and carries a non-empty value (vault is complete)
+//   "empty"       — the cert slug exists on the template but holds nothing (half-vaulted credential)
+//   "unsupported" — the template has no such slug (password-only template — Finding 5; not a gap)
+//   "unknown"     — the read failed; can't tell (fail-safe: treat as complete, never churn creds)
+type VaultCertState = "present" | "empty" | "unsupported" | "unknown";
+
+async function readVaultCertState(
+  cfg: { baseUrl: string; username: string; password: string },
+  externalId: string,
+  certSlug: string,
+  token: string,
+  fetcher: Fetcher
+): Promise<VaultCertState> {
+  try {
+    const comment = encodeURIComponent("iam-engine automated provisioning");
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}?autoComment=${comment}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return "unknown";
+    const body = (await res.json().catch(() => null)) as { items?: Array<{ slug?: string; itemValue?: unknown }> } | null;
+    if (!body?.items) return "unknown";
+    const item = body.items.find((i) => (i.slug ?? "").toLowerCase() === certSlug.toLowerCase());
+    if (!item) return "unsupported";
+    return typeof item.itemValue === "string" && item.itemValue.trim() !== "" ? "present" : "empty";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps): Promise<WriteResult> {
   const { client, provision } = input;
   const secretName = input.secretName ?? "m365-admin";
@@ -200,6 +230,34 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
           "the app registration reports a valid credential but none is vaulted — it was likely issued on a prior run whose vault write failed; the app's credential must be rotated/re-issued manually (the prior one-time secret is unrecoverable)",
         hint: "re-run setup to force a credential rotation (the app registration's existing secret/cert cannot be re-read — only a fresh issue can be vaulted)",
       };
+    }
+    // A real id exists — but is what's vaulted COMPLETE? A prior run may have written the secret and
+    // never the cert (56977: secret-only rotation, then every later run read "kept-valid" and no-op'd
+    // forever, so the missing cert could never self-heal). Read the vault row's cert slug: if the
+    // template supports it and it's EMPTY, the vaulted credential is half-written and its missing half
+    // is unrecoverable → stranded, so the recovery path rotates BOTH and re-vaults complete material.
+    // Any read failure (or no template/write config) degrades to the old "trust it" behaviour.
+    const keptTmpl = templateFor(secretName, env);
+    const certSlug = keptTmpl?.fieldMap["certificate (base64 pfx)"];
+    if (certSlug) {
+      try {
+        const keptCfg = delineaWriteConfigFromEnv(env);
+        const keptFetcher: Fetcher = fetcher ?? (fetch as unknown as Fetcher);
+        const keptToken = await getDelineaToken(keptCfg, keptFetcher);
+        const certState = await readVaultCertState(keptCfg, existingRow!.externalId, certSlug, keptToken, keptFetcher);
+        if (certState === "empty") {
+          return {
+            ok: false,
+            wroteCreds: false,
+            stranded: true,
+            error:
+              `the vaulted credential (Delinea ${existingRow!.externalId}) has no certificate material (${certSlug} is empty) — the cert's PFX/password from the original issue are unrecoverable, so the credential must be rotated to complete it`,
+            hint: "recovery re-issues the secret + certificate together and re-vaults the complete credential",
+          };
+        }
+      } catch {
+        // best-effort — an unreadable vault must not fail a healthy kept-valid run
+      }
     }
     return { ok: true, wroteCreds: false, externalId: existingRow!.externalId };
   }

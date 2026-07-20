@@ -377,3 +377,36 @@ test("Finding 8: a WARN line embedded after a newline inside a multi-line string
   const multiline = "started sign-in\nWARN GA login rejected\ndone";
   assert.deepEqual(extractWarnings({ log: multiline }), [multiline]);
 });
+
+// Provisioning's own step log (grant outcomes, cert issuance, Exchange lines) must land in the run
+// log VERBATIM — without it a failed MailboxSettings.Read / Exchange.ManageAsApp grant is invisible
+// (the 56977 diagnosis: logs showed only "provisioned", none of the grant lines).
+test("provision's actions (grant outcomes, WARNs) are appended verbatim to the run log", async () => {
+  const provActions = [
+    "granted (admin-consented) User.ReadWrite.All",
+    "WARN could not grant MailboxSettings.Read: Authorization_RequestDenied",
+    "granted (admin-consented) Exchange.ManageAsApp",
+    "added the app to the Exchange Administrator role",
+    "issued + uploaded a new certificate",
+  ];
+  const deps = happyDeps({
+    provisionM365App: async () => ({ ok: true, result: provision({ actions: provActions }) }),
+  });
+  const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT }, deps);
+  assert.equal(result.ok, true);
+  for (const line of provActions) {
+    assert.ok(result.actions.includes(line), `run log must carry provision line: ${line}`);
+  }
+});
+
+// The operator's "Rotate credentials" checkbox: forceReissue on the input must reach provisioning.
+test("input.forceReissue is threaded into provisionM365App", async () => {
+  let seen: unknown = "unset";
+  const deps = happyDeps({
+    provisionM365App: async (input) => { seen = input.forceReissue; return { ok: true, result: provision() }; },
+  });
+  await setupM365ForClient({ client: CLIENT, tenant: TENANT, forceReissue: true }, deps);
+  assert.equal(seen, true);
+  await setupM365ForClient({ client: CLIENT, tenant: TENANT }, deps);
+  assert.equal(seen, undefined, "absent input stays absent (no accidental rotation)");
+});

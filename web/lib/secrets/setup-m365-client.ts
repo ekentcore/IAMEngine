@@ -85,6 +85,10 @@ export type SetupInput = {
   // suggestedRole (see graph-caps). Threaded into provisioning; `[]` means required-only, undefined
   // falls back to the provision default (`caps`). Ignored when `caps` alone is used (fleet path).
   optionalRoles?: string[];
+  // Operator-requested credential rotation ("Rotate credentials" on the setup form): force a fresh
+  // secret + certificate even when the app's existing ones are still valid, so the vault is re-written
+  // with complete material. The escape hatch for a half-vaulted credential the automation can't detect.
+  forceReissue?: boolean;
 };
 
 export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error";
@@ -240,7 +244,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // 5. Have a Graph token carrying the GA's privileges — provision (or reconcile) the app registration.
   await deps.onStage?.("provision");
   actions.push("obtained a Graph token — provisioning the app registration");
-  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles }));
+  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: input.forceReissue }));
   if (!provR.ok) {
     actions.push(`provisioning errored: ${provR.error}`);
     return { ok: false, stage: "error", error: provR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
@@ -258,10 +262,12 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
     };
   }
   actions.push(`app registration provisioned (appId ${prov.result.appId}, verified=${prov.result.verified})`);
-  // Diagnostic WARN lines from provisioning (e.g. a role that couldn't be granted, a credential read
-  // that failed) — surfaced below if the write fails, so an operator can see WHY instead of just that
-  // it did. Never contains a secret value (ProvisionResult.actions never carries one).
-  const provisionWarnings = extractWarnings(prov.result.actions);
+  // Provisioning's own step log — every grant outcome ("granted (admin-consented) X", "WARN could not
+  // grant MailboxSettings.Read: …", the Exchange.ManageAsApp/Exchange-Administrator lines, cert
+  // issuance) — goes into the run log VERBATIM. Without this the log only ever said "provisioned",
+  // so a failed grant was invisible and the UI's ✓/⚠ permission lines had nothing to read. Never
+  // contains a secret value (ProvisionResult.actions never carries one).
+  for (const line of prov.result.actions) actions.push(line);
 
   // 6. Write whatever new credential material this run issued back to Delinea (a "kept existing, still
   // valid" run writes nothing — see writeProvisionedM365App). writeProvisionedM365App itself refuses to
@@ -271,7 +277,6 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result }));
   if (!writeR.ok) {
     actions.push(`writing to Delinea errored: ${writeR.error}`);
-    for (const w of provisionWarnings) actions.push(w);
     return { ok: false, stage: "error", error: writeR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
   }
   // A success return shares this shape regardless of whether it came from the normal path or the
@@ -292,9 +297,6 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   const write = writeR.value;
   if (!write.ok) {
     actions.push(`Delinea write failed: ${write.error}`);
-    // Surface WHY provisioning may have led here (e.g. a credential read that failed, a role that
-    // couldn't be granted) so an operator isn't left staring at just the write error.
-    for (const w of provisionWarnings) actions.push(w);
     if (write.warnings) for (const w of write.warnings) actions.push(w);
 
     if (write.stranded) {
@@ -302,7 +304,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       // "kept-valid") but nothing is vaulted for it — that prior secret value is unrecoverable, so the
       // only fix is to rotate a fresh one and vault THAT. Bounded to exactly ONE recovery attempt: if
       // it fails too, fall through to a normal failure rather than looping.
-      actions.push("the app has a credential that was never vaulted — rotating a fresh secret");
+      actions.push("the app has credential material that was never vaulted — rotating a fresh secret + certificate");
       const recoverProvR = await callDep("provisionM365App", () =>
         deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: true })
       );
@@ -316,6 +318,8 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
         return { ok: false, stage: "provision", error: recoverProv.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
       }
       actions.push(`app registration re-provisioned with a freshly issued credential (appId ${recoverProv.result.appId})`);
+      // The recovery provision's own step log too (grants may have been re-checked, creds rotated).
+      for (const line of recoverProv.result.actions) actions.push(line);
 
       const recoverWriteR = await callDep("writeProvisionedM365App", () =>
         deps.writeProvisionedM365App({ client, provision: recoverProv.result })

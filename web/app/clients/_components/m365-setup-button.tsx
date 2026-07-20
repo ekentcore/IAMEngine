@@ -56,6 +56,9 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   // Optional permissions to request — default all on (matches the old required+optional behaviour), the
   // operator unticks any they don't want granted. Keyed by each cap's suggestedRole.
   const [optRoles, setOptRoles] = useState<Set<string>>(() => new Set(OPTIONAL_CAPS.map((c) => c.role)));
+  // Force a fresh secret + certificate even when the app's existing ones are valid — the manual fix for
+  // a half-vaulted credential (secret present, cert never written). Off by default: rotation churns.
+  const [forceRotate, setForceRotate] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -140,7 +143,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
       const r = await fetch(`/api/clients/${slug}/m365-setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ gaSecretRef: ref, optionalRoles: [...optRoles] }),
+        body: JSON.stringify({ gaSecretRef: ref, optionalRoles: [...optRoles], forceRotate }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -251,6 +254,15 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                   onClick={() => setOptRoles(new Set())}>None</button>
               </div>
             </fieldset>
+
+            <label className="m365-optperm" style={{ marginTop: "0.6rem" }}
+              title="Issues a brand-new client secret + certificate and re-vaults them, even if the app's current ones are still valid. Use when the vaulted credential is incomplete (e.g. missing certificate fields).">
+              <input type="checkbox" checked={forceRotate} disabled={busy} onChange={(e) => setForceRotate(e.target.checked)} />
+              <span>
+                <span className="m365-optperm-need">Rotate credentials — issue a fresh secret + certificate and re-vault them</span>
+                <span className="m365-optperm-role">for repairing an incomplete vault entry; the old secret/cert stop working</span>
+              </span>
+            </label>
 
             {modalError && <p className="note" style={{ color: "#b91c1c" }}>{modalError}</p>}
             <div className="toolbar" style={{ marginTop: "0.75rem" }}>

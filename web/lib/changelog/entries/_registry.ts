@@ -96,6 +96,7 @@ export { entry as m365SetupProgressModal } from "./m365-setup-progress-modal";
 export { entry as m365SetupPropagationTolerance } from "./m365-setup-propagation-tolerance";
 export { entry as m365SetupRecoveryCert } from "./m365-setup-recovery-cert";
 export { entry as m365SetupSigninCallout } from "./m365-setup-signin-callout";
+export { entry as m365SetupVaultSelfheal } from "./m365-setup-vault-selfheal";
 export { entry as mailboxMirrorNamesSource } from "./mailbox-mirror-names-source";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
