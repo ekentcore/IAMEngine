@@ -86,6 +86,7 @@ export { entry as m365DevicecodeAuth } from "./m365-devicecode-auth";
 export { entry as m365FleetPermissionReport } from "./m365-fleet-permission-report";
 export { entry as m365PasswordResetPermission } from "./m365-password-reset-permission";
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
+export { entry as m365ProvisionExchangeAppOnly } from "./m365-provision-exchange-app-only";
 export { entry as m365SetupAutorecoverRunlog } from "./m365-setup-autorecover-runlog";
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";
 export { entry as m365SetupPropagationTolerance } from "./m365-setup-propagation-tolerance";

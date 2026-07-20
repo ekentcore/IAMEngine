@@ -93,6 +93,8 @@ function router(
     addPassword?: () => Response;
     graphSpRoles?: () => Response; // the tenant's Microsoft Graph SP's appRoles (resolveGraphAppRoleIds)
     resourceSpAppRoles?: () => Response; // a resource SP's appRoles, as read back by readGrantedAppRoles
+    exoSp?: () => Response; // the Office 365 Exchange Online SP (grantExchangeOnline) — default: not found
+    directoryRoles?: () => Response; // activated directory roles (ensureDirectoryRoleActivated)
   } = {}
 ): Router {
   const posts: Router["posts"] = [];
@@ -129,6 +131,22 @@ function router(
     // reconcile app (PATCH) — also hit by the credentials leg's keyCredentials upload; distinguish by body
     if (method === "PATCH" && u.includes("/applications/")) {
       const b = body(); patches.push({ path: u, body: b });
+      return OK({});
+    }
+    // Exchange Online SP lookup (grantExchangeOnline) — a DISTINCT appId from our app's SP; default
+    // "not found" so the Exchange grant aborts (best-effort) and pre-existing count assertions hold.
+    if (method === "GET" && u.includes("/servicePrincipals") && u.includes("appId eq '00000002-0000-0ff1-ce00-000000000000'")) {
+      return over.exoSp ? over.exoSp() : OK({ value: [] });
+    }
+    // Exchange Administrator directory role (ensureDirectoryRoleActivated)
+    if (method === "GET" && u.includes("/directoryRoles")) {
+      return over.directoryRoles ? over.directoryRoles() : OK({ value: [] });
+    }
+    if (method === "POST" && u.endsWith("/directoryRoles")) {
+      return OK({ id: "exo-admin-role" });
+    }
+    if (method === "POST" && u.includes("/directoryRoles/") && u.endsWith("/members/$ref")) {
+      posts.push({ path: "/directoryRoles/members/$ref", body: body() });
       return OK({});
     }
     // find our app's SP
@@ -171,10 +189,14 @@ test("provisionM365App: fresh tenant — creates app + SP, admin-consents every 
   assert.ok(appCreate, "expected a POST to /applications");
   assert.deepEqual(appCreate!.body.tags, ["ctg:iam-engine"]);
   const rra = appCreate!.body.requiredResourceAccess as { resourceAppId: string; resourceAccess: { id: string; type: string }[] }[];
-  assert.equal(rra.length, 1);
+  assert.equal(rra.length, 2); // Graph block + the Exchange Online block
   assert.equal(rra[0].resourceAppId, GRAPH_RESOURCE_APP_ID);
   assert.equal(rra[0].resourceAccess.length, ALL_ROLE_NAMES.length);
   assert.deepEqual(new Set(rra[0].resourceAccess.map((x) => x.id)), new Set(ALL_ROLE_NAMES.map(roleId)));
+  // The Exchange Online block declares Exchange.ManageAsApp (Office 365 Exchange Online resource).
+  const exoBlock = rra.find((b) => b.resourceAppId === "00000002-0000-0ff1-ce00-000000000000");
+  assert.ok(exoBlock, "expected an Exchange Online resource block");
+  assert.ok(exoBlock!.resourceAccess.some((x) => x.id === "dc50a0fb-09a3-484d-be87-e023b12c6440"), "Exchange.ManageAsApp must be declared");
 
   const spCreate = r.posts.find((p) => p.path === "/servicePrincipals");
   assert.ok(spCreate, "expected a POST to /servicePrincipals");
@@ -408,7 +430,9 @@ test("provisionM365App: Fix B — an incomplete post-grant verify must not repor
 
 test("provisionM365App: Fix C — reconcile PATCH preserves a non-Graph block and unions extra Graph roles", async () => {
   const EXTRA_GRAPH_ROLE_ID = "extra-hand-added-role-id";
-  const NON_GRAPH_BLOCK = { resourceAppId: "00000002-0000-0ff1-ce00-000000000000", resourceAccess: [{ id: "some-exo-role", type: "Role" }] };
+  // A resource we DON'T manage (SharePoint) — it must survive the reconcile untouched. (Exchange, which
+  // we DO manage now, is asserted separately below.)
+  const NON_GRAPH_BLOCK = { resourceAppId: "00000003-0000-0ff1-ce00-000000000000", resourceAccess: [{ id: "some-sharepoint-role", type: "Role" }] };
   const r = router({
     findApp: () => OK({
       value: [{
@@ -436,6 +460,37 @@ test("provisionM365App: Fix C — reconcile PATCH preserves a non-Graph block an
   const graphIds = graphBlock!.resourceAccess.map((x) => x.id);
   assert.ok(graphIds.includes(EXTRA_GRAPH_ROLE_ID), "a hand-added Graph role must survive (union, not replace)");
   for (const name of ALL_ROLE_NAMES) assert.ok(graphIds.includes(roleId(name)), `wanted role ${name} must still be present`);
+
+  // The reconcile also ensures the Exchange Online block carries Exchange.ManageAsApp.
+  const exoBlock = rra.find((b) => b.resourceAppId === "00000002-0000-0ff1-ce00-000000000000");
+  assert.ok(exoBlock, "expected an Exchange Online resource block after reconcile");
+  assert.ok(exoBlock!.resourceAccess.some((x) => x.id === "dc50a0fb-09a3-484d-be87-e023b12c6440"), "Exchange.ManageAsApp must be present");
+});
+
+test("provisionM365App: Exchange app-only — grants Exchange.ManageAsApp and the Exchange Administrator role", async () => {
+  const r = router({
+    findApp: () => OK({ value: [{ id: "obj-1", appId: "app-1", tags: ["ctg:iam-engine"] }] }),
+    spFind: () => OK({ value: [{ id: "app-sp" }] }),
+    exoSp: () => OK({ value: [{ id: "exo-sp" }] }),
+  });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1" }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+
+  // admin-consent for Exchange.ManageAsApp against the EXO service principal
+  const exoAssign = r.assigns.find((a) => a.appRoleId === "dc50a0fb-09a3-484d-be87-e023b12c6440");
+  assert.ok(exoAssign, "expected an Exchange.ManageAsApp appRoleAssignedTo");
+  assert.equal(exoAssign!.principalId, "app-sp");
+  assert.equal(exoAssign!.resourceId, "exo-sp");
+
+  // the app SP added to the (activated) Exchange Administrator directory role
+  const roleAdd = r.posts.find((p) => p.path === "/directoryRoles/members/$ref");
+  assert.ok(roleAdd, "expected the app to be added to the Exchange Administrator role");
+  assert.match(String(roleAdd!.body["@odata.id"]), /directoryObjects\/app-sp$/);
+
+  assert.equal(result.result.exchangeReady, true);
+  assert.ok(result.result.actions.some((a) => a === "granted (admin-consented) Exchange.ManageAsApp"));
+  assert.ok(result.result.actions.some((a) => a === "added the app to the Exchange Administrator role"));
 });
 
 // ── Fix E: an unresolvable OPTIONAL role is skipped, a REQUIRED one is fatal ───────────────────────

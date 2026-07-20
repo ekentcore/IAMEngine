@@ -44,6 +44,71 @@ export async function resolveGraphAppRoleIds(
   return { ok: true, graphSpId: sp.id, roleIdByName };
 }
 
+// Exchange Online app-only auth needs THREE things, only one of which (the certificate) provisioning
+// used to supply. The other two live on a DIFFERENT resource than Microsoft Graph, so they don't fit
+// the GraphCap table and are granted here directly:
+//   - the `Exchange.ManageAsApp` application permission on the "Office 365 Exchange Online" resource,
+//   - the app's service principal added to the "Exchange Administrator" directory role (assigned ACTIVE).
+// See web/app/help/cloud-auth/page.tsx and the runner's Connect-CtgExchange error hints.
+const EXO_RESOURCE_APP_ID = "00000002-0000-0ff1-ce00-000000000000"; // Office 365 Exchange Online
+const EXO_MANAGE_AS_APP_ROLE_ID = "dc50a0fb-09a3-484d-be87-e023b12c6440"; // Exchange.ManageAsApp (application role)
+const EXCHANGE_ADMIN_ROLE_TEMPLATE_ID = "29232cdf-9323-42fd-ade2-1d097af3e4de"; // Exchange Administrator directory role
+
+// /directoryRoles lists only the roles a tenant has ACTIVATED from their templates. Resolve our role's
+// activated id, activating it from its template if the tenant hasn't yet. Returns the directoryRole id.
+async function ensureDirectoryRoleActivated(
+  token: string, roleTemplateId: string, fetcher: GraphFetch, opts: GraphRetryOpts
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const list = await graphGet<{ value?: { id?: string; roleTemplateId?: string }[] }>(
+    token, `/directoryRoles?$select=id,roleTemplateId`, fetcher, opts);
+  if (list.ok) {
+    const hit = (list.body.value ?? []).find((r) => r.roleTemplateId === roleTemplateId);
+    if (hit?.id) return { ok: true, id: hit.id };
+  }
+  const act = await graphSend<{ id?: string }>(token, "POST", "/directoryRoles", { roleTemplateId }, fetcher, opts);
+  if (act.ok && act.body?.id) return { ok: true, id: act.body.id };
+  // Activation can 409 when it was already active but our list read missed it — re-read once.
+  const relist = await graphGet<{ value?: { id?: string; roleTemplateId?: string }[] }>(
+    token, `/directoryRoles?$select=id,roleTemplateId`, fetcher, opts);
+  const hit2 = relist.ok ? (relist.body.value ?? []).find((r) => r.roleTemplateId === roleTemplateId) : undefined;
+  if (hit2?.id) return { ok: true, id: hit2.id };
+  return { ok: false, error: act.ok ? "activated role returned no id" : act.error };
+}
+
+// Grant everything Exchange Online app-only needs BEYOND the certificate: the Exchange.ManageAsApp app
+// permission (admin-consented) + the Exchange Administrator role membership. Best-effort and fully
+// reported: a tenant where these fail (e.g. the GA lacks RoleManagement.ReadWrite.Directory consent)
+// still completes the rest of setup, and the WARNs say exactly what to finish by hand. Idempotent —
+// Graph rejects a duplicate assignment, which we read as "already granted", not a failure.
+async function grantExchangeOnline(
+  token: string, appSpId: string, fetcher: GraphFetch, opts: GraphRetryOpts
+): Promise<{ ok: boolean; actions: string[] }> {
+  const actions: string[] = [];
+  const exo = await graphGet<{ value?: { id?: string }[] }>(
+    token, `/servicePrincipals?$filter=appId eq '${EXO_RESOURCE_APP_ID}'&$select=id`, fetcher, opts);
+  const exoSpId = exo.ok ? exo.body.value?.[0]?.id : undefined;
+  if (!exoSpId) {
+    actions.push(`WARN could not resolve the Exchange Online service principal — Exchange app-only not granted (${exo.ok ? "not found in tenant" : exo.error})`);
+    return { ok: false, actions };
+  }
+  const dup = (e: string) => /already|exists|conflict|added object references already exist/i.test(e);
+
+  const grant = await graphSend(token, "POST", `/servicePrincipals/${exoSpId}/appRoleAssignedTo`,
+    { principalId: appSpId, resourceId: exoSpId, appRoleId: EXO_MANAGE_AS_APP_ROLE_ID }, fetcher, opts);
+  if (grant.ok) actions.push("granted (admin-consented) Exchange.ManageAsApp");
+  else if (dup(grant.error)) actions.push("Exchange.ManageAsApp already granted");
+  else { actions.push(`WARN could not grant Exchange.ManageAsApp: ${grant.error}`); return { ok: false, actions }; }
+
+  const role = await ensureDirectoryRoleActivated(token, EXCHANGE_ADMIN_ROLE_TEMPLATE_ID, fetcher, opts);
+  if (!role.ok) { actions.push(`WARN could not resolve/activate the Exchange Administrator role: ${role.error}`); return { ok: false, actions }; }
+  const add = await graphSend(token, "POST", `/directoryRoles/${role.id}/members/$ref`,
+    { "@odata.id": `https://graph.microsoft.com/v1.0/directoryObjects/${appSpId}` }, fetcher, opts);
+  if (add.ok) actions.push("added the app to the Exchange Administrator role");
+  else if (dup(add.error)) actions.push("app already in the Exchange Administrator role");
+  else { actions.push(`WARN could not add the app to the Exchange Administrator role: ${add.error}`); return { ok: false, actions }; }
+  return { ok: true, actions };
+}
+
 // ── provisionM365App ────────────────────────────────────────────────────────────────────────────
 //
 // Finds-or-creates the iam-engine app registration, sets its requiredResourceAccess to the chosen
@@ -94,6 +159,9 @@ export type ProvisionResult = {
   gaps: string[];
   optionalGaps: string[];
   verified: boolean;
+  // Exchange Online app-only was fully granted this run (Exchange.ManageAsApp + Exchange Administrator
+  // role). False when a piece couldn't be granted — the actions log carries the WARN with what's left.
+  exchangeReady: boolean;
   actions: string[];
 };
 
@@ -141,10 +209,11 @@ export async function provisionM365App(
   if (!find.ok) return { ok: false, error: `find app: ${find.error}`, actions };
   let app = (find.body.value ?? []).find((a) => (a.tags ?? []).includes(APP_TAG));
   let created = false;
-  const requiredResourceAccess = [{
-    resourceAppId: GRAPH_RESOURCE_APP_ID,
-    resourceAccess: wantRoleIds.map((r) => ({ id: r.id, type: "Role" })),
-  }];
+  const requiredResourceAccess = [
+    { resourceAppId: GRAPH_RESOURCE_APP_ID, resourceAccess: wantRoleIds.map((r) => ({ id: r.id, type: "Role" })) },
+    // Exchange Online app-only: declare Exchange.ManageAsApp so the app manifest reflects the grant below.
+    { resourceAppId: EXO_RESOURCE_APP_ID, resourceAccess: [{ id: EXO_MANAGE_AS_APP_ROLE_ID, type: "Role" }] },
+  ];
   if (!app?.id || !app.appId) {
     const c = await graphSend<{ id: string; appId: string }>(token, "POST", "/applications", {
       displayName: APP_DISPLAY_NAME, signInAudience: "AzureADMyOrg", tags: [APP_TAG], requiredResourceAccess,
@@ -157,14 +226,20 @@ export async function provisionM365App(
     // portal. Preserve every non-Graph block untouched, and for the Graph block UNION the existing
     // resourceAccess with the roles we want (dedupe by id).
     const existingRRA = app.requiredResourceAccess ?? [];
-    const nonGraphBlocks = existingRRA.filter((b) => b.resourceAppId !== GRAPH_RESOURCE_APP_ID);
+    // Preserve every OTHER resource block untouched; union the Graph block and the Exchange block.
+    const otherBlocks = existingRRA.filter((b) => b.resourceAppId !== GRAPH_RESOURCE_APP_ID && b.resourceAppId !== EXO_RESOURCE_APP_ID);
     const existingGraphAccess = existingRRA.find((b) => b.resourceAppId === GRAPH_RESOURCE_APP_ID)?.resourceAccess ?? [];
     const mergedGraphAccessById = new Map<string, { id: string; type: string }>();
     for (const ra of existingGraphAccess) if (ra.id) mergedGraphAccessById.set(ra.id, { id: ra.id, type: ra.type ?? "Role" });
     for (const r of wantRoleIds) mergedGraphAccessById.set(r.id, { id: r.id, type: "Role" });
+    const existingExoAccess = existingRRA.find((b) => b.resourceAppId === EXO_RESOURCE_APP_ID)?.resourceAccess ?? [];
+    const mergedExoAccessById = new Map<string, { id: string; type: string }>();
+    for (const ra of existingExoAccess) if (ra.id) mergedExoAccessById.set(ra.id, { id: ra.id, type: ra.type ?? "Role" });
+    mergedExoAccessById.set(EXO_MANAGE_AS_APP_ROLE_ID, { id: EXO_MANAGE_AS_APP_ROLE_ID, type: "Role" });
     const mergedRequiredResourceAccess = [
-      ...nonGraphBlocks,
+      ...otherBlocks,
       { resourceAppId: GRAPH_RESOURCE_APP_ID, resourceAccess: [...mergedGraphAccessById.values()] },
+      { resourceAppId: EXO_RESOURCE_APP_ID, resourceAccess: [...mergedExoAccessById.values()] },
     ];
     const p = await graphSend(token, "PATCH", `/applications/${app.id}`, { requiredResourceAccess: mergedRequiredResourceAccess }, fetcher, opts);
     if (!p.ok) return { ok: false, error: `update app permissions: ${p.error}`, actions };
@@ -218,6 +293,13 @@ export async function provisionM365App(
     if (!a.ok) { actions.push(`WARN could not grant ${roleName}: ${a.error}`); continue; }
     actions.push(`granted (admin-consented) ${roleName}`);
   }
+
+  // Exchange Online app-only: the certificate (issued below) is necessary but NOT sufficient — the app
+  // also needs Exchange.ManageAsApp + the Exchange Administrator role. Grant them here; best-effort so a
+  // tenant where they fail still finishes Graph setup, with WARNs saying what to complete by hand.
+  const exo = await grantExchangeOnline(token, spId, fetcher, opts);
+  for (const line of exo.actions) actions.push(line);
+  const exchangeReady = exo.ok;
 
   // credentials — reconcile rule: only issue a new secret/cert when none valid exists. `clientSecret`
   // / `certBase64` / `certPassword` stay undefined unless THIS run issued a new one — a caller must
@@ -333,7 +415,7 @@ export async function provisionM365App(
     result: {
       appId, objectId, spId: spId!, tenantId,
       clientSecret, certBase64, certPassword, certThumbprint, credState,
-      created, granted, gaps, optionalGaps, verified, actions,
+      created, granted, gaps, optionalGaps, verified, exchangeReady, actions,
     },
   };
 }

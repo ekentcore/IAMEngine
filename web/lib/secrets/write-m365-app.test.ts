@@ -20,6 +20,7 @@ function provision(overrides: Partial<ProvisionResult> = {}): ProvisionResult {
     gaps: [],
     optionalGaps: [],
     verified: true,
+    exchangeReady: true,
     credState: "issued",
     actions: [],
     ...overrides,
