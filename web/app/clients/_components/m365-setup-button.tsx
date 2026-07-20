@@ -190,6 +190,12 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   const log = state?.log ?? [];
   const exchangeWarns = log.filter((l) => /warn.*exchange/i.test(l));
   const exchangeGranted = done && log.some((l) => /exchange\.manageasapp|exchange administrator/i.test(l)) && exchangeWarns.length === 0;
+  // Graph optional-permission grant failures, read from the run log (e.g. a role that couldn't be
+  // granted or isn't carried by the tenant's Graph SP — "MailboxSettings.Read not set" shows up here).
+  // Exchange has its own line above, so exclude it. Strip the "WARN " prefix for display.
+  const permWarns = log
+    .filter((l) => /warn/i.test(l) && /(could not grant|graph role not found)/i.test(l) && !/exchange/i.test(l))
+    .map((l) => l.replace(/^WARN\s*/i, ""));
 
   return (
     <>
@@ -337,6 +343,16 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                     ⚠ Exchange Online admin needs attention: {exchangeWarns[0].replace(/^WARN\s*/i, "")}
                   </div>
                 ) : null}
+                {/* Optional Graph permissions that didn't get granted (e.g. MailboxSettings.Read) — shown
+                    with the reason so "it's not set" always has an answer, and a hint to re-run. */}
+                {permWarns.length > 0 && (
+                  <div className="note" style={{ color: "#8a6d00" }}>
+                    ⚠ Some optional permissions weren&rsquo;t granted — <b>Set up again</b> to retry:
+                    <ul style={{ margin: "3px 0 0", paddingLeft: 18 }}>
+                      {permWarns.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
                 {state?.gaps && state.gaps.length > 0 && (
                   <div className="note">Still-pending permissions: {state.gaps.join(", ")}.</div>
                 )}

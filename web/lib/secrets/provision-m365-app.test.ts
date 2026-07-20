@@ -329,7 +329,7 @@ test("provisionM365App: reconcile-keep — a non-expired secret + cert are kept,
 
 // ── forceReissue (stranded-credential recovery, see setup-m365-client.ts) ──────────────────────────
 
-test("provisionM365App: forceReissue mints a fresh secret even though a valid one already exists", async () => {
+test("provisionM365App: forceReissue mints a fresh secret AND a fresh cert even though valid ones exist", async () => {
   const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
   const r = router({
     credsSelect: () => OK({ passwordCredentials: [{ endDateTime: future }], keyCredentials: [{ endDateTime: future }] }),
@@ -343,10 +343,13 @@ test("provisionM365App: forceReissue mints a fresh secret even though a valid on
   assert.ok(r.posts.some((p) => p.path === "/addPassword"), "expected a POST to .../addPassword despite an existing valid secret");
   assert.ok(result.result.actions.some((a) => a === "issued a new client secret"));
 
-  // forceReissue targets the client SECRET only — a valid certificate is left completely alone.
-  assert.equal(result.result.certBase64, undefined, "forceReissue must not touch the certificate");
-  assert.ok(!r.patches.some((p) => "keyCredentials" in p.body), "no keyCredentials PATCH — cert issuance is unchanged by forceReissue");
-  assert.ok(result.result.actions.some((a) => a === "kept existing certificate (valid)"));
+  // forceReissue is the stranded-recovery rotation: nothing real is vaulted, so the KEPT cert's PFX +
+  // password are unrecoverable too. It must rotate the certificate as well, so the recovery vaults a
+  // COMPLETE, usable credential (secret + cert base64/password) rather than a secret with no cert material.
+  assert.ok(result.result.certBase64, "forceReissue must mint a fresh cert (its base64 is needed to vault a complete credential)");
+  assert.ok(result.result.certPassword, "forceReissue must produce the fresh cert's password to vault");
+  assert.ok(r.patches.some((p) => "keyCredentials" in p.body), "expected a keyCredentials PATCH — the cert is rotated under forceReissue");
+  assert.ok(result.result.actions.some((a) => a === "issued + uploaded a new certificate"));
 });
 
 test("provisionM365App: without forceReissue, an existing valid secret is kept (baseline contrast)", async () => {

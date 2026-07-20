@@ -387,7 +387,14 @@ export async function provisionM365App(
       } else {
         actions.push("kept existing client secret (valid)");
       }
-      if (!certValid) {
+      // forceReissue rotates the CERT too, not just the secret: it's the stranded-recovery path where
+      // nothing real is vaulted, so the existing cert's PFX + password are just as unrecoverable as the
+      // secret. Keeping the cert would vault an INCOMPLETE credential (a fresh secret with no cert
+      // base64/password) — and the runner needs the cert for Exchange app-only auth. Rotate both.
+      if (!certValid || forceReissue) {
+        if (forceReissue && certValid) {
+          actions.push("forcing a fresh certificate despite an existing valid one (recovering a stranded credential — the kept cert's PFX/password are unrecoverable)");
+        }
         const cp = await issueCert();
         if (!cp.ok) return { ok: false, error: cp.error, actions };
         issuedAny = true;
