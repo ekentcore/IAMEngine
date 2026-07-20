@@ -502,6 +502,29 @@ export function makeCaseRepository(db: PrismaClient) {
       });
     },
 
+    // Take a case that has already run in dry-run mode LIVE: clear dryRun, resume it, and re-queue every
+    // api step that ran under dry-run so it executes for real. Manual steps are left as-is. Returns how many
+    // jobs were re-queued.
+    async takeCaseLive(caseId: string): Promise<{ ok: boolean; jobsRequeued: number }> {
+      const c = await db.caseRequest.findUnique({ where: { id: caseId }, select: { id: true, status: true, jobs: { select: { id: true, mode: true, status: true } } } });
+      if (!c) return { ok: false, jobsRequeued: 0 };
+      const toRequeue = c.jobs.filter((j) => j.mode === "api" && STARTED_STATUSES.includes(j.status as never)).map((j) => j.id);
+      await db.$transaction(async (tx) => {
+        // Case: out of dry-run, unpaused, back in the queue so runners pick up the re-queued steps.
+        await tx.caseRequest.update({ where: { id: caseId }, data: { dryRun: false, pausedAt: null, pausedReason: null, ...(c.status === "completed" ? {} : { status: "queued" }) } });
+        // Every api job: clear dryRun from its request so a real run doesn't -WhatIf. Pending ones stay pending.
+        await tx.$executeRaw`UPDATE "Job" SET "request" = jsonb_set(COALESCE("request", '{}'::jsonb), '{dryRun}', 'false') WHERE "caseRequestId" = ${caseId} AND "mode" = 'api'`;
+        // Re-queue the already-run api steps to a fresh claimable state with dryRun cleared.
+        if (toRequeue.length) {
+          await tx.job.updateMany({
+            where: { id: { in: toRequeue } },
+            data: { status: "pending", assignedAgentId: null, result: Prisma.DbNull, validation: Prisma.DbNull, evidence: Prisma.DbNull, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null },
+          });
+        }
+      });
+      return { ok: true, jobsRequeued: toRequeue.length };
+    },
+
     // `scope` (default unrestricted) limits the list to cases of the operator's visible clients.
     // `limit` bounds the query — this table + its inlined jobs/audit grow unboundedly, so the default
     // returns the most-recent N (an ops list scans recent cases; a history/pagination UI is the follow-up).

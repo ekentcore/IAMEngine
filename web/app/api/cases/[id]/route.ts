@@ -1,5 +1,5 @@
 // GET    /api/cases/:id — case detail with planned jobs.
-// PATCH  /api/cases/:id — { action: "set-dry-run", dryRun } | { action: "restore" }.
+// PATCH  /api/cases/:id — { action: "set-dry-run", dryRun } | { action: "restore" } | { action: "exit-dry-run" }.
 // DELETE /api/cases/:id — move the case to the trash (restorable 30 days). Blocked while in flight.
 //        DELETE /api/cases/:id?forever=1 — permanently delete a trashed case + its jobs.
 import { NextResponse } from "next/server";
@@ -51,7 +51,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     await recordAudit("case.restore", { user: _g.user, caseRequestId: params.id, clientId: res.clientId, detail: { caseId: params.id } });
     return NextResponse.json({ ok: true });
   }
-  return NextResponse.json({ error: 'action must be "set-dry-run" or "restore"' }, { status: 422 });
+  if (body.action === "exit-dry-run") {
+    const exists = await db.caseRequest.findUnique({ where: { id: params.id }, select: { id: true, clientId: true, dryRun: true } });
+    if (!exists) return NextResponse.json({ error: "not found" }, { status: 404 });
+    const res = await makeCaseRepository(db).takeCaseLive(params.id);
+    if (!res.ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+    await recordAudit("case.dry_run.exit", { user: _g.user, caseRequestId: params.id, clientId: exists.clientId, detail: { caseId: params.id, jobsRequeued: res.jobsRequeued } });
+    return NextResponse.json({ ok: true, jobsRequeued: res.jobsRequeued });
+  }
+  return NextResponse.json({ error: 'action must be "set-dry-run", "restore", or "exit-dry-run"' }, { status: 422 });
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {

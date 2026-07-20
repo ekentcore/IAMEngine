@@ -24,6 +24,7 @@ import { RescanButton } from "../_components/rescan-button";
 import { RevealPasswordButton } from "../_components/reveal-password-button";
 import { HardMatchButton } from "../_components/hard-match-button";
 import { DryRunToggle } from "../_components/dry-run-toggle";
+import { ExitDryRunButton } from "../_components/exit-dry-run-button";
 import { PauseButton } from "../_components/pause-button";
 import { ScheduleButton } from "../_components/schedule-button";
 import { LocalDateTime } from "../../_components/local-datetime";
@@ -176,8 +177,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
       {changePreviewDiffs && <ChangePreview caseId={c.id} diffs={changePreviewDiffs} />}
 
-      <div style={{ margin: "0.5rem 0 1rem" }}>
+      <div style={{ margin: "0.5rem 0 1rem", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={started} />
+        {c.dryRun && started && <ExitDryRunButton caseId={c.id} />}
       </div>
 
       {playbook && playbook.steps.length > 0 && (
