@@ -92,6 +92,7 @@ export { entry as m365SetupAutorecoverRunlog } from "./m365-setup-autorecover-ru
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";
 export { entry as m365SetupProgressModal } from "./m365-setup-progress-modal";
 export { entry as m365SetupPropagationTolerance } from "./m365-setup-propagation-tolerance";
+export { entry as m365SetupSigninCallout } from "./m365-setup-signin-callout";
 export { entry as mailboxMirrorNamesSource } from "./mailbox-mirror-names-source";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";

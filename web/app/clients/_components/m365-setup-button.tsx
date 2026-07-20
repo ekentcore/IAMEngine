@@ -8,8 +8,10 @@
 //   • form     — pick the Global Admin login's Delinea secret + which optional Graph permissions to
 //                request/consent, then Start.
 //   • progress — a live step tracker (Connect → Sign in → Configure app registration → Save
-//                credential), the device user-code for a manual MFA fallback, and on success the
-//                Delinea secret id the credential was vaulted as (so an operator knows what to use).
+//                credential). The sign-in step blocks on a human approving the Global Admin sign-in,
+//                so the device code shows as a prominent "action needed" callout (with an elapsed
+//                escalation) rather than a footnote. On success it shows the Exchange admin outcome
+//                and the Delinea secret id the credential was vaulted as (so an operator knows what to use).
 //
 // The GA reference is used TRANSIENTLY for this one run — the API threads it onto the case's
 // secretOverrides so the runner can broker the login without anything being vaulted on the client.
@@ -60,6 +62,11 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   // Highest step index the run has reached — monotonic, so a fast stage transition still leaves earlier
   // steps marked done even if a poll skipped over them. Reset at the start of each run.
   const maxStep = useRef(-1);
+  // Elapsed time on the sign-in step, so the "approve the sign-in" prompt can escalate if it's been a
+  // while (that step blocks on a human approving MFA / entering the device code). `tick` just forces a
+  // re-render each second; `signinSince` is when the sign-in step was first entered.
+  const [, setTick] = useState(0);
+  const signinSince = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +94,21 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
     if (i > maxStep.current) maxStep.current = i;
   }, [state?.stage]);
 
+  // Stamp when the sign-in step is first entered (for the elapsed/escalation prompt), clear otherwise.
+  useEffect(() => {
+    const onSignin = state?.stage === "browser-signin" || state?.stage === "token";
+    if (onSignin) { if (signinSince.current == null) signinSince.current = Date.now(); }
+    else signinSince.current = null;
+  }, [state?.stage]);
+
+  // While a run is live, re-render every second so the sign-in elapsed counter advances.
+  useEffect(() => {
+    const live = active || state?.status === "pending" || state?.status === "running";
+    if (!live) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [active, state?.status]);
+
   const openForm = useCallback(async () => {
     setModalError(null); setError(null); setLogOpen(false); setCopied(false);
     dialogRef.current?.showModal();
@@ -111,6 +133,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
     if (!ref) return;
     setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpen(false); setCopied(false);
     maxStep.current = -1;
+    signinSince.current = null;
     setState({ status: "pending", stage: null });
     setPhase("progress");
     try {
@@ -158,6 +181,15 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   }
 
   const isWriteFail = failed && (state?.stage === "write" || (state?.stage === "error" && (state?.log ?? []).some((l) => /delinea write/i.test(l))));
+
+  // Seconds spent on the sign-in step (blocks on a human approving the sign-in).
+  const signinElapsed = signinSince.current ? Math.floor((Date.now() - signinSince.current) / 1000) : 0;
+
+  // Exchange Online admin outcome, read from the run log (provision emits deterministic lines for the
+  // Exchange.ManageAsApp grant + Exchange Administrator role membership, or WARNs when a piece fails).
+  const log = state?.log ?? [];
+  const exchangeWarns = log.filter((l) => /warn.*exchange/i.test(l));
+  const exchangeGranted = done && log.some((l) => /exchange\.manageasapp|exchange administrator/i.test(l)) && exchangeWarns.length === 0;
 
   return (
     <>
@@ -240,19 +272,39 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                     <span className="setup-step-body">
                       <span className="setup-step-label">{s.label}</span>
                       {s.caption && <span className="setup-step-caption">{s.caption}</span>}
-                      {/* Live device-code fallback, surfaced on the sign-in step while running. */}
-                      {st === "active" && s.stages.includes("browser-signin") && state?.userCode && (
-                        <span className="setup-step-caption">
-                          If MFA needs a hand: sign in at{" "}
-                          <a href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer">devicelogin</a>{" "}
-                          with code <code>{state.userCode}</code>
-                        </span>
-                      )}
                     </span>
                   </li>
                 );
               })}
             </ol>
+
+            {/* Sign-in step blocks on a HUMAN approving the Global Admin sign-in — the runner drives the
+                browser, but MFA (push / number-match / SMS) needs the operator. Surface the device code
+                prominently as an "action needed" callout so a spinning sign-in doesn't look wedged. */}
+            {running && stepStatus(1) === "active" && (
+              <div className="setup-signin-callout">
+                <div className="setup-signin-title">⚠ Action needed — approve the Global Admin sign-in</div>
+                {state?.userCode ? (
+                  <>
+                    <div className="setup-signin-code">
+                      <span className="note">Code</span>
+                      <code>{state.userCode}</code>
+                      <a className="button" href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer">Open devicelogin ↗</a>
+                    </div>
+                    <div className="note">
+                      The runner is signing in for you, but a Global Admin has to approve it: approve the
+                      sign-in prompt on your device, or open <b>microsoft.com/devicelogin</b> and enter the
+                      code above yourself.
+                      {signinElapsed >= 20 && (
+                        <> <b>Still waiting after {signinElapsed}s</b> — it&rsquo;s almost certainly waiting on that approval.</>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="note">Requesting a sign-in code…</div>
+                )}
+              </div>
+            )}
 
             {done && (
               <div className="setup-result-ok">
@@ -272,6 +324,15 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                 ) : (
                   <div className="note">Credential vaulted, but its Delinea id couldn&rsquo;t be read back — check Secret wiring below.</div>
                 )}
+                {/* Exchange Online app-only (Exchange.ManageAsApp + Exchange Administrator role) — its own
+                    line so an operator can see whether the Exchange admin grant actually landed. */}
+                {exchangeGranted ? (
+                  <div className="note" style={{ color: "#2e7d32" }}>✓ Exchange Online admin granted (Exchange.ManageAsApp + Exchange Administrator role).</div>
+                ) : exchangeWarns.length > 0 ? (
+                  <div className="note" style={{ color: "#8a6d00" }}>
+                    ⚠ Exchange Online admin needs attention: {exchangeWarns[0].replace(/^WARN\s*/i, "")}
+                  </div>
+                ) : null}
                 {state?.gaps && state.gaps.length > 0 && (
                   <div className="note">Still-pending permissions: {state.gaps.join(", ")}.</div>
                 )}
