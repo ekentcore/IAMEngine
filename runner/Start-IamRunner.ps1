@@ -2218,6 +2218,12 @@ $script:GRAPH_OPTIONAL_CAPS = @(
     # fine and was still told to grant Domain.Read.All (verified live on core1390 — 200, no Domain role).
     @{ need = "read the tenant's verified email domains (multi-domain clients)"; anyOf = @('Domain.Read.All', 'Domain.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
        why  = 'needed only when a client has more than one verified email domain, to pick the right one; single-domain clients are unaffected' }
+    # The leaked-seat scan reads mailboxSettings.userPurpose to tell whether a disabled-but-licensed
+    # user's mailbox was converted to shared (licence safe to remove) — mirrors the web table's cap.
+    # Without this entry the surplus scan flagged a GRANTED MailboxSettings.Read as "not needed",
+    # which the UI renders red and reads as a missing permission (core1787).
+    @{ need = "read whether a leaver's mailbox was converted to shared"; anyOf = @('MailboxSettings.Read', 'MailboxSettings.ReadWrite')
+       why  = "without it the leaked-seat scan can still see that a disabled user is still licensed, but cannot say whether their mailbox was converted to shared — so it can't tell you whether the licence is safe to remove yet" }
     # Get-CtgAppCredentialExpiry reads this app's own passwordCredentials/keyCredentials to warn before
     # the secret lapses. Degrades to a note, but nothing modelled it.
     @{ need = "warn before this app registration's own secret/certificate expires"; anyOf = @('Application.Read.All', 'Application.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All')
