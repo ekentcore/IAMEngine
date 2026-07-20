@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { buildSetupDeps } from "@/lib/secrets/setup-m365-deps";
 import { setupM365ForClient } from "@/lib/secrets/setup-m365-client";
 import { startM365SetupRun, latestM365SetupRun } from "@/lib/secrets/m365-setup-run";
+import { secretIsSet } from "@/lib/secrets/wiring";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +82,10 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
       where: { clientId_name: { clientId: client.id, name: "m365-admin" } },
       select: { externalId: true },
     });
-    externalId = sec?.externalId ?? null;
+    // Only surface a REAL Delinea id — never the "REPLACE_ME"/""/NOT_NEEDED placeholder (the seed default
+    // on most clients). A placeholder here would show as the "credential to use", which it isn't; the
+    // write should have replaced it with a real id, so null (→ "couldn't read back") is the honest signal.
+    externalId = secretIsSet(sec?.externalId) ? sec!.externalId : null;
   }
   return NextResponse.json({
     run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },

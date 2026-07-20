@@ -24,6 +24,7 @@ import type { PrismaClient } from "@prisma/client";
 import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, type Fetcher } from "./delinea";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
+import { secretIsSet } from "./wiring";
 import { makeClientRepository } from "@/lib/clients/repository";
 import type { ProvisionResult } from "./provision-m365-app";
 
@@ -187,7 +188,10 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
       where: { clientId_name: { clientId: client.id, name: secretName } },
       select: { externalId: true },
     });
-    if (!existingRow?.externalId) {
+    // A "REPLACE_ME"/""/NOT_NEEDED placeholder is NOT a real vaulted id — ~106/137 clients carry one as
+    // the seed default. Treat it as nothing-vaulted (stranded), so the recovery path re-issues and vaults
+    // a REAL secret rather than reporting a fake "done" that surfaces the placeholder as the credential.
+    if (!secretIsSet(existingRow?.externalId)) {
       return {
         ok: false,
         wroteCreds: false,
@@ -197,7 +201,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
         hint: "re-run setup to force a credential rotation (the app registration's existing secret/cert cannot be re-read — only a fresh issue can be vaulted)",
       };
     }
-    return { ok: true, wroteCreds: false, externalId: existingRow.externalId };
+    return { ok: true, wroteCreds: false, externalId: existingRow!.externalId };
   }
 
   // From here: provision.credState === "issued" — a new secret and/or cert was minted this run and
@@ -266,10 +270,14 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
   let created: boolean;
   // Seed with the propagation warning (if any) — a field-write warning, if any, is appended below.
   let warnings: string[] = propagationWarning ? [propagationWarning] : [];
-  if (existingRow?.externalId) {
+  // Only a REAL Delinea id counts as "already vaulted". A "REPLACE_ME"/""/NOT_NEEDED placeholder (the
+  // seed default on ~106/137 clients) is NOT a secret to update in place — PUTting fields to secret id
+  // "REPLACE_ME" 400s ("couldn't write it"). Fall through to CREATE, which mints a real secret and wires
+  // its real id over the placeholder.
+  if (secretIsSet(existingRow?.externalId)) {
     // 5a. Already vaulted — update the known secret in place. No name search, no create call, so this
     // can never mint a duplicate regardless of what the secret happens to be named in Secret Server.
-    externalId = existingRow.externalId;
+    externalId = existingRow!.externalId;
     created = false;
     const updated = await updateSecretFields(cfg, externalId, fields, token, fetcher);
     const verdict = judgeFieldWrite(updated, buckets);

@@ -88,7 +88,7 @@ function fetcher(opts: {
     if (url.includes("/fields/") && init?.method === "PUT") {
       putUrls.push(url);
       opts.capturedPutUrls?.(putUrls);
-      const slug = decodeURIComponent(url.split("/fields/")[1]);
+      const slug = decodeURIComponent(url.split("/fields/")[1].split("?")[0]); // strip the ?autoComment= query
       if (opts.updateFails || opts.putFailsForSlugs?.includes(slug)) {
         return { ok: false, status: opts.updateFails ? 500 : 400, json: async () => ({ message: opts.updateFails ? "boom" : "field not supported by this template" }) } as FetchResponse;
       }
@@ -351,6 +351,39 @@ test("Finding 1: credState kept-valid but NOTHING vaulted -> stranded, ok:false,
   assert.equal(r.stranded, true);
   assert.match(r.error ?? "", /valid credential but none is vaulted|unrecoverable/);
   assert.equal(probed, false, "a stranded kept-valid credential is never probed — there is nothing to probe");
+  assert.equal(calls.upsert.length, 0);
+});
+
+// PLACEHOLDER externalId: ~106/137 clients carry an m365-admin Secret row whose externalId is the
+// "REPLACE_ME" placeholder (or "") — the profile-generator/seed default for an un-wired secret. That is
+// NOT a real Delinea id, so it must be treated as "nothing vaulted", not a live secret to update or
+// report. secretIsSet() already draws that line for the rest of the app; the write must honour it too.
+test("issued credState + existing row is a REPLACE_ME placeholder -> CREATE a real secret (not PUT to 'REPLACE_ME'), wire the real id", async () => {
+  const { db, calls } = fakeDb({ existingSecret: { externalId: "REPLACE_ME" } });
+  let createCalled = false;
+  let putUrls: string[] = [];
+  const f = fetcher({ createCalled: () => (createCalled = true), capturedPutUrls: (u) => (putUrls = u), createId: "55555" });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.created, true, "a placeholder externalId is not a real secret — must CREATE, not update in place");
+  assert.equal(r.externalId, "55555", "the real created id is wired, replacing the placeholder");
+  assert.equal(createCalled, true, "createSecret must run");
+  assert.ok(!putUrls.some((u) => u.includes("/secrets/REPLACE_ME/")), "must never PUT fields to secret id 'REPLACE_ME'");
+  assert.equal(calls.upsert.length, 1);
+});
+
+test("kept-valid credState + existing row is a REPLACE_ME placeholder -> stranded, ok:false (not a fake 'done' showing REPLACE_ME)", async () => {
+  const { db, calls } = fakeDb({ existingSecret: { externalId: "REPLACE_ME" } });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: fetcher(), env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.stranded, true, "a placeholder id means nothing real is vaulted — stranded, so recovery re-issues");
+  assert.notEqual(r.externalId, "REPLACE_ME", "must never surface the placeholder as the vaulted id");
   assert.equal(calls.upsert.length, 0);
 });
 
