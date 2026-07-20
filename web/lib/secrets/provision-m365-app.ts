@@ -376,30 +376,29 @@ export async function provisionM365App(
         (list ?? []).some((c) => !c.endDateTime || Date.parse(c.endDateTime) > now);
       const secretValid = hasValid(creds.body.passwordCredentials);
       const certValid = hasValid(creds.body.keyCredentials);
+      // Secret + cert are vaulted as ONE UNIT. Each credential's material (a client secret's value, a
+      // cert's PFX + password) is returned by Graph exactly once at issuance and is UNRECOVERABLE
+      // afterwards — so it can only be vaulted the same run it's minted. If we re-issue only ONE, the
+      // vault gets a fresh half plus an un-vaultable "kept" half → an INCOMPLETE credential (and the
+      // runner needs BOTH: the secret for Graph, the cert for Exchange app-only auth). So whenever
+      // EITHER is missing/expired (or forceReissue), rotate BOTH, so credState "issued" always carries
+      // a complete, vaultable secret+cert set. This is the bug behind "56977 has the secret but no
+      // certificatebase64/certificatepassword": a run that re-issued the secret but kept a valid cert.
+      const reissue = !secretValid || !certValid || forceReissue;
       let issuedAny = false;
-      if (!secretValid || forceReissue) {
-        if (forceReissue && secretValid) {
-          actions.push("forcing a fresh client secret despite an existing valid one (recovering a stranded credential)");
+      if (reissue) {
+        if (forceReissue && secretValid && certValid) {
+          actions.push("forcing a fresh secret + certificate despite existing valid ones (recovering a stranded credential — the kept material is unrecoverable)");
+        } else if (secretValid !== certValid) {
+          actions.push(`re-issuing BOTH secret and certificate as a unit (only the ${secretValid ? "certificate" : "secret"} was missing/expired, but a kept credential's material can't be re-vaulted)`);
         }
         const ap = await issueClientSecret();
         if (!ap.ok) return { ok: false, error: ap.error, actions };
-        issuedAny = true;
-      } else {
-        actions.push("kept existing client secret (valid)");
-      }
-      // forceReissue rotates the CERT too, not just the secret: it's the stranded-recovery path where
-      // nothing real is vaulted, so the existing cert's PFX + password are just as unrecoverable as the
-      // secret. Keeping the cert would vault an INCOMPLETE credential (a fresh secret with no cert
-      // base64/password) — and the runner needs the cert for Exchange app-only auth. Rotate both.
-      if (!certValid || forceReissue) {
-        if (forceReissue && certValid) {
-          actions.push("forcing a fresh certificate despite an existing valid one (recovering a stranded credential — the kept cert's PFX/password are unrecoverable)");
-        }
         const cp = await issueCert();
         if (!cp.ok) return { ok: false, error: cp.error, actions };
         issuedAny = true;
       } else {
-        actions.push("kept existing certificate (valid)");
+        actions.push("kept existing client secret + certificate (both valid)");
       }
       credState = issuedAny ? "issued" : "kept-valid";
     }

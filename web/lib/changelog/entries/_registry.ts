@@ -89,6 +89,7 @@ export { entry as m365PasswordResetPermission } from "./m365-password-reset-perm
 export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-flaky-and-optional-caps";
 export { entry as m365ProvisionExchangeAppOnly } from "./m365-provision-exchange-app-only";
 export { entry as m365SetupAutorecoverRunlog } from "./m365-setup-autorecover-runlog";
+export { entry as m365SetupCertUnit } from "./m365-setup-cert-unit";
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";
 export { entry as m365SetupPlaceholderSecretId } from "./m365-setup-placeholder-secret-id";
 export { entry as m365SetupProgressModal } from "./m365-setup-progress-modal";

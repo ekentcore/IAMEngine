@@ -323,8 +323,28 @@ test("provisionM365App: reconcile-keep — a non-expired secret + cert are kept,
   assert.ok(!r.posts.some((p) => p.path === "/addPassword"), "addPassword must NOT be called when a valid secret already exists");
   assert.ok(!r.patches.some((p) => "keyCredentials" in p.body), "no keyCredentials PATCH must fire when a valid cert already exists");
 
-  assert.ok(result.result.actions.some((a) => a === "kept existing client secret (valid)"));
-  assert.ok(result.result.actions.some((a) => a === "kept existing certificate (valid)"));
+  assert.ok(result.result.actions.some((a) => a === "kept existing client secret + certificate (both valid)"));
+});
+
+// The core1787 bug: an existing app whose SECRET is missing/expired but whose CERT is still valid. The
+// old code re-issued only the secret and KEPT the cert, so certBase64/certPassword stayed undefined and
+// never reached Delinea (56977 got the secret, no cert). Secret+cert are a unit: issue BOTH.
+test("provisionM365App: secret missing but cert valid -> re-issues BOTH (cert material must be vaultable)", async () => {
+  const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
+  const r = router({
+    // No password credentials (secret missing/expired), but a still-valid cert.
+    credsSelect: () => OK({ passwordCredentials: [], keyCredentials: [{ endDateTime: future }] }),
+  });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1" }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+
+  assert.equal(result.result.credState, "issued");
+  assert.equal(result.result.clientSecret, "the-secret", "a fresh secret is issued");
+  assert.ok(result.result.certBase64, "the cert is ALSO re-issued so its base64 can be vaulted");
+  assert.ok(result.result.certPassword, "the cert password is produced to vault");
+  assert.ok(r.posts.some((p) => p.path === "/addPassword"), "addPassword fired");
+  assert.ok(r.patches.some((p) => "keyCredentials" in p.body), "keyCredentials PATCH fired — cert rotated as a unit");
 });
 
 // ── forceReissue (stranded-credential recovery, see setup-m365-client.ts) ──────────────────────────
