@@ -153,8 +153,15 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
     const existing = await findSecretIdByName(cfg, input.folderId, input.name, token, fetcher);
     if (existing) return { ok: true, id: existing };
 
-    // 1. Pull the template stub to learn the exact item shape (field ids/slugs) for this template.
-    const stubRes = await fetcher(`${cfg.baseUrl}/api/v1/secrets/stub?filterSecretTemplateId=${encodeURIComponent(String(input.templateId))}`, {
+    // folderId is numeric in Secret Server; coerce when it's a numeric string.
+    const folderId = Number.isFinite(Number(input.folderId)) ? Number(input.folderId) : input.folderId;
+
+    // 1. Pull the template stub — both to learn the exact item shape (field ids/slugs) AND to obtain
+    //    the full secret model Secret Server expects handed back on create. The stub call needs BOTH
+    //    the template id and the target folder: Secret Server (Cloud in particular) 400s with "Folder
+    //    is required" / "The request is invalid." on the older `filterSecretTemplateId` form or when
+    //    the folder is omitted.
+    const stubRes = await fetcher(`${cfg.baseUrl}/api/v1/secrets/stub?secretTemplateId=${encodeURIComponent(String(input.templateId))}&folderId=${encodeURIComponent(String(folderId))}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (stubRes.status === 401 || stubRes.status === 403) return { ok: false, error: "access denied — the write account needs Create + template access in Delinea" };
@@ -162,7 +169,7 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
       const d = (await stubRes.json().catch(() => null)) as { message?: string } | null;
       return { ok: false, error: `Delinea stub ${stubRes.status}${d?.message ? ` — ${d.message}` : ""}` };
     }
-    const stub = (await stubRes.json()) as { items?: StubItem[] };
+    const stub = (await stubRes.json()) as { items?: StubItem[]; [k: string]: unknown };
     const { items, unmatched } = shapeStubItems(stub.items ?? [], input.fields);
     // Refuse rather than POST a secret whose values silently dropped because the template's field slugs
     // differ from ours — the operator needs to set a fieldMap, not end up with a blank credential.
@@ -170,9 +177,10 @@ export async function createSecret(cfg: DelineaConfig, input: CreateSecretInput,
       return { ok: false, error: `template ${input.templateId} has no field matching: ${unmatched.join(", ")} — set a fieldMap in DELINEA_TEMPLATE_MAP so these land in the right Secret Server fields` };
     }
 
-    // 2. POST the populated stub. folderId is numeric in Secret Server; coerce when it's a numeric string.
-    const folderId = Number.isFinite(Number(input.folderId)) ? Number(input.folderId) : input.folderId;
-    const body = { name: input.name, folderId, secretTemplateId: input.templateId, items };
+    // 2. POST the FULL stub model back, with our name/folder/filled items overlaid. Secret Server
+    //    requires the complete model it handed us (siteId, active, policy flags, …); a hand-built
+    //    { name, folderId, items } is rejected as "The request is invalid." on Secret Server Cloud.
+    const body = { ...stub, name: input.name, folderId, secretTemplateId: input.templateId, items };
     const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -212,9 +220,13 @@ export async function updateSecretFields(
   fetcher: Fetcher = defaultFetcher
 ): Promise<{ ok: boolean; results: { slug: string; ok: boolean; error?: string }[]; error?: string }> {
   const results: { slug: string; ok: boolean; error?: string }[] = [];
+  // A field PUT reads the secret to apply the edit, so a "require comment on view" policy rejects it
+  // with 400 "requires a comment when viewed" unless we supply one — same policy resolveSecretFields
+  // satisfies on the read path. Harmless for secrets without the policy.
+  const comment = encodeURIComponent("iam-engine automated provisioning");
   for (const [slug, value] of Object.entries(fields)) {
     try {
-      const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}/fields/${encodeURIComponent(slug)}`, {
+      const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(externalId)}/fields/${encodeURIComponent(slug)}?autoComment=${comment}`, {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ value }),

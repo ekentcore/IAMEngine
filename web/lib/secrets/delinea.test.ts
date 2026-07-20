@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -320,4 +320,54 @@ test("getOneTimePasswordCode: never returns the expired code when the freshness 
   assert.equal(r.ok, false);
   assert.equal(r.code, undefined);
   assert.match(r.error ?? "", /about to expire.*refreshing/i);
+});
+
+
+// --- Regression: the exact Secret Server Cloud contract createSecret/updateSecretFields must speak.
+// The older code called the stub with `filterSecretTemplateId` and no folder (400 "Folder is
+// required"), and POSTed a hand-built {name,folderId,items} (400 "The request is invalid."); the field
+// PUT omitted the view-comment a "require comment" policy demands (400 "requires a comment when
+// viewed"). These lock in the corrected calls so they can't regress against a mock.
+
+test("createSecret requests the stub with secretTemplateId + folderId and echoes the full stub model back", async () => {
+  let stubUrl = "";
+  let posted: Record<string, unknown> | undefined;
+  const fetcher: Fetcher = async (url, init) => {
+    if (url.includes("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "tok" }) };
+    if (url.includes("/secrets/stub")) {
+      stubUrl = url;
+      // A realistic stub: the full secret MODEL, not just items (siteId/active must survive to the POST).
+      return { ok: true, status: 200, json: async () => ({ id: null, siteId: 1, active: true, secretTemplateName: "Entra Azure AD Account", items: [{ fieldId: 1, slug: "username", itemValue: "" }, { fieldId: 2, slug: "password", itemValue: "" }] }) } as FetchResponse;
+    }
+    if (url.includes("filter.folderId")) return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse;
+    if (init?.body) posted = JSON.parse(init.body) as Record<string, unknown>;
+    return { ok: true, status: 200, json: async () => ({ id: 4242 }) } as FetchResponse;
+  };
+  const res = await createSecret(cfg, { name: "Acme — m365-admin", folderId: "142", templateId: 6045, fields: { username: "svc", password: "pw" } }, "tok", fetcher);
+  assert.equal(res.ok, true);
+  // Stub call carries BOTH params in the Secret Server Cloud form, not the rejected filterSecretTemplateId.
+  assert.match(stubUrl, /secretTemplateId=6045/);
+  assert.match(stubUrl, /folderId=142/);
+  assert.ok(!stubUrl.includes("filterSecretTemplateId"), "must not use filterSecretTemplateId");
+  // The POST echoes the full model back — extra top-level fields (siteId/active) survive.
+  assert.equal(posted!.siteId, 1);
+  assert.equal(posted!.active, true);
+  assert.equal(posted!.name, "Acme — m365-admin");
+  assert.equal(posted!.folderId, 142);
+});
+
+test("updateSecretFields sends an autoComment on the field PUT (satisfies a require-comment policy)", async () => {
+  const urls: string[] = [];
+  const fetcher: Fetcher = async (url) => {
+    if (url.includes("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "tok" }) };
+    urls.push(url);
+    return { ok: true, status: 200, json: async () => ({}) } as FetchResponse;
+  };
+  const r = await updateSecretFields(cfg, "999", { username: "svc", tenantid: "contoso.com" }, "tok", fetcher);
+  assert.equal(r.ok, true);
+  assert.equal(urls.length, 2);
+  for (const u of urls) {
+    assert.match(u, /\/fields\//);
+    assert.match(u, /autoComment=/);
+  }
 });
