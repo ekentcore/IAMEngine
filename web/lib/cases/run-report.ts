@@ -80,6 +80,7 @@ export type RunReport = {
   client: { name: string; slug: string };
   caseStatus: string;
   verifiedAt: string | null; // when the auto-verify sweep completed (null until verified)
+  warningsDismissed?: { at: string; by: string | null } | null;
   verifying: boolean; // a validate-only sweep is in flight right now (persistent across step gaps)
   // Client credentials this case needs that AREN'T set up in Delinea yet (secret name -> the systems
   // that need it). Computed regardless of hold state, so an auto-imported case for an un-onboarded
@@ -543,6 +544,13 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     names,
     acceptedSystemKeys,
   });
+
+  report.warningsDismissed = c.warningsDismissedAt
+    ? {
+        at: c.warningsDismissedAt.toISOString(),
+        by: c.warningsDismissedBy,
+      }
+    : null;
 
   // "Ignore warning" — a step whose run-log fingerprint the operator resolved is ACCEPTED: it no
   // longer counts against the case (and the run log already hides it + re-runs inherit it).

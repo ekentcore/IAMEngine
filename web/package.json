@@ -18,7 +18,8 @@
     "generate:profiles": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' scripts/generate-profiles.ts",
     "test": "tsx --test \"lib/**/*.test.ts\"",
     "e2e": "playwright test",
-    "db:provision": "node scripts/provision-db.mjs"
+    "db:provision": "node scripts/provision-db.mjs",
+    "db:migrate:deploy": "prisma migrate deploy"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
