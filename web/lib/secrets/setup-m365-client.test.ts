@@ -55,6 +55,8 @@ test("happy path: chains device-code -> token -> provision -> write -> done", as
   assert.equal(result.stage, "done");
   assert.equal(result.appId, "app-guid-1");
   assert.equal(result.wroteCreds, true);
+  assert.equal(result.externalId, "ext-1"); // the Delinea secret id flows through -> audit + run log
+  assert.ok(result.actions.some((a) => a.includes("wrote new credentials to Delinea (secret ext-1)")));
   assert.equal(result.verified, true);
   assert.deepEqual(result.gaps, []);
   assert.equal(result.userCode, "ABCD-1234");

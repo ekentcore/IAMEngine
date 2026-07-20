@@ -328,7 +328,8 @@ test("credState kept-valid + already vaulted -> no-op, no Delinea calls at all",
     { client: CLIENT, provision: provision({ credState: "kept-valid" }) /* no clientSecret, no certBase64 */ },
     { db, fetch: f, env: ENV_CONFIGURED }
   );
-  assert.deepEqual(r, { ok: true, wroteCreds: false });
+  // Now surfaces the already-vaulted secret id so the audit/run log can name which credential is wired.
+  assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-already-vaulted" });
   assert.equal(probed, false);
   assert.equal(calls.upsert.length, 0);
 });

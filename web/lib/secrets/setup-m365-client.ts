@@ -83,6 +83,9 @@ export type SetupResult = {
   ok: boolean;
   stage: SetupStage;
   appId?: string;
+  // The Delinea secret id the credential was vaulted as / wired to — surfaced so the audit and run log
+  // show WHICH vault entry to test. A reference, never a secret value.
+  externalId?: string;
   wroteCreds?: boolean;
   verified?: boolean;
   gaps?: string[];
@@ -258,10 +261,11 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   }
   // A success return shares this shape regardless of whether it came from the normal path or the
   // stranded-credential recovery path below — factored out so the two returns can't drift apart.
-  const doneResult = (p: ProvisionResult, w: { wroteCreds: boolean }): SetupResult => ({
+  const doneResult = (p: ProvisionResult, w: { wroteCreds: boolean; externalId?: string }): SetupResult => ({
     ok: true,
     stage: "done",
     appId: p.appId,
+    externalId: w.externalId,
     wroteCreds: w.wroteCreds,
     verified: p.verified,
     gaps: p.gaps,
@@ -311,7 +315,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
         if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
         return { ok: false, stage: "write", error: recoverWrite.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
       }
-      actions.push(recoverWrite.wroteCreds ? "wrote the rotated credential to Delinea" : "no new credentials to write (kept existing, still valid)");
+      actions.push(recoverWrite.wroteCreds ? `wrote the rotated credential to Delinea (secret ${recoverWrite.externalId ?? "?"})` : "no new credentials to write (kept existing, still valid)");
       if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
       return doneResult(recoverProv.result, recoverWrite);
     }
@@ -330,7 +334,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // already vaulted for this client (wroteCreds:false) — writeProvisionedM365App enforces both; there is
   // no other ok:true path (see Finding 1/3). So this message is never printed on an unverified/stranded
   // credential.
-  actions.push(write.wroteCreds ? "wrote new credentials to Delinea" : "no new credentials to write (kept existing, still valid)");
+  actions.push(write.wroteCreds ? `wrote new credentials to Delinea (secret ${write.externalId ?? "?"})` : "no new credentials to write (kept existing, still valid)");
   if (write.warnings) for (const w of write.warnings) actions.push(w);
 
   return doneResult(prov.result, write);

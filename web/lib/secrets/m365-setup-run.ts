@@ -146,7 +146,7 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
           // itself never throws, but the extra .catch is defense-in-depth against a rejected promise.
           void recordAudit("m365.setup.client", {
             clientId: t.id,
-            detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, warnings: res.browserWarnings },
+            detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, externalId: res.externalId, warnings: res.browserWarnings },
           }).catch(() => {});
         } catch (e) {
           if (row) {

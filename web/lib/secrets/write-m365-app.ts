@@ -197,7 +197,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
         hint: "re-run setup to force a credential rotation (the app registration's existing secret/cert cannot be re-read — only a fresh issue can be vaulted)",
       };
     }
-    return { ok: true, wroteCreds: false };
+    return { ok: true, wroteCreds: false, externalId: existingRow.externalId };
   }
 
   // From here: provision.credState === "issued" — a new secret and/or cert was minted this run and
