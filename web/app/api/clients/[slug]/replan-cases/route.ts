@@ -7,6 +7,7 @@ import { auditActor } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { replanCase } from "@/lib/cases/replan-service";
+import { notM365AutoSetupCase } from "@/lib/cases/exclude-m365-autosetup";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,8 @@ export async function POST(_req: Request, { params }: { params: { id?: string; s
       status: { notIn: ["completed", "failed"] },
       // Exclude the synthetic onboard case that hosts a lone entra-devicecode browser job
       // (dispatch-device-code-job.ts) — re-planning it would mangle its single-purpose job.
-      NOT: { payload: { path: ["m365AutoSetup"], equals: true } },
+      // See notM365AutoSetupCase for why a bare NOT would drop every real case here.
+      ...notM365AutoSetupCase,
     },
     select: { id: true },
   });

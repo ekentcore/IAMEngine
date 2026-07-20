@@ -15,6 +15,7 @@ export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
+export { entry as casesEmptyM365autosetupJsonFilter } from "./cases-empty-m365autosetup-json-filter";
 export { entry as casesV2AccessRules } from "./cases-v2-access-rules";
 export { entry as changeActionGroundwork } from "./change-action-groundwork";
 export { entry as changeAdLane } from "./change-ad-lane";

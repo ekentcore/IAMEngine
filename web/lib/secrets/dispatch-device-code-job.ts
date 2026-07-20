@@ -1,5 +1,6 @@
 import type { PrismaClient, Prisma } from "@prisma/client";
 import { ENTRA_DEVICECODE_KEY } from "@/lib/jobs/adhoc";
+import { M365_AUTOSETUP_MARKER } from "@/lib/cases/exclude-m365-autosetup";
 
 // The GA login the runner's device-code browser flow signs in WITH (interactive UPN+password, OTP on
 // the secret). Must match field-requirements.ts "m365-global-admin".
@@ -23,7 +24,7 @@ export async function dispatchDeviceCodeJob(
       action: "onboard",
       createdSource: "api",
       subject: "M365 automated setup (device-code sign-in)",
-      payload: { m365AutoSetup: true } as Prisma.InputJsonValue,
+      payload: { [M365_AUTOSETUP_MARKER]: true } as Prisma.InputJsonValue,
       // A per-run GA login reference from the modal: brokerCredential prefers this case override over
       // any stored client secret, so the runner's device-code job can sign in WITHOUT anything vaulted
       // on the client. Omitted entirely for the fleet path, which relies on the stored secret instead.

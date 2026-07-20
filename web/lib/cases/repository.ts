@@ -14,6 +14,7 @@ import { ALL_OPTIONAL_SECRET_NAMES } from "../secrets/optional-secrets";
 import { secretIsSet } from "../secrets/wiring";
 import { jobWarningLines, ADHOC_STEP_LABELS } from "./run-report";
 import { iamCaseNumber, needsIamNumber } from "./case-number";
+import { notM365AutoSetupCase } from "./exclude-m365-autosetup";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
@@ -511,8 +512,8 @@ export function makeCaseRepository(db: PrismaClient) {
           clientId: clientIdWhere(scope), // trashed cases live in the Trash section
           // Exclude the synthetic onboard case that hosts a lone entra-devicecode browser job
           // (dispatch-device-code-job.ts) — it's not a real intake case and would just clutter the
-          // queue. Marker-only; a case whose payload lacks the key still matches (path null → not equal).
-          NOT: { payload: { path: ["m365AutoSetup"], equals: true } },
+          // queue. See notM365AutoSetupCase for why a bare NOT drops every normal case.
+          ...notM365AutoSetupCase,
         },
         orderBy: { createdAt: "desc" },
         take: limit,
