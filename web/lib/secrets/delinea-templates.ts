@@ -43,7 +43,7 @@ function parseJson<T>(raw: string | undefined): T | null {
 
 // DELINEA_TEMPLATE_MAP — JSON keyed by secretName. Each entry is either a bare template id
 // (number/string) or { templateId, fieldMap? } to also override the label→slug mapping.
-type TemplateMapEntry = number | string | { templateId?: number | string; fieldMap?: Record<string, string> };
+type TemplateMapEntry = number | string | { templateId?: number | string; fieldMap?: Record<string, string>; templateName?: string };
 // Memoized on the raw env value — delineaWriteSummary calls templateFor() once per client secret, so
 // re-parsing the same JSON each time is wasted work on every client-detail/setup render.
 let _tmplCache: { raw: string | undefined; parsed: Record<string, TemplateMapEntry> } | null = null;
@@ -60,6 +60,33 @@ const asId = (v: unknown): number | null => {
   if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
   return null;
 };
+
+// The human NAME of the Secret Server template a secret is created against. The app only knows the
+// template *id* (a per-instance number from env) — this map supplies the display name so a manual
+// "create it by hand in Delinea" guide can tell the operator which template to pick. Names mirror the
+// stock templates referenced in field-requirements.ts. Overridable per secret via a `templateName`
+// field on a DELINEA_TEMPLATE_MAP entry. Unknown/absent → null (the caller falls back to generic copy).
+const DEFAULT_TEMPLATE_NAMES: Record<string, string> = {
+  "m365-admin": "Entra Azure AD Account",
+  exchange: "Entra Azure AD Account",
+  "exchange-onprem": "Active Directory Account",
+  "ad-dc": "Active Directory Account",
+  adobe: "Automation - API",
+  mimecast: "Automation - API",
+  spanning: "Automation - API",
+  "spanning-portal": "Entra Azure AD Account",
+  "m365-global-admin": "Entra Azure AD Account",
+  proofpoint: "Automation - API",
+  slack: "Automation - API",
+};
+
+export function defaultTemplateName(secretName: string, env: Env = process.env): string | null {
+  const entry = parseTemplateMap(env)[secretName];
+  if (typeof entry === "object" && entry !== null && typeof entry.templateName === "string" && entry.templateName.trim()) {
+    return entry.templateName.trim();
+  }
+  return DEFAULT_TEMPLATE_NAMES[secretName] ?? null;
+}
 
 // The default field label → slug map for a secret, seeded from its field requirements (first synonym
 // of each requirement, slugified). Empty for a secret with no known requirements.
@@ -136,12 +163,19 @@ export function delineaWriteConfigured(opts: {
 
 // Server-side summary for the UI: the instance write account, the client's resolved folder, and which
 // of the client's secret names have a template mapped. Shaped to pass straight down as a prop.
-export type DelineaWriteSummary = { hasAccount: boolean; folderId: string | null; templates: Record<string, boolean> };
+export type DelineaWriteSummary = {
+  hasAccount: boolean;
+  folderId: string | null;
+  templates: Record<string, boolean>;
+  // The human template name per secret (for the manual "create it by hand" guide) — null when unknown.
+  templateNames: Record<string, string | null>;
+};
 export function delineaWriteSummary(opts: { slug: string; clientFolderId?: string | null; secretNames: string[]; env?: Env }): DelineaWriteSummary {
   const env = opts.env ?? process.env;
   return {
     hasAccount: writeAccountConfigured(delineaWriteConfigFromEnv(env)),
     folderId: folderIdFor(opts.slug, opts.clientFolderId, env),
     templates: Object.fromEntries(opts.secretNames.map((n) => [n, templateFor(n, env) != null])),
+    templateNames: Object.fromEntries(opts.secretNames.map((n) => [n, defaultTemplateName(n, env)])),
   };
 }

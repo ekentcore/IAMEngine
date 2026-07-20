@@ -230,7 +230,7 @@ export function SecretsPanel({
             const notNeeded = r.externalId === NOT_NEEDED;
             // "Create in Delinea" capability for this row: instance write account + a template for this
             // secret. Folder can be collected inline, so it doesn't gate the button.
-            const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[r.name] ?? false, folderId: write.folderId } : null;
+            const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[r.name] ?? false, folderId: write.folderId, templateName: write.templateNames[r.name] ?? null } : null;
             const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
             const disabledReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
             return (

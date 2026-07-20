@@ -52,7 +52,10 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   // Gate — refuse gracefully (409) with exactly what's missing.
   const cap = delineaWriteConfigured({ slug: params.slug, secretName: name, clientFolderId: folderId });
   if (!cap.ok) {
-    return NextResponse.json({ error: `Can't create this secret in Delinea — configure ${cap.missing.join("; ")}.`, missing: cap.missing }, { status: 409 });
+    // manualFallback: the app can't write it here, so the UI offers a "create it by hand in Delinea"
+    // modal instead of a dead-end error. (422 field-shape / blocking-probe failures below do NOT set
+    // this — those mean fix the form or the credential, not go manual.)
+    return NextResponse.json({ error: `Can't create this secret in Delinea — configure ${cap.missing.join("; ")}.`, missing: cap.missing, manualFallback: true }, { status: 409 });
   }
 
   // Validate required fields are present — the SAME shared check the read-side test uses, so the
@@ -103,12 +106,12 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   try {
     token = await getDelineaToken(cfg);
   } catch (e) {
-    return NextResponse.json({ error: `Delinea write auth failed — ${(e as Error).message}` }, { status: 502 });
+    return NextResponse.json({ error: `Delinea write auth failed — ${(e as Error).message}`, manualFallback: true }, { status: 502 });
   }
   const ssName = typeof body.label === "string" && body.label.trim() ? body.label.trim() : `${client.name} — ${name}`;
   const result = await createSecret(cfg, { name: ssName, folderId: folderId!, templateId: tmpl.templateId, fields }, token);
   if (!result.ok || !result.id) {
-    return NextResponse.json({ error: result.error ?? "Delinea create failed" }, { status: 502 });
+    return NextResponse.json({ error: result.error ?? "Delinea create failed", manualFallback: true }, { status: 502 });
   }
 
   // Remember the folder we ACTUALLY created in (folderId) — but only when the client had none stored,

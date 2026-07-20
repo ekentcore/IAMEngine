@@ -420,7 +420,7 @@ function StepCard({
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
   // "Create in Delinea" capability: instance write account + a template for this secret (folder is
   // collected inline). Absent write summary → not available.
-  const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId } : null;
+  const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId, templateName: write.templateNames[step.secretName] ?? null } : null;
   const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
   const createReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
   // Lead with entering the credentials: a fresh, not-yet-wired step opens straight into the create form

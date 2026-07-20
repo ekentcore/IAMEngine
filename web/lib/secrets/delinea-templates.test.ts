@@ -10,6 +10,7 @@ import {
   writeAccountConfigured,
   delineaWriteConfigured,
   delineaWriteSummary,
+  defaultTemplateName,
 } from "./delinea-templates";
 
 test("defaultSlug lowercases and strips non-alnum", () => {
@@ -125,4 +126,27 @@ test("delineaWriteSummary shapes the per-secret UI prop", () => {
   assert.equal(s.folderId, "142");
   assert.equal(s.templates["m365-admin"], true);
   assert.equal(s.templates["spanning"], false); // no template configured for spanning
+  // The manual-fallback guide needs the human template name per secret, independent of whether a
+  // template ID is configured for the write path.
+  assert.equal(s.templateNames["m365-admin"], "Entra Azure AD Account");
+  assert.equal(s.templateNames["spanning"], "Automation - API");
+});
+
+test("defaultTemplateName maps the M365 api-key secret to the Entra Azure AD Account template", () => {
+  assert.equal(defaultTemplateName("m365-admin", {}), "Entra Azure AD Account");
+});
+
+test("defaultTemplateName returns the documented template name for known secrets", () => {
+  assert.equal(defaultTemplateName("ad-dc", {}), "Active Directory Account");
+  assert.equal(defaultTemplateName("exchange-onprem", {}), "Active Directory Account");
+  assert.equal(defaultTemplateName("adobe", {}), "Automation - API");
+});
+
+test("defaultTemplateName is null for an unknown secret", () => {
+  assert.equal(defaultTemplateName("totally-unknown", {}), null);
+});
+
+test("defaultTemplateName honors a DELINEA_TEMPLATE_MAP templateName override", () => {
+  const env = { DELINEA_TEMPLATE_MAP: JSON.stringify({ "m365-admin": { templateId: 6001, templateName: "Custom Azure App" } }) };
+  assert.equal(defaultTemplateName("m365-admin", env), "Custom Azure App");
 });

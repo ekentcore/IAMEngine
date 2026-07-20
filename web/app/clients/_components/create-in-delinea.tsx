@@ -7,9 +7,10 @@
 // requests; nothing is echoed back or persisted here.
 import { useState } from "react";
 import type { FieldReq } from "@/lib/secrets/field-requirements";
+import { ManualDelineaModal } from "./manual-delinea-modal";
 
 // Heuristic: which fields render as password inputs (so a shoulder-surfer can't read the value).
-const isSecretish = (label: string) => /pass|secret|token|key|certificate|thumbprint/i.test(label);
+export const isSecretish = (label: string) => /pass|secret|token|key|certificate|thumbprint/i.test(label);
 
 // The verdict shape returned by POST /secrets/probe (mirrors ValueProbe in lib/secrets/value-probe.ts).
 type ProbeResult = { probeable: boolean; blocking: boolean; ok?: boolean; error?: string; hint?: string; label?: string; kind?: "live" | "agent" };
@@ -18,6 +19,7 @@ export type CreateCapability = {
   hasAccount: boolean; // instance-level write account present
   hasTemplate: boolean; // a template id is mapped for this secret
   folderId: string | null; // client's resolved folder id, or null (→ collect inline)
+  templateName: string | null; // the Delinea template's human name (for the manual fallback guide)
 };
 
 export function CreateInDelineaForm({
@@ -40,6 +42,8 @@ export function CreateInDelineaForm({
   const [phase, setPhase] = useState<"idle" | "testing" | "creating">("idle");
   const [probe, setProbe] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // When the app can't write to Delinea itself, we pop a "do it by hand" modal instead of dead-ending.
+  const [manual, setManual] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
   const needsFolder = !capability.folderId;
   const busy = phase !== "idle";
 
@@ -75,6 +79,12 @@ export function CreateInDelineaForm({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // The app couldn't write it (no write config, or a Delinea auth/create error) → offer the
+        // manual "create it in Delinea by hand" path instead of a dead-end error.
+        if (data.manualFallback) {
+          setManual({ open: true, reason: data.error ?? null });
+          return;
+        }
         // The create route re-checks a blocking probe server-side; surface its hint too.
         setError([data.error, data.hint].filter(Boolean).join(" — ") || res.statusText);
         return;
@@ -174,6 +184,19 @@ export function CreateInDelineaForm({
         <button onClick={onCancel} disabled={busy}>Cancel</button>
         {error && <span className="note danger" style={{ flexBasis: "100%" }}>{error}</span>}
       </div>
+
+      <ManualDelineaModal
+        open={manual.open}
+        onClose={() => setManual({ open: false, reason: null })}
+        slug={slug}
+        secretName={secretName}
+        templateName={capability.templateName}
+        folderId={capability.folderId}
+        fields={fields}
+        values={values}
+        reason={manual.reason}
+        onWired={(id) => { setManual({ open: false, reason: null }); onCreated(id); }}
+      />
     </div>
   );
 }
