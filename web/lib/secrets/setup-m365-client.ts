@@ -54,6 +54,7 @@ export type SetupDeps = {
     tenantId: string;
     caps?: "required" | "required+optional";
     issueCreds?: boolean;
+    forceReissue?: boolean;
   }) => Promise<ProvisionOutcome>;
   writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string }) => Promise<WriteResult>;
   // db.secret.findUnique({ where: { clientId_name: { clientId, name: "m365-global-admin" } } }) !== null
@@ -255,6 +256,20 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
     for (const w of provisionWarnings) actions.push(w);
     return { ok: false, stage: "error", error: writeR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
   }
+  // A success return shares this shape regardless of whether it came from the normal path or the
+  // stranded-credential recovery path below — factored out so the two returns can't drift apart.
+  const doneResult = (p: ProvisionResult, w: { wroteCreds: boolean }): SetupResult => ({
+    ok: true,
+    stage: "done",
+    appId: p.appId,
+    wroteCreds: w.wroteCreds,
+    verified: p.verified,
+    gaps: p.gaps,
+    userCode: dc.userCode,
+    verificationUri: dc.verificationUri,
+    actions,
+  });
+
   const write = writeR.value;
   if (!write.ok) {
     actions.push(`Delinea write failed: ${write.error}`);
@@ -262,6 +277,45 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
     // couldn't be granted) so an operator isn't left staring at just the write error.
     for (const w of provisionWarnings) actions.push(w);
     if (write.warnings) for (const w of write.warnings) actions.push(w);
+
+    if (write.stranded) {
+      // 7. Auto-recover: the app registration already carries a still-valid secret (credState
+      // "kept-valid") but nothing is vaulted for it — that prior secret value is unrecoverable, so the
+      // only fix is to rotate a fresh one and vault THAT. Bounded to exactly ONE recovery attempt: if
+      // it fails too, fall through to a normal failure rather than looping.
+      actions.push("the app has a credential that was never vaulted — rotating a fresh secret");
+      const recoverProvR = await callDep("provisionM365App", () =>
+        deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, forceReissue: true })
+      );
+      if (!recoverProvR.ok) {
+        actions.push(`recovery re-provisioning errored: ${recoverProvR.error}`);
+        return { ok: false, stage: "error", error: recoverProvR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
+      }
+      const recoverProv = recoverProvR.value;
+      if (!recoverProv.ok) {
+        actions.push(`recovery re-provisioning failed: ${recoverProv.error}`);
+        return { ok: false, stage: "provision", error: recoverProv.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
+      }
+      actions.push(`app registration re-provisioned with a freshly issued credential (appId ${recoverProv.result.appId})`);
+
+      const recoverWriteR = await callDep("writeProvisionedM365App", () =>
+        deps.writeProvisionedM365App({ client, provision: recoverProv.result })
+      );
+      if (!recoverWriteR.ok) {
+        actions.push(`writing the rotated credential to Delinea errored: ${recoverWriteR.error}`);
+        return { ok: false, stage: "error", error: recoverWriteR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
+      }
+      const recoverWrite = recoverWriteR.value;
+      if (!recoverWrite.ok) {
+        actions.push(`Delinea write failed after recovery: ${recoverWrite.error}`);
+        if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
+        return { ok: false, stage: "write", error: recoverWrite.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
+      }
+      actions.push(recoverWrite.wroteCreds ? "wrote the rotated credential to Delinea" : "no new credentials to write (kept existing, still valid)");
+      if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
+      return doneResult(recoverProv.result, recoverWrite);
+    }
+
     return {
       ok: false,
       stage: "write",
@@ -279,15 +333,5 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   actions.push(write.wroteCreds ? "wrote new credentials to Delinea" : "no new credentials to write (kept existing, still valid)");
   if (write.warnings) for (const w of write.warnings) actions.push(w);
 
-  return {
-    ok: true,
-    stage: "done",
-    appId: prov.result.appId,
-    wroteCreds: write.wroteCreds,
-    verified: prov.result.verified,
-    gaps: prov.result.gaps,
-    userCode: dc.userCode,
-    verificationUri: dc.verificationUri,
-    actions,
-  };
+  return doneResult(prov.result, write);
 }

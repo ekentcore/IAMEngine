@@ -185,25 +185,76 @@ test("Finding 3: provision credState issued + write ok -> stage done, ok:true", 
   assert.equal(result.stage, "done");
 });
 
-// FINDING 3: the stranded case (write returns stranded:true) must surface as a failure, and provision's
-// own WARN lines get surfaced into setup's actions so an operator sees why.
-test("Finding 3: stranded write -> setup ok:false, provision WARN lines surfaced into actions", async () => {
+// FIX A: the stranded case (write returns stranded:true) now triggers ONE bounded auto-recovery
+// attempt — re-provision with forceReissue (mints a fresh secret) then re-write — before setup gives
+// up. This is the case that used to force an operator to "rotate manually".
+test("Fix A: stranded write triggers one recovery re-provision (forceReissue) + re-write, then succeeds", async () => {
+  const provisionCalls: { forceReissue?: boolean }[] = [];
+  let writeCalls = 0;
   const deps = happyDeps({
-    provisionM365App: async () => ({
-      ok: true,
-      result: provision({ credState: "kept-valid", actions: ["kept existing client secret (valid)", "WARN could not verify granted roles (read incomplete)"] }),
-    }),
-    writeProvisionedM365App: async () => ({
-      ok: false,
-      wroteCreds: false,
-      stranded: true,
-      error: "the app registration reports a valid credential but none is vaulted",
-    }),
+    provisionM365App: async (input) => {
+      provisionCalls.push({ forceReissue: input.forceReissue });
+      if (input.forceReissue) {
+        return { ok: true, result: provision({ credState: "issued", clientSecret: "fresh-secret", appId: "app-guid-1" }) };
+      }
+      return { ok: true, result: provision({ credState: "kept-valid" }) };
+    },
+    writeProvisionedM365App: async () => {
+      writeCalls++;
+      if (writeCalls === 1) {
+        return {
+          ok: false,
+          wroteCreds: false,
+          stranded: true,
+          error: "the app registration reports a valid credential but none is vaulted",
+        };
+      }
+      return { ok: true, wroteCreds: true, created: false, externalId: "ext-1" };
+    },
+  });
+  const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, "done");
+  assert.equal(result.appId, "app-guid-1");
+  assert.equal(result.wroteCreds, true);
+  assert.equal(writeCalls, 2, "expected exactly one recovery re-write on top of the initial write");
+  assert.equal(provisionCalls.length, 2, "expected exactly one recovery re-provision on top of the initial provision");
+  assert.equal(provisionCalls[0].forceReissue, undefined, "the initial provision must not force a reissue");
+  assert.equal(provisionCalls[1].forceReissue, true, "the recovery provision must force a fresh secret");
+  assert.ok(result.actions.some((a) => a.includes("rotating a fresh secret")), "expected the recovery step to be logged");
+  assert.ok(result.actions.some((a) => a.includes("wrote the rotated credential to Delinea")));
+});
+
+// FIX A: recovery is bounded to exactly ONE attempt — if the retry also fails, setup gives up and
+// surfaces the retry's own failure rather than looping. Provision's WARN lines from the FIRST attempt
+// still get surfaced into actions so an operator sees why.
+test("Fix A: a stranded write whose recovery ALSO fails is bounded to one retry, not a loop", async () => {
+  let provisionCalls = 0;
+  let writeCalls = 0;
+  const deps = happyDeps({
+    provisionM365App: async () => {
+      provisionCalls++;
+      return {
+        ok: true,
+        result: provision({ credState: "kept-valid", actions: ["kept existing client secret (valid)", "WARN could not verify granted roles (read incomplete)"] }),
+      };
+    },
+    writeProvisionedM365App: async () => {
+      writeCalls++;
+      return {
+        ok: false,
+        wroteCreds: false,
+        stranded: true,
+        error: "the app registration reports a valid credential but none is vaulted",
+      };
+    },
   });
   const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT }, deps);
   assert.equal(result.ok, false);
   assert.equal(result.stage, "write");
   assert.match(result.error ?? "", /none is vaulted/);
+  assert.equal(provisionCalls, 2, "exactly one recovery re-provision, not an unbounded retry loop");
+  assert.equal(writeCalls, 2, "exactly one recovery re-write, not an unbounded retry loop");
   assert.ok(result.actions.some((a) => a.includes("WARN could not verify granted roles")), "expected provisioning's WARN line to be surfaced");
 });
 

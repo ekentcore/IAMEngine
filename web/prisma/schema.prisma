@@ -906,6 +906,7 @@ model M365SetupRunClient {
   warnings        String[] // SetupResult.browserWarnings (e.g. "WARN MFA push not automatable")
   userCode        String? // device user-code, surfaced while running for a manual fallback
   verificationUri String?
+  log             String[] // SetupResult.actions — the full step/error trail, for the UI's expandable run log
   updatedAt       DateTime     @updatedAt
 
   @@index([runId])

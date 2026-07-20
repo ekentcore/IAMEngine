@@ -4,6 +4,7 @@
 // device-code sign-in plus Graph provisioning per client can take minutes.
 import type { PrismaClient } from "@prisma/client";
 import type { SetupClientInput, SetupResult } from "./setup-m365-client";
+import { recordAudit } from "@/lib/auth/audit";
 
 // Must exceed DEFAULT_RUN_DEADLINE_MS (2h) plus one in-flight client's ~15m device-code window, or a
 // healthy long fleet sweep gets misjudged stale, force-failed, and duplicated (two concurrent MUTATING sweeps).
@@ -120,6 +121,9 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
             res = { ok: false, stage: "error", error: (e as Error).message, actions: [] };
           }
           // Surface the device user-code + warnings so the UI can show a manual fallback / MFA reason.
+          // `log` carries the FULL step/error trail (SetupResult.actions — step names/ids/UPNs only,
+          // never a secret value) so the UI's expandable run log can show exactly what happened, not
+          // just the terminal stage/error.
           await db.m365SetupRunClient.update({
             where: { id: row.id },
             data: {
@@ -132,10 +136,18 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
               warnings: res.browserWarnings ?? [],
               userCode: res.userCode ?? null,
               verificationUri: res.verificationUri ?? null,
+              log: res.actions ?? [],
             },
           });
           if (res.ok) succeeded++; else failed++;
           completed++;
+          // Best-effort audit trail entry for this client's terminal outcome — fire-and-forget so a
+          // slow/unreachable audit write can never delay (let alone derail) the sweep; recordAudit
+          // itself never throws, but the extra .catch is defense-in-depth against a rejected promise.
+          void recordAudit("m365.setup.client", {
+            clientId: t.id,
+            detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, warnings: res.browserWarnings },
+          }).catch(() => {});
         } catch (e) {
           if (row) {
             await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "failed", error: (e as Error).message } }).catch(() => {});

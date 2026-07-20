@@ -62,6 +62,11 @@ export type ProvisionInput = {
   tenantId: string;
   caps?: "required" | "required+optional";
   issueCreds?: boolean;
+  // Mint a FRESH client secret even though the existing app already has a still-valid one — the
+  // stranded-credential recovery path (see setup-m365-client.ts): a prior run's write to Delinea
+  // failed AFTER Graph already issued a secret, so the vaulted value is unrecoverable and the only
+  // fix is to rotate. Targets the client SECRET only — a valid certificate is still kept as-is.
+  forceReissue?: boolean;
 };
 
 // credState tells a caller how much to trust the credential material on this result — never infer
@@ -223,6 +228,7 @@ export async function provisionM365App(
   let clientSecret: string | undefined, certBase64: string | undefined, certPassword: string | undefined, certThumbprint: string | undefined;
   let credState: CredState = "kept-valid";
   const issue = input.issueCreds ?? true;
+  const forceReissue = input.forceReissue === true;
 
   const issueClientSecret = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
     const ap = await graphSend<{ secretText?: string }>(token, "POST", `/applications/${objectId}/addPassword`,
@@ -282,7 +288,10 @@ export async function provisionM365App(
       const secretValid = hasValid(creds.body.passwordCredentials);
       const certValid = hasValid(creds.body.keyCredentials);
       let issuedAny = false;
-      if (!secretValid) {
+      if (!secretValid || forceReissue) {
+        if (forceReissue && secretValid) {
+          actions.push("forcing a fresh client secret despite an existing valid one (recovering a stranded credential)");
+        }
         const ap = await issueClientSecret();
         if (!ap.ok) return { ok: false, error: ap.error, actions };
         issuedAny = true;

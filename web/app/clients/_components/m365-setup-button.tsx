@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type ClientState = {
   status: string; stage?: string | null; appId?: string | null; verified?: boolean | null;
   wroteCreds?: boolean | null; error?: string | null; warnings?: string[]; userCode?: string | null;
-  verificationUri?: string | null; skipReason?: string | null;
+  verificationUri?: string | null; skipReason?: string | null; log?: string[];
 };
 
 // Friendly progress text for each stage of the run, so "Setting up…" isn't the only signal while it's
@@ -40,6 +40,9 @@ export function M365SetupButton({ slug }: { slug: string }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [gaSecretRef, setGaSecretRef] = useState("");
   const [modalError, setModalError] = useState<string | null>(null);
+  // null = no manual choice yet -> defaults open on a terminal failure, closed otherwise. Once the
+  // operator toggles it, that choice sticks through further polls of the SAME run.
+  const [logOpenOverride, setLogOpenOverride] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -76,7 +79,7 @@ export function M365SetupButton({ slug }: { slug: string }) {
   async function start() {
     const ref = gaSecretRef.trim();
     if (!ref) return;
-    setBusy(true); setModalError(null); setError(null); setActive(true);
+    setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpenOverride(null);
     try {
       const r = await fetch(`/api/clients/${slug}/m365-setup`, {
         method: "POST",
@@ -101,6 +104,10 @@ export function M365SetupButton({ slug }: { slug: string }) {
   }
 
   const running = state?.status === "pending" || state?.status === "running";
+  // Default the run log open on a terminal failure (there's something worth reading immediately);
+  // closed otherwise. A manual toggle (logOpenOverride non-null) always wins over that default.
+  const logOpen = logOpenOverride ?? state?.status === "failed";
+  const hasLog = Boolean(state?.log && state.log.length > 0);
   return (
     <span>
       <button disabled={busy || running} title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential"
@@ -119,6 +126,36 @@ export function M365SetupButton({ slug }: { slug: string }) {
         </span>
       )}
       {error && <span className="note" style={{ marginLeft: 8, color: "#b91c1c" }}>{error}</span>}
+      {hasLog && (
+        <span style={{ marginLeft: 8 }}>
+          <button
+            type="button"
+            className="note"
+            style={{ border: "none", background: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+            onClick={() => setLogOpenOverride(!logOpen)}
+          >
+            {logOpen ? "hide details" : "details"}
+          </button>
+          {logOpen && (
+            <pre
+              style={{
+                marginTop: 4,
+                maxHeight: 220,
+                overflowY: "auto",
+                overflowX: "auto",
+                fontSize: 12,
+                fontFamily: "var(--mono, monospace)",
+                background: "var(--bg-soft, #f3f4f8)",
+                padding: "0.5rem",
+                border: "1px solid var(--line, #e8e9ef)",
+                borderRadius: 4,
+              }}
+            >
+              {state!.log!.join("\n")}
+            </pre>
+          )}
+        </span>
+      )}
 
       <dialog ref={dialogRef} style={{ maxWidth: 480 }}>
         <h2>Set up M365 automatically</h2>

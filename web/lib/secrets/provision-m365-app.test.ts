@@ -305,6 +305,41 @@ test("provisionM365App: reconcile-keep — a non-expired secret + cert are kept,
   assert.ok(result.result.actions.some((a) => a === "kept existing certificate (valid)"));
 });
 
+// ── forceReissue (stranded-credential recovery, see setup-m365-client.ts) ──────────────────────────
+
+test("provisionM365App: forceReissue mints a fresh secret even though a valid one already exists", async () => {
+  const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
+  const r = router({
+    credsSelect: () => OK({ passwordCredentials: [{ endDateTime: future }], keyCredentials: [{ endDateTime: future }] }),
+  });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1", forceReissue: true }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+
+  assert.equal(result.result.clientSecret, "the-secret", "forceReissue must mint (and report) a fresh secret");
+  assert.equal(result.result.credState, "issued");
+  assert.ok(r.posts.some((p) => p.path === "/addPassword"), "expected a POST to .../addPassword despite an existing valid secret");
+  assert.ok(result.result.actions.some((a) => a === "issued a new client secret"));
+
+  // forceReissue targets the client SECRET only — a valid certificate is left completely alone.
+  assert.equal(result.result.certBase64, undefined, "forceReissue must not touch the certificate");
+  assert.ok(!r.patches.some((p) => "keyCredentials" in p.body), "no keyCredentials PATCH — cert issuance is unchanged by forceReissue");
+  assert.ok(result.result.actions.some((a) => a === "kept existing certificate (valid)"));
+});
+
+test("provisionM365App: without forceReissue, an existing valid secret is kept (baseline contrast)", async () => {
+  const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
+  const r = router({
+    credsSelect: () => OK({ passwordCredentials: [{ endDateTime: future }], keyCredentials: [{ endDateTime: future }] }),
+  });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1" }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+
+  assert.equal(result.result.credState, "kept-valid");
+  assert.ok(!r.posts.some((p) => p.path === "/addPassword"), "addPassword must NOT be called without forceReissue when a valid secret already exists");
+});
+
 // ── Fix A / Finding 2: a failed credentials GET must NOT re-mint/clobber creds on an EXISTING app,
 // but MUST issue on a just-created app (which provably has no credential to clobber) ───────────────
 

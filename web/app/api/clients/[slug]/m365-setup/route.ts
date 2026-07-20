@@ -63,11 +63,11 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
     // pending/running client status instead so the UI keeps polling until the row shows up.
     return NextResponse.json({
       run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },
-      client: { status: run.status === "running" ? "running" : "pending", stage: null },
+      client: { status: run.status === "running" ? "running" : "pending", stage: null, log: [] },
     });
   }
   return NextResponse.json({
     run: { id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt },
-    client: { status: mine.status, stage: mine.stage, appId: mine.appId, verified: mine.verified, wroteCreds: mine.wroteCreds, error: mine.error, warnings: mine.warnings, userCode: mine.userCode, verificationUri: mine.verificationUri, skipReason: mine.skipReason },
+    client: { status: mine.status, stage: mine.stage, appId: mine.appId, verified: mine.verified, wroteCreds: mine.wroteCreds, error: mine.error, warnings: mine.warnings, userCode: mine.userCode, verificationUri: mine.verificationUri, skipReason: mine.skipReason, log: mine.log },
   });
 }
