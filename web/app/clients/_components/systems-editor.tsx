@@ -133,6 +133,8 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   const [addKey, setAddKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Whether this client has a parent — enables the per-system "revert to parent" affordance (FR #23).
+  const [hasParent, setHasParent] = useState(false);
   // parse tab
   const [paste, setPaste] = useState("");
   const [useAI, setUseAI] = useState(false);
@@ -158,6 +160,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       const c = await res.json();
       setName(c.name ?? s);
       setBackbone(c.backbone ?? "");
+      setHasParent(Boolean(c.parentId));
       const ad = (c.adObjects ?? {}) as { ous?: unknown };
       setAdOus(Array.isArray(ad.ous) ? (ad.ous as string[]) : []);
       setOuPickerRow(null);
@@ -188,6 +191,25 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
   function remove(i: number) {
     setRows((rs) => rs.filter((_, j) => j !== i));
+  }
+  // Revert ONE system to the parent's version (FR #23) — overwrites this client's row for it and clears
+  // its own credential wiring so the parent's brokers. Applies immediately server-side and reloads.
+  async function revertSystem(systemKey: string) {
+    if (!slug) return;
+    if (!confirm(`Revert ${systemKey} on ${name} to the parent's version?\n\nOverwrites this system with the parent's and deletes this client's own Delinea credential references for it, so the parent's broker. The vault secrets aren't deleted, but re-wiring is manual. Applies immediately and reloads this dialog (discarding unsaved edits). This can't be undone.`)) return;
+    setSaving(true); setError(null);
+    try {
+      const res = await fetch(`/api/clients/${slug}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "reset-to-parent", scope: "full", systemKey }),
+      });
+      if (!res.ok) { setError((await res.json().catch(() => ({}))).error ?? "could not revert"); return; }
+      await load(slug);
+      router.refresh();
+    } finally {
+      setSaving(false);
+    }
   }
   function addSystem(key: string) {
     if (!key || rows.some((r) => r.systemKey === key)) return;
@@ -435,7 +457,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
               <div key={r.systemKey} style={{ border: "1px solid var(--line, #e5e7eb)", borderRadius: 10, padding: "0.7rem 0.85rem" }}>
                 <div className="row-between" style={{ alignItems: "center" }}>
                   <b style={{ fontFamily: "monospace", fontSize: 14 }}>{r.systemKey}</b>
-                  <button title={`Remove ${r.systemKey}`} onClick={() => remove(i)} style={{ fontSize: 12 }}>✕ remove</button>
+                  <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                    {hasParent && (
+                      <button title={`Revert ${r.systemKey} to the parent's version (overwrites it + clears its own credential wiring)`} onClick={() => revertSystem(r.systemKey)} disabled={saving} className="note" style={{ fontSize: 12 }}>↩ revert to parent</button>
+                    )}
+                    <button title={`Remove ${r.systemKey}`} onClick={() => remove(i)} style={{ fontSize: 12 }}>✕ remove</button>
+                  </span>
                 </div>
                 {/* Row 1 — what & when */}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: "0.55rem", alignItems: "flex-end" }}>
