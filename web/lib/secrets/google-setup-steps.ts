@@ -38,3 +38,31 @@ export const NEEDS_ACTION_STEP = 2;
 export function needsActionStep(status?: string | null): number | null {
   return status === "needs_action" ? NEEDS_ACTION_STEP : null;
 }
+
+// Which screen the modal should open on when there is already a run for this client. The GET route
+// always returns the LATEST run regardless of age, so without this a STALE terminal run (e.g. a
+// sign-in that failed hours ago) would keep hijacking the modal onto its progress/result screen —
+// leaving the operator staring at an old failure with no visible place to type a new Delinea secret
+// id (the "why won't it let me enter a secret?" bug).
+//
+//   • running / pending      → progress: the run is live; show it.
+//   • done / needs_action    → progress: a credential was vaulted — the operator reopens to see/copy
+//                              the wired Delinea id (needs_action also carries the manual-DWD card).
+//   • failed / cancelled /   → FORM: the only useful next action is to (re-)enter a secret and retry,
+//     skipped / anything else  so lead with the input rather than a dead-end result screen. The prior
+//                              error is surfaced as a note on the form (see reopenNoteFor) so the
+//                              context isn't lost.
+export function reopenPhaseFor(status?: string | null): "form" | "progress" {
+  return status === "running" || status === "pending" || status === "done" || status === "needs_action"
+    ? "progress"
+    : "form";
+}
+
+// When a reopen lands on the FORM because the last run failed, show why — so the operator sees the
+// prior failure right above the input instead of it vanishing. null for any non-failed status (a
+// fresh form, a cancelled/skipped run) — nothing to explain.
+export function reopenNoteFor(status?: string | null, error?: string | null): string | null {
+  if (status !== "failed") return null;
+  const e = (error ?? "").trim();
+  return e ? `The last run failed: ${e}` : "The last run failed. Re-enter the super-admin secret id to try again.";
+}

@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CopyButton } from "@/app/_components/copy-button";
-import { stepOf, needsActionStep } from "@/lib/secrets/google-setup-steps";
+import { stepOf, needsActionStep, reopenPhaseFor, reopenNoteFor } from "@/lib/secrets/google-setup-steps";
 
 type GoogleClientState = {
   status: string; stage?: string | null; saEmail?: string | null; saClientId?: string | null;
@@ -117,12 +117,15 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
     abandoned.current = false;
     setModalError(null); setError(null); setLogOpen(false);
     dialogRef.current?.showModal();
-    // If a run for this client is already in flight (or just finished), jump straight to progress so a
-    // reopen shows live status instead of a fresh form.
+    // If a run for this client is LIVE (running/pending) or vaulted a credential (done/needs_action),
+    // jump to progress so the reopen shows status / the wired id. A stale FAILED/cancelled/skipped run
+    // opens the form instead — otherwise an old failure hides the secret-id input forever (the reason
+    // couldn't be entered). reopenPhaseFor owns that routing; reopenNoteFor surfaces the prior failure.
     const c = await load();
     const s = (c as GoogleClientState | null)?.status;
-    if (s && (s === "running" || s === "pending" || TERMINAL.has(s))) setPhase("progress");
-    else setPhase("form");
+    const phaseToShow = reopenPhaseFor(s);
+    setPhase(phaseToShow);
+    if (phaseToShow === "form") setModalError(reopenNoteFor(s, (c as GoogleClientState | null)?.error ?? null));
   }, [load]);
 
   // Menu-driven open: a change in openSignal (an incrementing counter) requests the modal.

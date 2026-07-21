@@ -74,7 +74,10 @@ export { entry as googleDelineaFieldNamesMatchTemplate } from "./google-delinea-
 export { entry as googleKeyConverterTool } from "./google-key-converter-tool";
 export { entry as googleKeyFileUpload } from "./google-key-file-upload";
 export { entry as googleOauthDeheadUa } from "./google-oauth-dehead-ua";
+export { entry as googleOauthErrorNamesTheBlock } from "./google-oauth-error-names-the-block";
+export { entry as googleSetupReopenFormAfterFailure } from "./google-setup-reopen-form-after-failure";
 export { entry as googleOauthRedirectCaptureFix } from "./google-oauth-redirect-capture-fix";
+export { entry as googleKeyToolCreateDelinea } from "./google-key-tool-create-delinea";
 export { entry as googleOauthOfflineGrant } from "./google-oauth-offline-grant";
 export { entry as googleSigninWelcomeFalsePositive } from "./google-signin-welcome-falsepositive";
 export { entry as googleWorkspaceAutoSetupOverview } from "./google-workspace-auto-setup-overview";
