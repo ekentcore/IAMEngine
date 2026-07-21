@@ -69,16 +69,19 @@ carries `j.systemKey` and each job's resolved `config`. Topology is inferred fro
 keys, exactly as the rest of the planner does it (`orchestrator.ts:81`,
 `case-secrets.ts:29`). Routing:
 
-- **If the AD offboard lane already resolves to hide-from-GAL** — the resolved
-  `active-directory` job config has a truthy `hideFromGal` (either the attribute form
-  `{ attribute: "msExchHideFromAddressLists", value: "TRUE" }` / Six One's
-  `msDS-cloudExtensionAttribute1`, or bare `hideFromGal: true`) — then the **AD lane owns
-  the hide** (already implemented). Exchange/M365 does **not** also attempt. This is the
-  "a client can select an AD attribute and it gets used" requirement, and it avoids the
-  directory-synced-mailbox error on the EXO side. Note: resolving a bare `hideFromGal:
-  true` on the AD lane to a concrete attribute write is the AD module's existing
-  responsibility (`psm1:667`); the planner routes on truthiness only. The planner check is
-  case-insensitive (`hideFromGal` vs `hideFromGAL`).
+- **If the AD offboard lane has a configured hide *attribute*** — the resolved
+  `active-directory` job config carries `hideFromGal` with a concrete `attribute` (e.g.
+  `{ attribute: "msExchHideFromAddressLists", value: "TRUE" }`, or Six One's
+  `{ attribute: "msDS-cloudExtensionAttribute1", value: "HideFromGAL" }`) — then the **AD
+  lane owns the hide**. Exchange/M365 does **not** also attempt. This is the "a client can
+  select an AD attribute and it gets used" requirement, and it avoids the
+  directory-synced-mailbox error on the EXO side. The planner detects this by reading the
+  `active-directory` job's config for a `hideFromGal.attribute` (case-insensitive on the
+  `hideFromGal` vs `hideFromGAL` key). Important: the AD module's existing step
+  (`psm1:668-675`) only writes when `hideFromGal.attribute` is present — a bare
+  `hideFromGal: true` on the AD lane is a no-op there, so it does **not** count as
+  AD-owned and the EXO path (below) runs instead. This design does not change that AD
+  behavior.
 - **Otherwise** — inject `hideFromGal: true` onto the **exchange** lane. The runner runs
   `Set-Mailbox -HiddenFromAddressListsEnabled $true`. This works for cloud-native EXO and
   for full-hybrid on-prem Exchange. If EXO rejects it because the mailbox is
