@@ -17,6 +17,7 @@
 // secretOverrides so the runner can broker the login without anything being vaulted on the client.
 // After setup the client only carries the app-registration's own m365-admin credential.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { optionalCapChoices } from "@/lib/secrets/graph-caps";
 
 type ClientState = {
@@ -62,6 +63,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   const [modalError, setModalError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
   // Highest step index the run has reached — monotonic, so a fast stage transition still leaves earlier
   // steps marked done even if a poll skipped over them. Reset at the start of each run.
   const maxStep = useRef(-1);
@@ -70,6 +72,10 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   // re-render each second; `signinSince` is when the sign-in step was first entered.
   const [, setTick] = useState(0);
   const signinSince = useRef<number | null>(null);
+  const router = useRouter();
+  // Refresh the page ONCE when a run finishes, so the client's Secrets panel below reflects the
+  // newly-wired Delinea id + "(auto)" label without a manual reload. Reset when a new run starts.
+  const refreshedOnDone = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -97,6 +103,15 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
     if (i > maxStep.current) maxStep.current = i;
   }, [state?.stage]);
 
+  // On a successful finish, re-fetch the page so the Secrets panel shows the freshly-wired id.
+  useEffect(() => {
+    if (state?.status === "done") {
+      if (!refreshedOnDone.current) { refreshedOnDone.current = true; router.refresh(); }
+    } else {
+      refreshedOnDone.current = false;
+    }
+  }, [state?.status, router]);
+
   // Stamp when the sign-in step is first entered (for the elapsed/escalation prompt), clear otherwise.
   useEffect(() => {
     const onSignin = state?.stage === "browser-signin" || state?.stage === "token";
@@ -113,7 +128,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   }, [active, state?.status]);
 
   const openForm = useCallback(async () => {
-    setModalError(null); setError(null); setLogOpen(false); setCopied(false);
+    setModalError(null); setError(null); setLogOpen(false); setCopied(false); setCodeCopied(false);
     dialogRef.current?.showModal();
     // If a run for this client is already in flight (or just finished), jump straight to progress so a
     // reopen shows live status instead of a fresh form.
@@ -134,7 +149,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   async function start() {
     const ref = gaSecretRef.trim();
     if (!ref) return;
-    setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpen(false); setCopied(false);
+    setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpen(false); setCopied(false); setCodeCopied(false);
     maxStep.current = -1;
     signinSince.current = null;
     setState({ status: "pending", stage: null });
@@ -165,6 +180,15 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
     try {
       if (navigator.clipboard) { await navigator.clipboard.writeText(id); setCopied(true); setTimeout(() => setCopied(false), 1500); }
     } catch { /* clipboard blocked on plain-http LAN — the id is shown as selectable text anyway */ }
+  }
+
+  // Copy the device code so it's ready to paste on the devicelogin page. Returns whether it actually
+  // copied (navigator.clipboard is undefined on a plain-http LAN origin — the code stays selectable).
+  async function copyCode(code: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard) { await navigator.clipboard.writeText(code); setCodeCopied(true); setTimeout(() => setCodeCopied(false), 2000); return true; }
+    } catch { /* blocked on plain-http — the code is shown as selectable text anyway */ }
+    return false;
   }
 
   const running = state?.status === "pending" || state?.status === "running";
@@ -307,12 +331,17 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                     <div className="setup-signin-code">
                       <span className="note">Code</span>
                       <code>{state.userCode}</code>
-                      <a className="button" href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer">Open devicelogin ↗</a>
+                      <button type="button" className="btn-quiet" style={{ fontSize: 12 }} onClick={() => copyCode(state!.userCode!)}>
+                        {codeCopied ? "Copied ✓" : "Copy code"}
+                      </button>
+                      {/* Copy the code as you open the page, so it's on the clipboard ready to paste. */}
+                      <a className="button" href={state.verificationUri ?? "https://microsoft.com/devicelogin"} target="_blank" rel="noreferrer"
+                        onClick={() => { void copyCode(state!.userCode!); }}>Copy code &amp; open devicelogin ↗</a>
                     </div>
                     <div className="note">
                       The runner is signing in for you, but a Global Admin has to approve it: approve the
-                      sign-in prompt on your device, or open <b>microsoft.com/devicelogin</b> and enter the
-                      code above yourself.
+                      sign-in prompt on your device, or open <b>microsoft.com/devicelogin</b> and paste the
+                      code (it&rsquo;s copied when you click above; you can also copy it with the button).
                       {signinElapsed >= 20 && (
                         <> <b>Still waiting after {signinElapsed}s</b> — it&rsquo;s almost certainly waiting on that approval.</>
                       )}

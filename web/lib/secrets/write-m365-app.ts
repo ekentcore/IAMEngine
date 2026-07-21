@@ -56,6 +56,14 @@ export type WriteResult = {
   warnings?: string[];
 };
 
+// The client Secrets-panel wiring label, stamped so it's clear the credential was auto-provisioned.
+// Preserves any existing label and appends " (auto)" once; a blank/none label gets a descriptive default.
+export function autoLabel(existing?: string | null): string {
+  const base = (existing ?? "").trim();
+  if (!base) return "M365 app registration (auto)";
+  return /\(auto\)/i.test(base) ? base : `${base} (auto)`;
+}
+
 // The template field LABELS (from field-requirements.ts's m365-admin entry) mapped to the ProvisionResult
 // value that fills them — undefined when this run issued nothing for that field, so it's never written.
 function labeledValues(provision: ProvisionResult): Record<string, string | undefined> {
@@ -216,7 +224,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // value from whenever it WAS issued is unrecoverable; the only fix is to rotate/re-issue.
     const existingRow = await deps.db.secret.findUnique({
       where: { clientId_name: { clientId: client.id, name: secretName } },
-      select: { externalId: true },
+      select: { externalId: true, label: true },
     });
     // A "REPLACE_ME"/""/NOT_NEEDED placeholder is NOT a real vaulted id — ~106/137 clients carry one as
     // the seed default. Treat it as nothing-vaulted (stranded), so the recovery path re-issues and vaults
@@ -258,6 +266,12 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
       } catch {
         // best-effort — an unreadable vault must not fail a healthy kept-valid run
       }
+    }
+    // Nothing new to vault, but stamp the "(auto)" wiring label if it isn't already — so an
+    // already-complete client set up by the auto flow still shows the marker (idempotent).
+    const stamped = autoLabel(existingRow!.label);
+    if (stamped !== (existingRow!.label ?? "")) {
+      await makeClientRepository(deps.db).upsertSecrets(client.id, [{ name: secretName, externalId: existingRow!.externalId, label: stamped }]);
     }
     return { ok: true, wroteCreds: false, externalId: existingRow!.externalId };
   }
@@ -321,7 +335,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
   // can't ever duplicate.
   const existingRow = await deps.db.secret.findUnique({
     where: { clientId_name: { clientId: client.id, name: secretName } },
-    select: { externalId: true },
+    select: { externalId: true, label: true },
   });
 
   let externalId: string;
@@ -345,8 +359,9 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     warnings = warnings.concat(verdict.warnings);
   } else {
     // 5b. No local row — create it fresh. Name it the same way the manual create route does
-    // (`${client.name} — ${secretName}`) so a later manual lookup agrees with what we just created.
-    const ssName = `${client.name} — ${secretName}`;
+    // (`${client.name} — ${secretName}`), plus an "(auto)" marker so it's clear in Delinea that this
+    // credential was provisioned by the automated setup (not hand-entered).
+    const ssName = `${client.name} — ${secretName} (auto)`;
     // Identity credentials belong in the client's "Identity Services" subfolder (correct team view
     // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child.
     const subName = identitySubfolderName(env);
@@ -366,11 +381,13 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
   }
 
   // 6. Persist the vault REFERENCE (never a value): self-learn the folder if the client had none, then
-  // wire the secret id onto the client the same way the manual create route does.
+  // wire the secret id onto the client the same way the manual create route does. The wiring LABEL is
+  // stamped with "(auto)" so the client's Secrets panel shows this credential was set up by the auto
+  // flow — preserving any existing label and only appending the marker once.
   if (folderId && !client.delineaFolderId) {
     await deps.db.client.update({ where: { id: client.id }, data: { delineaFolderId: folderId } });
   }
-  await makeClientRepository(deps.db).upsertSecrets(client.id, [{ name: secretName, externalId }]);
+  await makeClientRepository(deps.db).upsertSecrets(client.id, [{ name: secretName, externalId, label: autoLabel(existingRow?.label) }]);
 
   return { ok: true, externalId, created, updated: !created, wroteCreds: true, warnings: warnings.length > 0 ? warnings : undefined };
 }

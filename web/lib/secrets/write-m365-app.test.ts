@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@prisma/client";
 import type { Fetcher, FetchResponse } from "./delinea";
-import { writeProvisionedM365App, type WriteClientInput } from "./write-m365-app";
+import { writeProvisionedM365App, autoLabel, type WriteClientInput } from "./write-m365-app";
 import type { ProvisionResult } from "./provision-m365-app";
 
 const CLIENT: WriteClientInput = { id: "client1", slug: "acme", name: "Acme Corp", delineaFolderId: "142", primaryDomain: "acme.com" };
@@ -109,7 +109,7 @@ function fetcher(opts: {
 
 // Fake db: db.secret.findUnique (existing-row check), db.client.update (self-learn folder), and
 // everything makeClientRepository(db).upsertSecrets touches.
-function fakeDb(opts: { existingSecret?: { externalId: string } | null } = {}) {
+function fakeDb(opts: { existingSecret?: { externalId: string; label?: string | null } | null } = {}) {
   const calls: { upsert: unknown[]; clientUpdate: unknown[] } = { upsert: [], clientUpdate: [] };
   const db = {
     secret: {
@@ -327,18 +327,31 @@ test("propagation retry: probe always fails (invalid_client) -> vaults anyway wi
   assert.equal(calls.upsert.length, 1);
 });
 
-test("credState kept-valid + already vaulted -> no-op, no Delinea calls at all", async () => {
-  const { db, calls } = fakeDb({ existingSecret: { externalId: "SS-already-vaulted" } });
+test("credState kept-valid + already vaulted (label already stamped) -> no-op, no Delinea calls at all", async () => {
+  // Label already carries "(auto)", so nothing at all changes — the true settled no-op.
+  const { db, calls } = fakeDb({ existingSecret: { externalId: "SS-already-vaulted", label: "M365 app registration (auto)" } });
   let probed = false;
-  const f = fetcher({ probeCalled: () => (probed = true) });
+  const f = fetcher({ probeCalled: () => (probed = true), vaultItems: [{ slug: "certificatebase64", itemValue: "present-pfx" }] });
   const r = await writeProvisionedM365App(
     { client: CLIENT, provision: provision({ credState: "kept-valid" }) /* no clientSecret, no certBase64 */ },
     { db, fetch: f, env: ENV_CONFIGURED }
   );
-  // Now surfaces the already-vaulted secret id so the audit/run log can name which credential is wired.
+  // Surfaces the already-vaulted secret id so the audit/run log can name which credential is wired.
   assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-already-vaulted" });
   assert.equal(probed, false);
   assert.equal(calls.upsert.length, 0);
+});
+
+test("credState kept-valid + already vaulted but UN-labelled -> stamps the (auto) wiring label (idempotent)", async () => {
+  const { db, calls } = fakeDb({ existingSecret: { externalId: "SS-already-vaulted", label: null } });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: fetcher({ vaultItems: [{ slug: "certificatebase64", itemValue: "present-pfx" }] }), env: ENV_CONFIGURED }
+  );
+  assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-already-vaulted" });
+  assert.equal(calls.upsert.length, 1, "the label-only stamp is written once");
+  const entry = calls.upsert[0] as { update?: { label?: string }; create?: { label?: string } };
+  assert.equal(entry.update?.label ?? entry.create?.label, "M365 app registration (auto)");
 });
 
 // FINDING 1: the stranded case — the app registration reports a valid credential (credState
@@ -589,4 +602,15 @@ test("Finding 7: no thumbprint this run -> field absent, not written as blank/un
   const r = await writeProvisionedM365App({ client: CLIENT, provision: provision({ clientSecret: "shh" }) }, { db, fetch: f, env: ENV_CONFIGURED });
   assert.equal(r.ok, true);
   assert.equal("certificatethumbprint" in created, false);
+});
+
+test("autoLabel: blank/none -> a descriptive default with (auto)", () => {
+  assert.equal(autoLabel(null), "M365 app registration (auto)");
+  assert.equal(autoLabel(""), "M365 app registration (auto)");
+  assert.equal(autoLabel("   "), "M365 app registration (auto)");
+});
+test("autoLabel: existing label -> appended once, never doubled", () => {
+  assert.equal(autoLabel("M365 App Reg"), "M365 App Reg (auto)");
+  assert.equal(autoLabel("M365 App Reg (auto)"), "M365 App Reg (auto)");
+  assert.equal(autoLabel("Something (AUTO)"), "Something (AUTO)"); // case-insensitive, not re-appended
 });
