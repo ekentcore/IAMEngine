@@ -18,9 +18,9 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { recordAudit } from "@/lib/auth/audit";
-import { createSecret, updateSecretFields, findTemplateIdByName, getDelineaToken } from "@/lib/secrets/delinea";
+import { createSecret, updateSecretFields, findTemplateIdByName, getDelineaToken, resolveCreateFolderId } from "@/lib/secrets/delinea";
 import { SECRET_FIELD_REQUIREMENTS, checkFieldShape } from "@/lib/secrets/field-requirements";
-import { delineaWriteConfigured, delineaWriteConfigFromEnv, defaultFieldMap, defaultTemplateName, folderIdFor, templateFor } from "@/lib/secrets/delinea-templates";
+import { delineaWriteConfigured, delineaWriteConfigFromEnv, defaultFieldMap, defaultTemplateName, folderIdFor, templateFor, identitySubfolderName } from "@/lib/secrets/delinea-templates";
 import { probeSecretValues } from "@/lib/secrets/value-probe";
 import { secretRunnerReach } from "@/lib/runner/reachability";
 import { secretIsSet } from "@/lib/secrets/wiring";
@@ -176,7 +176,12 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     // one already exists) passes a distinct `label` — createSecret dedups by name in the folder, so the
     // default `${client.name} — ${name}` would otherwise reuse the existing same-named secret.
     const ssName = label ?? `${client.name} — ${name}`;
-    const result = await createSecret(cfg, { name: ssName, folderId: folderId!, templateId: tmpl.templateId, fields }, token);
+    // Identity/cloud credentials belong in the client's "Identity Services" subfolder (correct team
+    // view permissions), not the client ROOT — resolve it, falling back to the folder itself when there's
+    // no such child. Without this the secret lands in the ROOT and "can't be viewed" by the team (the same
+    // redirect the M365/Google auto-setup writers apply). We still persist the ROOT as delineaFolderId below.
+    const createFolderId = await resolveCreateFolderId(cfg, folderId!, identitySubfolderName(), token);
+    const result = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token);
     if (!result.ok || !result.id) {
       return NextResponse.json({ error: result.error ?? "Delinea create failed", manualFallback: true }, { status: 502 });
     }

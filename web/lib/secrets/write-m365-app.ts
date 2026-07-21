@@ -21,7 +21,7 @@
 // the dev environment lacks DELINEA_WRITE_*, so this path is unit-tested only here and live-validated
 // by the operator once a write account + folder + template are configured.
 import type { PrismaClient } from "@prisma/client";
-import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, deriveClientFolderId, type Fetcher, type FolderDerivation } from "./delinea";
+import { createSecret, updateSecretFields, getDelineaToken, resolveCreateFolderId, deriveClientFolderId, type Fetcher, type FolderDerivation } from "./delinea";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
 import { secretIsSet } from "./wiring";
@@ -407,8 +407,7 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     const ssName = `${client.name} — ${secretName} (auto)`;
     // Identity credentials belong in the client's "Identity Services" subfolder (correct team view
     // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child.
-    const subName = identitySubfolderName(env);
-    const createFolderId = (subName && (await findChildFolderByName(cfg, folderId, subName, token, fetcher))) || folderId;
+    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
     const createdSecret = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!createdSecret.ok || !createdSecret.id) {
       return { ok: false, wroteCreds: false, error: createdSecret.error ?? "Delinea create failed" };
