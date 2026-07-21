@@ -155,16 +155,24 @@ export type WriteCapability = {
 };
 
 // The single gate the API and UI both consult: can the app create THIS secret for THIS client right now?
+// `allowTemplateByName` counts a KNOWN template name (DEFAULT_TEMPLATE_NAMES / templateName override) as
+// having a template even without an env id — for callers that resolve the id live from Secret Server at
+// create time (the /secrets/create route via findTemplateIdByName). Callers that map labels→slugs with a
+// SYNCHRONOUS templateFor() (write-m365-app and friends) must NOT pass it: for them a passing gate has to
+// guarantee templateFor() is non-null.
 export function delineaWriteConfigured(opts: {
   slug: string;
   secretName: string;
   clientFolderId?: string | null;
+  allowTemplateByName?: boolean;
   env?: Env;
 }): WriteCapability {
   const env = opts.env ?? process.env;
   const hasAccount = writeAccountConfigured(delineaWriteConfigFromEnv(env));
   const hasFolder = folderIdFor(opts.slug, opts.clientFolderId, env) != null;
-  const hasTemplate = templateFor(opts.secretName, env) != null;
+  const hasTemplate =
+    templateFor(opts.secretName, env) != null ||
+    (opts.allowTemplateByName === true && defaultTemplateName(opts.secretName, env) != null);
   const missing: string[] = [];
   if (!hasAccount) missing.push("a Delinea write account (DELINEA_WRITE_USER/PASSWORD, or the read DELINEA_USER/PASSWORD)");
   if (!hasFolder) missing.push("this client's Delinea folder id (set it on the client, or via DELINEA_FOLDER_MAP)");
@@ -186,7 +194,9 @@ export function delineaWriteSummary(opts: { slug: string; clientFolderId?: strin
   return {
     hasAccount: writeAccountConfigured(delineaWriteConfigFromEnv(env)),
     folderId: folderIdFor(opts.slug, opts.clientFolderId, env),
-    templates: Object.fromEntries(opts.secretNames.map((n) => [n, templateFor(n, env) != null])),
+    // A secret is creatable with an env template id OR a known template NAME (the create route resolves
+    // the id live from Secret Server by name) — the UI enables the create affordances on either.
+    templates: Object.fromEntries(opts.secretNames.map((n) => [n, templateFor(n, env) != null || defaultTemplateName(n, env) != null])),
     templateNames: Object.fromEntries(opts.secretNames.map((n) => [n, defaultTemplateName(n, env)])),
   };
 }

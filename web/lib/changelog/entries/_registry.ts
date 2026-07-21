@@ -47,6 +47,7 @@ export { entry as credExpirySettings } from "./cred-expiry-settings";
 export { entry as credPlatform } from "./cred-platform";
 export { entry as defaultSharedMailboxAccess } from "./default-shared-mailbox-access";
 export { entry as delineaSecretserverCloudCreateFix } from "./delinea-secretserver-cloud-create-fix";
+export { entry as delineaTemplateByName } from "./delinea-template-by-name";
 export { entry as delineaWriteFailManualModal } from "./delinea-write-fail-manual-modal";
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
@@ -76,6 +77,7 @@ export { entry as googleSigninWelcomeFalsePositive } from "./google-signin-welco
 export { entry as googleWorkspaceAutoSetupOverview } from "./google-workspace-auto-setup-overview";
 export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missing";
 export { entry as guidedApiSetup } from "./guided-api-setup";
+export { entry as guidedSetupFullerInstructions } from "./guided-setup-fuller-instructions";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as importClientsByCoreid } from "./import-clients-by-coreid";
 export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";
@@ -114,6 +116,7 @@ export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-de
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
 export { entry as manualSetPasswordOption } from "./manual-set-password-option";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
+export { entry as mimecastConsoleUrlFix } from "./mimecast-console-url-fix";
 export { entry as mimecastDocProductsPoc } from "./mimecast-doc-products-poc";
 export { entry as modelFilesReadwritePerm } from "./model-files-readwrite-perm";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";
@@ -152,6 +155,7 @@ export { entry as sharepointFullcontrolUsedRole } from "./sharepoint-fullcontrol
 export { entry as sharepointOnedriveFullaccessGrant } from "./sharepoint-onedrive-fullaccess-grant";
 export { entry as slackExecutorAndManualFlip } from "./slack-executor-and-manual-flip";
 export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-central-only";
+export { entry as spanningGuidedSetupDerived } from "./spanning-guided-setup-derived";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
 export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";

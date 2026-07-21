@@ -55,12 +55,16 @@ DELINEA_WRITE_PASSWORD="..."
       </ul>
       <Code>{`DELINEA_FOLDER_MAP='{"acme":142,"brighton-park":205}'`}</Code>
 
-      <h2>3. A template id per secret name</h2>
+      <h2>3. A template per secret name</h2>
       <p className="note">
-        Secret Server template ids are <b>per-instance</b>, so they come from env. Map each secret name (the logical
-        key the systems reference, e.g. <code>m365-admin</code>, <code>mimecast</code>, <code>spanning</code>) to its
-        template id. The app already knows which <b>fields</b> each secret needs (from the field requirements) and maps
-        your field labels to the template&rsquo;s field slugs; override a slug only if your template differs.
+        For secrets that live on a <b>stock template</b> the app knows by name — <b>Automation - API</b> for
+        {" "}<code>mimecast</code>, <code>spanning</code>, <code>proofpoint</code>, <code>adobe</code>, <code>slack</code>,
+        {" "}<code>google-admin</code> — <b>no configuration is needed</b>: the create resolves the template id live from
+        Secret Server by that name. Set an explicit id only to <b>override</b> (e.g. your instance renamed the template),
+        or for secrets with no stock name. Map each secret name (the logical key the systems reference, e.g.
+        {" "}<code>m365-admin</code>) to its template id. The app already knows which <b>fields</b> each secret needs
+        (from the field requirements) and maps your field labels to the template&rsquo;s field slugs (matched
+        case-insensitively); override a slug only if your template differs.
       </p>
       <Code>{`# Option A — one env var per secret (name uppercased, non-alnum -> _):
 DELINEA_TEMPLATE_M365_ADMIN="6001"

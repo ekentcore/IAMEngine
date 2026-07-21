@@ -57,9 +57,16 @@ const PROOFPOINT_DOMAIN_FIELDS = ["Domain", "OrgDomain", "Org", "Tenant"];
 const PROOFPOINT_REGION_FIELDS = ["Region", "apiURL", "ApiUrl", "BaseUrl", "Base URL", "Url", "URL"];
 
 // Spanning region -> API base. A full URL in the region field wins; else map the short region.
+// Mirrors Connect-CtgSpanning's normalization: force https, and append /external when the stored
+// value is just the host (the guided setup vaults "https://<service>-api-<region>.spanningbackup.com"
+// and the runner appends /external the same way — without this the probe would 404 a good credential).
 function spanningBase(region: string): string {
   const v = (region || "us").trim();
-  if (/^https?:\/\//i.test(v)) return v.replace(/\/+$/, "");
+  if (/^https?:\/\//i.test(v)) {
+    let u = v.replace(/\/+$/, "").replace(/^http:\/\//i, "https://");
+    if (!/\/(external|api\/v\d+)$/i.test(u)) u += "/external";
+    return u;
+  }
   return `https://o365-api-${v.toLowerCase()}.spanningbackup.com/external`;
 }
 // Proofpoint region -> API base. A full URL wins; else map us1..us5/eu1/au1.
@@ -156,7 +163,7 @@ const PROBERS: Record<string, Prober> = {
   "spanning": async (values, _ctx, fetcher) => {
     const id = pickField(values, SPANNING_ID_FIELDS);
     const token = pickField(values, SPANNING_TOKEN_FIELDS);
-    if (!id || !token) return { probeable: true, blocking: true, ok: false, error: `missing ${!id ? "account / api user" : "api token"}`, kind: "live" };
+    if (!id || !token) return { probeable: true, blocking: true, ok: false, error: `missing ${!id ? "login email" : "api token"}`, kind: "live" };
     const base = spanningBase(pickField(values, SPANNING_REGION_FIELDS) ?? "us");
     const auth = "Basic " + Buffer.from(`${id}:${token}`).toString("base64");
     try {
