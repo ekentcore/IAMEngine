@@ -21,7 +21,7 @@
 // the dev environment lacks DELINEA_WRITE_*, so this path is unit-tested only here and live-validated
 // by the operator once a write account + folder + template are configured.
 import type { PrismaClient } from "@prisma/client";
-import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, type Fetcher } from "./delinea";
+import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, deriveClientFolderId, type Fetcher, type FolderDerivation } from "./delinea";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
 import { secretIsSet } from "./wiring";
@@ -33,6 +33,10 @@ export type WriteInput = {
   client: WriteClientInput;
   provision: ProvisionResult;
   secretName?: string /* default "m365-admin" */;
+  // The Global-Admin login's Delinea secret id from the per-client setup modal. Beyond its role in the
+  // device-code sign-in, it's a locator: that secret lives in this client's own folder, so when the
+  // client has no folder configured, the write auto-detects the folder from it (see deriveClientFolderId).
+  gaSecretRef?: string;
   // Whether this credential is SUPPOSED to carry a certificate (default true). When the operator set up
   // the app client-secret-only (no Exchange), an empty cert slug in the vault is expected — NOT the
   // half-vaulted/stranded case — so the completeness check below is skipped.
@@ -62,6 +66,11 @@ export type WriteResult = {
   // Optional-field write failures that did NOT fail the run (e.g. a password-only template legitimately
   // has no certificate slug) — surfaced so an operator can see what quietly didn't get vaulted.
   warnings?: string[];
+  // Set when this client had no configured Delinea folder and the write AUTO-DETECTED one — the id it
+  // resolved and which signal found it. Surfaced so the run log can say where the secret was vaulted
+  // (the write also self-learns this onto the client, so subsequent runs skip detection).
+  resolvedFolderId?: string;
+  resolvedFolderSource?: FolderDerivation["source"];
 };
 
 // The client Secrets-panel wiring label, stamped so it's clear the credential was auto-provisioned.
@@ -310,23 +319,17 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     propagationWarning = warning;
   }
 
-  // 3. Gate: the app can only write when a write account + this client's folder + a template id for
-  // this secret are all configured. Same check the manual create route uses.
-  const cap = delineaWriteConfigured({ slug: client.slug, secretName, clientFolderId: client.delineaFolderId, env });
-  if (!cap.ok) {
-    return { ok: false, wroteCreds: false, error: `Delinea write not configured — ${cap.missing.join("; ")}` };
-  }
-
-  const folderId = folderIdFor(client.slug, client.delineaFolderId, env)!; // cap.ok guarantees non-null
-  const tmpl = templateFor(secretName, env)!; // cap.ok guarantees a template
-  const buckets = slugBuckets(tmpl);
-
-  // 4. Map labels -> Secret Server slugs, skipping any label whose value is undefined this run.
-  const fields: Record<string, string> = {};
-  for (const [label, value] of Object.entries(labeledValues(provision))) {
-    if (value === undefined) continue;
-    const slug = tmpl.fieldMap[label];
-    if (slug) fields[slug] = value;
+  // 3. Gate + folder resolution. The write ACCOUNT and TEMPLATE are pure env prerequisites — without
+  // either there's nothing to try, so refuse immediately (no network). The FOLDER is different: when
+  // it isn't already configured (on the client or in DELINEA_FOLDER_MAP) it can be AUTO-DETECTED — the
+  // Global-Admin login the operator pointed at lives IN this client's folder, so its folderId IS the
+  // answer; failing that, a folder whose name carries the client's core id. So: check account/template,
+  // get a write token (reused for the create/update below and the detection reads), then resolve/derive.
+  const preGate = delineaWriteConfigured({ slug: client.slug, secretName, clientFolderId: client.delineaFolderId, env });
+  if (!preGate.hasAccount || !preGate.hasTemplate) {
+    // Drop the folder leg from the message — a missing folder is handled by detection below, not here.
+    const missing = preGate.missing.filter((m) => !/folder/i.test(m));
+    return { ok: false, wroteCreds: false, error: `Delinea write not configured — ${missing.join("; ")}` };
   }
 
   const cfg = delineaWriteConfigFromEnv(env);
@@ -335,6 +338,36 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     token = await getDelineaToken(cfg, fetcher);
   } catch (e) {
     return { ok: false, wroteCreds: false, error: `Delinea write auth failed — ${(e as Error).message}` };
+  }
+
+  // Configured folder (client / DELINEA_FOLDER_MAP) wins; otherwise auto-detect it in Secret Server.
+  let folderId = folderIdFor(client.slug, client.delineaFolderId, env);
+  let resolvedFolderSource: FolderDerivation["source"] | undefined;
+  if (!folderId) {
+    const derived = await deriveClientFolderId(cfg, { gaSecretRef: input.gaSecretRef, slug: client.slug, name: client.name }, token, fetcher);
+    if (derived) {
+      folderId = derived.folderId;
+      resolvedFolderSource = derived.source;
+    }
+  }
+  if (!folderId) {
+    return {
+      ok: false,
+      wroteCreds: false,
+      error:
+        "Delinea write not configured — couldn't determine this client's Delinea folder: it isn't set on the client or in DELINEA_FOLDER_MAP, and couldn't be auto-detected from the Global Admin login's folder or a folder named for the client. Set the client's Delinea folder id and re-run.",
+    };
+  }
+
+  const tmpl = templateFor(secretName, env)!; // preGate.hasTemplate guarantees a template
+  const buckets = slugBuckets(tmpl);
+
+  // 4. Map labels -> Secret Server slugs, skipping any label whose value is undefined this run.
+  const fields: Record<string, string> = {};
+  for (const [label, value] of Object.entries(labeledValues(provision))) {
+    if (value === undefined) continue;
+    const slug = tmpl.fieldMap[label];
+    if (slug) fields[slug] = value;
   }
 
   // Does the client already have a Secret row for this name? If so, its externalId is the Delinea
@@ -399,5 +432,15 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
   }
   await makeClientRepository(deps.db).upsertSecrets(client.id, [{ name: secretName, externalId, label: autoLabel(existingRow?.label) }]);
 
-  return { ok: true, externalId, created, updated: !created, wroteCreds: true, warnings: warnings.length > 0 ? warnings : undefined };
+  return {
+    ok: true,
+    externalId,
+    created,
+    updated: !created,
+    wroteCreds: true,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    // Only present when the folder was AUTO-DETECTED (not configured) — keeps the result shape identical
+    // to before for the common configured-folder path.
+    ...(resolvedFolderSource ? { resolvedFolderId: folderId, resolvedFolderSource } : {}),
+  };
 }

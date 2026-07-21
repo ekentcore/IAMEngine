@@ -190,6 +190,84 @@ export async function findChildFolderByName(
   }
 }
 
+// The Secret Server folder a given secret LIVES in — read from the metadata-only /summary endpoint
+// (no field values pulled, so no "require comment on view" policy is triggered). Used to auto-detect a
+// client's Delinea folder from a secret the operator already pointed at (e.g. the Global-Admin login
+// they supplied for M365 setup, which sits in that client's own folder). Returns the folder id, or null
+// when the secret has no folder (folderId -1), the read is denied, or anything fails.
+export async function getSecretFolderId(cfg: DelineaConfig, secretId: string, token: string, fetcher: Fetcher = defaultFetcher): Promise<string | null> {
+  if (!secretIsSet(secretId)) return null;
+  try {
+    const res = await fetcher(`${cfg.baseUrl}/api/v1/secrets/${encodeURIComponent(secretId)}/summary`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => null)) as { folderId?: number | string } | null;
+    if (d?.folderId == null) return null;
+    const s = String(d.folderId).trim();
+    return s && s !== "-1" ? s : null; // -1 = "no folder" in Secret Server
+  } catch {
+    return null;
+  }
+}
+
+// Find a folder by a search term appearing in its NAME (e.g. a client's core id "core1269", or the
+// client's display name). CONSERVATIVE by design — this picks the folder a credential gets written
+// into, so it never guesses: it returns a match only when there's a single unambiguous one. Among
+// several name-containing folders it prefers an exact name match, then the shallowest path (the client
+// ROOT over a subfolder — the write path does its own "Identity Services" subfolder redirect from
+// there); a genuine tie returns null rather than risk the wrong folder. Returns null on no match/failure.
+export async function findFolderIdByName(cfg: DelineaConfig, searchText: string, token: string, fetcher: Fetcher = defaultFetcher): Promise<string | null> {
+  const q = (searchText ?? "").trim();
+  if (!q) return null;
+  const norm = (s: string) => s.trim().toLowerCase();
+  try {
+    const url = `${cfg.baseUrl}/api/v1/folders?filter.searchText=${encodeURIComponent(q)}&take=200`;
+    const res = await fetcher(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => null)) as { records?: { id?: number | string; folderName?: string; name?: string; folderPath?: string }[] } | null;
+    const nameOf = (r: { folderName?: string; name?: string }) => norm(String(r.folderName ?? r.name ?? ""));
+    const ql = norm(q);
+    const hits = (d?.records ?? []).filter((r) => r.id != null && nameOf(r).includes(ql));
+    if (hits.length === 0) return null;
+    if (hits.length === 1) return String(hits[0].id);
+    const exact = hits.filter((r) => nameOf(r) === ql);
+    if (exact.length === 1) return String(exact[0].id);
+    const depth = (r: { folderPath?: string }) => String(r.folderPath ?? "").split("\\").length;
+    const sorted = [...hits].sort((a, b) => depth(a) - depth(b));
+    return depth(sorted[0]) < depth(sorted[1]) ? String(sorted[0].id) : null; // unambiguous shallowest only
+  } catch {
+    return null;
+  }
+}
+
+// Auto-detect the Delinea folder a client's credentials belong in, when it isn't already configured on
+// the client / in DELINEA_FOLDER_MAP. In priority order:
+//   1. ga-secret — the folder the supplied Global-Admin login secret lives in. This is the strongest
+//      signal: the operator literally pointed the setup at a secret in this client's own folder.
+//   2. coreid    — a folder whose name carries the client's core id (its slug, e.g. "core1269").
+//   3. name      — a folder named for the client (last resort; the same conservative matcher).
+// Returns the folder id + which signal found it (for the run log), or null when none is confident.
+export type FolderDerivation = { folderId: string; source: "ga-secret" | "coreid" | "name" };
+export async function deriveClientFolderId(
+  cfg: DelineaConfig,
+  opts: { gaSecretRef?: string | null; slug: string; name?: string | null },
+  token: string,
+  fetcher: Fetcher = defaultFetcher
+): Promise<FolderDerivation | null> {
+  if (secretIsSet(opts.gaSecretRef ?? undefined)) {
+    const fid = await getSecretFolderId(cfg, String(opts.gaSecretRef), token, fetcher);
+    if (fid) return { folderId: fid, source: "ga-secret" };
+  }
+  const byCore = await findFolderIdByName(cfg, opts.slug, token, fetcher);
+  if (byCore) return { folderId: byCore, source: "coreid" };
+  if (opts.name) {
+    const byName = await findFolderIdByName(cfg, opts.name, token, fetcher);
+    if (byName) return { folderId: byName, source: "name" };
+  }
+  return null;
+}
+
 // POST a new secret. `token` is a write-account access token (getDelineaToken with the write config).
 // Never throws to the caller — returns a readable error. Does NOT log the values it sends.
 // Idempotent: if a secret of the same name already exists in the folder, its id is returned instead of
