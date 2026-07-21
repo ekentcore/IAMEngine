@@ -89,3 +89,6 @@ rollback-pre-apply.*
 
 # Local Claude project configuration
 .claude/
+
+# machine-specific node_modules symlink some tooling drops here — never track it
+runner/browser/node_modules
