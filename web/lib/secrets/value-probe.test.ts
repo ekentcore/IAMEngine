@@ -165,6 +165,16 @@ test("spanning probe: 401 = not ok", async () => {
   const r = await probeSecretValues("spanning", { ClientId: "acct", AccessToken: "bad", Region: "us" }, {}, okFetch(401));
   assert.equal(r.ok, false);
 });
+test("spanning probe: a host-only apiURL (what the guided setup vaults) gets /external appended, https forced", async () => {
+  let asked = "";
+  const spy: typeof fetch = (async (url: string) => {
+    asked = String(url);
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await probeSecretValues("spanning", { ClientID: "a@x.com", ClientSecret: "tok", apiURL: "http://google-api-us.spanningbackup.com" }, {}, spy);
+  assert.equal(r.ok, true);
+  assert.match(asked, /^https:\/\/google-api-us\.spanningbackup\.com\/external\//);
+});
 test("proofpoint probe: 200 with X-User/X-Password + region + domain = ok", async () => {
   const r = await probeSecretValues("proofpoint", { "X-User": "a@x.com", "X-Password": "p", Region: "us1", Domain: "x.com" }, {}, okFetch(200, {}));
   assert.equal(r.ok, true);

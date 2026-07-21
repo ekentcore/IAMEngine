@@ -32,3 +32,19 @@ export function buildGuidedValues(
   if (region !== undefined) values["Region"] = region;
   return values;
 }
+
+// Spanning's guided setup derives two fields instead of collecting them (see api-setup-catalog's
+// `derive: "spanning"` entry): the API base URL from the email-service + region selects, and the
+// account id from the login email's domain WITHOUT its suffix (evan@acme.com → acme — Spanning's
+// account-id convention, per /help/spanning). Keys are the canonical synonyms (anyOf[0]) of the
+// "region or base url" and "account id" requirements, same contract as buildGuidedValues. The caller
+// merges this OVER the typed values, so a derived key can't be shadowed by a stale text entry.
+export function deriveSpanningValues(loginEmail: string, service: string, region: string): Record<string, string> {
+  const values: Record<string, string> = {
+    apiURL: `https://${service.trim().toLowerCase()}-api-${region.trim().toLowerCase()}.spanningbackup.com`,
+  };
+  const domain = (loginEmail.split("@")[1] ?? "").trim().toLowerCase();
+  const account = domain.split(".")[0] ?? "";
+  if (account) values["AccountID"] = account;
+  return values;
+}

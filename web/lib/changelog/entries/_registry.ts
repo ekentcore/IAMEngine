@@ -152,6 +152,7 @@ export { entry as sharepointFullcontrolUsedRole } from "./sharepoint-fullcontrol
 export { entry as sharepointOnedriveFullaccessGrant } from "./sharepoint-onedrive-fullaccess-grant";
 export { entry as slackExecutorAndManualFlip } from "./slack-executor-and-manual-flip";
 export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-central-only";
+export { entry as spanningGuidedSetupDerived } from "./spanning-guided-setup-derived";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
 export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";

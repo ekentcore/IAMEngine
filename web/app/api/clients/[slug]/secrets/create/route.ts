@@ -113,13 +113,18 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   }
 
   // Map our field LABELS → Secret Server slugs via the template map (synonyms also accepted as keys).
+  // An exact LABEL match wins over a synonym match across ALL requirements: a synonym can legitimately
+  // appear in another requirement's anyOf too (spanning's AccountID is both the "account id" canonical
+  // name and a login-email fallback the runner honors) — first-synonym-wins would collapse both values
+  // onto one slug.
   const fields: Record<string, string> = {};
   for (const [label, val] of Object.entries(values)) {
     if (val.trim() === "") continue;
     let slug = tmpl.fieldMap[label];
     if (!slug) {
-      // allow a synonym as the incoming key (find the requirement whose label/synonym it matches)
-      const req = reqs.find((r) => norm(r.label) === norm(label) || r.anyOf.some((syn) => norm(syn) === norm(label)));
+      const req =
+        reqs.find((r) => norm(r.label) === norm(label)) ??
+        reqs.find((r) => r.anyOf.some((syn) => norm(syn) === norm(label)));
       if (req) slug = tmpl.fieldMap[req.label];
     }
     if (slug) fields[slug] = val;

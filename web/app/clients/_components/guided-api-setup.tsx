@@ -19,8 +19,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ApiSetupEntry } from "@/lib/secrets/api-setup-catalog";
 import { SECRET_FIELD_REQUIREMENTS } from "@/lib/secrets/field-requirements";
-import { buildGuidedValues } from "@/lib/secrets/guided-api-values";
+import { buildGuidedValues, deriveSpanningValues } from "@/lib/secrets/guided-api-values";
 import { isSecretish } from "./create-in-delinea";
+
+// The requirement label the Spanning derivation OWNS: its value comes from the service/region selects
+// (deriveSpanningValues), so the modal must not also render it as a free-text input.
+const SPANNING_DERIVED_LABEL = "region or base url";
 
 type Mode = "paste" | "existing";
 type Verdict = { ok: boolean; text: string };
@@ -42,6 +46,7 @@ export function GuidedApiSetup({
   const [busy, setBusy] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const [region, setRegion] = useState(entry.regionOptions?.[0] ?? "");
+  const [service, setService] = useState(entry.serviceOptions?.[0] ?? "");
   const [externalId, setExternalId] = useState("");
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [done, setDone] = useState(false);
@@ -50,7 +55,11 @@ export function GuidedApiSetup({
 
   // Required fields only — optional ones (incl. Proofpoint's `Region`, which the select below owns
   // exclusively) have a runner fallback and are never collected here, same filter as create-in-delinea.
-  const fields = (SECRET_FIELD_REQUIREMENTS[entry.secretName] ?? []).filter((f) => !f.optional);
+  // A Spanning entry additionally derives the base-url requirement from the service/region selects, so
+  // that field is never typed either.
+  const fields = (SECRET_FIELD_REQUIREMENTS[entry.secretName] ?? [])
+    .filter((f) => !f.optional)
+    .filter((f) => entry.derive !== "spanning" || f.label !== SPANNING_DERIVED_LABEL);
 
   const openModal = useCallback(() => {
     setVerdict(null);
@@ -59,10 +68,11 @@ export function GuidedApiSetup({
     setValues({});
     setExternalId("");
     setRegion(entry.regionOptions?.[0] ?? "");
+    setService(entry.serviceOptions?.[0] ?? "");
     setMode("paste");
     refreshedOnDone.current = false;
     dialogRef.current?.showModal();
-  }, [entry.regionOptions]);
+  }, [entry.regionOptions, entry.serviceOptions]);
 
   // Menu-driven open: a change in openSignal (an incrementing counter) requests the modal — same
   // contract as M365SetupButton.
@@ -87,12 +97,17 @@ export function GuidedApiSetup({
     setBusy(true);
     setVerdict(null);
     try {
+      // Keyed by each field's CANONICAL synonym (f.anyOf[0]), not its human label — see
+      // guided-api-values.ts. The region <select> (Proofpoint) contributes under "Region" only when
+      // the catalog entry offers region options; a Spanning entry instead folds region + email service
+      // into the derived apiURL/account-id pair (never a bare Region key — the create route would map
+      // it onto the same slug as apiURL and clobber the URL).
+      const typed = buildGuidedValues(fields, values, entry.derive === "spanning" ? undefined : entry.regionOptions ? region : undefined);
+      const loginEmail = fields.find((f) => f.anyOf[0] === "ClientID");
+      const derived = entry.derive === "spanning" ? deriveSpanningValues(loginEmail ? values[loginEmail.label] ?? "" : "", service, region) : {};
       const body = {
         name: entry.secretName,
-        // Keyed by each field's CANONICAL synonym (f.anyOf[0]), not its human label — see
-        // guided-api-values.ts. The region <select> (Proofpoint) contributes under "Region" only when
-        // the catalog entry offers region options.
-        values: buildGuidedValues(fields, values, entry.regionOptions ? region : undefined),
+        values: { ...typed, ...derived },
         label: `${entry.label} (auto)`,
       };
       const r = await fetch(`/api/clients/${slug}/secrets/create`, {
@@ -204,6 +219,23 @@ export function GuidedApiSetup({
             ))}
             {fields.length === 0 && (
               <p className="note muted">No field requirements known for this secret — add its fields in Delinea directly.</p>
+            )}
+            {entry.serviceOptions && (
+              <label style={{ display: "block", marginBottom: 10 }}>
+                <span className="note" style={{ display: "block", marginBottom: 2 }}>Email service</span>
+                <select
+                  value={service}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setService(e.target.value);
+                    setVerdict(null);
+                  }}
+                >
+                  {entry.serviceOptions.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
             )}
             {entry.regionOptions && (
               <label style={{ display: "block", marginBottom: 10 }}>

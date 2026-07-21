@@ -6,7 +6,11 @@ export type ApiSetupEntry = {
   label: string;          // "Mimecast" -> "Setup Mimecast API"
   consoleUrl: string;     // "Open console ↗"
   steps: string[];        // vendor instructions
-  regionOptions?: string[]; // Proofpoint: the region picker
+  regionOptions?: string[]; // Proofpoint: the region picker. Spanning: feeds the derived apiURL instead
+  // Spanning: the modal replaces the "region or base url" text input with email-service + region
+  // selects and derives apiURL + account id via deriveSpanningValues (guided-api-values.ts).
+  derive?: "spanning";
+  serviceOptions?: string[]; // Spanning: the email-service picker (o365 | google)
 };
 
 export const API_SETUP_CATALOG: ApiSetupEntry[] = [
@@ -22,10 +26,13 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "spanning", secretName: "spanning", label: "Spanning",
     consoleUrl: "https://o365.spanningbackup.com/",
+    derive: "spanning",
+    serviceOptions: ["o365", "google"],
+    regionOptions: ["us", "eu", "ap", "uk", "ca"],
     steps: [
-      "In the Spanning admin console, open Settings → API Token.",
-      "Generate / copy the API token and note the account/domain and your data region.",
-      "Paste them below (or the Delinea id you saved them in), then Verify & save.",
+      "Sign in to the Spanning Backup admin console for this client's tenant, and note the email you sign in with — that's the API username.",
+      "Open Settings and scroll to API Token at the bottom of the page; copy the API Key (generate one if there isn't one — avoid Regenerate, it invalidates the current key everywhere immediately).",
+      "Enter the login email + API Key below and pick the email service (o365, or google for a Google Workspace tenant) and region (United States = us). The account id and API URL (https://<service>-api-<region>.spanningbackup.com) are filled in automatically.",
     ],
   },
   {

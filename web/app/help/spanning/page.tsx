@@ -24,9 +24,11 @@ export default function SpanningSetupPage() {
         <p style={{ margin: "0.4rem 0 0" }}>
           The Spanning API uses <b>HTTP Basic auth</b> over HTTPS: <b>username = the email you sign in to Spanning
           with</b>, <b>password = your API Key</b> (Settings → API Token), against
-          {" "}<code>https://o365-api-&#123;region&#125;.spanningbackup.com</code> (region = US/EU/AP/UK/CA — the United
-          States is <code>us</code>; the runner appends <code>/external</code>). Use the <b>o365-api</b> host — the bare
-          {" "}<code>api-&#123;region&#125;</code> host is a different product surface and returns 404.
+          {" "}<code>https://&#123;service&#125;-api-&#123;region&#125;.spanningbackup.com</code> (service =
+          {" "}<code>o365</code>, or <code>google</code> for a Spanning for Google Workspace tenant; region =
+          US/EU/AP/UK/CA — the United States is <code>us</code>; the runner appends <code>/external</code>). Use the
+          {" "}<b>&#123;service&#125;-api</b> host — the bare <code>api-&#123;region&#125;</code> host is a different
+          product surface and returns 404.
         </p>
       </div>
 
@@ -52,7 +54,7 @@ export default function SpanningSetupPage() {
           <tr><th style={{ width: 160 }}>clientID</th><td>the <b>email you log in to Spanning with</b> (the Basic-auth username)</td></tr>
           <tr><th>ClientSecret</th><td>the <b>API Key</b> — Spanning admin → <b>Settings</b> → <b>API Token</b> (at the bottom of the page)</td></tr>
           <tr><th>accountid</th><td>the account <b>domain without its suffix</b> — e.g. <code>coretelligent.com</code> → <code>coretelligent</code></td></tr>
-          <tr><th>apiURL</th><td><code>https://o365-api-&lt;region&gt;.spanningbackup.com</code> — for the United States the region is <code>us</code> (so <code>https://o365-api-us.spanningbackup.com</code>). Paste just the host; the runner appends <code>/external</code>.</td></tr>
+          <tr><th>apiURL</th><td><code>https://&lt;service&gt;-api-&lt;region&gt;.spanningbackup.com</code> — service <code>o365</code> (or <code>google</code> for a Google Workspace tenant), and for the United States the region is <code>us</code> (so <code>https://o365-api-us.spanningbackup.com</code>). Paste just the host; the runner appends <code>/external</code>.</td></tr>
         </tbody>
       </table>
       <p className="note">
