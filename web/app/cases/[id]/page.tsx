@@ -142,6 +142,10 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <p className="note">
             <Link href={`/clients/${c.client.slug}`}>{c.client.name}</Link> · {c.action} ·{" "}
             {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
+            {(() => {
+              const rule = (c.payload as { __intakeRule?: { label?: string } } | null)?.__intakeRule;
+              return rule?.label ? <span className="badge" style={{ marginLeft: 6 }} title="This case was planned by a per-contact intake rule">Intake rule: {rule.label}</span> : null;
+            })()}
           </p>
           <p className="note">
             {CASE_SOURCE_LABEL[c.createdSource]} {c.createdBy ? <>by <b>{c.createdBy}</b></> : <span className="muted">— creator not recorded</span>}
@@ -254,14 +258,16 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
       <p className="note" style={{ marginTop: "0.25rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
       <table>
         <tbody>
-          {Object.entries(c.payload).map(([k, v]) => (
-            <tr key={k}>
-              <th style={{ width: 240 }}>{intakeLabel(k)}</th>
-              <td>
-                <IntakeValue v={v} />
-              </td>
-            </tr>
-          ))}
+          {Object.entries(c.payload)
+            .filter(([k]) => !k.startsWith("__") && k !== "requestedByContactSysId" && k !== "openedBySysId")
+            .map(([k, v]) => (
+              <tr key={k}>
+                <th style={{ width: 240 }}>{intakeLabel(k)}</th>
+                <td>
+                  <IntakeValue v={v} />
+                </td>
+              </tr>
+            ))}
           {Object.keys(c.payload).length === 0 && (
             <tr><td className="muted">No intake fields.</td></tr>
           )}

@@ -98,6 +98,11 @@ model Client {
   globals                Json? // every-user ONBOARD rules (add groups, place OU, set attributes)
   globalsOffboard        Json? // every-user OFFBOARD rules (remove groups, move OU, set attributes)
   locations              Json?
+  // Per-contact intake rules (FR #0000019): when a configured ServiceNow contact submits an onboard
+  // case, skip named systems and force an email domain. Shape:
+  // { rules: [ { id, label, match: { contacts: [{ sysId, name }] }, effects: { skipSystems: string[], forceDomain: string } } ] }
+  // First matching rule wins; onboard-only. Evaluated in matchIntakeRule at plan/replan time.
+  intakeRules            Json?
   // AD objects discovered from the client's DC by its agent (read-only Get-ADOrganizationalUnit /
   // Get-ADGroup), to back the rules editor's OU/group pickers. { ous: string[], groups: string[],
   // discoveredAt }. adDiscoverRequestedAt is set by the "Refresh AD objects" button and consumed by

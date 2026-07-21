@@ -3,6 +3,7 @@
 import type { CaseStatus } from "@prisma/client";
 import { planCase, type PlannedJob } from "../orchestrator";
 import { deriveIdentity } from "../servicenow/intake-mapper";
+import { matchIntakeRule } from "../profiles/intake-rules";
 import type { CaseRepository } from "./repository";
 import type { NewCaseInput } from "./types";
 import type { ResolveClient } from "../clients/email-domain";
@@ -61,6 +62,11 @@ export async function createAndPlanCase(
   // a UPN from a username pattern). So no identity derivation here for offboard.
   let domain = client.emailDomain ?? client.primaryDomain;
   if (input.action === "onboard" && opts?.resolveDomain) domain = await opts.resolveDomain(client);
+  // Per-contact intake rule (FR #0000019): a configured requester forces the domain and skips systems.
+  const intakeRule = input.action === "onboard"
+    ? matchIntakeRule((client as { intakeRules?: unknown }).intakeRules, input.payload as Record<string, unknown>)
+    : null;
+  if (intakeRule?.forceDomain) domain = intakeRule.forceDomain;
   let payload =
     input.action === "onboard"
       ? deriveIdentity(input.payload, {
@@ -68,6 +74,7 @@ export async function createAndPlanCase(
           primaryDomain: domain,
         })
       : input.payload;
+  if (intakeRule) payload = { ...payload, __intakeRule: { id: intakeRule.id, label: intakeRule.label } };
 
   // LLM last resort: before holding the case for unknowns, let the AI take a confident guess at the
   // fields the deterministic mapping couldn't resolve (marked AI-derived for an operator to confirm).
@@ -79,7 +86,7 @@ export async function createAndPlanCase(
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
   const planned = resolvePlannedConfigs(client, payload, input.action,
     planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
-      new Set(client.notNeededSecrets), new Set(client.wiredOptionalSecrets)));
+      new Set(client.notNeededSecrets), new Set(client.wiredOptionalSecrets), intakeRule?.skipSystems));
   const status = deriveStatus(planned);
   const who = resolveActor(actor);
   const creator = { label: who.actor, userId: who.userId };
@@ -100,6 +107,7 @@ export async function createAndPlanCase(
       serviceNowCaseNumber: input.serviceNowCaseNumber ?? null,
       subject: input.subject ?? null,
       dryRun: input.dryRun ?? false,
+      intakeRule: intakeRule ? { id: intakeRule.id, label: intakeRule.label } : null,
     },
   });
 

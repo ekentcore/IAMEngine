@@ -138,6 +138,38 @@ export async function fetchAccountContactEmails(
   return emails;
 }
 
+// Active customer_contact rows for an account (sys_id + name + email), backing the intake-rule
+// contact picker (FR #0000019). Same query/guard as fetchAccountContactEmails, more fields.
+export async function fetchAccountContacts(
+  config: SnConfig,
+  accountSysId: string,
+  fetcher: Fetcher = fetch
+): Promise<{ sysId: string; name: string; email: string }[]> {
+  if (!/^[0-9a-f]{32}$/i.test(accountSysId)) return [];
+  assertConfig(config);
+  const out: { sysId: string; name: string; email: string }[] = [];
+  for (let offset = 0; offset < CONTACT_MAX; offset += CONTACT_PAGE) {
+    const page = await snGet<Array<{ sys_id?: string; name?: string; email?: string }>>(
+      config,
+      "/api/now/table/customer_contact",
+      {
+        sysparm_query: `account=${accountSysId}^active=true`,
+        sysparm_fields: "sys_id,name,email",
+        sysparm_display_value: "false",
+        sysparm_limit: String(CONTACT_PAGE),
+        sysparm_offset: String(offset),
+      },
+      fetcher
+    );
+    for (const r of page) {
+      const sysId = (r.sys_id ?? "").trim();
+      if (sysId) out.push({ sysId, name: (r.name ?? "").trim(), email: (r.email ?? "").trim() });
+    }
+    if (page.length < CONTACT_PAGE) break;
+  }
+  return out;
+}
+
 // Build SnConfig from environment (server-side only).
 export function snConfigFromEnv(): SnConfig {
   return {

@@ -125,9 +125,15 @@ export function planCase(
   // secret (e.g. ad-dc, which AD only needs off a domain controller — a DC agent authenticates as
   // ambient SYSTEM) is stripped from a job's required secretNames UNLESS the client wired it, in
   // which case it's kept so the runner brokers it as the fallback. Mirrors wiredOptionalSecrets.
-  wiredOptional?: ReadonlySet<string>
+  wiredOptional?: ReadonlySet<string>,
+  // System keys to exclude from this plan regardless of onboardWhen (per-contact intake rules,
+  // FR #0000019). Skipping active-directory also suppresses the synthetic ad-email-writeback /
+  // ad-consistency-check steps, which only inject when active-directory is active.
+  skipSystems?: ReadonlySet<string>
 ): PlannedJob[] {
-  const active = systems.filter((s) => included(s, action, payload, personaSystems));
+  const active = systems.filter(
+    (s) => !skipSystems?.has(s.systemKey) && included(s, action, payload, personaSystems)
+  );
   // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
   // `mail` attribute. Applies to every AD-origin client (identity starts on-prem) automatically — no
   // per-client ClientSystem row or migration. It depends on the cloud consumers present (m365/exchange)

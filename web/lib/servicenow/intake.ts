@@ -8,7 +8,7 @@ export type SnUserMgmtRecord = Record<string, SnFieldValue>;
 
 const INTAKE_FIELDS = [
   // routing / identity
-  "number", "short_description", "subcategory", "account", "company", "opened_by",
+  "number", "short_description", "subcategory", "account", "company", "opened_by", "contact",
   "contact_time_zone", "u_new_contact", "u_new_contact_time_zone", "u_not_listed", "u_new_or_existing",
   // onboarding — person
   "u_first", "u_last", "u_mi", "u_nickname", "u_start_date", "u_employment_type", "u_other_employment_type",

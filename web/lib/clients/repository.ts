@@ -3,6 +3,7 @@
 import type { PrismaClient, Backbone } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { NormalizedSnClient } from "../servicenow/mappers";
+import { parseIntakeRules, type IntakeRulesDoc } from "../profiles/intake-rules";
 import { normalizeCoreId } from "./core-id";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import { resolveActor, type ActorInput } from "../auth/actor";
@@ -484,6 +485,23 @@ export function makeClientRepository(db: PrismaClient) {
           globalsOffboard: globalsOffboard as Prisma.InputJsonValue,
         },
       });
+    },
+
+    // Read the per-contact intake rules (FR #0000019) + the client's system keys, for the rule
+    // editor. parseIntakeRules tolerantly normalizes the stored JSON (a client with no rules yet
+    // reads back as { rules: [] }).
+    async getIntakeRules(slug: string): Promise<{ id: string; intakeRules: IntakeRulesDoc; systemKeys: string[] } | null> {
+      const c = await db.client.findUnique({
+        where: { slug },
+        select: { id: true, intakeRules: true, systems: { select: { systemKey: true }, orderBy: { systemKey: "asc" } } },
+      });
+      if (!c) return null;
+      return { id: c.id, intakeRules: parseIntakeRules(c.intakeRules), systemKeys: c.systems.map((s) => s.systemKey) };
+    },
+
+    // Replace the intake rules doc wholesale (the editor sends the full { rules: [] } array).
+    async setIntakeRules(slug: string, doc: IntakeRulesDoc) {
+      return db.client.update({ where: { slug }, data: { intakeRules: doc as unknown as Prisma.InputJsonValue } });
     },
 
     // Hard refresh: overwrite ALL SN-owned fields from a freshly-fetched account (incl. the

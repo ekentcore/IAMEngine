@@ -220,6 +220,11 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     roles: dispList(r, "u_role_s"),
     listMembership: dispList(r, "u_coretelligent_list_membership"),
     requestedBy: disp(r, "opened_by"),
+    // Requester sys_ids for per-contact intake rules (FR #0000019). `contact` is the customer_contact
+    // reference (what the rule picker resolves); `opened_by` is the sys_user who opened the case (a
+    // fallback match key). matchIntakeRule reads both.
+    requestedByContactSysId: val(r, "contact"),
+    openedBySysId: val(r, "opened_by"),
     // access / licensing (names, not sys_ids)
     emailAddressNeeded: yes(r, "u_email_address_needed"),
     officeLineRequired: yes(r, "u_office_line_required"),

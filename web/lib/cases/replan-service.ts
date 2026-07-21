@@ -6,6 +6,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { planCase } from "../orchestrator";
 import { deriveIdentity } from "../servicenow/intake-mapper";
+import { matchIntakeRule } from "../profiles/intake-rules";
 import { fetchNormalizedIntake } from "./import-service";
 import { makeCaseRepository } from "./repository";
 import { deriveStatus, type PlanOutcome } from "./planning-service";
@@ -31,6 +32,9 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
   let action = info.action;
   let payload = info.payload;
   let refreshedFromServiceNow = false;
+  // Per-contact intake rule (FR #0000019): a configured requester forces the domain and skips
+  // systems. Hoisted to function scope so the planCase call below can see it.
+  let intakeRule: ReturnType<typeof matchIntakeRule> = null;
 
   // Re-pull the latest ticket for a ServiceNow-sourced case (UM or INC — the requester may have
   // edited it). Best-effort: a SN outage / unconfigured env must NOT block re-planning against edited
@@ -54,13 +58,16 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
     const identity = (info.client.identity ?? {}) as { usernamePatterns?: string[] | null };
     // Explicit override (request body) wins; else the PERSISTED per-case choice (the operator's
     // domain pick survives later replans); else the client's default resolution.
-    const { domain } = await makeEmailDomainResolver(db)(info.client, override ?? info.emailDomainOverride ?? undefined);
+    let { domain } = await makeEmailDomainResolver(db)(info.client, override ?? info.emailDomainOverride ?? undefined);
+    intakeRule = matchIntakeRule((info.client as { intakeRules?: unknown }).intakeRules, payload as Record<string, unknown>);
+    if (intakeRule?.forceDomain) domain = intakeRule.forceDomain;
     payload = deriveIdentity(payload, { usernamePatterns: identity.usernamePatterns ?? null, primaryDomain: domain });
+    if (intakeRule) payload = { ...payload, __intakeRule: { id: intakeRule.id, label: intakeRule.label } };
   }
 
   const planned = resolvePlannedConfigs(info.client, payload, action,
     planCase(info.client.systems, action, payload, personaSystemKeys(info.client, payload, action),
-      new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets)));
+      new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets), intakeRule?.skipSystems));
   const status = deriveStatus(planned);
   let result: { mode: "full" | "incremental"; kept: number; added: number; rerun: number };
   try {
