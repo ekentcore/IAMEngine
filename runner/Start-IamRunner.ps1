@@ -2458,7 +2458,16 @@ $CONNTEST_PROBE = @{
         }
         "$base · all required Graph permissions present — ${how}: $(@($granted) -join ', ')"
     }
-    'exchange'         = { param($job, $creds) $o = Get-OrganizationConfig -ErrorAction Stop; "org: $($o.Name)" }
+    'exchange'         = { param($job, $creds)
+        $o = Get-OrganizationConfig -ErrorAction Stop
+        # A successful app-only connect + org read PROVES the app holds Exchange.ManageAsApp + the
+        # Exchange Administrator role — Connect-ExchangeOnline app-only cannot mint a token without both,
+        # and any Exchange cmdlet (this one included) would 401/403 without them. So report the one
+        # Exchange right as satisfied: an Exchange-Online client with Exchange.ManageAsApp granted now
+        # reads 1/1 in the rights panel, instead of a blank/no-rights row.
+        $script:ConnTestRights = @(@{ op = 'run Exchange Online cmdlets app-only (Exchange.ManageAsApp + Exchange Administrator role)'; ok = $true; detail = "connected app-only to $($o.Name)" })
+        "org: $($o.Name)"
+    }
     'mimecast'         = { param($job, $creds)
         # Probe the actual operations onboarding needs and report which the API 2.0 app is permitted
         # to do — so "Test connections" shows the app's real permission map (Mimecast has no API to

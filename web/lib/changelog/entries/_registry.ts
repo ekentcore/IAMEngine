@@ -55,6 +55,7 @@ export { entry as engineOptOutHardening } from "./engine-opt-out-hardening";
 export { entry as engineOptOutParentInheritance } from "./engine-opt-out-parent-inheritance";
 export { entry as exchangeDisconnectExportHotfix } from "./exchange-disconnect-export-hotfix";
 export { entry as exchangeManagerName } from "./exchange-manager-name";
+export { entry as exchangeRightsManageasapp } from "./exchange-rights-manageasapp";
 export { entry as exoPinSelfheal } from "./exo-pin-selfheal";
 export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
 export { entry as extraAccessIndicator } from "./extra-access-indicator";
