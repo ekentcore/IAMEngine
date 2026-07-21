@@ -35,6 +35,10 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ...(flags.showFleetAudit ? ([["/fleet-audit", "Fleet audits"]] as const) : []),
     ["/help", "Help"],
   ];
+  // Self-contained operator utilities — no data access, no role gate (everything runs in the browser).
+  const tools: Item[] = [
+    ["/tools/google-key", "Google key converter"],
+  ];
   const admin: Item[] = [
     ...(flags.showAudit ? ([["/audit", "Audit"]] as const) : []),
     ...(flags.showUsers ? ([["/users", "Users"]] as const) : []),
@@ -44,6 +48,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
   ];
   return [
     { label: "Reference", items: reference },
+    { label: "Tools", items: tools },
     ...(admin.length ? [{ label: "Administration", items: admin }] : []),
   ];
 }
