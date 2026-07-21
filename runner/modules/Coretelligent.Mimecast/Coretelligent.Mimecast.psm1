@@ -183,6 +183,22 @@ function Get-CtgMimecastProfile {
     @(Get-CtgProp $resp 'data') | Select-Object -First 1
 }
 
+function Test-CtgMimecastPermissionForbidden {
+    # Classify a get-profile fail (its joined 'code: message' text) for the connection-test USER-read probe.
+    # Returns $true ONLY for a genuine API-2.0-application permission gap (the app can't read users at all,
+    # e.g. app_forbidden when User & Group Management isn't assigned). A PER-ADDRESS forbidden
+    # (err_xdk_operation_forbidden_for_address / "Forbidden To Perform Operation For Address") means the app
+    # WAS allowed to call get-profile and the probe address (postmaster@) simply isn't a managed user — that
+    # is NOT a permission gap, so it returns $false. Mirrors Get-CtgMimecastProfile's own distinction so the
+    # connection test can never disagree with what onboarding actually does. (Bug: the old probe regex
+    # matched 'forbidden|operation_forbidden', so a benign per-address forbidden false-flagged FORBIDDEN and
+    # failed the whole test even though the app was correctly permissioned.)
+    param([string]$FailText)
+    if ([string]::IsNullOrWhiteSpace($FailText)) { return $false }
+    if ($FailText -match 'operation_forbidden_for_address|forbidden.{0,16}address|forbidden to perform operation for address') { return $false }
+    return [bool]($FailText -match 'app_forbidden|forbidden|operation_forbidden|not .{0,6}permitted|unauthoriz|permission|denied')
+}
+
 function Invoke-CtgMimecastOnboarding {
     <#
     .SYNOPSIS
@@ -463,4 +479,4 @@ function Invoke-CtgMimecastConsoleSetup {
     throw "Mimecast console sign-in failed — $err$ev"
 }
 
-Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Get-CtgMimecastProfile, Find-CtgMimecastGroup, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast, Resolve-CtgMimecastConsoleLogin, Invoke-CtgMimecastConsoleSetup
+Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Get-CtgMimecastProfile, Test-CtgMimecastPermissionForbidden, Find-CtgMimecastGroup, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast, Resolve-CtgMimecastConsoleLogin, Invoke-CtgMimecastConsoleSetup

@@ -2579,15 +2579,19 @@ $CONNTEST_PROBE = @{
         $ops.Add((& $try 'account read'           '/api/account/get-account'))
         $ops.Add((& $try 'directory/domains read' '/api/domain/get-internal-domain'))
         $ops.Add((& $try 'directory-sync read'    '/api/directory/get-connection'))
-        # USER read is what onboarding actually needs (get-profile). Probe a benign address in an
-        # internal domain: FORBIDDEN = the missing permission; not-found = the permission IS granted.
+        # USER read is what onboarding actually needs (get-profile). Probe a benign address in an internal
+        # domain. A PER-ADDRESS forbidden (postmaster@ isn't a managed user) is NOT a permission gap — the
+        # app was allowed to CALL get-profile, which is what we're testing. Only a genuine app permission gap
+        # (app_forbidden — User & Group Management not assigned) counts. Test-CtgMimecastPermissionForbidden
+        # makes that distinction, matching Get-CtgMimecastProfile, so this test can't false-flag a correctly
+        # permissioned app as FORBIDDEN (which used to fail the whole test).
         $dom = $null
         try { $idr = @(Invoke-CtgMimecastApi -Path '/api/domain/get-internal-domain'); $dom = @($idr | ForEach-Object { $d = Get-CtgProp $_ 'domain'; if (-not $d) { $d = Get-CtgProp $_ 'domainName' }; $d } | Where-Object { $_ })[0] } catch { }
         if ($dom) {
             try {
                 $resp = Invoke-CtgMimecastApi -Path '/api/user/get-profile' -Data @{ emailAddress = "postmaster@$dom" } -AllowFail
-                $codes = @(@(Get-CtgProp $resp 'fail') | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { [string](Get-CtgProp $_ 'code') } })
-                if (($codes -join ' ') -match 'forbidden|operation_forbidden') { $ops.Add(@{ op = 'user read (get-profile)'; ok = $false; detail = 'FORBIDDEN — THIS is the onboarding gap' }) }
+                $failText = @(@(Get-CtgProp $resp 'fail') | ForEach-Object { @(Get-CtgProp $_ 'errors') | ForEach-Object { "$(Get-CtgProp $_ 'code'): $(Get-CtgProp $_ 'message')" } }) -join '; '
+                if (Test-CtgMimecastPermissionForbidden $failText) { $ops.Add(@{ op = 'user read (get-profile)'; ok = $false; detail = 'FORBIDDEN — grant the API 2.0 app User & Group Management (Directory + User read)' }) }
                 else { $ops.Add(@{ op = 'user read (get-profile)'; ok = $true; detail = 'allowed' }) }
             } catch { $ops.Add(@{ op = 'user read (get-profile)'; ok = $null; detail = 'error probing' }) }
         }

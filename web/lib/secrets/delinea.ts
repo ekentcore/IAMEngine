@@ -191,20 +191,22 @@ export async function findChildFolderByName(
 }
 
 // Resolve the folder a client credential should be CREATED in: the identity subfolder under the client's
-// folder when that child exists (it carries the RS/identity team's view permissions), else the client
-// folder itself. Every in-app credential write goes through here so a secret is never left in the client
-// ROOT — whose permissions are narrower, so a secret written there "reads as not viewable" to the team
-// (the exact symptom that stranded a hand-created Mimecast secret). `subfolderName` is the child to look
-// for (identitySubfolderName(); an empty string disables the redirect, e.g. via DELINEA_IDENTITY_SUBFOLDER).
+// folder (it carries the RS/identity team's view permissions). A credential must NEVER land in the client
+// ROOT — the ROOT's permissions are narrower, so a secret written there "reads as not viewable" to the
+// team (the exact symptom that stranded a hand-created Mimecast secret). So this returns the subfolder id,
+// or `null` when the requested subfolder doesn't exist — the caller decides what to do with a miss (the
+// in-app create route REFUSES rather than write to the ROOT; the auto-setup writers fall back + warn).
+// `subfolderName` is the child to look for (identitySubfolderName()); an EMPTY string means the redirect is
+// explicitly disabled (DELINEA_IDENTITY_SUBFOLDER=""), so the parent folder is returned as-is.
 export async function resolveCreateFolderId(
   cfg: DelineaConfig,
   parentFolderId: string | number,
   subfolderName: string,
   token: string,
   fetcher: Fetcher = defaultFetcher
-): Promise<string> {
-  const child = subfolderName ? await findChildFolderByName(cfg, parentFolderId, subfolderName, token, fetcher) : null;
-  return child || String(parentFolderId);
+): Promise<string | null> {
+  if (!subfolderName) return String(parentFolderId); // redirect disabled -> parent (explicit opt-out)
+  return await findChildFolderByName(cfg, parentFolderId, subfolderName, token, fetcher); // child id, or null if none
 }
 
 // The Secret Server folder a given secret LIVES in — read from the metadata-only /summary endpoint
