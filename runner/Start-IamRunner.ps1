@@ -566,11 +566,14 @@ function Connect-Ctg1PasswordForJob {
 }
 
 # Connect Google Workspace from the brokered 'google-admin' secret. Domain-wide-delegated SERVICE
-# ACCOUNT: the secret carries the downloaded JSON key (whole, as ServiceAccountJson, or base64 as
-# ServiceAccountKeyBase64 — Delinea-safe for the multi-line private_key) OR ClientEmail+PrivateKey
-# split out; plus the super-admin to impersonate (Impersonate field, else the secret's Username).
-# Connect-CtgGoogle mints a fresh OAuth token each call, so a rotated key takes effect next job. See
-# /help/google for the Cloud/Workspace setup that produces these fields.
+# ACCOUNT. The fleet shape is Delinea's stock "Automation - API" template (the same one the app's
+# auto-vault writes): ClientSecret = base64 of the downloaded JSON key (Delinea-safe for the
+# multi-line private_key), accountid = the SA's client email (needed only for a bare-PEM key),
+# apiURL = the super-admin email to impersonate (repurposed — never a URL here), ClientID = the
+# Workspace customer id. Custom templates keep working via the lenient picks below:
+# ServiceAccountJson/ServiceAccountKeyBase64 or ClientEmail+PrivateKey for the key, and
+# Impersonate (else the secret's Username) for the admin. Connect-CtgGoogle mints a fresh OAuth
+# token each call, so a rotated key takes effect next job. See /help/google.
 function Use-CtgGoogleSecret {
     param($Job, $Creds)
     $s = $Creds['google-admin']
@@ -621,7 +624,7 @@ function Use-CtgGoogleSecret {
         }
     }
     if (-not $clientEmail -or -not $privateKey) {
-        throw "the 'google-admin' secret has no service-account key — set ServiceAccountKeyBase64 (the downloaded JSON key, base64-encoded) or ServiceAccountJson, or split ClientEmail+PrivateKey. The secret has: $(@($f.Keys) -join ', '). See /help/google."
+        throw "the 'google-admin' secret has no service-account key — put the base64 of the downloaded JSON key in ClientSecret (the stock Automation - API template), or on a custom template set ServiceAccountKeyBase64/ServiceAccountJson or split ClientEmail+PrivateKey. The secret has: $(@($f.Keys) -join ', '). See /help/google."
     }
     $impersonate = & $pick @('Impersonate', 'AdminEmail', 'Admin', 'Subject', 'DelegatedAdmin', 'AdminUser')
     if (-not $impersonate -and $s.Username) { $impersonate = [string]$s.Username }
@@ -631,7 +634,7 @@ function Use-CtgGoogleSecret {
         $apiUrlField = & $pick @('apiURL')
         if ($apiUrlField -and $apiUrlField -match '@') { $impersonate = $apiUrlField }
     }
-    if (-not $impersonate) { throw "the 'google-admin' secret has no admin to impersonate — set the Impersonate field to a Workspace super-admin's email (domain-wide delegation acts as a real admin). See /help/google." }
+    if (-not $impersonate) { throw "the 'google-admin' secret has no admin to impersonate — put a Workspace super-admin's email in the apiURL field (the stock Automation - API template; the runner reads an email there), or in Impersonate/Username on a custom template. Domain-wide delegation acts as a real admin. See /help/google." }
     $customer = & $pick @('CustomerId', 'Customer')
     if (-not $customer) {
         # Automation - API template fallback: ClientID holds the Workspace customer id.

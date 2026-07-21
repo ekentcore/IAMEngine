@@ -63,29 +63,36 @@ export default function GoogleSetupPage() {
         domain hasn&rsquo;t added it — everything keeps working, and the offboard just warns that the tokens are
         still live until you paste the fourth scope here.
       </p>
-      <p className="note">Pick a <b>super-admin email</b> the service account will impersonate (any active super-admin) — you&rsquo;ll store it as <code>Impersonate</code>.</p>
+      <p className="note">Pick a <b>super-admin email</b> the service account will impersonate (any active super-admin) — you&rsquo;ll store it in the secret&rsquo;s <code>apiURL</code> field below.</p>
 
       <h2>3. Store it in Delinea</h2>
-      <p className="note"><b>Delinea template: Automation - API</b> — the service-account key goes in the <code>ServiceAccountKeyBase64</code> field. Field names are matched leniently, so any template that carries these fields works.</p>
       <p className="note">
-        The private key is multi-line, so the simplest Delinea-safe option is to <b>base64-encode the whole JSON key
-        file</b> and paste that into one field. From a terminal:
+        <b>Delinea template: Automation - API</b> — the same stock template Adobe / Mimecast / Spanning use. Its four
+        fields are <code>ClientID</code>, <code>ClientSecret</code>, <code>accountid</code> and <code>apiURL</code>;
+        Secret Server fields are fixed per template, so those exact names are what you fill in. Two are repurposed for
+        Google (<code>apiURL</code> carries an email, not a URL) — the table says what goes where. A manually created
+        secret and an auto-vaulted one (name <b>Google API - IAM Engine</b>) end up identical.
+      </p>
+      <p className="note">
+        The private key is multi-line, so <b>base64-encode the whole JSON key file</b> and paste that into
+        {" "}<code>ClientSecret</code>. From a terminal:
       </p>
       <Code>{`base64 -i coretelligent-iam-xxxx.json | pbcopy   # macOS — JSON key, base64, now on your clipboard`}</Code>
       <table>
         <tbody>
-          <tr><th style={{ width: 200 }}>ServiceAccountKeyBase64</th><td>the base64 of the downloaded JSON key (preferred — one field, no newline issues). The runner decodes it and reads <code>client_email</code> + <code>private_key</code>.</td></tr>
-          <tr><th>Impersonate</th><td><b>required</b> — the Workspace <b>super-admin email</b> to act as (domain-wide delegation impersonates a real admin).</td></tr>
-          <tr><th>CustomerId</th><td>optional — defaults to <code>my_customer</code> (the secret&rsquo;s own tenant), which is correct for a single-tenant service account.</td></tr>
-          <tr><th>Scopes</th><td>optional — override the default Directory scopes (comma/space separated). Leave blank to use the three above.</td></tr>
+          <tr><th style={{ width: 200 }}>ClientSecret</th><td><b>required</b> — the base64 of the downloaded JSON key file. The runner decodes it and reads <code>client_email</code> + <code>private_key</code>. (Raw JSON pasted here also works.)</td></tr>
+          <tr><th>accountid</th><td>the service account&rsquo;s email (<code>client_email</code>, ends in <code>.iam.gserviceaccount.com</code>). Informational when <code>ClientSecret</code> is the full JSON key (the email is inside it); required only if you store a bare PEM instead.</td></tr>
+          <tr><th>apiURL</th><td><b>required</b> — the Workspace <b>super-admin email</b> to impersonate (domain-wide delegation acts as a real admin). Yes, an email in a field named apiURL — the stock template has no better slot, and the runner knows to read it here.</td></tr>
+          <tr><th>ClientID</th><td>optional — the Workspace <b>customer ID</b> (Admin Console → Account settings, e.g. <code>C01ab2cd3</code>). Leave blank to use <code>my_customer</code>, which is correct for a single-tenant service account.</td></tr>
         </tbody>
       </table>
       <p className="note">
-        Alternatives accepted (in case base64 is awkward): paste the raw JSON into <code>ServiceAccountJson</code>, or
-        split it into <code>ClientEmail</code> + <code>PrivateKey</code> (the PEM, including the
-        {" "}<code>-----BEGIN PRIVATE KEY-----</code> lines). <code>Impersonate</code> can also be read from the
-        secret&rsquo;s <b>Username</b> field. If the runner can&rsquo;t find a key or an admin to impersonate, the step
-        fails with a message naming the fields it looked for.
+        Using a custom template instead? Field names are matched leniently: the key can live in
+        {" "}<code>ServiceAccountKeyBase64</code> or raw-JSON <code>ServiceAccountJson</code>, or split as
+        {" "}<code>ClientEmail</code> + <code>PrivateKey</code> (the PEM, including the
+        {" "}<code>-----BEGIN PRIVATE KEY-----</code> lines); the super-admin can live in <code>Impersonate</code> or the
+        secret&rsquo;s <b>Username</b>, and the customer id in <code>CustomerId</code>. If the runner can&rsquo;t find a
+        key or an admin to impersonate, the step fails with a message naming the fields it looked for.
       </p>
       <p className="note">Grant the app&rsquo;s Delinea service account <b>Read</b> on the secret, or the Test shows &ldquo;access denied&rdquo;.</p>
 
