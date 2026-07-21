@@ -239,3 +239,46 @@ Describe 'Invoke-CtgMimecastApi (transient retry)' {
         $global:McCalls | Should -Be 1
     }
 }
+
+Describe 'Resolve-CtgMimecastConsoleLogin' {
+    # The console sign-in login-resolver — the ONE place that decides what may be typed into the
+    # Mimecast Administration Console login. Field synonyms mirror field-requirements.ts 'mimecast-console'.
+    It 'resolves Username + Password from the secret fields' {
+        $secret = [pscustomobject]@{ Fields = @{ Username = 'admin@drakestar.com'; Password = 'p@ss' } }
+        $r = Resolve-CtgMimecastConsoleLogin -Secret $secret
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be 'admin@drakestar.com'
+        $r.Password | Should -Be 'p@ss'
+    }
+
+    It 'accepts the AdminEmail / AdminPassword synonyms' {
+        $secret = [pscustomobject]@{ Fields = @{ AdminEmail = 'it@drakestar.com'; AdminPassword = 'x' } }
+        $r = Resolve-CtgMimecastConsoleLogin -Secret $secret
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be 'it@drakestar.com'
+    }
+
+    It 'falls back to the secret Credential when no email/password fields are present' {
+        $cred = [System.Management.Automation.PSCredential]::new('admin@drakestar.com', (ConvertTo-SecureString 'sekret' -AsPlainText -Force))
+        $secret = [pscustomobject]@{ Fields = @{}; Credential = $cred }
+        $r = Resolve-CtgMimecastConsoleLogin -Secret $secret
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be 'admin@drakestar.com'
+        $r.Password | Should -Be 'sekret'
+    }
+
+    It 'fails (Ok=$false) with an actionable reason when nothing is wired — and never echoes a value' {
+        $r = Resolve-CtgMimecastConsoleLogin -Secret ([pscustomobject]@{ Fields = @{} })
+        $r.Ok | Should -BeFalse
+        $r.Username | Should -BeNullOrEmpty
+        $r.Reason | Should -Match "no 'mimecast-console' secret is wired"
+    }
+
+    It 'rejects a non-email username (an API clientId is not a console sign-in) without echoing it' {
+        $secret = [pscustomobject]@{ Fields = @{ Username = 'not-an-email-clientid'; Password = 'x' } }
+        $r = Resolve-CtgMimecastConsoleLogin -Secret $secret
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Match 'is not an email'
+        $r.Reason | Should -Not -Match 'not-an-email-clientid'
+    }
+}

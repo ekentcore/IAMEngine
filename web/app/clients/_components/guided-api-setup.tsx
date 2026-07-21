@@ -26,8 +26,15 @@ import { isSecretish } from "./create-in-delinea";
 // (deriveSpanningValues), so the modal must not also render it as a free-text input.
 const SPANNING_DERIVED_LABEL = "region or base url";
 
-type Mode = "paste" | "existing";
+type Mode = "paste" | "existing" | "automatic";
 type Verdict = { ok: boolean; text: string };
+
+// Poll the console sign-in test's status endpoint until the job is terminal (or we give up). Kept
+// simple: a fixed 3 s cadence, bounded so a wedged job can't spin forever — the runner-side flow has
+// its own hard timeout, so a "still running" here past the cap means something is stuck.
+const SIGNIN_POLL_MS = 3000;
+const SIGNIN_MAX_POLLS = 80; // ~4 min — comfortably past a browser launch + sign-in + MFA window
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function GuidedApiSetup({
   slug,
@@ -50,6 +57,8 @@ export function GuidedApiSetup({
   const [externalId, setExternalId] = useState("");
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [done, setDone] = useState(false);
+  // Automatic tab: the live status line for the console sign-in test ("Signing in…", pass, fail).
+  const [signinStatus, setSigninStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
   // Refresh the page ONCE per successful save, mirroring M365SetupButton's refreshedOnDone guard.
   const refreshedOnDone = useRef(false);
 
@@ -69,6 +78,7 @@ export function GuidedApiSetup({
     setExternalId("");
     setRegion(entry.regionOptions?.[0] ?? "");
     setService(entry.serviceOptions?.[0] ?? "");
+    setSigninStatus({ state: "idle" });
     setMode("paste");
     refreshedOnDone.current = false;
     dialogRef.current?.showModal();
@@ -165,8 +175,45 @@ export function GuidedApiSetup({
     }
   }
 
+  // Automatic tab: dispatch the console sign-in test, then poll its status to a verdict. Proves the
+  // mimecast-console login + MFA work before Phase 2's create-app automation is built on top. On a
+  // 409 (no console login wired) the route returns actionable guidance, shown as the verdict.
+  async function testConsoleSignin() {
+    setSigninStatus({ state: "running" });
+    try {
+      const r = await fetch(`/api/clients/${slug}/mimecast-console/signin-test`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.jobId) {
+        setSigninStatus({ state: "done", verdict: { ok: false, text: d.error ?? `couldn't start the test (${r.status})` } });
+        return;
+      }
+      for (let i = 0; i < SIGNIN_MAX_POLLS; i++) {
+        await sleep(SIGNIN_POLL_MS);
+        const s = await fetch(`/api/clients/${slug}/mimecast-console/signin-test?jobId=${encodeURIComponent(d.jobId)}`);
+        const sd = await s.json().catch(() => ({}));
+        if (!s.ok) {
+          setSigninStatus({ state: "done", verdict: { ok: false, text: sd.error ?? `couldn't read the test status (${s.status})` } });
+          return;
+        }
+        if (sd.done) {
+          setSigninStatus({
+            state: "done",
+            verdict: sd.ok
+              ? { ok: true, text: "Signed in to the Mimecast console — the login and MFA work." }
+              : { ok: false, text: sd.error ?? "sign-in failed" },
+          });
+          return;
+        }
+      }
+      setSigninStatus({ state: "done", verdict: { ok: false, text: "the sign-in test is still running after several minutes — check the agent, then try again." } });
+    } catch (e) {
+      setSigninStatus({ state: "done", verdict: { ok: false, text: (e as Error).message } });
+    }
+  }
+
   const canSubmitPaste = fields.every((f) => (values[f.label] ?? "").trim() !== "");
   const canSubmitExisting = externalId.trim() !== "";
+  const signinRunning = signinStatus.state === "running";
 
   return (
     <>
@@ -196,12 +243,17 @@ export function GuidedApiSetup({
         </div>
 
         <div className="toolbar" style={{ marginTop: "0.75rem" }}>
-          <button type="button" className={mode === "paste" ? "primary" : undefined} disabled={busy} onClick={() => { setMode("paste"); setVerdict(null); }}>
+          <button type="button" className={mode === "paste" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("paste"); setVerdict(null); }}>
             Paste fields
           </button>
-          <button type="button" className={mode === "existing" ? "primary" : undefined} disabled={busy} onClick={() => { setMode("existing"); setVerdict(null); }}>
+          <button type="button" className={mode === "existing" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("existing"); setVerdict(null); }}>
             Existing Delinea id
           </button>
+          {entry.autoBrowser && (
+            <button type="button" className={mode === "automatic" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("automatic"); setVerdict(null); }}>
+              Automatic (browser)
+            </button>
+          )}
         </div>
 
         {mode === "paste" ? (
@@ -262,7 +314,7 @@ export function GuidedApiSetup({
               </label>
             )}
           </div>
-        ) : (
+        ) : mode === "existing" ? (
           <div style={{ marginTop: "0.75rem" }}>
             <label style={{ display: "block", marginBottom: 10 }}>
               <span className="note" style={{ display: "block", marginBottom: 2 }}>Delinea secret id</span>
@@ -279,6 +331,32 @@ export function GuidedApiSetup({
               />
             </label>
           </div>
+        ) : (
+          <div style={{ marginTop: "0.75rem" }}>
+            <p className="note">
+              The runner drives the Mimecast console for you. First confirm it can sign in; once that works,
+              the automated setup will create the API application and save the credential to Delinea.
+            </p>
+            <p className="note muted">
+              Needs a <code>mimecast-console</code> secret wired on this client — the Mimecast admin email + password,
+              with One-Time Password enabled on the Delinea secret for MFA. Create and wire it in the Credentials
+              panel first (see the full guide).
+            </p>
+            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+              <button type="button" className="primary" disabled={signinRunning} onClick={testConsoleSignin}>
+                {signinRunning ? "Signing in…" : "Test sign-in"}
+              </button>
+            </div>
+            {signinStatus.verdict && (
+              <p className="note" style={{ color: signinStatus.verdict.ok ? "#2e7d32" : "#b91c1c" }}>
+                {signinStatus.verdict.ok ? "✓ " : "✗ "}{signinStatus.verdict.text}
+              </p>
+            )}
+            <p className="note muted" style={{ marginTop: "0.5rem" }}>
+              Creating the API application automatically is coming next. For now, use <b>Paste fields</b> after a
+              successful sign-in test.
+            </p>
+          </div>
         )}
 
         {verdict && (
@@ -289,8 +367,9 @@ export function GuidedApiSetup({
 
         <div className="toolbar" style={{ marginTop: "0.9rem" }}>
           <span className="grow" />
-          <button type="button" onClick={closeModal} disabled={busy}>{done ? "Close" : "Cancel"}</button>
-          {!done && (
+          <button type="button" onClick={closeModal} disabled={busy || signinRunning}>{done ? "Close" : "Cancel"}</button>
+          {/* Verify & save belongs to the two credential-entry tabs; the Automatic tab has its own action. */}
+          {!done && mode !== "automatic" && (
             <button
               type="button"
               className="primary"
