@@ -35,6 +35,7 @@ export { entry as changelogOneFilePerEntry } from "./changelog-one-file-per-entr
 export { entry as changelogPage } from "./changelog-page";
 export { entry as changelogTimes } from "./changelog-times";
 export { entry as changelogTimesEastern } from "./changelog-times-eastern";
+export { entry as changelogTimesEasternUtcFix } from "./changelog-times-eastern-utc-fix";
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
 export { entry as clientsActionsMenu } from "./clients-actions-menu";
 export { entry as connectorBuilder } from "./connector-builder";
