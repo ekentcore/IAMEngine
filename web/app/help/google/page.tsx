@@ -81,6 +81,11 @@ export default function GoogleSetupPage() {
         key against Google&rsquo;s Directory API before anything is written.
       </p>
       <p className="note">
+        Creating the secret by hand and just need the base64? The <Link href="/tools/google-key"><b>Google key converter</b></Link>{" "}
+        (under <b>More → Tools</b>) takes the same <code>.json</code> file and hands you each Automation - API field value
+        to copy — no terminal, nothing uploaded.
+      </p>
+      <p className="note">
         Creating the secret <b>by hand in Secret Server</b> instead? The private key is multi-line, so
         {" "}<b>base64-encode the whole JSON key file</b> and paste that into <code>ClientSecret</code>. From a terminal:
       </p>
