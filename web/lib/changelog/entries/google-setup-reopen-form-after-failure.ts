@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "google-setup-reopen-form-after-failure",
   date: "2026-07-21",
-  time: "16:15",
+  time: "12:15",
   title: "Google auto-setup modal reopens on the form after a failed run - so you can enter a new secret id",
   items: [
     "Reopening 'Set up Google Workspace automatically' always jumped to the last run's screen, because the modal shows whatever the latest run was - and a run that failed hours ago still counts",
