@@ -152,6 +152,7 @@ export { entry as runnerGraphSkewGuard } from "./runner-graph-skew-guard";
 export { entry as runnerVersionStartupLog } from "./runner-version-startup-log";
 export { entry as securityP0Runner } from "./security-p0-runner";
 export { entry as selfHealWatchdog } from "./self-heal-watchdog";
+export { entry as setupRunCancelButton } from "./setup-run-cancel-button";
 export { entry as slackCatalogBuilt } from "./slack-catalog-built";
 export { entry as sharepointFullcontrolUsedRole } from "./sharepoint-fullcontrol-used-role";
 export { entry as sharepointOnedriveFullaccessGrant } from "./sharepoint-onedrive-fullaccess-grant";

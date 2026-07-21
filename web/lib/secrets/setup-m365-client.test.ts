@@ -410,3 +410,39 @@ test("input.forceReissue is threaded into provisionM365App", async () => {
   await setupM365ForClient({ client: CLIENT, tenant: TENANT }, deps);
   assert.equal(seen, undefined, "absent input stays absent (no accidental rotation)");
 });
+
+// --- cancellation ------------------------------------------------------------------------------------
+
+test("a pre-aborted signal returns cancelled before touching any dep", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const mustNotRun = () => { throw new Error("must not be called after cancel"); };
+  const deps = happyDeps({
+    hasGlobalAdminSecret: async () => mustNotRun(),
+    startDeviceCode: async () => mustNotRun(),
+    provisionM365App: async () => mustNotRun(),
+    writeProvisionedM365App: async () => mustNotRun(),
+  });
+  const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT, signal: controller.signal }, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "cancelled");
+});
+
+test("cancel during the token poll stops before provisioning (nothing mutates after the abort)", async () => {
+  const controller = new AbortController();
+  let provisioned = false;
+  const deps = happyDeps({
+    // The signal rides into the poll (real impl exits early); abort mid-poll and return a token
+    // anyway — the core's next boundary check must still refuse to provision.
+    pollDeviceCodeToken: async (_t, _d, opts) => {
+      assert.equal(opts.signal, controller.signal, "the cancel signal must reach the token poll");
+      controller.abort();
+      return { ok: true, token: "SECRET-GRAPH-TOKEN" };
+    },
+    provisionM365App: async () => { provisioned = true; return { ok: true, result: provision() }; },
+  });
+  const result = await setupM365ForClient({ client: CLIENT, tenant: TENANT, signal: controller.signal }, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "cancelled");
+  assert.equal(provisioned, false, "provisioning must not run after the cancel");
+});

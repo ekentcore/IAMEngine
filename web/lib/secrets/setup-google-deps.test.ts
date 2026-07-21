@@ -138,3 +138,28 @@ test("awaitJobResult: a job that never terminates times out -> ok:false", async 
   assert.equal(out.ok, false);
   assert.equal(out.resultText, undefined);
 });
+
+test("awaitJobResult exits within one poll interval when the cancel signal aborts", async () => {
+  const controller = new AbortController();
+  const clock = fakeClock();
+  let polls = 0;
+  const db = {
+    job: {
+      findUnique: async () => {
+        polls++;
+        return { status: "running", result: null };
+      },
+    },
+  } as any;
+  const deps = buildGoogleSetupDeps(db, {
+    now: clock.now,
+    sleep: async (ms: number) => {
+      await clock.sleep(ms);
+      controller.abort(); // the cancel lands while the await sleeps
+    },
+    pollIntervalMs: 5000,
+  });
+  const r = await deps.awaitJobResult("job-1", 10 * 60 * 1000, controller.signal);
+  assert.equal(r.ok, false);
+  assert.equal(polls, 1, "exactly one poll before the abort, none after");
+});

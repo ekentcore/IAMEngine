@@ -47,7 +47,7 @@ export type SetupDeps = {
   pollDeviceCodeToken: (
     tenant: string,
     deviceCode: string,
-    opts: { intervalSeconds: number; expiresInSeconds: number; sleep?: (ms: number) => Promise<void>; now?: () => number }
+    opts: { intervalSeconds: number; expiresInSeconds: number; sleep?: (ms: number) => Promise<void>; now?: () => number; signal?: AbortSignal }
   ) => Promise<DeviceCodeToken>;
   provisionM365App: (input: {
     graphToken: string;
@@ -99,9 +99,13 @@ export type SetupInput = {
   issueCert?: boolean;
   certDays?: number;
   grantExchange?: boolean;
+  // The run's cancel signal (see setup-cancel.ts). Checked between steps — a cancelled run returns a
+  // terminal "cancelled" result at the next boundary instead of mutating further, and the device-code
+  // token poll exits early. Optional: an un-cancellable caller just never aborts it.
+  signal?: AbortSignal;
 };
 
-export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error";
+export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error" | "cancelled";
 
 export type SetupResult = {
   ok: boolean;
@@ -164,6 +168,14 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   const { client, tenant } = input;
   const actions: string[] = [];
 
+  // Cancel boundary: checked before every step that would mutate (or start a long wait). The row/run
+  // status writes are the caller's job — this just stops doing work and reports why.
+  const cancelledResult = (): SetupResult => {
+    actions.push("the run was cancelled");
+    return { ok: false, stage: "cancelled", error: "the run was cancelled", actions };
+  };
+  if (input.signal?.aborted) return cancelledResult();
+
   // 1. Fail fast if there's no Global-Admin login for the runner's device-code broker to use — nothing
   // downstream can work without it, and this avoids minting a device code that will just expire unused.
   // A gaSecretRef (from the modal) bypasses this entirely — the override IS the eligibility, and there
@@ -212,13 +224,16 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   const { jobId } = dispatchR.value;
   actions.push(`browser job ${jobId} dispatched — waiting for Global Admin sign-in`);
 
-  // 4. The token poll is the primary success signal (see file header) — poll it to completion.
+  // 4. The token poll is the primary success signal (see file header) — poll it to completion. The
+  // cancel signal rides along so a cancelled run doesn't sit in this poll for the full ~15m window.
+  if (input.signal?.aborted) return cancelledResult();
   actions.push("polling for the device-code token");
   const tokenR = await callDep("pollDeviceCodeToken", () =>
     deps.pollDeviceCodeToken(tenant, dc.deviceCode, {
       intervalSeconds: dc.interval,
       expiresInSeconds: dc.expiresIn,
       sleep: deps.sleep,
+      signal: input.signal,
     })
   );
   if (!tokenR.ok) {
@@ -252,6 +267,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   }
 
   // 5. Have a Graph token carrying the GA's privileges — provision (or reconcile) the app registration.
+  if (input.signal?.aborted) return cancelledResult();
   await deps.onStage?.("provision");
   actions.push("obtained a Graph token — provisioning the app registration");
   const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: input.forceReissue, issueCert: input.issueCert, certDays: input.certDays, grantExchange: input.grantExchange }));
@@ -282,6 +298,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // 6. Write whatever new credential material this run issued back to Delinea (a "kept existing, still
   // valid" run writes nothing — see writeProvisionedM365App). writeProvisionedM365App itself refuses to
   // report ok:true unless the credential is genuinely present+valid (credState-aware — see Findings 1/3).
+  if (input.signal?.aborted) return cancelledResult();
   await deps.onStage?.("write");
   actions.push("writing provisioned credentials to Delinea");
   const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result, expectCert: input.issueCert ?? true }));
@@ -314,6 +331,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       // "kept-valid") but nothing is vaulted for it — that prior secret value is unrecoverable, so the
       // only fix is to rotate a fresh one and vault THAT. Bounded to exactly ONE recovery attempt: if
       // it fails too, fall through to a normal failure rather than looping.
+      if (input.signal?.aborted) return cancelledResult();
       actions.push("the app has credential material that was never vaulted — rotating a fresh secret + certificate");
       const recoverProvR = await callDep("provisionM365App", () =>
         deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: true, issueCert: input.issueCert, certDays: input.certDays, grantExchange: input.grantExchange })

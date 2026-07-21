@@ -48,6 +48,7 @@ const OPTIONAL_CAPS = optionalCapChoices();
 export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: string; openSignal?: number; hideTrigger?: boolean }) {
   const [phase, setPhase] = useState<"form" | "progress">("form");
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [state, setState] = useState<ClientState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(false);
@@ -81,20 +82,25 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   // Refresh the page ONCE when a run finishes, so the client's Secrets panel below reflects the
   // newly-wired Delinea id + "(auto)" label without a manual reload. Reset when a new run starts.
   const refreshedOnDone = useRef(false);
+  // Set by cancelRun: a poll that was already in flight when the cancel landed must not repopulate
+  // the just-cleared state (it would flash the "running" view back for one cycle). Cleared whenever
+  // the modal is (re)opened or a new run starts.
+  const abandoned = useRef(false);
 
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/clients/${slug}/m365-setup`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
+      if (abandoned.current) return null;
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return d?.client ?? null; }
       setState(d.client ?? null);
       return d.client ?? null;
-    } catch (e) { setError((e as Error).message); return null; }
+    } catch (e) { if (!abandoned.current) setError((e as Error).message); return null; }
   }, [slug]);
 
   // Poll while the client's run is unsettled.
   useEffect(() => {
-    const terminal = state && ["done", "skipped", "failed"].includes(state.status);
+    const terminal = state && ["done", "skipped", "failed", "cancelled"].includes(state.status);
     if (terminal) { setActive(false); return; }
     const running = active || state?.status === "pending" || state?.status === "running";
     if (timer.current) clearTimeout(timer.current);
@@ -133,13 +139,14 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   }, [active, state?.status]);
 
   const openForm = useCallback(async () => {
+    abandoned.current = false;
     setModalError(null); setError(null); setLogOpen(false); setCopied(false); setCodeCopied(false);
     dialogRef.current?.showModal();
     // If a run for this client is already in flight (or just finished), jump straight to progress so a
     // reopen shows live status instead of a fresh form.
     const c = await load();
     const s = (c as ClientState | null)?.status;
-    if (s === "running" || s === "pending" || s === "done" || s === "failed") setPhase("progress");
+    if (s === "running" || s === "pending" || s === "done" || s === "failed" || s === "cancelled") setPhase("progress");
     else setPhase("form");
   }, [load]);
 
@@ -151,9 +158,31 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
 
   function closeModal() { dialogRef.current?.close(); }
 
+  // Emergency stop: cancel the server-side run (which also stops its browser job), then wipe every
+  // bit of local run state — timer, step tracker, sign-in stamp, state itself — and close the modal.
+  // The teardown runs even if the DELETE fails (network blip / the run just finished): the operator
+  // asked for the modal to go away, and the run's own deadline+stale reaper are the server backstop.
+  async function cancelRun() {
+    setCancelling(true);
+    abandoned.current = true; // drop any poll response still in flight — it must not repopulate state
+    try {
+      await fetch(`/api/clients/${slug}/m365-setup`, { method: "DELETE" });
+    } catch { /* teardown below still applies */ }
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    maxStep.current = -1;
+    signinSince.current = null;
+    refreshedOnDone.current = false;
+    setState(null); setActive(false); setError(null); setModalError(null); setLogOpen(false);
+    setCopied(false); setCodeCopied(false);
+    setCancelling(false);
+    setPhase("form");
+    dialogRef.current?.close();
+  }
+
   async function start() {
     const ref = gaSecretRef.trim();
     if (!ref) return;
+    abandoned.current = false;
     setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpen(false); setCopied(false); setCodeCopied(false);
     maxStep.current = -1;
     signinSince.current = null;
@@ -199,12 +228,14 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   const running = state?.status === "pending" || state?.status === "running";
   const done = state?.status === "done";
   const failed = state?.status === "failed";
+  const cancelledRun = state?.status === "cancelled";
   const hasLog = Boolean(state?.log && state.log.length > 0);
   // The step the failure landed on (from the terminal stage), else the furthest running step.
   const failedStep = failed ? (stepOf(state?.stage) >= 0 ? stepOf(state?.stage) : maxStep.current) : -1;
   const activeStep = Math.max(maxStep.current, stepOf(state?.stage));
 
   function stepStatus(i: number): "done" | "active" | "failed" | "pending" {
+    if (cancelledRun) return "pending"; // a cancelled run's steps are moot — no spinner, no ✕
     if (done) return "done";
     if (failed) return i === failedStep ? "failed" : i < failedStep ? "done" : "pending";
     if (i < activeStep) return "done";
@@ -335,7 +366,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
         ) : (
           <>
             <h2>
-              {done ? "M365 setup complete" : failed ? "M365 setup failed" : "Setting up M365…"}
+              {done ? "M365 setup complete" : failed ? "M365 setup failed" : cancelledRun ? "M365 setup cancelled" : "Setting up M365…"}
             </h2>
 
             <ol className="setup-steps">
@@ -450,6 +481,13 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
               </div>
             )}
 
+            {/* A cancelled run seen from another tab / a reopen — the tab that cancelled closes itself. */}
+            {cancelledRun && (
+              <div className="setup-result-fail">
+                <div className="note">{state?.error ?? "This run was cancelled."}</div>
+              </div>
+            )}
+
             {error && <p className="note" style={{ color: "#b91c1c" }}>{error}</p>}
 
             {hasLog && (
@@ -468,9 +506,16 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
               {/* Re-run is available on BOTH a failed and a completed run — a "done" run still needs a
                   way back (re-provision to reconcile permissions, rotate a credential, or recover a
                   client whose vault only ever got a placeholder). */}
-              {(failed || done) && (
+              {(failed || done || cancelledRun) && (
                 <button type="button" onClick={reRun} disabled={running}>
-                  {failed ? "Re-run setup" : "Set up again"}
+                  {failed || cancelledRun ? "Re-run setup" : "Set up again"}
+                </button>
+              )}
+              {/* Emergency stop while the run is live: aborts the server-side run + its browser job,
+                  clears everything held for it here, and closes the modal. */}
+              {running && (
+                <button type="button" onClick={() => void cancelRun()} disabled={cancelling}>
+                  {cancelling ? "Cancelling…" : "Cancel setup"}
                 </button>
               )}
               <button type="button" className={done ? "primary" : undefined} onClick={closeModal} disabled={running && !failed && !done}>

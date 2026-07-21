@@ -81,9 +81,12 @@ export function buildGoogleSetupDeps(db: PrismaClient, opts: GoogleDepsOptions =
     dispatchOAuthJob: ({ client, seedSecretRef, authUrl }) =>
       dispatchGoogleOAuthJob({ db, client, seedSecretRef, authUrl, redirectUri: OAUTH_REDIRECT_URI }),
 
-    awaitJobResult: async (jobId, timeoutMs): Promise<JobAwaitResult> => {
+    awaitJobResult: async (jobId, timeoutMs, signal): Promise<JobAwaitResult> => {
       const start = now();
       for (;;) {
+        // The run's cancel signal: exit within one poll interval instead of sitting out the full
+        // browser-job timeout. Non-ok — the core's boundary check turns it into a "cancelled" result.
+        if (signal?.aborted) return { ok: false, resultText: undefined, warnings: [] };
         const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, result: true } });
         const status = job?.status ?? "unknown";
         if (TERMINAL_STATUSES.has(status)) {

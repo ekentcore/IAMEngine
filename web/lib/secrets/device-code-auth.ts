@@ -20,11 +20,15 @@ export async function startDeviceCode(tenant: string, fetcher: typeof fetch = fe
 
 export async function pollDeviceCodeToken(
   tenant: string, deviceCode: string,
-  opts: { intervalSeconds: number; expiresInSeconds: number; sleep?: (ms: number) => Promise<void>; now?: () => number },
+  opts: { intervalSeconds: number; expiresInSeconds: number; sleep?: (ms: number) => Promise<void>; now?: () => number; signal?: AbortSignal },
   fetcher: typeof fetch = fetch
 ): Promise<{ ok: true; token: string } | { ok: false; error: string; code?: string }> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = opts.now ?? (() => Date.now());
+  // The run's cancel signal: checked each loop pass (either side of the sleep) so a cancelled run
+  // exits within one poll interval instead of sitting out the full device-code window.
+  const cancelled = (): { ok: false; error: string; code: string } | null =>
+    opts.signal?.aborted ? { ok: false, error: "the run was cancelled", code: "cancelled" } : null;
   let interval = Math.max(1, opts.intervalSeconds);
   const deadline = now() + opts.expiresInSeconds * 1000;
   // A persistent egress outage (network down, DNS, TLS, the 20s AbortSignal.timeout firing) throws
@@ -34,7 +38,9 @@ export async function pollDeviceCodeToken(
   let consecutiveFailures = 0;
   let lastFailureMessage = "";
   while (now() < deadline) {
+    { const c = cancelled(); if (c) return c; }
     await sleep(interval * 1000);
+    { const c = cancelled(); if (c) return c; }
     try {
       const body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", client_id: DEVICE_CODE_CLIENT_ID, device_code: deviceCode });
       const res = await fetcher(`${AUTH_HOST}/${encodeURIComponent(tenant)}/oauth2/v2.0/token`, {

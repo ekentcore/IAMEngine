@@ -27,7 +27,8 @@ export type GoogleSetupStage =
   | "verify"
   | "write"
   | "done"
-  | "error";
+  | "error"
+  | "cancelled";
 
 export type GoogleSetupClient = { id: string; slug: string; name: string; delineaFolderId: string | null };
 
@@ -65,7 +66,9 @@ export type GoogleSetupDeps = {
     seedSecretRef: string;
     authUrl: string;
   }): Promise<{ ok: true; jobId: string } | { ok: false; error: string }>;
-  awaitJobResult(jobId: string, timeoutMs: number): Promise<JobAwaitResult>;
+  // `signal` is the run's cancel signal — the poll loop exits early when it fires (returning a
+  // non-ok await the core turns into a terminal "cancelled" at its next boundary check).
+  awaitJobResult(jobId: string, timeoutMs: number, signal?: AbortSignal): Promise<JobAwaitResult>;
   exchangeCode(code: string, verifier: string): Promise<{ ok: true; accessToken: string } | { ok: false; error: string }>;
   provision(input: {
     accessToken: string;
@@ -111,8 +114,12 @@ export async function setupGoogleForClient(input: {
   forceRotate: boolean;
   deps: GoogleSetupDeps;
   onStage?: (stage: GoogleSetupStage, extra?: Partial<GoogleSetupResult>) => Promise<void>;
+  // The run's cancel signal (see setup-cancel.ts). Checked between steps — a cancelled run returns a
+  // terminal "cancelled" result at the next boundary instead of mutating further, and the browser-job
+  // awaits exit early. Optional: an un-cancellable caller just never aborts it.
+  signal?: AbortSignal;
 }): Promise<GoogleSetupResult> {
-  const { client, seedSecretRef, forceRotate, deps, onStage } = input;
+  const { client, seedSecretRef, forceRotate, deps, onStage, signal } = input;
 
   const actions: string[] = [];
   const browserWarnings: string[] = [];
@@ -157,6 +164,12 @@ export async function setupGoogleForClient(input: {
     return fail("error", error);
   };
 
+  // Cancel boundary: checked before every step that would mutate (or start a long wait). The row/run
+  // status writes are the caller's job — this just stops doing work and reports why.
+  const cancelled = () => signal?.aborted === true;
+  const cancelledResult = async (): Promise<GoogleSetupResult> => fail("cancelled", "the run was cancelled");
+  if (cancelled()) return cancelledResult();
+
   // 1. Eligibility — the client must have a google-workspace system and a readable super-admin login
   // (an email we can impersonate over DWD). Both are terminal; nothing downstream can work without them.
   await emit("eligibility");
@@ -187,7 +200,8 @@ export async function setupGoogleForClient(input: {
 
   await emit("oauth-code");
   actions.push(`awaiting OAuth sign-in (job ${oauthJobId})`);
-  const oauthAwait = await callDep("awaitJobResult", () => deps.awaitJobResult(oauthJobId, OAUTH_TIMEOUT_MS));
+  const oauthAwait = await callDep("awaitJobResult", () => deps.awaitJobResult(oauthJobId, OAUTH_TIMEOUT_MS, signal));
+  if (cancelled()) return cancelledResult();
   if (!oauthAwait.ok) return threw(oauthAwait.error);
   for (const w of oauthAwait.value.warnings) browserWarnings.push(w);
   if (!oauthAwait.value.ok) {
@@ -202,6 +216,7 @@ export async function setupGoogleForClient(input: {
   // 3. Provision — exchange the code for an access token (PKCE verifier held locally), then provision
   // (or reconcile) the GCP project + service account. needKey rotates a fresh key when the operator
   // asked (forceRotate) or nothing is currently vaulted.
+  if (cancelled()) return cancelledResult();
   await emit("provision");
   const exchangeR = await callDep("exchangeCode", () => deps.exchangeCode(authCode, pkce.verifier));
   if (!exchangeR.ok) return threw(exchangeR.error);
@@ -226,6 +241,7 @@ export async function setupGoogleForClient(input: {
   // 4. DWD grant — dispatch the domain-wide-delegation browser job and await it. NON-TERMINAL on
   // failure: record a manual-fallback userAction and press on (the operator can paste the grant while
   // verification keeps retrying against the propagating grant).
+  if (cancelled()) return cancelledResult();
   await emit("dwd-dispatch");
   actions.push("dispatching the domain-wide-delegation grant browser job");
   const dwdDispatch = await callDep("dispatchDwdJob", () =>
@@ -241,7 +257,8 @@ export async function setupGoogleForClient(input: {
     const dwdJobId = dwdDispatch.value.jobId;
     await emit("dwd-grant");
     actions.push(`awaiting the DWD grant (job ${dwdJobId})`);
-    const dwdAwait = await callDep("awaitJobResult", () => deps.awaitJobResult(dwdJobId, DWD_TIMEOUT_MS));
+    const dwdAwait = await callDep("awaitJobResult", () => deps.awaitJobResult(dwdJobId, DWD_TIMEOUT_MS, signal));
+    if (cancelled()) return cancelledResult();
     if (dwdAwait.ok) {
       for (const w of dwdAwait.value.warnings) browserWarnings.push(w);
       if (!dwdAwait.value.ok) setDwdFallback();
@@ -256,6 +273,7 @@ export async function setupGoogleForClient(input: {
   // meaningful when we hold key material this run (issued); a kept-valid run has no key in hand to
   // probe with, so verification is left to the run that issued it. Failure never blocks the write.
   if (prov.keyBase64) {
+    if (cancelled()) return cancelledResult();
     await emit("verify");
     const probeR = await callDep("probeWithRetry", () => deps.probeWithRetry({ keyBase64: prov.keyBase64!, impersonate }));
     if (!probeR.ok) {
@@ -271,6 +289,7 @@ export async function setupGoogleForClient(input: {
 
   // 6. Write — vault the freshly-issued key back to Delinea. A stranded write (the SA reports a valid
   // key but none is vaulted) triggers exactly ONE re-provision with needKey:true, then a re-write.
+  if (cancelled()) return cancelledResult();
   await emit("write");
   const writeR = await callDep("write", () => deps.write({ client, provision: prov, impersonate, customerId }));
   if (!writeR.ok) return threw(writeR.error);
@@ -282,6 +301,7 @@ export async function setupGoogleForClient(input: {
   if (!write.ok) {
     for (const line of write.actions) actions.push(line);
     if (write.stranded) {
+      if (cancelled()) return cancelledResult();
       actions.push("the service account reports a valid key but none is vaulted — rotating a fresh key");
       const priorKeyName = prov.issuedKeyName; // the key (if any) this run had before recovery
       const recoverR = await callDep("provision", () => deps.provision({ accessToken, clientSlug: client.slug, needKey: true }));

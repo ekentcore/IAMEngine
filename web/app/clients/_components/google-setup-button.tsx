@@ -45,11 +45,12 @@ const STEPS: { label: string }[] = [
   { label: "Test the connection" },
 ];
 
-const TERMINAL = new Set(["done", "needs_action", "skipped", "failed"]);
+const TERMINAL = new Set(["done", "needs_action", "skipped", "failed", "cancelled"]);
 
 export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: string; openSignal?: number; hideTrigger?: boolean }) {
   const [phase, setPhase] = useState<"form" | "progress">("form");
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [state, setState] = useState<GoogleClientState | null>(null);
   const [connTest, setConnTest] = useState<ConnTestVerdict>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,16 +71,21 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
   // reflects the newly-wired Delinea id (`done` OR `needs_action` both wire a real credential — only
   // the DWD grant differs). Reset when a new run starts.
   const refreshedOnTerminal = useRef(false);
+  // Set by cancelRun: a poll that was already in flight when the cancel landed must not repopulate
+  // the just-cleared state (it would flash the "running" view back for one cycle). Cleared whenever
+  // the modal is (re)opened or a new run starts.
+  const abandoned = useRef(false);
 
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/clients/${slug}/google-setup`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
+      if (abandoned.current) return null;
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return null; }
       setState(d.client ?? null);
       setConnTest(d.connTest ?? null);
       return d.client ?? null;
-    } catch (e) { setError((e as Error).message); return null; }
+    } catch (e) { if (!abandoned.current) setError((e as Error).message); return null; }
   }, [slug]);
 
   // Poll while the client's run is unsettled.
@@ -108,6 +114,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
   }, [state, router]);
 
   const openForm = useCallback(async () => {
+    abandoned.current = false;
     setModalError(null); setError(null); setLogOpen(false);
     dialogRef.current?.showModal();
     // If a run for this client is already in flight (or just finished), jump straight to progress so a
@@ -126,6 +133,25 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
 
   function closeModal() { dialogRef.current?.close(); }
 
+  // Emergency stop: cancel the server-side run (which also stops its browser jobs), then wipe every
+  // bit of local run state — timer, step tracker, state itself — and close the modal. The teardown
+  // runs even if the DELETE fails (network blip / the run just finished): the operator asked for the
+  // modal to go away, and the run's own timeouts+stale reaper are the server backstop.
+  async function cancelRun() {
+    setCancelling(true);
+    abandoned.current = true; // drop any poll response still in flight — it must not repopulate state
+    try {
+      await fetch(`/api/clients/${slug}/google-setup`, { method: "DELETE" });
+    } catch { /* teardown below still applies */ }
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    maxStep.current = -1;
+    refreshedOnTerminal.current = false;
+    setState(null); setConnTest(null); setActive(false); setError(null); setModalError(null); setLogOpen(false);
+    setCancelling(false);
+    setPhase("form");
+    dialogRef.current?.close();
+  }
+
   async function start() {
     const ref = seedSecretRef.trim();
     if (!ref) {
@@ -135,6 +161,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
       setModalError("Re-enter the super-admin login secret ID to continue.");
       return;
     }
+    abandoned.current = false;
     setBusy(true); setModalError(null); setError(null); setActive(true); setLogOpen(false);
     maxStep.current = -1;
     setState({ status: "pending", stage: null });
@@ -172,6 +199,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
   const needsAction = state?.status === "needs_action";
   const failed = state?.status === "failed";
   const skipped = state?.status === "skipped";
+  const cancelledRun = state?.status === "cancelled";
   const hasLog = Boolean(state?.log && state.log.length > 0);
   const attnStep = needsActionStep(state?.status);
   // The step the failure landed on (from the terminal stage), else the furthest running step.
@@ -179,6 +207,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
   const activeStep = Math.max(maxStep.current, stepOf(state?.stage));
 
   function stepStatus(i: number): "done" | "active" | "failed" | "attn" | "pending" {
+    if (cancelledRun) return "pending"; // a cancelled run's steps are moot — no spinner, no ✕
     if (needsAction && attnStep !== null) return i === attnStep ? "attn" : i < attnStep ? "done" : "pending";
     if (done) return "done";
     if (failed) return i === failedStep ? "failed" : i < failedStep ? "done" : "pending";
@@ -232,7 +261,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
         ) : (
           <>
             <h2>
-              {done ? "Google Workspace setup complete" : needsAction ? "Almost done — one manual step" : failed ? "Google Workspace setup failed" : "Setting up Google Workspace…"}
+              {done ? "Google Workspace setup complete" : needsAction ? "Almost done — one manual step" : failed ? "Google Workspace setup failed" : cancelledRun ? "Google Workspace setup cancelled" : "Setting up Google Workspace…"}
             </h2>
 
             <ol className="setup-steps">
@@ -323,6 +352,13 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
               </div>
             )}
 
+            {/* A cancelled run seen from another tab / a reopen — the tab that cancelled closes itself. */}
+            {cancelledRun && (
+              <div className="setup-result-fail">
+                <div className="note">{state?.error ?? "This run was cancelled."}</div>
+              </div>
+            )}
+
             {error && <p className="note" style={{ color: "#b91c1c" }}>{error}</p>}
 
             {hasLog && (
@@ -341,9 +377,16 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
               {/* Re-run is a full reset back to the form — available on any terminal status, so an
                   operator can change the super-admin secret or force a rotation and start clean. The
                   needs_action card's own "Verify again" above is the faster path for that one case. */}
-              {(failed || done || needsAction || skipped) && (
+              {(failed || done || needsAction || skipped || cancelledRun) && (
                 <button type="button" onClick={reRun} disabled={running}>
-                  {failed ? "Re-run setup" : "Set up again"}
+                  {failed || cancelledRun ? "Re-run setup" : "Set up again"}
+                </button>
+              )}
+              {/* Emergency stop while the run is live: aborts the server-side run + its browser jobs,
+                  clears everything held for it here, and closes the modal. */}
+              {running && (
+                <button type="button" onClick={() => void cancelRun()} disabled={cancelling}>
+                  {cancelling ? "Cancelling…" : "Cancel setup"}
                 </button>
               )}
               <button type="button" className={done ? "primary" : undefined} onClick={closeModal} disabled={running}>

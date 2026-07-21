@@ -5,6 +5,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SetupClientInput, SetupResult } from "./setup-m365-client";
 import { recordAudit } from "@/lib/auth/audit";
+import { abortSetupRun, registerSetupRun, releaseSetupRun } from "./setup-cancel";
 
 // Must exceed DEFAULT_RUN_DEADLINE_MS (2h) plus one in-flight client's ~15m device-code window, or a
 // healthy long fleet sweep gets misjudged stale, force-failed, and duplicated (two concurrent MUTATING sweeps).
@@ -30,7 +31,9 @@ export type SetupTarget = {
 // Live progress reporter: the run recorder passes one in so setupM365ForClient can report each step
 // as it's entered (persisted onto the client row for the UI's step tracker). Best-effort.
 export type StageReporter = (stage: string, meta?: { userCode?: string; verificationUri?: string }) => void | Promise<void>;
-export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string, onStage?: StageReporter) => Promise<SetupResult>;
+// `signal` is the run's cancel signal (see setup-cancel.ts) — the core checks it between steps so a
+// cancelled run stops mutating (and its polling loops exit) instead of running to completion.
+export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string, onStage?: StageReporter, signal?: AbortSignal) => Promise<SetupResult>;
 
 export type StartArgs = { scope: string; targets: SetupTarget[]; dryRun?: boolean; startedBy: string | null };
 export type RunDeps = {
@@ -86,11 +89,22 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
     throw e;
   }
 
+  // The run's cancel signal: abortSetupRun (via cancelM365SetupRun) flips it, the loop below and the
+  // setup core check it. Released on ANY exit so nothing about the run lingers in memory.
+  const signal = registerSetupRun("m365", run.id);
+  // Cross-process backstop: a cancel issued by an instance that doesn't hold this controller only
+  // lands in the DB — re-read the run's status between clients so a fleet sweep still stops.
+  const cancelledInDb = async () =>
+    (await db.m365SetupRun.findUnique({ where: { id: run.id }, select: { status: true } }))?.status === "cancelled";
+
   detach(async () => {
     const deadline = now().getTime() + deadlineMs;
     let completed = 0, succeeded = 0, skipped = 0, failed = 0;
     try {
       for (const t of args.targets) {
+        // Cancelled: stop before starting the next client. In-flight/pending rows were already
+        // finalized by the cancel path itself; clients never reached simply aren't created.
+        if (signal.aborted || (await cancelledInDb().catch(() => false))) break;
         // A single client's row create / hasGlobalAdminSecret / status-update can throw transiently
         // (a dropped connection, etc.) — that must not abort the rest of the fleet sweep. Best-effort
         // mark this one client failed and move on.
@@ -99,24 +113,31 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
           row = await db.m365SetupRunClient.create({
             data: { runId: run.id, clientId: t.id, slug: t.slug, name: t.name, status: "pending" },
           });
+          // Skip writes share the cancel guard too (only a still-pending row skips), so a cancel that
+          // lands right after the row create isn't overwritten and isn't counted.
+          const skip = async (skipReason: string): Promise<boolean> => {
+            const w = await db.m365SetupRunClient.updateMany({ where: { id: row!.id, status: "pending" }, data: { status: "skipped", skipReason } });
+            if (w.count > 0) { skipped++; completed++; }
+            return w.count > 0;
+          };
           // Deadline: stop starting new clients (in-flight none, since sequential).
           if (now().getTime() > deadline) {
-            await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "skipped", skipReason: "run deadline reached before this client was reached" } });
-            skipped++; completed++; continue;
+            await skip("run deadline reached before this client was reached");
+            continue;
           }
           // Dry-run: eligibility preview only — never device-code/provision.
           if (args.dryRun) {
             const eligible = await deps.hasGlobalAdminSecret(t.id);
-            await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "skipped", skipReason: eligible ? "dry run — would run (has GA secret)" : "dry run — would skip (no m365-global-admin secret)" } });
-            skipped++; completed++; continue;
+            await skip(eligible ? "dry run — would run (has GA secret)" : "dry run — would skip (no m365-global-admin secret)");
+            continue;
           }
           // Real: pre-skip when there's no GA login for the runner to sign in with — UNLESS a per-run
           // gaSecretRef was supplied (the override IS the eligibility; there may be no stored secret).
           if (!t.gaSecretRef && !(await deps.hasGlobalAdminSecret(t.id))) {
-            await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "skipped", skipReason: "no m365-global-admin secret" } });
-            skipped++; completed++; continue;
+            await skip("no m365-global-admin secret");
+            continue;
           }
-          await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "running" } });
+          await db.m365SetupRunClient.updateMany({ where: { id: row.id, status: "pending" }, data: { status: "running" } });
           // Live step tracker: persist the stage (and, at sign-in, the device user-code + URL) as the
           // run enters each step. Best-effort — swallow any write error so a progress blip can't derail
           // the run, and capture `row` in the closure so it targets THIS client's row.
@@ -133,7 +154,7 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
           };
           let res: SetupResult;
           try {
-            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t), t.gaSecretRef, onStage);
+            res = await deps.runSetup({ id: t.id, slug: t.slug, name: t.name, primaryDomain: t.primaryDomain, delineaFolderId: t.delineaFolderId }, tenantFor(t), t.gaSecretRef, onStage, signal);
           } catch (e) {
             res = { ok: false, stage: "error", error: (e as Error).message, actions: [] };
           }
@@ -141,8 +162,11 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
           // `log` carries the FULL step/error trail (SetupResult.actions — step names/ids/UPNs only,
           // never a secret value) so the UI's expandable run log can show exactly what happened, not
           // just the terminal stage/error.
-          await db.m365SetupRunClient.update({
-            where: { id: row.id },
+          // updateMany + a status filter, NOT update: the cancel path may have already flipped this
+          // row to "cancelled", and a late terminal write from the still-unwinding closure must not
+          // overwrite that (the cancel is what the operator saw happen).
+          const wrote = await db.m365SetupRunClient.updateMany({
+            where: { id: row.id, status: { in: ["pending", "running"] } },
             data: {
               status: res.ok ? "done" : "failed",
               stage: res.stage,
@@ -156,28 +180,66 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
               log: res.actions ?? [],
             },
           });
-          if (res.ok) succeeded++; else failed++;
-          completed++;
-          // Best-effort audit trail entry for this client's terminal outcome — fire-and-forget so a
-          // slow/unreachable audit write can never delay (let alone derail) the sweep; recordAudit
-          // itself never throws, but the extra .catch is defense-in-depth against a rejected promise.
-          void recordAudit("m365.setup.client", {
-            clientId: t.id,
-            detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, externalId: res.externalId, warnings: res.browserWarnings },
-          }).catch(() => {});
+          // Counters + audit only when the terminal write actually landed: a zero-count means the
+          // cancel path owns this row, and counting/auditing it "done"/"failed" would misreport what
+          // the operator saw happen (the cancel route writes its own audit entry).
+          if (wrote.count > 0) {
+            if (res.ok) succeeded++; else failed++;
+            completed++;
+            // Best-effort audit trail entry for this client's terminal outcome — fire-and-forget so a
+            // slow/unreachable audit write can never delay (let alone derail) the sweep; recordAudit
+            // itself never throws, but the extra .catch is defense-in-depth against a rejected promise.
+            void recordAudit("m365.setup.client", {
+              clientId: t.id,
+              detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, externalId: res.externalId, warnings: res.browserWarnings },
+            }).catch(() => {});
+          }
         } catch (e) {
           if (row) {
-            await db.m365SetupRunClient.update({ where: { id: row.id }, data: { status: "failed", error: (e as Error).message } }).catch(() => {});
+            const wrote = await db.m365SetupRunClient.updateMany({ where: { id: row.id, status: { in: ["pending", "running"] } }, data: { status: "failed", error: (e as Error).message } }).catch(() => null);
+            if (!wrote || wrote.count > 0) { failed++; completed++; }
+          } else {
+            failed++; completed++;
           }
-          failed++; completed++;
         }
-        await db.m365SetupRun.update({ where: { id: run.id }, data: { completed, succeeded, skipped, failed } }).catch(() => {});
+        // Status-guarded so a cancelled run's counters aren't clobbered by the in-flight client's
+        // stale local tallies after the cancel already froze them.
+        await db.m365SetupRun.updateMany({ where: { id: run.id, status: "running" }, data: { completed, succeeded, skipped, failed } }).catch(() => {});
       }
-      await db.m365SetupRun.update({ where: { id: run.id }, data: { status: "done", finishedAt: now(), completed, succeeded, skipped, failed } });
+      // Guarded like the per-client writes: a cancelled run stays cancelled — this only settles a run
+      // that is still "running".
+      await db.m365SetupRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "done", finishedAt: now(), completed, succeeded, skipped, failed } });
     } catch (e) {
-      await db.m365SetupRun.update({ where: { id: run.id }, data: { status: "failed", finishedAt: now(), error: (e as Error).message, completed, succeeded, skipped, failed } }).catch(() => {});
+      await db.m365SetupRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "failed", finishedAt: now(), error: (e as Error).message, completed, succeeded, skipped, failed } }).catch(() => {});
+    } finally {
+      releaseSetupRun("m365", run.id);
     }
   });
 
   return { started: true, id: run.id };
+}
+
+export type CancelSetupResult = { cancelled: boolean; id?: string; reason?: string };
+
+// Operator "Cancel" on a live run: flip the run + its unsettled per-client rows to the terminal
+// "cancelled" status (durable — every write in the detached closure is guarded to respect it), then
+// abort the in-process signal so the closure's loops and the setup core stop as soon as they next
+// check. Stopping the run's in-flight browser Job(s) is the ROUTE's job (stopAutoSetupJobs) — it
+// needs the runner service, which this module deliberately doesn't depend on.
+export async function cancelM365SetupRun(
+  db: PrismaClient,
+  scope: string,
+  opts: { cancelledBy?: string | null; now?: () => Date } = {}
+): Promise<CancelSetupResult> {
+  const now = opts.now ?? (() => new Date());
+  const live = await db.m365SetupRun.findFirst({ where: { scope, status: "running" }, orderBy: { startedAt: "desc" } });
+  if (!live) return { cancelled: false, reason: "no setup run is in progress" };
+  const note = `cancelled by ${opts.cancelledBy ?? "operator"}`;
+  // Guarded flip: if the run settled between the findFirst and here, the cancel lost the race — report
+  // that instead of stamping "cancelled" over a finished run.
+  const flipped = await db.m365SetupRun.updateMany({ where: { id: live.id, status: "running" }, data: { status: "cancelled", finishedAt: now(), error: note } });
+  if (flipped.count === 0) return { cancelled: false, reason: "the run just finished", id: live.id };
+  await db.m365SetupRunClient.updateMany({ where: { runId: live.id, status: { in: ["pending", "running"] } }, data: { status: "cancelled", error: note } });
+  abortSetupRun("m365", live.id);
+  return { cancelled: true, id: live.id };
 }

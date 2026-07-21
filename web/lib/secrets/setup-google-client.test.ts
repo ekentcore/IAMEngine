@@ -373,3 +373,42 @@ test("never leaks the verifier, auth code, access token, or key material into re
     for (const a of result.actions) assert.ok(!a.includes(secret), `leaked secret in actions[]: ${secret}`);
   }
 });
+
+// --- cancellation ------------------------------------------------------------------------------------
+
+test("a pre-aborted signal returns cancelled before touching any dep", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const mustNotRun = () => { throw new Error("must not be called after cancel"); };
+  const deps = happyDeps({
+    hasGoogleSystem: async () => mustNotRun(),
+    dispatchOAuthJob: async () => mustNotRun(),
+    provision: async () => mustNotRun(),
+    write: async () => mustNotRun(),
+  });
+  const result = await setupGoogleForClient({ client: CLIENT, seedSecretRef: SEED_REF, forceRotate: false, deps, signal: controller.signal });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "cancelled");
+});
+
+test("cancel during the OAuth await stops before the code exchange and provisioning", async () => {
+  const controller = new AbortController();
+  let exchanged = false;
+  let provisioned = false;
+  const deps = happyDeps({
+    // The signal rides into the await (real impl exits early); abort mid-await and return a
+    // success anyway — the core's next boundary check must still refuse to continue.
+    awaitJobResult: async (_jobId, _timeout, signal) => {
+      assert.equal(signal, controller.signal, "the cancel signal must reach the job await");
+      controller.abort();
+      return { ok: true, resultText: "OAUTH_CODE:the-auth-code-xyz", warnings: [] };
+    },
+    exchangeCode: async () => { exchanged = true; return { ok: true, accessToken: "SECRET-ACCESS-TOKEN" }; },
+    provision: async () => { provisioned = true; return { ok: true, value: provision() }; },
+  });
+  const result = await setupGoogleForClient({ client: CLIENT, seedSecretRef: SEED_REF, forceRotate: false, deps, signal: controller.signal });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "cancelled");
+  assert.equal(exchanged, false, "the code exchange must not run after the cancel");
+  assert.equal(provisioned, false, "provisioning must not run after the cancel");
+});

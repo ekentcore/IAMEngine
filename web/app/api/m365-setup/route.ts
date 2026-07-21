@@ -9,7 +9,11 @@ import { auditActor, recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { buildSetupDeps } from "@/lib/secrets/setup-m365-deps";
 import { setupM365ForClient } from "@/lib/secrets/setup-m365-client";
-import { startM365SetupRun, latestM365SetupRun } from "@/lib/secrets/m365-setup-run";
+import { startM365SetupRun, latestM365SetupRun, cancelM365SetupRun } from "@/lib/secrets/m365-setup-run";
+import { stopAutoSetupJobs } from "@/lib/secrets/setup-cancel";
+import { M365_AUTOSETUP_MARKER } from "@/lib/cases/exclude-m365-autosetup";
+import { ENTRA_DEVICECODE_KEY } from "@/lib/jobs/adhoc";
+import { makeRunnerService } from "@/lib/jobs/runner-service";
 
 export const dynamic = "force-dynamic";
 
@@ -38,12 +42,31 @@ export async function POST(req: Request, _ctx: unknown) {
     startedBy: auditActor(_g.user, "ui").label,
   }, {
     // Fleet path never carries a gaSecretRef — undefined keeps the persisted-secret path in setupM365ForClient.
-    runSetup: (c, tenant) => setupM365ForClient({ client: c, tenant }, deps),
+    runSetup: (c, tenant, _ref, onStage, signal) => setupM365ForClient({ client: c, tenant, signal }, { ...deps, onStage }),
     hasGlobalAdminSecret: deps.hasGlobalAdminSecret,
   });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason, id: r.id }, { status: 409 });
   await recordAudit("m365.setup.start", { user: _g.user, detail: { scope: "fleet", dryRun: Boolean(body.dryRun), targets: targets.length, runId: r.id } });
   return NextResponse.json({ started: true, id: r.id, targets: targets.length });
+}
+
+// DELETE /api/m365-setup — cancel the in-progress fleet sweep. No clientId filter on the job stop:
+// the cross-family start guards mean every in-flight entra-devicecode job belongs to this run.
+export async function DELETE(_req: Request, _ctx: unknown) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
+  const access = await fleetWideAccess(db, _g.user.id);
+  if (!access.ok) return NextResponse.json({ error: access.reason }, { status: 403 });
+
+  const actor = auditActor(_g.user, "ui:cancel");
+  const r = await cancelM365SetupRun(db, "fleet", { cancelledBy: actor.label });
+  if (!r.cancelled) return NextResponse.json({ cancelled: false, reason: r.reason, id: r.id }, { status: 409 });
+  const stopped = await stopAutoSetupJobs(db, makeRunnerService(db), {
+    marker: M365_AUTOSETUP_MARKER,
+    systemKeys: [ENTRA_DEVICECODE_KEY],
+    actor,
+  });
+  await recordAudit("m365.setup.cancel", { user: _g.user, detail: { scope: "fleet", runId: r.id, stoppedJobs: stopped } });
+  return NextResponse.json({ cancelled: true, id: r.id, stoppedJobs: stopped });
 }
 
 export async function GET(_req: Request, _ctx: unknown) {

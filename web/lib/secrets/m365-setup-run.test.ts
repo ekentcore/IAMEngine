@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startM365SetupRun } from "./m365-setup-run";
+import { startM365SetupRun, cancelM365SetupRun } from "./m365-setup-run";
+
+// Minimal status-filter matcher for the fakes' updateMany (the engine's cancel-guarded writes filter
+// on `status` / `status: { in: [...] }`).
+function statusMatches(row: any, status: any): boolean {
+  if (status === undefined) return true;
+  if (typeof status === "string") return row.status === status;
+  return Array.isArray(status?.in) && status.in.includes(row.status);
+}
 
 function fakeDb() {
   const state: any = { run: null, clients: [] as any[] };
@@ -8,12 +16,25 @@ function fakeDb() {
     state,
     m365SetupRun: {
       findFirst: async () => null,
-      create: async ({ data }: any) => { state.run = { id: "run-1", ...data }; return state.run; },
+      findUnique: async ({ where }: any) => (state.run && state.run.id === where.id ? state.run : null),
+      // completed/succeeded/skipped/failed default to 0 in the schema — mirror that here.
+      create: async ({ data }: any) => { state.run = { id: "run-1", completed: 0, succeeded: 0, skipped: 0, failed: 0, ...data }; return state.run; },
       update: async ({ data }: any) => { Object.assign(state.run, data); return state.run; },
+      updateMany: async ({ where, data }: any) => {
+        const hit = state.run && (!where.id || state.run.id === where.id) && statusMatches(state.run, where.status);
+        if (hit) Object.assign(state.run, data);
+        return { count: hit ? 1 : 0 };
+      },
     },
     m365SetupRunClient: {
       create: async ({ data }: any) => { const row = { id: `rc-${state.clients.length}`, ...data }; state.clients.push(row); return row; },
       update: async ({ where, data }: any) => { const row = state.clients.find((c: any) => c.id === where.id); Object.assign(row, data); return row; },
+      updateMany: async ({ where, data }: any) => {
+        const rows = state.clients.filter((c: any) =>
+          (!where.id || c.id === where.id) && (!where.runId || c.runId === where.runId) && statusMatches(c, where.status));
+        for (const r of rows) Object.assign(r, data);
+        return { count: rows.length };
+      },
     },
   } as any;
 }
@@ -193,6 +214,56 @@ test("dry-run marks ineligible clients skipped-preview with a 'would skip' reaso
   await drain();
   assert.equal(db.state.clients[0].status, "skipped");
   assert.match(db.state.clients[0].skipReason, /would skip/);
+});
+
+test("cancel mid-client: the signal fires, cancelled rows are never overwritten, and no further client starts", async () => {
+  const db = fakeDb();
+  // Let the cancel path find the live run.
+  db.m365SetupRun.findFirst = async ({ where }: any) =>
+    (db.state.run && db.state.run.status === "running" && where?.scope === "fleet" ? db.state.run : null);
+  let started = 0;
+  const runSetup = async (_c: any, _t: string, _r: string | undefined, _o: any, signal?: AbortSignal) => {
+    started++;
+    // The operator cancels while client 0 is mid-setup.
+    const cr = await cancelM365SetupRun(db, "fleet", { cancelledBy: "user:test" });
+    assert.equal(cr.cancelled, true);
+    assert.equal(signal?.aborted, true, "the in-process signal must fire");
+    // Even a would-be success must not overwrite the cancelled row.
+    return { ok: true, stage: "done", appId: "app-x", actions: [] } as any;
+  };
+  await startM365SetupRun(db, { scope: "fleet", targets: targets(3), startedBy: null }, {
+    runSetup, hasGlobalAdminSecret: async () => true, detach: (fn) => { void fn(); },
+  });
+  await drain();
+  assert.equal(started, 1, "no further client may start after the cancel");
+  assert.equal(db.state.clients.length, 1);
+  assert.equal(db.state.clients[0].status, "cancelled");
+  assert.match(db.state.clients[0].error, /cancelled by user:test/);
+  assert.equal(db.state.run.status, "cancelled");
+  // The cancelled client is NOT tallied as succeeded/failed, and the frozen counters aren't
+  // clobbered by the in-flight client's stale local tallies after the cancel.
+  assert.equal(db.state.run.succeeded, 0);
+  assert.equal(db.state.run.failed, 0);
+  assert.equal(db.state.run.completed, 0);
+});
+
+test("cancelM365SetupRun with no live run reports cancelled:false", async () => {
+  const db = fakeDb();
+  const r = await cancelM365SetupRun(db, "fleet");
+  assert.equal(r.cancelled, false);
+  assert.match(r.reason ?? "", /no setup run/);
+});
+
+test("cancelM365SetupRun loses the settle race gracefully (run finished between find and flip)", async () => {
+  const db = fakeDb();
+  db.state.run = { id: "run-1", scope: "fleet", status: "running", startedAt: new Date() };
+  db.m365SetupRun.findFirst = async () => ({ ...db.state.run });
+  // The run settles before the guarded flip lands.
+  db.state.run.status = "done";
+  const r = await cancelM365SetupRun(db, "fleet");
+  assert.equal(r.cancelled, false);
+  assert.match(r.reason ?? "", /just finished/);
+  assert.equal(db.state.run.status, "done", "a finished run must never be stamped cancelled");
 });
 
 test("the deadline stops starting new clients", async () => {

@@ -91,3 +91,23 @@ test("pollDeviceCodeToken stops after repeated network exceptions and reports ne
   assert.ok(n >= 4 && n < 10, `expected to stop after a small consecutive-failure threshold, got ${n} calls`);
   assert.ok(!r.ok && /ECONNREFUSED/.test(r.error));
 });
+
+test("pollDeviceCodeToken exits with code 'cancelled' when the signal aborts (no further token calls)", async () => {
+  const controller = new AbortController();
+  let n = 0;
+  const f = (async () => { n++; return ERR({ error: "authorization_pending" }); }) as unknown as typeof fetch;
+  const sleep = async () => { controller.abort(); }; // the cancel lands while the poll sleeps
+  const r = await pollDeviceCodeToken("tenant.com", "dc", { intervalSeconds: 5, expiresInSeconds: 900, sleep, signal: controller.signal }, f);
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.code, "cancelled");
+  assert.equal(n, 0, "no token call after the abort");
+});
+
+test("pollDeviceCodeToken with a pre-aborted signal returns immediately", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const f = (async () => { throw new Error("must not fetch"); }) as unknown as typeof fetch;
+  const r = await pollDeviceCodeToken("tenant.com", "dc", { intervalSeconds: 5, expiresInSeconds: 900, sleep: async () => {}, signal: controller.signal }, f);
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.code, "cancelled");
+});

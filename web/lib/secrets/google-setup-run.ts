@@ -6,7 +6,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { GoogleSetupResult, GoogleSetupStage } from "./setup-google-client";
 import { recordAudit } from "@/lib/auth/audit";
-import { isSetupStale } from "./m365-setup-run";
+import { isSetupStale, type CancelSetupResult } from "./m365-setup-run";
+import { abortSetupRun, registerSetupRun, releaseSetupRun } from "./setup-cancel";
 import { secretIsSet } from "./wiring";
 
 const GOOGLE_SYSTEM_KEY = "google-workspace";
@@ -23,7 +24,9 @@ export type StartGoogleArgs = {
   startedBy: string | null;
   seedSecretRef: string;
   forceRotate: boolean;
-  runSetup: (onStage: GoogleStageReporter) => Promise<GoogleSetupResult>;
+  // `signal` is the run's cancel signal (see setup-cancel.ts) — the core checks it between steps so a
+  // cancelled run stops mutating (and its browser-job await exits) instead of running to completion.
+  runSetup: (onStage: GoogleStageReporter, signal?: AbortSignal) => Promise<GoogleSetupResult>;
 };
 
 export type GoogleRunDeps = {
@@ -68,6 +71,10 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
     throw e;
   }
 
+  // The run's cancel signal: abortSetupRun (via cancelGoogleSetupRun) flips it, the setup core checks
+  // it between steps. Released on ANY exit so nothing about the run lingers in memory.
+  const signal = registerSetupRun("google", run.id);
+
   detach(async () => {
     let row: { id: string } | undefined;
     try {
@@ -92,7 +99,7 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
 
       let res: GoogleSetupResult;
       try {
-        res = await args.runSetup(onStage);
+        res = await args.runSetup(onStage, signal);
       } catch (e) {
         res = { ok: false, stage: "error", error: (e as Error).message, browserWarnings: [], actions: [] };
       }
@@ -101,8 +108,10 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
       // needs_action (the operator still has to paste the grant by hand); anything else -> failed.
       const status = res.ok && !res.userAction ? "done" : res.ok && res.userAction ? "needs_action" : "failed";
 
-      await db.googleSetupRunClient.update({
-        where: { id: row.id },
+      // updateMany + a status filter, NOT update: the cancel path may have already flipped this row to
+      // "cancelled", and a late terminal write from the still-unwinding closure must not overwrite it.
+      await db.googleSetupRunClient.updateMany({
+        where: { id: row.id, status: { in: ["pending", "running"] } },
         data: {
           status,
           stage: res.stage,
@@ -124,19 +133,41 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
         detail: { status, stage: res.stage, saEmail: res.saEmail, externalId: res.externalId, warnings: res.browserWarnings },
       }).catch(() => {});
 
-      await db.googleSetupRun.update({
-        where: { id: run.id },
+      // Guarded like the client-row write: a cancelled run stays cancelled.
+      await db.googleSetupRun.updateMany({
+        where: { id: run.id, status: "running" },
         data: { status, finishedAt: now(), completed: 1, succeeded: res.ok ? 1 : 0, failed: res.ok ? 0 : 1 },
       }).catch(() => {});
     } catch (e) {
       if (row) {
-        await db.googleSetupRunClient.update({ where: { id: row.id }, data: { status: "failed", error: (e as Error).message } }).catch(() => {});
+        await db.googleSetupRunClient.updateMany({ where: { id: row.id, status: { in: ["pending", "running"] } }, data: { status: "failed", error: (e as Error).message } }).catch(() => {});
       }
-      await db.googleSetupRun.update({ where: { id: run.id }, data: { status: "failed", finishedAt: now(), error: (e as Error).message, completed: 1, failed: 1 } }).catch(() => {});
+      await db.googleSetupRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "failed", finishedAt: now(), error: (e as Error).message, completed: 1, failed: 1 } }).catch(() => {});
+    } finally {
+      releaseSetupRun("google", run.id);
     }
   });
 
   return { started: true, id: run.id };
+}
+
+// Operator "Cancel" on a live Google run — the Google analog of cancelM365SetupRun (see its doc
+// comment; stopping the in-flight browser Jobs is likewise the route's job via stopAutoSetupJobs).
+export async function cancelGoogleSetupRun(
+  db: PrismaClient,
+  clientId: string,
+  opts: { cancelledBy?: string | null; now?: () => Date } = {}
+): Promise<CancelSetupResult> {
+  const now = opts.now ?? (() => new Date());
+  const scope = googleSetupScope(clientId);
+  const live = await db.googleSetupRun.findFirst({ where: { scope, status: "running" }, orderBy: { startedAt: "desc" } });
+  if (!live) return { cancelled: false, reason: "no setup run is in progress" };
+  const note = `cancelled by ${opts.cancelledBy ?? "operator"}`;
+  const flipped = await db.googleSetupRun.updateMany({ where: { id: live.id, status: "running" }, data: { status: "cancelled", finishedAt: now(), error: note } });
+  if (flipped.count === 0) return { cancelled: false, reason: "the run just finished", id: live.id };
+  await db.googleSetupRunClient.updateMany({ where: { runId: live.id, status: { in: ["pending", "running"] } }, data: { status: "cancelled", error: note } });
+  abortSetupRun("google", live.id);
+  return { cancelled: true, id: live.id };
 }
 
 // --- Auto-triggered connection test (GET-poll side effect) -------------------------------------------

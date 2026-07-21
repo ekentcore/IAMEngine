@@ -13,7 +13,10 @@ import { auditActor, recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { buildGoogleSetupDeps } from "@/lib/secrets/setup-google-deps";
 import { setupGoogleForClient } from "@/lib/secrets/setup-google-client";
-import { startGoogleSetupRun, latestGoogleSetupRun, ensureGoogleConnTestTriggered } from "@/lib/secrets/google-setup-run";
+import { startGoogleSetupRun, latestGoogleSetupRun, ensureGoogleConnTestTriggered, cancelGoogleSetupRun } from "@/lib/secrets/google-setup-run";
+import { stopAutoSetupJobs } from "@/lib/secrets/setup-cancel";
+import { GOOGLE_AUTOSETUP_MARKER } from "@/lib/cases/exclude-m365-autosetup";
+import { GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY } from "@/lib/jobs/adhoc";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { secretIsSet } from "@/lib/secrets/wiring";
 
@@ -47,11 +50,35 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     startedBy: auditActor(_g.user, "ui").label,
     seedSecretRef,
     forceRotate,
-    runSetup: (onStage) => setupGoogleForClient({ client, seedSecretRef, forceRotate, deps, onStage }),
+    runSetup: (onStage, signal) => setupGoogleForClient({ client, seedSecretRef, forceRotate, deps, onStage, signal }),
   });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason }, { status: 409 });
   await recordAudit("google.setup.start", { user: _g.user, clientId: client.id, detail: { scope: "client", runId: r.id } });
   return NextResponse.json({ started: true, id: r.id });
+}
+
+// DELETE /api/clients/:slug/google-setup — cancel this client's in-progress setup run: flip the run +
+// row to "cancelled" (durable — the detached closure's writes all respect it), abort the in-process
+// signal, and stop the run's in-flight browser jobs (OAuth sign-in / DWD grant) so the runner
+// abandons them too. Mirrors the m365-setup route's DELETE.
+export async function DELETE(_req: Request, { params }: { params: { slug: string } }) {
+  const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
+  const client = await loadClient(params.slug);
+  if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
+  const scope = await currentClientScope(db);
+  if (!scopeAllows(scope, client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const actor = auditActor(_g.user, "ui:cancel");
+  const r = await cancelGoogleSetupRun(db, client.id, { cancelledBy: actor.label });
+  if (!r.cancelled) return NextResponse.json({ cancelled: false, reason: r.reason, id: r.id }, { status: 409 });
+  const stopped = await stopAutoSetupJobs(db, makeRunnerService(db), {
+    marker: GOOGLE_AUTOSETUP_MARKER,
+    systemKeys: [GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY],
+    clientId: client.id,
+    actor,
+  });
+  await recordAudit("google.setup.cancel", { user: _g.user, clientId: client.id, detail: { scope: "client", runId: r.id, stoppedJobs: stopped } });
+  return NextResponse.json({ cancelled: true, id: r.id, stoppedJobs: stopped });
 }
 
 export async function GET(_req: Request, { params }: { params: { slug: string } }) {

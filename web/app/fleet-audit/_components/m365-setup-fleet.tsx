@@ -43,6 +43,19 @@ export function M365SetupFleet() {
     finally { setBusy(false); }
   }
 
+  // Emergency stop for the sweep: cancels the run server-side (in-flight browser job included) and
+  // stops the poll on the refreshed "cancelled" status.
+  async function cancelRun() {
+    setBusy(true); setError(null);
+    try {
+      const r = await fetch(`/api/m365-setup`, { method: "DELETE" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok && r.status !== 409) { setError(d.error ?? `failed (${r.status})`); return; }
+      await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
   const running = run?.status === "running";
   return (
     <section style={{ marginTop: 24 }}>
@@ -50,7 +63,8 @@ export function M365SetupFleet() {
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <button disabled={busy || running} onClick={() => start(true)}>Dry run (preview eligible)</button>
         <button disabled={busy || running} onClick={() => start(false)}>Run setup across the fleet</button>
-        {run && <span className="note">{run.dryRun ? "preview" : "run"}: {run.completed}/{run.total} · {run.succeeded} ok · {run.skipped} skipped · {run.failed} failed{running ? " · running…" : ""}</span>}
+        {running && <button disabled={busy} onClick={() => void cancelRun()}>Cancel run</button>}
+        {run && <span className="note">{run.dryRun ? "preview" : "run"}: {run.completed}/{run.total} · {run.succeeded} ok · {run.skipped} skipped · {run.failed} failed{running ? " · running…" : run.status === "cancelled" ? " · cancelled" : ""}</span>}
         {error && <span className="note" style={{ color: "#b91c1c" }}>{error}</span>}
       </div>
       {rows.length > 0 && (

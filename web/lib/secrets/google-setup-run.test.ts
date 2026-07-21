@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startGoogleSetupRun, ensureGoogleConnTestTriggered } from "./google-setup-run";
+import { startGoogleSetupRun, ensureGoogleConnTestTriggered, cancelGoogleSetupRun } from "./google-setup-run";
+
+// Minimal status-filter matcher for the fakes' updateMany (the engine's cancel-guarded writes filter
+// on `status` / `status: { in: [...] }`).
+function statusMatches(row: any, status: any): boolean {
+  if (status === undefined) return true;
+  if (typeof status === "string") return row.status === status;
+  return Array.isArray(status?.in) && status.in.includes(row.status);
+}
 
 function fakeDb() {
   const state: any = { run: null, clients: [] as any[] };
@@ -10,10 +18,21 @@ function fakeDb() {
       findFirst: async () => null,
       create: async ({ data }: any) => { state.run = { id: "run-1", ...data }; return state.run; },
       update: async ({ data }: any) => { Object.assign(state.run, data); return state.run; },
+      updateMany: async ({ where, data }: any) => {
+        const hit = state.run && (!where.id || state.run.id === where.id) && statusMatches(state.run, where.status);
+        if (hit) Object.assign(state.run, data);
+        return { count: hit ? 1 : 0 };
+      },
     },
     googleSetupRunClient: {
       create: async ({ data }: any) => { const row = { id: `rc-${state.clients.length}`, ...data }; state.clients.push(row); return row; },
       update: async ({ where, data }: any) => { const row = state.clients.find((c: any) => c.id === where.id); Object.assign(row, data); return row; },
+      updateMany: async ({ where, data }: any) => {
+        const rows = state.clients.filter((c: any) =>
+          (!where.id || c.id === where.id) && (!where.runId || c.runId === where.runId) && statusMatches(c, where.status));
+        for (const r of rows) Object.assign(r, data);
+        return { count: rows.length };
+      },
     },
   } as any;
 }
@@ -152,6 +171,33 @@ test("a thrown runSetup is recorded as failed, not left running", async () => {
   assert.equal(db.state.clients[0].status, "failed");
   assert.match(db.state.clients[0].error, /boom/);
   assert.equal(db.state.run.status, "failed");
+});
+
+test("cancel mid-run: the signal fires and even a late success result never overwrites the cancelled rows", async () => {
+  const db = fakeDb();
+  // Let the cancel path find the live run.
+  db.googleSetupRun.findFirst = async () =>
+    (db.state.run && db.state.run.status === "running" ? db.state.run : null);
+  const runSetup = async (_onStage: any, signal?: AbortSignal) => {
+    // The operator cancels while the run is mid-setup.
+    const cr = await cancelGoogleSetupRun(db, "c0", { cancelledBy: "user:test" });
+    assert.equal(cr.cancelled, true);
+    assert.equal(signal?.aborted, true, "the in-process signal must fire");
+    // Even a would-be success must not overwrite the cancelled row.
+    return { ok: true, stage: "done", browserWarnings: [], actions: [] } as any;
+  };
+  await startGoogleSetupRun(db, { client, startedBy: null, seedSecretRef: "seed-1", forceRotate: false, runSetup }, { detach: (fn) => { void fn(); } });
+  await drain();
+  assert.equal(db.state.clients[0].status, "cancelled");
+  assert.match(db.state.clients[0].error, /cancelled by user:test/);
+  assert.equal(db.state.run.status, "cancelled");
+});
+
+test("cancelGoogleSetupRun with no live run reports cancelled:false", async () => {
+  const db = fakeDb();
+  const r = await cancelGoogleSetupRun(db, "c0");
+  assert.equal(r.cancelled, false);
+  assert.match(r.reason ?? "", /no setup run/);
 });
 
 // --- conn-test trigger-once semantics (adjudicated: fires on done OR needs_action; the auto-triggered
