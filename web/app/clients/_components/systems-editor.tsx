@@ -9,6 +9,9 @@ import { copyText } from "@/lib/clipboard";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual" | "scim";
+type GalMode = "default" | "off" | "attribute";
+// Systems where "hide from GAL on offboard" is meaningful (FR #21).
+const GAL_SYSTEMS = new Set(["exchange", "google-workspace", "active-directory"]);
 type Row = {
   systemKey: string;
   mode: Mode;
@@ -19,6 +22,8 @@ type Row = {
   captureEvidence: boolean;
   offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
   onboardOu: string; // AD onboarding target DN (config.onboard.ou) — the field the runner actually uses
+  galMode: GalMode; // hide-from-GAL deviation (config.offboard.hideFromGal) — default is hide, this only records opt-outs
+  galAttribute: string; // AD-only: the attribute name when galMode === "attribute"
   secretNames: string[];
   configText: string; // JSON text; parsed on save
 };
@@ -52,6 +57,7 @@ const HELP = {
   secrets: "The Delinea secret references this system needs at run time (comma-separated names, e.g. m365-admin). Names only — never the values.",
   config: 'Per-lane JSON settings, nested under onboard / offboard. e.g. { "offboard": { "delete": true } }. Leave blank for defaults.',
   onboardOu: "Where new AD accounts are created (config.onboard.ou). This is the value the runner uses — it overrides any OU set in Roles & rules. Type a full DN or 📁 Browse the folders discovered from the DC. Leave blank to create at the domain default. Refresh the folder list under Roles & rules → “Refresh AD objects from DC”.",
+  hideFromGal: "Hiding offboarded users from the Global Address List is the default (FR #21). Use this only to record a deviation: “Do NOT hide” opts this client out entirely; “Hide via AD attribute…” (AD only) hides by setting a named attribute (e.g. msExchHideFromAddressLists) to TRUE instead of the default mechanism.",
 };
 
 function Field({ label, help, children, grow }: { label: string; help: string; children: ReactNode; grow?: boolean }) {
@@ -93,9 +99,23 @@ function rowFromCatalog(key: string): Row {
     captureEvidence: false,
     offboardIntent: "disable",
     onboardOu: "",
+    galMode: "default",
+    galAttribute: "",
     secretNames: c?.secret ? [c.secret] : [],
     configText: "",
   };
+}
+
+// Reads the GAL deviation out of a system's parsed config.offboard.hideFromGal. Handles both the
+// canonical casing and the "hideFromGAL" variant seen in some hand-edited configs.
+function galFromConfig(config: unknown): { galMode: GalMode; galAttribute: string } {
+  const offboard = (config as { offboard?: Record<string, unknown> } | null)?.offboard;
+  const raw = offboard?.hideFromGal ?? offboard?.hideFromGAL;
+  if (raw === false) return { galMode: "off", galAttribute: "" };
+  if (raw && typeof raw === "object" && typeof (raw as { attribute?: unknown }).attribute === "string") {
+    return { galMode: "attribute", galAttribute: (raw as { attribute: string }).attribute };
+  }
+  return { galMode: "default", galAttribute: "" };
 }
 
 export function SystemsEditor({ slug, open, onClose }: { slug: string | null; open: boolean; onClose: () => void }) {
@@ -153,6 +173,7 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           captureEvidence: Boolean(sys.captureEvidence),
           offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
           onboardOu: String((sys.config as { onboard?: { ou?: unknown } } | null)?.onboard?.ou ?? ""),
+          ...galFromConfig(sys.config),
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
           configText: sys.config ? JSON.stringify(sys.config, null, 2) : "",
         }))
@@ -259,6 +280,28 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       // config.onboard.ou (the field the runner reads), so it wins over the raw JSON textarea — the
       // same "structured control beats the blob" contract as offboardIntent above.
       if (r.systemKey === "active-directory") config = withOnboardOu(config, r.onboardOu.trim());
+      // The GAL control is authoritative for the offboard hide-from-GAL deviation: merge it into
+      // config.offboard.hideFromGal (the planner flattens config.offboard onto the offboard job, so
+      // this becomes the top-level config.hideFromGal the planner/runner read). Preserve any other
+      // offboard siblings (e.g. convertToShared) already in the JSON blob; drop offboard entirely if
+      // this was the only key.
+      if (GAL_SYSTEMS.has(r.systemKey)) {
+        const offboard = { ...((config.offboard as Record<string, unknown> | undefined) ?? {}) };
+        if (r.galMode === "off") {
+          offboard.hideFromGal = false;
+        } else if (r.galMode === "attribute" && r.galAttribute.trim()) {
+          offboard.hideFromGal = { attribute: r.galAttribute.trim(), value: "TRUE" };
+        } else {
+          delete offboard.hideFromGal;
+          delete offboard.hideFromGAL; // clear the casing variant if present
+        }
+        if (Object.keys(offboard).length === 0) {
+          const { offboard: _drop, ...rest } = config;
+          config = rest;
+        } else {
+          config = { ...config, offboard };
+        }
+      }
       systems.push({ ...r, secretNames: r.secretNames, config });
     }
     try {
@@ -425,6 +468,23 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                       <option value="destructive">destructive (delete)</option>
                     </select>
                   </Field>
+                  {GAL_SYSTEMS.has(r.systemKey) && (
+                    <Field label="Hide from GAL" help={HELP.hideFromGal}>
+                      <select value={r.galMode} onChange={(e) => update(i, { galMode: e.target.value as GalMode })}>
+                        <option value="default">Default — hide from GAL</option>
+                        <option value="off">Do NOT hide (client opts out)</option>
+                        {r.systemKey === "active-directory" && <option value="attribute">Hide via AD attribute…</option>}
+                      </select>
+                      {r.galMode === "attribute" && (
+                        <input
+                          value={r.galAttribute}
+                          onChange={(e) => update(i, { galAttribute: e.target.value })}
+                          placeholder="msExchHideFromAddressLists"
+                          style={{ marginTop: 4, fontFamily: "monospace", fontSize: 12 }}
+                        />
+                      )}
+                    </Field>
+                  )}
                   <Field label="Secrets" help={HELP.secrets}>
                     <input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 200 }} />
                   </Field>
