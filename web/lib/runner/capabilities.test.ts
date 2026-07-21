@@ -87,3 +87,10 @@ test("browser systems are NOT on-prem (so the on-prem gate leaves them to the br
   // which reports 'browser', could never claim it.
   assert.equal(ALWAYS_ON_PREM_SYSTEMS.includes("spanning-force-sync"), false);
 });
+
+test("browser gate: the Mimecast console key is gated on 'browser' and is not on-prem", () => {
+  assert.ok(BROWSER_SYSTEMS.includes("mimecast-console-setup"));
+  assert.equal(browserExclusions(["browser"]).includes("mimecast-console-setup"), false); // browser agent can claim
+  assert.ok(browserExclusions(null).includes("mimecast-console-setup")); // legacy/non-browser -> withheld
+  assert.equal(ALWAYS_ON_PREM_SYSTEMS.includes("mimecast-console-setup"), false); // central runner runs it
+});

@@ -23,6 +23,9 @@ const FLOWS = {
   // Grant/reconcile domain-wide delegation for a service account in the Admin console (prints
   // DWD_GRANTED:<saClientId> on confirmation). LIVE-VALIDATION PENDING — see the flow file.
   "google-dwd-grant": () => import("./flows/google-dwd-grant.mjs"),
+  // Sign in to the Mimecast Administration Console (Phase 1: sign-in test only; Phase 2 will create
+  // the API 2.0 app + harvest the credential). LIVE-VALIDATION PENDING — see the flow file.
+  "mimecast-console-signin": () => import("./flows/mimecast-console-signin.mjs"),
   // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
   // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
   "connector-steps": () => import("./flows/connector-steps.mjs"),

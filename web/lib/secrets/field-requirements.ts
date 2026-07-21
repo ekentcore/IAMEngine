@@ -116,6 +116,24 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "M365 admin email", anyOf: ["Username", "PortalUsername", "AdminUser", "AdminEmail", "Email", "User"] },
     { label: "that account's password", anyOf: ["Password", "PortalPassword", "AdminPassword"] },
   ],
+  // Mimecast ADMINISTRATION CONSOLE sign-in — the credential the browser console-setup flow signs in
+  // WITH (login.mimecast.com), NOT the mimecast API 2.0 clientId/secret above. It is a SEPARATE secret
+  // on purpose, for the same reasons spanning-portal is split from spanning: the console login is a
+  // Mimecast admin email + password (Mimecast-native login), and feeding the API clientId/secret to a
+  // login box cannot authenticate and walks a real admin account toward lockout. Licensing/API steps
+  // never need this — a client without a console login stays fully ready; only the browser auto-setup
+  // (create the API app in the console) uses it.
+  //
+  // MFA: enable One-Time Password on the Delinea secret — the runner mints the code AT the prompt, so
+  // the seed never leaves the vault. It must be a TOTP/software token; push or phone-call MFA can't be
+  // automated and the sign-in will simply time out at the prompt.
+  //
+  // Synonyms mirror the runner's Resolve-CtgMimecastConsoleLogin pick order (Username/email first, then
+  // the generic pair — on a dedicated secret the generic Username/Password are the natural fields).
+  "mimecast-console": [
+    { label: "Mimecast admin email", anyOf: ["Username", "AdminEmail", "AdminUser", "Email", "User"], hint: "a Mimecast admin login with access to the Administration Console (Integrations → API and Platform Integrations)" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword"], hint: "that admin account's password (enable One-Time Password on the Delinea secret for MFA)" },
+  ],
   // M365 Global Admin interactive sign-in — the credential the device-code browser flow logs in WITH.
   // This is an interactive M365 admin login (an email + that account's password), NOT the app
   // registration credentials above (app id + client secret). It is used for automated browser

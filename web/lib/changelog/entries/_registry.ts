@@ -116,6 +116,7 @@ export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-de
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
 export { entry as manualSetPasswordOption } from "./manual-set-password-option";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
+export { entry as mimecastConsoleSigninTest } from "./mimecast-console-signin-test";
 export { entry as mimecastConsoleUrlFix } from "./mimecast-console-url-fix";
 export { entry as mimecastDocProductsPoc } from "./mimecast-doc-products-poc";
 export { entry as modelFilesReadwritePerm } from "./model-files-readwrite-perm";

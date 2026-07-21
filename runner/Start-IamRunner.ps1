@@ -1604,6 +1604,22 @@ $DISPATCH['google-dwd-grant'] = @{
 }
 $DISPATCH['google-dwd-grant'].Offboard = $DISPATCH['google-dwd-grant'].Onboard
 
+# Ad-hoc "Mimecast console setup" (browser automation): sign into the Mimecast Administration Console
+# (login.mimecast.com) to set up the API 2.0 credential. Phase 1 is a SIGN-IN TEST (config.signInOnly)
+# — prove the console login + MFA work. Rides the 'mimecast-console' secret (a Mimecast admin email +
+# password + One-Time Password), NOT the 'mimecast' API 2.0 clientId/secret; no Connect lane (the
+# browser flow does its own Mimecast sign-in). One executor serves both lanes. Withheld from agents
+# without the 'browser' capability (BROWSER_SYSTEMS app-side). LIVE-VALIDATION PENDING (see the flow
+# file header) — the Mimecast console DOM/MFA is unverified.
+$DISPATCH['mimecast-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'mimecast-console'
+        Invoke-CtgMimecastConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['mimecast-console-setup'].Offboard = $DISPATCH['mimecast-console-setup'].Onboard
+
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
 $DISPATCH['tap'] = @{

@@ -19,8 +19,14 @@ export const ENTRA_DEVICECODE_KEY = "entra-devicecode";
 export const GOOGLE_OAUTH_SIGNIN_KEY = "google-oauth-signin";
 export const GOOGLE_DWD_GRANT_KEY = "google-dwd-grant";
 
+// The systemKey for the ad-hoc Mimecast console browser flow: sign into the Mimecast Administration
+// Console and (Phase 2) create the API 2.0 application + harvest the credential. One key serves both
+// the sign-in test (config.signInOnly) and the full setup run. See
+// lib/secrets/dispatch-mimecast-console-job.ts.
+export const MIMECAST_CONSOLE_SETUP_KEY = "mimecast-console-setup";
+
 export const ADHOC_SYSTEM_KEYS = [
-  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY]),
+  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY, MIMECAST_CONSOLE_SETUP_KEY]),
 ];
 
 export function isAdhocSystemKey(systemKey: string): boolean {
