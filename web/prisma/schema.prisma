@@ -109,12 +109,17 @@ model Client {
   // the next client-network heartbeat (which tells the agent to run discovery).
   adObjects              Json?
   adDiscoverRequestedAt  DateTime?
+  // The user who requested the last AD/cloud discovery — so the runner's RESULT audit (which the
+  // runner writes as "agent:<id>") can be attributed to the human who kicked it off, not the agent.
+  // Persisted at request time; read when the result lands; overwritten by the next request.
+  adDiscoverRequestedById   String?
   // Cloud (Entra) groups discovered from the tenant via the m365-admin secret (Get-MgGroup), to back
   // the same group pickers for cloud-only groups AD sync never covers — DLs, Security, M365 Groups.
   // { groups: [{ name, type }], discoveredAt }. cloudGroupsRequestedAt is set by "Refresh cloud
   // groups" and consumed by the CENTRAL runner (it has Graph), which posts the result back.
   cloudGroups            Json?
   cloudGroupsRequestedAt DateTime?
+  cloudGroupsRequestedById  String? // who requested the last cloud discovery — see adDiscoverRequestedById
   // Shared mailboxes discovered from Exchange Online alongside the cloud groups (same "Refresh"
   // request flag; the central runner enumerates Get-Mailbox -RecipientTypeDetails SharedMailbox when
   // the m365-admin secret carries an EXO cert). Backs the per-client "default shared-mailbox access"
