@@ -21,6 +21,8 @@
 - Module manifest export drift: any NEW exported PowerShell function must be added to the module's `.psd1` `FunctionsToExport`, or production hides it. (Internal helpers used only inside the same `.psm1` need no export, but Pester tests import the module and call them — so functions the tests call directly MUST be exported.)
 - Runner change ⇒ bump `runner/VERSION`. Current on this branch: `1.80.0`. Target: **`1.82.0`** (a minor bump; `1.81.0` is taken by in-flight PR #175).
 - Ship convention: append a one-file-per-entry changelog file under `web/lib/changelog/entries/` and register it in `_registry.ts`. Entry `time` MUST come from `TZ=America/New_York date +%H:%M` rounded to a 15-min boundary.
+- **Test runner (verified):** the web app uses `node:test` + `node:assert` (NOT vitest — there is no vitest dependency). Run tests with `cd web && npx tsx --test <file.test.ts>` (or `npm test` for the whole `lib/**/*.test.ts` glob). Write tests with `import { test } from "node:test"; import assert from "node:assert/strict";` — follow the idiom of existing `web/lib/**/*.test.ts` files. Ignore any `vitest`/`describe/it/expect` snippet in the task bodies below and translate it to `node:test`.
+- **Lint:** `next lint` is not configured in this repo (interactive setup prompt, no ESLint config) — do NOT run `npm run lint`. Use `npx tsc --noEmit` as the sole static gate for web changes.
 
 ---
 
@@ -313,9 +315,9 @@ to:
       : { userToOffboard: `${first} ${last}`.trim(), dateOfOffboarding: date || null, allowedToMaintainEmail: f.get("email") === "on", skipGalHide: f.get("skipGalHide") === "on" };
 ```
 
-- [ ] **Step 3: Typecheck + lint**
+- [ ] **Step 3: Typecheck**
 
-Run: `cd web && npx tsc --noEmit && npm run lint`
+Run: `cd web && npx tsc --noEmit`  (do NOT run `npm run lint` — not configured in this repo)
 Expected: no errors.
 
 - [ ] **Step 4: Manual smoke (dev server)**
@@ -389,9 +391,9 @@ if (Object.keys(parsed.offboard).length === 0) delete parsed.offboard;
 
 (Types: cast `parsed`/`parsed.offboard` to `Record<string, unknown>` consistent with the surrounding code's handling of the parsed blob.)
 
-- [ ] **Step 4: Typecheck + lint**
+- [ ] **Step 4: Typecheck**
 
-Run: `cd web && npx tsc --noEmit && npm run lint`
+Run: `cd web && npx tsc --noEmit`  (do NOT run `npm run lint` — not configured in this repo)
 Expected: no errors.
 
 - [ ] **Step 5: Manual smoke (dev server)**
@@ -763,12 +765,12 @@ export { entry as offboardHideFromGal } from "./offboard-hide-from-gal";
 
 - [ ] **Step 6: Verify the changelog registry test passes**
 
-Run: `cd web && npx vitest run lib/changelog`
-Expected: PASS (registry.test.ts confirms every entry file is registered).
+Run: `cd web && npx tsx --test lib/changelog/*.test.ts`  (or `npm test` for the full lib glob)
+Expected: PASS (the registry test confirms every entry file is registered).
 
 - [ ] **Step 7: Full web + runner test sweep**
 
-Run: `cd web && npx tsc --noEmit && npx vitest run`
+Run: `cd web && npx tsc --noEmit && npm test`
 Run: `~/.local/pwsh/pwsh -c "Invoke-Pester runner/tests/Coretelligent.Exchange.Tests.ps1, runner/tests/Coretelligent.GoogleWorkspace.Tests.ps1, runner/tests/Smoke.Tests.ps1 -Output Detailed"`
 Expected: all green.
 
