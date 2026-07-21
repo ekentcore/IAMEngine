@@ -6,7 +6,7 @@
 BeforeAll {
     function global:Connect-ExchangeOnline { [CmdletBinding()] param($AppId, $Organization, $CertificateThumbprint, $CertificateFilePath, $CertificatePassword, [switch]$ShowBanner) }
     function global:Get-MailboxStatistics { [CmdletBinding()] param($Identity) }
-    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, [switch]$Confirm) }
+    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, $HiddenFromAddressListsEnabled, [switch]$Confirm) }
     # shared-mailbox permission mirror (EXO)
     function global:Get-MailboxPermission { [CmdletBinding()] param($Identity) }
     function global:Add-MailboxPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, $InheritanceType, [switch]$AutoMapping, [switch]$Confirm) }
@@ -494,6 +494,44 @@ Describe 'Confirm-CtgExchange' {
         $r.ok | Should -BeTrue
         @($r.checks).Count | Should -Be 0
     }
+
+    It 'offboard: passes the GAL check when hideFromGal was requested and EXO confirms it is hidden' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $true } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ hideFromGal = $true; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: fails the GAL check when hideFromGal was requested but EXO still shows it visible' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $false } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ hideFromGal = $true; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).pass | Should -BeFalse
+    }
+
+    It 'offboard: does not assert the GAL check when hideFromGal was not requested' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $false } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        @($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).Count | Should -Be 0
+    }
+
+    It 'offboard: skips the GAL check for a MailUser (no EXO mailbox) even when hideFromGal was requested' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '0 GB (0 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { $null }   # MailUser: no EXO mailbox
+        $config = [pscustomobject]@{ hideFromGal = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        @($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).Count | Should -Be 0
+    }
 }
 
 Describe 'Invoke-CtgExchangeOnboarding' {
@@ -721,5 +759,75 @@ Describe 'Invoke-CtgExchangeOffboarding convert safety' {
         $r.Status | Should -Be 'ok'
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
         ($r.Actions -join ' ') | Should -Match 'WARN mailbox NOT converted'
+    }
+}
+
+Describe 'Invoke-CtgExchangeOffboarding hide-from-GAL' {
+    BeforeEach {
+        Mock Resolve-CtgExchangeTarget { [pscustomobject]@{ Upn = 'leaver@contoso.com'; DisplayName = ''; MatchCount = 1 } } -ModuleName Coretelligent.Exchange
+        Mock Get-CtgMailboxSizeGB { 1 } -ModuleName Coretelligent.Exchange
+        Mock Get-Mailbox { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $false } } -ModuleName Coretelligent.Exchange
+        Mock Set-Mailbox { } -ModuleName Coretelligent.Exchange
+    }
+
+    It 'hides from GAL when config asks and it is not already hidden' {
+        # The static BeforeEach mock always reports HiddenFromAddressListsEnabled = $false, which can't
+        # exercise the executor's read-BACK-after-write (it would always see the pre-write state and
+        # WARN "still shows visible"). Make the mock stateful so the read-back sees the real EXO
+        # behavior: Set-Mailbox applies synchronously, so the follow-up Get-Mailbox reflects it.
+        $state = @{ hidden = $false }
+        Mock Get-Mailbox { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $state.hidden } } -ModuleName Coretelligent.Exchange
+        Mock Set-Mailbox { $state.hidden = $true } -ModuleName Coretelligent.Exchange -ParameterFilter { $HiddenFromAddressListsEnabled -eq $true }
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $HiddenFromAddressListsEnabled -eq $true } -Times 1
+        ($r.Actions -join "`n") | Should -Match 'hid from GAL'
+    }
+
+    It 'is idempotent: skips the write when already hidden' {
+        Mock Get-Mailbox { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $true } } -ModuleName Coretelligent.Exchange
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $null -ne $HiddenFromAddressListsEnabled } -Times 0
+        ($r.Actions -join "`n") | Should -Match 'already hidden from GAL'
+    }
+
+    It 'does not hide when config opts out with { value = $false }' {
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = [pscustomobject]@{ value = $false } })
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $null -ne $HiddenFromAddressListsEnabled } -Times 0
+    }
+
+    It 'WARNs (does not throw) when EXO rejects a directory-synced mailbox' {
+        Mock Set-Mailbox { throw "The operation couldn't be performed because object 'leaver' is being synchronized." } -ModuleName Coretelligent.Exchange -ParameterFilter { $null -ne $HiddenFromAddressListsEnabled }
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        ($r.Actions -join "`n") | Should -Match 'WARN.*hide from GAL.*sync'
+    }
+
+    It 'skips the hide (on-prem note) for a MailUser with no EXO mailbox' {
+        Mock Get-Mailbox { $null } -ModuleName Coretelligent.Exchange
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $null -ne $HiddenFromAddressListsEnabled } -Times 0
+        ($r.Actions -join "`n") | Should -Match 'hide-from-GAL skipped.*MailUser'
+    }
+}
+
+Describe 'Test-CtgHideFromGal' {
+    It 'defaults, flags, and objects resolve correctly' {
+        Test-CtgHideFromGal $true | Should -BeTrue
+        Test-CtgHideFromGal $false | Should -BeFalse
+        Test-CtgHideFromGal 'off' | Should -BeFalse
+        Test-CtgHideFromGal ([pscustomobject]@{ value = $false }) | Should -BeFalse
+        Test-CtgHideFromGal ([pscustomobject]@{ value = $true }) | Should -BeTrue
+        Test-CtgHideFromGal $null | Should -BeFalse
+    }
+
+    It 'treats an object with no value key as opt-in (presence = intent), and normalizes string falsy forms' {
+        Test-CtgHideFromGal ([pscustomobject]@{ attribute = 'msExchHideFromAddressLists' }) | Should -BeTrue
+        Test-CtgHideFromGal 'no' | Should -BeFalse
+        Test-CtgHideFromGal 'false' | Should -BeFalse
+        Test-CtgHideFromGal '0' | Should -BeFalse
     }
 }
