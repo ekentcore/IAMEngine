@@ -275,15 +275,29 @@ export default async function googleOAuthSignin({ page, shot, input, log }) {
     return { ok: false, error: "no OAuth auth URL was provided (params.authUrl) — the app must supply the consent URL (PKCE challenge embedded)." };
   }
 
-  // Capture the redirect WITHOUT serving it: fulfil the loopback callback ourselves and read `code`
-  // off the intercepted request. No local listener on 127.0.0.1:8765 is needed (or wanted).
+  // Capture the redirect WITHOUT serving it. Two mechanisms, because Chromium exposes the loopback
+  // hop differently depending on how it's reached:
+  //   - request/requestfailed listeners (PRIMARY): Google's consent response is a server-side 302,
+  //     and Playwright routing does NOT get a shot at redirect hops of an in-flight navigation — the
+  //     browser follows the redirect at the network layer, the connection to 127.0.0.1:8765 is
+  //     refused (nothing listens there, by design), and the page lands on chrome-error://chromewebdata/
+  //     (also why page.url() is useless afterwards). The Request object still carries the full
+  //     redirect URL, code included — read it there. Proven against the live console (first Drive
+  //     Capital run: the code rode a requestfailed event, never the route).
+  //   - page.route fulfill (SECONDARY): covers a client-side navigation to the callback, where
+  //     interception does work — fulfil a tiny page so the browser doesn't error.
   let captured = null;
+  const maybeCapture = (url) => {
+    if (!captured && matchesRedirect(url, redirectUri)) captured = parseOAuthRedirect(url);
+  };
+  page.on("request", (r) => maybeCapture(r.url()));
+  page.on("requestfailed", (r) => maybeCapture(r.url()));
   try {
     // Match on origin+pathname via a predicate (not a glob): the callback query carries '/' — an
     // encoded code and the scope URLs — which Playwright's glob '*' would not span, so a glob could
     // miss the redirect entirely. matchesRedirect ignores the query, which is exactly right here.
     await page.route((u) => matchesRedirect(u.toString(), redirectUri), async (route) => {
-      captured = parseOAuthRedirect(route.request().url());
+      maybeCapture(route.request().url());
       try {
         await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><meta charset=utf-8><body>You may close this window.</body>" });
       } catch { try { await route.abort(); } catch { /* already handled */ } }

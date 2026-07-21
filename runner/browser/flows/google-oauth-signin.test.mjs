@@ -48,6 +48,14 @@ test("matchesRedirect: true for the callback regardless of its query string", ()
   assert.equal(matchesRedirect(`${REDIRECT}?error=access_denied`, REDIRECT), true);
 });
 
+test("matchesRedirect + parseOAuthRedirect: the exact live refused-navigation URL shape (iss + code + scope)", () => {
+  // The URL Chromium reported on requestfailed in the first live Drive Capital run — the server-302
+  // hop that page.route never saw. The listener path must both match it and parse the code out.
+  const live = `${REDIRECT}?iss=${encodeURIComponent("https://accounts.google.com")}&code=4/0AeanS0bLIVE&scope=${encodeURIComponent("https://www.googleapis.com/auth/cloud-platform")}`;
+  assert.equal(matchesRedirect(live, REDIRECT), true);
+  assert.deepEqual(parseOAuthRedirect(live), { code: "4/0AeanS0bLIVE", error: null, errorDescription: null });
+});
+
 test("matchesRedirect: false for Google's own auth pages and other paths on the same host", () => {
   assert.equal(matchesRedirect("https://accounts.google.com/o/oauth2/v2/auth?client_id=x", REDIRECT), false);
   assert.equal(matchesRedirect("http://127.0.0.1:8765/somethingelse?code=x", REDIRECT), false);
