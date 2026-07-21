@@ -1,9 +1,10 @@
 // Standalone operator utility: convert a downloaded Google service-account JSON key into the exact
 // values the `google-admin` Delinea secret needs (base64 for ClientSecret, the client_email for
-// accountid). Everything runs in the browser — the file is read locally and NEVER uploaded — so an
-// operator on a locked-down Windows machine with no terminal can still produce the base64 the vault
-// wants. This is the manual companion to the auto-setup's in-form upload (CreateInDelineaForm) and
-// its "field seeder" (lib/secrets/field-seeders.ts, which this page reuses verbatim).
+// accountid), and — with the super-admin email filled in — create that secret straight into a picked
+// client's Delinea folder and wire it onto the client. The key file is read locally and NEVER
+// uploaded; its material is used once for the create call and never stored by the app. This is the
+// manual companion to the auto-setup's in-form upload (CreateInDelineaForm) and its "field seeder"
+// (lib/secrets/field-seeders.ts, which this page reuses verbatim).
 import Link from "next/link";
 import { GoogleKeyConverter } from "./_components/google-key-converter";
 
@@ -17,8 +18,9 @@ export default function GoogleKeyToolPage() {
       <p className="note" style={{ maxWidth: 640 }}>
         Turn a downloaded Google <b>service-account JSON key</b> into the fields the{" "}
         <code>google-admin</code> Delinea secret needs. The file is read <b>in your browser</b> and is{" "}
-        <b>never uploaded</b> anywhere — this page just does the base64 conversion you&rsquo;d otherwise run in a
-        terminal, then hands you each value to copy into Secret Server&rsquo;s <b>Automation - API</b> template.
+        <b>never uploaded</b> — this page does the base64 conversion you&rsquo;d otherwise run in a terminal. Add the
+        super-admin email and you can <b>create the secret straight into a client&rsquo;s Delinea folder</b> (on the{" "}
+        <b>Automation - API</b> template) and wire it onto the client — or just copy each value out by hand.
       </p>
       <GoogleKeyConverter />
     </main>
