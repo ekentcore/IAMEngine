@@ -59,3 +59,39 @@ test("auditor is read-only with audit access", () => {
   assert.ok(!can("auditor", "case.import"));
   assert.ok(!can("auditor", "case.dispatch"));
 });
+
+test("client_onboarding adds/modifies/sets up clients but cannot run cases or archive", () => {
+  assert.ok(can("client_onboarding", "client.edit_systems")); // add + modify + set up
+  assert.ok(can("client_onboarding", "client.edit_secrets"));
+  assert.ok(can("client_onboarding", "case.view")); // read-only visibility
+  assert.ok(!can("client_onboarding", "case.dispatch")); // cannot run cases
+  assert.ok(!can("client_onboarding", "case.plan"));
+  assert.ok(!can("client_onboarding", "case.import"));
+  assert.ok(!can("client_onboarding", "client.archive")); // cannot archive
+});
+
+test("client_offboarding is like onboarding but CAN archive clients", () => {
+  assert.ok(can("client_offboarding", "client.edit_systems"));
+  assert.ok(can("client_offboarding", "client.edit_secrets"));
+  assert.ok(can("client_offboarding", "client.archive")); // the difference
+  assert.ok(!can("client_offboarding", "case.dispatch")); // still cannot run cases
+});
+
+test("archive is restricted to client_offboarding + global/super — NOT ops_manager or onboarding", () => {
+  assert.ok(can("client_offboarding", "client.archive"));
+  assert.ok(can("global_admin", "client.archive"));
+  assert.ok(can("super_admin", "client.archive"));
+  assert.ok(!can("ops_manager", "client.archive")); // regression guard: ops can edit but not archive
+  assert.ok(!can("client_onboarding", "client.archive"));
+  assert.ok(!can("engineer", "client.archive"));
+});
+
+test("a global_admin can manage (reset/reassign) the client-lifecycle roles", () => {
+  assert.ok(canResetPassword("global_admin", "client_offboarding"));
+  assert.ok(canResetPassword("global_admin", "client_onboarding"));
+  assert.ok(canAssignRole("global_admin", "engineer", "client_onboarding"));
+  assert.ok(canAssignRole("global_admin", "client_onboarding", "client_offboarding"));
+  // the client roles themselves hold no user.manage, so they can't manage anyone
+  assert.ok(!canResetPassword("client_offboarding", "client_onboarding"));
+  assert.ok(!canAssignRole("client_offboarding", "engineer", "engineer"));
+});

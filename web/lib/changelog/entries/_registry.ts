@@ -12,6 +12,7 @@ export { entry as agentRestartStatusVisible } from "./agent-restart-status-visib
 export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
+export { entry as auditAttributesDiscoveryToUser } from "./audit-attributes-discovery-to-user";
 export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
@@ -37,6 +38,7 @@ export { entry as changelogTimes } from "./changelog-times";
 export { entry as changelogTimesEastern } from "./changelog-times-eastern";
 export { entry as changelogTimesEasternUtcFix } from "./changelog-times-eastern-utc-fix";
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
+export { entry as clientLifecycleRoles } from "./client-lifecycle-roles";
 export { entry as clientsActionsMenu } from "./clients-actions-menu";
 export { entry as connectorBuilder } from "./connector-builder";
 export { entry as connectorBrowserSessionAuth } from "./connector-browser-session-auth";

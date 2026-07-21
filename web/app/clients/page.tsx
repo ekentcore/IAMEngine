@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Clients" };
 
 export default async function ClientsPage() {
-  const { clients, canRestrict, lastSync, modeledCount } = await loadClientsPage();
+  const { clients, canRestrict, canArchive, lastSync, modeledCount } = await loadClientsPage();
 
   return (
     <main className="wide">
@@ -22,7 +22,7 @@ export default async function ClientsPage() {
         </div>
         <Link href="/clients/review" className="note" style={{ alignSelf: "flex-start" }}>⊞ Config review (email formats + runbooks)</Link>
       </div>
-      <ClientsTable clients={clients} canRestrict={canRestrict} />
+      <ClientsTable clients={clients} canRestrict={canRestrict} canArchive={canArchive} />
     </main>
   );
 }

@@ -484,8 +484,9 @@ export function makeRunnerService(db: PrismaClient) {
       if (!client) throw new HttpError(404, "unknown client");
       const agent = await db.agent.findFirst({ where: { clientId: client.id, scope: "client_network", enabled: true, deletedAt: null }, select: { id: true } });
       if (!agent) throw new HttpError(409, "no enabled on-prem agent for this client to read its DC");
-      await db.client.update({ where: { id: client.id }, data: { adDiscoverRequestedAt: new Date() } });
       const who = resolveActor(actor);
+      // Stamp WHO requested it so the runner's later result audit can be attributed to the user.
+      await db.client.update({ where: { id: client.id }, data: { adDiscoverRequestedAt: new Date(), adDiscoverRequestedById: who.userId } });
       await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "client.ad_discovery.request", clientId: client.id } });
       return { clientId: client.id };
     },
@@ -501,8 +502,10 @@ export function makeRunnerService(db: PrismaClient) {
       const clean = (xs: unknown): string[] =>
         [...new Set((Array.isArray(xs) ? xs : []).filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 512))].sort().slice(0, 5000);
       const adObjects = { ous: clean(ous), groups: clean(groups), discoveredAt: new Date().toISOString() };
-      await db.client.update({ where: { id: agent.clientId }, data: { adObjects } });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "client.ad_discovery.result", clientId: agent.clientId, detail: { ous: adObjects.ous.length, groups: adObjects.groups.length } } });
+      // Attribute the result to the human who requested it (kept the agent id in detail for traceability),
+      // so the audit log shows the user, not "agent:<id>".
+      const c = await db.client.update({ where: { id: agent.clientId }, data: { adObjects }, select: { adDiscoverRequestedById: true } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: c.adDiscoverRequestedById, action: "client.ad_discovery.result", clientId: agent.clientId, detail: { ous: adObjects.ous.length, groups: adObjects.groups.length, agentId } } });
       return { clientId: agent.clientId, ous: adObjects.ous.length, groups: adObjects.groups.length };
     },
 
@@ -1419,14 +1422,16 @@ export function makeRunnerService(db: PrismaClient) {
     // pickers can offer cloud groups AD sync never sees. Like AD discovery (a request flag + a result
     // blob on the client), but claimed by the CENTRAL runner — it's the one with Graph.
 
-    async requestCloudGroupDiscovery(clientSlug: string): Promise<{ ok: true }> {
+    async requestCloudGroupDiscovery(clientSlug: string, actor: ActorInput = "ui"): Promise<{ ok: true }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
         select: { id: true, systems: { where: { systemKey: "m365" }, select: { secretNames: true } } },
       });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       if (client.systems.length === 0) throw new HttpError(422, "this client has no m365 system to read groups from");
-      await db.client.update({ where: { id: client.id }, data: { cloudGroupsRequestedAt: new Date() } });
+      // Stamp WHO requested it so the central runner's result (cloud groups + mailboxes) is attributed
+      // to the user, not "agent:<id>".
+      await db.client.update({ where: { id: client.id }, data: { cloudGroupsRequestedAt: new Date(), cloudGroupsRequestedById: resolveActor(actor).userId } });
       return { ok: true };
     },
 
@@ -1471,8 +1476,8 @@ export function makeRunnerService(db: PrismaClient) {
         .filter((g) => g && typeof g.name === "string" && g.name.trim())
         .map((g) => ({ name: g.name.trim(), type: ["dl", "security", "m365"].includes(g.type) ? g.type : "security" }))
         .slice(0, 5000);
-      await db.client.update({ where: { id: clientId }, data: { cloudGroups: { groups: clean, discoveredAt: new Date().toISOString() } } });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudgroups.result", clientId, detail: { count: clean.length } } });
+      const c = await db.client.update({ where: { id: clientId }, data: { cloudGroups: { groups: clean, discoveredAt: new Date().toISOString() } }, select: { cloudGroupsRequestedById: true } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: c.cloudGroupsRequestedById, action: "cloudgroups.result", clientId, detail: { count: clean.length, agentId } } });
       return { ok: true, count: clean.length };
     },
 
@@ -1490,8 +1495,9 @@ export function makeRunnerService(db: PrismaClient) {
         .map((m) => ({ address: m.address.trim(), displayName: typeof m.displayName === "string" ? m.displayName.trim() : "" }))
         .filter((m) => { const k = m.address.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
         .slice(0, 5000);
-      await db.client.update({ where: { id: clientId }, data: { cloudMailboxes: { mailboxes: clean, discoveredAt: new Date().toISOString() } } });
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "cloudmailboxes.result", clientId, detail: { count: clean.length } } });
+      // Same discovery request as cloud groups → attribute to the same requesting user.
+      const c = await db.client.update({ where: { id: clientId }, data: { cloudMailboxes: { mailboxes: clean, discoveredAt: new Date().toISOString() } }, select: { cloudGroupsRequestedById: true } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: c.cloudGroupsRequestedById, action: "cloudmailboxes.result", clientId, detail: { count: clean.length, agentId } } });
       return { ok: true, count: clean.length };
     },
 

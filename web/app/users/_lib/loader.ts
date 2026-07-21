@@ -2,13 +2,14 @@
 // live here once so the two variants can't drift. requirePermission still guards every action
 // server-side; the gate here just hides the page from non-admins.
 import { redirect } from "next/navigation";
+import type { Role } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
 
 export async function loadUsersPage() {
   // The acting role drives which password resets / role changes the UI offers (server still enforces).
-  let meRole: "super_admin" | "global_admin" | "ops_manager" | "engineer" | "importer" | "auditor" = "super_admin";
+  let meRole: Role = "super_admin";
   let meId: string | undefined;
   if (authEnabled()) {
     const me = await getCurrentUser();
