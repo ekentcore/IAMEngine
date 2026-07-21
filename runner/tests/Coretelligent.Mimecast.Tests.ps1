@@ -282,3 +282,28 @@ Describe 'Resolve-CtgMimecastConsoleLogin' {
         $r.Reason | Should -Not -Match 'not-an-email-clientid'
     }
 }
+
+Describe 'Test-CtgMimecastPermissionForbidden (connection-test user-read classifier)' {
+    # The "Test connections" probe reads get-profile for postmaster@<internal domain>. A PER-ADDRESS
+    # forbidden (postmaster@ isn't a managed user) must NOT read as a permission gap — the app WAS
+    # allowed to call get-profile, which is what the test checks. Only a genuine app_forbidden is real.
+    It 'does NOT flag a per-address forbidden (postmaster@ is not a managed user)' {
+        Test-CtgMimecastPermissionForbidden 'err_xdk_operation_forbidden_for_address: 0003 Forbidden To Perform Operation For Address' | Should -BeFalse
+    }
+    It 'does NOT flag a message-only "Forbidden ... For Address" variant' {
+        Test-CtgMimecastPermissionForbidden 'err_something: Forbidden To Perform Operation For Address' | Should -BeFalse
+    }
+    It 'FLAGS a genuine app-level permission gap (app_forbidden / missing product)' {
+        Test-CtgMimecastPermissionForbidden 'app_forbidden: The resource or method does not exist in any product assigned to the application' | Should -BeTrue
+    }
+    It 'FLAGS a bare unauthorized / not-permitted fail' {
+        Test-CtgMimecastPermissionForbidden 'err_unauthorized: user is not permitted to use the API' | Should -BeTrue
+    }
+    It 'treats empty / null text as allowed (no fail at all)' {
+        Test-CtgMimecastPermissionForbidden '' | Should -BeFalse
+        Test-CtgMimecastPermissionForbidden $null | Should -BeFalse
+    }
+    It 'treats a plain not-found as allowed (permission IS granted, user just absent)' {
+        Test-CtgMimecastPermissionForbidden 'err_not_found: No such user' | Should -BeFalse
+    }
+}

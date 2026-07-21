@@ -176,11 +176,21 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     // one already exists) passes a distinct `label` — createSecret dedups by name in the folder, so the
     // default `${client.name} — ${name}` would otherwise reuse the existing same-named secret.
     const ssName = label ?? `${client.name} — ${name}`;
-    // Identity/cloud credentials belong in the client's "Identity Services" subfolder (correct team
-    // view permissions), not the client ROOT — resolve it, falling back to the folder itself when there's
-    // no such child. Without this the secret lands in the ROOT and "can't be viewed" by the team (the same
-    // redirect the M365/Google auto-setup writers apply). We still persist the ROOT as delineaFolderId below.
-    const createFolderId = await resolveCreateFolderId(cfg, folderId!, identitySubfolderName(), token);
+    // Identity/cloud credentials belong in the client's "Identity Services" subfolder (correct team view
+    // permissions), NEVER the client ROOT — a secret in the ROOT "can't be viewed" by the team. Resolve the
+    // subfolder; if the client's folder has no such child we REFUSE rather than vault into the ROOT (the
+    // operator must create the subfolder in Delinea first). The stored delineaFolderId stays the ROOT below.
+    const subName = identitySubfolderName();
+    const createFolderId = await resolveCreateFolderId(cfg, folderId!, subName, token);
+    if (!createFolderId) {
+      return NextResponse.json(
+        {
+          error: `Can't create this secret — ${client.name}'s Delinea folder has no "${subName}" subfolder to vault it in. Create that subfolder (with the identity team's view permissions) in Delinea, then retry. Credentials are never written to the client root.`,
+          manualFallback: true,
+        },
+        { status: 409 },
+      );
+    }
     const result = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token);
     if (!result.ok || !result.id) {
       return NextResponse.json({ error: result.error ?? "Delinea create failed", manualFallback: true }, { status: 502 });

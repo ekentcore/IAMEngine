@@ -152,7 +152,7 @@ export async function writeGoogleWorkspaceCreds(input: WriteGoogleInput): Promis
   } else {
     // No local row — create it fresh, named EXACTLY "Google API - IAM Engine" (a fixed literal name,
     // unlike m365's per-client name — each client's own Identity Services subfolder gets its own copy).
-    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
+    const createFolderId = (await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher)) ?? folderId;
     const created = await createSecret(cfg, { name: GOOGLE_SECRET_NAME, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!created.ok || !created.id) {
       return { ok: false, error: created.error ?? "Delinea create failed", actions };

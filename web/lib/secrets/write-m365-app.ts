@@ -406,8 +406,9 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // credential was provisioned by the automated setup (not hand-entered).
     const ssName = `${client.name} — ${secretName} (auto)`;
     // Identity credentials belong in the client's "Identity Services" subfolder (correct team view
-    // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child.
-    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
+    // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child so
+    // an in-flight provisioning run is never hard-blocked (the create route is stricter and refuses).
+    const createFolderId = (await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher)) ?? folderId;
     const createdSecret = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!createdSecret.ok || !createdSecret.id) {
       return { ok: false, wroteCreds: false, error: createdSecret.error ?? "Delinea create failed" };
