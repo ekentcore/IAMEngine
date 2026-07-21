@@ -12,7 +12,7 @@ export type ApiSetupEntry = {
 export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "mimecast", secretName: "mimecast", label: "Mimecast",
-    consoleUrl: "https://login.services.mimecast.com/",
+    consoleUrl: "https://login.mimecast.com/",
     steps: [
       "In the Mimecast Administration Console, go to Services → API and Platform Integrations.",
       "Create a new 2.0 application; copy its Client ID and Client Secret (the secret is shown once).",
