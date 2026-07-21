@@ -88,11 +88,17 @@ keys, exactly as the rest of the planner does it (`orchestrator.ts:81`,
   directory-synced, the module emits a **WARN action line** ("couldn't hide from GAL —
   mailbox is directory-synced; set an AD hide attribute or hide manually") that surfaces on
   the run report.
-- **Fallback** — if a client has a mailbox via `m365`/`entra` but **no** `exchange` lane,
-  inject onto that lane and run the same step in the M365 module. (Scoped as fallback only:
-  every mailbox client checked, including the FR's own ENT client, has an `exchange` lane.)
 - **Google** — inject `hideFromGal: true` onto the **google** lane → the runner sets
   `includeInGlobalAddressList = $false`.
+
+**Why not an M365/Graph fallback:** `HiddenFromAddressListsEnabled` is an Exchange mailbox
+property; Microsoft Graph does not expose it on the `user` resource. Only the EXO
+`Set-Mailbox` cmdlet (which lives in `Coretelligent.Exchange`) can flip it. So the cloud
+GAL hide can only run on the `exchange` lane, never on the `m365`/`entra` (Graph) lane. A
+mailbox-bearing client is therefore expected to have an `exchange` ClientSystem — every
+mailbox client checked (including the FR's own ENT client) does. If one somehow does not,
+the cloud GAL hide simply can't run; that is a profile gap to fix by adding the `exchange`
+system, not something to paper over on the Graph lane.
 
 ## Runner changes
 
