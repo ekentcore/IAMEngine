@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "google-oauth-error-names-the-block",
   date: "2026-07-21",
-  time: "16:00",
+  time: "12:00",
   title: "Google auto-setup: the OAuth failure now names why the sign-in was blocked, not just 'no code'",
   items: [
     "When the automatic Google setup couldn't sign in, the run showed 'the OAuth job finished but returned no authorization code' - which reads like the sign-in ran all the way through and just missed the code at the end",

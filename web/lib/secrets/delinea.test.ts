@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, getSecretFolderId, findFolderIdByName, deriveClientFolderId, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -428,4 +428,92 @@ test("findTemplateIdByName resolves a template id by exact name (case-insensitiv
   // Lookup failure -> null, never throws.
   const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
   assert.equal(await findTemplateIdByName(cfg, "Automation - API", "tok", boom), null);
+});
+
+// --- getSecretFolderId: read the folder a secret lives in (folder auto-detection source) ------------
+
+test("getSecretFolderId returns the secret's folderId from /summary (metadata only)", async () => {
+  let asked = "";
+  const fetcher: Fetcher = async (url) => {
+    if (url.includes("/oauth2/token")) return { ok: true, status: 200, json: async () => ({ access_token: "t" }) } as FetchResponse;
+    asked = url;
+    return { ok: true, status: 200, json: async () => ({ id: 48213, folderId: 5318, name: "DCG GA Login" }) } as FetchResponse;
+  };
+  assert.equal(await getSecretFolderId(cfg, "48213", "tok", fetcher), "5318");
+  assert.match(asked, /\/api\/v1\/secrets\/48213\/summary$/); // metadata endpoint, no value pulled
+});
+
+test("getSecretFolderId: unset id / -1 folder / read failure -> null (never throws)", async () => {
+  const spy: Fetcher = async () => { throw new Error("should not be called"); };
+  assert.equal(await getSecretFolderId(cfg, "REPLACE_ME", "tok", spy), null); // short-circuits, no network
+  const noFolder: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ folderId: -1 }) } as FetchResponse);
+  assert.equal(await getSecretFolderId(cfg, "1", "tok", noFolder), null);
+  const denied: Fetcher = async () => ({ ok: false, status: 403, json: async () => ({}) } as FetchResponse);
+  assert.equal(await getSecretFolderId(cfg, "1", "tok", denied), null);
+});
+
+// --- findFolderIdByName: conservative folder-by-name lookup (coreid / client name) ------------------
+
+test("findFolderIdByName returns the single folder whose name contains the term", async () => {
+  let asked = "";
+  const fetcher: Fetcher = async (url) => {
+    asked = url;
+    return { ok: true, status: 200, json: async () => ({ records: [
+      { id: 5318, folderName: "Digital Currency Group (core1269)", folderPath: "\\Clients\\Digital Currency Group (core1269)" },
+    ] }) } as FetchResponse;
+  };
+  assert.equal(await findFolderIdByName(cfg, "core1269", "tok", fetcher), "5318");
+  assert.match(asked, /\/api\/v1\/folders\?filter\.searchText=core1269/);
+});
+
+test("findFolderIdByName prefers the shallowest folder when several names contain the term", async () => {
+  const fetcher: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [
+    { id: 99, folderName: "core1269 Identity Services", folderPath: "\\Clients\\core1269 root\\core1269 Identity Services" },
+    { id: 5318, folderName: "core1269 root", folderPath: "\\Clients\\core1269 root" },
+  ] }) } as FetchResponse);
+  assert.equal(await findFolderIdByName(cfg, "core1269", "tok", fetcher), "5318"); // client ROOT, not the subfolder
+});
+
+test("findFolderIdByName: no name-containing hit, an ambiguous tie, or a failure -> null (never guess)", async () => {
+  // searchText matched folders, but none actually CONTAIN the term in their name -> null.
+  const noNameHit: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [{ id: 1, folderName: "Some Other Client" }] }) } as FetchResponse);
+  assert.equal(await findFolderIdByName(cfg, "core1269", "tok", noNameHit), null);
+  // Two equally-shallow matches, no exact -> ambiguous -> null.
+  const tie: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [
+    { id: 10, folderName: "core1269 A", folderPath: "\\Clients\\core1269 A" },
+    { id: 11, folderName: "core1269 B", folderPath: "\\Clients\\core1269 B" },
+  ] }) } as FetchResponse);
+  assert.equal(await findFolderIdByName(cfg, "core1269", "tok", tie), null);
+  const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
+  assert.equal(await findFolderIdByName(cfg, "core1269", "tok", boom), null);
+  assert.equal(await findFolderIdByName(cfg, "   ", "tok", boom), null); // empty term, no network
+});
+
+// --- deriveClientFolderId: priority order ga-secret > coreid > name --------------------------------
+
+test("deriveClientFolderId prefers the GA login's own folder", async () => {
+  const fetcher: Fetcher = async (url) => {
+    if (url.includes("/api/v1/secrets/") && url.includes("/summary")) return { ok: true, status: 200, json: async () => ({ folderId: 5318 }) } as FetchResponse;
+    throw new Error(`folder search should not run when the GA secret resolves: ${url}`);
+  };
+  assert.deepEqual(await deriveClientFolderId(cfg, { gaSecretRef: "48213", slug: "core1269", name: "Digital Currency Group, Inc." }, "tok", fetcher), { folderId: "5318", source: "ga-secret" });
+});
+
+test("deriveClientFolderId falls back to a coreid-named folder when there's no GA secret", async () => {
+  const fetcher: Fetcher = async (url) => {
+    if (url.includes("filter.searchText=core1269")) return { ok: true, status: 200, json: async () => ({ records: [{ id: 5318, folderName: "core1269 root", folderPath: "\\Clients\\core1269 root" }] }) } as FetchResponse;
+    return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse;
+  };
+  assert.deepEqual(await deriveClientFolderId(cfg, { slug: "core1269", name: "DCG" }, "tok", fetcher), { folderId: "5318", source: "coreid" });
+});
+
+test("deriveClientFolderId falls back to a client-name folder, else null", async () => {
+  const byName: Fetcher = async (url) => {
+    if (url.includes("filter.searchText=core1269")) return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse;
+    if (url.toLowerCase().includes("digital%20currency%20group")) return { ok: true, status: 200, json: async () => ({ records: [{ id: 5318, folderName: "Digital Currency Group", folderPath: "\\Clients\\Digital Currency Group" }] }) } as FetchResponse;
+    return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse;
+  };
+  assert.deepEqual(await deriveClientFolderId(cfg, { slug: "core1269", name: "Digital Currency Group" }, "tok", byName), { folderId: "5318", source: "name" });
+  const none: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse);
+  assert.equal(await deriveClientFolderId(cfg, { slug: "core1269", name: "DCG" }, "tok", none), null);
 });

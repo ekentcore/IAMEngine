@@ -35,6 +35,7 @@ export { entry as changelogOneFilePerEntry } from "./changelog-one-file-per-entr
 export { entry as changelogPage } from "./changelog-page";
 export { entry as changelogTimes } from "./changelog-times";
 export { entry as changelogTimesEastern } from "./changelog-times-eastern";
+export { entry as changelogTimesEasternUtcFix } from "./changelog-times-eastern-utc-fix";
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
 export { entry as clientsActionsMenu } from "./clients-actions-menu";
 export { entry as connectorBuilder } from "./connector-builder";
@@ -178,3 +179,4 @@ export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-
 export { entry as v2Offboarding } from "./v2-offboarding";
 export { entry as zoomChunkRealCap } from "./zoom-chunk-real-cap";
 export { entry as zoomSenderPaginationGuard } from "./zoom-sender-pagination-guard";
+export { entry as m365SetupAutodetectFolder } from "./m365-setup-autodetect-folder";

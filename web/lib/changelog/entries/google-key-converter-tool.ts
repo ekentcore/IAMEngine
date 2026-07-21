@@ -3,7 +3,7 @@ import type { ChangelogEntry } from "../format";
 export const entry: ChangelogEntry = {
   id: "google-key-converter-tool",
   date: "2026-07-21",
-  time: "14:45",
+  time: "10:45",
   title: "New More → Tools → Google key converter: drop in a JSON key, copy out the Delinea fields",
   items: [
     "A standalone page at /tools/google-key (under a new More → Tools menu group) converts a downloaded Google service-account JSON key into the exact google-admin secret fields, with no terminal and nothing uploaded - the file is read entirely in your browser",
