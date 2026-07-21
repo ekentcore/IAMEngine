@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Fragment, Persona, GroupEntry, AttrValue } from "@/lib/clients/rules";
+import { byPersonaSystemKeys, personaHasSystem, withPersonaSystem } from "@/lib/clients/persona-systems";
 import { ConditionBuilder, TagList, AD_ATTRIBUTES, VARS } from "./condition-builder";
 import { OuTreePicker } from "./ad-pickers";
 import { NlRuleBox, type AppliedRule, type AppliedPersona } from "./nl-rule-box";
@@ -32,6 +33,9 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
   // Per-system config.onboard.ou — the OU the runner actually uses. Drives the shadow warning that an
   // OU set here (a persona/global fragment) is overridden by the system's own base OU at plan time.
   const [systemOnboardOu, setSystemOnboardOu] = useState<Record<string, string>>({});
+  // Per-system inclusion lane (never | always | on_request | by_persona). Drives the "by persona"
+  // badge + the per-persona membership checklist (FR #0000022).
+  const [systemLanes, setSystemLanes] = useState<Record<string, { onboard: string; offboard: string }>>({});
   const [cloudGroups, setCloudGroups] = useState<{ name: string; type?: string }[]>([]);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -58,6 +62,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
         setGlobals(g); setGlobalsOffboard((d.globalsOffboard ?? {}) as Globals); setPersonas(p); setSystemKeys(keys);
         setAdObjects({ ous: ad.ous ?? [], groups: ad.groups ?? [], discoveredAt: ad.discoveredAt });
         setSystemOnboardOu((d.systemOnboardOu ?? {}) as Record<string, string>);
+        setSystemLanes((d.systemLanes ?? {}) as Record<string, { onboard: string; offboard: string }>);
         setCloudGroups(Array.isArray(cg.groups) ? cg.groups.filter((x) => x && typeof x.name === "string") : []);
         setScope("globals");
         setActiveSystem(Object.keys(g)[0] ?? keys[0] ?? "active-directory");
@@ -73,6 +78,14 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     : (personas[scope]?.[personaSysKey] ?? {});
   const systems = [...new Set([...systemKeys, ...Object.keys(scopeFragments)])].sort();
   const fragment: Fragment = scopeFragments[activeSystem] ?? {};
+
+  // FR #22: the systems in "by persona" mode for the current lane — inclusion is decided by whether
+  // the selected persona lists the system. The checklist below toggles that membership directly.
+  const byPersonaSystems = byPersonaSystemKeys(systemKeys, systemLanes, action);
+  function togglePersonaSystem(key: string, on: boolean) {
+    if (scope === "globals") return;
+    setPersonas({ ...personas, [scope]: withPersonaSystem(personas[scope], key, on, action) });
+  }
 
   function setFragmentFor(sys: string, frag: Fragment) {
     if (scope === "globals") {
@@ -252,12 +265,38 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
             </div>
           )}
 
+          {/* FR #22 — per-persona membership for "by persona" systems. These systems (their lane is set
+              to "by persona" in Edit systems) run for a hire ONLY when the selected persona is checked
+              here. Independent of any group/OU/attribute — a checked system with no fragment still runs. */}
+          {scope !== "globals" && personas[scope] && byPersonaSystems.length > 0 && (
+            <div style={{ margin: "0 0 8px", padding: "0.5rem 0.75rem", background: "#f5f3ff", border: "1px solid #e9e3fb", borderRadius: 4 }}>
+              <label style={{ display: "block", marginBottom: 4 }}>
+                Systems this persona receives{" "}
+                <span className="note">(“by persona” systems run only for the personas checked here — no group/OU needed)</span>
+              </label>
+              <div className="toolbar" style={{ flexWrap: "wrap", gap: 12 }}>
+                {byPersonaSystems.map((key) => (
+                  <label key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input type="checkbox" checked={personaHasSystem(personas[scope], key, action)} onChange={(e) => togglePersonaSystem(key, e.target.checked)} />
+                    {key}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* System selector */}
           <div className="toolbar" style={{ flexWrap: "wrap", gap: 4, marginTop: 8 }}>
             <span className="note">System:</span>
-            {systems.map((sys) => (
-              <button key={sys} className={activeSystem === sys ? "primary" : ""} onClick={() => setActiveSystem(sys)}>{sys}</button>
-            ))}
+            {systems.map((sys) => {
+              const byPersona = systemLanes[sys]?.onboard === "by_persona" || systemLanes[sys]?.offboard === "by_persona";
+              return (
+                <button key={sys} className={activeSystem === sys ? "primary" : ""} onClick={() => setActiveSystem(sys)}
+                  title={byPersona ? "In 'by persona' mode — runs only for personas that include it (set membership per persona above)" : undefined}>
+                  {sys}{byPersona ? <span style={{ marginLeft: 4, fontSize: 10, color: "#7c3aed" }}>•persona</span> : null}
+                </button>
+              );
+            })}
             <button onClick={addSystem} className="note">+ system</button>
           </div>
 

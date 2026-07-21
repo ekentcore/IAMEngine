@@ -435,6 +435,105 @@ export function makeClientRepository(db: PrismaClient) {
       ]);
       return { ok: true, copied: p.systems.length };
     },
+    // Reset a child back to inheriting from its parent (FR #0000023) — the inverse of
+    // copyParentModeling. Two granularities, and a scope that decides how far it goes:
+    //
+    //   WHOLE-CHILD (no systemKey): delete ALL the child's own ClientSystem rows (+ their setup/health/
+    //     connection-test state) and null the child's modeling overrides and set inheritParentSystems=
+    //     true, so clientForPlanning falls back to the parent again (it only inherits when the child has
+    //     ZERO own systems). scope "full" additionally deletes the child's own Secret rows so the
+    //     parent's credentials broker.
+    //   PER-SYSTEM (systemKey given): reset ONE system to the parent's version. Because systems
+    //     inheritance is all-or-nothing, "revert" can't mean "delete and inherit" while other own
+    //     systems remain — so we OVERWRITE the child's row for that key with the parent's (or delete it
+    //     when the parent has no such system). scope "full" also deletes the child's own Secret rows
+    //     named by that system, so the parent's brokered secret wins.
+    //
+    // Destructive: deleting a child Secret row loses the Delinea REFERENCE (the vault secret survives).
+    async resetToParent(
+      slug: string,
+      opts: { scope: "full" | "systems"; systemKey?: string }
+    ): Promise<
+      | { ok: true; removedSystems: number; removedSecrets: number; copiedSystem: boolean }
+      | { ok: false; code: "not_found" | "no_parent" }
+    > {
+      const c = await db.client.findUnique({
+        where: { slug },
+        select: { id: true, parentId: true, systems: { select: { systemKey: true, secretNames: true } } },
+      });
+      if (!c) return { ok: false, code: "not_found" };
+      if (!c.parentId) return { ok: false, code: "no_parent" };
+      const parentId = c.parentId;
+      const full = opts.scope === "full";
+
+      if (opts.systemKey) {
+        const key = opts.systemKey;
+        const parentSys = await db.clientSystem.findUnique({
+          where: { clientId_systemKey: { clientId: parentId, systemKey: key } },
+          select: {
+            mode: true, onboardWhen: true, offboardWhen: true, dependsOn: true,
+            requiresApproval: true, captureEvidence: true, secretNames: true, config: true,
+          },
+        });
+        const childSys = c.systems.find((s) => s.systemKey === key);
+        const secretNames = full ? (childSys?.secretNames ?? []) : [];
+        const result = await db.$transaction(async (tx) => {
+          // Clear this system's dependent state regardless of overwrite-vs-delete.
+          await tx.systemSetupState.deleteMany({ where: { clientId: c.id, systemKey: key } });
+          await tx.connHealthState.deleteMany({ where: { clientId: c.id, systemKey: key } });
+          await tx.connectionTest.deleteMany({ where: { clientId: c.id, systemKey: key } });
+          let removedSystems = 0;
+          let copiedSystem = false;
+          if (parentSys) {
+            const data = {
+              mode: parentSys.mode, onboardWhen: parentSys.onboardWhen, offboardWhen: parentSys.offboardWhen,
+              dependsOn: parentSys.dependsOn, requiresApproval: parentSys.requiresApproval,
+              captureEvidence: parentSys.captureEvidence, secretNames: parentSys.secretNames,
+              config: (parentSys.config ?? Prisma.DbNull) as Prisma.InputJsonValue,
+            };
+            await tx.clientSystem.upsert({
+              where: { clientId_systemKey: { clientId: c.id, systemKey: key } },
+              update: data,
+              create: { clientId: c.id, systemKey: key, ...data },
+            });
+            copiedSystem = true;
+          } else if (childSys) {
+            const del = await tx.clientSystem.deleteMany({ where: { clientId: c.id, systemKey: key } });
+            removedSystems = del.count;
+          }
+          let removedSecrets = 0;
+          if (secretNames.length) {
+            const del = await tx.secret.deleteMany({ where: { clientId: c.id, name: { in: secretNames } } });
+            removedSecrets = del.count;
+          }
+          return { removedSystems, removedSecrets, copiedSystem };
+        });
+        return { ok: true, ...result };
+      }
+
+      // WHOLE-CHILD reset.
+      const result = await db.$transaction(async (tx) => {
+        const delSys = await tx.clientSystem.deleteMany({ where: { clientId: c.id } });
+        await tx.systemSetupState.deleteMany({ where: { clientId: c.id } });
+        await tx.connHealthState.deleteMany({ where: { clientId: c.id } });
+        await tx.connectionTest.deleteMany({ where: { clientId: c.id } });
+        let removedSecrets = 0;
+        if (full) {
+          const delSec = await tx.secret.deleteMany({ where: { clientId: c.id } });
+          removedSecrets = delSec.count;
+        }
+        await tx.client.update({
+          where: { id: c.id },
+          data: {
+            inheritParentSystems: true,
+            identity: Prisma.DbNull, personas: Prisma.DbNull, globals: Prisma.DbNull,
+            globalsOffboard: Prisma.DbNull, locations: Prisma.DbNull,
+          },
+        });
+        return { removedSystems: delSys.count, removedSecrets, copiedSystem: false };
+      });
+      return { ok: true, ...result };
+    },
     // Per-client notification override (per-channel object, or null to clear). Shape sanitized by the
     // API route via parseClientOverride before it lands here.
     async setNotifyOverride(slug: string, notifyOverride: unknown | null) {
@@ -457,21 +556,27 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Read the v2.1 rules (personas/globals/locations) for the editor. Separate from getClientBySlug
     // (which omits them) so the editor loads exactly what it round-trips back via setRules.
-    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown; cloudGroups: unknown; systemOnboardOu: Record<string, string> } | null> {
+    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown; cloudGroups: unknown; systemOnboardOu: Record<string, string>; systemLanes: Record<string, { onboard: string; offboard: string }> } | null> {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, personas: true, globals: true, globalsOffboard: true, locations: true, adObjects: true, cloudGroups: true, systems: { select: { systemKey: true, config: true }, orderBy: { systemKey: "asc" } } },
+        select: { id: true, personas: true, globals: true, globalsOffboard: true, locations: true, adObjects: true, cloudGroups: true, systems: { select: { systemKey: true, config: true, onboardWhen: true, offboardWhen: true }, orderBy: { systemKey: "asc" } } },
       });
       if (!c) return null;
       // Systems whose config.onboard.ou is set — the OU the runner actually uses. The rules editor
       // surfaces this so an operator setting an OU in a persona/global fragment is warned that the
       // system's base OU overrides it (own config wins at plan time; see resolveSystemConfig).
       const systemOnboardOu: Record<string, string> = {};
+      // Each system's per-lane inclusion enum (never | always | on_request | by_persona). The rules
+      // editor uses this to flag which systems are "by persona" — those whose inclusion is decided by
+      // persona membership (a key in persona.systems / persona.offboardSystems), which is what the
+      // editor lets an operator set explicitly. See FR #0000022.
+      const systemLanes: Record<string, { onboard: string; offboard: string }> = {};
       for (const s of c.systems) {
         const ou = (s.config as { onboard?: { ou?: unknown } } | null)?.onboard?.ou;
         if (typeof ou === "string" && ou) systemOnboardOu[s.systemKey] = ou;
+        systemLanes[s.systemKey] = { onboard: String(s.onboardWhen), offboard: String(s.offboardWhen) };
       }
-      return { id: c.id, personas: c.personas, globals: c.globals, globalsOffboard: c.globalsOffboard, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects, cloudGroups: c.cloudGroups, systemOnboardOu };
+      return { id: c.id, personas: c.personas, globals: c.globals, globalsOffboard: c.globalsOffboard, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects, cloudGroups: c.cloudGroups, systemOnboardOu, systemLanes };
     },
 
     // Replace the personas + globals (onboard) + globalsOffboard JSON columns wholesale (the editor

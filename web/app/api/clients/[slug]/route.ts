@@ -29,7 +29,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; printers?: unknown; ou?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; printers?: unknown; ou?: unknown; scope?: unknown; systemKey?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -227,6 +227,28 @@ export async function PATCH(req: Request, { params }: Ctx) {
       detail: { inheritParentSystems: body.inherit, copiedSystems: copied },
     });
     return NextResponse.json({ ...client, copiedSystems: copied });
+  }
+
+  // Reset a child back to inheriting from its parent (FR #0000023) — the inverse of the "keep a copy"
+  // break above. Whole-child (no systemKey) restores full inheritance; per-system overwrites one system
+  // with the parent's version. scope "full" also clears the child's own credential wiring; "systems"
+  // keeps it. Destructive: deleting a child Secret row loses the Delinea reference (vault secret survives).
+  if (body.action === "reset-to-parent") {
+    if (!existing.parentId) return NextResponse.json({ error: "this client has no parent to reset to" }, { status: 422 });
+    const scope = body.scope === "systems" ? "systems" : body.scope === "full" ? "full" : null;
+    if (!scope) return NextResponse.json({ error: "scope must be 'full' or 'systems'" }, { status: 422 });
+    const systemKey = typeof body.systemKey === "string" && body.systemKey.trim() ? body.systemKey.trim() : undefined;
+    const r = await repo.resetToParent(params.slug, { scope, systemKey });
+    if (!r.ok) {
+      return NextResponse.json({ error: r.code === "not_found" ? "client not found" : "this client has no parent to reset to" }, { status: r.code === "not_found" ? 404 : 422 });
+    }
+    await repo.writeAudit({
+      actor: who.label, userId: who.userId,
+      action: "client.reset_to_parent",
+      clientId: existing.id,
+      detail: { scope, systemKey: systemKey ?? null, removedSystems: r.removedSystems, removedSecrets: r.removedSecrets, copiedSystem: r.copiedSystem },
+    });
+    return NextResponse.json(r);
   }
 
   // Per-client notification override: this client's own destination per channel, added to ("also") or

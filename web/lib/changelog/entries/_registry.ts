@@ -149,6 +149,7 @@ export { entry as onedriveGrantRealError } from "./onedrive-grant-real-error";
 export { entry as optionalCredEmptyLabel } from "./optional-cred-empty-label";
 export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-at-first-login-optional";
 export { entry as perContactIntakeRules } from "./per-contact-intake-rules";
+export { entry as personaSystemMembership } from "./persona-system-membership";
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
 export { entry as pr7Pr10Batch } from "./pr7-pr10-batch";
 export { entry as proofpointHttpsSchemeWedge } from "./proofpoint-https-scheme-wedge";
@@ -156,6 +157,7 @@ export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrat
 export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";
 export { entry as requestedGroupsReachThePlan } from "./requested-groups-reach-the-plan";
+export { entry as resetChildToParent } from "./reset-child-to-parent";
 export { entry as runLogFixedLinesPopulate } from "./run-log-fixed-lines-populate";
 export { entry as runLogFixedNoLongerBuriesARecurrence } from "./run-log-fixed-no-longer-buries-a-recurrence";
 export { entry as runlogBulkCopy } from "./runlog-bulk-copy";
