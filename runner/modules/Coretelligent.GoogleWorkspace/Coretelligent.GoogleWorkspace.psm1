@@ -342,6 +342,28 @@ function Invoke-CtgGoogleOffboarding {
         $actions.Add("transferred Drive ownership to: $transfer")
     }
 
+    # 4b. Hide from the directory / GAL (FR #21) — Google calls it "contact sharing".
+    # includeInGlobalAddressList = $false HIDES (inverted sense). Default-on is decided in the planner
+    # (config.hideFromGal = $true); a client opt-out arrives as $false / { value = $false }. Idempotent.
+    $hideCfg = Get-CtgProp $Config 'hideFromGal'; if ($null -eq $hideCfg) { $hideCfg = Get-CtgProp $Config 'hideFromGAL' }
+    $wantHide = $false
+    if ($null -ne $hideCfg) {
+        if ($hideCfg -is [bool]) { $wantHide = [bool]$hideCfg }
+        elseif ($hideCfg -is [string]) { $wantHide = -not ($hideCfg -match '^(?i:false|no|off|0)$') }
+        else { $v = Get-CtgProp $hideCfg 'value'; $wantHide = if ($null -ne $v) { -not ("$v" -match '^(?i:false|no|off|0)$') } else { $true } }
+    }
+    if ($wantHide) {
+        $current = Get-CtgGoogleUser -Email $email
+        $already = ($null -ne $current) -and ((Get-CtgProp $current 'includeInGlobalAddressList') -eq $false)
+        if ($already) {
+            $actions.Add("already hidden from GAL")
+        }
+        elseif ($PSCmdlet.ShouldProcess($email, "Hide from directory (includeInGlobalAddressList = false)")) {
+            Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ includeInGlobalAddressList = $false } | Out-Null
+            $actions.Add("hid from GAL (contact sharing off)")
+        }
+    }
+
     # 5. Suspend (deactivate) — NEVER delete.
     if ($PSCmdlet.ShouldProcess($email, "Suspend Google user")) {
         Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ suspended = $true } | Out-Null
@@ -430,6 +452,21 @@ function Confirm-CtgGoogle {
         $inactiveOu = (Get-CtgProp $Config 'inactiveOu') ?? '/Email & Calendar/Inactive'
         $moved = ($ou -eq $inactiveOu)
         $checks.Add(@{ name = "moved to $inactiveOu"; expected = $true; actual = $moved; pass = $moved })
+
+        # FR #21: only assert the GAL-visibility flip when the config actually requested it — same
+        # inline intent-resolution as the executor (self-contained; no cross-module import).
+        $hideCfg = Get-CtgProp $Config 'hideFromGal'; if ($null -eq $hideCfg) { $hideCfg = Get-CtgProp $Config 'hideFromGAL' }
+        $wantHide = $false
+        if ($null -ne $hideCfg) {
+            if ($hideCfg -is [bool]) { $wantHide = [bool]$hideCfg }
+            elseif ($hideCfg -is [string]) { $wantHide = -not ($hideCfg -match '^(?i:false|no|off|0)$') }
+            else { $v = Get-CtgProp $hideCfg 'value'; $wantHide = if ($null -ne $v) { -not ("$v" -match '^(?i:false|no|off|0)$') } else { $true } }
+        }
+        if ($wantHide) {
+            $incl = Get-CtgProp $u 'includeInGlobalAddressList'
+            $hidden = ($incl -eq $false)
+            $checks.Add(@{ name = 'hidden from GAL (contact sharing off)'; expected = $true; actual = $hidden; pass = $hidden })
+        }
     }
     $ok = -not ($checks | Where-Object { -not $_.pass })
     [pscustomobject]@{ ok = [bool]$ok; checks = @($checks) }

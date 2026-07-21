@@ -142,6 +142,42 @@ Describe 'Invoke-CtgGoogleOffboarding' {
     }
 }
 
+Describe 'Invoke-CtgGoogleOffboarding hide-from-GAL' {
+    BeforeEach {
+        Mock Get-CtgGoogleUser { [pscustomobject]@{ primaryEmail = 'leaver@contoso.com'; includeInGlobalAddressList = $true } } -ModuleName Coretelligent.GoogleWorkspace
+        Mock Get-CtgGoogleUserGroups { @() } -ModuleName Coretelligent.GoogleWorkspace
+        Mock Get-CtgGoogleSessionScopes { @() } -ModuleName Coretelligent.GoogleWorkspace
+        Mock Invoke-CtgGoogleApi { } -ModuleName Coretelligent.GoogleWorkspace
+    }
+
+    It 'sets includeInGlobalAddressList=$false by default' {
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgGoogleOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter {
+            $Method -eq 'PUT' -and $Path -eq '/users/leaver@contoso.com' -and $Body.includeInGlobalAddressList -eq $false
+        } -Times 1
+        ($r.Actions -join "`n") | Should -Match 'hid from GAL'
+    }
+
+    It 'is idempotent when already hidden' {
+        Mock Get-CtgGoogleUser { [pscustomobject]@{ primaryEmail = 'leaver@contoso.com'; includeInGlobalAddressList = $false } } -ModuleName Coretelligent.GoogleWorkspace
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgGoogleOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = $true })
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter {
+            $null -ne $Body -and $Body.ContainsKey('includeInGlobalAddressList')
+        } -Times 0
+        ($r.Actions -join "`n") | Should -Match 'already hidden from GAL'
+    }
+
+    It 'does not hide when opted out with { value = $false }' {
+        $u = [pscustomobject]@{ UserPrincipalName = 'leaver@contoso.com' }
+        $r = Invoke-CtgGoogleOffboarding -User $u -Config ([pscustomobject]@{ hideFromGal = [pscustomobject]@{ value = $false } })
+        Should -Invoke Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -ParameterFilter {
+            $null -ne $Body -and $Body.ContainsKey('includeInGlobalAddressList')
+        } -Times 0
+    }
+}
+
 Describe 'Connect-CtgGoogle (service-account JWT)' {
     It 'signs an RS256 JWT with the service-account key and exchanges it for an access token' {
         $rsa = [System.Security.Cryptography.RSA]::Create(2048)
@@ -229,6 +265,26 @@ Describe 'Confirm-CtgGoogle' {
     It 'offboard: fails when the user is still active' {
         Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; orgUnitPath = '/Active Users'; suspended = $false } }
         $r = Confirm-CtgGoogle -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeFalse
+    }
+
+    It 'offboard: does not assert GAL visibility when hideFromGal was not requested' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; orgUnitPath = '/Email & Calendar/Inactive'; suspended = $true; includeInGlobalAddressList = $true } }
+        $r = Confirm-CtgGoogle -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeTrue
+        $r.checks.name | Should -Not -Contain 'hidden from GAL (contact sharing off)'
+    }
+
+    It 'offboard: passes GAL check when hideFromGal requested and includeInGlobalAddressList is false' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; orgUnitPath = '/Email & Calendar/Inactive'; suspended = $true; includeInGlobalAddressList = $false } }
+        $r = Confirm-CtgGoogle -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{ hideFromGal = $true }) -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'hidden from GAL (contact sharing off)' }).pass | Should -BeTrue
+    }
+
+    It 'offboard: fails GAL check when hideFromGal requested but still visible' {
+        Mock Invoke-CtgGoogleApi -ModuleName Coretelligent.GoogleWorkspace -MockWith { [pscustomobject]@{ primaryEmail = 'jdoe@brightonpark.com'; orgUnitPath = '/Email & Calendar/Inactive'; suspended = $true; includeInGlobalAddressList = $true } }
+        $r = Confirm-CtgGoogle -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@brightonpark.com' }) -Config ([pscustomobject]@{ hideFromGal = $true }) -Action 'offboard'
         $r.ok | Should -BeFalse
     }
 }
