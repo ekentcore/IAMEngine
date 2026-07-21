@@ -417,6 +417,22 @@ test("kept-valid + real row but the vault's cert slug is EMPTY -> stranded (half
   assert.match(r.error ?? "", /no certificate material|certificatebase64/);
 });
 
+test("kept-valid + empty cert slug but expectCert=false (client-secret-only app) -> ok, NOT stranded", async () => {
+  const { db } = fakeDb({ existingSecret: { externalId: "SS-secretonly" } });
+  const f = fetcher({
+    vaultItems: [
+      { slug: "username", itemValue: "app-guid-1" },
+      { slug: "password", itemValue: "some-secret" },
+      { slug: "certificatebase64", itemValue: "" }, // empty is EXPECTED here — no cert was ever wanted
+    ],
+  });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }), expectCert: false },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.deepEqual(r, { ok: true, wroteCreds: false, externalId: "SS-secretonly" });
+});
+
 test("kept-valid + real row, template has NO cert slug (password-only) -> ok, NOT stranded (Finding 5 semantics)", async () => {
   const { db } = fakeDb({ existingSecret: { externalId: "SS-pwonly" } });
   const f = fetcher({

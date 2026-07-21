@@ -137,6 +137,16 @@ export type ProvisionInput = {
   // required role plus exactly the chosen optional roles — the operator's opt-in from the setup modal.
   // `[]` therefore means required-only. Absent → fall back to the `caps` all-or-nothing default.
   optionalRoles?: string[];
+  // Whether to create + maintain the app's certificate (default true). The certificate is only used
+  // for Exchange Online app-only auth; a client that only needs Graph (users/groups/licences) can skip
+  // it. When false, no cert is issued and none is vaulted — the credential is client-secret-only.
+  issueCert?: boolean;
+  // Certificate validity in DAYS (default ~3 years, the generateExoCert max). Ignored when !issueCert.
+  certDays?: number;
+  // Whether to grant Exchange Online app-only rights (Exchange.ManageAsApp + the Exchange Administrator
+  // role) — default true. Exchange app-only auth also needs the certificate, so this is only meaningful
+  // together with issueCert; skipping it leaves the app Graph-only.
+  grantExchange?: boolean;
 };
 
 // credState tells a caller how much to trust the credential material on this result — never infer
@@ -304,9 +314,16 @@ export async function provisionM365App(
   // Exchange Online app-only: the certificate (issued below) is necessary but NOT sufficient — the app
   // also needs Exchange.ManageAsApp + the Exchange Administrator role. Grant them here; best-effort so a
   // tenant where they fail still finishes Graph setup, with WARNs saying what to complete by hand.
-  const exo = await grantExchangeOnline(token, spId, fetcher, opts);
-  for (const line of exo.actions) actions.push(line);
-  const exchangeReady = exo.ok;
+  // Skipped when the operator opts out (grantExchange=false) — the app is then Graph-only.
+  const wantExchange = input.grantExchange ?? true;
+  let exchangeReady = false;
+  if (wantExchange) {
+    const exo = await grantExchangeOnline(token, spId, fetcher, opts);
+    for (const line of exo.actions) actions.push(line);
+    exchangeReady = exo.ok;
+  } else {
+    actions.push("Exchange Online admin not requested this run (skipped Exchange.ManageAsApp + Exchange Administrator role)");
+  }
 
   // credentials — reconcile rule: only issue a new secret/cert when none valid exists. `clientSecret`
   // / `certBase64` / `certPassword` stay undefined unless THIS run issued a new one — a caller must
@@ -318,6 +335,9 @@ export async function provisionM365App(
   let credState: CredState = "kept-valid";
   const issue = input.issueCreds ?? true;
   const forceReissue = input.forceReissue === true;
+  // Whether a certificate is wanted at all (default yes). When false the app is client-secret-only —
+  // no cert is issued or vaulted (a Graph-only client that never uses Exchange app-only auth).
+  const wantCert = input.issueCert ?? true;
 
   const issueClientSecret = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
     const ap = await graphSend<{ secretText?: string }>(token, "POST", `/applications/${objectId}/addPassword`,
@@ -329,7 +349,7 @@ export async function provisionM365App(
   };
 
   const issueCert = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
-    const cert = await generateExoCert({ password: generatePassword() });
+    const cert = await generateExoCert({ password: generatePassword(), days: input.certDays });
     // Graph's keyCredentials.key wants the raw DER, base64-encoded — strip the PEM armor + newlines
     // generateExoCert's cerPem carries.
     const der = cert.cerPem.replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
@@ -359,8 +379,10 @@ export async function provisionM365App(
         actions.push("WARN could not read credentials on the just-created app — issuing new credentials anyway (a brand-new app provably has none to clobber)");
         const ap = await issueClientSecret();
         if (!ap.ok) return { ok: false, error: ap.error, actions };
-        const cp = await issueCert();
-        if (!cp.ok) return { ok: false, error: cp.error, actions };
+        if (wantCert) {
+          const cp = await issueCert();
+          if (!cp.ok) return { ok: false, error: cp.error, actions };
+        }
         credState = "issued";
       } else {
         // Fail SAFE: a failed read on an EXISTING app must never be treated as "no valid credential
@@ -384,21 +406,26 @@ export async function provisionM365App(
       // EITHER is missing/expired (or forceReissue), rotate BOTH, so credState "issued" always carries
       // a complete, vaultable secret+cert set. This is the bug behind "56977 has the secret but no
       // certificatebase64/certificatepassword": a run that re-issued the secret but kept a valid cert.
-      const reissue = !secretValid || !certValid || forceReissue;
+      // A missing/expired CERT only forces a reissue when a cert is actually wanted.
+      const reissue = !secretValid || (wantCert && !certValid) || forceReissue;
       let issuedAny = false;
       if (reissue) {
-        if (forceReissue && secretValid && certValid) {
-          actions.push("forcing a fresh secret + certificate despite existing valid ones (recovering a stranded credential — the kept material is unrecoverable)");
-        } else if (secretValid !== certValid) {
+        if (forceReissue && secretValid && (!wantCert || certValid)) {
+          actions.push("forcing a fresh credential despite an existing valid one (recovering a stranded credential — the kept material is unrecoverable)");
+        } else if (wantCert && secretValid !== certValid) {
           actions.push(`re-issuing BOTH secret and certificate as a unit (only the ${secretValid ? "certificate" : "secret"} was missing/expired, but a kept credential's material can't be re-vaulted)`);
+        } else if (!wantCert) {
+          actions.push("re-issuing the client secret (certificate not requested this run)");
         }
         const ap = await issueClientSecret();
         if (!ap.ok) return { ok: false, error: ap.error, actions };
-        const cp = await issueCert();
-        if (!cp.ok) return { ok: false, error: cp.error, actions };
+        if (wantCert) {
+          const cp = await issueCert();
+          if (!cp.ok) return { ok: false, error: cp.error, actions };
+        }
         issuedAny = true;
       } else {
-        actions.push("kept existing client secret + certificate (both valid)");
+        actions.push(wantCert ? "kept existing client secret + certificate (both valid)" : "kept existing client secret (valid); certificate not requested");
       }
       credState = issuedAny ? "issued" : "kept-valid";
     }

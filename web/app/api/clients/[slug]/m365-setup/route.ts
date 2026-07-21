@@ -25,7 +25,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   const scope = await currentClientScope(db);
   if (!scopeAllows(scope, client.id)) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const body = (await req.json().catch(() => ({}))) as { gaSecretRef?: string; optionalRoles?: unknown; forceRotate?: unknown };
+  const body = (await req.json().catch(() => ({}))) as { gaSecretRef?: string; optionalRoles?: unknown; forceRotate?: unknown; createCert?: unknown; certDays?: unknown; grantExchange?: unknown };
   // The per-client flow always runs off a per-run GA login reference (never a stored client secret) —
   // require it here rather than silently falling back to the fleet path's persisted-secret behavior.
   if (!body.gaSecretRef?.trim()) {
@@ -40,6 +40,12 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   // Operator-requested rotation: force a fresh secret + certificate even if the app's existing ones are
   // valid, so the vault is re-written complete. Strictly opt-in (an accidental rotation churns creds).
   const forceReissue = body.forceRotate === true;
+  // Certificate + Exchange options (default ON = the historical behaviour). `createCert=false` sets up a
+  // client-secret-only app (no cert, no Exchange app-only); certDays is clamped by generateExoCert.
+  const issueCert = body.createCert !== false;
+  const certDays = typeof body.certDays === "number" && Number.isFinite(body.certDays) ? body.certDays : undefined;
+  // Exchange app-only auth needs the cert, so it can't be on without it.
+  const grantExchange = body.grantExchange !== false && issueCert;
 
   const deps = buildSetupDeps(db);
   const r = await startM365SetupRun(db, {
@@ -47,7 +53,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     targets: [{ id: client.id, slug: client.slug, name: client.name, primaryDomain: client.primaryDomain, delineaFolderId: client.delineaFolderId, gaSecretRef }],
     startedBy: auditActor(_g.user, "ui").label,
   }, {
-    runSetup: (c, tenant, ref, onStage) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref, optionalRoles, forceReissue }, { ...deps, onStage }),
+    runSetup: (c, tenant, ref, onStage) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref, optionalRoles, forceReissue, issueCert, certDays, grantExchange }, { ...deps, onStage }),
     hasGlobalAdminSecret: deps.hasGlobalAdminSecret,
   });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason, id: r.id }, { status: 409 });

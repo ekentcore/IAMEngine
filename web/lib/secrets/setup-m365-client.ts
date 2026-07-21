@@ -56,8 +56,11 @@ export type SetupDeps = {
     issueCreds?: boolean;
     forceReissue?: boolean;
     optionalRoles?: string[];
+    issueCert?: boolean;
+    certDays?: number;
+    grantExchange?: boolean;
   }) => Promise<ProvisionOutcome>;
-  writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string }) => Promise<WriteResult>;
+  writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string; expectCert?: boolean }) => Promise<WriteResult>;
   // db.secret.findUnique({ where: { clientId_name: { clientId, name: "m365-global-admin" } } }) !== null
   hasGlobalAdminSecret: (clientId: string) => Promise<boolean>;
   // Creates the synthetic CaseRequest + entra-devicecode Job. See the E4/E5 design spec for the real impl.
@@ -89,6 +92,13 @@ export type SetupInput = {
   // secret + certificate even when the app's existing ones are still valid, so the vault is re-written
   // with complete material. The escape hatch for a half-vaulted credential the automation can't detect.
   forceReissue?: boolean;
+  // Setup-form options: whether to create/vault a certificate (default true), its validity in days, and
+  // whether to grant Exchange Online admin (default true). Exchange app-only needs the cert, so the form
+  // couples them. `issueCert=false` → the write must not treat a missing vault cert as a half-vaulted
+  // credential (see expectCert on the write).
+  issueCert?: boolean;
+  certDays?: number;
+  grantExchange?: boolean;
 };
 
 export type SetupStage = "no-ga-secret" | "device-code-init" | "browser-signin" | "token" | "provision" | "write" | "done" | "error";
@@ -244,7 +254,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // 5. Have a Graph token carrying the GA's privileges — provision (or reconcile) the app registration.
   await deps.onStage?.("provision");
   actions.push("obtained a Graph token — provisioning the app registration");
-  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: input.forceReissue }));
+  const provR = await callDep("provisionM365App", () => deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: input.forceReissue, issueCert: input.issueCert, certDays: input.certDays, grantExchange: input.grantExchange }));
   if (!provR.ok) {
     actions.push(`provisioning errored: ${provR.error}`);
     return { ok: false, stage: "error", error: provR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
@@ -274,7 +284,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // report ok:true unless the credential is genuinely present+valid (credState-aware — see Findings 1/3).
   await deps.onStage?.("write");
   actions.push("writing provisioned credentials to Delinea");
-  const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result }));
+  const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result, expectCert: input.issueCert ?? true }));
   if (!writeR.ok) {
     actions.push(`writing to Delinea errored: ${writeR.error}`);
     return { ok: false, stage: "error", error: writeR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
@@ -306,7 +316,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       // it fails too, fall through to a normal failure rather than looping.
       actions.push("the app has credential material that was never vaulted — rotating a fresh secret + certificate");
       const recoverProvR = await callDep("provisionM365App", () =>
-        deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: true })
+        deps.provisionM365App({ graphToken: tokenResult.token, tenantId: tenant, caps: input.caps, optionalRoles: input.optionalRoles, forceReissue: true, issueCert: input.issueCert, certDays: input.certDays, grantExchange: input.grantExchange })
       );
       if (!recoverProvR.ok) {
         actions.push(`recovery re-provisioning errored: ${recoverProvR.error}`);
@@ -322,7 +332,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       for (const line of recoverProv.result.actions) actions.push(line);
 
       const recoverWriteR = await callDep("writeProvisionedM365App", () =>
-        deps.writeProvisionedM365App({ client, provision: recoverProv.result })
+        deps.writeProvisionedM365App({ client, provision: recoverProv.result, expectCert: input.issueCert ?? true })
       );
       if (!recoverWriteR.ok) {
         actions.push(`writing the rotated credential to Delinea errored: ${recoverWriteR.error}`);

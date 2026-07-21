@@ -60,6 +60,11 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   // Force a fresh secret + certificate even when the app's existing ones are valid — the manual fix for
   // a half-vaulted credential (secret present, cert never written). Off by default: rotation churns.
   const [forceRotate, setForceRotate] = useState(false);
+  // Certificate + Exchange options (default on = the historical behaviour). Exchange app-only auth needs
+  // the certificate, so unchecking the cert also turns Exchange off.
+  const [createCert, setCreateCert] = useState(true);
+  const [certYears, setCertYears] = useState(3); // 1 / 2 / 3 years — 3 (~1095d) is the generateExoCert max
+  const [grantExchange, setGrantExchange] = useState(true);
   const [modalError, setModalError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -158,7 +163,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
       const r = await fetch(`/api/clients/${slug}/m365-setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ gaSecretRef: ref, optionalRoles: [...optRoles], forceRotate }),
+        body: JSON.stringify({ gaSecretRef: ref, optionalRoles: [...optRoles], forceRotate, createCert, certDays: certYears * 365, grantExchange: grantExchange && createCert }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -277,6 +282,36 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
                 <button type="button" className="btn-quiet" style={{ fontSize: 12, padding: "1px 6px" }} disabled={busy}
                   onClick={() => setOptRoles(new Set())}>None</button>
               </div>
+            </fieldset>
+
+            <fieldset className="m365-optperms" style={{ marginTop: "0.6rem" }}>
+              <legend>Certificate &amp; Exchange</legend>
+              <label className="m365-optperm">
+                <input type="checkbox" checked={createCert} disabled={busy}
+                  onChange={(e) => { const on = e.target.checked; setCreateCert(on); if (!on) setGrantExchange(false); }} />
+                <span>
+                  <span className="m365-optperm-need">Create &amp; save a certificate</span>
+                  <span className="m365-optperm-role">needed for Exchange app-only auth; skip it for a Graph-only client</span>
+                </span>
+              </label>
+              {createCert && (
+                <label className="m365-optperm" style={{ paddingLeft: 22 }} title="Certificate validity. 3 years is the current maximum.">
+                  <span className="m365-optperm-need" style={{ marginRight: 8 }}>Certificate expires in</span>
+                  <select value={certYears} disabled={busy} onChange={(e) => setCertYears(Number(e.target.value))} className="inline">
+                    <option value={1}>1 year</option>
+                    <option value={2}>2 years</option>
+                    <option value={3}>3 years (max)</option>
+                  </select>
+                </label>
+              )}
+              <label className="m365-optperm" title={createCert ? "Grants Exchange.ManageAsApp + the Exchange Administrator role, so the app can run Exchange Online cmdlets." : "Exchange app-only auth needs a certificate — enable 'Create & save a certificate' first."}>
+                <input type="checkbox" checked={grantExchange} disabled={busy || !createCert}
+                  onChange={(e) => setGrantExchange(e.target.checked)} />
+                <span>
+                  <span className="m365-optperm-need">Grant Exchange Online admin (Exchange.ManageAsApp + Exchange Administrator role)</span>
+                  <span className="m365-optperm-role">{createCert ? "for mailbox/shared-mailbox operations" : "requires a certificate — enable it above"}</span>
+                </span>
+              </label>
             </fieldset>
 
             <label className="m365-optperm" style={{ marginTop: "0.6rem" }}

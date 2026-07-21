@@ -92,6 +92,7 @@ export { entry as m365PermProbeFlakyAndOptionalCaps } from "./m365-perm-probe-fl
 export { entry as m365PermcheckMailboxParity } from "./m365-permcheck-mailbox-parity";
 export { entry as m365ProvisionExchangeAppOnly } from "./m365-provision-exchange-app-only";
 export { entry as m365SetupAutorecoverRunlog } from "./m365-setup-autorecover-runlog";
+export { entry as m365SetupCertExchangeOptions } from "./m365-setup-cert-exchange-options";
 export { entry as m365SetupAutowireLabel } from "./m365-setup-autowire-label";
 export { entry as m365SetupCertUnit } from "./m365-setup-cert-unit";
 export { entry as m365SetupGaRefModal } from "./m365-setup-ga-ref-modal";

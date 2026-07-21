@@ -29,7 +29,15 @@ import { makeClientRepository } from "@/lib/clients/repository";
 import type { ProvisionResult } from "./provision-m365-app";
 
 export type WriteClientInput = { id: string; slug: string; name: string; delineaFolderId?: string | null; primaryDomain?: string | null };
-export type WriteInput = { client: WriteClientInput; provision: ProvisionResult; secretName?: string /* default "m365-admin" */ };
+export type WriteInput = {
+  client: WriteClientInput;
+  provision: ProvisionResult;
+  secretName?: string /* default "m365-admin" */;
+  // Whether this credential is SUPPOSED to carry a certificate (default true). When the operator set up
+  // the app client-secret-only (no Exchange), an empty cert slug in the vault is expected — NOT the
+  // half-vaulted/stranded case — so the completeness check below is skipped.
+  expectCert?: boolean;
+};
 
 type Env = Record<string, string | undefined>;
 export type WriteDeps = {
@@ -247,7 +255,9 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // Any read failure (or no template/write config) degrades to the old "trust it" behaviour.
     const keptTmpl = templateFor(secretName, env);
     const certSlug = keptTmpl?.fieldMap["certificate (base64 pfx)"];
-    if (certSlug) {
+    // Only a cert-BEARING credential can be "half-vaulted" for a missing cert. When set up client-
+    // secret-only (expectCert=false), an empty cert slug is intended, not stranded — skip the check.
+    if (certSlug && input.expectCert !== false) {
       try {
         const keptCfg = delineaWriteConfigFromEnv(env);
         const keptFetcher: Fetcher = fetcher ?? (fetch as unknown as Fetcher);

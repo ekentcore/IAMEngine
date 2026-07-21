@@ -347,6 +347,35 @@ test("provisionM365App: secret missing but cert valid -> re-issues BOTH (cert ma
   assert.ok(r.patches.some((p) => "keyCredentials" in p.body), "keyCredentials PATCH fired — cert rotated as a unit");
 });
 
+// ── certificate / Exchange as options (setup-form toggles) ─────────────────────────────────────────
+
+test("provisionM365App: issueCert=false -> issues the secret, NO certificate (client-secret-only app)", async () => {
+  const r = router({
+    // Nothing valid vaulted, so it would normally re-issue both — but the cert is not wanted.
+    credsSelect: () => OK({ passwordCredentials: [], keyCredentials: [] }),
+  });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1", issueCert: false }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  assert.equal(result.result.credState, "issued");
+  assert.equal(result.result.clientSecret, "the-secret", "the secret is still issued");
+  assert.equal(result.result.certBase64, undefined, "no cert issued");
+  assert.equal(result.result.certPassword, undefined);
+  assert.ok(!r.patches.some((p) => "keyCredentials" in p.body), "no keyCredentials PATCH — cert not created");
+  assert.ok(result.result.actions.some((a) => /certificate not requested/i.test(a)));
+});
+
+test("provisionM365App: grantExchange=false -> the Exchange grant is not attempted, exchangeReady=false", async () => {
+  let exoLookedUp = false;
+  const r = router({ exoSp: () => { exoLookedUp = true; return OK({ value: [{ id: "exo-sp" }] }); } });
+  const result = await provisionM365App({ graphToken: "tok", tenantId: "ten-1", grantExchange: false }, r.fetch, FAST);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  assert.equal(exoLookedUp, false, "grantExchangeOnline must not run when Exchange is not requested");
+  assert.equal(result.result.exchangeReady, false);
+  assert.ok(result.result.actions.some((a) => /Exchange Online admin not requested/i.test(a)));
+});
+
 // ── forceReissue (stranded-credential recovery, see setup-m365-client.ts) ──────────────────────────
 
 test("provisionM365App: forceReissue mints a fresh secret AND a fresh cert even though valid ones exist", async () => {
