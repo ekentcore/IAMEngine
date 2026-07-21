@@ -6,13 +6,18 @@
 // without pulling in Prisma; re-exported here so callers have one place to import from.
 import { db } from "@/lib/db";
 import type { ActingUser } from "./guard";
+import { resolveActor, type ActorInput } from "./actor";
 
 export { auditActor, actorLabel, resolveActor } from "./actor";
 export type { AuditActor, ActorInput } from "./actor";
 
 type AuditOpts = {
   user?: ActingUser | null;
-  actor?: string; // explicit label when there's no user (e.g. "system:auto-retry")
+  // A label string ("system:auto-retry"), OR an AuditActor that ALSO carries a userId — the latter
+  // records "automation on behalf of a user" (the runner/background job did it, but a person kicked
+  // it off): a non-`user:` actor label with the initiating user's id, which the audit view renders as
+  // "Name (Automation)".
+  actor?: ActorInput;
   clientId?: string | null;
   caseRequestId?: string | null;
   jobId?: string | null;
@@ -21,12 +26,13 @@ type AuditOpts = {
 
 export async function recordAudit(action: string, opts: AuditOpts = {}): Promise<void> {
   const user = opts.user && !opts.user.system ? opts.user : null;
+  const via = resolveActor(opts.actor); // label + (for an AuditActor) the on-behalf-of userId
   try {
     await db.auditLog.create({
       data: {
         action,
-        actor: user ? `user:${user.email}` : (opts.actor ?? "ui"),
-        userId: user?.id ?? null,
+        actor: user ? `user:${user.email}` : via.actor,
+        userId: user?.id ?? via.userId,
         clientId: opts.clientId ?? null,
         caseRequestId: opts.caseRequestId ?? null,
         jobId: opts.jobId ?? null,

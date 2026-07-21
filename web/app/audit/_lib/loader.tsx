@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { can } from "@/lib/auth/permissions";
+import { isAutomationOnBehalf } from "@/lib/auth/actor";
 
 export const AUDIT_LIMIT = 250;
 
@@ -17,6 +18,21 @@ export type AuditSearchParams = { q?: string; action?: string; days?: string; us
 
 // Keys rendered by hand (or too bulky to dump inline) — kept out of the generic key=value pass.
 const SPECIAL_KEYS = new Set(["summary", "diff"]);
+
+// The "who" cell. Three cases:
+//   - a direct user action (actor "user:<email>", user joined)      -> the person's name
+//   - automation a person kicked off (user joined, but a non-`user:` actor label — the runner/
+//     background job actually did it on their behalf)               -> "Name (Automation)"
+//   - a pure system/agent row (no user)                             -> the raw label, muted
+// Knowing WHO started an agent action matters as much as who edited a client directly; the
+// "(Automation)" tag just distinguishes "they clicked, the runner executed" from a direct edit.
+export function actorCell(r: { user: { name: string | null; email: string } | null; actor: string }): React.ReactNode {
+  if (r.user) {
+    const viaAutomation = isAutomationOnBehalf(r.actor, true);
+    return <span title={r.user.email}>{r.user.name || r.user.email}{viaAutomation ? " (Automation)" : ""}</span>;
+  }
+  return <span className="muted">{r.actor}</span>;
+}
 
 // The one-line cell. A row carrying a `summary` (a runbook edit) leads with it; everything else
 // falls back to the generic key=value dump.

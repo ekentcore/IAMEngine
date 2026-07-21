@@ -3,7 +3,7 @@
 // Data assembly lives in _lib/loader.tsx, shared with /audit/v2 (so this page also understands
 // comma-separated ?action= lists and ?user=, even though its UI only offers the single select).
 import { AuditFilters } from "./_components/audit-filters";
-import { loadAuditPage, fmtDetail, fmtDetailLong, AUDIT_LIMIT, type AuditSearchParams } from "./_lib/loader";
+import { loadAuditPage, fmtDetail, fmtDetailLong, actorCell, AUDIT_LIMIT, type AuditSearchParams } from "./_lib/loader";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Audit" };
@@ -22,7 +22,7 @@ export default async function AuditPage({ searchParams }: { searchParams: AuditS
           {rows.map((r) => (
             <tr key={r.id}>
               <td className="note tnum" style={{ whiteSpace: "nowrap" }}>{r.at.toLocaleString()}</td>
-              <td>{r.user ? <span title={r.user.email}>{r.user.name || r.user.email}</span> : <span className="muted">{r.actor}</span>}</td>
+              <td>{actorCell(r)}</td>
               <td><code style={{ fontSize: 11.5 }}>{r.action}</code></td>
               <td>{target(r)}</td>
               <td className="note" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={fmtDetailLong(r.detail)}>{fmtDetail(r.detail)}</td>

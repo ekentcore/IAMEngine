@@ -340,6 +340,9 @@ model ConnectionTest {
   clientId        String
   systemKey       String
   status          String    @default("pending") // pending | running | ok | fail (overall)
+  // Who requested this test (a manual "Test connections" click) — null for a sweep-initiated test. Lets
+  // the runner's result audit be attributed to the user who kicked it off, not "agent:<id>".
+  requestedById   String?
   detail          String? // the API stage's one-line summary ("users readable") or its error
   // Two-stage result: accessOk = the runner could RESOLVE the secret from Delinea; the API stage
   // (status/detail) = connect + one live read worked. Null until a (new) runner reports them.
@@ -888,6 +891,7 @@ model M365SetupRun {
   startedAt  DateTime             @default(now())
   finishedAt DateTime?
   startedBy  String? // actor label snapshot ("user:jane@core.tech")
+  startedById String? // FK to the user who started it — so per-client result audits attribute to them (as automation)
   total      Int                  @default(0) // clients this run intends to visit
   completed  Int                  @default(0) // clients reaching any terminal per-client state
   succeeded  Int                  @default(0)
@@ -934,6 +938,7 @@ model GoogleSetupRun {
   startedAt  DateTime               @default(now())
   finishedAt DateTime?
   startedBy  String?
+  startedById String? // FK to the user who started it — per-client result audits attribute to them (as automation)
   total      Int                    @default(0)
   completed  Int                    @default(0)
   succeeded  Int                    @default(0)

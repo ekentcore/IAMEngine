@@ -1211,7 +1211,7 @@ export function makeRunnerService(db: PrismaClient) {
     // source: "google-setup" is a one-off auto-trigger fired by the Google Workspace auto-setup GET
     // poller once a run lands on a vaulted credential (see google-setup-run.ts) — otherwise a normal
     // single-system retest, just distinguishable in the ConnectionTest.source column.
-    async requestConnectionTests(clientSlug: string, systemKey?: string, source: "manual" | "sweep" | "google-setup" = "manual", deepAllowed = false): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+    async requestConnectionTests(clientSlug: string, systemKey?: string, source: "manual" | "sweep" | "google-setup" = "manual", deepAllowed = false, requestedById: string | null = null): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
         select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } }, secrets: { select: { name: true, externalId: true } } },
@@ -1230,7 +1230,8 @@ export function makeRunnerService(db: PrismaClient) {
       // Retesting ONE system, by hand, is the only place a deep (interactive, browser) probe may run.
       const deep = Boolean(systemKey) && deepAllowed;
       const rows = specs.map((s) => connTestRow(client.id, s, client.secrets, source, deep));
-      await db.connectionTest.createMany({ data: rows });
+      // Stamp who asked (a manual click) so the runner's result audit attributes to them as automation.
+      await db.connectionTest.createMany({ data: requestedById ? rows.map((r) => ({ ...r, requestedById })) : rows });
       // Stage 1 ("Fields"): the app's own Delinea resolve + field-shape check, persisted on the
       // rows. Best-effort — a preflight problem must never stop the runner stages from running.
       await preflightConnTestFields(db, client.id, client.primaryDomain, specs).catch(() => {});
@@ -1373,7 +1374,7 @@ export function makeRunnerService(db: PrismaClient) {
       rights: RightsRow[] | null = null,
       credExpiresAt: Date | null = null
     ): Promise<{ ok: true }> {
-      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true, source: true } });
+      const t = await db.connectionTest.findUnique({ where: { id: testId }, select: { assignedAgentId: true, clientId: true, systemKey: true, source: true, requestedById: true } });
       if (!t) throw new HttpError(404, "unknown connection test");
       if (t.assignedAgentId !== agentId) throw new HttpError(403, "connection test not assigned to this agent");
       // Overall status is a fail if EITHER stage failed (access couldn't resolve, or the API read failed).
@@ -1413,7 +1414,7 @@ export function makeRunnerService(db: PrismaClient) {
       } catch {
         // the snapshot is best-effort — never fail the result post over it
       }
-      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok, rightsMissing: rights ? rights.filter((r) => r.ok === false).length : undefined } } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: t.requestedById, action: "conntest.result", clientId: t.clientId, detail: { systemKey: t.systemKey, accessOk, apiOk: ok, rightsMissing: rights ? rights.filter((r) => r.ok === false).length : undefined, agentId } } });
       return { ok: true };
     },
 

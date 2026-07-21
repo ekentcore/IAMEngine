@@ -56,6 +56,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     scope: `client:${client.id}`,
     targets: [{ id: client.id, slug: client.slug, name: client.name, primaryDomain: client.primaryDomain, delineaFolderId: client.delineaFolderId, gaSecretRef }],
     startedBy: auditActor(_g.user, "ui").label,
+    startedById: auditActor(_g.user, "ui").userId,
   }, {
     runSetup: (c, tenant, ref, onStage, signal) => setupM365ForClient({ client: c, tenant, gaSecretRef: ref, optionalRoles, forceReissue, issueCert, certDays, grantExchange, signal }, { ...deps, onStage }),
     hasGlobalAdminSecret: deps.hasGlobalAdminSecret,

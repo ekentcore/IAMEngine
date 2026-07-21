@@ -6,7 +6,7 @@ import { NextResponse } from "next/server";
 import { guard, guardAuth } from "@/lib/auth/route-guard";
 import { clientSlugInScope } from "@/lib/auth/client-scope";
 import { db } from "@/lib/db";
-import { recordAudit } from "@/lib/auth/audit";
+import { recordAudit, auditActor } from "@/lib/auth/audit";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
@@ -26,7 +26,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   // API token would otherwise fire a real M365 admin sign-in as a side effect of pressing Save.
   const deep = body?.deep === true && Boolean(systemKey);
   try {
-    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey, "manual", deep);
+    const out = await makeRunnerService(db).requestConnectionTests(params.slug, systemKey, "manual", deep, auditActor(g.user, "ui").userId);
     const client = await db.client.findUnique({ where: { slug: params.slug }, select: { id: true } });
     await recordAudit("conntest.request", { user: g.user, clientId: client?.id ?? null, detail: { systemKey: systemKey ?? "*", queued: out.tests.length } });
     return NextResponse.json(out);

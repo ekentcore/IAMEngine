@@ -35,7 +35,7 @@ export type StageReporter = (stage: string, meta?: { userCode?: string; verifica
 // cancelled run stops mutating (and its polling loops exit) instead of running to completion.
 export type RunSetupFn = (client: SetupClientInput, tenant: string, gaSecretRef?: string, onStage?: StageReporter, signal?: AbortSignal) => Promise<SetupResult>;
 
-export type StartArgs = { scope: string; targets: SetupTarget[]; dryRun?: boolean; startedBy: string | null };
+export type StartArgs = { scope: string; targets: SetupTarget[]; dryRun?: boolean; startedBy: string | null; startedById?: string | null };
 export type RunDeps = {
   runSetup: RunSetupFn;
   hasGlobalAdminSecret: (clientId: string) => Promise<boolean>;
@@ -80,7 +80,7 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
 
   let run;
   try {
-    run = await db.m365SetupRun.create({ data: { scope: args.scope, status: "running", dryRun: Boolean(args.dryRun), startedBy: args.startedBy, total: args.targets.length } });
+    run = await db.m365SetupRun.create({ data: { scope: args.scope, status: "running", dryRun: Boolean(args.dryRun), startedBy: args.startedBy, startedById: args.startedById ?? null, total: args.targets.length } });
   } catch (e) {
     // Lost the create race against a concurrent caller for the same scope — the unique index rejected
     // us. Point at the winner instead of failing opaquely.
@@ -190,6 +190,8 @@ export async function startM365SetupRun(db: PrismaClient, args: StartArgs, deps:
             // slow/unreachable audit write can never delay (let alone derail) the sweep; recordAudit
             // itself never throws, but the extra .catch is defense-in-depth against a rejected promise.
             void recordAudit("m365.setup.client", {
+              // Automation on behalf of whoever started the run — shows as "Name (Automation)".
+              actor: { label: "system:m365-setup", userId: run.startedById },
               clientId: t.id,
               detail: { status: res.ok ? "done" : "failed", stage: res.stage, appId: res.appId, externalId: res.externalId, warnings: res.browserWarnings },
             }).catch(() => {});

@@ -40,6 +40,7 @@ export async function POST(req: Request, _ctx: unknown) {
     targets,
     dryRun: Boolean(body.dryRun),
     startedBy: auditActor(_g.user, "ui").label,
+    startedById: auditActor(_g.user, "ui").userId,
   }, {
     // Fleet path never carries a gaSecretRef — undefined keeps the persisted-secret path in setupM365ForClient.
     runSetup: (c, tenant, _ref, onStage, signal) => setupM365ForClient({ client: c, tenant, signal }, { ...deps, onStage }),

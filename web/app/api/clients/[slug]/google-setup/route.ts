@@ -48,6 +48,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   const r = await startGoogleSetupRun(db, {
     client,
     startedBy: auditActor(_g.user, "ui").label,
+    startedById: auditActor(_g.user, "ui").userId,
     seedSecretRef,
     forceRotate,
     runSetup: (onStage, signal) => setupGoogleForClient({ client, seedSecretRef, forceRotate, deps, onStage, signal }),

@@ -19,6 +19,13 @@ export function auditActor(user: MaybeUser, fallback: string): AuditActor {
   return { label: u ? `user:${u.email}` : fallback, userId: u?.id ?? null };
 }
 
+// True when an audit row is automation a person kicked off: there's a known user, but the actor label
+// that actually performed it is a runner/background job (not the user's own "user:<email>"). The audit
+// view tags these "Name (Automation)" — separating "they clicked, the runner did it" from a direct edit.
+export function isAutomationOnBehalf(actorLabel: string, hasUser: boolean): boolean {
+  return hasUser && !actorLabel.startsWith("user:");
+}
+
 // The actor string alone ("user:<email>"), for the few paths that still thread a plain string.
 // Prefer auditActor() — this form cannot carry the userId FK.
 export function actorLabel(user: MaybeUser, fallback: string): string {

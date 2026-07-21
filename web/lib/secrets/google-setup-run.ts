@@ -22,6 +22,7 @@ export type StartGoogleClient = { id: string; slug: string; name: string; deline
 export type StartGoogleArgs = {
   client: StartGoogleClient;
   startedBy: string | null;
+  startedById?: string | null;
   seedSecretRef: string;
   forceRotate: boolean;
   // `signal` is the run's cancel signal (see setup-cancel.ts) — the core checks it between steps so a
@@ -62,7 +63,7 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
 
   let run;
   try {
-    run = await db.googleSetupRun.create({ data: { scope, status: "running", startedBy: args.startedBy, total: 1 } });
+    run = await db.googleSetupRun.create({ data: { scope, status: "running", startedBy: args.startedBy, startedById: args.startedById ?? null, total: 1 } });
   } catch (e) {
     // Lost the create race against a concurrent caller for the same scope — the unique index rejected
     // us. Point at the winner instead of failing opaquely.
@@ -129,6 +130,8 @@ export async function startGoogleSetupRun(db: PrismaClient, args: StartGoogleArg
       // delay (let alone derail) this client's run; recordAudit itself never throws, the extra .catch
       // is defense-in-depth against a rejected promise.
       void recordAudit("google.setup.client", {
+        // Automation on behalf of whoever started the run — shows as "Name (Automation)".
+        actor: { label: "system:google-setup", userId: run.startedById },
         clientId: args.client.id,
         detail: { status, stage: res.stage, saEmail: res.saEmail, externalId: res.externalId, warnings: res.browserWarnings },
       }).catch(() => {});
