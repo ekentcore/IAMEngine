@@ -13,7 +13,15 @@ export const SPANNING_FORCE_SYNC_KEY = "spanning-force-sync";
 // The systemKey for the ad-hoc "Entra device code" browser flow.
 export const ENTRA_DEVICECODE_KEY = "entra-devicecode";
 
-export const ADHOC_SYSTEM_KEYS = [...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY])];
+// The systemKeys for the two ad-hoc Google Workspace browser flows: the interactive super-admin
+// OAuth sign-in (mints the browser session) and the domain-wide-delegation grant in the Admin
+// console (requires that session). See lib/secrets/dispatch-google-browser-job.ts.
+export const GOOGLE_OAUTH_SIGNIN_KEY = "google-oauth-signin";
+export const GOOGLE_DWD_GRANT_KEY = "google-dwd-grant";
+
+export const ADHOC_SYSTEM_KEYS = [
+  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY]),
+];
 
 export function isAdhocSystemKey(systemKey: string): boolean {
   return ADHOC_SYSTEM_KEYS.includes(systemKey);

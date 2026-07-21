@@ -69,6 +69,7 @@ export { entry as fleetReportRestrictedRouting } from "./fleet-report-restricted
 export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";
+export { entry as googleWorkspaceAutoSetupOverview } from "./google-workspace-auto-setup-overview";
 export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missing";
 export { entry as guidedApiSetup } from "./guided-api-setup";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";

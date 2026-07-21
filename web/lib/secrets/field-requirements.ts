@@ -168,6 +168,22 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
       hint: "needed only if the username has no realm (a bare sAMAccountName)",
     },
   ],
+  // Google Workspace service-account key (domain-wide delegation): a base64 JSON key + the SA's own
+  // client email + the impersonated super-admin email DWD delegates to. Wired onto the stock
+  // "Automation - API" template — the SAME template adobe/mimecast/spanning/proofpoint/slack use,
+  // whose four stock fields are ClientID / ClientSecret / accountid / apiURL. Unlike those other
+  // entries (whose `label` is human prose and the Secret Server slug is a separate concern), these
+  // labels are deliberately spelled EXACTLY like the stock field names: writeGoogleWorkspaceCreds'
+  // googleLabeledValues() keys its output by these same names, and delinea-templates.ts's
+  // defaultFieldMap derives the write-path slug from `defaultSlug(anyOf[0])` — keeping both ends in
+  // lockstep without needing a DELINEA_TEMPLATE_MAP override (accountid/apiURL do double duty here
+  // the same way adobe repurposes accountid for its org id).
+  "google-admin": [
+    { label: "ClientSecret", anyOf: ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key"], hint: "Base64 of the service-account JSON key file" },
+    { label: "accountid", anyOf: ["accountid", "AccountId", "Account ID", "Account"], hint: "the service account's client email (SA client email)" },
+    { label: "apiURL", anyOf: ["apiURL", "ApiUrl", "ApiURL", "Url", "URL"], hint: "the impersonated super-admin email" },
+    { label: "ClientID", anyOf: ["ClientID", "ClientId", "Client ID"], optional: true, hint: "the Workspace customer ID (defaults to my_customer)" },
+  ],
 };
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");

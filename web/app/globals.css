@@ -573,6 +573,14 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
 /* ── M365 auto-setup modal (form + live step tracker) ─────────────────────────── */
 .m365-setup-dialog { width: min(560px, 94vw); }
 
+/* ── Google Workspace auto-setup modal — shares the setup-step/setup-result/setup-log rules below. */
+.google-setup-dialog { width: min(560px, 94vw); }
+.setup-step.is-attn .setup-step-mark { background: var(--warn-bg); border-color: var(--warn-fg); color: var(--warn-fg); }
+.setup-dwd-card {
+  margin-top: 10px; padding: 0.7rem 0.85rem; border-radius: 10px; display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid var(--warn-fg); background: var(--warn-bg); font-size: 13.5px;
+}
+
 /* Optional-permission checklist on the setup form. */
 .m365-optperms { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0.5rem 0 0; }
 .m365-optperms legend { font-size: 12.5px; font-weight: 600; padding: 0 0.35rem; color: var(--muted); }

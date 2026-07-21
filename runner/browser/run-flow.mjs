@@ -17,6 +17,12 @@ const FLOWS = {
   // Complete Microsoft's device-login page (microsoft.com/devicelogin) as a Global Admin, reusing
   // the shared MS-SSO login lib (lib/ms-sso-login.mjs). LIVE-VALIDATION PENDING — see the flow file.
   "entra-devicecode": () => import("./flows/entra-devicecode.mjs"),
+  // Sign in to Google as the Workspace super-admin and capture an OAuth authorization code (the code
+  // rides the OAUTH_CODE:<code> result line). LIVE-VALIDATION PENDING — see the flow file.
+  "google-oauth-signin": () => import("./flows/google-oauth-signin.mjs"),
+  // Grant/reconcile domain-wide delegation for a service account in the Admin console (prints
+  // DWD_GRANTED:<saClientId> on confirmation). LIVE-VALIDATION PENDING — see the flow file.
+  "google-dwd-grant": () => import("./flows/google-dwd-grant.mjs"),
   // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
   // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
   "connector-steps": () => import("./flows/connector-steps.mjs"),

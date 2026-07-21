@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SystemsEditor } from "./systems-editor";
 import { M365SetupButton } from "./m365-setup-button";
+import { GoogleSetupButton } from "./google-setup-button";
 import { ChangeCaseDialog } from "./change-case-dialog";
 import { GuidedApiSetup } from "./guided-api-setup";
 import { API_SETUP_CATALOG } from "@/lib/secrets/api-setup-catalog";
@@ -31,6 +32,9 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
   // Catalog systems this client actually has — each gets its own "Setup <label> API" item + modal.
   const guidedEntries = API_SETUP_CATALOG.filter((e) => systemKeys.includes(e.systemKey));
   const showM365 = systemKeys.some((k) => k === "m365" || k === "entra" || k === "exchange");
+  // "Set up Google Workspace automatically" only makes sense for a client that actually has a
+  // google-workspace system — derived from systemKeys like every other system-specific gate here.
+  const showGoogle = systemKeys.includes("google-workspace");
 
   // In-place actions run straight from the menu; their result persists in a note below the trigger.
   const [nameBusy, setNameBusy] = useState(false);
@@ -41,6 +45,7 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
   // stay open through a long-running setup), so the menu just pings an incrementing open signal.
   const [systemsOpen, setSystemsOpen] = useState(false);
   const [m365Signal, setM365Signal] = useState(0);
+  const [googleSignal, setGoogleSignal] = useState(0);
   const [changeOpen, setChangeOpen] = useState(false);
   // One open-signal per guided-setup entry, keyed by systemKey — mirrors m365Signal so each system's
   // modal opens independently of the others.
@@ -109,6 +114,12 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
                 Set up M365 automatically
               </button>
             )}
+            {showGoogle && (
+              <button role="menuitem" onClick={() => { setOpen(false); setGoogleSignal((n) => n + 1); }}
+                title="Automatically create this client's Google service account, grant domain-wide delegation, and vault the credential">
+                Set up Google Workspace automatically
+              </button>
+            )}
             {guidedEntries.map((entry) => (
               <button key={entry.systemKey} role="menuitem"
                 onClick={() => { setOpen(false); setGuidedSignals((prev) => ({ ...prev, [entry.systemKey]: (prev[entry.systemKey] ?? 0) + 1 })); }}
@@ -135,6 +146,7 @@ export function ClientActionsMenu({ slug, personas, locations, knownGroups, ous,
         </span>
       )}
       {showM365 && <M365SetupButton slug={slug} openSignal={m365Signal} hideTrigger />}
+      {showGoogle && <GoogleSetupButton slug={slug} openSignal={googleSignal} hideTrigger />}
       {guidedEntries.map((entry) => (
         <GuidedApiSetup key={entry.systemKey} slug={slug} entry={entry} openSignal={guidedSignals[entry.systemKey] ?? 0} hideTrigger />
       ))}

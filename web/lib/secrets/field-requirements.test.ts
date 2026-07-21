@@ -103,3 +103,15 @@ test("proofpoint: admin email + password required; org domain from field or clie
 test("unknown secret name has no rule -> never flagged", () => {
   assert.deepEqual(checkFieldShape("some-future-system", []), { ok: true, missing: [] });
 });
+
+test("google-admin: ClientSecret + accountid + apiURL required, ClientID optional", () => {
+  assert.deepEqual(checkFieldShape("google-admin", ["ClientSecret", "accountid", "apiURL"]), { ok: true, missing: [] });
+  // ClientID (customer id) absent entirely -> still ok (optional, defaults to my_customer)
+  assert.deepEqual(checkFieldShape("google-admin", ["ClientSecret", "accountid", "apiURL"]), { ok: true, missing: [] });
+  // present too -> still fine
+  assert.deepEqual(checkFieldShape("google-admin", ["ClientID", "ClientSecret", "accountid", "apiURL"]), { ok: true, missing: [] });
+  // missing the key -> flagged
+  assert.deepEqual(checkFieldShape("google-admin", ["accountid", "apiURL"]), { ok: false, missing: ["ClientSecret"] });
+  // missing everything -> all three required flagged, ClientID never appears
+  assert.deepEqual(checkFieldShape("google-admin", ["Notes"]), { ok: false, missing: ["ClientSecret", "accountid", "apiURL"] });
+});

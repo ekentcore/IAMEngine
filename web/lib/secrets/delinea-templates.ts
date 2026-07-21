@@ -78,6 +78,7 @@ const DEFAULT_TEMPLATE_NAMES: Record<string, string> = {
   "m365-global-admin": "Entra Azure AD Account",
   proofpoint: "Automation - API",
   slack: "Automation - API",
+  "google-admin": "Automation - API",
 };
 
 export function defaultTemplateName(secretName: string, env: Env = process.env): string | null {

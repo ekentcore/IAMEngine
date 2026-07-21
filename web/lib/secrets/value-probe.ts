@@ -21,6 +21,7 @@ import {
   M365_TENANT_FIELDS,
   probeEntraClientCredentials,
 } from "@/lib/secrets/m365-credential";
+import { keyPemFromBase64Json, probeGoogleDirectory } from "@/lib/secrets/google-verify";
 
 export type ValueProbe = {
   probeable: boolean; // is there a prover for this secret? false → caller writes, runner verifies later
@@ -40,6 +41,10 @@ export type ProbeCtx = {
 };
 
 type Prober = (values: Record<string, string>, ctx: ProbeCtx, fetcher: typeof fetch) => Promise<ValueProbe>;
+
+// Mirrors field-requirements.ts's "google-admin" anyOf lists (ClientSecret/apiURL requirements).
+const GOOGLE_KEY_FIELDS = ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key"];
+const GOOGLE_IMPERSONATE_FIELDS = ["apiURL", "ApiUrl", "ApiURL", "Url", "URL"];
 
 const MIMECAST_ID_FIELDS = ["ClientID", "ClientId", "Client ID", "AppId", "Application ID", "Username"];
 const MIMECAST_SECRET_FIELDS = ["ClientSecret", "Client Secret", "Secret", "API Key", "ApiKey", "AccessToken", "Token", "Password"];
@@ -93,6 +98,30 @@ const PROBERS: Record<string, Prober> = {
     return p.ok
       ? { probeable: true, blocking: true, ok: true, label: "authenticated against Entra", kind: "live" }
       : { probeable: true, blocking: true, ok: false, error: p.error ?? "authentication failed", hint: p.hint, kind: "live" };
+  },
+
+  // Google Workspace service account — the definitive live test: the same DWD JWT-bearer grant +
+  // Directory API read probeGoogleDirectory runs. Blocking: there's no point vaulting a key we just
+  // proved can't impersonate the tenant's super admin. Fields mirror field-requirements.ts's
+  // "google-admin" entry — the key lives in ClientSecret, the impersonate target in apiURL.
+  "google-admin": async (values, _ctx, fetcher) => {
+    const keyBase64 = pickField(values, GOOGLE_KEY_FIELDS);
+    const impersonate = pickField(values, GOOGLE_IMPERSONATE_FIELDS);
+    if (!keyBase64 || !impersonate) {
+      return {
+        probeable: true,
+        blocking: true,
+        ok: false,
+        error: `missing ${!keyBase64 ? "service-account key (ClientSecret)" : "impersonate email (apiURL)"}`,
+      };
+    }
+    if (!keyPemFromBase64Json(keyBase64)) {
+      return { probeable: true, blocking: true, ok: false, error: "invalid service account key file (not base64 JSON, or missing client_email/private_key)", kind: "live" };
+    }
+    const p = await probeGoogleDirectory({ keyBase64, impersonate, fetcher });
+    return p.ok
+      ? { probeable: true, blocking: true, ok: true, label: "authenticated against Google Directory", kind: "live" }
+      : { probeable: true, blocking: true, ok: false, error: p.error ?? "authentication failed", kind: "live" };
   },
 
   // On-prem AD service account — the app can't bind AD, so the pre-write check is runner comms: is the

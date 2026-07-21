@@ -150,3 +150,22 @@ test("defaultTemplateName honors a DELINEA_TEMPLATE_MAP templateName override", 
   const env = { DELINEA_TEMPLATE_MAP: JSON.stringify({ "m365-admin": { templateId: 6001, templateName: "Custom Azure App" } }) };
   assert.equal(defaultTemplateName("m365-admin", env), "Custom Azure App");
 });
+
+test("google-admin defaults to the Automation - API template, and its default field map matches the stock slugs", () => {
+  assert.equal(defaultTemplateName("google-admin", {}), "Automation - API");
+  const m = defaultFieldMap("google-admin");
+  // Labels are spelled exactly like the stock field names on purpose (see field-requirements.ts) so
+  // this default map round-trips write-google-workspace.ts's googleLabeledValues() keys without
+  // needing a DELINEA_TEMPLATE_MAP override.
+  assert.equal(m["ClientSecret"], "clientsecret");
+  assert.equal(m["accountid"], "accountid");
+  assert.equal(m["apiURL"], "apiurl");
+  assert.equal(m["ClientID"], "clientid");
+});
+
+test("templateFor resolves google-admin from a per-key env id", () => {
+  const t = templateFor("google-admin", { DELINEA_TEMPLATE_GOOGLE_ADMIN: "7002" });
+  assert.ok(t);
+  assert.equal(t!.templateId, 7002);
+  assert.equal(t!.fieldMap["accountid"], "accountid");
+});

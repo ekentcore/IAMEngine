@@ -587,13 +587,58 @@ function Use-CtgGoogleSecret {
         if (-not $clientEmail) { $clientEmail = [string]$sa.client_email }
         if (-not $privateKey)  { $privateKey  = [string]$sa.private_key }
     }
+    # Additive fallback: Secret Server's stock "Automation - API" template (no key/email/subject
+    # fields of its own) repurposed for google-admin — ClientSecret carries the key material
+    # (base64 of the full SA JSON, base64 of a bare PEM, or either un-encoded), accountid carries
+    # the SA's client email (only needed for the bare-PEM shape — a JSON key already has one).
+    # Only consulted when the shapes above didn't resolve both an email and a key.
+    if (-not $clientEmail -or -not $privateKey) {
+        $clientSecretField = & $pick @('ClientSecret')
+        if ($clientSecretField) {
+            $accountId = & $pick @('accountid')
+            $resolveKeyValue = {
+                param($value, $email)
+                if ($value -match '^\s*-----BEGIN') {
+                    if (-not $email) { return $null }
+                    return [pscustomobject]@{ Email = $email; Key = $value.Trim() }
+                }
+                if ($value -match '^\s*\{') {
+                    $sa2 = $value | ConvertFrom-Json
+                    return [pscustomobject]@{ Email = [string]$sa2.client_email; Key = [string]$sa2.private_key }
+                }
+                return $null
+            }
+            $resolved = & $resolveKeyValue $clientSecretField $accountId
+            if (-not $resolved) {
+                $decodedOnce = $null
+                try { $decodedOnce = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($clientSecretField)) } catch {}
+                if ($decodedOnce) { $resolved = & $resolveKeyValue $decodedOnce $accountId }
+            }
+            if ($resolved -and $resolved.Email -and $resolved.Key) {
+                $clientEmail = $resolved.Email
+                $privateKey  = $resolved.Key
+            }
+        }
+    }
     if (-not $clientEmail -or -not $privateKey) {
         throw "the 'google-admin' secret has no service-account key — set ServiceAccountKeyBase64 (the downloaded JSON key, base64-encoded) or ServiceAccountJson, or split ClientEmail+PrivateKey. The secret has: $(@($f.Keys) -join ', '). See /help/google."
     }
     $impersonate = & $pick @('Impersonate', 'AdminEmail', 'Admin', 'Subject', 'DelegatedAdmin', 'AdminUser')
     if (-not $impersonate -and $s.Username) { $impersonate = [string]$s.Username }
+    if (-not $impersonate) {
+        # Automation - API template fallback: apiURL repurposed to carry the impersonate email
+        # (never a real URL for this secret, so the '@' check disambiguates from stray Adobe/other-style values).
+        $apiUrlField = & $pick @('apiURL')
+        if ($apiUrlField -and $apiUrlField -match '@') { $impersonate = $apiUrlField }
+    }
     if (-not $impersonate) { throw "the 'google-admin' secret has no admin to impersonate — set the Impersonate field to a Workspace super-admin's email (domain-wide delegation acts as a real admin). See /help/google." }
-    $customer = & $pick @('CustomerId', 'Customer'); if (-not $customer) { $customer = 'my_customer' }
+    $customer = & $pick @('CustomerId', 'Customer')
+    if (-not $customer) {
+        # Automation - API template fallback: ClientID holds the Workspace customer id.
+        $clientIdField = & $pick @('ClientID')
+        if ($clientIdField) { $customer = $clientIdField }
+    }
+    if (-not $customer) { $customer = 'my_customer' }
     $scopesRaw = & $pick @('Scopes', 'Scope')
     $scopes = if ($scopesRaw) { @($scopesRaw -split '[,\s]+' | Where-Object { $_ }) } else { @() }
     if ($scopes.Count) { Connect-CtgGoogle -ClientEmail $clientEmail -PrivateKey $privateKey -Impersonate $impersonate -CustomerId $customer -Scopes $scopes }
@@ -1528,6 +1573,36 @@ $DISPATCH['entra-devicecode'] = @{
     }
 }
 $DISPATCH['entra-devicecode'].Offboard = $DISPATCH['entra-devicecode'].Onboard
+
+# Ad-hoc "Google super-admin OAuth sign-in" (browser automation): drives Google's own sign-in + OAuth
+# consent as the interactive Workspace SUPER-ADMIN to capture the authorization code the app needs to
+# provision a GCP project + service account for the automated Google Workspace setup. Rides the
+# 'google-super-admin' secret (an interactive super-admin email + password + One-Time Password), NOT
+# the 'google-admin' service-account key the API lane uses; no Connect lane (the browser flow does its
+# own Google sign-in). One executor serves both lanes. Withheld from agents without the 'browser'
+# capability (BROWSER_SYSTEMS app-side). LIVE-VALIDATION PENDING (see the flow file header).
+$DISPATCH['google-oauth-signin'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'google-super-admin'
+        Invoke-CtgGoogleOAuthSignin -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['google-oauth-signin'].Offboard = $DISPATCH['google-oauth-signin'].Onboard
+
+# Ad-hoc "Google domain-wide delegation grant" (browser automation): with the super-admin signed in,
+# grant/reconcile DWD scopes for the just-provisioned service account in the Admin console. Same secret
+# and gating as google-oauth-signin; a grant that can't be confirmed FAILS the job so the app falls
+# back to a manual grant (the DWD app path keys off job success, not a result line). One executor
+# serves both lanes. LIVE-VALIDATION PENDING (see the flow file header).
+$DISPATCH['google-dwd-grant'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'google-super-admin'
+        Invoke-CtgGoogleDwdGrant -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['google-dwd-grant'].Offboard = $DISPATCH['google-dwd-grant'].Onboard
 
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).

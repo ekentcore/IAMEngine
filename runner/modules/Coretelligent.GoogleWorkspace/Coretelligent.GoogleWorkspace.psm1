@@ -526,4 +526,156 @@ function Invoke-CtgGoogleChange {
     [pscustomobject]@{ System = 'google-workspace'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange
+# -------------------------------------------------------------------------------------------------
+# Interactive super-admin BROWSER flows (google-oauth-signin / google-dwd-grant)
+# -------------------------------------------------------------------------------------------------
+# These two executors drive Google's own web UI as the interactive Workspace SUPER-ADMIN (the
+# 'google-super-admin' secret — a human email + password + One-Time Password), NOT the service-account
+# API key ('google-admin') the rest of this module uses. They mirror Invoke-CtgEntraDeviceCode: resolve
+# the login from the brokered secret, hand a { username; password; params } spec to the Node/Playwright
+# sidecar (Invoke-CtgBrowserFlow), and map the result to the runner's contract. The OTP is minted from
+# Delinea AT the prompt via an -OtpRequest spec (a 30s code can't survive browser launch + the SSO hop).
+# Withheld from agents without the 'browser' capability by the app's claim gate (BROWSER_SYSTEMS).
+
+function Get-CtgGoogleSuperAdminField {
+    param($Secret, [Parameter(Mandatory)][string[]]$Names)
+    if (-not $Secret) { return $null }
+    $fields = Get-CtgProp $Secret 'Fields'
+    foreach ($n in $Names) {
+        if ($fields -and ($fields -is [System.Collections.IDictionary]) -and $fields.ContainsKey($n) -and $fields[$n]) { return $fields[$n] }
+    }
+    return $null
+}
+
+# The ONE place that decides what may be typed into Google's sign-in. Returns @{ Ok; Username;
+# Password; Reason }. Field synonyms mirror the interactive-admin shape (Username/AdminEmail/.../Email +
+# Password/AdminPassword), never a service-account key. The rejected VALUE is never echoed — everything
+# here lands in an AuditLog row + a ServiceNow work note; naming the field is enough to fix it.
+function Resolve-CtgGoogleSuperAdminLogin {
+    param($Secret, [string]$SecretName = 'google-super-admin')
+    $username = Get-CtgGoogleSuperAdminField $Secret @('Username', 'AdminEmail', 'AdminUser', 'Email', 'UPN', 'User')
+    $password = Get-CtgGoogleSuperAdminField $Secret @('Password', 'AdminPassword')
+    if (-not $username -and -not $password) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) {
+            $username = $cred.UserName
+            try { $password = $cred.GetNetworkCredential().Password } catch { }
+        }
+    }
+    if (-not $username -or -not $password) {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "no '$SecretName' secret is wired with a super-admin email + password (fields Username/Password, or AdminEmail/AdminPassword) — wire one in Delinea, and enable One-Time Password on it so Delinea can supply the verification code." }
+    }
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "the brokered '$SecretName' username is not an email, so it cannot be a Google sign-in. Set the secret's Username to a Workspace super-admin's email. The value is not repeated here because it may be credential material." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $username; Password = $password; Reason = $null }
+}
+
+# Shared: build the { username; password; params } spec every Google browser flow takes, folding in the
+# preferred OtpRequest (mint-at-the-prompt) and the legacy TOTP-seed fallback. Returns the spec, or
+# $null (with a WARN pushed to $Actions) when no login is wired.
+function New-CtgGoogleBrowserInput {
+    param($Secret, [string]$SecretName, [hashtable]$OtpRequest, [hashtable]$Params, [System.Collections.Generic.List[string]]$Actions)
+    $login = Resolve-CtgGoogleSuperAdminLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) { $Actions.Add("WARN $($login.Reason)"); return $null }
+    if ($OtpRequest) { $Actions.Add("one-time password will be minted by Delinea at the verification prompt") }
+    $totpSeed = Get-CtgGoogleSuperAdminField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest) { $Actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
+    $p = @{}
+    if ($Params) { foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] } }
+    if ($OtpRequest) { $p['otp'] = $OtpRequest }
+    if ($totpSeed)   { $p['totpSeed'] = $totpSeed }
+    return @{ username = $login.Username; password = $login.Password; params = $p }
+}
+
+function Invoke-CtgGoogleOAuthSignin {
+    <#
+    .SYNOPSIS
+        Sign in to Google as the Workspace super-admin and capture the OAuth authorization code the
+        consent flow redirects back with (the 'google-oauth-signin' browser flow).
+    .DESCRIPTION
+        Resolves the super-admin login from the brokered 'google-super-admin' secret, hands the browser
+        flow the app-supplied authUrl + redirectUri, and returns the captured code ONLY on its result
+        line (OAUTH_CODE:<code>). Never throws for a browser-side failure — a missing browser / bad
+        credentials / unautomatable MFA come back as a WARN action (the app then reports no code and the
+        operator can complete the consent manually). The code itself never appears in a WARN or a log.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'google-super-admin',
+        [hashtable]$OtpRequest
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $authUrl     = [string](Get-CtgProp $Config 'authUrl')
+    $redirectUri = [string](Get-CtgProp $Config 'redirectUri')
+    if ([string]::IsNullOrWhiteSpace($authUrl)) { throw "google-oauth-signin: no OAuth auth URL was supplied (config.authUrl) — set it on the job and re-run." }
+
+    $params = @{ authUrl = $authUrl }
+    if (-not [string]::IsNullOrWhiteSpace($redirectUri)) { $params['redirectUri'] = $redirectUri }
+    $flowInput = New-CtgGoogleBrowserInput -Secret $Secret -SecretName $SecretName -OtpRequest $OtpRequest -Params $params -Actions $actions
+    if (-not $flowInput) {
+        $actions.Add("WARN could not complete the Google OAuth sign-in — complete the consent manually meanwhile.")
+        return [pscustomobject]@{ System = 'google-oauth-signin'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+
+    # -TimeoutSeconds 300: browser launch + Google sign-in + MFA (can wait out a TOTP window) + consent.
+    $res = Invoke-CtgBrowserFlow -Flow 'google-oauth-signin' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        # $res.message is the OAUTH_CODE:<code> line — the app reads the code off it. It is the flow's
+        # OUTPUT, carried on the result line only (the browser sidecar never logs the code).
+        $msg = if ($res.message) { $res.message } else { "completed the Google OAuth sign-in" }
+        $actions.Add($msg)
+        return [pscustomobject]@{ System = 'google-oauth-signin'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+    # Not ok — surface as a WARN (non-fatal): the job still succeeds, the app finds no OAUTH_CODE and
+    # reports the sign-in couldn't complete, with this warning attached.
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    $actions.Add("WARN Google OAuth sign-in could not complete — $err$ev")
+    [pscustomobject]@{ System = 'google-oauth-signin'; Status = 'ok'; Actions = $actions.ToArray() }
+}
+
+function Invoke-CtgGoogleDwdGrant {
+    <#
+    .SYNOPSIS
+        Grant/reconcile domain-wide delegation for a service account in the Admin console (the
+        'google-dwd-grant' browser flow).
+    .DESCRIPTION
+        Resolves the super-admin login, hands the browser flow the service-account client ID + requested
+        scopes, and confirms the grant. UNLIKE the OAuth sign-in, the app keys DWD off the job SUCCEEDING
+        (there is no result line it parses), so a grant that can't be confirmed must FAIL the job — this
+        throws on a non-ok flow result, letting the app fall back to a manual grant. On success the
+        DWD_GRANTED:<saClientId> line is recorded for the run report.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'google-super-admin',
+        [hashtable]$OtpRequest
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $saClientId = [string](Get-CtgProp $Config 'saClientId')
+    $scopes = @(Get-CtgProp $Config 'scopes' | Where-Object { $_ })
+    if ([string]::IsNullOrWhiteSpace($saClientId)) { throw "google-dwd-grant: no service-account client ID was supplied (config.saClientId)." }
+    if ($scopes.Count -eq 0) { throw "google-dwd-grant: no scopes were supplied (config.scopes) — nothing to authorize." }
+
+    $params = @{ saClientId = $saClientId; scopes = $scopes }
+    $flowInput = New-CtgGoogleBrowserInput -Secret $Secret -SecretName $SecretName -OtpRequest $OtpRequest -Params $params -Actions $actions
+    if (-not $flowInput) { throw "google-dwd-grant: $($actions -join '; ')" }
+
+    $res = Invoke-CtgBrowserFlow -Flow 'google-dwd-grant' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        $msg = if ($res.message) { $res.message } else { "DWD_GRANTED:$saClientId" }
+        $actions.Add($msg)
+        return [pscustomobject]@{ System = 'google-dwd-grant'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+    # A grant that can't be confirmed must fail the job so the app surfaces the manual-grant fallback.
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    throw "domain-wide delegation grant could not be confirmed — $err$ev"
+}
+
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant

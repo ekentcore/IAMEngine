@@ -105,7 +105,7 @@ function connTestRow(
   clientId: string,
   s: { systemKey: string; secretNames: string[]; config: unknown; onPrem: boolean },
   clientSecrets: { name: string; externalId: string | null }[],
-  source: "manual" | "sweep",
+  source: "manual" | "sweep" | "google-setup",
   deep: boolean
 ) {
   return {
@@ -1204,7 +1204,10 @@ export function makeRunnerService(db: PrismaClient) {
     // deepAllowed: caller states whether an INTERACTIVE probe (a real vendor-portal sign-in) is wanted.
     // Only the operator's explicit "test this one system" says yes — a save-and-test after editing a
     // token, a whole-client run, the fleet button and the nightly sweep all say no. See ConnectionTest.deep.
-    async requestConnectionTests(clientSlug: string, systemKey?: string, source: "manual" | "sweep" = "manual", deepAllowed = false): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
+    // source: "google-setup" is a one-off auto-trigger fired by the Google Workspace auto-setup GET
+    // poller once a run lands on a vaulted credential (see google-setup-run.ts) — otherwise a normal
+    // single-system retest, just distinguishable in the ConnectionTest.source column.
+    async requestConnectionTests(clientSlug: string, systemKey?: string, source: "manual" | "sweep" | "google-setup" = "manual", deepAllowed = false): Promise<{ tests: { systemKey: string; onPrem: boolean }[] }> {
       const client = await db.client.findUnique({
         where: { slug: clientSlug },
         select: { id: true, primaryDomain: true, systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } }, secrets: { select: { name: true, externalId: true } } },

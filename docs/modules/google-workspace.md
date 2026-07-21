@@ -10,11 +10,27 @@ Secret: `google-admin` (Admin SDK / Directory API; domain-wide-delegated service
 `Connect-CtgGoogle` mints a short-lived OAuth token by signing an RS256 JWT with the service
 account's private key (`iss`=SA email, `sub`=impersonated super-admin, `scope`=Directory scopes)
 and exchanging it at `oauth2.googleapis.com/token` — pure .NET crypto + REST, no external module,
-cross-platform (central runner on Mac/Linux). Secret fields (`Use-CtgGoogleSecret`):
-`ServiceAccountKeyBase64` (the JSON key, base64 — preferred) **or** `ServiceAccountJson` **or**
-`ClientEmail`+`PrivateKey`; `Impersonate` (super-admin email, required; falls back to the secret's
-Username); optional `CustomerId` (default `my_customer`) and `Scopes`. Full operator setup
-(service account, domain-wide delegation, Delinea storage): **/help/google**.
+cross-platform (central runner on Mac/Linux).
+
+**Canonical vaulted shape:** the app writes `google-admin` on Secret Server's stock
+"Automation - API" template (the same template Adobe reuses) — no field is native to this
+secret type, so the fields are repurposed:
+
+| Template field | Holds |
+| --- | --- |
+| `ClientSecret` | The service-account key material — **base64 of the full downloaded JSON key** (preferred), or base64 of a bare PEM private key, or either un-encoded. |
+| `accountid` | The service account's client email (`client_email`). Only required when `ClientSecret` is a bare PEM — a full JSON key already carries its own `client_email`. |
+| `apiURL` | The Workspace **super-admin email to impersonate** (domain-wide delegation) — repurposed field name; it is an email, not a URL. Only honored when it contains `@`. |
+| `ClientID` | The Google Workspace **customer id**. Falls back to `my_customer` when absent. |
+
+`Use-CtgGoogleSecret` tries this shape only as a fallback: the older field names are checked
+first and win when present — `ServiceAccountKeyBase64`/`ServiceAccountJson`/`ServiceAccountKeyJson`/`KeyJson`
+(or split `ClientEmail`+`PrivateKey`) for the key, `Impersonate`/`AdminEmail`/`Admin`/`Subject`/
+`DelegatedAdmin`/`AdminUser` (or the secret's `Username`) for the admin, `CustomerId`/`Customer`
+for the customer id, plus optional `Scopes`. Full operator setup (service account, domain-wide
+delegation, Delinea storage): **/help/google**. Rotating the service-account key (auto-setup's
+force-rotate, or a manual re-run) does not revoke the previously issued key in GCP — old keys
+stay valid until cleaned up manually; automated cleanup is a planned follow-up.
 
 ### Onboard lane
 `always`. (1) Create user with the username pattern; password generated or shared-default;

@@ -98,6 +98,50 @@ test("ad-dc: not probeable when no reachability check is injected", async () => 
   assert.equal(r.probeable, false);
 });
 
+test("google-admin is registered as blocking", () => {
+  assert.equal(isProbeable("google-admin"), true);
+});
+
+test("google-admin: missing the key or impersonate field fails before any network call", async () => {
+  let called = false;
+  const spy: typeof fetch = (async () => {
+    called = true;
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  const r1 = await probeSecretValues("google-admin", { apiURL: "admin@acme.com" }, {}, spy);
+  assert.equal(r1.probeable, true);
+  assert.equal(r1.blocking, true);
+  assert.equal(r1.ok, false);
+  assert.match(r1.error ?? "", /service-account key/);
+  const r2 = await probeSecretValues("google-admin", { ClientSecret: "not-checked-here" }, {}, spy);
+  assert.equal(r2.ok, false);
+  assert.match(r2.error ?? "", /impersonate email/);
+  assert.equal(called, false);
+});
+
+test("google-admin: a malformed key fails before the network (caught by keyPemFromBase64Json)", async () => {
+  let called = false;
+  const spy: typeof fetch = (async () => {
+    called = true;
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await probeSecretValues("google-admin", { ClientSecret: "not-base64-json", apiURL: "admin@acme.com" }, {}, spy);
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /invalid service account key/);
+  assert.equal(called, false);
+});
+
+test("google-admin: a well-formed key + impersonate delegates to probeGoogleDirectory (live, blocking)", async () => {
+  const saKey = Buffer.from(JSON.stringify({ client_email: "sa@proj.iam.gserviceaccount.com", private_key: "not-a-real-pem" })).toString("base64");
+  // probeGoogleDirectory will fail signing with a fake PEM — the point here is that it was REACHED
+  // (delegated to), not that it succeeds; a live success path is covered in google-verify.test.ts.
+  const r = await probeSecretValues("google-admin", { ClientSecret: saKey, apiURL: "admin@acme.com" }, {});
+  assert.equal(r.probeable, true);
+  assert.equal(r.blocking, true);
+  assert.equal(r.kind, "live");
+  assert.equal(r.ok, false);
+});
+
 const okFetch = (status: number, body: unknown = {}): typeof fetch =>
   (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
 

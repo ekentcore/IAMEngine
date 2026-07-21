@@ -911,3 +911,49 @@ model M365SetupRunClient {
 
   @@index([runId])
 }
+
+// A run of the automated Google Workspace setup (service account + domain-wide delegation) —
+// client scope only, no fleet mode. Mirrors M365SetupRun's start/track/read shape; per-client
+// detail lives in GoogleSetupRunClient.
+model GoogleSetupRun {
+  id         String                 @id @default(cuid())
+  scope      String // "client:<clientId>" (no fleet mode)
+  status     String                 @default("running") // running | done | needs_action | failed
+  startedAt  DateTime               @default(now())
+  finishedAt DateTime?
+  startedBy  String?
+  total      Int                    @default(0)
+  completed  Int                    @default(0)
+  succeeded  Int                    @default(0)
+  skipped    Int                    @default(0)
+  failed     Int                    @default(0)
+  error      String?
+  clients    GoogleSetupRunClient[]
+
+  @@index([scope, startedAt])
+}
+
+// One client's outcome within a GoogleSetupRun. Its stage/warnings mirror GoogleSetupResult so the
+// UI can show exactly where it stopped and why (incl. a manual-DWD fallback card).
+model GoogleSetupRunClient {
+  id         String         @id @default(cuid())
+  run        GoogleSetupRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId      String
+  clientId   String
+  slug       String
+  name       String
+  status     String         @default("pending") // pending | running | done | needs_action | skipped | failed
+  stage      String? // GoogleSetupResult.stage
+  saEmail    String?
+  saClientId String? // numeric uniqueId — the DWD grant target
+  verified   Boolean?
+  wroteCreds Boolean?
+  skipReason String?
+  error      String?
+  warnings   String[]
+  userAction Json? // manual-DWD fallback card: { kind:"dwd", clientId, scopes } — non-secret only
+  log        String[]
+  updatedAt  DateTime       @updatedAt
+
+  @@index([runId])
+}
