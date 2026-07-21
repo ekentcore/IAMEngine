@@ -34,31 +34,39 @@ async function resolveClient(slug: string) {
   return client;
 }
 
-export async function POST(_req: Request, { params }: { params: { slug: string } }) {
+export async function POST(req: Request, { params }: { params: { slug: string } }) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
   const client = await resolveClient(params.slug);
   if (!client) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // The console login must be wired (persistent client secret) — otherwise the job would be
-  // unclaimable (every listed secret is required at claim time). Refuse up front with the fix.
-  const consoleSecret = await db.secret.findUnique({
-    where: { clientId_name: { clientId: client.id, name: MIMECAST_CONSOLE_SECRET_NAME } },
-    select: { externalId: true },
-  });
-  if (!secretIsSet(consoleSecret?.externalId)) {
-    return NextResponse.json(
-      {
-        error:
-          "No Mimecast console login is wired. Create a mimecast-console secret in Delinea (the Mimecast admin email + password), enable One-Time Password on it for MFA, wire it on this client, then test. See /help/mimecast.",
-        needsConsoleSecret: true,
-      },
-      { status: 409 },
-    );
+  // An optional per-run Delinea secret ID typed into the modal: the runner signs in with it transiently
+  // via a case-level secretOverride — nothing is stored on the client. Body may be empty (no ref).
+  const body = await req.json().catch(() => ({}));
+  const consoleSecretRef = typeof body?.consoleSecretRef === "string" ? body.consoleSecretRef.trim() : "";
+
+  // With no per-run ref, the console login must already be wired (persistent client secret) — otherwise
+  // the job would be unclaimable (every listed secret is required at claim time). Refuse up front with
+  // the fix. A supplied ref satisfies the claim gate on its own, so skip the check.
+  if (!consoleSecretRef) {
+    const consoleSecret = await db.secret.findUnique({
+      where: { clientId_name: { clientId: client.id, name: MIMECAST_CONSOLE_SECRET_NAME } },
+      select: { externalId: true },
+    });
+    if (!secretIsSet(consoleSecret?.externalId)) {
+      return NextResponse.json(
+        {
+          error:
+            "No Mimecast console login is wired. Either enter a Delinea secret ID above, or create a mimecast-console secret in Delinea (the Mimecast admin email + password), enable One-Time Password on it for MFA, wire it on this client, then test. See /help/mimecast.",
+          needsConsoleSecret: true,
+        },
+        { status: 409 },
+      );
+    }
   }
 
-  const res = await dispatchMimecastConsoleJob({ db, client, signInOnly: true });
+  const res = await dispatchMimecastConsoleJob({ db, client, signInOnly: true, consoleSecretRef: consoleSecretRef || undefined });
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
-  await recordAudit("mimecast.console.signin_test.dispatch", { user: g.user, clientId: client.id, jobId: res.jobId });
+  await recordAudit("mimecast.console.signin_test.dispatch", { user: g.user, clientId: client.id, jobId: res.jobId, detail: { usedSecretRef: Boolean(consoleSecretRef) } });
   return NextResponse.json({ ok: true, jobId: res.jobId });
 }
 

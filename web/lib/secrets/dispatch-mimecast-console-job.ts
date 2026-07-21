@@ -24,17 +24,23 @@ type DispatchResult = { ok: true; jobId: string } | { ok: false; error: string }
 // Mirrors dispatch-device-code-job.ts: a Job needs a non-null caseRequestId FK and there is no
 // lightweight "system case" factory, so we mint a synthetic onboard/api case flagged
 // mimecastAutoSetup (so notM365AutoSetupCase hides it from /cases + bulk-replan). The job is singleRun
-// (claimable in isolation, no cascade). The console login is a PERSISTENT per-client secret resolved
-// by the normal broker — no secretOverrides. Only browser-capable agents can claim it
-// (BROWSER_SYSTEMS includes this key).
+// (claimable in isolation, no cascade). Only browser-capable agents can claim it (BROWSER_SYSTEMS
+// includes this key).
+//
+// The console login is resolved by the normal broker from the client's persistent secret UNLESS
+// consoleSecretRef is supplied: a per-run Delinea secret ID typed into the modal. brokerCredential
+// prefers that case override over any stored client secret, so the runner can sign in WITHOUT anything
+// vaulted on the client — the ref is used transiently and never stored.
 export async function dispatchMimecastConsoleJob(input: {
   db: PrismaClient;
   client: ClientRef;
   signInOnly: boolean;
   consoleUrl?: string;
+  consoleSecretRef?: string;
 }): Promise<DispatchResult> {
   const { db, client, signInOnly } = input;
   const consoleUrl = input.consoleUrl?.trim() || MIMECAST_CONSOLE_URL;
+  const consoleSecretRef = input.consoleSecretRef?.trim() || undefined;
   try {
     const caseRequest = await db.caseRequest.create({
       data: {
@@ -43,14 +49,19 @@ export async function dispatchMimecastConsoleJob(input: {
         createdSource: "api",
         subject: signInOnly ? "Mimecast console sign-in test" : "Mimecast API automated setup (console)",
         payload: { [MIMECAST_AUTOSETUP_MARKER]: true } as Prisma.InputJsonValue,
+        // A per-run console login reference typed into the modal: brokerCredential prefers this case
+        // override over any stored client secret, so the job can sign in WITHOUT anything vaulted on the
+        // client. Omitted when blank — the flow then relies on the wired persistent secret.
+        ...(consoleSecretRef
+          ? { secretOverrides: { [MIMECAST_CONSOLE_SECRET_NAME]: consoleSecretRef } as Prisma.InputJsonValue }
+          : {}),
       },
       select: { id: true },
     });
     const request = {
-      // Claim-gate invariant: every secretNames entry is REQUIRED for claiming. The console login is a
-      // persistent client secret, so the job is claimable only once it's wired — which is exactly the
-      // precondition the flow needs (an unwired name would make the job hang unclaimable; the route
-      // refuses up front with an actionable message instead).
+      // Claim-gate invariant: every secretNames entry is REQUIRED for claiming. The name is satisfied
+      // by either the wired persistent client secret OR the per-run case override above — with neither,
+      // the job would hang unclaimable, so the route refuses up front with an actionable message.
       secretNames: [MIMECAST_CONSOLE_SECRET_NAME],
       config: { consoleUrl, signInOnly },
       dependsOn: [],

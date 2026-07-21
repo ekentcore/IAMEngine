@@ -57,6 +57,9 @@ export function GuidedApiSetup({
   const [externalId, setExternalId] = useState("");
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [done, setDone] = useState(false);
+  // Automatic tab: an optional per-run Delinea secret id to sign in with, so a login can be tested
+  // without wiring a persistent mimecast-console secret. Sent transiently in the POST; never stored.
+  const [consoleSecretRef, setConsoleSecretRef] = useState("");
   // Automatic tab: the live status line for the console sign-in test ("Signing in…", pass, fail).
   const [signinStatus, setSigninStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
   // Refresh the page ONCE per successful save, mirroring M365SetupButton's refreshedOnDone guard.
@@ -78,6 +81,7 @@ export function GuidedApiSetup({
     setExternalId("");
     setRegion(entry.regionOptions?.[0] ?? "");
     setService(entry.serviceOptions?.[0] ?? "");
+    setConsoleSecretRef("");
     setSigninStatus({ state: "idle" });
     setMode("paste");
     refreshedOnDone.current = false;
@@ -176,12 +180,18 @@ export function GuidedApiSetup({
   }
 
   // Automatic tab: dispatch the console sign-in test, then poll its status to a verdict. Proves the
-  // mimecast-console login + MFA work before Phase 2's create-app automation is built on top. On a
-  // 409 (no console login wired) the route returns actionable guidance, shown as the verdict.
+  // mimecast-console login + MFA work before Phase 2's create-app automation is built on top. A typed
+  // Delinea secret id is sent transiently (used via a case override, never stored); left blank, the
+  // route requires a wired mimecast-console secret and returns actionable guidance on a 409.
   async function testConsoleSignin() {
     setSigninStatus({ state: "running" });
     try {
-      const r = await fetch(`/api/clients/${slug}/mimecast-console/signin-test`, { method: "POST" });
+      const ref = consoleSecretRef.trim();
+      const r = await fetch(`/api/clients/${slug}/mimecast-console/signin-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ref ? { consoleSecretRef: ref } : {}),
+      });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.jobId) {
         setSigninStatus({ state: "done", verdict: { ok: false, text: d.error ?? `couldn't start the test (${r.status})` } });
@@ -338,10 +348,26 @@ export function GuidedApiSetup({
               the automated setup will create the API application and save the credential to Delinea.
             </p>
             <p className="note muted">
-              Needs a <code>mimecast-console</code> secret wired on this client — the Mimecast admin email + password,
-              with One-Time Password enabled on the Delinea secret for MFA. Create and wire it in the Credentials
-              panel first (see the full guide).
+              Sign in with a <code>mimecast-console</code> login — the Mimecast admin email + password, with
+              One-Time Password enabled on the Delinea secret for MFA. Enter a Delinea secret id below to use it
+              just for this test (nothing is stored), or leave it blank to use a <code>mimecast-console</code>
+              {" "}secret already wired on this client.
             </p>
+            <label style={{ display: "block", marginTop: "0.5rem", marginBottom: 10 }}>
+              <span className="note" style={{ display: "block", marginBottom: 2 }}>Delinea secret id (optional)</span>
+              <input
+                type="text"
+                autoComplete="off"
+                disabled={signinRunning}
+                value={consoleSecretRef}
+                placeholder="e.g. 8404 — used for this test only, not saved"
+                onChange={(e) => {
+                  setConsoleSecretRef(e.target.value);
+                  setSigninStatus({ state: "idle" });
+                }}
+                style={{ width: 320 }}
+              />
+            </label>
             <div className="toolbar" style={{ marginTop: "0.5rem" }}>
               <button type="button" className="primary" disabled={signinRunning} onClick={testConsoleSignin}>
                 {signinRunning ? "Signing in…" : "Test sign-in"}
