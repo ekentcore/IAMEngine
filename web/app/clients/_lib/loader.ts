@@ -6,6 +6,8 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { currentIsSuperAdmin } from "@/lib/auth/acting";
+import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
+import { can } from "@/lib/auth/permissions";
 import { syncIfStale } from "@/lib/clients/stale-check";
 import type { ClientListItem } from "@/lib/clients/types";
 import type { ClientVM } from "../_components/client-vm";
@@ -15,6 +17,10 @@ export async function loadClientsPage() {
   const scope = await currentClientScope(db);
   const clients = await makeClientRepository(db).listClients(scope);
   const canRestrict = await currentIsSuperAdmin();
+  // Whether the viewer may archive/restore (client.archive: client_offboarding + global/super). The
+  // server enforces it regardless; this just hides the archive icon so a role that can't archive isn't
+  // offered a button that 403s. Auth disabled → full access (anti-lockout, like the rest of the app).
+  const canArchive = !authEnabled() ? true : await getCurrentUser().then((me) => !!me && can(me.role, "client.archive"));
 
   const lastSync = clients.reduce<Date | null>((max, c) => {
     if (c.snLastSyncedAt && (!max || c.snLastSyncedAt > max)) return c.snLastSyncedAt;
@@ -23,7 +29,7 @@ export async function loadClientsPage() {
 
   const modeledCount = clients.filter((c) => c.modeled).length;
 
-  return { clients: clients.map(serialize), canRestrict, lastSync, modeledCount };
+  return { clients: clients.map(serialize), canRestrict, canArchive, lastSync, modeledCount };
 }
 
 // Dates don't cross the server/client boundary cleanly — hand the island plain strings.

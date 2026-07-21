@@ -688,6 +688,8 @@ enum Role {
   engineer // import/plan/dispatch/rerun/pause/verify/schedule; NOT approve destructive
   importer // import + view only
   auditor // read-only everywhere + audit log
+  client_onboarding // add + modify + set up clients (systems/credentials); NOT run cases, NOT archive
+  client_offboarding // like client_onboarding, plus archiving clients (archive is restricted to this + global/super)
 }
 
 enum AuthType {

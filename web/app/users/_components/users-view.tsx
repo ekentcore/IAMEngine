@@ -15,7 +15,7 @@ type UserVM = {
 
 export type AccessRequestVM = { id: string; email: string; name: string | null; requestCount: number; firstRequestedAtIso: string; lastRequestedAtIso: string };
 
-const ALL_ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
+const ALL_ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "client_offboarding", "client_onboarding", "engineer", "importer", "auditor"];
 
 function lastSeen(iso: string | null) {
   if (!iso) return "never";

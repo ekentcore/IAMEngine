@@ -36,9 +36,15 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
   // Restricting a client is the most sensitive access-control decision (it hides an org from everyone
-  // but super admins) — SUPER-ADMIN ONLY. Everything else on this route is the usual systems-editing
-  // capability.
-  const _g = body.action === "set-restricted" ? await guardAuth() : await guard("client.edit_systems");
+  // but super admins) — SUPER-ADMIN ONLY (guardAuth + the super check below). Archiving/restoring is
+  // limited to the client.archive capability (client_offboarding + global/super) — NOT plain
+  // client.edit_systems, so an onboarding role or ops_manager can edit a client but cannot archive it.
+  // Everything else on this route is the usual systems-editing capability.
+  const _g = body.action === "set-restricted"
+    ? await guardAuth()
+    : (body.action === "archive" || body.action === "restore")
+      ? await guard("client.archive")
+      : await guard("client.edit_systems");
   if (_g.res) return _g.res;
   if (body.action === "set-restricted" && _g.user.role !== "super_admin") {
     return NextResponse.json({ error: "only a super admin can restrict or unrestrict a client" }, { status: 403 });

@@ -17,7 +17,7 @@ export type { ClientVM } from "./client-vm";
 type SortKey = "name" | "coreId" | "region" | "primaryDomain" | "onboardingRating" | "systemCount" | "status";
 type SortDir = "asc" | "desc";
 
-export function ClientsTable({ clients, canRestrict = false }: { clients: ClientVM[]; canRestrict?: boolean }) {
+export function ClientsTable({ clients, canRestrict = false, canArchive = true }: { clients: ClientVM[]; canRestrict?: boolean; canArchive?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
@@ -389,15 +389,15 @@ export function ClientsTable({ clients, canRestrict = false }: { clients: Client
                 )}
               </td>
               <td className="row-actions">
-                <span className="icon-stack" style={{ flexDirection: "row" }}>
+                <span className="icon-stack">
                   <button className="icon-btn" title="Edit systems" aria-label="Edit systems" onClick={() => setEditSlug(c.slug)}>✎</button>
                   <button className="icon-btn" title="Re-pull this client from ServiceNow, discarding manual edits" aria-label="Hard refresh"
                     onClick={() => askHardRefresh({ slugs: [c.slug], label: c.name })}>↻</button>
-                  {c.status === "archived" ? (
+                  {canArchive && (c.status === "archived" ? (
                     <button className="icon-btn" title="Restore (unarchive)" aria-label="Restore" disabled={busy === c.slug} onClick={() => patch(c, "restore")}>↩</button>
                   ) : (
                     <button className="icon-btn" title="Archive" aria-label="Archive" disabled={busy === c.slug} onClick={() => askArchive(c)}>🗄</button>
-                  )}
+                  ))}
                 </span>
               </td>
             </tr>

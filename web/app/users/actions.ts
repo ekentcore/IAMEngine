@@ -13,7 +13,7 @@ import { canResetPassword, canAssignRole } from "@/lib/auth/permissions";
 
 type Result<T = unknown> = ({ ok: true } & T) | { ok: false; error: string };
 
-const ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "engineer", "importer", "auditor"];
+const ROLES: Role[] = ["super_admin", "global_admin", "ops_manager", "client_offboarding", "client_onboarding", "engineer", "importer", "auditor"];
 const isRole = (r: unknown): r is Role => typeof r === "string" && ROLES.includes(r as Role);
 const ACCESS_MODES: ClientAccessMode[] = ["all", "only", "exclude"];
 const isAccessMode = (m: unknown): m is ClientAccessMode => typeof m === "string" && ACCESS_MODES.includes(m as ClientAccessMode);
