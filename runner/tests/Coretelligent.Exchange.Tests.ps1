@@ -515,6 +515,16 @@ Describe 'Confirm-CtgExchange' {
         ($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).pass | Should -BeFalse
     }
 
+    It 'offboard: skips the GAL check for a directory-synced mailbox even when hideFromGal was requested (EXO cannot hide it; the AD lane owns synced hides, and the executor already soft-WARNed)' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $false; IsDirSynced = $true } }
+        Mock Get-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ ActiveSyncEnabled = $false; OWAEnabled = $false } }
+        $config = [pscustomobject]@{ hideFromGal = $true; blockMobileDevices = $true }
+        $r = Confirm-CtgExchange -User $user -Config $config -Action 'offboard'
+        @($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).Count | Should -Be 0
+        $r.ok | Should -BeTrue
+    }
+
     It 'offboard: does not assert the GAL check when hideFromGal was not requested' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox'; HiddenFromAddressListsEnabled = $false } }

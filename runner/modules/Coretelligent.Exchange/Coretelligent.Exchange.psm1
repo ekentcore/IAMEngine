@@ -1102,10 +1102,14 @@ function Confirm-CtgExchange {
     }
 
     # GAL hide (FR #21) — only assert when it was actually requested, and only against an EXO mailbox
-    # (a MailUser has none; that hide is on-prem via AD and isn't this lane's assertion).
+    # (a MailUser has none; that hide is on-prem via AD and isn't this lane's assertion). Also skip for
+    # a directory-synced mailbox: EXO genuinely cannot flip HiddenFromAddressListsEnabled on one (Set-Mailbox
+    # throws "being synchronized"), the executor already soft-WARNs and deliberately stays Status=ok, and the
+    # AD lane's hide attribute is the correct/owning path for synced clients — asserting here would fail
+    # EVERY offboard for a synced mailbox with no AD hide attribute configured.
     $hideCfg = Get-CtgProp $Config 'hideFromGal'
     if ($null -eq $hideCfg) { $hideCfg = Get-CtgProp $Config 'hideFromGAL' }
-    if ((Test-CtgHideFromGal $hideCfg) -and $mbx) {
+    if ((Test-CtgHideFromGal $hideCfg) -and $mbx -and -not (Get-CtgProp $mbx 'IsDirSynced')) {
         & $add 'hidden from GAL' $true ([bool](Get-CtgProp $mbx 'HiddenFromAddressListsEnabled'))
     }
 
