@@ -306,6 +306,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             locations={locationNames}
             knownGroups={cloudGroupList}
             ous={adOus}
+            systemKeys={client.systems.map((s) => s.systemKey)}
             guidedSetupHref={readiness && readiness.tier !== "no_systems" ? `/clients/${client.slug}/setup` : null}
           />
         </div>

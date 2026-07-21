@@ -13,10 +13,10 @@ function entraFetcher(ok: boolean, code = "AADSTS7000215"): typeof fetch {
 }
 
 test("unknown secret is not probeable", async () => {
-  const r = await probeSecretValues("mimecast", { ClientID: "x", ClientSecret: "y" });
+  const r = await probeSecretValues("totally-unregistered-system", { ClientID: "x", ClientSecret: "y" });
   assert.equal(r.probeable, false);
   assert.equal(r.blocking, false);
-  assert.equal(isProbeable("mimecast"), false);
+  assert.equal(isProbeable("totally-unregistered-system"), false);
 });
 
 test("m365: a valid app registration authenticates (blocking, ok)", async () => {
@@ -96,4 +96,49 @@ test("ad-dc: advisory probe fails (but non-blocking) when no agent is online", a
 test("ad-dc: not probeable when no reachability check is injected", async () => {
   const r = await probeSecretValues("ad-dc", { Username: "svc", Password: "pw" });
   assert.equal(r.probeable, false);
+});
+
+const okFetch = (status: number, body: unknown = {}): typeof fetch =>
+  (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
+
+test("mimecast probe: a token response = ok", async () => {
+  const r = await probeSecretValues("mimecast", { ClientId: "cid", ClientSecret: "sec" }, {}, okFetch(200, { access_token: "t" }));
+  assert.equal(r.probeable, true); assert.equal(r.blocking, true); assert.equal(r.ok, true); assert.equal(r.kind, "live");
+});
+test("mimecast probe: 401 = not ok", async () => {
+  const r = await probeSecretValues("mimecast", { ClientId: "cid", ClientSecret: "bad" }, {}, okFetch(401, { error: "invalid_client" }));
+  assert.equal(r.ok, false);
+});
+test("mimecast probe: missing a field is refused before the network", async () => {
+  const r = await probeSecretValues("mimecast", { ClientId: "cid" }, {}, okFetch(200));
+  assert.equal(r.ok, false); assert.match(r.error ?? "", /client secret/i);
+});
+test("spanning probe: 2xx with Basic auth = ok", async () => {
+  const r = await probeSecretValues("spanning", { ClientId: "acct", AccessToken: "tok", Region: "us" }, {}, okFetch(200, {}));
+  assert.equal(r.ok, true);
+});
+test("spanning probe: 401 = not ok", async () => {
+  const r = await probeSecretValues("spanning", { ClientId: "acct", AccessToken: "bad", Region: "us" }, {}, okFetch(401));
+  assert.equal(r.ok, false);
+});
+test("proofpoint probe: 200 with X-User/X-Password + region + domain = ok", async () => {
+  const r = await probeSecretValues("proofpoint", { "X-User": "a@x.com", "X-Password": "p", Region: "us1", Domain: "x.com" }, {}, okFetch(200, {}));
+  assert.equal(r.ok, true);
+});
+test("proofpoint probe: no region -> not probeable (advisory), never a false red", async () => {
+  const r = await probeSecretValues("proofpoint", { "X-User": "a@x.com", "X-Password": "p", Domain: "x.com" }, {}, okFetch(200));
+  assert.equal(r.probeable, false);
+});
+test("proofpoint probe: domain falls back to the client's primary domain", async () => {
+  let calledUrl = "";
+  const spy = (async (u: string) => { calledUrl = u; return { ok: true, status: 200, json: async () => ({}) }; }) as unknown as typeof fetch;
+  const r = await probeSecretValues("proofpoint", { "X-User": "a@x.com", "X-Password": "p", Region: "us1" }, { clientPrimaryDomain: "acme.com" }, spy);
+  assert.equal(r.ok, true); assert.match(calledUrl, /\/orgs\/acme\.com\//);
+});
+test("mimecast probe: a throwing fetcher (network down / timeout) is caught, not thrown", async () => {
+  const throwingFetch = (async () => { throw new Error("network down"); }) as unknown as typeof fetch;
+  const r = await probeSecretValues("mimecast", { ClientId: "cid", ClientSecret: "sec" }, {}, throwingFetch);
+  assert.equal(r.probeable, true);
+  assert.equal(r.blocking, true);
+  assert.equal(r.ok, false);
 });

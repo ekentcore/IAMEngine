@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken } from "@/lib/secrets/delinea";
 import { checkFieldShape } from "@/lib/secrets/field-requirements";
+import { verifyAndWire } from "@/lib/secrets/verify-and-wire";
 import {
   classifyM365Credential,
   probeEntraClientCredentials,
@@ -29,7 +30,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   const _g = await guard("client.edit_secrets"); if (_g.res) return _g.res;
   // scope-gated: an out-of-scope client reads as not-found (see clientSlugInScope).
   if (!(await clientSlugInScope(db, params.slug))) return NextResponse.json({ error: "not found" }, { status: 404 });
-  let body: { secrets?: unknown };
+  let body: { secrets?: unknown; wireOnPass?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -38,6 +39,9 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   if (!Array.isArray(body.secrets)) {
     return NextResponse.json({ error: "secrets[] is required" }, { status: 422 });
   }
+  // Opt-in: on a passing test, also wire the tested id into the client's Secret rows (existing-id
+  // verify-then-wire — see lib/secrets/verify-and-wire.ts). Absent/false keeps this route a pure test.
+  const wireOnPass = body.wireOnPass === true;
 
   const repo = makeClientRepository(db);
   const wiring = await repo.secretsWiring(params.slug);
@@ -65,44 +69,75 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   } catch {
     // leave token undefined — each resolve reports the auth failure itself.
   }
+  // Adapts the batch's already-fetched Delinea config/token into the shape verifyAndWire expects —
+  // no new Delinea plumbing, just a thin closure over the real resolveSecretFields.
+  const resolveFieldsForWire = async (externalId: string) => {
+    const r = await resolveSecretFields(cfg, externalId, undefined, token);
+    return r.ok ? { ok: true as const, fields: r.fields ?? {} } : { ok: false as const, error: r.error ?? "could not resolve the secret" };
+  };
+
   const results = await Promise.all(
     items.map(async (i) => {
-      const r = await resolveSecretFields(cfg, i.externalId, undefined, token);
-      if (!r.ok) return { name: i.name, ok: false, error: r.error };
-      // Shape check on field NAMES only — values are never read into the response.
-      const shape = checkFieldShape(i.name, Object.keys(r.fields ?? {}), { clientHasTenantHint: hasTenantHint });
+      const result = await (async () => {
+        const r = await resolveSecretFields(cfg, i.externalId, undefined, token);
+        if (!r.ok) return { name: i.name, ok: false, error: r.error };
+        // Shape check on field NAMES only — values are never read into the response.
+        const shape = checkFieldShape(i.name, Object.keys(r.fields ?? {}), { clientHasTenantHint: hasTenantHint });
 
-      // m365-admin gets two extra checks a name-only shape check cannot make, because a Global Admin
-      // account and an app registration BOTH carry a Username + Password:
-      //   1. kind  — the value's shape (a UPN is a person, a GUID is an app). Free, instant.
-      //   2. live  — the real client-credentials grant against Entra: the same handshake
-      //              Connect-MgGraph -ClientSecretCredential performs, so a pass here means the
-      //              runner WILL connect. This is the definitive answer, and it costs one HTTPS call.
-      // Neither ever puts a credential value in the response.
-      if (i.name === "m365-admin" && r.fields) {
-        const kind = classifyM365Credential(r.fields);
-        if (kind.kind !== "app-registration") {
-          return { name: i.name, ok: false, label: r.label, error: kind.reason, credKind: kind.kind, missingFields: shape.missing };
-        }
-        const appId = pickField(r.fields, M365_APPID_FIELDS);
-        const secret = pickField(r.fields, M365_SECRET_FIELDS);
-        const tenant = pickField(r.fields, M365_TENANT_FIELDS) ?? client?.primaryDomain ?? undefined;
-        if (appId && secret && tenant) {
-          const probe = await probeEntraClientCredentials(tenant, appId, secret);
-          if (!probe.ok) {
-            return {
-              name: i.name,
-              ok: false,
-              label: r.label,
-              error: `Entra rejected this credential (${probe.errorCode ?? probe.error})${probe.hint ? ` — ${probe.hint}` : ""}`,
-              credKind: kind.kind,
-              missingFields: shape.missing,
-            };
+        // m365-admin gets two extra checks a name-only shape check cannot make, because a Global Admin
+        // account and an app registration BOTH carry a Username + Password:
+        //   1. kind  — the value's shape (a UPN is a person, a GUID is an app). Free, instant.
+        //   2. live  — the real client-credentials grant against Entra: the same handshake
+        //              Connect-MgGraph -ClientSecretCredential performs, so a pass here means the
+        //              runner WILL connect. This is the definitive answer, and it costs one HTTPS call.
+        // Neither ever puts a credential value in the response.
+        if (i.name === "m365-admin" && r.fields) {
+          const kind = classifyM365Credential(r.fields);
+          if (kind.kind !== "app-registration") {
+            return { name: i.name, ok: false, label: r.label, error: kind.reason, credKind: kind.kind, missingFields: shape.missing };
           }
-          return { name: i.name, ok: true, label: r.label, missingFields: shape.missing, credKind: kind.kind, liveAuth: true };
+          const appId = pickField(r.fields, M365_APPID_FIELDS);
+          const secret = pickField(r.fields, M365_SECRET_FIELDS);
+          const tenant = pickField(r.fields, M365_TENANT_FIELDS) ?? client?.primaryDomain ?? undefined;
+          if (appId && secret && tenant) {
+            const probe = await probeEntraClientCredentials(tenant, appId, secret);
+            if (!probe.ok) {
+              return {
+                name: i.name,
+                ok: false,
+                label: r.label,
+                error: `Entra rejected this credential (${probe.errorCode ?? probe.error})${probe.hint ? ` — ${probe.hint}` : ""}`,
+                credKind: kind.kind,
+                missingFields: shape.missing,
+              };
+            }
+            return { name: i.name, ok: true, label: r.label, missingFields: shape.missing, credKind: kind.kind, liveAuth: true };
+          }
         }
+        return { name: i.name, ok: true, label: r.label, missingFields: shape.missing };
+      })();
+
+      // Existing-id verify-then-wire: on a passing test, opt-in wiring of the tested id into the
+      // client's Secret rows. verifyAndWire re-resolves + re-probes on its own terms (the value-probe
+      // registry, not this route's m365-only live check) and refuses to wire on a BLOCKING failure —
+      // so this can only ADD a wire, never downgrade an already-passing result to a failure.
+      if (wireOnPass && result.ok) {
+        const base = "label" in result ? result.label : undefined;
+        const label = base && /\(auto\)/i.test(base) ? base : `${base ?? i.name} (auto)`;
+        const wire = await verifyAndWire({
+          db,
+          slug: params.slug,
+          clientId: wiring.clientId,
+          name: i.name,
+          externalId: i.externalId,
+          label,
+          actor: auditActor(_g.user, "ui"),
+          ctx: { clientPrimaryDomain: client?.primaryDomain ?? undefined },
+          resolveFields: resolveFieldsForWire,
+        });
+        return wire.ok ? { ...result, wired: true } : { ...result, wired: false, wireError: wire.error };
       }
-      return { name: i.name, ok: true, label: r.label, missingFields: shape.missing };
+      return result;
     })
   );
 

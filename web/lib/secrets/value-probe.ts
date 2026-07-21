@@ -41,6 +41,30 @@ export type ProbeCtx = {
 
 type Prober = (values: Record<string, string>, ctx: ProbeCtx, fetcher: typeof fetch) => Promise<ValueProbe>;
 
+const MIMECAST_ID_FIELDS = ["ClientID", "ClientId", "Client ID", "AppId", "Application ID", "Username"];
+const MIMECAST_SECRET_FIELDS = ["ClientSecret", "Client Secret", "Secret", "API Key", "ApiKey", "AccessToken", "Token", "Password"];
+const SPANNING_ID_FIELDS = ["ClientID", "ClientId", "Client ID", "Domain", "AccountID", "AccountId", "Account", "Tenant", "Username"];
+const SPANNING_TOKEN_FIELDS = ["ClientSecret", "AccessToken", "Access Token", "ApiToken", "APIKey", "Api Key", "ApiKey", "Token", "Key", "Password"];
+const SPANNING_REGION_FIELDS = ["apiURL", "ApiUrl", "ApiURL", "BaseUrl", "Base URL", "Url", "URL", "Region"];
+const PROOFPOINT_USER_FIELDS = ["X-User", "Username", "AdminUser", "Admin", "Email", "User"];
+const PROOFPOINT_PASS_FIELDS = ["X-Password", "Password", "AdminPassword", "Secret", "ApiKey", "API Key", "Token"];
+const PROOFPOINT_DOMAIN_FIELDS = ["Domain", "OrgDomain", "Org", "Tenant"];
+const PROOFPOINT_REGION_FIELDS = ["Region", "apiURL", "ApiUrl", "BaseUrl", "Base URL", "Url", "URL"];
+
+// Spanning region -> API base. A full URL in the region field wins; else map the short region.
+function spanningBase(region: string): string {
+  const v = (region || "us").trim();
+  if (/^https?:\/\//i.test(v)) return v.replace(/\/+$/, "");
+  return `https://o365-api-${v.toLowerCase()}.spanningbackup.com/external`;
+}
+// Proofpoint region -> API base. A full URL wins; else map us1..us5/eu1/au1.
+function proofpointBase(region: string): string | null {
+  const v = (region || "").trim();
+  if (/^https?:\/\//i.test(v)) return v.replace(/\/+$/, "") + (/\/api\/v1$/.test(v) ? "" : "/api/v1");
+  if (/^(us[1-5]|eu1|au1)$/i.test(v)) return `https://${v.toLowerCase()}.proofpointessentials.com/api/v1`;
+  return null;
+}
+
 const PROBERS: Record<string, Prober> = {
   // M365 admin — the definitive live test: the same client-credentials grant Connect-CtgM365 runs. A
   // Global-Admin account (UPN username) is caught before we even hit the network (it can NEVER work).
@@ -80,6 +104,55 @@ const PROBERS: Record<string, Prober> = {
     return r.servable
       ? { probeable: true, blocking: false, ok: true, label: "the client's AD agent is online and capable", kind: "agent" }
       : { probeable: true, blocking: false, ok: false, error: r.reason ?? "no capable AD agent is online for this client", kind: "agent" };
+  },
+
+  // Mimecast API 2.0 — the exact OAuth2 client-credentials grant Connect-CtgMimecast runs.
+  "mimecast": async (values, _ctx, fetcher) => {
+    const id = pickField(values, MIMECAST_ID_FIELDS);
+    const secret = pickField(values, MIMECAST_SECRET_FIELDS);
+    if (!id || !secret) return { probeable: true, blocking: true, ok: false, error: `missing ${!id ? "client id" : "client secret"}`, kind: "live" };
+    try {
+      const res = await fetcher("https://api.services.mimecast.com/oauth/token", {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "client_credentials", client_id: id, client_secret: secret }).toString(),
+        signal: AbortSignal.timeout(20_000),
+      });
+      const body = (await res.json().catch(() => ({}))) as { access_token?: string; error?: string; error_description?: string };
+      return res.ok && body.access_token
+        ? { probeable: true, blocking: true, ok: true, label: "authenticated to Mimecast (API 2.0)", kind: "live" }
+        : { probeable: true, blocking: true, ok: false, error: body.error_description ?? body.error ?? `Mimecast token request failed (${res.status})`, hint: "check the 2.0 app's Client ID + Client Secret", kind: "live" };
+    } catch (e) { return { probeable: true, blocking: true, ok: false, error: (e as Error).message, kind: "live" }; }
+  },
+  // Spanning Backup API — Basic auth (client id : token) against the region base.
+  "spanning": async (values, _ctx, fetcher) => {
+    const id = pickField(values, SPANNING_ID_FIELDS);
+    const token = pickField(values, SPANNING_TOKEN_FIELDS);
+    if (!id || !token) return { probeable: true, blocking: true, ok: false, error: `missing ${!id ? "account / api user" : "api token"}`, kind: "live" };
+    const base = spanningBase(pickField(values, SPANNING_REGION_FIELDS) ?? "us");
+    const auth = "Basic " + Buffer.from(`${id}:${token}`).toString("base64");
+    try {
+      const res = await fetcher(`${base}/users?limit=1`, { headers: { Authorization: auth, Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+      return res.ok
+        ? { probeable: true, blocking: true, ok: true, label: "authenticated to Spanning", kind: "live" }
+        : { probeable: true, blocking: true, ok: false, error: `Spanning returned ${res.status}`, hint: "check the API user + token and the region", kind: "live" };
+    } catch (e) { return { probeable: true, blocking: true, ok: false, error: (e as Error).message, kind: "live" }; }
+  },
+  // Proofpoint Essentials — X-User/X-Password against /orgs/{domain}. Needs a region (see Task 2);
+  // without one we can't build the base URL, so it's advisory (never a false red) — the runner test verifies.
+  "proofpoint": async (values, ctx, fetcher) => {
+    const user = pickField(values, PROOFPOINT_USER_FIELDS);
+    const pass = pickField(values, PROOFPOINT_PASS_FIELDS);
+    const domain = pickField(values, PROOFPOINT_DOMAIN_FIELDS) ?? (ctx.clientPrimaryDomain?.trim() || undefined);
+    const base = proofpointBase(pickField(values, PROOFPOINT_REGION_FIELDS) ?? "");
+    if (!base) return { probeable: false, blocking: false };
+    if (!user || !pass) return { probeable: true, blocking: true, ok: false, error: `missing ${!user ? "admin email (X-User)" : "admin password (X-Password)"}`, kind: "live" };
+    if (!domain) return { probeable: true, blocking: true, ok: false, error: "no org domain, and the client has no primary domain to fall back on", kind: "live" };
+    try {
+      const res = await fetcher(`${base}/orgs/${encodeURIComponent(domain)}/settings/azure`, { headers: { "X-User": user, "X-Password": pass }, signal: AbortSignal.timeout(20_000) });
+      return res.ok
+        ? { probeable: true, blocking: true, ok: true, label: "authenticated to Proofpoint Essentials", kind: "live" }
+        : { probeable: true, blocking: true, ok: false, error: `Proofpoint returned ${res.status}`, hint: "check the admin email/password, the org domain, and the region", kind: "live" };
+    } catch (e) { return { probeable: true, blocking: true, ok: false, error: (e as Error).message, kind: "live" }; }
   },
 };
 

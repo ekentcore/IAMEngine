@@ -520,7 +520,7 @@ function Use-CtgProofpointSecret {
     $domain = & $pick @('Domain', 'OrgDomain', 'Org', 'Tenant')
     if (-not $domain) { $domain = $Job.client.primaryDomain }
     if (-not $domain) { throw "the 'proofpoint' secret has no Domain field and the client has no primary domain — Proofpoint needs the org domain for the /orgs/{domain} path." }
-    $baseUrl = & $pick @('BaseUrl', 'ApiUrl', 'apiURL', 'Url')
+    $baseUrl = & $pick @('BaseUrl', 'Base URL', 'ApiUrl', 'apiURL', 'Url', 'URL')
     if ($baseUrl) { Connect-CtgProofpoint -User ([string]$user) -Password ([string]$pass) -Domain ([string]$domain) -BaseUrl $baseUrl }
     else {
         $region = & $pick @('Region', 'Pod')

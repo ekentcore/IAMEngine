@@ -129,6 +129,10 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "admin email (X-User)", anyOf: ["X-User", "Username", "AdminUser", "Admin", "Email", "User"], hint: "a Proofpoint Essentials admin login with API access enabled for this org" },
     { label: "admin password (X-Password)", anyOf: ["X-Password", "Password", "AdminPassword", "Secret", "ApiKey", "API Key", "Token"], hint: "that admin account's password" },
     { label: "org domain", anyOf: ["Domain", "OrgDomain", "Org", "Tenant"], orClientDomain: true, hint: "the org's primary domain (the /orgs/{domain} path); or leave blank to use the client's primary domain" },
+    // Optional: the runner (Use-CtgProofpointSecret) already defaults to the "us1" pod when no
+    // Region/BaseUrl-shaped field is present, so this must never flag as missing — it documents the
+    // field the connector will USE if present (mirrors the value-probe's advisory-when-absent stance).
+    { label: "region", anyOf: ["Region", "apiURL", "ApiUrl", "BaseUrl", "Base URL", "Url", "URL"], optional: true, hint: "the Proofpoint Essentials data region: us1..us5, eu1, or au1 (from your console URL)" },
   ],
   // On-prem AD / directory-sync service account. The common topology is an agent running ON the domain
   // controller, where the runner authenticates as its OWN identity (SYSTEM = the directory's SYSTEM
