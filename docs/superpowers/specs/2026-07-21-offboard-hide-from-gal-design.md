@@ -128,9 +128,8 @@ confirm) — the module convention, with convert-to-shared
   PUT). Read current value first; skip if already `false`.
 - Add the read-back to `Confirm-CtgGoogle` (`psm1:400`).
 
-### `Coretelligent.M365`
-- Same hide step (`Invoke-CtgM365Offboarding`, `psm1:1126`) for the no-`exchange`-lane
-  fallback only.
+(No `Coretelligent.M365` change — Graph cannot set `HiddenFromAddressListsEnabled`, so the
+cloud hide lives solely in `Coretelligent.Exchange`. See "Why not an M365/Graph fallback" above.)
 
 ### Versioning
 - Bump `runner/VERSION` (minor — backward compatible; new config key, no protocol change).
@@ -176,15 +175,15 @@ confirm) — the module convention, with convert-to-shared
 
 - **Pester (runner):** Exchange hide — idempotent skip when already hidden; synced-mailbox
   error → WARN not failure; opt-out `false` → no write; read-back confirm. Google hide —
-  set + skip-if-already + read-back. M365 fallback hide.
+  set + skip-if-already + read-back.
 - **TypeScript (web):** `resolveOffboardConfigs` injects on the right lane; the 3-level
   precedence (per-case > per-client > default); AD-attribute routing skips the EXO lane;
   `resolveHideFromGal` casing/shape normalization.
 
 ## Scope boundaries
 
-- M365-lane hide is a **fallback only** (clients with a mailbox but no `exchange` lane);
-  the primary path is the Exchange module, matching the FR's exact cmdlet.
+- The cloud hide runs solely on the `exchange` lane (Graph can't set the GAL bit); there is
+  no M365-lane path. A mailbox client is expected to have an `exchange` system.
 - The per-client control is a **structured toggle** in `systems-editor`, not raw-JSON-only.
 - No change to how AD does its existing attribute-based hide — the design routes to it and
   reuses it.

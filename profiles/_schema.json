@@ -374,7 +374,7 @@
         "mailbox":        { "type": "object" },
         "removeLicense":  { "type": ["object", "boolean"], "description": "true = remove all licenses; object = conditional (e.g. { exceptWhen: 'mailbox above 50GB' }). The module honors the mailbox-size threshold either way." },
         "hideFromGal": {
-          "description": "Hide the leaver from the Global Address List on offboard. Default is to hide; set false to opt out. On synced clients an { attribute, value } object hides via the on-prem AD attribute.",
+          "description": "Shared offboard opt-out documentation home (the runtime hide runs on the exchange/google/active-directory lanes, not m365). Hide the leaver from the Global Address List on offboard. Default is to hide; set false to opt out. On synced clients an { attribute, value } object hides via the on-prem AD attribute.",
           "oneOf": [
             { "type": "boolean" },
             { "type": "object" }
