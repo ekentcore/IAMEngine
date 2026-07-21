@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -102,6 +102,23 @@ test("shapeStubItems fills itemValue by slug (and slugified field name), preserv
   assert.deepEqual(out.unmatched, []); // every supplied key landed
   // A key the template has no field for is reported, not silently dropped.
   assert.deepEqual(shapeStubItems(stub, { bogus: "x" }).unmatched, ["bogus"]);
+});
+
+test("shapeStubItems matches slugs case-insensitively (stock Automation - API slugs carry template casing)", () => {
+  // Real slugs on the stock template: clientID / ClientSecret / accountid / apiURL — our default field
+  // maps send lowercase; the values must land anyway.
+  const stub = [
+    { fieldId: 1, slug: "clientID", itemValue: "" },
+    { fieldId: 2, slug: "ClientSecret", itemValue: "" },
+    { fieldId: 3, slug: "accountid", itemValue: "" },
+    { fieldId: 4, slug: "apiURL", itemValue: "" },
+  ];
+  const out = shapeStubItems(stub, { clientid: "id-1", clientsecret: "s3cret", accountid: "acme", apiurl: "https://x" });
+  assert.equal(out.items[0].itemValue, "id-1");
+  assert.equal(out.items[1].itemValue, "s3cret");
+  assert.equal(out.items[2].itemValue, "acme");
+  assert.equal(out.items[3].itemValue, "https://x");
+  assert.deepEqual(out.unmatched, []);
 });
 
 // A fetcher for the write path: the name-search GET (dedup), the template-stub GET, and the create
@@ -392,4 +409,23 @@ test("findChildFolderByName resolves a named child folder under a parent (case-i
   // Lookup failure -> null, never throws.
   const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
   assert.equal(await findChildFolderByName(cfg, 5606, "Identity Services", "tok", boom), null);
+});
+
+test("findTemplateIdByName resolves a template id by exact name (case-insensitive), else null", async () => {
+  let asked = "";
+  const fetcher: Fetcher = async (url) => {
+    asked = url;
+    return { ok: true, status: 200, json: async () => ({ records: [
+      { id: 6001, name: "Automation - API Legacy" }, // search hit, but not an exact name match
+      { id: 6063, name: "Automation - API" },
+    ] }) } as FetchResponse;
+  };
+  assert.equal(await findTemplateIdByName(cfg, "automation - api", "tok", fetcher), 6063);
+  assert.match(asked, /secret-templates\?filter\.searchText=/);
+  // No exact match -> null (a substring hit must not silently pick a different template).
+  const miss: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [{ id: 1, name: "Automation - API Legacy" }] }) } as FetchResponse);
+  assert.equal(await findTemplateIdByName(cfg, "Automation - API X", "tok", miss), null);
+  // Lookup failure -> null, never throws.
+  const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
+  assert.equal(await findTemplateIdByName(cfg, "Automation - API", "tok", boom), null);
 });

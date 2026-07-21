@@ -115,6 +115,22 @@ test("delineaWriteConfigured requires account + folder + template; reports exact
   assert.match(noFolder.missing[0], /folder/i);
 });
 
+test("delineaWriteConfigured: allowTemplateByName counts a known template NAME as a template; strict mode does not", () => {
+  const env = { DELINEA_BASE_URL: "https://x", DELINEA_USER: "svc", DELINEA_PASSWORD: "pw" };
+  // spanning has no env id but a known stock name — creatable only for name-resolving callers.
+  const byName = delineaWriteConfigured({ slug: "acme", secretName: "spanning", clientFolderId: "142", allowTemplateByName: true, env });
+  assert.equal(byName.ok, true);
+  assert.equal(byName.hasTemplate, true);
+  // Strict callers (write-m365-app etc.) need templateFor() non-null — a name alone must NOT pass,
+  // or they'd null-deref right after the gate.
+  const strict = delineaWriteConfigured({ slug: "acme", secretName: "spanning", clientFolderId: "142", env });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.hasTemplate, false);
+  // A secret with NO stock name stays unconfigurable either way.
+  const unknown = delineaWriteConfigured({ slug: "acme", secretName: "totally-unknown", clientFolderId: "142", allowTemplateByName: true, env });
+  assert.equal(unknown.hasTemplate, false);
+});
+
 test("delineaWriteSummary shapes the per-secret UI prop", () => {
   const s = delineaWriteSummary({
     slug: "acme",
@@ -125,7 +141,9 @@ test("delineaWriteSummary shapes the per-secret UI prop", () => {
   assert.equal(s.hasAccount, true);
   assert.equal(s.folderId, "142");
   assert.equal(s.templates["m365-admin"], true);
-  assert.equal(s.templates["spanning"], false); // no template configured for spanning
+  // No env template id for spanning — but its stock template NAME ("Automation - API") is known, and
+  // the create route resolves the id live by name, so the UI reports it creatable.
+  assert.equal(s.templates["spanning"], true);
   // The manual-fallback guide needs the human template name per secret, independent of whether a
   // template ID is configured for the write path.
   assert.equal(s.templateNames["m365-admin"], "Entra Azure AD Account");

@@ -112,19 +112,42 @@ export type CreateSecretInput = { name: string; folderId: string; templateId: nu
 export type CreateResult = { ok: boolean; id?: string; error?: string };
 
 // Fill a template stub's items from our slug→value map, preserving every other property Secret Server
-// put on each item (fieldId, isFile, ...). Matches on slug, falling back to the slugified field name.
+// put on each item (fieldId, isFile, ...). Matches on slug, falling back to the slugified field name —
+// CASE-INSENSITIVELY (both sides normalized through defaultSlug): real Secret Server slugs carry the
+// template author's casing ("clientID", "ClientSecret" on the stock Automation - API template), while
+// our default field maps derive lowercase slugs; a case mismatch must land the value, not drop it.
 // Returns which of OUR keys never matched a stub item — a non-empty `unmatched` means the template's
 // real slugs differ from what we sent, so the values would silently drop; the caller must refuse
 // rather than create a secret with blank fields.
 export function shapeStubItems(stub: StubItem[], fields: Record<string, string>): { items: StubItem[]; unmatched: string[] } {
+  const wanted = new Map(Object.keys(fields).map((k) => [defaultSlug(k), k]));
   const used = new Set<string>();
   const items = stub.map((it) => {
-    const key = it.slug ?? (it.fieldName ? defaultSlug(it.fieldName) : "");
-    if (Object.prototype.hasOwnProperty.call(fields, key)) { used.add(key); return { ...it, itemValue: fields[key] }; }
+    const key = defaultSlug(it.slug ?? it.fieldName ?? "");
+    const ours = key ? wanted.get(key) : undefined;
+    if (ours !== undefined) { used.add(ours); return { ...it, itemValue: fields[ours] }; }
     return it;
   });
   const unmatched = Object.keys(fields).filter((k) => !used.has(k));
   return { items, unmatched };
+}
+
+// Resolve a Secret Server template id by its human NAME (exact match, case-insensitive) — so secrets
+// that live on a stock template ("Automation - API" for mimecast/spanning/proofpoint/adobe/slack) need
+// no per-instance template-id env at all. Same search convention as findSecretIdByName/folders; returns
+// null on no exact hit or any failure (the caller reports what name it looked for).
+export async function findTemplateIdByName(cfg: DelineaConfig, name: string, token: string, fetcher: Fetcher = defaultFetcher): Promise<number | null> {
+  try {
+    const url = `${cfg.baseUrl}/api/v1/secret-templates?filter.searchText=${encodeURIComponent(name)}&take=200`;
+    const res = await fetcher(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => null)) as { records?: { id?: number | string; name?: string }[] } | null;
+    const hit = (d?.records ?? []).find((r) => String(r.name ?? "").trim().toLowerCase() === name.trim().toLowerCase());
+    const id = hit?.id != null ? Number(hit.id) : NaN;
+    return Number.isFinite(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 // Best-effort search for an existing secret of this exact name in the folder — the dedup key for

@@ -47,6 +47,7 @@ export { entry as credExpirySettings } from "./cred-expiry-settings";
 export { entry as credPlatform } from "./cred-platform";
 export { entry as defaultSharedMailboxAccess } from "./default-shared-mailbox-access";
 export { entry as delineaSecretserverCloudCreateFix } from "./delinea-secretserver-cloud-create-fix";
+export { entry as delineaTemplateByName } from "./delinea-template-by-name";
 export { entry as delineaWriteFailManualModal } from "./delinea-write-fail-manual-modal";
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";

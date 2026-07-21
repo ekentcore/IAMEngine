@@ -12,9 +12,9 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
 import { recordAudit } from "@/lib/auth/audit";
-import { createSecret, getDelineaToken } from "@/lib/secrets/delinea";
+import { createSecret, findTemplateIdByName, getDelineaToken } from "@/lib/secrets/delinea";
 import { SECRET_FIELD_REQUIREMENTS, checkFieldShape } from "@/lib/secrets/field-requirements";
-import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor } from "@/lib/secrets/delinea-templates";
+import { delineaWriteConfigured, delineaWriteConfigFromEnv, defaultFieldMap, defaultTemplateName, folderIdFor, templateFor } from "@/lib/secrets/delinea-templates";
 import { probeSecretValues } from "@/lib/secrets/value-probe";
 import { secretRunnerReach } from "@/lib/runner/reachability";
 
@@ -49,8 +49,9 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   let folderId = folderIdFor(params.slug, client.delineaFolderId);
   if (!folderId && bodyFolder) folderId = bodyFolder;
 
-  // Gate — refuse gracefully (409) with exactly what's missing.
-  const cap = delineaWriteConfigured({ slug: params.slug, secretName: name, clientFolderId: folderId });
+  // Gate — refuse gracefully (409) with exactly what's missing. A known template NAME counts (no env
+  // id needed): stock-template secrets (Automation - API etc.) resolve the id live by name below.
+  const cap = delineaWriteConfigured({ slug: params.slug, secretName: name, clientFolderId: folderId, allowTemplateByName: true });
   if (!cap.ok) {
     // manualFallback: the app can't write it here, so the UI offers a "create it by hand in Delinea"
     // modal instead of a dead-end error. (422 field-shape / blocking-probe failures below do NOT set
@@ -87,8 +88,31 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     );
   }
 
+  const cfg = delineaWriteConfigFromEnv();
+  let token: string;
+  try {
+    token = await getDelineaToken(cfg);
+  } catch (e) {
+    return NextResponse.json({ error: `Delinea write auth failed — ${(e as Error).message}`, manualFallback: true }, { status: 502 });
+  }
+
+  // The template: an env-configured id wins (per-instance override); else resolve the secret's stock
+  // template NAME ("Automation - API" for mimecast/spanning/proofpoint/…) live from Secret Server, so
+  // no per-secret template env is needed at all. cap.ok guarantees one of the two paths exists.
+  let tmpl = templateFor(name);
+  if (!tmpl) {
+    const tmplName = defaultTemplateName(name)!;
+    const templateId = await findTemplateIdByName(cfg, tmplName, token);
+    if (templateId == null) {
+      return NextResponse.json(
+        { error: `couldn't find a Secret Server template named "${tmplName}" — create/rename it in Delinea, or set its id via DELINEA_TEMPLATE_MAP`, manualFallback: true },
+        { status: 502 },
+      );
+    }
+    tmpl = { templateId, fieldMap: defaultFieldMap(name) };
+  }
+
   // Map our field LABELS → Secret Server slugs via the template map (synonyms also accepted as keys).
-  const tmpl = templateFor(name)!; // cap.ok guarantees a template
   const fields: Record<string, string> = {};
   for (const [label, val] of Object.entries(values)) {
     if (val.trim() === "") continue;
@@ -99,14 +123,6 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
       if (req) slug = tmpl.fieldMap[req.label];
     }
     if (slug) fields[slug] = val;
-  }
-
-  const cfg = delineaWriteConfigFromEnv();
-  let token: string;
-  try {
-    token = await getDelineaToken(cfg);
-  } catch (e) {
-    return NextResponse.json({ error: `Delinea write auth failed — ${(e as Error).message}`, manualFallback: true }, { status: 502 });
   }
   const ssName = typeof body.label === "string" && body.label.trim() ? body.label.trim() : `${client.name} — ${name}`;
   const result = await createSecret(cfg, { name: ssName, folderId: folderId!, templateId: tmpl.templateId, fields }, token);
