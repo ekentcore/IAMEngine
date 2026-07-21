@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, getSecretFolderId, findFolderIdByName, deriveClientFolderId, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, resolveCreateFolderId, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, getSecretFolderId, findFolderIdByName, deriveClientFolderId, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -409,6 +409,23 @@ test("findChildFolderByName resolves a named child folder under a parent (case-i
   // Lookup failure -> null, never throws.
   const boom: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) } as FetchResponse);
   assert.equal(await findChildFolderByName(cfg, 5606, "Identity Services", "tok", boom), null);
+});
+
+test("resolveCreateFolderId redirects into the named subfolder when it exists, else falls back to the parent", async () => {
+  // Child exists -> the credential is created in the subfolder (the team-viewable one), not the ROOT.
+  const withChild: Fetcher = async (url) => {
+    assert.match(url, /parentFolderId=10619/);
+    return { ok: true, status: 200, json: async () => ({ records: [{ id: 10628, folderName: "Identity Services" }] }) } as FetchResponse;
+  };
+  assert.equal(await resolveCreateFolderId(cfg, 10619, "Identity Services", "tok", withChild), "10628");
+  // No such child -> the parent folder is used as-is (never blocks a write).
+  const noChild: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [{ id: 1, folderName: "Vendor" }] }) } as FetchResponse);
+  assert.equal(await resolveCreateFolderId(cfg, 10619, "Identity Services", "tok", noChild), "10619");
+  // Empty subfolder name disables the redirect entirely — no lookup is made, parent returned.
+  let called = false;
+  const neverCalled: Fetcher = async () => { called = true; return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse; };
+  assert.equal(await resolveCreateFolderId(cfg, 10619, "", "tok", neverCalled), "10619");
+  assert.equal(called, false);
 });
 
 test("findTemplateIdByName resolves a template id by exact name (case-insensitive), else null", async () => {

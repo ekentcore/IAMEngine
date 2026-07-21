@@ -20,7 +20,7 @@
 // Secret hygiene: keyBase64 (the one-time service-account key material) is used only to build the
 // Delinea field values — it is never interpolated into an error string or pushed onto `actions`.
 import type { PrismaClient } from "@prisma/client";
-import { createSecret, updateSecretFields, getDelineaToken, findChildFolderByName, type Fetcher } from "./delinea";
+import { createSecret, updateSecretFields, getDelineaToken, resolveCreateFolderId, type Fetcher } from "./delinea";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { secretIsSet } from "./wiring";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -152,8 +152,7 @@ export async function writeGoogleWorkspaceCreds(input: WriteGoogleInput): Promis
   } else {
     // No local row — create it fresh, named EXACTLY "Google API - IAM Engine" (a fixed literal name,
     // unlike m365's per-client name — each client's own Identity Services subfolder gets its own copy).
-    const subName = identitySubfolderName(env);
-    const createFolderId = (subName && (await findChildFolderByName(cfg, folderId, subName, token, fetcher))) || folderId;
+    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
     const created = await createSecret(cfg, { name: GOOGLE_SECRET_NAME, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!created.ok || !created.id) {
       return { ok: false, error: created.error ?? "Delinea create failed", actions };

@@ -42,6 +42,7 @@ export { entry as connectorBuilder } from "./connector-builder";
 export { entry as connectorBrowserSessionAuth } from "./connector-browser-session-auth";
 export { entry as connectorProbeAndHarHosts } from "./connector-probe-and-har-hosts";
 export { entry as copyButtonsWorkOffTheHost } from "./copy-buttons-work-off-the-host";
+export { entry as createSecretIdentitySubfolder } from "./create-secret-identity-subfolder";
 export { entry as coreidSlugRedirect } from "./coreid-slug-redirect";
 export { entry as coretelligentPostResetRestore } from "./coretelligent-post-reset-restore";
 export { entry as credExpirySettings } from "./cred-expiry-settings";

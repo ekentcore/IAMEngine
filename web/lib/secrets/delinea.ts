@@ -190,6 +190,23 @@ export async function findChildFolderByName(
   }
 }
 
+// Resolve the folder a client credential should be CREATED in: the identity subfolder under the client's
+// folder when that child exists (it carries the RS/identity team's view permissions), else the client
+// folder itself. Every in-app credential write goes through here so a secret is never left in the client
+// ROOT — whose permissions are narrower, so a secret written there "reads as not viewable" to the team
+// (the exact symptom that stranded a hand-created Mimecast secret). `subfolderName` is the child to look
+// for (identitySubfolderName(); an empty string disables the redirect, e.g. via DELINEA_IDENTITY_SUBFOLDER).
+export async function resolveCreateFolderId(
+  cfg: DelineaConfig,
+  parentFolderId: string | number,
+  subfolderName: string,
+  token: string,
+  fetcher: Fetcher = defaultFetcher
+): Promise<string> {
+  const child = subfolderName ? await findChildFolderByName(cfg, parentFolderId, subfolderName, token, fetcher) : null;
+  return child || String(parentFolderId);
+}
+
 // The Secret Server folder a given secret LIVES in — read from the metadata-only /summary endpoint
 // (no field values pulled, so no "require comment on view" policy is triggered). Used to auto-detect a
 // client's Delinea folder from a secret the operator already pointed at (e.g. the Global-Admin login
