@@ -300,6 +300,12 @@ function MailboxOversizeDecision({ caseId, jobId, actions, refresh }: { caseId: 
   return (
     <div style={{ border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
       <div style={{ fontSize: 13, color: "#92400e" }}><b>Decision needed</b>{size ? <> — mailbox is <b>{size} GB</b></> : null}. {msg}</div>
+      {/* Why there is no "Convert to shared" button here, said plainly next to the choices — the
+          under-cap picker offers convert, so its absence needs a reason. Without it the two buttons
+          read as the whole menu and nobody knows the size is what took the third option away. */}
+      <p className="note" style={{ marginTop: 4, color: "#92400e" }}>
+        Converting to a shared mailbox isn&apos;t an option: at {size ? <b>{size} GB</b> : "its size"} it&apos;s over the {decision.thresholdGB} GB cap, and a mailbox that large needs a licence either way.
+      </p>
       <div className="toolbar" style={{ marginTop: 8 }}>
         {/* Neither is "primary": one costs money, the other destroys mail. Presenting a recommended
             button would be making the client's call for them, which is the thing we stopped doing. */}
