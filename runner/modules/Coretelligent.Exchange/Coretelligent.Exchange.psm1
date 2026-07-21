@@ -276,8 +276,42 @@ function Get-CtgMailboxSizeGB {
     if ([string]::IsNullOrWhiteSpace($Identity)) { return $null }
     $stats = Get-MailboxStatistics -Identity $Identity -ErrorAction SilentlyContinue
     if (-not $stats) { return $null }
-    $m = [regex]::Match([string]$stats.TotalItemSize, '([\d,]+)\s*bytes')
+    return (ConvertFrom-CtgMailboxSize $stats.TotalItemSize)
+}
+
+# TotalItemSize -> GB, tolerant of the several shapes it arrives in. This is the fallback the offboard
+# leans on (FR #20): a 33 MB mailbox reported "size unknown" once — its TotalItemSize had deserialized
+# WITHOUT the "(…,… bytes)" suffix the old bytes-only regex required, so a perfectly readable size read
+# as unparseable and the licence gate then treated the mailbox as over-cap and un-convertible.
+#
+# Three reads, most precise first — ALL failing returns $null (genuinely unknown), never 0:
+#   1. .Value.ToBytes()  — the structured ByteQuantifiedSize (a live EXO session); exact, FR #20's `.value`
+#   2. "(… bytes)"       — the string form's exact byte count, when present
+#   3. "33.5 MB"         — a unit-suffixed string with no byte count (a deserialized remote session)
+function ConvertFrom-CtgMailboxSize {
+    param($TotalItemSize)
+    if ($null -eq $TotalItemSize) { return $null }
+    # 1. Structured ByteQuantifiedSize: $size.Value.ToBytes(). Guarded — over a remote PSSession the
+    # property often deserializes to a bare string with no .ToBytes(), which would throw.
+    try {
+        $v = $TotalItemSize.Value
+        if ($null -ne $v -and ($v.PSObject.Methods.Name -contains 'ToBytes')) {
+            return [math]::Round([double]$v.ToBytes() / 1GB, 2)
+        }
+    } catch { }
+    $s = [string]$TotalItemSize
+    # 2. Exact bytes in the parenthetical: "33.5 MB (35,127,296 bytes)".
+    $m = [regex]::Match($s, '([\d,]+)\s*bytes')
     if ($m.Success) { return [math]::Round([double]($m.Groups[1].Value -replace ',', '') / 1GB, 2) }
+    # 3. Unit-suffixed with no byte count: "33.5 MB", "1.2 GB", "512 KB", "0 B".
+    $m = [regex]::Match($s, '(?i)([\d.]+)\s*(TB|GB|MB|KB|B)\b')
+    if ($m.Success) {
+        $n = [double]$m.Groups[1].Value
+        $factor = switch ($m.Groups[2].Value.ToUpper()) {
+            'TB' { 1024 } 'GB' { 1 } 'MB' { 1 / 1024 } 'KB' { 1 / 1048576 } 'B' { 1 / 1073741824 } default { $null }
+        }
+        if ($null -ne $factor) { return [math]::Round($n * $factor, 2) }
+    }
     return $null
 }
 
@@ -1204,4 +1238,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

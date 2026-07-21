@@ -116,6 +116,7 @@ export { entry as m365SetupSigninCallout } from "./m365-setup-signin-callout";
 export { entry as m365SetupVaultSelfheal } from "./m365-setup-vault-selfheal";
 export { entry as mailboxMirrorNamesSource } from "./mailbox-mirror-names-source";
 export { entry as mailboxNotConvertedDecision } from "./mailbox-not-converted-decision";
+export { entry as mailboxSizeDecisionClarity } from "./mailbox-size-decision-clarity";
 export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-and-fix-status";
 export { entry as manualSetPasswordOption } from "./manual-set-password-option";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
