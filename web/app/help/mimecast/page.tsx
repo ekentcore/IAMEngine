@@ -58,6 +58,28 @@ export default function MimecastSetupPage() {
         just <b>not-synced-yet</b> (see Notes), not a permissions problem.
       </p>
 
+      <h2>Automatic setup (browser) — sign-in test</h2>
+      <p className="note">
+        The <b>Setup Mimecast API</b> dialog has an <b>Automatic (browser)</b> tab: instead of creating the API
+        application by hand, the runner drives the console for you. It is being rolled out in two steps — today the tab
+        offers a <b>&ldquo;Test sign-in&rdquo;</b> button that confirms the runner can sign into the Administration
+        Console (the automated app-creation follows once sign-in is proven). Until then, create the app by hand and use
+        {" "}<b>Paste fields</b> (below).
+      </p>
+      <p className="note">
+        The sign-in uses a <b>separate</b> Delinea secret, <code>mimecast-console</code> — a <b>Mimecast admin login</b>
+        {" "}(email + password), <b>not</b> the API 2.0 client id/secret (a login box can&rsquo;t authenticate an API
+        key). Create it in Delinea and wire it on the client&rsquo;s Credentials panel:
+      </p>
+      <ul>
+        <li><code>Username</code> — a Mimecast admin&rsquo;s <b>email</b> with Administration Console access.</li>
+        <li><code>Password</code> — that account&rsquo;s password.</li>
+        <li>Enable <b>One-Time Password</b> on the secret. The runner mints the MFA code from Delinea <i>at the prompt</i>,
+          so the authenticator seed never leaves the vault. It must be a <b>TOTP / authenticator-app</b> method —
+          push notifications and phone calls can&rsquo;t be automated and the sign-in will time out.</li>
+      </ul>
+      <p className="note">Runs on the <b>central runner</b> (Mimecast is cloud) and needs the browser sidecar installed.</p>
+
       <h2>3. Store it in Delinea</h2>
       <table>
         <tbody>

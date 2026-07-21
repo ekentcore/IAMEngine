@@ -359,4 +359,108 @@ function Confirm-CtgMimecast {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Get-CtgMimecastProfile, Find-CtgMimecastGroup, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast
+# ------------------------------------------------------------------------------------------------
+# Console browser auto-setup (Phase 1: sign-in test). Drives the Mimecast Administration Console via
+# the Node/Playwright sidecar to prove the console login works, ahead of Phase 2 (create the API 2.0
+# app + harvest the credential). Rides the 'mimecast-console' secret (an admin email + password +
+# One-Time Password), DISTINCT from the 'mimecast' API 2.0 clientId/secret. Withheld from agents
+# without the 'browser' capability (BROWSER_SYSTEMS app-side).
+# ------------------------------------------------------------------------------------------------
+
+function Get-CtgMimecastConsoleField {
+    param($Secret, [Parameter(Mandatory)][string[]]$Names)
+    if (-not $Secret) { return $null }
+    $fields = Get-CtgProp $Secret 'Fields'
+    foreach ($n in $Names) {
+        if ($fields -and ($fields -is [System.Collections.IDictionary]) -and $fields.ContainsKey($n) -and $fields[$n]) { return $fields[$n] }
+    }
+    return $null
+}
+
+# The ONE place that decides what may be typed into Mimecast's console login. Returns @{ Ok; Username;
+# Password; Reason }. Field synonyms mirror field-requirements.ts 'mimecast-console'. The rejected
+# VALUE is never echoed — naming the field is enough to fix it (this lands in an AuditLog + work note).
+function Resolve-CtgMimecastConsoleLogin {
+    param($Secret, [string]$SecretName = 'mimecast-console')
+    $username = Get-CtgMimecastConsoleField $Secret @('Username', 'AdminEmail', 'AdminUser', 'Email', 'User')
+    $password = Get-CtgMimecastConsoleField $Secret @('Password', 'AdminPassword')
+    if (-not $username -and -not $password) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) {
+            $username = $cred.UserName
+            try { $password = $cred.GetNetworkCredential().Password } catch { }
+        }
+    }
+    if (-not $username -or -not $password) {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "no '$SecretName' secret is wired with a Mimecast admin email + password (fields Username/Password, or AdminEmail/AdminPassword) — wire one in Delinea, and enable One-Time Password on it so Delinea can supply the verification code." }
+    }
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "the brokered '$SecretName' username is not an email, so it cannot be a Mimecast console sign-in. Set the secret's Username to a Mimecast admin's email. The value is not repeated here because it may be credential material." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $username; Password = $password; Reason = $null }
+}
+
+# Build the { username; password; params } spec the mimecast-console-signin flow takes, folding in the
+# preferred OtpRequest (mint-at-the-prompt) and a legacy TOTP-seed fallback. Returns the spec, or $null
+# (with a WARN pushed to $Actions) when no login is wired. Mirrors New-CtgGoogleBrowserInput.
+function New-CtgMimecastConsoleInput {
+    param($Secret, [string]$SecretName, [hashtable]$OtpRequest, [hashtable]$Params, [System.Collections.Generic.List[string]]$Actions)
+    $login = Resolve-CtgMimecastConsoleLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) { $Actions.Add("WARN $($login.Reason)"); return $null }
+    if ($OtpRequest) { $Actions.Add("one-time password will be minted by Delinea at the verification prompt") }
+    $totpSeed = Get-CtgMimecastConsoleField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'MFA Seed', 'AuthenticatorSeed', 'Authenticator Seed', 'OneTimePasswordSeed', 'TwoFactorSeed', '2FASeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest) { $Actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
+    $p = @{}
+    if ($Params) { foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] } }
+    if ($OtpRequest) { $p['otp'] = $OtpRequest }
+    if ($totpSeed)   { $p['totpSeed'] = $totpSeed }
+    return @{ username = $login.Username; password = $login.Password; params = $p }
+}
+
+function Invoke-CtgMimecastConsoleSetup {
+    <#
+    .SYNOPSIS
+        Drive the Mimecast Administration Console via the browser sidecar. Phase 1: SIGN-IN TEST
+        (Config.signInOnly) — prove the console login + MFA work; changes nothing.
+    .DESCRIPTION
+        Resolves the console login from the brokered 'mimecast-console' secret and runs the
+        'mimecast-console-signin' flow. UNLIKE the Google OAuth sign-in (whose browser failure is a
+        non-fatal WARN), a sign-in TEST must FAIL the job on a failed sign-in so the app's "Test
+        sign-in" reports red — so this THROWS on a non-ok flow result (missing browser, bad
+        credentials, unautomatable MFA), carrying the error + screenshot path. A missing login is a
+        throw too (nothing to test). No credential value is ever logged.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'mimecast-console',
+        [hashtable]$OtpRequest
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $consoleUrl = [string](Get-CtgProp $Config 'consoleUrl')
+    # signInOnly defaults TRUE (Phase 1) — only an explicit $false runs the (not-yet-built) full setup.
+    $signInOnlyProp = Get-CtgProp $Config 'signInOnly'
+    $signInOnly = ($null -eq $signInOnlyProp) -or [bool]$signInOnlyProp
+
+    $params = @{ signInOnly = $signInOnly }
+    if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    $flowInput = New-CtgMimecastConsoleInput -Secret $Secret -SecretName $SecretName -OtpRequest $OtpRequest -Params $params -Actions $actions
+    if (-not $flowInput) {
+        throw "Mimecast console sign-in could not start — $([string]::Join(' ', $actions))"
+    }
+
+    # -TimeoutSeconds 240: browser launch + Mimecast sign-in + MFA (can wait out a TOTP window).
+    $res = Invoke-CtgBrowserFlow -Flow 'mimecast-console-signin' -InputObject $flowInput -TimeoutSeconds 240
+    if ($res.ok) {
+        $msg = if ($res.message) { $res.message } else { 'signed in to the Mimecast Administration Console' }
+        $actions.Add($msg)
+        return [pscustomobject]@{ System = 'mimecast-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    # THROW (fail the job) so the app's sign-in test reads as failed, with the error + screenshot path.
+    throw "Mimecast console sign-in failed — $err$ev"
+}
+
+Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Get-CtgMimecastProfile, Find-CtgMimecastGroup, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast, Resolve-CtgMimecastConsoleLogin, Invoke-CtgMimecastConsoleSetup

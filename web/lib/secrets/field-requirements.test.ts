@@ -80,6 +80,14 @@ test("m365-global-admin: interactive GA login needs email + password", () => {
   assert.deepEqual(checkFieldShape("m365-global-admin", ["Notes"]), { ok: false, missing: ["M365 Global Admin email (UPN)", "that account's password"] });
 });
 
+test("mimecast-console: console sign-in needs an admin email + password (distinct from the API creds)", () => {
+  assert.deepEqual(checkFieldShape("mimecast-console", ["Username", "Password"]), { ok: true, missing: [] });
+  // Synonyms (AdminEmail/AdminPassword) also work.
+  assert.deepEqual(checkFieldShape("mimecast-console", ["AdminEmail", "AdminPassword"]), { ok: true, missing: [] });
+  // Missing password -> flagged.
+  assert.deepEqual(checkFieldShape("mimecast-console", ["Email"]), { ok: false, missing: ["that account's password"] });
+});
+
 test("ad-dc: username + password required; the DC/server field is optional (on-DC agent)", () => {
   // Agent runs ON the DC: the "Active Directory Account" secret has only Username + Password and the
   // runner binds to the local domain (omits -Server) — must NOT flag a missing server.
