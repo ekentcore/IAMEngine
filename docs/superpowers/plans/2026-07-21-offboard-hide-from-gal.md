@@ -351,7 +351,7 @@ Confirm where `configText` is parsed on save (~`:245-262`) and how `intent.offbo
 
 - [ ] **Step 2: Add a "Hide from GAL" control to the offboard section**
 
-Add, within the offboard-lane editing UI for mail-capable systems (`exchange`, and — for the AD attribute — `active-directory`), a select + optional text input. The select has three states, defaulting to "Default (hide)":
+Show the control only for the systems where GAL hide is meaningful: `exchange`, `google-workspace`, and `active-directory`. All three offer the "Default" / "Do NOT hide" states; the "Hide via AD attribute…" option appears ONLY for `active-directory` (gate it with `systemKey === "active-directory"` as shown). Place it near the existing "Offboard intent" field. The select has three states, defaulting to "Default (hide)":
 
 ```tsx
 {/* FR #21: GAL hide is default-on. This control only records deviations. */}
