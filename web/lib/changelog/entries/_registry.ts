@@ -75,6 +75,7 @@ export { entry as googleOauthOfflineGrant } from "./google-oauth-offline-grant";
 export { entry as googleWorkspaceAutoSetupOverview } from "./google-workspace-auto-setup-overview";
 export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missing";
 export { entry as guidedApiSetup } from "./guided-api-setup";
+export { entry as guidedSetupFullerInstructions } from "./guided-setup-fuller-instructions";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as importClientsByCoreid } from "./import-clients-by-coreid";
 export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";

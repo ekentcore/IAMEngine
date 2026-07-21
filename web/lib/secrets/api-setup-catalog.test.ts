@@ -9,6 +9,7 @@ test("catalog has mimecast, spanning, proofpoint, each with a real field-require
   for (const e of API_SETUP_CATALOG) {
     assert.ok(SECRET_FIELD_REQUIREMENTS[e.secretName], `${e.secretName} must be a known secret`);
     assert.ok(e.label && e.consoleUrl.startsWith("https://") && e.steps.length > 0);
+    assert.ok(e.helpPath?.startsWith("/help/"), `${e.systemKey} should link its in-app setup guide`);
   }
 });
 test("proofpoint entry offers region options", () => {

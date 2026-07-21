@@ -184,9 +184,16 @@ export function GuidedApiSetup({
             <li key={i}>{step}</li>
           ))}
         </ol>
-        <a className="button" href={entry.consoleUrl} target="_blank" rel="noreferrer">
-          Open console ↗
-        </a>
+        <div className="toolbar">
+          <a className="button" href={entry.consoleUrl} target="_blank" rel="noreferrer">
+            Open console ↗
+          </a>
+          {entry.helpPath && (
+            <a className="button" href={entry.helpPath} target="_blank" rel="noreferrer">
+              Full guide ↗
+            </a>
+          )}
+        </div>
 
         <div className="toolbar" style={{ marginTop: "0.75rem" }}>
           <button type="button" className={mode === "paste" ? "primary" : undefined} disabled={busy} onClick={() => { setMode("paste"); setVerdict(null); }}>
