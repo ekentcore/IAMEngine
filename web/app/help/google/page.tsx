@@ -74,10 +74,20 @@ export default function GoogleSetupPage() {
         secret and an auto-vaulted one (name <b>Google API - IAM Engine</b>) end up identical.
       </p>
       <p className="note">
-        The private key is multi-line, so <b>base64-encode the whole JSON key file</b> and paste that into
-        {" "}<code>ClientSecret</code>. From a terminal:
+        <b>Easiest — no terminal needed:</b> in the client&rsquo;s guided setup, open the <code>google-admin</code> step&rsquo;s
+        {" "}<b>Create in Delinea</b> form and <b>upload the downloaded .json key file</b>. Your browser converts it to
+        base64 locally (the file is never uploaded anywhere) and fills <code>ClientSecret</code> + <code>accountid</code>{" "}
+        for you — you type only <code>apiURL</code> (the super-admin email), then <b>Test &amp; create</b> verifies the
+        key against Google&rsquo;s Directory API before anything is written.
       </p>
-      <Code>{`base64 -i coretelligent-iam-xxxx.json | pbcopy   # macOS — JSON key, base64, now on your clipboard`}</Code>
+      <p className="note">
+        Creating the secret <b>by hand in Secret Server</b> instead? The private key is multi-line, so
+        {" "}<b>base64-encode the whole JSON key file</b> and paste that into <code>ClientSecret</code>. From a terminal:
+      </p>
+      <Code>{`base64 -i coretelligent-iam-xxxx.json | pbcopy   # macOS — JSON key, base64, now on your clipboard
+
+# Windows PowerShell:
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('coretelligent-iam-xxxx.json')) | Set-Clipboard`}</Code>
       <table>
         <tbody>
           <tr><th style={{ width: 200 }}>ClientSecret</th><td><b>required</b> — the base64 of the downloaded JSON key file. The runner decodes it and reads <code>client_email</code> + <code>private_key</code>. (Raw JSON pasted here also works.)</td></tr>

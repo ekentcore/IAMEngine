@@ -7,6 +7,7 @@
 // requests; nothing is echoed back or persisted here.
 import { useState } from "react";
 import type { FieldReq } from "@/lib/secrets/field-requirements";
+import { FIELD_SEEDERS } from "@/lib/secrets/field-seeders";
 import { ManualDelineaModal } from "./manual-delinea-modal";
 
 // Heuristic: which fields render as password inputs (so a shoulder-surfer can't read the value).
@@ -44,8 +45,28 @@ export function CreateInDelineaForm({
   const [error, setError] = useState<string | null>(null);
   // When the app can't write to Delinea itself, we pop a "do it by hand" modal instead of dead-ending.
   const [manual, setManual] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
+  // File-seeded secrets (google-admin's JSON key): the upload verdict shown under the file input.
+  const [seed, setSeed] = useState<{ note?: string; error?: string } | null>(null);
+  const seeder = FIELD_SEEDERS[secretName];
   const needsFolder = !capability.folderId;
   const busy = phase !== "idle";
+
+  // Read the picked file LOCALLY (it is never uploaded), parse it, and fill the matching fields —
+  // exactly as if the operator had typed the values. A parse failure names what was wrong with the
+  // file; the input's value is cleared so re-picking the same (fixed) file fires the handler again.
+  async function onSeedFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !seeder) return;
+    try {
+      const parsed = seeder.parse(await file.text());
+      setValues((prev) => ({ ...prev, ...parsed.values }));
+      setProbe(null); // seeded values invalidate a prior test verdict, same as typing
+      setSeed({ note: parsed.note });
+    } catch (err) {
+      setSeed({ error: (err as Error).message });
+    }
+  }
 
   // Test the entered values without writing anything. Returns the verdict so the caller (Test & create)
   // can decide whether to proceed.
@@ -137,6 +158,14 @@ export function CreateInDelineaForm({
           <span className="note" style={{ display: "block", marginBottom: 2 }}>Delinea folder id (saved to this client)</span>
           <input value={folderId} onChange={(e) => setFolderId(e.target.value)} placeholder="e.g. 142" style={{ width: 160, fontFamily: "var(--mono, monospace)" }} />
         </label>
+      )}
+      {seeder && (
+        <div style={{ marginBottom: 12, padding: "0.5rem 0.6rem", border: "1px dashed var(--line)", borderRadius: 6 }}>
+          <span className="note" style={{ display: "block", marginBottom: 4 }}>{seeder.prompt}</span>
+          <input type="file" accept={seeder.accept} disabled={busy} onChange={onSeedFile} style={{ fontSize: 12 }} />
+          {seed?.note && <span className="note" style={{ display: "block", fontSize: 12, marginTop: 4, color: "var(--ok-fg)" }}>✓ {seed.note}</span>}
+          {seed?.error && <span className="note danger" style={{ display: "block", fontSize: 12, marginTop: 4 }}>✗ {seed.error}</span>}
+        </div>
       )}
       {fields.map((f) => (
         <label key={f.label} style={{ display: "block", marginBottom: 10 }}>

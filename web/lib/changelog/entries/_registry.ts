@@ -71,6 +71,7 @@ export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";
 export { entry as googleDelineaFieldNamesMatchTemplate } from "./google-delinea-field-names-match-template";
+export { entry as googleKeyFileUpload } from "./google-key-file-upload";
 export { entry as googleOauthDeheadUa } from "./google-oauth-dehead-ua";
 export { entry as googleOauthRedirectCaptureFix } from "./google-oauth-redirect-capture-fix";
 export { entry as googleOauthOfflineGrant } from "./google-oauth-offline-grant";
