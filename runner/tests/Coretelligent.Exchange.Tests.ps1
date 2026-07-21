@@ -713,6 +713,35 @@ Describe 'Get-CtgMailboxSizeGB' {
     }
 }
 
+Describe 'ConvertFrom-CtgMailboxSize' {
+    # FR #20: a 33 MB mailbox once read as "size unknown" because its TotalItemSize deserialized with
+    # no "(…,… bytes)" suffix. The parser must recover a real size from every shape it arrives in, and
+    # still return $null (never 0) for a genuinely unreadable one.
+    It 'reads exact bytes from the parenthetical string form' {
+        ConvertFrom-CtgMailboxSize '10 GB (10,737,418,240 bytes)' | Should -Be 10
+        ConvertFrom-CtgMailboxSize '0 GB (0 bytes)' | Should -Be 0
+    }
+    It 'reads the structured .Value.ToBytes() (a live EXO session)' {
+        $size = [pscustomobject]@{ Value = [pscustomobject]@{ } }
+        $size.Value | Add-Member -MemberType ScriptMethod -Name ToBytes -Value { 35127296 } # 33.5 MB
+        ConvertFrom-CtgMailboxSize $size | Should -Be 0.03
+    }
+    It 'recovers a unit-suffixed string with NO byte count — the UM0029906 shape' {
+        ConvertFrom-CtgMailboxSize '33.5 MB' | Should -Be 0.03
+        ConvertFrom-CtgMailboxSize '1.2 GB'  | Should -Be 1.2
+        ConvertFrom-CtgMailboxSize '512 KB'  | Should -Be 0
+        ConvertFrom-CtgMailboxSize '2 TB'    | Should -Be 2048
+    }
+    It 'a 33 MB mailbox is UNDER the 50 GB cap (the whole point — convert must be offered)' {
+        (ConvertFrom-CtgMailboxSize '33.5 MB') -lt 50 | Should -BeTrue
+    }
+    It 'returns $null for unparseable / empty input — an unknown size is not zero' {
+        ConvertFrom-CtgMailboxSize 'Unlimited' | Should -BeNullOrEmpty
+        ConvertFrom-CtgMailboxSize ''          | Should -BeNullOrEmpty
+        ConvertFrom-CtgMailboxSize $null       | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Invoke-CtgExchangeOffboarding convert safety' {
     BeforeEach {
         $script:user = [pscustomobject]@{ UserPrincipalName = 'jdoe@61commodities.com'; DisplayName = 'J Doe' }

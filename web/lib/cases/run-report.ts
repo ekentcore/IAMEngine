@@ -12,6 +12,7 @@ import { runnerBuildId } from "../runner/bundle";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { offboardCandidatesOf, offboardCandidateQuery, acceptedKeysFor, type OffboardCandidate } from "../jobs/runner-service";
 import { blockingJobs, type JobLite } from "../jobs/runner-logic";
+import { jobResultEnvelope } from "../jobs/job-result";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying" | "retrying";
 
@@ -310,6 +311,9 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
   const lites = jobs.map(liteOf);
 
   const steps: RunReportStep[] = jobs.map((j, i) => {
+    // Older rows can hold a pipeline-leaked ARRAY result ([null, {…envelope…}]) recorded before
+    // recordResult normalized the shape; unwrap here so their actions/markers still render.
+    const jr = jobResultEnvelope(j.result);
     const validation = normalizeValidation(j.validation);
     const req = (j.request ?? {}) as { requiresApproval?: boolean; approved?: boolean; validateOnly?: boolean; intent?: "disable" | "destructive" | null; autoStopped?: boolean };
     let verdict = verdictOf(j.status, validation, Boolean(req.validateOnly));
@@ -319,7 +323,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     // warning, not a clean "verified" — surface it even when the validation read-back passed.
     // Match WARN anywhere in the action, not just the start — actions are often prefixed
     // ("license: WARN could not add to E5 group"), which a start-anchored match would miss.
-    const stepActions = actionsOf(j.result);
+    const stepActions = actionsOf(jr);
     if (verdict === "verified" && stepActions.some((a) => /\bWARN\b/i.test(a))) verdict = "warning";
 
     // A step that scheduled its OWN re-run (request.autoRetry) is deliberately waiting for a
@@ -341,7 +345,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     else if (verdict === "running" || verdict === "verifying" || verdict === "retrying") summary.running++;
     else summary.pending++;
 
-    const manualCompleted = Boolean((j.result as Record<string, unknown> | null)?.manualCompletion);
+    const manualCompleted = Boolean((jr as Record<string, unknown> | null)?.manualCompletion);
     // Why is a pending api step not running yet? THE gating rule is the runner's claim gate
     // (blockingJobs) — reused here, not mirrored, so the report can never disagree with what the
     // runner will actually do (the old hand-rolled copy counted ad-hoc jobs as blockers the claim
@@ -363,7 +367,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
     // resolves the SAME row (and re-runs inherit it). null for clean/in-progress steps.
     let fingerprint: string | null = null;
     if (verdict === "warning" || verdict === "failed") {
-      const oc = jobOutcome(j.status, j.result, j.validation, j.error);
+      const oc = jobOutcome(j.status, jr, j.validation, j.error);
       fingerprint = outcomeFingerprint({ caseRequestId: input.caseId, systemKey: j.systemKey, verdict: oc.verdict, messages: oc.messages, error: j.error });
     }
 
@@ -381,7 +385,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       status: j.status,
       verdict,
       // A manual step has no result to report — show its instruction note instead of an empty line.
-      actions: j.mode === "manual" ? [...manualNotesOf(j.request), ...actionsOf(j.result)] : actionsOf(j.result),
+      actions: j.mode === "manual" ? [...manualNotesOf(j.request), ...actionsOf(jr)] : actionsOf(jr),
       validation,
       error: j.error,
       finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
@@ -391,8 +395,8 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       phaseTrail,
       manualCompleted,
       pendingReason,
-      licenseOptions: licenseOptionsOf(j.result),
-      offboardCandidates: offboardCandidatesFor(j.result),
+      licenseOptions: licenseOptionsOf(jr),
+      offboardCandidates: offboardCandidatesFor(jr),
       autoRetry: autoRetryData,
       intent: req.intent ?? null,
       expectedLicenses: expectedLicensesFor(j, input.action, input.payload),

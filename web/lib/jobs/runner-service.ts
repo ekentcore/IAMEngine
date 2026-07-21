@@ -9,6 +9,7 @@ import { getAppSetting, setAppSetting } from "../settings";
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
 export const SETUP_GATE_KEY = "setup_gate";
 import { isConvertConfirmed, isConvertStillComing } from "./mailbox-convert";
+import { jobResultEnvelope } from "./job-result";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
@@ -887,7 +888,7 @@ export function makeRunnerService(db: PrismaClient) {
         });
         for (const s of siblings) {
           // The runner emits PascalCase result keys (PrimarySmtpAddress); tolerate lowercase too.
-          const res = s.result as { PrimarySmtpAddress?: unknown; primarySmtpAddress?: unknown } | null;
+          const res = jobResultEnvelope(s.result) as { PrimarySmtpAddress?: unknown; primarySmtpAddress?: unknown } | null;
           const addr = res?.PrimarySmtpAddress ?? res?.primarySmtpAddress;
           if (typeof addr === "string" && addr.includes("@")) {
             const cur = emailByCase.get(s.caseRequestId);
@@ -916,7 +917,7 @@ export function makeRunnerService(db: PrismaClient) {
         for (const a of dirJobs) {
           if (managerByCase.has(a.caseRequestId)) continue;
           // The runner emits PascalCase result keys (Manager.Email); tolerate lowercase too.
-          const res = (a.result ?? {}) as { Manager?: unknown; manager?: unknown };
+          const res = (jobResultEnvelope(a.result) ?? {}) as { Manager?: unknown; manager?: unknown };
           const m = (res.Manager ?? res.manager) as { Email?: unknown; email?: unknown } | null;
           const addr = m?.Email ?? m?.email;
           if (typeof addr === "string" && addr.includes("@")) managerByCase.set(a.caseRequestId, addr);
@@ -933,7 +934,7 @@ export function makeRunnerService(db: PrismaClient) {
           select: { caseRequestId: true, result: true },
         });
         for (const s of m365s) {
-          const res = (s.result ?? {}) as Record<string, unknown>;
+          const res = (jobResultEnvelope(s.result) ?? {}) as Record<string, unknown>;
           const pick = (a: string, b: string) => res[a] ?? res[b];
           const immutableId = pick("OnPremImmutableId", "onPremImmutableId");
           const syncEnabled = pick("OnPremSyncEnabled", "onPremSyncEnabled");
@@ -972,7 +973,7 @@ export function makeRunnerService(db: PrismaClient) {
           select: { caseRequestId: true, result: true, status: true, request: true },
         });
         for (const e of exJobs) {
-          const res = (e.result ?? {}) as Record<string, unknown>;
+          const res = (jobResultEnvelope(e.result) ?? {}) as Record<string, unknown>;
           const raw = res.MailboxSizeGB ?? res.mailboxSizeGB;
           const sizeGB = typeof raw === "number" ? raw : null;
           // The executor reports the conversion in its action lines ("converted mailbox to shared…"), and
@@ -1560,6 +1561,10 @@ export function makeRunnerService(db: PrismaClient) {
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       await assertAgentEnabled(db, agentId);
 
+      // Unwrap a pipeline-leaked array result BEFORE anything reads or stores it — one stray
+      // emission in an executor otherwise blanks every downstream reader (see lib/jobs/job-result.ts).
+      const result = jobResultEnvelope(input.result);
+
       // OFFBOARD TARGET AMBIGUITY. An executor that cannot tell WHICH person to offboard (the name on
       // the ticket matched several users, or none) returns the shortlist it found rather than acting.
       // Such a result must NEVER be recorded as a success: it used to come back 'ok' with a WARN, which
@@ -1567,7 +1572,7 @@ export function makeRunnerService(db: PrismaClient) {
       // fails with a DECISION_NEEDED marker (the same convention the username-collision flow uses), and
       // the case is HELD so an operator picks the right user and re-runs. The candidates ride along in
       // Job.result for the picker to render.
-      const candidates = offboardCandidatesOf(input.result);
+      const candidates = offboardCandidatesOf(result);
       const needsTargetDecision = input.status === "succeeded" && candidates.length > 0 && job.case.action === "offboard";
 
       const status = needsTargetDecision ? "failed" : input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
@@ -1583,8 +1588,8 @@ export function makeRunnerService(db: PrismaClient) {
       await db.job.update({
         where: { id: jobId },
         data: {
-          status, result: (input.result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined,
-          error: needsTargetDecision ? offboardDecisionError(input.result, candidates.length) : (input.error ?? null),
+          status, result: (result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined,
+          error: needsTargetDecision ? offboardDecisionError(result, candidates.length) : (input.error ?? null),
           finishedAt: new Date(), singleRun: false,
           // A password reset that didn't land never shows its value — wipe it so a plaintext that was
           // never set on the account can't linger. A GENERATED reset keeps its value on success until
@@ -1608,7 +1613,7 @@ export function makeRunnerService(db: PrismaClient) {
       // falls through as a normal warning and the operator finally sees it.
       let retryScheduled = false;
       if (status === "succeeded" && !req(job).validateOnly && (!job.singleRun || isAdhoc)) {
-        const marker = (input.result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
+        const marker = (result ?? {}) as { RetryAfterMinutes?: unknown; retryAfterMinutes?: unknown };
         const mins = Number(marker.RetryAfterMinutes ?? marker.retryAfterMinutes ?? 0);
         const reqJson = { ...(job.request as Record<string, unknown> ?? {}) };
         const decision = decideAutoRetry((reqJson.autoRetry ?? null) as AutoRetryMarker | null, mins, Date.now());
@@ -1633,7 +1638,7 @@ export function makeRunnerService(db: PrismaClient) {
       // budget on a guaranteed failure. Hold those siblings; a later licensed re-run clears the hold
       // (the license-picker → re-run path), and the claim gate dispatches them then.
       if (!req(job).validateOnly && job.case.action === "onboard" && (job.systemKey === "m365" || job.systemKey === "entra") && status === "succeeded") {
-        const res = (input.result ?? {}) as { SeatShortage?: unknown; seatShortage?: unknown; AvailableLicenses?: unknown };
+        const res = (result ?? {}) as { SeatShortage?: unknown; seatShortage?: unknown; AvailableLicenses?: unknown };
         // Older runners don't send the explicit flag; the inventory is only ever returned on shortage.
         const shortage = res.SeatShortage === true || res.seatShortage === true
           || (Array.isArray(res.AvailableLicenses) && res.AvailableLicenses.length > 0);
@@ -1731,7 +1736,7 @@ export function makeRunnerService(db: PrismaClient) {
           data: { pausedAt: new Date(), pausedReason: "needs_info", scheduledFor: null },
         });
         await db.auditLog.create({
-          data: { actor: "system", action: "case.offboard_target.ambiguous", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey, candidates: candidates.length, query: offboardCandidateQuery(input.result) } },
+          data: { actor: "system", action: "case.offboard_target.ambiguous", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { systemKey: job.systemKey, candidates: candidates.length, query: offboardCandidateQuery(result) } },
         });
       }
 
@@ -1751,7 +1756,7 @@ export function makeRunnerService(db: PrismaClient) {
       // The run-report verdict for THIS result: "failed", or "warning" when the step succeeded but its
       // validation read-back missed. Computed once here and reused by both the notify block below and
       // the outcome log — a warning is a real problem an operator must see, so it notifies too.
-      const { verdict, messages } = jobOutcome(status, input.result, input.validation, input.error ?? null);
+      const { verdict, messages } = jobOutcome(status, result, input.validation, input.error ?? null);
 
       // Failure notifications — best-effort + awaited (the sender is timeout-bounded, so it can't hang
       // the result path). Step-level alerts (failed/warning) fire for single-step re-runs too — a re-run
@@ -1781,7 +1786,7 @@ export function makeRunnerService(db: PrismaClient) {
         // mailboxPurgeLines only matches when a licence actually came off IN THIS RUN (the "freed N"
         // signal), so idempotent re-runs and group-inherited rejections don't re-alert; the
         // !retryScheduled guard mirrors stepWarning — an auto-retrying step must not spam per attempt.
-        const purge = status === "succeeded" && !retryScheduled ? mailboxPurgeLines(input.result) : [];
+        const purge = status === "succeeded" && !retryScheduled ? mailboxPurgeLines(result) : [];
         if (purge.length) {
           await fireNotification({ event: "mailboxPurge", title: `Mailbox purge scheduled: ${job.systemKey} — ${who}`, caseNumber, clientName, restricted, override, systemKey: job.systemKey, actor, at, detail: purge.join("\n"), url });
         }

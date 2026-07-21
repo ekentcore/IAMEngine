@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   setupGoogleForClient,
+  oauthSignInFailureReason,
   type GoogleSetupDeps,
   type GoogleSetupClient,
   type GoogleSetupStage,
@@ -129,6 +130,40 @@ test("OAuth job succeeds but result text has no OAUTH_CODE line: error at oauth-
   const result = await setupGoogleForClient({ client: CLIENT, seedSecretRef: SEED_REF, forceRotate: false, deps });
   assert.equal(result.ok, false);
   assert.equal(result.stage, "oauth-code");
+  // No recorded reason -> the clearer generic that names WHAT happened (never reached the redirect)
+  // instead of the old "the OAuth job finished but returned no authorization code".
+  assert.match(result.error ?? "", /never reached the consent redirect/);
+  assert.doesNotMatch(result.error ?? "", /job finished but returned no authorization code/);
+});
+
+test("no OAUTH_CODE but a runner sign-in WARN: the error names the real reason (the block), not just 'no code'", async () => {
+  const warn =
+    "WARN Google OAuth sign-in could not complete — Google rejected the sign-in: Couldn't sign you in (screenshot: /tmp/ctg-browser-google-email-error-1.png)";
+  const deps = happyDeps({
+    awaitJobResult: async (jobId) =>
+      jobId === "oauth-job" ? { ok: true, resultText: "signed in\nno code", warnings: [warn] } : { ok: true, warnings: [] },
+  });
+  const result = await setupGoogleForClient({ client: CLIENT, seedSecretRef: SEED_REF, forceRotate: false, deps });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "oauth-code");
+  assert.match(result.error ?? "", /Google rejected the sign-in: Couldn't sign you in/);
+  assert.match(result.error ?? "", /blocked the automated browser|set the client up manually/i);
+  // And the raw warning is still preserved for the run log.
+  assert.ok(result.browserWarnings.includes(warn));
+});
+
+test("oauthSignInFailureReason: strips the runner's WARN prefix, keeps the reason + screenshot", () => {
+  assert.equal(
+    oauthSignInFailureReason([
+      "WARN Google OAuth sign-in could not complete — Google rejected the sign-in: Couldn't sign you in (screenshot: /tmp/x.png)",
+    ]),
+    "Google rejected the sign-in: Couldn't sign you in (screenshot: /tmp/x.png)",
+  );
+  // No matching WARN prefix but a google-flavoured warn -> still surfaced (WARN stripped).
+  assert.equal(oauthSignInFailureReason(["WARN consent screen was slow"]), "consent screen was slow");
+  // Nothing relevant -> null (caller falls back to its generic message).
+  assert.equal(oauthSignInFailureReason([]), null);
+  assert.equal(oauthSignInFailureReason(["WARN some unrelated thing"]), null);
 });
 
 test("OAuth job warnings surface into browserWarnings", async () => {
