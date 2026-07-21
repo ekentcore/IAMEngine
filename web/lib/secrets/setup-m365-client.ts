@@ -60,7 +60,7 @@ export type SetupDeps = {
     certDays?: number;
     grantExchange?: boolean;
   }) => Promise<ProvisionOutcome>;
-  writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string; expectCert?: boolean }) => Promise<WriteResult>;
+  writeProvisionedM365App: (input: { client: SetupClientInput; provision: ProvisionResult; secretName?: string; expectCert?: boolean; gaSecretRef?: string }) => Promise<WriteResult>;
   // db.secret.findUnique({ where: { clientId_name: { clientId, name: "m365-global-admin" } } }) !== null
   hasGlobalAdminSecret: (clientId: string) => Promise<boolean>;
   // Creates the synthetic CaseRequest + entra-devicecode Job. See the E4/E5 design spec for the real impl.
@@ -123,6 +123,19 @@ export type SetupResult = {
   browserWarnings?: string[];
   actions: string[];
 };
+
+// A human note for the run log when the client's Delinea folder wasn't configured and the write
+// auto-detected it — says which signal found it and the id it landed on (also self-learned onto the
+// client). Kept out of `warnings` (which render as ⚠); this is an informational success line.
+const FOLDER_SOURCE_LABEL: Record<NonNullable<WriteResult["resolvedFolderSource"]>, string> = {
+  "ga-secret": "the Global Admin login's Delinea folder",
+  coreid: "a Delinea folder matching this client's core id",
+  name: "a Delinea folder named for this client",
+};
+function folderDetectionNote(w: WriteResult): string | null {
+  if (!w.resolvedFolderSource) return null;
+  return `auto-detected this client's Delinea folder (${w.resolvedFolderId}) from ${FOLDER_SOURCE_LABEL[w.resolvedFolderSource]} — saved it on the client for next time`;
+}
 
 // A WARN "line" — trimmed, at the start of the string or right after a newline — matching the
 // PowerShell modules' own convention ("WARN could not grant ...", "WARN MFA push not automatable ...").
@@ -301,7 +314,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   if (input.signal?.aborted) return cancelledResult();
   await deps.onStage?.("write");
   actions.push("writing provisioned credentials to Delinea");
-  const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result, expectCert: input.issueCert ?? true }));
+  const writeR = await callDep("writeProvisionedM365App", () => deps.writeProvisionedM365App({ client, provision: prov.result, expectCert: input.issueCert ?? true, gaSecretRef: input.gaSecretRef }));
   if (!writeR.ok) {
     actions.push(`writing to Delinea errored: ${writeR.error}`);
     return { ok: false, stage: "error", error: writeR.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
@@ -350,7 +363,7 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
       for (const line of recoverProv.result.actions) actions.push(line);
 
       const recoverWriteR = await callDep("writeProvisionedM365App", () =>
-        deps.writeProvisionedM365App({ client, provision: recoverProv.result, expectCert: input.issueCert ?? true })
+        deps.writeProvisionedM365App({ client, provision: recoverProv.result, expectCert: input.issueCert ?? true, gaSecretRef: input.gaSecretRef })
       );
       if (!recoverWriteR.ok) {
         actions.push(`writing the rotated credential to Delinea errored: ${recoverWriteR.error}`);
@@ -362,6 +375,8 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
         if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
         return { ok: false, stage: "write", error: recoverWrite.error, userCode: dc.userCode, verificationUri: dc.verificationUri, actions };
       }
+      const recoverFolderNote = folderDetectionNote(recoverWrite);
+      if (recoverFolderNote) actions.push(recoverFolderNote);
       actions.push(recoverWrite.wroteCreds ? `wrote the rotated credential to Delinea (secret ${recoverWrite.externalId ?? "?"})` : "no new credentials to write (kept existing, still valid)");
       if (recoverWrite.warnings) for (const w of recoverWrite.warnings) actions.push(w);
       return doneResult(recoverProv.result, recoverWrite);
@@ -381,6 +396,8 @@ export async function setupM365ForClient(input: SetupInput, deps: SetupDeps): Pr
   // already vaulted for this client (wroteCreds:false) — writeProvisionedM365App enforces both; there is
   // no other ok:true path (see Finding 1/3). So this message is never printed on an unverified/stranded
   // credential.
+  const folderNote = folderDetectionNote(write);
+  if (folderNote) actions.push(folderNote);
   actions.push(write.wroteCreds ? `wrote new credentials to Delinea (secret ${write.externalId ?? "?"})` : "no new credentials to write (kept existing, still valid)");
   if (write.warnings) for (const w of write.warnings) actions.push(w);
 

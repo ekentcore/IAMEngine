@@ -630,3 +630,91 @@ test("autoLabel: existing label -> appended once, never doubled", () => {
   assert.equal(autoLabel("M365 App Reg (auto)"), "M365 App Reg (auto)");
   assert.equal(autoLabel("Something (AUTO)"), "Something (AUTO)"); // case-insensitive, not re-appended
 });
+
+// --- Folder AUTO-DETECTION: a client with no configured Delinea folder ------------------------------
+// When DELINEA_FOLDER_MAP has no entry and the client row carries no delineaFolderId, the write detects
+// the folder in Secret Server — from the Global-Admin login's own folder (the operator pointed the
+// setup at a secret that lives IN the client's folder), else a folder named for the client's core id.
+
+const FOLDERLESS: WriteClientInput = { id: "client1", slug: "core1269", name: "Digital Currency Group, Inc.", delineaFolderId: null, primaryDomain: "dcg.com" };
+
+// Wraps the standard write `fetcher` with the two detection routes: the GA-secret /summary read and the
+// folder-by-name search. The Identity-Services subfolder lookup (findChildFolderByName, parentFolderId
+// form) returns empty so create falls back to the detected folder itself.
+function derivationFetcher(opts: { gaFolderId?: string | number; folderSearchRecords?: { id: number | string; folderName: string; folderPath?: string }[]; base?: Parameters<typeof fetcher>[0] } = {}): Fetcher {
+  const std = fetcher(opts.base ?? {});
+  return (async (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    if (/\/api\/v1\/secrets\/[^/]+\/summary$/.test(url)) {
+      return opts.gaFolderId != null
+        ? ({ ok: true, status: 200, json: async () => ({ folderId: opts.gaFolderId }) } as FetchResponse)
+        : ({ ok: false, status: 404, json: async () => ({}) } as FetchResponse);
+    }
+    if (url.includes("/api/v1/folders?filter.parentFolderId")) {
+      return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse; // no Identity Services child
+    }
+    if (url.includes("/api/v1/folders?filter.searchText")) {
+      return { ok: true, status: 200, json: async () => ({ records: opts.folderSearchRecords ?? [] }) } as FetchResponse;
+    }
+    return std(url, init);
+  }) as Fetcher;
+}
+
+test("folderless client + gaSecretRef: auto-detects the folder from the GA login's folder, self-learns it, vaults", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
+  const f = derivationFetcher({ gaFolderId: 5318, base: { createId: "70001" } });
+  const r = await writeProvisionedM365App(
+    { client: FOLDERLESS, provision: provision({ clientSecret: "shh" }), gaSecretRef: "48213" },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.wroteCreds, true);
+  assert.equal(r.resolvedFolderId, "5318");
+  assert.equal(r.resolvedFolderSource, "ga-secret");
+  // The detected folder is self-learned onto the client so later runs skip detection.
+  assert.equal(calls.clientUpdate.length, 1);
+  assert.equal((calls.clientUpdate[0] as { data?: { delineaFolderId?: string } }).data?.delineaFolderId, "5318");
+  assert.equal(calls.upsert.length, 1);
+});
+
+test("folderless client, no GA secret: falls back to a coreid-named folder", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
+  const f = derivationFetcher({ folderSearchRecords: [{ id: 5318, folderName: "core1269 root", folderPath: "\\Clients\\core1269 root" }], base: { createId: "70002" } });
+  const r = await writeProvisionedM365App(
+    { client: FOLDERLESS, provision: provision({ clientSecret: "shh" }) /* no gaSecretRef */ },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.resolvedFolderSource, "coreid");
+  assert.equal(r.resolvedFolderId, "5318");
+  assert.equal((calls.clientUpdate[0] as { data?: { delineaFolderId?: string } }).data?.delineaFolderId, "5318");
+});
+
+test("folderless client with no detectable folder -> refuses with a folder message, nothing persisted", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
+  const f = derivationFetcher({ gaFolderId: undefined }); // GA /summary 404s, no name-search hits
+  const r = await writeProvisionedM365App(
+    { client: FOLDERLESS, provision: provision({ clientSecret: "shh" }), gaSecretRef: "48213" },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /folder/i);
+  assert.match(r.error ?? "", /auto-detected|Set the client/i);
+  assert.equal(calls.upsert.length, 0);
+  assert.equal(calls.clientUpdate.length, 0);
+});
+
+test("a configured folder is used as-is and detection never runs (no /summary, no folder search)", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
+  // CLIENT has delineaFolderId 142; any detection call would throw here.
+  const f = ((url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    if (/\/summary$/.test(url) || url.includes("/api/v1/folders?filter.searchText")) throw new Error(`detection must not run for a configured folder: ${url}`);
+    return fetcher({ createId: "70003" })(url, init);
+  }) as Fetcher;
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }), gaSecretRef: "48213" },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.resolvedFolderSource, undefined); // configured, not detected
+  assert.equal(calls.clientUpdate.length, 0); // already had a folder — nothing to self-learn
+});

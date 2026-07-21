@@ -178,3 +178,4 @@ export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-
 export { entry as v2Offboarding } from "./v2-offboarding";
 export { entry as zoomChunkRealCap } from "./zoom-chunk-real-cap";
 export { entry as zoomSenderPaginationGuard } from "./zoom-sender-pagination-guard";
+export { entry as m365SetupAutodetectFolder } from "./m365-setup-autodetect-folder";
