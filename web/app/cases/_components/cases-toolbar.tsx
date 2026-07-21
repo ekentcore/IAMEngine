@@ -312,7 +312,7 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
           employmentType: str("employmentType"), managerName: str("manager"),
           emailAddressNeeded: f.get("email") === "on", officeLineRequired: f.get("phone") === "on",
         }
-      : { userToOffboard: `${first} ${last}`.trim(), dateOfOffboarding: date || null, allowedToMaintainEmail: f.get("email") === "on" };
+      : { userToOffboard: `${first} ${last}`.trim(), dateOfOffboarding: date || null, allowedToMaintainEmail: f.get("email") === "on", skipGalHide: f.get("skipGalHide") === "on" };
     const subject = `${action === "onboard" ? "New User" : "Offboard"} - ${first} ${last}`.trim();
     try {
       const res = await fetch("/api/cases", {
@@ -387,6 +387,11 @@ function NewCaseDialog({ clients }: { clients: ClientOpt[] }) {
             <input type="checkbox" name="email" style={{ width: "auto" }} />
             {action === "onboard" ? "Email account needed" : "Allowed to maintain email"}
           </label>
+          {action === "offboard" && (
+            <label style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+              <input type="checkbox" name="skipGalHide" style={{ width: "auto" }} /> Keep in global address list (skip GAL hide)
+            </label>
+          )}
           {action === "onboard" && (
             <label style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
               <input type="checkbox" name="phone" style={{ width: "auto" }} /> Office line required

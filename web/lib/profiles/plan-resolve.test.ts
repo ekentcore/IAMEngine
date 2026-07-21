@@ -341,3 +341,49 @@ test("printers only (no groups) still emits the manual job", () => {
   const resolved = resolvePlannedConfigs(locClient, p, "onboard", [job("active-directory", {})]);
   assert.equal(resolved.filter((j) => j.systemKey === "printers").length, 1);
 });
+
+// ── FR #0000021: offboard hide-from-GAL injection ────────────────────────────────────────────────
+const galJob = (systemKey: string, config: Record<string, unknown> = {}): PlannedJob => job(systemKey, config);
+const galClient = {}; // v2.0 client: no personas/globals — GAL default must still apply
+function cfgOf(jobs: PlannedJob[], key: string) {
+  return (jobs.find((j) => j.systemKey === key)?.config ?? {}) as Record<string, unknown>;
+}
+
+test("offboard hide-from-GAL: defaults hideFromGal=true on exchange and google-workspace", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [galJob("exchange"), galJob("google-workspace"), galJob("m365")]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, true);
+  assert.equal(cfgOf(out, "google-workspace").hideFromGal, true);
+  // never on the Graph lane
+  assert.equal(cfgOf(out, "m365").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: per-case skipGalHide=true suppresses it on every lane", () => {
+  const out = resolvePlannedConfigs(galClient, { skipGalHide: true }, "offboard", [galJob("exchange"), galJob("google-workspace")]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+  assert.equal(cfgOf(out, "google-workspace").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: per-client opt-out (hideFromGal:false) is preserved, not overwritten", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [galJob("exchange", { hideFromGal: false })]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false);
+});
+
+test("offboard hide-from-GAL: AD attribute config takes over — exchange lane is left untouched", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [
+    galJob("exchange"),
+    galJob("active-directory", { hideFromGal: { attribute: "msExchHideFromAddressLists", value: "TRUE" } }),
+  ]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined); // AD owns it
+  // AD job config is untouched by this feature
+  assert.equal((cfgOf(out, "active-directory").hideFromGal as Record<string, unknown>).attribute, "msExchHideFromAddressLists");
+});
+
+test("offboard hide-from-GAL: bare hideFromGal:true on the AD lane does NOT count as AD-owned — exchange still hides", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [galJob("exchange"), galJob("active-directory", { hideFromGal: true })]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, true);
+});
+
+test("offboard hide-from-GAL: does nothing on onboard", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "onboard", [galJob("exchange")]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});

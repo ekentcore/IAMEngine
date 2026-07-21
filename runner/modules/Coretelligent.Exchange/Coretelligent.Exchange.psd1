@@ -9,7 +9,7 @@
 
     RequiredModules   = @(@{ ModuleName = 'ExchangeOnlineManagement'; ModuleVersion = '3.0.0' })
 
-    FunctionsToExport = @('Connect-CtgExchange', 'Disconnect-CtgExchange', 'Connect-CtgExchangeOnPrem', 'Get-CtgMailboxSizeGB', 'ConvertFrom-CtgMailboxSize', 'Test-CtgConvertToShared', 'Test-CtgCloudMailboxShared', 'Invoke-CtgExchangeOnboarding', 'Invoke-CtgExchangeHybridOnboard', 'Invoke-CtgExchangeCloudOnboard', 'Invoke-CtgExchangeNamedGroups', 'Invoke-CtgExchangeDistListMirror', 'Invoke-CtgExchangeSharedMailboxMirror', 'Invoke-CtgExchangeDefaultMailboxAccess', 'Invoke-CtgExchangeChange', 'Set-CtgMailboxRegional', 'Wait-CtgMailbox', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange')
+    FunctionsToExport = @('Connect-CtgExchange', 'Disconnect-CtgExchange', 'Connect-CtgExchangeOnPrem', 'Get-CtgMailboxSizeGB', 'ConvertFrom-CtgMailboxSize', 'Test-CtgConvertToShared', 'Test-CtgCloudMailboxShared', 'Test-CtgHideFromGal', 'Invoke-CtgExchangeOnboarding', 'Invoke-CtgExchangeHybridOnboard', 'Invoke-CtgExchangeCloudOnboard', 'Invoke-CtgExchangeNamedGroups', 'Invoke-CtgExchangeDistListMirror', 'Invoke-CtgExchangeSharedMailboxMirror', 'Invoke-CtgExchangeDefaultMailboxAccess', 'Invoke-CtgExchangeChange', 'Set-CtgMailboxRegional', 'Wait-CtgMailbox', 'Invoke-CtgExchangeOffboarding', 'Confirm-CtgExchange')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

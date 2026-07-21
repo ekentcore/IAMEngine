@@ -340,6 +340,25 @@ function Test-CtgConvertToShared {
     return $true
 }
 
+# Does this client's config ask us to hide the mailbox from the GAL?
+# Mirrors Test-CtgConvertToShared: a PSCustomObject is always truthy, so { value = $false } — the
+# shape a client uses to opt OUT — must be read for intent, not existence. Default (no key) is
+# handled by the caller; this function only judges a value that WAS provided.
+function Test-CtgHideFromGal {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)]$Config)
+    if ($null -eq $Config) { return $false }
+    if ($Config -is [bool]) { return [bool]$Config }
+    if ($Config -is [string]) { return -not ([string]::IsNullOrWhiteSpace($Config) -or $Config -match '^(?i:false|no|off|0)$') }
+    $value = Get-CtgProp $Config 'value'
+    if ($null -ne $value) {
+        if ($value -is [string]) { return -not ($value -match '^(?i:false|no|off|0)$') }
+        return [bool]$value
+    }
+    # An object with no `value` (e.g. an { attribute = … } AD shape, or a settings bag) — presence is opt-in.
+    return $true
+}
+
 # Is the CLOUD mailbox actually a shared mailbox right now?
 #
 # The licence gate must never act on an on-prem convert that Entra Connect hasn't pushed yet: the
@@ -875,6 +894,41 @@ function Invoke-CtgExchangeOffboarding {
         }
     }
 
+    # 1a. Hide from the GAL (FR #21) — EXO-only, idempotent -------------------
+    # Default-on is decided in the planner (config.hideFromGal = $true); a client opt-out arrives as
+    # $false / { value = $false }. Directory-synced mailboxes can't be modified from EXO — Set-Mailbox
+    # throws a "being synchronized" error; that's a WARN for a human (hide via the AD attribute), never
+    # a failed offboard. MailUsers (no EXO mailbox) are hidden on-prem via AD, so skip here.
+    $hideCfg = Get-CtgProp $Config 'hideFromGal'
+    if ($null -eq $hideCfg) { $hideCfg = Get-CtgProp $Config 'hideFromGAL' }
+    if (Test-CtgHideFromGal $hideCfg) {
+        if (-not $hasExoMailbox) {
+            $actions.Add("hide-from-GAL skipped — $upn is a MailUser (on-prem mailbox); hide it via the AD attribute on the active-directory step")
+        }
+        else {
+            $mbx = Get-Mailbox -Identity $upn -ErrorAction SilentlyContinue
+            if ($mbx -and $mbx.HiddenFromAddressListsEnabled) {
+                $actions.Add("already hidden from GAL")
+            }
+            elseif ($PSCmdlet.ShouldProcess($upn, "Hide from GAL (Set-Mailbox -HiddenFromAddressListsEnabled `$true)")) {
+                try {
+                    Set-Mailbox -Identity $upn -HiddenFromAddressListsEnabled $true
+                    # Read back — only claim it once EXO reflects it.
+                    $after = Get-Mailbox -Identity $upn -ErrorAction SilentlyContinue
+                    if ($after -and $after.HiddenFromAddressListsEnabled) { $actions.Add("hid from GAL") }
+                    else { $actions.Add("WARN hide from GAL submitted but EXO still shows the mailbox visible — re-run; if it persists, hide via the AD attribute") }
+                }
+                catch {
+                    $msg = $_.Exception.Message
+                    if ($msg -match 'synchroniz|being synchronized|on-premises|directory') {
+                        $actions.Add("WARN could not hide from GAL — the mailbox is directory-synced and can't be changed from Exchange Online. Set the AD hide attribute (e.g. msExchHideFromAddressLists) on the active-directory step, or hide it manually.")
+                    }
+                    else { $actions.Add("WARN could not hide from GAL: $msg") }
+                }
+            }
+        }
+    }
+
     # 1b. Grant the manager Full Access to the mailbox (so they can retrieve mail) -------
     # config.delegateManagerFullAccess: $true uses the case's manager; a string sets an explicit
     # address. AutoMapping adds the mailbox to the manager's Outlook automatically. Idempotent.
@@ -1081,6 +1135,18 @@ function Confirm-CtgExchange {
         & $add 'OWA disabled' $false ([bool](Get-CtgProp $cas 'OWAEnabled'))
     }
 
+    # GAL hide (FR #21) — only assert when it was actually requested, and only against an EXO mailbox
+    # (a MailUser has none; that hide is on-prem via AD and isn't this lane's assertion). Also skip for
+    # a directory-synced mailbox: EXO genuinely cannot flip HiddenFromAddressListsEnabled on one (Set-Mailbox
+    # throws "being synchronized"), the executor already soft-WARNs and deliberately stays Status=ok, and the
+    # AD lane's hide attribute is the correct/owning path for synced clients — asserting here would fail
+    # EVERY offboard for a synced mailbox with no AD hide attribute configured.
+    $hideCfg = Get-CtgProp $Config 'hideFromGal'
+    if ($null -eq $hideCfg) { $hideCfg = Get-CtgProp $Config 'hideFromGAL' }
+    if ((Test-CtgHideFromGal $hideCfg) -and $mbx -and -not (Get-CtgProp $mbx 'IsDirSynced')) {
+        & $add 'hidden from GAL' $true ([bool](Get-CtgProp $mbx 'HiddenFromAddressListsEnabled'))
+    }
+
     $all = @($checks)
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
@@ -1238,4 +1304,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

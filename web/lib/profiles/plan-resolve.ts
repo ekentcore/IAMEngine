@@ -6,6 +6,7 @@
 import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
+import { hideFromGalOptedOut, adLaneHidesViaAttribute } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = { personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown };
@@ -63,8 +64,7 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
   // oneDriveDelegateAccess: false on the m365 offboard config).
   const delegate = typeof payload.provideMailboxAccessTo === "string" && payload.provideMailboxAccessTo.trim()
     ? payload.provideMailboxAccessTo.trim() : null;
-  if (!delegate) return resolved;
-  return resolved.map((j) => {
+  const withDelegate = !delegate ? resolved : resolved.map((j) => {
     if (j.systemKey === "exchange") {
       return { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), grantFullAccessTo: delegate } };
     }
@@ -72,6 +72,32 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
       const cfg = (j.config as Record<string, unknown> | null) ?? {};
       if (cfg.oneDriveDelegateAccess === false) return j;
       return { ...j, config: { ...cfg, oneDriveGrantAccessTo: delegate } };
+    }
+    return j;
+  });
+
+  return injectHideFromGal(withDelegate, payload);
+}
+
+// FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:
+// per-case skip (payload.skipGalHide) > per-client opt-out (hideFromGal:false on the lane) > default-on.
+// Cloud GAL hide runs ONLY on the exchange lane — Graph can't set HiddenFromAddressListsEnabled, so
+// m365/entra are never touched here. When the AD lane carries a concrete hide ATTRIBUTE, AD owns the
+// hide (correct for directory-synced mailboxes) and exchange stands down to avoid the synced-object error.
+function injectHideFromGal(planned: PlannedJob[], payload: Record<string, unknown>): PlannedJob[] {
+  if (payload.skipGalHide === true) return planned;
+  const adOwnsHide = planned.some((j) => j.systemKey === "active-directory" && adLaneHidesViaAttribute(j.config));
+  return planned.map((j) => {
+    if (j.systemKey === "exchange") {
+      const cfg = (j.config as Record<string, unknown> | null) ?? {};
+      if (adOwnsHide) return j;
+      if (hideFromGalOptedOut(cfg)) return j;
+      return { ...j, config: { ...cfg, hideFromGal: true } };
+    }
+    if (j.systemKey === "google-workspace") {
+      const cfg = (j.config as Record<string, unknown> | null) ?? {};
+      if (hideFromGalOptedOut(cfg)) return j;
+      return { ...j, config: { ...cfg, hideFromGal: true } };
     }
     return j;
   });

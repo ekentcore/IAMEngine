@@ -16,6 +16,20 @@ devices; disable Exchange ActiveSync and OWA (keep OWA if delegate access is nee
 `hideFromGal`, `convertToShared{value,skipIfMailboxOverGB,unless}`, `onRequest[]`
 (ooo-message/email-forwarding/email-delegates), `blockMobileDevices`, `disable[]`.
 
+`hideFromGal` is **default-on** for every offboard — the planner injects it even when the
+client's exchange offboard config doesn't mention it, so no per-client opt-in is required.
+The runner runs `Set-Mailbox -HiddenFromAddressListsEnabled $true` against the EXO mailbox,
+skips the write if the mailbox is already hidden (idempotent), and reads the attribute back
+before reporting the step done. To opt a client out entirely, set `hideFromGal: false` on
+its exchange offboard config; to keep one specific leaver listed, use the case-level "Keep
+in global address list" checkbox on the offboard form (`skipGalHide`).
+
+Directory-synced mailboxes can't be hidden directly from Exchange Online — the attribute is
+owned on-prem. For those clients, hiding is instead performed by the `active-directory`
+offboard lane's own `hideFromGal: { attribute, value }` config (e.g.
+`{ attribute: "msExchHideFromAddressLists", value: true }`), and this Exchange step WARNs
+rather than fails if it's asked to hide a mailbox it detects is synced.
+
 ### Functions
 `Invoke-CtgExchangeOffboarding`, `Convert-CtgMailboxToShared`, `Set-CtgMailboxForwarding`,
 `Set-CtgMailboxOoo`, `Add-CtgMailboxDelegate`.

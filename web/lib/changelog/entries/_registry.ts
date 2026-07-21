@@ -132,6 +132,7 @@ export { entry as offboardCaseRequestedDelegate } from "./offboard-case-requeste
 export { entry as offboardClearsManagerInEntra } from "./offboard-clears-manager-in-entra";
 export { entry as offboardConvertBeforeLicense } from "./offboard-convert-before-license";
 export { entry as offboardConvertByDefault } from "./offboard-convert-by-default";
+export { entry as offboardHideFromGal } from "./offboard-hide-from-gal";
 export { entry as offboardIdentityResolution } from "./offboard-identity-resolution";
 export { entry as offboardLicenceFleetSweep } from "./offboard-licence-fleet-sweep";
 export { entry as offboardLicenseAfterSharedConvert } from "./offboard-license-after-shared-convert";
