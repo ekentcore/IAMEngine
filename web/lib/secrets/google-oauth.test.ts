@@ -44,7 +44,9 @@ test("buildAuthUrl embeds client_id, redirect_uri, scope, S256 challenge method,
   assert.equal(parsed.searchParams.get("code_challenge"), "the-challenge");
   assert.equal(parsed.searchParams.get("code_challenge_method"), "S256");
   assert.equal(parsed.searchParams.get("login_hint"), "user@example.com");
-  assert.equal(parsed.searchParams.get("access_type"), "online");
+  // offline is load-bearing: online redemptions are refused (rapt_required) under Workspace
+  // Google Cloud session-control reauth policies — see buildAuthUrl's comment.
+  assert.equal(parsed.searchParams.get("access_type"), "offline");
   assert.equal(parsed.searchParams.get("prompt"), "consent");
   assert.equal(parsed.searchParams.get("response_type"), "code");
   // redirect_uri must actually be URL-encoded in the raw string (not left as a bare loopback URL)

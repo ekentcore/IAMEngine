@@ -27,7 +27,15 @@ export function buildAuthUrl(challenge: string, loginHint: string): string {
     scope: CLOUD_PLATFORM_SCOPE,
     code_challenge: challenge,
     code_challenge_method: "S256",
-    access_type: "online",
+    // offline, NOT online — and not because we want the refresh token (we drop it, see
+    // exchangeCodeForToken). Under Workspace "Google Cloud session control" reauth policies, an
+    // access_type=online code redemption is session-bound and Google rejects it outright with
+    // invalid_grant (rapt_required) — even seconds after a fresh password+TOTP sign-in, and even
+    // with the app trusted + "exempt trusted apps" set (proven live on Drive Capital, 2026-07-21:
+    // cold/warm online both refused; offline redeemed cleanly). gcloud always requests offline,
+    // which is why gcloud works where online fails; the reauth policy applies to REFRESH calls,
+    // which we never make.
+    access_type: "offline",
     prompt: "consent",
     login_hint: loginHint,
   });
@@ -61,6 +69,9 @@ export async function exchangeCodeForToken(
       const errorField = typeof d?.error === "string" ? d.error : undefined;
       return { ok: false, error: errorField ?? `HTTP ${res.status}` };
     }
+    // The offline grant also returns a refresh_token. We deliberately DROP it — never returned,
+    // never persisted — so no long-lived credential exists anywhere after this run; the setup only
+    // ever uses the short-lived access token it just minted.
     return { ok: true, accessToken: d.access_token };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
