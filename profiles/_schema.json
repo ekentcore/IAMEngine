@@ -372,7 +372,14 @@
         "oneDriveBackup": { "type": "object", "description": "{ target }: archive the leaver's OneDrive into an 'Archive - <name>' folder on the target — a user email (their OneDrive) or a SharePoint site URL. Server-side Graph copies; the source is left for account deletion." },
         "oneDriveDelegateAccess": { "type": "boolean", "description": "Grant the case-requested delegate access to the leaver's OneDrive (default true when the case names one)." },
         "mailbox":        { "type": "object" },
-        "removeLicense":  { "type": ["object", "boolean"], "description": "true = remove all licenses; object = conditional (e.g. { exceptWhen: 'mailbox above 50GB' }). The module honors the mailbox-size threshold either way." }
+        "removeLicense":  { "type": ["object", "boolean"], "description": "true = remove all licenses; object = conditional (e.g. { exceptWhen: 'mailbox above 50GB' }). The module honors the mailbox-size threshold either way." },
+        "hideFromGal": {
+          "description": "Hide the leaver from the Global Address List on offboard. Default is to hide; set false to opt out. On synced clients an { attribute, value } object hides via the on-prem AD attribute.",
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "object" }
+          ]
+        }
       }
     },
 
