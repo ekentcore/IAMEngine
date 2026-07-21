@@ -98,6 +98,23 @@ const DWD_TIMEOUT_MS = 10 * 60 * 1000;
 // The OAuth browser flow returns the authorization code as `OAUTH_CODE:<code>` on its own line.
 const OAUTH_CODE_LINE = /(^|\n)\s*OAUTH_CODE:(\S+)/;
 
+// When the OAuth job comes back with NO authorization code, the runner has already recorded WHY as a
+// WARN action (the sign-in is non-fatal — the job succeeds so the app can decide). The runner spells
+// them "WARN Google OAuth sign-in could not complete — <reason>(screenshot: …)"; pull the <reason>
+// back out so the run error names what actually happened instead of the opaque "no authorization
+// code". The common one is Google's anti-automation block ("Google rejected the sign-in: Couldn't
+// sign you in"), which stops the flow at the email step — before the Delinea one-time code is ever
+// requested — so an operator reading "returned no authorization code" wrongly thinks the sign-in ran.
+const OAUTH_WARN_PREFIX = /^\s*WARN\s+Google OAuth sign-in could not complete\s*[—-]+\s*/i;
+export function oauthSignInFailureReason(warnings: string[]): string | null {
+  for (const w of warnings) {
+    if (OAUTH_WARN_PREFIX.test(w)) return w.replace(OAUTH_WARN_PREFIX, "").trim() || null;
+  }
+  // No matched prefix but a Google-flavoured WARN is still better than nothing.
+  const anyGoogle = warnings.find((w) => /google|sign-in|oauth|consent/i.test(w));
+  return anyGoogle ? anyGoogle.replace(/^\s*WARN\s+/i, "").trim() : null;
+}
+
 // Every dep call degrades to a structured result rather than an uncaught throw (M365 Finding 9): a
 // network blip in any collaborator comes back as an ok:false the caller can retry/report on.
 async function callDep<T>(name: string, fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
@@ -204,13 +221,29 @@ export async function setupGoogleForClient(input: {
   if (cancelled()) return cancelledResult();
   if (!oauthAwait.ok) return threw(oauthAwait.error);
   for (const w of oauthAwait.value.warnings) browserWarnings.push(w);
+  const signInReason = oauthSignInFailureReason(oauthAwait.value.warnings);
   if (!oauthAwait.value.ok) {
-    return fail("oauth-code", "the OAuth sign-in job did not complete (timed out or failed)");
+    return fail(
+      "oauth-code",
+      signInReason
+        ? `the Google sign-in did not complete: ${signInReason}`
+        : "the Google sign-in job did not complete (timed out or failed) — check the runner's screenshot",
+    );
   }
   const codeMatch = oauthAwait.value.resultText?.match(OAUTH_CODE_LINE);
   const authCode = codeMatch?.[2]; // held in memory only — NEVER pushed to actions/errors
   if (!authCode) {
-    return fail("oauth-code", "the OAuth job finished but returned no authorization code");
+    // No code AND a recorded sign-in reason = the sign-in was blocked/rejected before it finished (the
+    // common case is Google's "Couldn't sign you in / browser may not be secure" block at the email
+    // step, before the Delinea verification code is even requested). Name that instead of implying the
+    // flow ran to the end. With no reason recorded, say plainly that the sign-in never reached the
+    // consent redirect and point at the manual fallback.
+    return fail(
+      "oauth-code",
+      signInReason
+        ? `the Google sign-in did not complete, so no authorization code came back: ${signInReason}. This usually means Google blocked the automated browser before the sign-in finished — set the client up manually instead (convert the key at /tools/google-key and create the google-admin secret by hand).`
+        : "the Google sign-in never reached the consent redirect, so no authorization code came back — Google likely blocked or interrupted the automated sign-in. Check the runner's screenshot, or set the client up manually (convert the key at /tools/google-key and create the google-admin secret by hand).",
+    );
   }
 
   // 3. Provision — exchange the code for an access token (PKCE verifier held locally), then provision
