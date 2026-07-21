@@ -43,8 +43,24 @@ const G = {
   tryAnotherWay: 'button:has-text("Try another way"), a:has-text("Try another way"), text=/try another way/i',
   authenticatorOption: 'text=/Google Authenticator|authenticator app|verification code/i',
   // Google's own inline sign-in error (wrong password / couldn't find account / rejected code).
-  error: 'div[role="alert"]:visible, [aria-live="assertive"]:visible, .o6cuMc:visible, .OyEIQ:visible, .Ekjuhf:visible',
+  // ARIA error semantics ONLY. The obfuscated class selectors this used to also carry (.Ekjuhf et al.)
+  // matched Google's page HEADING, not just errors — the newer real-browser sign-in layout renders a
+  // "Welcome" <h1> in .Ekjuhf on the normal password page, so readGoogleError reported "Welcome" as a
+  // rejection and aborted a perfectly good sign-in (only surfaced once the de-headless UA made Google
+  // serve that layout; old-headless got a legacy layout without the heading). Genuine sign-in errors
+  // are announced via role=alert / aria-live=assertive, which the "Welcome" heading is not.
+  error: 'div[role="alert"]:visible, [aria-live="assertive"]:visible',
 };
+
+// Page headings/labels that can legitimately sit inside a live region and are NOT sign-in errors — a
+// defensive second guard so a future markup shift can't turn a benign heading back into a false
+// "Google rejected the sign-in". Matched case-insensitively against the first line of the alert text.
+const BENIGN_SIGNIN_TEXT = [/^welcome$/i, /^sign in$/i, /^choose an account$/i, /^verify it.?s you$/i];
+export function isBenignSigninText(text) {
+  const first = (text ?? "").trim().split("\n")[0].trim();
+  if (!first) return true; // empty => nothing to report
+  return BENIGN_SIGNIN_TEXT.some((re) => re.test(first));
+}
 
 // -------------------------------------------------------------------------------------------------
 // PURE HELPERS (unit-tested; no browser) — exported for the test harness and for google-dwd-grant.
@@ -126,7 +142,10 @@ async function readGoogleError(page) {
   const box = page.locator(G.error).first();
   if (!(await box.isVisible().catch(() => false))) return null;
   const t = await box.innerText().catch(() => null);
-  return t && t.trim() ? t.trim().split("\n")[0] : null;
+  if (!t || !t.trim()) return null;
+  // A live region can briefly carry a benign heading/label — don't mistake it for a rejection.
+  if (isBenignSigninText(t)) return null;
+  return t.trim().split("\n")[0];
 }
 
 // Handle Google's second factor when it challenges for a TOTP code. Returns { done:true } (past it or

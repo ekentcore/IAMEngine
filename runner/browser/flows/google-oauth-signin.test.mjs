@@ -7,7 +7,7 @@
 //   node --test flows/google-oauth-signin.test.mjs        (from runner/browser)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOAuthRedirect, matchesRedirect, formatOAuthCodeLine } from "./google-oauth-signin.mjs";
+import { parseOAuthRedirect, matchesRedirect, formatOAuthCodeLine, isBenignSigninText } from "./google-oauth-signin.mjs";
 
 const REDIRECT = "http://127.0.0.1:8765/oauth2callback";
 
@@ -73,4 +73,23 @@ test("formatOAuthCodeLine: prints the exact contract line the app's OAUTH_CODE r
   const m = line.match(/(^|\n)\s*OAUTH_CODE:(\S+)/);
   assert.ok(m, "the produced line must match the app's OAUTH_CODE regex");
   assert.equal(m[2], "4/0Abc_De-fGh");
+});
+
+test("isBenignSigninText: the 'Welcome' heading (the real-UA password page) is NOT a rejection", () => {
+  // The live-run regression: the newer Google layout renders <h1>Welcome</h1> on the password page;
+  // it must never be read as "Google rejected the sign-in".
+  assert.equal(isBenignSigninText("Welcome"), true);
+  assert.equal(isBenignSigninText("Welcome\ncoretech@drivecapital.com"), true);
+  assert.equal(isBenignSigninText("  welcome  "), true);
+  assert.equal(isBenignSigninText("Sign in"), true);
+  assert.equal(isBenignSigninText("Choose an account"), true);
+  assert.equal(isBenignSigninText(""), true);
+  assert.equal(isBenignSigninText(null), true);
+});
+
+test("isBenignSigninText: genuine sign-in errors are NOT treated as benign", () => {
+  assert.equal(isBenignSigninText("Wrong password. Try again or click Forgot password to reset it."), false);
+  assert.equal(isBenignSigninText("Couldn't find your Google Account"), false);
+  assert.equal(isBenignSigninText("Wrong code. Try again."), false);
+  assert.equal(isBenignSigninText("This account is disabled"), false);
 });
