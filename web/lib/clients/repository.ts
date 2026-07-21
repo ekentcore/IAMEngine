@@ -457,21 +457,27 @@ export function makeClientRepository(db: PrismaClient) {
 
     // Read the v2.1 rules (personas/globals/locations) for the editor. Separate from getClientBySlug
     // (which omits them) so the editor loads exactly what it round-trips back via setRules.
-    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown; cloudGroups: unknown; systemOnboardOu: Record<string, string> } | null> {
+    async getRules(slug: string): Promise<{ id: string; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systemKeys: string[]; adObjects: unknown; cloudGroups: unknown; systemOnboardOu: Record<string, string>; systemLanes: Record<string, { onboard: string; offboard: string }> } | null> {
       const c = await db.client.findUnique({
         where: { slug },
-        select: { id: true, personas: true, globals: true, globalsOffboard: true, locations: true, adObjects: true, cloudGroups: true, systems: { select: { systemKey: true, config: true }, orderBy: { systemKey: "asc" } } },
+        select: { id: true, personas: true, globals: true, globalsOffboard: true, locations: true, adObjects: true, cloudGroups: true, systems: { select: { systemKey: true, config: true, onboardWhen: true, offboardWhen: true }, orderBy: { systemKey: "asc" } } },
       });
       if (!c) return null;
       // Systems whose config.onboard.ou is set — the OU the runner actually uses. The rules editor
       // surfaces this so an operator setting an OU in a persona/global fragment is warned that the
       // system's base OU overrides it (own config wins at plan time; see resolveSystemConfig).
       const systemOnboardOu: Record<string, string> = {};
+      // Each system's per-lane inclusion enum (never | always | on_request | by_persona). The rules
+      // editor uses this to flag which systems are "by persona" — those whose inclusion is decided by
+      // persona membership (a key in persona.systems / persona.offboardSystems), which is what the
+      // editor lets an operator set explicitly. See FR #0000022.
+      const systemLanes: Record<string, { onboard: string; offboard: string }> = {};
       for (const s of c.systems) {
         const ou = (s.config as { onboard?: { ou?: unknown } } | null)?.onboard?.ou;
         if (typeof ou === "string" && ou) systemOnboardOu[s.systemKey] = ou;
+        systemLanes[s.systemKey] = { onboard: String(s.onboardWhen), offboard: String(s.offboardWhen) };
       }
-      return { id: c.id, personas: c.personas, globals: c.globals, globalsOffboard: c.globalsOffboard, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects, cloudGroups: c.cloudGroups, systemOnboardOu };
+      return { id: c.id, personas: c.personas, globals: c.globals, globalsOffboard: c.globalsOffboard, locations: c.locations, systemKeys: c.systems.map((s) => s.systemKey), adObjects: c.adObjects, cloudGroups: c.cloudGroups, systemOnboardOu, systemLanes };
     },
 
     // Replace the personas + globals (onboard) + globalsOffboard JSON columns wholesale (the editor

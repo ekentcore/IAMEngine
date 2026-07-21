@@ -116,9 +116,17 @@ export function RolesRulesView({ personas, globals, locations, slug, groupSectio
                   {p.match ? chipCond(p.match) : null}
                 </summary>
                 <div style={{ marginLeft: "0.8rem" }}>
-                  {Object.entries(p.systems ?? {}).map(([sys, frag]) => (
-                    <div key={sys} style={{ marginTop: 4 }}><b style={{ fontSize: 13 }}>{sys}</b><FragmentView frag={frag} /></div>
-                  ))}
+                  {Object.entries(p.systems ?? {}).map(([sys, frag]) => {
+                    // A membership-only entry (empty fragment) means the persona simply RECEIVES the
+                    // system (relevant for by-persona systems) with no group/OU/attribute config. FR #22.
+                    const membershipOnly = !frag || (typeof frag === "object" && Object.keys(frag as object).length === 0);
+                    return (
+                      <div key={sys} style={{ marginTop: 4 }}>
+                        <b style={{ fontSize: 13 }}>{sys}</b>
+                        {membershipOnly ? <span className="note" style={{ marginLeft: 6 }}>receives this system (no extra config)</span> : <FragmentView frag={frag} />}
+                      </div>
+                    );
+                  })}
                 </div>
               </details>
             );
