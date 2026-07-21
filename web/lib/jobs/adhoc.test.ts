@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Prisma } from "@prisma/client";
-import { insertStepSequence, isAdhocSystemKey, SPANNING_FORCE_SYNC_KEY } from "./adhoc";
+import { insertStepSequence, isAdhocSystemKey, SPANNING_FORCE_SYNC_KEY, MIMECAST_CONSOLE_SETUP_KEY } from "./adhoc";
 
 // A minimal stand-in for the Prisma transaction client: only the three job methods insertStepSequence
 // touches, plus a record of the shift it performed so we can assert on it.
@@ -47,4 +47,9 @@ test("insertStepSequence: inserts at case-resolution's slot and pushes it (and a
 test("adhoc keys still classify force-sync", () => {
   assert.equal(isAdhocSystemKey(SPANNING_FORCE_SYNC_KEY), true);
   assert.equal(isAdhocSystemKey("m365"), false);
+});
+
+test("the Mimecast console browser key is an ad-hoc key (never fails/gates a case)", () => {
+  assert.equal(MIMECAST_CONSOLE_SETUP_KEY, "mimecast-console-setup");
+  assert.equal(isAdhocSystemKey(MIMECAST_CONSOLE_SETUP_KEY), true);
 });

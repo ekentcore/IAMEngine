@@ -12,6 +12,10 @@ export type ApiSetupEntry = {
   // selects and derives apiURL + account id via deriveSpanningValues (guided-api-values.ts).
   derive?: "spanning";
   serviceOptions?: string[]; // Spanning: the email-service picker (o365 | google)
+  // When set, the modal shows an "Automatic (browser)" tab that drives the vendor console via the
+  // runner. Phase 1: a "Test sign-in" button (proves the console login works). Value is the ad-hoc
+  // browser systemKey the flow runs under. Only Mimecast declares it today.
+  autoBrowser?: "mimecast-console-setup";
 };
 
 export const API_SETUP_CATALOG: ApiSetupEntry[] = [
@@ -19,6 +23,7 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     systemKey: "mimecast", secretName: "mimecast", label: "Mimecast",
     consoleUrl: "https://login.mimecast.com/",
     helpPath: "/help/mimecast",
+    autoBrowser: "mimecast-console-setup",
     steps: [
       "In the Mimecast Administration Console, go to Integrations → API and Platform Integrations → Add API Application.",
       "Name it \"iam-engine — <client>\", category SIEM/Integration, point of contact Coretelligent (<coreid>@help.support.tech), and enable it (new applications can take a few minutes to activate).",

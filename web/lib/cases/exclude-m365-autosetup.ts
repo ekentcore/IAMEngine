@@ -12,6 +12,11 @@ export const M365_AUTOSETUP_MARKER = "m365AutoSetup" as const;
 // shape (add a marker, AND in its exclude branch) instead of overloading one name across providers.
 export const GOOGLE_AUTOSETUP_MARKER = "googleAutoSetup" as const;
 
+// Same idea for the synthetic onboard case that hosts a Mimecast console browser job
+// (mimecast-console-setup — see lib/secrets/dispatch-mimecast-console-job.ts). Its own marker, same
+// additive shape as the others.
+export const MIMECAST_AUTOSETUP_MARKER = "mimecastAutoSetup" as const;
+
 // Per-marker "exclude rows where this marker is true" fragment. The obvious
 // `NOT: { payload: { path: [marker], equals: true } }` is WRONG on its own: for the overwhelming
 // majority of cases the payload has no marker key at all, so the JSON path resolves to SQL NULL,
@@ -33,5 +38,5 @@ function excludeMarkerTrue(marker: string): Prisma.CaseRequestWhereInput {
 // the AND across markers is independent — a case can only be flagged by at most one dispatcher, so
 // this reads as "keep it unless SOME marker is true", not a joint condition.
 export const notM365AutoSetupCase: Prisma.CaseRequestWhereInput = {
-  AND: [excludeMarkerTrue(M365_AUTOSETUP_MARKER), excludeMarkerTrue(GOOGLE_AUTOSETUP_MARKER)],
+  AND: [excludeMarkerTrue(M365_AUTOSETUP_MARKER), excludeMarkerTrue(GOOGLE_AUTOSETUP_MARKER), excludeMarkerTrue(MIMECAST_AUTOSETUP_MARKER)],
 };

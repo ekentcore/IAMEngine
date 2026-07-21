@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Prisma } from "@prisma/client";
-import { notM365AutoSetupCase, M365_AUTOSETUP_MARKER, GOOGLE_AUTOSETUP_MARKER } from "./exclude-m365-autosetup";
+import { notM365AutoSetupCase, M365_AUTOSETUP_MARKER, GOOGLE_AUTOSETUP_MARKER, MIMECAST_AUTOSETUP_MARKER } from "./exclude-m365-autosetup";
 
 // Regression guard for the PR #131 outage: a bare `NOT: { payload: { path, equals: true } }` filter
 // drops EVERY case whose payload lacks the marker key (JSON path → SQL NULL, NOT NULL → NULL → not
@@ -21,10 +21,14 @@ test("google marker key is the one dispatch-google-browser-job writes", () => {
   assert.equal(GOOGLE_AUTOSETUP_MARKER, "googleAutoSetup");
 });
 
+test("mimecast marker key is the one dispatch-mimecast-console-job writes", () => {
+  assert.equal(MIMECAST_AUTOSETUP_MARKER, "mimecastAutoSetup");
+});
+
 test("filter is an AND of per-marker OR branches, each with the null-path branch (not a bare NOT)", () => {
   const and = notM365AutoSetupCase.AND;
   assert.ok(Array.isArray(and), "must be an AND of per-marker branches");
-  assert.equal(and.length, 2);
+  assert.equal(and.length, 3);
 
   for (const branch of and) {
     const or = (branch as { OR?: Prisma.CaseRequestWhereInput[] }).OR;
@@ -60,7 +64,7 @@ test("the two AND branches target the m365 marker and the google marker respecti
   });
   assert.deepEqual(
     pathsPerBranch.sort(),
-    [[GOOGLE_AUTOSETUP_MARKER], [M365_AUTOSETUP_MARKER]].sort()
+    [[GOOGLE_AUTOSETUP_MARKER], [M365_AUTOSETUP_MARKER], [MIMECAST_AUTOSETUP_MARKER]].sort()
   );
 });
 
@@ -101,4 +105,8 @@ test("an m365AutoSetup case is still hidden", () => {
 
 test("a googleAutoSetup case is hidden", () => {
   assert.equal(evaluate(notM365AutoSetupCase, { [GOOGLE_AUTOSETUP_MARKER]: true }), false);
+});
+
+test("a mimecastAutoSetup case is hidden", () => {
+  assert.equal(evaluate(notM365AutoSetupCase, { [MIMECAST_AUTOSETUP_MARKER]: true }), false);
 });
