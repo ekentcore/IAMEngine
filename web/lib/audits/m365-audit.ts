@@ -178,6 +178,66 @@ export async function scanLeakedSeats(db: PrismaClient, opts: { onlyClient?: str
   return out;
 }
 
+// WHO HOLDS an escalation-capable role (AppRoleAssignment.ReadWrite.All and friends) — the INVERSE of
+// the missing-permission sweep: not "who is short a permission" but "which app registrations can
+// expand their own authority / reach the whole tenant". Same read-only walk as scanPermissions; the
+// finding is the escalation roles each credential actually holds (via graphSurplusRoles, which flags
+// them). A credential we can't read is reported as unverified, never silently treated as "holds none".
+export type EscalationHolderRow = {
+  clientId: string;
+  client: string;
+  slug: string;
+  status: AuditStatus; // ok | cred-bad | no-cred | unverified
+  escalations: SurplusRole[]; // the escalation roles this credential holds (escalation === true)
+  detail?: string;
+};
+
+export async function scanEscalationHolders(db: PrismaClient, opts: { onlyClient?: string; onProgress?: Progress } = {}): Promise<EscalationHolderRow[]> {
+  const cfg = delineaConfigFromEnv();
+  if (!delineaConfigured(cfg)) throw new Error("Delinea is not configured (DELINEA_BASE_URL / DELINEA_USER / DELINEA_PASSWORD)");
+  const dToken = await getDelineaToken(cfg);
+  const targets = await auditTargets(db, opts.onlyClient);
+  const out: EscalationHolderRow[] = [];
+
+  for (const [i, t] of targets.entries()) {
+    const base = { clientId: t.clientId, client: t.client, slug: t.slug, escalations: [] as SurplusRole[] };
+    const tok = await tokenFor(t, cfg, dToken);
+    if (!tok.ok) { out.push({ ...base, status: tok.status, detail: tok.detail }); await opts.onProgress?.(i + 1); continue; }
+    const granted = await readGrantedAppRoles(tok.token, tok.appId);
+    if (!granted.ok) { out.push({ ...base, status: "unverified", detail: `could not read the app's role assignments: ${granted.error}` }); await opts.onProgress?.(i + 1); continue; }
+    // A held escalation role is present in `granted` regardless of read completeness — absence can only
+    // UNDER-report a holder, never invent one — so this is safe on a partial read (unlike "missing").
+    const escalations = graphSurplusRoles(granted.roles).filter((s) => s.escalation);
+    out.push({ ...base, status: "ok", escalations, detail: granted.complete ? undefined : `${granted.unresolved} assignment(s) unresolved — a held role may be under-reported` });
+    await opts.onProgress?.(i + 1);
+  }
+  return out;
+}
+
+export type EscalationPivot = { role: string; why: string; clients: { slug: string; client: string }[] };
+
+// Pivot escalation-holder rows into "who holds THIS role" — the direct answer to "who has
+// AppRoleAssignment.ReadWrite.All". AppRoleAssignment.ReadWrite.All sorts first (the tenant-takeover
+// route), then by holder count.
+export function pivotEscalationHolders(rows: EscalationHolderRow[]): EscalationPivot[] {
+  const byRole = new Map<string, { why: string; clients: { slug: string; client: string }[] }>();
+  for (const r of rows) {
+    for (const s of r.escalations) {
+      const e = byRole.get(s.role) ?? { why: s.why, clients: [] };
+      e.clients.push({ slug: r.slug, client: r.client });
+      byRole.set(s.role, e);
+    }
+  }
+  const SELF_GRANT = "approleassignment.readwrite.all";
+  return [...byRole]
+    .map(([role, e]) => ({ role, why: e.why, clients: e.clients }))
+    .sort((a, b) =>
+      Number(b.role.toLowerCase() === SELF_GRANT) - Number(a.role.toLowerCase() === SELF_GRANT) ||
+      b.clients.length - a.clients.length ||
+      a.role.localeCompare(b.role)
+    );
+}
+
 export type PermissionPivot = { role: string; optional: boolean; clients: { slug: string; client: string }[] };
 
 // Pivot the per-client rows into "who needs THIS permission" — the question the per-client connection

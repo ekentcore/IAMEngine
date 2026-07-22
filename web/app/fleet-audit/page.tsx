@@ -11,6 +11,7 @@ import Link from "next/link";
 import { loadAuditsPage, type AuditsSearchParams } from "./_lib/loader";
 import { ScanButton } from "./_components/scan-button";
 import { PermissionPivotTable } from "./_components/permission-pivot";
+import { EscalationHoldersTable } from "./_components/escalation-holders";
 import { M365SetupFleet } from "./_components/m365-setup-fleet";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ function ago(iso: string): string {
 export default async function AuditsPage({ searchParams }: { searchParams: AuditsSearchParams }) {
   const data = await loadAuditsPage(searchParams);
   if (!data) return null; // layout redirects unauthenticated users; unpermitted see nothing
-  const { tab, shown, live, permissions, leaks, grantHelp } = data;
+  const { tab, shown, live, permissions, leaks, escalation, grantHelp } = data;
 
   const Tab = ({ id, label }: { id: string; label: string }) => (
     <Link
@@ -48,6 +49,7 @@ export default async function AuditsPage({ searchParams }: { searchParams: Audit
 
       <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid #e5e7eb", marginBottom: 16 }}>
         <Tab id="permissions" label="Permissions" />
+        <Tab id="escalation_holders" label="Extra access" />
         <Tab id="leaked_seats" label="Leaked seats" />
       </nav>
 
@@ -80,6 +82,22 @@ export default async function AuditsPage({ searchParams }: { searchParams: Audit
             <p className="note" style={{ fontSize: 12 }}>
               {permissions.noCred.length} client(s) have no usable credential, so nothing could be checked:{" "}
               {permissions.noCred.map((r) => r.client || r.slug).join(", ")}
+            </p>
+          )}
+        </>
+      ) : tab === "escalation_holders" ? (
+        <>
+          <EscalationHoldersTable pivot={escalation.pivot} holders={escalation.holders} />
+          {escalation.unverified.length > 0 && (
+            <p className="note" style={{ fontSize: 12, color: "#b45309" }}>
+              {escalation.unverified.length} client(s) could not be fully read — a held role may be under-reported there:{" "}
+              {escalation.unverified.map((r) => r.client || r.slug).join(", ")}
+            </p>
+          )}
+          {escalation.noCred.length > 0 && (
+            <p className="note" style={{ fontSize: 12 }}>
+              {escalation.noCred.length} client(s) have no usable credential, so nothing could be checked:{" "}
+              {escalation.noCred.map((r) => r.client || r.slug).join(", ")}
             </p>
           )}
         </>

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pivotByPermission, leakVerdict, type PermissionRow } from "./m365-audit";
+import { pivotByPermission, pivotEscalationHolders, leakVerdict, type PermissionRow, type EscalationHolderRow } from "./m365-audit";
 
 function row(over: Partial<PermissionRow>): PermissionRow {
   return {
@@ -62,4 +62,29 @@ test("the leaked-seat verdict never suggests pulling a licence off an unconverte
   assert.match(leakVerdict("unknown"), /MailboxSettings\.Read|before acting/i);
   // The only verdict that green-lights removal is the one where the mailbox is already shared.
   for (const m of ["not-shared", "unknown"] as const) assert.doesNotMatch(leakVerdict(m), /^safe to remove/i);
+});
+
+function eRow(over: Partial<EscalationHolderRow>): EscalationHolderRow {
+  return { clientId: "c1", client: "Client One", slug: "core1", status: "ok", escalations: [], ...over };
+}
+
+test("escalation pivot groups holders by role, AppRoleAssignment.ReadWrite.All first", () => {
+  const p = pivotEscalationHolders([
+    eRow({ slug: "a", escalations: [{ role: "Application.ReadWrite.All", escalation: true, why: "can add creds to any app" }] }),
+    eRow({ slug: "b", escalations: [
+      { role: "AppRoleAssignment.ReadWrite.All", escalation: true, why: "can consent app roles to itself" },
+      { role: "Application.ReadWrite.All", escalation: true, why: "can add creds to any app" },
+    ] }),
+    eRow({ slug: "c", escalations: [] }), // holds nothing → not a holder of any role
+  ]);
+  // The tenant-takeover route sorts first.
+  assert.equal(p[0].role, "AppRoleAssignment.ReadWrite.All");
+  assert.deepEqual(p[0].clients.map((c) => c.slug), ["b"]);
+  const appRw = p.find((x) => x.role === "Application.ReadWrite.All")!;
+  assert.deepEqual(appRw.clients.map((c) => c.slug).sort(), ["a", "b"]);
+  assert.match(appRw.why, /add cred/i); // carries the human-readable reason
+});
+
+test("escalation pivot: no holders -> empty", () => {
+  assert.deepEqual(pivotEscalationHolders([eRow({ escalations: [] })]), []);
 });
