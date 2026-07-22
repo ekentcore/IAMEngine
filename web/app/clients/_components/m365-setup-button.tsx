@@ -46,7 +46,22 @@ function stepOf(stage?: string | null): number {
 
 const OPTIONAL_CAPS = optionalCapChoices();
 
-export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: string; openSignal?: number; hideTrigger?: boolean }) {
+export function M365SetupButton({
+  slug,
+  openSignal,
+  hideTrigger,
+  presetOptionalRoles,
+  presetForceRotate,
+}: {
+  slug: string;
+  openSignal?: number;
+  hideTrigger?: boolean;
+  // Fleet "Correct Permissions" opens the modal preconfigured: pre-check exactly the missing optional
+  // roles (undefined keeps the per-client default of "all optional on"), and keep the existing secret
+  // (presetForceRotate=false). Applied on each open when defined; undefined leaves today's defaults.
+  presetOptionalRoles?: string[];
+  presetForceRotate?: boolean;
+}) {
   const [phase, setPhase] = useState<"form" | "progress">("form");
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -142,14 +157,21 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
   const openForm = useCallback(async () => {
     abandoned.current = false;
     setModalError(null); setError(null); setLogOpen(false); setCopied(false); setCodeCopied(false);
+    // Apply any presets (fleet "Correct Permissions"): pre-check exactly the missing optional roles and
+    // keep the existing secret. Only when the caller supplied them — otherwise the per-client defaults
+    // (all optional on, no rotate) stand.
+    if (presetOptionalRoles !== undefined) setOptRoles(new Set(presetOptionalRoles));
+    if (presetForceRotate !== undefined) setForceRotate(presetForceRotate);
     dialogRef.current?.showModal();
-    // If a run for this client is already in flight (or just finished), jump straight to progress so a
-    // reopen shows live status instead of a fresh form.
+    // Land on the FORM by default so an operator can always work through setup / adjust permissions —
+    // even for an already-configured client. Only a LIVE run (running / pending) jumps straight to the
+    // progress tracker; a terminal last run (done / failed / cancelled) shows the form with an
+    // "already configured" banner, and its finished details stay reachable via "View last run".
     const c = await load();
     const s = (c as ClientState | null)?.status;
-    if (s === "running" || s === "pending" || s === "done" || s === "failed" || s === "cancelled") setPhase("progress");
+    if (s === "running" || s === "pending") setPhase("progress");
     else setPhase("form");
-  }, [load]);
+  }, [load, presetOptionalRoles, presetForceRotate]);
 
   // Menu-driven open: a change in openSignal (an incrementing counter) requests the modal.
   useEffect(() => {
@@ -274,6 +296,23 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
         {phase === "form" ? (
           <>
             <h2>Set up M365 automatically</h2>
+            {/* Already-configured banner: a terminal last run no longer hijacks the modal to the
+                success screen — the operator lands here and can re-run to reconcile/adjust permissions,
+                with the finished run's details one click away. */}
+            {(done || failed || cancelledRun) && (
+              <div className={`setup-lastrun-banner is-${done ? "done" : failed ? "failed" : "cancelled"}`}>
+                <span>
+                  {done
+                    ? "✓ Already configured — the last setup run succeeded. Adjust permissions below and run again to reconcile."
+                    : failed
+                    ? "⚠ The last setup run failed. Review the settings below and run again."
+                    : "The last setup run was cancelled. Adjust the settings below and run again."}
+                </span>
+                <button type="button" className="btn-quiet" style={{ fontSize: 12 }} onClick={() => setPhase("progress")}>
+                  View last run
+                </button>
+              </div>
+            )}
             <p className="note">
               Creates + configures this client&rsquo;s iam-engine app registration and vaults its credential.
               Sign in with a Global Admin login (UPN + password, One-Time Password enabled) — used once for
