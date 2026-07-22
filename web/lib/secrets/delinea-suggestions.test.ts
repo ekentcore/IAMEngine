@@ -14,6 +14,13 @@ test("aliases exist for the guided vendors", () => {
   }
 });
 
+test("aliases exist for the automated M365 + Google login secrets", () => {
+  // The M365 + Google automated-setup dialogs Suggest-from-Delinea against these keys, so their
+  // login-secret names must rank (m365-global-admin = the GA sign-in; google-admin = the super-admin).
+  assert.ok(SUGGESTION_ALIASES["m365-global-admin"]?.length, "m365-global-admin needs aliases");
+  assert.ok(SUGGESTION_ALIASES["google-admin"]?.length, "google-admin needs aliases");
+});
+
 test("template match, name match, and folder match each contribute, with reasons", () => {
   const cands = [
     rec({ id: 1, name: "Adobe Admin Console (auto)", folderPath: "\\Clients\\Acme !CORE1!\\Vendor", secretTemplateName: "Automation - API" }),

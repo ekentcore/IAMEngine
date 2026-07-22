@@ -19,6 +19,11 @@ import type { ConnTestState } from "@/lib/clients/readiness";
 import type { RunnerReach } from "@/lib/runner/reachability";
 import type { DelineaWriteSummary } from "@/lib/secrets/delinea-templates";
 import { CreateInDelineaForm, createDisabledReason } from "@/app/clients/_components/create-in-delinea";
+import { DelineaSuggestions } from "@/app/clients/_components/delinea-suggestions";
+import { M365SetupButton } from "@/app/clients/_components/m365-setup-button";
+import { GoogleSetupButton } from "@/app/clients/_components/google-setup-button";
+import { GuidedApiSetup } from "@/app/clients/_components/guided-api-setup";
+import { API_SETUP_CATALOG } from "@/lib/secrets/api-setup-catalog";
 
 type FieldTest = { status: "idle" | "testing" | "ok" | "fail"; label?: string; missingFields?: string[]; error?: string };
 type StepState = { externalId: string; notNeeded: boolean; saved: boolean; skipped: boolean; field: FieldTest; saveMsg?: string };
@@ -146,10 +151,12 @@ export function SetupWizard({
   }
 
   // ---- actions (reuse the existing guarded endpoints) ---------------------------------------
-  async function save(s: SetupStep, opts: { notNeeded?: boolean } = {}): Promise<boolean> {
+  async function save(s: SetupStep, opts: { notNeeded?: boolean; externalId?: string } = {}): Promise<boolean> {
     const st = state[s.secretName];
     const notNeeded = opts.notNeeded ?? st.notNeeded;
-    const externalId = notNeeded ? NOT_NEEDED : st.externalId.trim();
+    // An explicit externalId (a picked Delinea suggestion) wins over the field's state, which may not
+    // have flushed yet — mirrors test()'s externalIdOverride so the SAME wiring call serves both.
+    const externalId = notNeeded ? NOT_NEEDED : (opts.externalId ?? st.externalId).trim();
     patch(s.secretName, { saveMsg: undefined });
     try {
       const res = await fetch(`/api/clients/${slug}/secrets`, {
@@ -205,6 +212,16 @@ export function SetupWizard({
     // POST a blank secret, but the read-back is the honest confirmation.)
     patch(s.secretName, { externalId, saved: true, notNeeded: false, field: { status: "idle" }, saveMsg: undefined });
     if (delineaConfigured) await test(s, externalId);
+  }
+
+  // An EXISTING Delinea secret was picked from the suggestions panel: wire it through the SAME path
+  // "paste an id → Save and test" uses (PUT /secrets then the field-shape test) — unlike onCreated,
+  // whose secret was already wired server-side by the create route. Reuses save() + test(), just with
+  // an explicit id so it doesn't race the input's setState.
+  async function onPickSuggestion(s: SetupStep, externalId: string) {
+    patch(s.secretName, { externalId, saved: false, notNeeded: false, field: { status: "idle" }, saveMsg: undefined });
+    const ok = await save(s, { externalId });
+    if (ok && delineaConfigured && secretIsSet(externalId)) await test(s, externalId);
   }
 
   async function markNotNeeded(s: SetupStep) {
@@ -328,6 +345,7 @@ export function SetupWizard({
                 onSkip={() => skip(active, activeIdx)}
                 onNext={() => goNext(activeIdx)}
                 onCreated={(id) => onCreated(active, id)}
+                onPickSuggestion={(id) => onPickSuggestion(active, id)}
               />
             )}
           </section>
@@ -397,7 +415,7 @@ function Badge({ children, color, bg, title }: { children: React.ReactNode; colo
 
 function StepCard({
   slug, step, st, connStatus, conn, reach, wired, delineaConfigured, write,
-  onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated,
+  onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated, onPickSuggestion,
 }: {
   slug: string;
   step: SetupStep;
@@ -416,6 +434,7 @@ function StepCard({
   onSkip: () => void;
   onNext: () => void;
   onCreated: (externalId: string) => void;
+  onPickSuggestion: (externalId: string) => void;
 }) {
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
   // "Create in Delinea" capability: instance write account + a template for this secret (folder is
@@ -426,6 +445,18 @@ function StepCard({
   // Lead with entering the credentials: a fresh, not-yet-wired step opens straight into the create form
   // so "type the fields → test → write" is the front-and-center path. Paste-an-existing-id stays below.
   const [creating, setCreating] = useState(() => canCreate && !hasValue && !st.notNeeded);
+
+  // "Automatic setup" — the same one-click provisioning flows the client actions menu offers, embedded
+  // per step so an operator can run them without leaving the wizard. Which one applies is derived from
+  // the step's systems / secret name, exactly as client-actions-menu gates them. Each keeps the modal
+  // lifecycle inside its own component (M365/Google run long); we just ping an incrementing openSignal.
+  const showM365 = step.systemKeys.some((k) => k === "m365" || k === "entra" || k === "exchange");
+  const showGoogle = step.systemKeys.includes("google-workspace");
+  const apiEntry = API_SETUP_CATALOG.find((e) => e.secretName === step.secretName && e.autoBrowser);
+  const hasAuto = showM365 || showGoogle || Boolean(apiEntry);
+  const [m365Signal, setM365Signal] = useState(0);
+  const [googleSignal, setGoogleSignal] = useState(0);
+  const [apiSignal, setApiSignal] = useState(0);
 
   // Runner reachability for this step's systems — the "test comms to the runner" signal. Only meaningful
   // for a step that runs on the client's OWN agent (on-prem AD/exchange): a cloud step is served centrally.
@@ -509,6 +540,42 @@ function StepCard({
             </div>
           )}
 
+          {/* AUTOMATIC path — the one-click provisioning flow for this system (the same modals the client
+              actions menu drives). Sits above the manual "type it" form so the fastest route leads. Each
+              flow owns its own dialog; the inline button just pings an incrementing openSignal. */}
+          {hasAuto && (
+            <div style={{ marginTop: 16, border: "1px solid var(--line)", borderRadius: 8, padding: "0.8rem 0.9rem" }}>
+              <div className="note" style={{ marginBottom: 6 }}>
+                <b>Automatic setup</b> — let the runner provision + vault this credential for you.
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {showM365 && (
+                  <button onClick={() => setM365Signal((n) => n + 1)}
+                    title="Automatically create + configure this client's iam-engine M365 app registration and vault the credential">
+                    Set up M365 automatically
+                  </button>
+                )}
+                {showGoogle && (
+                  <button onClick={() => setGoogleSignal((n) => n + 1)}
+                    title="Automatically create this client's Google service account, grant domain-wide delegation, and vault the credential">
+                    Set up Google Workspace automatically
+                  </button>
+                )}
+                {apiEntry && (
+                  <button onClick={() => setApiSignal((n) => n + 1)}
+                    title={`Guided setup for the ${apiEntry.label} API credential — the runner drives the console`}>
+                    Set up {apiEntry.label} automatically
+                  </button>
+                )}
+              </div>
+              {/* Always-mounted dialogs (hideTrigger) — each owns its lifecycle so its live status survives
+                  the button click; opened only when its signal increments. */}
+              {showM365 && <M365SetupButton slug={slug} openSignal={m365Signal} hideTrigger />}
+              {showGoogle && <GoogleSetupButton slug={slug} openSignal={googleSignal} hideTrigger />}
+              {apiEntry && <GuidedApiSetup slug={slug} entry={apiEntry} openSignal={apiSignal} hideTrigger />}
+            </div>
+          )}
+
           {/* PRIMARY path — enter the credential's fields, test them, and create it in Delinea. Opens by
               default for a fresh (not-yet-wired) step so the walkthrough leads with entering credentials. */}
           {cap && creating && (
@@ -556,6 +623,9 @@ function StepCard({
               )}
               {st.saved === false && <span className="note muted">unsaved</span>}
             </div>
+            {/* 🔎 Suggest from Delinea — pick an EXISTING secret from this client's folders; wired + tested
+                through the same PUT /secrets + field-shape check the paste box uses. */}
+            <DelineaSuggestions slug={slug} secretName={step.secretName} onPick={onPickSuggestion} />
             {st.saveMsg && <p className="note danger" style={{ marginTop: 6 }}>{st.saveMsg}</p>}
           </div>
 

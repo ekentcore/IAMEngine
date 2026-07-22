@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { optionalCapChoices } from "@/lib/secrets/graph-caps";
+import { DelineaSuggestions } from "./delinea-suggestions";
 
 type ClientState = {
   status: string; stage?: string | null; appId?: string | null; verified?: boolean | null;
@@ -283,6 +284,7 @@ export function M365SetupButton({ slug, openSignal, hideTrigger }: { slug: strin
               <input type="text" required autoFocus value={gaSecretRef} disabled={busy}
                 onChange={(e) => setGaSecretRef(e.target.value)} style={{ display: "block", marginTop: 4, width: "100%" }} />
             </label>
+            <DelineaSuggestions slug={slug} secretName="m365-global-admin" onPick={setGaSecretRef} />
 
             <fieldset className="m365-optperms">
               <legend>Optional permissions to request &amp; consent</legend>

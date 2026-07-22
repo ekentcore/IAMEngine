@@ -19,7 +19,8 @@ export const SUGGESTION_ALIASES: Record<string, string[]> = {
   "spanning-portal": ["spanning"],
   proofpoint: ["proofpoint"],
   "m365-admin": ["m365", "azure", "entra", "graph", "global admin", "365"],
-  "google-admin": ["google", "workspace", "gws"],
+  "m365-global-admin": ["m365", "global admin", "365", "azure", "entra", "global administrator"],
+  "google-admin": ["google", "workspace", "gws", "super admin", "admin"],
 };
 
 export type SuggestionTarget = { secretName: string; templateName: string | null; subfolders: string[] };

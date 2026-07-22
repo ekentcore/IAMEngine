@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CopyButton } from "@/app/_components/copy-button";
 import { stepOf, needsActionStep, reopenPhaseFor, reopenNoteFor } from "@/lib/secrets/google-setup-steps";
+import { DelineaSuggestions } from "./delinea-suggestions";
 
 type GoogleClientState = {
   status: string; stage?: string | null; saEmail?: string | null; saClientId?: string | null;
@@ -242,6 +243,7 @@ export function GoogleSetupButton({ slug, openSignal, hideTrigger }: { slug: str
               <input type="text" required autoFocus value={seedSecretRef} disabled={busy}
                 onChange={(e) => setSeedSecretRef(e.target.value)} style={{ display: "block", marginTop: 4, width: "100%" }} />
             </label>
+            <DelineaSuggestions slug={slug} secretName="google-admin" onPick={setSeedSecretRef} />
 
             <label className="m365-optperm" style={{ marginTop: "0.6rem" }}
               title="Issues a brand-new service-account key and re-vaults it, even if the current one is still valid. Use when the vaulted credential is incomplete.">
