@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker, mailboxPurgeLines } from "./decision-markers";
+import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker, mailboxPurgeLines, parseSyncedUpnMismatch } from "./decision-markers";
 
 // The string the RUNNER actually emits, copied verbatim from
 // runner/modules/Coretelligent.M365/Coretelligent.M365.psm1 (the mailbox_oversize branch), with the
@@ -119,4 +119,22 @@ test("no 'freed N' line — announcement alone must NOT fire the purge alert", (
   const announce = "license removed on a mailbox that was NOT converted to shared — this client is configured to allow it (removeLicense.allowWithoutConvert). Exchange will DELETE this mailbox once its 30-day grace expires: the mail is not recoverable after that. Archive it now if it is needed.";
   assert.deepEqual(mailboxPurgeLines({ Actions: [announce, "no licenses to remove"] }), []);
   assert.deepEqual(mailboxPurgeLines({ Actions: [announce, "WARN license NOT removed — Microsoft rejected the removal because the license is inherited from a GROUP membership"] }), []);
+});
+
+// FR #25 — the M365 onboard throws this on an ad-synced client when a synced account for the person
+// exists under a DIFFERENT UPN. Copied verbatim from the psm1 create-gate branch with interpolation
+// resolved, so a drift in the runner's wording fails HERE rather than silently dropping the picker.
+const SYNCED_MISMATCH_LINE =
+  "DECISION_NEEDED:synced_upn_mismatch | A synced account for 'Jane Doe' exists at jdoe@x.com but the onboarding expected jane.doe@x.com — the on-prem UPN/email looks wrong. Fix the AD email and re-sync, or allow cloud creation on this case. Did NOT create in cloud. | expected=jane.doe@x.com | found=jdoe@x.com | name=Jane Doe";
+
+test("parseSyncedUpnMismatch pulls expected/found/name from the runner's exact string", () => {
+  const d = parseSyncedUpnMismatch(SYNCED_MISMATCH_LINE);
+  assert.notEqual(d, null);
+  assert.equal(d!.expected, "jane.doe@x.com");
+  assert.equal(d!.found, "jdoe@x.com");
+  assert.equal(d!.name, "Jane Doe");
+});
+
+test("parseSyncedUpnMismatch returns null on an unrelated error", () => {
+  assert.equal(parseSyncedUpnMismatch("some other failure"), null);
 });
