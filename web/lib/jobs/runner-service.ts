@@ -1539,18 +1539,24 @@ export function makeRunnerService(db: PrismaClient) {
     // "enabling remote mailbox", …) as it works, so the run report can show what a step is doing
     // right now instead of an opaque "running". Best-effort + append-only (last 20), and only while
     // the job is in flight — a late post after the job finished is ignored, not an error.
-    async recordProgress(jobId: string, agentId: string, phase: string): Promise<{ ok: true }> {
+    async recordProgress(jobId: string, agentId: string, phase?: string, stage?: string): Promise<{ ok: true }> {
       const job = await db.job.findUnique({ where: { id: jobId }, select: { status: true, assignedAgentId: true, progress: true } });
       if (!job) throw new HttpError(404, "unknown job");
       if (job.assignedAgentId !== agentId) throw new HttpError(403, "job not assigned to this agent");
       if (job.status !== "dispatched" && job.status !== "running") return { ok: true }; // job already done — drop
-      const trail = Array.isArray(job.progress) ? (job.progress as unknown[]) : [];
-      const next = [...trail, { ts: new Date().toISOString(), phase: String(phase).slice(0, 200) }].slice(-20);
       // Stamp running on the first progress post so the case/step reflects in-flight immediately.
       // progressAt = the queryable "still working?" signal (the JSON trail can't be filtered on) — the
       // reclaim/stuck logic keys off this, NOT the agent heartbeat (the agent identity is reused, so a
       // restarted runner keeps the heartbeat green while the worker that owned THIS job is dead).
-      await db.job.update({ where: { id: jobId }, data: { progress: next as Prisma.InputJsonValue, status: "running", progressAt: new Date() } });
+      const data: Prisma.JobUpdateInput = { status: "running", progressAt: new Date() };
+      if (phase) {
+        const trail = Array.isArray(job.progress) ? (job.progress as unknown[]) : [];
+        data.progress = [...trail, { ts: new Date().toISOString(), phase: String(phase).slice(0, 200) }].slice(-20) as Prisma.InputJsonValue;
+      }
+      // A coarse setup-stage marker (signin|create|harvest|vault) lands on a SCALAR column, kept apart
+      // from the free-text narration trail so the guided-setup run checklist reads one field to advance.
+      if (stage) data.stage = String(stage).slice(0, 40);
+      await db.job.update({ where: { id: jobId }, data });
       // A runner mid-step posts progress every second or two, but only the between-jobs heartbeat
       // loop refreshes lastSeenAt — so a long step (an Exchange mailbox/DL mirror can run minutes)
       // would read "offline" while it's actively working. Treat a progress post as a heartbeat too:

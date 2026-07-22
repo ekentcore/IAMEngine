@@ -1955,6 +1955,22 @@ function global:Send-CtgProgress {
     try { Invoke-CtgHttp -Method POST -Uri "$($global:CtgProgressUrl)/api/jobs/$jid/progress" -Headers $h -Body (@{ agentId = $global:CtgProgressAgent; phase = $Message } | ConvertTo-Json) | Out-Null } catch { }
 }
 
+function global:Send-CtgStage {
+    # Post one coarse setup-stage marker (signin|create|harvest|vault) for the current browser-based
+    # credential-setup job, so the guided-setup wizard's run checklist advances live. Same endpoint as
+    # Send-CtgProgress but a distinct `stage` field the app stores on a SCALAR Job.stage column, kept
+    # apart from the free-text narration trail. GLOBAL for the same reason as Send-CtgProgress (module
+    # scope can't see script functions). Best-effort; a stage change is progress, so touch the watchdog.
+    param([string]$Stage)
+    if (-not $Stage) { return }
+    if ($global:CtgHeartbeatFile) { try { [System.IO.File]::WriteAllText($global:CtgHeartbeatFile, "$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())`nstage:$Stage") } catch { } }
+    $jid = $global:CtgProgressJobId
+    if (-not $jid) { return }
+    $h = @{ 'ngrok-skip-browser-warning' = 'true' }
+    if ($global:CtgProgressToken) { $h['Authorization'] = "Bearer $($global:CtgProgressToken)" }
+    try { Invoke-CtgHttp -Method POST -Uri "$($global:CtgProgressUrl)/api/jobs/$jid/progress" -Headers $h -Body (@{ agentId = $global:CtgProgressAgent; stage = $Stage } | ConvertTo-Json) | Out-Null } catch { }
+}
+
 function Set-CtgPhase {
     # Record what we're doing right now: keep it in $script:Phase (so a thrown error can say WHICH
     # phase failed instead of a bare "Unauthorized"), and beacon it to the app so the run report can

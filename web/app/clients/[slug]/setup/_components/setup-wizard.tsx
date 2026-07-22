@@ -10,9 +10,10 @@
 // credential WIRED; live verification is a separate, client-wide "Run connection tests" action whose
 // result is surfaced per step but is NOT required to progress (a runner is often offline during
 // setup). This keeps the wizard honest — it never claims "verified" on a field-shape pass alone.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { secretIsSet } from "@/lib/secrets/wiring";
+import { StageBadge, RightsBadge, RightsDetail, stageDetail, hasRights, type ConnTest } from "@/lib/jobs/conn-test-badges";
 import { NOT_NEEDED } from "@/lib/cases/case-secrets";
 import type { SetupStep } from "@/lib/clients/setup-steps";
 import type { ConnTestState } from "@/lib/clients/readiness";
@@ -36,7 +37,20 @@ function stepDisplayName(step: SetupStep): string {
 
 type FieldTest = { status: "idle" | "testing" | "ok" | "fail"; label?: string; missingFields?: string[]; error?: string };
 type StepState = { externalId: string; notNeeded: boolean; saved: boolean; skipped: boolean; field: FieldTest; saveMsg?: string };
-type ConnResult = { status: "pending" | "running" | "ok" | "fail" | "not_needed"; detail?: string | null; accessOk?: boolean | null; accessDetail?: string | null };
+
+// The wizard tracks the FULL preflight row per system (not just a status), so each step can
+// render the same staged badges (Fields / Can access / API works / Rights) the client page's
+// Test-connections panel shows. `not_needed` is a wizard-only status for a system whose
+// credential the operator marked manual — it's never queued, so it never gets a real row.
+type ConnStatus = ConnTest["status"] | "not_needed";
+type ConnState = Omit<ConnTest, "status"> & { status: ConnStatus };
+
+function seedConn(systemKey: string, status: ConnStatus): ConnState {
+  return {
+    systemKey, status, detail: null, accessOk: null, accessDetail: null, fieldsOk: null,
+    fieldsDetail: null, rights: null, credExpiresAt: null, onPrem: false, finishedAt: null,
+  };
+}
 
 const CONN_POLL_MS = 3000;
 const CONN_POLL_DEADLINE_MS = 120_000; // stop polling after this — a system with no runner online never settles
@@ -76,11 +90,12 @@ export function SetupWizard({
       ])
     )
   );
-  const [conn, setConn] = useState<Record<string, ConnResult>>(() =>
+  const [conn, setConn] = useState<Record<string, ConnState>>(() =>
     Object.fromEntries(
       systemKeys.map((k) => {
         const c = initialConn[k];
-        return [k, { status: c === "ok" ? "ok" : c === "fail" ? "fail" : c === "not_needed" ? "not_needed" : "pending" }];
+        const status: ConnStatus = c === "ok" ? "ok" : c === "fail" ? "fail" : c === "not_needed" ? "not_needed" : "pending";
+        return [k, seedConn(k, status)];
       })
     )
   );
@@ -92,7 +107,7 @@ export function SetupWizard({
   // ---- derived per-step status --------------------------------------------------------------
   // Live connection-test verdict for a step, aggregated across its systems.
   const connStatusFor = useCallback(
-    (s: SetupStep): ConnResult["status"] | "untested" => {
+    (s: SetupStep): ConnStatus | "untested" => {
       const keys = s.systemKeys.filter((k) => k in conn);
       if (keys.length === 0) return "untested";
       const rs = keys.map((k) => conn[k].status);
@@ -262,20 +277,19 @@ export function SetupWizard({
       const r = await fetch(`/api/clients/${slug}/conn-test`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setConnError(d.error ?? `failed (${r.status})`); return; }
-      const next: Record<string, ConnResult> = {};
-      for (const t of (d.tests ?? []) as { systemKey: string; status: ConnResult["status"]; detail: string | null; accessOk: boolean | null; accessDetail: string | null }[]) {
-        next[t.systemKey] = { status: t.status, detail: t.detail, accessOk: t.accessOk, accessDetail: t.accessDetail };
-      }
+      const next: Record<string, ConnState> = {};
+      for (const t of (d.tests ?? []) as ConnTest[]) next[t.systemKey] = { ...t };
       setConn((c) => ({ ...c, ...next }));
     } catch (e) { setConnError((e as Error).message); }
   }, [slug]);
 
-  // Poll while a test is in flight — but bounded by a deadline, so a system whose runner never comes
-  // online (a permanently-pending test) can't leave the poll (and the button) stuck forever.
+  // Poll while ANY test is in flight — client-wide OR a single per-step test — bounded by a
+  // deadline, so a system whose runner never comes online (a permanently-pending test) can't
+  // leave the poll spinning forever. connBusy tracks only the client-wide button's label; it's
+  // cleared here once everything settles.
   useEffect(() => {
-    if (!connBusy) return;
     const unsettled = Object.values(conn).some((c) => c.status === "pending" || c.status === "running");
-    if (!unsettled || Date.now() >= pollDeadline.current) { setConnBusy(false); return; }
+    if (!unsettled || Date.now() >= pollDeadline.current) { if (connBusy) setConnBusy(false); return; }
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = setTimeout(loadConn, CONN_POLL_MS);
     return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
@@ -287,7 +301,7 @@ export function SetupWizard({
     // Mark every testable system in-flight so the operator sees motion (the endpoint re-queues them all).
     setConn((c) => {
       const next = { ...c };
-      for (const k of Object.keys(next)) if (next[k].status !== "not_needed") next[k] = { status: "running" };
+      for (const k of Object.keys(next)) if (next[k].status !== "not_needed") next[k] = { ...next[k], status: "running", detail: null };
       return next;
     });
     try {
@@ -297,6 +311,33 @@ export function SetupWizard({
       if ((d.tests ?? []).length === 0) { setConnError("No testable systems yet — wire a credential first."); setConnBusy(false); return; }
       await loadConn();
     } catch (e) { setConnError((e as Error).message); setConnBusy(false); }
+  }
+
+  // Per-step live test: queue a real read for just THIS step's system(s), so the operator can
+  // verify one credential without re-running the whole client. `deep: true` mirrors the panel's
+  // per-row Retest — a single, explicitly operator-initiated system is the only place an
+  // interactive probe (a real vendor sign-in) is allowed to run.
+  async function runStepTest(step: SetupStep) {
+    const keys = step.systemKeys.filter((k) => k in conn && conn[k].status !== "not_needed");
+    if (keys.length === 0) return;
+    setConnError(null);
+    pollDeadline.current = Date.now() + CONN_POLL_DEADLINE_MS;
+    setConn((c) => {
+      const next = { ...c };
+      for (const k of keys) next[k] = { ...next[k], status: "running", detail: null };
+      return next;
+    });
+    try {
+      for (const k of keys) {
+        const r = await fetch(`/api/clients/${slug}/conn-test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ systemKey: k, deep: true }),
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); setConnError(d.error ?? `failed (${r.status})`); }
+      }
+      await loadConn();
+    } catch (e) { setConnError((e as Error).message); }
   }
 
   // ---- render --------------------------------------------------------------------------------
@@ -358,6 +399,7 @@ export function SetupWizard({
                 onUndoNotNeeded={() => undoNotNeeded(active)}
                 onSkip={() => skip(active, activeIdx)}
                 onNext={() => goNext(activeIdx)}
+                onTestConn={() => runStepTest(active)}
                 onCreated={(id) => onCreated(active, id)}
                 onPickSuggestion={(id) => onPickSuggestion(active, id)}
               />
@@ -429,13 +471,13 @@ function Badge({ children, color, bg, title }: { children: React.ReactNode; colo
 
 function StepCard({
   slug, step, st, connStatus, conn, reach, wired, delineaConfigured, write,
-  onEdit, onSaveTest, onSave, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated, onPickSuggestion,
+  onEdit, onSaveTest, onSave, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onTestConn, onCreated, onPickSuggestion,
 }: {
   slug: string;
   step: SetupStep;
   st: StepState;
   connStatus: "pending" | "running" | "ok" | "fail" | "not_needed" | "untested";
-  conn: Record<string, ConnResult>;
+  conn: Record<string, ConnState>;
   reach?: Record<string, RunnerReach>;
   wired: boolean;
   delineaConfigured: boolean;
@@ -448,10 +490,16 @@ function StepCard({
   onUndoNotNeeded: () => void;
   onSkip: () => void;
   onNext: () => void;
+  onTestConn: () => void;
   onCreated: (externalId: string) => void;
   onPickSuggestion: (externalId: string) => void;
 }) {
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
+  // One rights disclosure open at a time within this step's live-test table.
+  const [openRights, setOpenRights] = useState<string | null>(null);
+  // This step's testable systems — a manual/not-needed system is never queued, so it has no row.
+  const testKeys = step.systemKeys.filter((k) => conn[k] && conn[k].status !== "not_needed");
+  const stepTesting = testKeys.some((k) => conn[k].status === "pending" || conn[k].status === "running");
   // A browser-login secret (a console sign-in — spanning-portal, m365-global-admin, …) is Delinea-id
   // ONLY: it can't be typed-and-created or field-tested here (a login box returns no verdict), so we
   // show just the paste-id + suggestions + Save path and hide the typed create form and the field-shape
@@ -664,24 +712,55 @@ function StepCard({
           </div>
           )}
 
-          {/* Live connection verdict (read-only here — the test itself is the client-wide control up top) */}
+          {/* Live connection test — the same staged feedback the client page's "Test connections"
+              panel shows (Fields → Can access → API works → Rights), scoped to THIS step's
+              system(s). "Test this connection" queues a real read for just this credential. */}
           <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line-2)" }}>
-            <div className="note" style={{ marginBottom: 6 }}>Live connection (verified via “Run live connection tests” above):</div>
-            {connStatus === "ok" && <Badge color="var(--ok-fg)" bg="var(--ok-bg)">✓ live read succeeded</Badge>}
-            {connStatus === "fail" && <Badge color="var(--err-fg)" bg="var(--err-bg)">✗ live read failed</Badge>}
-            {connStatus === "running" && <span className="note">waiting for a runner to connect…</span>}
-            {(connStatus === "pending" || connStatus === "untested") && <span className="note muted">not verified yet — needs the matching runner online</span>}
-            {(connStatus === "running" || connStatus === "fail") && (
-              <table style={{ marginTop: 8 }}>
+            <div className="row-between" style={{ alignItems: "baseline", marginBottom: 6 }}>
+              <div className="note">Live connection test</div>
+              <button
+                onClick={onTestConn}
+                disabled={stepTesting || testKeys.length === 0 || !wired}
+                style={{ fontSize: 13 }}
+                title={
+                  testKeys.length === 0
+                    ? "No testable system on this step"
+                    : !wired
+                    ? "Wire the credential first, then test it end-to-end"
+                    : "Connect with this credential and do one live read — proves real access, not just that the secret resolves. Needs the matching runner online."
+                }
+              >
+                {stepTesting ? "Testing…" : "Test this connection"}
+              </button>
+            </div>
+            {testKeys.length === 0 ? (
+              <span className="note muted">No testable system on this step.</span>
+            ) : (
+              <table style={{ marginTop: 4 }}>
                 <tbody>
-                  {step.systemKeys.map((k) => {
-                    const c = conn[k];
-                    const detail = c?.accessOk === false ? c?.accessDetail : c?.detail;
+                  {testKeys.map((k) => {
+                    const t = conn[k] as ConnTest; // status is never "not_needed" here (filtered)
+                    const rightsOpen = openRights === k;
                     return (
-                      <tr key={k}>
-                        <td style={{ fontSize: 13 }}>{k}</td>
-                        <td className="muted" style={{ fontSize: 13, whiteSpace: "normal", maxWidth: 340 }}>{detail ?? (c?.status ?? "—")}</td>
-                      </tr>
+                      <Fragment key={k}>
+                        <tr>
+                          <td style={{ fontSize: 13, paddingRight: 10 }}>{step.systemNames[step.systemKeys.indexOf(k)] ?? k}</td>
+                          <td style={{ paddingRight: 6 }}><StageBadge test={t} kind="fields" /></td>
+                          <td style={{ paddingRight: 6 }}><StageBadge test={t} kind="access" /></td>
+                          <td style={{ paddingRight: 6 }}><StageBadge test={t} kind="api" /></td>
+                          <td><RightsBadge test={t} open={rightsOpen} onToggle={() => setOpenRights(rightsOpen ? null : k)} /></td>
+                        </tr>
+                        {(t.status === "running" || t.status === "fail" || stageDetail(t)) && (
+                          <tr>
+                            <td colSpan={5} className="muted" style={{ fontSize: 12, whiteSpace: "normal", maxWidth: 460, paddingBottom: 6 }}>
+                              {stageDetail(t)}
+                            </td>
+                          </tr>
+                        )}
+                        {hasRights(t) && rightsOpen && (
+                          <tr><td colSpan={5}><RightsDetail rows={t.rights ?? []} /></td></tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>

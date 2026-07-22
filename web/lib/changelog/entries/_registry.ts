@@ -205,5 +205,6 @@ export { entry as m365SetupAutodetectFolder } from "./m365-setup-autodetect-fold
 export { entry as adConntestOptionalDcSecret } from "./ad-conntest-optional-dc-secret";
 export { entry as featureRequestSendToChat } from "./feature-request-send-to-chat";
 export { entry as locationGroupsLaneAware } from "./location-groups-lane-aware";
+export { entry as guidedSetupLiveTestFeedback } from "./guided-setup-live-test-feedback";
 export { entry as fleetSetupM365 } from "./fleet-setup-m365";
 export { entry as conntestNotNeededRows } from "./conntest-not-needed-rows";

@@ -195,6 +195,21 @@ function Install-CtgBrowser {
     }
 }
 
+function ConvertFrom-CtgStageLine {
+    <#
+    .SYNOPSIS
+        Extract the coarse setup-stage name from a sidecar stderr line, or $null if it isn't a marker.
+    .DESCRIPTION
+        The browser sidecar (run-flow.mjs reportStage) writes stage markers as a distinctly-prefixed
+        stderr line: "[browser] @@stage:<name>". This pulls out <name> (signin|create|harvest|vault),
+        ignoring any surrounding text. Pure/side-effect-free so it can be unit-tested in isolation.
+        Returns $null for ordinary log lines so the caller only forwards real stage transitions.
+    #>
+    param([string]$Line)
+    if ($Line -match '@@stage:([A-Za-z0-9_-]+)') { return $Matches[1] }
+    return $null
+}
+
 function Invoke-CtgBrowserFlow {
     <#
     .SYNOPSIS
@@ -213,7 +228,12 @@ function Invoke-CtgBrowserFlow {
     param(
         [Parameter(Mandatory)][string]$Flow,
         [Parameter(Mandatory)][hashtable]$InputObject,
-        [int]$TimeoutSeconds = 180
+        [int]$TimeoutSeconds = 180,
+        # Optional live-progress hook: invoked with the coarse stage name (signin|create|harvest|…) each
+        # time the sidecar emits a "@@stage:" marker on stderr, so a long browser run can advance a UI
+        # checklist AS it works instead of only at the terminal result. Best-effort — a throwing hook is
+        # swallowed. When omitted, stderr is still drained (for the error tail) but nothing is forwarded.
+        [scriptblock]$OnStage
     )
 
     if (-not (Test-CtgBrowserAvailable)) {
@@ -241,26 +261,60 @@ function Invoke-CtgBrowserFlow {
     $psi.UseShellExecute        = $false
 
     $proc = $null
+    $errSub = $null
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
         $proc.StandardInput.Write($spec)
         $proc.StandardInput.Close()
-        # Drain stdout AND stderr concurrently via async reads: a synchronous ReadToEnd() on stdout
-        # would block, and if Chromium fills the stderr pipe buffer (~64KB of GPU/sandbox noise) the
-        # child blocks writing stderr → never closes stdout → the read never returns and the timeout
-        # can't fire. Async tasks let both pipes empty while we wait, bounded, on exit.
+        # Drain stdout AND stderr concurrently: a synchronous ReadToEnd() on stdout would block, and if
+        # Chromium fills the stderr pipe buffer (~64KB of GPU/sandbox noise) the child blocks writing
+        # stderr → never closes stdout → the read never returns and the timeout can't fire.
+        #
+        # stdout: one async ReadToEnd (the result line is its LAST line — we only need the whole blob).
+        # stderr: read LINE BY LINE as it arrives, so a "@@stage:" marker can be forwarded to $OnStage
+        # WHILE the flow runs (not after exit). BeginErrorReadLine + an event handler enqueues each line
+        # onto a thread-safe queue; the main thread below drains the queue, forwards stage markers, and
+        # accumulates the lines for the error tail. This keeps both pipes emptying (no deadlock) while
+        # the bounded wait loop can still time out a wedged child.
+        $stderrLines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+        $errSub = Register-ObjectEvent -InputObject $proc -EventName 'ErrorDataReceived' -MessageData $stderrLines -Action {
+            if ($null -ne $EventArgs.Data) { $Event.MessageData.Enqueue([string]$EventArgs.Data) }
+        }
         $outTask = $proc.StandardOutput.ReadToEndAsync()
-        $errTask = $proc.StandardError.ReadToEndAsync()
-        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+        $proc.BeginErrorReadLine()
+
+        $stderrSb = [System.Text.StringBuilder]::new()
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $timedOut = $false
+        $drain = {
+            $l = $null
+            while ($stderrLines.TryDequeue([ref]$l)) {
+                [void]$stderrSb.AppendLine($l)
+                if ($OnStage) {
+                    $stage = ConvertFrom-CtgStageLine $l
+                    if ($stage) { try { & $OnStage $stage } catch { } } # forwarding is best-effort
+                }
+            }
+        }
+        while ($true) {
+            & $drain
+            if ($proc.HasExited) { break }
+            if ([DateTime]::UtcNow -ge $deadline) { $timedOut = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        if ($timedOut) {
             try { $proc.Kill($true) } catch { }
             return [pscustomobject]@{ ok = $false; message = $null; error = "browser flow '$Flow' timed out after ${TimeoutSeconds}s"; evidence = $null; retryAfterMinutes = $null }
         }
-        # The process has exited, so both pipes are closed — the read tasks are complete.
+        # Exited cleanly — make sure the async stderr pump has flushed, then drain any trailing lines.
+        $proc.WaitForExit()
+        & $drain
         $stdout = $outTask.GetAwaiter().GetResult()
-        $stderr = $errTask.GetAwaiter().GetResult()
+        $stderr = $stderrSb.ToString()
     } catch {
         return [pscustomobject]@{ ok = $false; message = $null; error = "could not run the browser sidecar: $($_.Exception.Message)"; evidence = $null; retryAfterMinutes = $null }
     } finally {
+        if ($errSub) { try { Unregister-Event -SubscriptionId $errSub.Id -ErrorAction SilentlyContinue; Remove-Job -Job $errSub -Force -ErrorAction SilentlyContinue } catch { } }
         if ($proc) { $proc.Dispose() }
     }
 
@@ -290,4 +344,4 @@ function Invoke-CtgBrowserFlow {
     }
 }
 
-Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow, Resolve-CtgNodeTool
+Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow, Resolve-CtgNodeTool, ConvertFrom-CtgStageLine
