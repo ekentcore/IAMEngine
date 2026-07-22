@@ -116,6 +116,26 @@ Describe 'Confirm-CtgEgnyte' {
     }
 }
 
+Describe 'Connect-CtgEgnyte (token mint)' {
+    It 'password grant sends client_id + client_secret + username + password to /puboauth/token' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Egnyte -MockWith { [pscustomobject]@{ access_token = 'minted-tok' } }
+        $cred = [pscredential]::new('admin@drakestar.com', (ConvertTo-SecureString 'pw' -AsPlainText -Force))
+        Connect-CtgEgnyte -Domain 'drakestar' -ClientId 'the-key' -ClientSecret 'the-secret' -Credential $cred
+        Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Egnyte -ParameterFilter {
+            $Uri -eq 'https://drakestar.egnyte.com/puboauth/token' -and
+            $Body.grant_type -eq 'password' -and $Body.client_id -eq 'the-key' -and
+            $Body.client_secret -eq 'the-secret' -and $Body.username -eq 'admin@drakestar.com' -and
+            $Body.password -eq 'pw'
+        } -Times 1
+    }
+
+    It 'uses a pre-minted Token directly — no token-mint call' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.Egnyte -MockWith { throw 'should not mint when a Token is supplied' }
+        Connect-CtgEgnyte -Domain 'drakestar.egnyte.com' -Token 'pre-minted'
+        Should -Invoke Invoke-RestMethod -ModuleName Coretelligent.Egnyte -Times 0 -Exactly
+    }
+}
+
 Describe 'Resolve-CtgEgnyteConsoleLogin (browser auto-setup)' {
     # The console login the browser flow signs in WITH — DISTINCT from the egnyte API token it harvests.
     It 'accepts an admin email + password (from a .Fields bag)' {

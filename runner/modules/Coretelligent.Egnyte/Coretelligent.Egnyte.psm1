@@ -8,10 +8,13 @@
 #
 # API: Egnyte User Management API v2 (developers.egnyte.com), per-tenant host.
 #   Base      : https://{egnyteDomain}.egnyte.com
-#   Auth      : OAuth2 bearer. Egnyte tokens are LONG-LIVED (no expiry unless revoked), so the
-#               simplest setup is a once-issued token stored in Delinea. Alternatively the
-#               password grant mints one from ClientID (API key) + a service account:
-#               POST /puboauth/token  grant_type=password&client_id&username&password
+#   Auth      : OAuth2 bearer via the Resource Owner Password grant — the runner mints a token from
+#               ClientID (the API Key) + ClientSecret (the API Secret) + a service account's
+#               username/password (the username being the AccountID / admin login email):
+#               POST /puboauth/token  grant_type=password&client_id&client_secret&username&password
+#               (client_secret is required for API keys issued after Jan 2015 — i.e. effectively all).
+#               A pre-minted long-lived Token stored in Delinea is accepted as an alternative and used
+#               directly (Egnyte tokens don't expire unless revoked).
 #   List/find : GET    /pubapi/v2/users?filter=email eq "x@y.com"   -> { resources: [user] }
 #   Create    : POST   /pubapi/v2/users  { userName, email, name:{givenName,familyName},
 #               active, sendInvite, authType: egnyte|sso|ad, userType: admin|power|standard }
@@ -40,9 +43,9 @@ function Get-CtgProp {
 function Connect-CtgEgnyte {
     <#
     .SYNOPSIS
-        Point the module at a tenant. Either pass a long-lived -Token directly (preferred — Egnyte
-        tokens don't expire), or -ClientId (the API key) + -Credential (service account) to mint
-        one via the password grant.
+        Point the module at a tenant. Either pass a long-lived -Token directly (Egnyte tokens don't
+        expire), or -ClientId (the API Key) + -ClientSecret (the API Secret) + -Credential (the
+        service account, its UserName being the admin login email) to mint one via the password grant.
     .PARAMETER Domain
         The tenant's Egnyte domain — "drakestar" or "drakestar.egnyte.com" both work.
     #>
@@ -51,6 +54,7 @@ function Connect-CtgEgnyte {
         [Parameter(Mandatory)][string]$Domain,
         [string]$Token,
         [string]$ClientId,
+        [string]$ClientSecret,
         [pscredential]$Credential
     )
     $d = $Domain.Trim().ToLower() -replace '^https?://', '' -replace '\.egnyte\.com.*$', ''
@@ -59,13 +63,15 @@ function Connect-CtgEgnyte {
         $script:EgnyteToken = $Token
         return
     }
-    if (-not $ClientId -or -not $Credential) { throw "Connect-CtgEgnyte needs -Token, or -ClientId + -Credential for the password grant." }
+    if (-not $ClientId -or -not $Credential) { throw "Connect-CtgEgnyte needs -Token, or -ClientId + -Credential (and -ClientSecret) for the password grant." }
     $body = @{
         grant_type = 'password'
         client_id  = $ClientId
         username   = $Credential.UserName
         password   = (ConvertFrom-SecureString $Credential.Password -AsPlainText)
     }
+    # Required for keys issued after Jan 2015 (effectively all); omitted only for legacy secret-less keys.
+    if ($ClientSecret) { $body.client_secret = $ClientSecret }
     $resp = Invoke-RestMethod -Method Post -Uri "$script:EgnyteBaseUrl/puboauth/token" -Body $body -ContentType 'application/x-www-form-urlencoded'
     $script:EgnyteToken = $resp.access_token
 }

@@ -57,6 +57,7 @@ export { entry as delineaWriteFailManualModal } from "./delinea-write-fail-manua
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
 export { entry as documentsVersionedInApp } from "./documents-versioned-in-app";
+export { entry as egnyteApiPasswordGrant } from "./egnyte-api-password-grant";
 export { entry as egnyteBrowserSetup } from "./egnyte-browser-setup";
 export { entry as engineOptOutHardening } from "./engine-opt-out-hardening";
 export { entry as engineOptOutParentInheritance } from "./engine-opt-out-parent-inheritance";
