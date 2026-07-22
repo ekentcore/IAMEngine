@@ -50,6 +50,7 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
   const [query, setQuery] = useState("");
   const [selectedStates, setSelectedStates] = useState<Set<FleetM365Tag>>(new Set());
   const [openRights, setOpenRights] = useState<string | null>(null);
+  const [retesting, setRetesting] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedOnMount = useRef(false);
 
@@ -87,13 +88,16 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
     finally { setStarting(false); }
   }, [load]);
 
-  // On mount: rejoin a running sweep, else kick one off so the page "tests each one" on open.
+  // On mount: rejoin a running sweep; otherwise only kick one off the FIRST time (no sweep has ever
+  // run). Results are stored durably in ConnectionTest, so returning to the page shows the last scan
+  // instantly and does NOT re-test everything — the operator retests on demand ("Retest all" / a row's
+  // "Retest").
   useEffect(() => {
     if (startedOnMount.current) return;
     startedOnMount.current = true;
-    if (rollup.run?.status === "running") { void load(); }
-    else { void start(); }
-  }, [rollup.run?.status, load, start]);
+    if (rollup.run?.status === "running") void load();
+    else if (!rollup.run) void start();
+  }, [rollup.run, load, start]);
 
   // Poll while the sweep is running OR any row is still settling (covers per-row / retest-all too).
   useEffect(() => {
@@ -150,6 +154,23 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
     if (row.action === "setup") return "Set up M365";
     if (row.action === "correct") return "Correct permissions";
     return "Adjust";
+  }
+
+  // Retest just this client's M365 systems. It goes pending → running, and the poll loop (which runs
+  // while any row is running) picks up the settled result.
+  async function retestRow(row: FleetM365Row) {
+    setRetesting(row.slug); setError(null);
+    try {
+      const r = await fetch("/api/tools/fleet-m365", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: row.slug }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(d.reason ?? d.error ?? `failed (${r.status})`); return; }
+      await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setRetesting(null); }
   }
 
   const running = rollup.run?.status === "running";
@@ -257,13 +278,37 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                       )}
                     </td>
                     <td className="row-actions">
-                      <button
-                        className={row.action === "none" ? undefined : "primary"}
-                        onClick={() => openFix(row)}
-                        title={row.action === "correct" ? "Reconcile the missing permissions, keeping the existing secret" : row.action === "setup" ? "Provision this client's M365 app registration + credential" : "Open the setup modal to adjust permissions"}
-                      >
-                        {actionLabel(row)}
-                      </button>
+                      {(() => {
+                        // Before a result exists we don't yet know whether this client needs a
+                        // correction — so the action is disabled and says so. no_creds is the
+                        // exception: no credential is a known state regardless of testing, so its
+                        // "Set up M365" stays active. A row mid-test shows a disabled "Testing…".
+                        const untested = row.tags.includes("untested");
+                        const testingNow = row.status === "running" || retesting === row.slug;
+                        if (testingNow) return <button disabled>Testing…</button>;
+                        if (untested) return <button disabled title="Run the connection test first to see what this client needs">Not tested yet</button>;
+                        return (
+                          <button
+                            className={row.action === "none" ? undefined : "primary"}
+                            onClick={() => openFix(row)}
+                            title={row.action === "correct" ? "Reconcile the missing permissions, keeping the existing secret" : row.action === "setup" ? "Provision this client's M365 app registration + credential" : "Open the setup modal to adjust permissions"}
+                          >
+                            {actionLabel(row)}
+                          </button>
+                        );
+                      })()}
+                      {/* Retest just this client. Hidden for no_creds (nothing wired to test). */}
+                      {!row.tags.includes("no_creds") && (
+                        <button
+                          className="btn-quiet"
+                          style={{ marginLeft: 6 }}
+                          onClick={() => void retestRow(row)}
+                          disabled={retesting !== null || row.status === "running"}
+                          title="Re-run the connection test for this client"
+                        >
+                          {retesting === row.slug ? "Retesting…" : "Retest"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                   {canExpand && openRights === row.slug && <RightsDetail slug={row.slug} />}

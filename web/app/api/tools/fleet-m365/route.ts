@@ -10,14 +10,26 @@ import { fleetWideAccess } from "@/lib/auth/fleet-access";
 import { auditActor, recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
-import { startFleetM365Test, rollupFleetM365Test, cancelFleetM365Test } from "@/lib/jobs/fleet-m365-test";
+import { startFleetM365Test, retestFleetM365Client, rollupFleetM365Test, cancelFleetM365Test } from "@/lib/jobs/fleet-m365-test";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request) {
+// POST with no body = start a full fleet sweep. POST { slug } = retest just that one client's M365
+// systems (the per-row "Retest").
+export async function POST(req: Request) {
   const g = await guard("client.edit_secrets"); if (g.res) return g.res;
   const access = await fleetWideAccess(db, g.user.id);
   if (!access.ok) return NextResponse.json({ error: access.reason }, { status: 403 });
+
+  const body = (await req.json().catch(() => ({}))) as { slug?: string };
+  const slug = typeof body?.slug === "string" && body.slug.trim() ? body.slug.trim() : undefined;
+
+  if (slug) {
+    const r = await retestFleetM365Client(db, makeRunnerService(db), slug, access.scope);
+    if (!r.ok) return NextResponse.json({ ok: false, reason: r.reason }, { status: r.reason === "not found" ? 404 : 422 });
+    await recordAudit("fleet.m365.test.retest", { user: g.user, detail: { slug, tests: r.tests } });
+    return NextResponse.json({ ok: true, tests: r.tests });
+  }
 
   const r = await startFleetM365Test(db, makeRunnerService(db), { startedBy: auditActor(g.user, "ui").label, scope: access.scope });
   if (!r.started) return NextResponse.json({ started: false, reason: r.reason, id: r.id }, { status: 409 });
