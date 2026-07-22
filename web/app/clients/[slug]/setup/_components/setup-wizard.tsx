@@ -23,7 +23,16 @@ import { DelineaSuggestions } from "@/app/clients/_components/delinea-suggestion
 import { M365SetupButton } from "@/app/clients/_components/m365-setup-button";
 import { GoogleSetupButton } from "@/app/clients/_components/google-setup-button";
 import { GuidedApiSetup } from "@/app/clients/_components/guided-api-setup";
-import { API_SETUP_CATALOG } from "@/lib/secrets/api-setup-catalog";
+import { API_SETUP_CATALOG, apiSetupBySecretName, isBrowserLoginSecret } from "@/lib/secrets/api-setup-catalog";
+
+// A step's display name, with a credential-KIND suffix so the two Spanning steps (and any API/console
+// pair) are distinguishable: "Spanning Backup (API)" vs "Spanning Backup (Browser)". Only suffixed when
+// a system name exists; a bare secret-name fallback is left as-is.
+function stepDisplayName(step: SetupStep): string {
+  const base = step.systemNames[0];
+  if (!base) return step.secretName;
+  return `${base} (${isBrowserLoginSecret(step.secretName) ? "Browser" : "API"})`;
+}
 
 type FieldTest = { status: "idle" | "testing" | "ok" | "fail"; label?: string; missingFields?: string[]; error?: string };
 type StepState = { externalId: string; notNeeded: boolean; saved: boolean; skipped: boolean; field: FieldTest; saveMsg?: string };
@@ -104,6 +113,9 @@ export function SetupWizard({
       if (!st) return false;
       if (st.notNeeded) return st.saved;
       if (!secretIsSet(st.externalId) || !st.saved) return false;
+      // A browser-login secret (a console sign-in) is never API/field-tested in the wizard — it's id-only,
+      // so a saved reference IS its completion (like the Delinea-unconfigured case below).
+      if (isBrowserLoginSecret(s.secretName)) return true;
       // Delinea unconfigured → the app-side field test can't run; a saved reference is the best we can do.
       if (!delineaConfigured) return true;
       return st.field.status === "ok" && !(st.field.missingFields && st.field.missingFields.length);
@@ -221,7 +233,8 @@ export function SetupWizard({
   async function onPickSuggestion(s: SetupStep, externalId: string) {
     patch(s.secretName, { externalId, saved: false, notNeeded: false, field: { status: "idle" }, saveMsg: undefined });
     const ok = await save(s, { externalId });
-    if (ok && delineaConfigured && secretIsSet(externalId)) await test(s, externalId);
+    // Browser-login secrets are id-only — never field-tested (see isWired); just wire the picked id.
+    if (ok && delineaConfigured && secretIsSet(externalId) && !isBrowserLoginSecret(s.secretName)) await test(s, externalId);
   }
 
   async function markNotNeeded(s: SetupStep) {
@@ -339,6 +352,7 @@ export function SetupWizard({
                 write={write}
                 onEdit={(v) => edit(active, v)}
                 onSaveTest={() => saveAndTest(active)}
+                onSave={() => save(active)}
                 onTest={() => test(active)}
                 onMarkNotNeeded={() => markNotNeeded(active)}
                 onUndoNotNeeded={() => undoNotNeeded(active)}
@@ -400,7 +414,7 @@ function Rail({
           >
             {statusDot(wired, isVerified(s), active, skipped)}
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {s.systemNames[0] ?? s.secretName}
+              {stepDisplayName(s)}
             </span>
           </button>
         );
@@ -415,7 +429,7 @@ function Badge({ children, color, bg, title }: { children: React.ReactNode; colo
 
 function StepCard({
   slug, step, st, connStatus, conn, reach, wired, delineaConfigured, write,
-  onEdit, onSaveTest, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated, onPickSuggestion,
+  onEdit, onSaveTest, onSave, onTest, onMarkNotNeeded, onUndoNotNeeded, onSkip, onNext, onCreated, onPickSuggestion,
 }: {
   slug: string;
   step: SetupStep;
@@ -428,6 +442,7 @@ function StepCard({
   write?: DelineaWriteSummary;
   onEdit: (v: string) => void;
   onSaveTest: () => void;
+  onSave: () => void;
   onTest: () => void;
   onMarkNotNeeded: () => void;
   onUndoNotNeeded: () => void;
@@ -437,9 +452,14 @@ function StepCard({
   onPickSuggestion: (externalId: string) => void;
 }) {
   const hasValue = st.notNeeded || secretIsSet(st.externalId);
+  // A browser-login secret (a console sign-in — spanning-portal, m365-global-admin, …) is Delinea-id
+  // ONLY: it can't be typed-and-created or field-tested here (a login box returns no verdict), so we
+  // show just the paste-id + suggestions + Save path and hide the typed create form and the field-shape
+  // test controls.
+  const browserLogin = isBrowserLoginSecret(step.secretName);
   // "Create in Delinea" capability: instance write account + a template for this secret (folder is
-  // collected inline). Absent write summary → not available.
-  const cap = write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId, templateName: write.templateNames[step.secretName] ?? null } : null;
+  // collected inline). Absent write summary → not available. Never offered for a browser-login secret.
+  const cap = !browserLogin && write ? { hasAccount: write.hasAccount, hasTemplate: write.templates[step.secretName] ?? false, folderId: write.folderId, templateName: write.templateNames[step.secretName] ?? null } : null;
   const canCreate = Boolean(cap && cap.hasAccount && cap.hasTemplate);
   const createReason = cap ? createDisabledReason(cap) : "Delinea write path is not available.";
   // Lead with entering the credentials: a fresh, not-yet-wired step opens straight into the create form
@@ -471,7 +491,7 @@ function StepCard({
     <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "1.1rem 1.2rem" }}>
       <div className="row-between" style={{ alignItems: "baseline" }}>
         <div>
-          <h2 style={{ margin: 0 }}>{step.systemNames[0] ?? step.secretName}</h2>
+          <h2 style={{ margin: 0 }}>{stepDisplayName(step)}</h2>
           <p className="note" style={{ margin: "2px 0 0" }}>{step.purpose}</p>
         </div>
         {connStatus === "ok"
@@ -585,6 +605,7 @@ function StepCard({
                 secretName={step.secretName}
                 fieldRequirements={step.fieldRequirements}
                 capability={cap}
+                entry={apiSetupBySecretName(step.secretName)}
                 onCreated={(id) => { setCreating(false); onCreated(id); }}
                 onCancel={() => setCreating(false)}
               />
@@ -595,7 +616,9 @@ function StepCard({
               the toggle that (re)opens the create form. */}
           <div style={{ marginTop: 16 }}>
             <label className="note" htmlFor={`sec-${step.secretName}`} style={{ display: "block", marginBottom: 4 }}>
-              {creating ? <>Or, if you already have one, paste its Delinea secret id</> : <>Delinea secret id for <code>{step.secretName}</code></>}
+              {browserLogin
+                ? <>Delinea secret id for <code>{step.secretName}</code> — this is a console sign-in, so save its Delinea reference (the runner uses it to sign in; it isn&rsquo;t API-tested here)</>
+                : creating ? <>Or, if you already have one, paste its Delinea secret id</> : <>Delinea secret id for <code>{step.secretName}</code></>}
             </label>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <input
@@ -605,13 +628,13 @@ function StepCard({
                 placeholder="e.g. 4821"
                 style={{ width: 180, fontFamily: "var(--mono, monospace)" }}
               />
-              <button className="primary" onClick={onSaveTest} disabled={!hasValue}>
-                {delineaConfigured ? "Save and test" : "Save"}
+              <button className="primary" onClick={browserLogin ? onSave : onSaveTest} disabled={!hasValue}>
+                {browserLogin || !delineaConfigured ? "Save" : "Save and test"}
               </button>
               <button onClick={onMarkNotNeeded} style={{ fontSize: 13 }} title="Its module is handled as a manual step — won't block a case">
                 Mark not needed
               </button>
-              {!creating && (
+              {!creating && !browserLogin && (
                 <button
                   onClick={() => setCreating(true)}
                   disabled={!canCreate}
@@ -629,7 +652,8 @@ function StepCard({
             {st.saveMsg && <p className="note danger" style={{ marginTop: 6 }}>{st.saveMsg}</p>}
           </div>
 
-          {/* App-side field-shape result */}
+          {/* App-side field-shape result — never for a browser-login secret (it's id-only, not field-tested). */}
+          {!browserLogin && (
           <div style={{ marginTop: 12, minHeight: 22 }}>
             {st.field.status === "testing" && <span className="note">Testing the reference…</span>}
             {st.field.status === "ok" && (st.field.missingFields && st.field.missingFields.length > 0
@@ -638,6 +662,7 @@ function StepCard({
             {st.field.status === "fail" && <Badge color="var(--err-fg)" bg="var(--err-bg)" title={st.field.error}>✗ {st.field.error ?? "could not read"}</Badge>}
             {st.field.status === "idle" && hasValue && st.saved && <button onClick={onTest} disabled={!delineaConfigured} style={{ fontSize: 13 }}>Test reference</button>}
           </div>
+          )}
 
           {/* Live connection verdict (read-only here — the test itself is the client-wide control up top) */}
           <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line-2)" }}>

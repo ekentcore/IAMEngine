@@ -91,6 +91,7 @@ export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missi
 export { entry as guidedApiSetup } from "./guided-api-setup";
 export { entry as guidedSetupAutomatedAndSuggest } from "./guided-setup-automated-and-suggest";
 export { entry as guidedSetupFullerInstructions } from "./guided-setup-fuller-instructions";
+export { entry as guidedSetupSpanningPasteAndBrowserLabels } from "./guided-setup-spanning-paste-and-browser-labels";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as guidedSetupWizardAndSuggestions } from "./guided-setup-wizard-and-suggestions";
 export { entry as hideDryRunOption } from "./hide-dry-run-option";
