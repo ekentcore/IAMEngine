@@ -789,6 +789,34 @@ function Get-CtgM365UserDevices {
     @(foreach ($d in $devices) { [pscustomobject]@{ Id = $d.Id; DisplayName = (Get-CtgProp $d.AdditionalProperties 'displayName') } })
 }
 
+function Find-CtgM365SyncedUser {
+    <#
+    .SYNOPSIS
+        Locate a directory-synced (on-prem mastered) M365 user for THIS person whose UPN differs from
+        the expected one — the tell-tale of a wrong on-prem email/UPN. Read-only: used ONLY to explain a
+        "no account found" on an ad-synced client, never to write. Returns the first synced match or $null.
+    #>
+    param(
+        [Parameter(Mandatory)][pscustomobject]$User,
+        [Parameter(Mandatory)][string]$ExpectedUpn
+    )
+    $props = @('Id', 'DisplayName', 'UserPrincipalName', 'Mail', 'OnPremisesSyncEnabled')
+    $name = ([string]$User.DisplayName).Trim()
+    # 1) A synced user with this display name catches a wrong UPN (the reported case). Escape single quotes.
+    if ($name) {
+        $safe = $name.Replace("'", "''")
+        $hits = @(Get-MgUser -Filter "displayName eq '$safe' and onPremisesSyncEnabled eq true" -Property $props -All -ErrorAction SilentlyContinue)
+        if ($hits) { return $hits[0] }
+    }
+    # 2) Fall back to a synced user whose mail equals the expected address (wrong UPN, right mail).
+    if ($ExpectedUpn) {
+        $safeMail = $ExpectedUpn.Replace("'", "''")
+        $hits = @(Get-MgUser -Filter "mail eq '$safeMail' and onPremisesSyncEnabled eq true" -Property $props -All -ErrorAction SilentlyContinue)
+        if ($hits) { return $hits[0] }
+    }
+    return $null
+}
+
 function Invoke-CtgM365Onboarding {
     <#
     .SYNOPSIS
@@ -894,6 +922,17 @@ function Invoke-CtgM365Onboarding {
         }
     }
     else {
+        # AD-synced clients: the cloud account originates on-prem via Entra Connect — never create it
+        # here. cloudCreate is stamped at plan time ('deny' for ad_synced without an override); absent =
+        # allow, so every non-ad-synced client and pre-existing case behaves exactly as before.
+        if ([string](Get-CtgProp $Config 'cloudCreate') -ieq 'deny') {
+            $synced = Find-CtgM365SyncedUser -User $User -ExpectedUpn $upn
+            if ($synced) {
+                $found = [string]$synced.UserPrincipalName
+                throw "DECISION_NEEDED:synced_upn_mismatch | A synced account for '$($User.DisplayName)' exists at $found but the onboarding expected $upn — the on-prem UPN/email looks wrong. Fix the AD email and re-sync, or allow cloud creation on this case. Did NOT create in cloud. | expected=$upn | found=$found | name=$($User.DisplayName)"
+            }
+            throw "no synced M365 account for $($User.DisplayName) at $upn — this is an AD-synced client, so the account must arrive from on-prem AD via Entra Connect. AD sync is pending or the on-prem UPN/email is wrong; did NOT create in cloud. Fix AD and re-sync, or allow cloud creation on the case."
+        }
         if ($PSCmdlet.ShouldProcess($upn, "Create M365 user")) {
             $passwordProfile = @{
                 Password                      = (ConvertFrom-SecureString $InitialPassword -AsPlainText)

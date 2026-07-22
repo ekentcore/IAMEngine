@@ -130,6 +130,50 @@ test("missing OPTIONAL cap -> pre-check its suggestedRole, but not a corrective 
   assert.equal(r.action, "none");
 });
 
+test("missing perms + surplus AppRoleAssignment.ReadWrite.All -> canSelfGrant", () => {
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365"],
+    tests: [
+      {
+        systemKey: "m365",
+        status: "fail",
+        accessOk: true,
+        rights: [
+          { op: "create / update users + assign licenses", ok: false, detail: "grant one of: User.ReadWrite.All" },
+          { op: "add users to groups", ok: true, detail: "" },
+          { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+          { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "can consent app roles to itself", surplus: true },
+        ],
+      },
+    ],
+  });
+  assert.ok(r.tags.includes("missing_perms"));
+  assert.ok(r.tags.includes("over_permissioned"));
+  assert.equal(r.canSelfGrant, true);
+});
+
+test("surplus AppRoleAssignment.ReadWrite.All but NO missing perms -> canSelfGrant false", () => {
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365"],
+    tests: [
+      {
+        systemKey: "m365",
+        status: "ok",
+        accessOk: true,
+        rights: [
+          { op: "create / update users + assign licenses", ok: true, detail: "" },
+          { op: "add users to groups", ok: true, detail: "" },
+          { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+          { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "", surplus: true },
+        ],
+      },
+    ],
+  });
+  assert.equal(r.canSelfGrant, false); // nothing to grant
+});
+
 test("worst-of across systems: one entra fail makes the client fail", () => {
   const r = classifyM365Client({
     hasAdminSecret: true,

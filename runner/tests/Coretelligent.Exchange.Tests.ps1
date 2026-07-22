@@ -76,6 +76,38 @@ Describe 'Invoke-CtgExchangeSharedMailboxMirror' {
     }
 }
 
+Describe 'Invoke-CtgExchangeSharedMailboxMirrorBounded' {
+    It 'returns the mirror actions when the bounded run finishes within the budget' {
+        # Stand in a REAL, already-finished job (a Start-Job avoids the real EXO-reconnecting child
+        # scriptblock while still being a genuine Job the real Receive-/Remove-Job can bind + read).
+        Mock Start-ThreadJob -ModuleName Coretelligent.Exchange -MockWith {
+            Start-Job -ScriptBlock { 'granted FullAccess on shared mailbox sales@x.com (Sales) — mirrored from mirror@x.com' } | Wait-Job
+        }
+        $acts = Invoke-CtgExchangeSharedMailboxMirrorBounded -MirrorUser 'mirror@x.com' -NewUser 'new@x.com' -AppId 'app' -Organization 'x.com' -TimeBudgetSeconds 30 -PollSeconds 0
+        ($acts -join ' ') | Should -Match 'granted FullAccess on shared mailbox sales@x.com'
+    }
+
+    It 'abandons the run and WARNs (never blocks the onboard) when the budget is exceeded' {
+        # A REAL long-running job + a zero budget -> the wait falls straight through to the abandon branch,
+        # which Stop/Remove-Jobs it. Asserts the onboard is handed a best-effort WARN, never left blocking.
+        Mock Start-ThreadJob -ModuleName Coretelligent.Exchange -MockWith { Start-Job -ScriptBlock { Start-Sleep -Seconds 999 } }
+        $acts = Invoke-CtgExchangeSharedMailboxMirrorBounded -MirrorUser 'mirror@x.com' -NewUser 'new@x.com' -AppId 'app' -Organization 'x.com' -TimeBudgetSeconds 0 -PollSeconds 0
+        ($acts -join ' ') | Should -Match 'exceeded 0s and was abandoned'
+    }
+
+    It 'falls back to the inline mirror when no connection args are supplied (no regression)' {
+        Mock Start-ThreadJob -ModuleName Coretelligent.Exchange -MockWith { throw 'ThreadJob should not be used on the inline fallback' }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ DisplayName='Mirror'; PrimarySmtpAddress='mirror@x.com'; UserPrincipalName='mirror@x.com' } }
+        Mock Get-Mailbox   -ModuleName Coretelligent.Exchange -ParameterFilter { $RecipientTypeDetails -eq 'SharedMailbox' } -MockWith { @() }
+
+        # No -AppId / -Organization -> inline path (calls the real mirror, which finds 0 shared mailboxes).
+        $acts = Invoke-CtgExchangeSharedMailboxMirrorBounded -MirrorUser 'mirror@x.com' -NewUser 'new@x.com'
+
+        ($acts -join ' ') | Should -Match 'shared-mailbox mirror from mirror@x.com: 0 FullAccess'
+        Should -Invoke Start-ThreadJob -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+    }
+}
+
 Describe 'Invoke-CtgExchangeDefaultMailboxAccess' {
     BeforeEach {
         # Target user (the new hire) — one Get-Recipient lookup by NewUser.

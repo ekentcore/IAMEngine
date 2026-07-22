@@ -17,6 +17,26 @@ Describe 'Invoke-CtgAdobeOnboarding' {
             $Commands[0].user -eq 'jdoe@61commodities.com' -and ($Commands[0].do[0].add.product -contains 'Acrobat Pro DC')
         } -Times 1
     }
+
+    It 'reports "nothing to grant" (no throw) when no product profiles are configured' {
+        # Regression: `@(x) | Where-Object` returns $null when nothing survives, and `$null.Count`
+        # THROWS under StrictMode Latest — so an onboard for a client with no productProfiles failed with
+        # "The property 'Count' cannot be found on this object" instead of a clean no-op.
+        Mock Invoke-CtgAdobeAction -ModuleName Coretelligent.Adobe -MockWith { throw 'must not call the action seam when nothing to grant' }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@dhm.com' }
+        $r = Invoke-CtgAdobeOnboarding -User $user -Config ([pscustomobject]@{})
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no Adobe product profiles configured'
+        Should -Invoke Invoke-CtgAdobeAction -ModuleName Coretelligent.Adobe -Times 0 -Exactly
+    }
+
+    It 'reports "nothing to grant" when productProfiles is present but empty' {
+        Mock Invoke-CtgAdobeAction -ModuleName Coretelligent.Adobe -MockWith { throw 'must not call the action seam when nothing to grant' }
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@dhm.com' }
+        $r = Invoke-CtgAdobeOnboarding -User $user -Config ([pscustomobject]@{ productProfiles = @() })
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'no Adobe product profiles configured'
+    }
 }
 
 Describe 'Invoke-CtgAdobeOffboarding' {

@@ -1118,7 +1118,14 @@ function Invoke-CtgM365ExoFinish {
         if ($names.Count) { foreach ($a in (Invoke-CtgExchangeNamedGroups -NewUser $upn -Groups $names)) { $out.Add($a) } }
         if ($mirror) {
             foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser $mirror -NewUser $upn)) { $out.Add($a) }
-            foreach ($a in (Invoke-CtgExchangeSharedMailboxMirror -MirrorUser $mirror -NewUser $upn)) { $out.Add($a) }
+            # BEST-EFFORT + BOUNDED: the shared-mailbox scan does one un-timed EXO read per mailbox; a
+            # single stalled session there used to wedge the whole onboard (and everything that dependsOn
+            # m365) until the process watchdog restarted the runner. Run it time-bounded in its own
+            # runspace so it can never hold the onboard hostage — heartbeat while we wait so the run report
+            # keeps moving. Budget via RUNNER_MIRROR_BUDGET_SECONDS (default 300).
+            $mirrorBudget = if ($env:RUNNER_MIRROR_BUDGET_SECONDS) { [int]$env:RUNNER_MIRROR_BUDGET_SECONDS } else { 300 }
+            $mirrorHeartbeat = { Set-CtgPhase $Job.id "mirroring shared-mailbox permissions from $mirror (bounded scan — up to ${mirrorBudget}s)" }.GetNewClosure()
+            foreach ($a in (Invoke-CtgExchangeSharedMailboxMirrorBounded -MirrorUser $mirror -NewUser $upn -AppId $s.Credential.UserName -Organization $exoOrg -CertArgs $certArgs -TimeBudgetSeconds $mirrorBudget -Heartbeat $mirrorHeartbeat)) { $out.Add($a) }
         }
         # FR #15: grant the per-client default shared mailboxes at their chosen level (list-driven,
         # independent of any mirror). Idempotent — a re-run only fills gaps.

@@ -79,6 +79,44 @@ Describe 'Invoke-CtgM365Onboarding' {
         Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { }
     }
 
+    Context 'ad-synced adopt-only (cloudCreate=deny)' {
+        # NB: Pester v5 runs the Context body in DISCOVERY and It blocks in RUN, so $user/$pwd must be
+        # built INSIDE each It (a Context-scope var is $null at run time) — matching the tests above.
+        It 'does NOT create and fails clearly when no account exists anywhere' {
+            $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }   # UPN candidates AND broader search miss
+            { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ cloudCreate = 'deny' }) -InitialPassword $pwd } |
+                Should -Throw -ExpectedMessage '*no synced M365 account*did NOT create*'
+            Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        }
+
+        It 'raises DECISION_NEEDED:synced_upn_mismatch when a synced user exists under a DIFFERENT UPN' {
+            $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+                param($UserId, $Filter)
+                # UPN-candidate lookups (by -UserId) miss; the broader displayName+onPremisesSyncEnabled filter hits.
+                if ("$Filter" -match "displayName eq 'Jane Doe'") {
+                    return [pscustomobject]@{ Id='uid-synced'; DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; OnPremisesSyncEnabled=$true }
+                }
+                return $null
+            }
+            { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ cloudCreate = 'deny' }) -InitialPassword $pwd } |
+                Should -Throw -ExpectedMessage '*DECISION_NEEDED:synced_upn_mismatch*expected=jane.doe@x.com*found=jdoe@x.com*'
+            Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        }
+
+        It 'STILL creates when cloudCreate=allow and no account exists (override / non-ad-synced)' {
+            $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }
+            $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ cloudCreate = 'allow' }) -InitialPassword $pwd
+            $r.Status | Should -Be 'ok'
+            Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        }
+    }
+
     It 'uses the fallback username when the primary UPN is taken by a DIFFERENT person' {
         # Primary jdoe@x.com is taken by John Doe (a different person); fallback j.doe@x.com is free.
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {

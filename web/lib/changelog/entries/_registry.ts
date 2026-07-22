@@ -5,6 +5,7 @@
 export { entry as acceptedFailureCaseStatus } from "./accepted-failure-case-status";
 export { entry as adAmbientAuthFirst } from "./ad-ambient-auth-first";
 export { entry as adDcOptional } from "./ad-dc-optional";
+export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case-resolution";
 export { entry as adobeConsoleAutoSetup } from "./adobe-console-auto-setup";
@@ -208,6 +209,9 @@ export { entry as featureRequestSendToChat } from "./feature-request-send-to-cha
 export { entry as locationGroupsLaneAware } from "./location-groups-lane-aware";
 export { entry as guidedSetupLiveTestFeedback } from "./guided-setup-live-test-feedback";
 export { entry as fleetSetupM365 } from "./fleet-setup-m365";
+export { entry as fleetM365SelfGrant } from "./fleet-m365-self-grant";
 export { entry as conntestNotNeededRows } from "./conntest-not-needed-rows";
 export { entry as m365ProxyaddressConflictFeedback } from "./m365-proxyaddress-conflict-feedback";
 export { entry as replanRederiveNeverrunMode } from "./replan-rederive-neverrun-mode";
+export { entry as adobeOnboardEmptyProfiles } from "./adobe-onboard-empty-profiles";
+export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";

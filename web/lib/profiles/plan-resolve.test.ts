@@ -440,3 +440,33 @@ test("offboard hide-from-GAL: does nothing on onboard", () => {
   const out = resolvePlannedConfigs(galClient, {}, "onboard", [galJob("exchange")]);
   assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
 });
+
+// FR #25 — AD-synced clients must not create cloud accounts unless explicitly allowed. The planner
+// stamps a create policy onto the m365/entra onboard jobs the runner enforces at its create gate.
+test("ad_synced client stamps cloudCreate:'deny' on m365 and entra onboard jobs", () => {
+  const adClient = { backbone: "ad_synced", personas: null, globals: null, locations: null };
+  const resolved = resolvePlannedConfigs(adClient, payload, "onboard", [job("m365", {}), job("entra", {}), job("active-directory", {})]);
+  assert.equal((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).cloudCreate, "deny");
+  assert.equal((resolved.find((j) => j.systemKey === "entra")!.config as Record<string, unknown>).cloudCreate, "deny");
+  // The AD lane is never stamped.
+  assert.equal((resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).cloudCreate, undefined);
+});
+
+test("ad_synced with the persistent allowCloudCreate flag stamps 'allow'", () => {
+  const adClient = { backbone: "ad_synced", personas: null, globals: null, locations: null };
+  const resolved = resolvePlannedConfigs(adClient, payload, "onboard", [job("m365", { allowCloudCreate: true })]);
+  assert.equal((resolved[0].config as Record<string, unknown>).cloudCreate, "allow");
+});
+
+test("ad_synced with the per-case override stamps 'allow'", () => {
+  const adClient = { backbone: "ad_synced", personas: null, globals: null, locations: null };
+  const resolved = resolvePlannedConfigs(adClient, { ...payload, allowCloudCreate: true }, "onboard", [job("m365", {})]);
+  assert.equal((resolved[0].config as Record<string, unknown>).cloudCreate, "allow");
+});
+
+test("non-ad-synced (entra) backbone never stamps cloudCreate", () => {
+  const entraClient = { backbone: "entra", personas: null, globals: null, locations: null };
+  const resolved = resolvePlannedConfigs(entraClient, payload, "onboard", [job("m365", {}), job("entra", {})]);
+  assert.equal((resolved[0].config as Record<string, unknown>).cloudCreate, undefined);
+  assert.equal((resolved[1].config as Record<string, unknown>).cloudCreate, undefined);
+});
