@@ -23,7 +23,6 @@ import { CaseDomainSelect } from "../_components/case-domain-select";
 import { RescanButton } from "../_components/rescan-button";
 import { RevealPasswordButton } from "../_components/reveal-password-button";
 import { HardMatchButton } from "../_components/hard-match-button";
-import { DryRunToggle } from "../_components/dry-run-toggle";
 import { ExitDryRunButton } from "../_components/exit-dry-run-button";
 import { PauseButton } from "../_components/pause-button";
 import { ScheduleButton } from "../_components/schedule-button";
@@ -181,10 +180,17 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
 
       {changePreviewDiffs && <ChangePreview caseId={c.id} diffs={changePreviewDiffs} />}
 
-      <div style={{ margin: "0.5rem 0 1rem", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <DryRunToggle caseId={c.id} dryRun={c.dryRun} locked={started} />
-        {c.dryRun && started && <ExitDryRunButton caseId={c.id} />}
-      </div>
+      {/* Dry run is no longer offered as an option (WhatIf suppresses cmdlet output, producing
+          false failures like unset $userId). We still surface an exit path for any case already
+          in dry-run so it can be re-run for real. */}
+      {c.dryRun && (
+        <div style={{ margin: "0.5rem 0 1rem", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="badge" style={{ color: "var(--info-fg)", borderColor: "var(--info-bg)", background: "var(--info-bg)" }}>
+            dry run · no changes made
+          </span>
+          <ExitDryRunButton caseId={c.id} />
+        </div>
+      )}
 
       {playbook && playbook.steps.length > 0 && (
         <>

@@ -92,6 +92,7 @@ export { entry as guidedApiSetup } from "./guided-api-setup";
 export { entry as guidedSetupFullerInstructions } from "./guided-setup-fuller-instructions";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as guidedSetupWizardAndSuggestions } from "./guided-setup-wizard-and-suggestions";
+export { entry as hideDryRunOption } from "./hide-dry-run-option";
 export { entry as importClientsByCoreid } from "./import-clients-by-coreid";
 export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";
 export { entry as knowbe4BrowserSetup } from "./knowbe4-browser-setup";
