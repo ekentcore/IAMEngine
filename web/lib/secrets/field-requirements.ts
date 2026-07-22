@@ -12,10 +12,18 @@
 // field is absent (e.g. an on-DC agent binds to its local domain with no -Server), so the Test must
 // NOT report them as missing. They stay in the list to document the field the connector will USE if
 // present and to keep the synonym lists honest about what the runner reads.
+// `unlessAnyPresent` waives a requirement when any of the named fields is present — for a credential
+// with two ALTERNATIVE shapes, where one field makes a whole other set moot (e.g. egnyte: a pre-minted
+// Token replaces the client_id/secret/account/password the runner would otherwise use to mint one).
 // `hint` is a one-line "where do I get this" shown under the field in the guided setup's create form —
 // inline guidance in place of screenshots (which would go stale per vendor and per client). Optional:
 // a field with no hint just renders its synonym examples.
-export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean; optional?: boolean; hint?: string };
+export type FieldReq = { label: string; anyOf: string[]; orClientDomain?: boolean; optional?: boolean; unlessAnyPresent?: string[]; hint?: string };
+
+// Egnyte access-token synonyms — a long-lived pre-minted bearer token is an alternative to the four
+// fields the runner uses to mint one (client_id + client_secret + username + password). Named once so
+// the token requirement and each field it waives (via unlessAnyPresent) can't drift apart.
+const EGNYTE_TOKEN_SYNONYMS = ["Token", "AccessToken", "Access Token", "ApiToken", "Api Token", "Bearer"];
 
 export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   // M365 admin (Graph app registration): an app id + a client secret + a tenant hint (the tenant can
@@ -75,11 +83,21 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "client id", anyOf: ["ClientId", "ClientID", "Client ID", "Username"], hint: "same app → Client ID" },
     { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key", "Password"], hint: "same app → Client Secret" },
   ],
-  // Egnyte — synonyms MIRROR the runner's Egnyte Connect $pick. Preferred setup is a long-lived bearer
-  // Token; the Domain is the tenant subdomain (drakestar for drakestar.egnyte.com), not the email domain.
+  // Egnyte — the runner mints a bearer token via the Resource Owner Password grant (developers.egnyte.com):
+  // POST /puboauth/token with client_id (the API Key) + client_secret (the API Secret) + username + password.
+  // So the credential is four fields: ClientID (key) + ClientSecret + AccountID (the admin login EMAIL, the
+  // OAuth username — this is the stock "Automation - API" template's accountid slot) + Password. Synonyms
+  // MIRROR the runner's Egnyte Connect $pick. Alternatively a pre-minted long-lived Token stands in for all
+  // four — so each of the four is waived (unlessAnyPresent) when a Token is present, and a Token-only secret
+  // (what the browser auto-setup harvests) still passes. Domain is the tenant subdomain (drakestar for
+  // drakestar.egnyte.com), NOT the email domain — optional because the runner derives it from the login email.
   egnyte: [
-    { label: "egnyte domain", anyOf: ["Domain", "EgnyteDomain", "Egnyte Domain", "Tenant", "AccountID", "AccountId"], hint: "the tenant subdomain — 'drakestar' for drakestar.egnyte.com" },
-    { label: "api token", anyOf: ["Token", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Bearer"], hint: "a long-lived Egnyte API token authorized by a domain admin (developers.egnyte.com)" },
+    { label: "client id (key)", anyOf: ["ClientID", "ClientId", "Client ID", "Key", "APIKey", "API Key", "ApiKey"], unlessAnyPresent: EGNYTE_TOKEN_SYNONYMS, hint: "Egnyte calls this the API Key — developers.egnyte.com → your application → Key (the OAuth client_id)" },
+    { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "API Secret", "APISecret"], unlessAnyPresent: EGNYTE_TOKEN_SYNONYMS, hint: "the API Secret paired with the key (required for keys issued after Jan 2015)" },
+    { label: "account id (login email)", anyOf: ["accountid", "AccountId", "AccountID", "Account ID", "Account", "Username", "Email", "Login", "User"], unlessAnyPresent: EGNYTE_TOKEN_SYNONYMS, hint: "the Egnyte admin login email the token is minted on behalf of (the OAuth username)" },
+    { label: "password", anyOf: ["Password", "Pass"], unlessAnyPresent: EGNYTE_TOKEN_SYNONYMS, hint: "that admin account's Egnyte password" },
+    { label: "egnyte domain", anyOf: ["Domain", "EgnyteDomain", "Egnyte Domain", "Tenant"], optional: true, hint: "tenant subdomain — 'drakestar' for drakestar.egnyte.com; leave blank to derive it from the login email" },
+    { label: "api token", anyOf: EGNYTE_TOKEN_SYNONYMS, optional: true, hint: "alternative to the four fields above: a pre-minted long-lived Egnyte access token" },
   ],
   // Egnyte admin CONSOLE login — the credential the browser auto-setup signs in WITH (email +
   // password, optional TOTP seed). DISTINCT from the `egnyte` API credential (domain + token) it
@@ -288,6 +306,9 @@ export function checkFieldShape(
       if (r.optional) return false;
       // Some requirements (m365 tenant, spanning user) can be supplied by the client's primary domain.
       if (r.orClientDomain && opts.clientHasTenantHint) return false;
+      // Waived when an alternative-shape field is present (e.g. egnyte: a pre-minted Token replaces the
+      // client_id/secret/account/password used to mint one), so neither shape false-flags the other.
+      if (r.unlessAnyPresent && r.unlessAnyPresent.some((syn) => have.has(norm(syn)))) return false;
       return !r.anyOf.some((syn) => have.has(norm(syn)));
     })
     .map((r) => r.label);

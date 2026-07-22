@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRights, summarizeRights, testableSystems, type TestableSystemInput } from "./conn-test-logic";
+import { isNotNeededForTest, parseRights, summarizeRights, testableSystems, type TestableSystemInput } from "./conn-test-logic";
+import { NOT_NEEDED } from "../cases/case-secrets";
 
 function sys(over: Partial<TestableSystemInput> & { systemKey: string }): TestableSystemInput {
   return { mode: "api", secretNames: ["s"], config: null, ...over };
@@ -60,6 +61,37 @@ test("testableSystems: a required secret alongside an optional one keeps only th
   // A member-server AD lane could list both a real required secret and ad-dc; only ad-dc is stripped.
   const rows = testableSystems([sys({ systemKey: "active-directory", secretNames: ["ad-svc", "ad-dc"] })], true);
   assert.deepEqual(rows[0].secretNames, ["ad-svc"]);
+});
+
+// A system whose every REQUIRED secret is marked NOT_NEEDED is a manual step — there's nothing to
+// connect to, so it must be surfaced as a read-only "not needed" row, never dispatched to a runner
+// (which would only fail the broker with "secret is marked not needed — nothing to test").
+test("isNotNeededForTest: true only when every required secret is NOT_NEEDED", () => {
+  assert.equal(isNotNeededForTest(["a"], new Map([["a", NOT_NEEDED]])), true);
+  assert.equal(isNotNeededForTest(["a", "b"], new Map([["a", NOT_NEEDED], ["b", NOT_NEEDED]])), true);
+  // any required secret with a real (or unset) reference means it still connects to something
+  assert.equal(isNotNeededForTest(["a", "b"], new Map([["a", NOT_NEEDED], ["b", "1234"]])), false);
+  assert.equal(isNotNeededForTest(["a"], new Map([["a", null]])), false);
+  assert.equal(isNotNeededForTest(["a"], new Map()), false);
+  assert.equal(isNotNeededForTest([], new Map()), false);
+  assert.equal(isNotNeededForTest(null, new Map()), false);
+});
+
+test("isNotNeededForTest: an OPTIONAL secret is ignored when deciding not-needed", () => {
+  // ad-dc is optional; an AD system whose ONLY secret is a not-needed ad-dc still connects via ambient
+  // auth, so it is NOT not-needed (there's a real Get-ADDomain probe to run).
+  assert.equal(isNotNeededForTest(["ad-dc"], new Map([["ad-dc", NOT_NEEDED]])), false);
+  // a required secret marked not-needed IS not-needed even if a not-needed optional rides alongside it.
+  assert.equal(isNotNeededForTest(["ad-svc", "ad-dc"], new Map([["ad-svc", NOT_NEEDED], ["ad-dc", NOT_NEEDED]])), true);
+});
+
+test("testableSystems: excludes not-needed systems when secret references are provided", () => {
+  const systems = [sys({ systemKey: "m365", secretNames: ["m365-app"] }), sys({ systemKey: "mimecast", secretNames: ["mc"] })];
+  const ext = new Map<string, string | null>([["m365-app", "9999"], ["mc", NOT_NEEDED]]);
+  // with references: the not-needed mimecast drops out, only m365 is dispatched
+  assert.deepEqual(testableSystems(systems, false, undefined, ext).map((r) => r.systemKey), ["m365"]);
+  // without references (older callers): behaviour unchanged — both systems are testable
+  assert.deepEqual(testableSystems(systems, false).map((r) => r.systemKey).sort(), ["m365", "mimecast"]);
 });
 
 test("parseRights: normalizes, drops malformed, caps detail", () => {

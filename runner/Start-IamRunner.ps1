@@ -1383,23 +1383,33 @@ $DISPATCH = @{
         Validate = { param($job, $creds) Confirm-CtgPerimeter81 -User $job.payload -Config $job.config -Action $job.action }
     }
     'egnyte' = @{
-        # Egnyte: per-tenant host https://{Domain}.egnyte.com, OAuth2 bearer. Secret fields:
-        # Domain (the tenant subdomain, e.g. "drakestar") + either a long-lived Token (preferred —
-        # Egnyte tokens don't expire) or ClientID (the API key) + Username/Password (service
-        # account) for the password grant. Template-tolerant field matching; actionable errors.
+        # Egnyte: per-tenant host https://{Domain}.egnyte.com, OAuth2 bearer. The runner mints a token via
+        # the Resource Owner Password grant from ClientID (the API Key) + ClientSecret (the API Secret) +
+        # AccountID/Username (the admin login EMAIL, the OAuth username) + Password. A pre-minted long-lived
+        # Token stands in for all four. Domain is the tenant subdomain (e.g. "drakestar"); when absent it's
+        # derived from the login email's domain label. NB the login email lives in AccountID (the stock
+        # "Automation - API" template's accountid slot), which CRED_USERNAME_FIELDS does NOT pick — so this
+        # block reads username/password off $s.Fields directly rather than relying on $s.Credential.
+        # Template-tolerant field matching; actionable errors.
         Connect  = { param($job, $creds)
             $s = $creds['egnyte']
             if (-not $s) { throw "the job did not broker an 'egnyte' secret — make sure the client's egnyte system lists 'egnyte' in its secrets" }
             $pick = { param($names) foreach ($k in $names) { if ($s.Fields.ContainsKey($k) -and $s.Fields[$k]) { return $s.Fields[$k] } } $null }
-            $domain = & $pick @('Domain', 'EgnyteDomain', 'Tenant', 'AccountID', 'AccountId')
-            if (-not $domain) { throw "the 'egnyte' secret has no Domain field — set it to the tenant subdomain (e.g. 'drakestar' for drakestar.egnyte.com); the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)" }
-            $token = & $pick @('Token', 'AccessToken', 'Access Token', 'ApiToken', 'API Key', 'APIKey', 'Api Key', 'ApiKey', 'Bearer')
-            if ($token) { Connect-CtgEgnyte -Domain $domain -Token $token }
-            else {
-                $clientId = & $pick @('ClientID', 'ClientId', 'Client ID', 'Key')
-                if (-not $clientId -or -not $s.Credential) { throw "the 'egnyte' secret needs either a Token field (preferred) or ClientID + Username/Password for the password grant; the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)" }
-                Connect-CtgEgnyte -Domain $domain -ClientId $clientId -Credential $s.Credential
+            $account = & $pick @('accountid', 'AccountID', 'AccountId', 'Account ID', 'Account', 'Username', 'Email', 'Login', 'User')
+            $domain = & $pick @('Domain', 'EgnyteDomain', 'Egnyte Domain', 'Tenant')
+            # Derive the tenant subdomain from the login email's domain label when no explicit Domain field.
+            if (-not $domain -and $account -match '@') { $domain = (($account -split '@')[1] -split '\.')[0] }
+            if (-not $domain) { throw "the 'egnyte' secret has no Domain field and no login email to derive it from — set Domain to the tenant subdomain (e.g. 'drakestar' for drakestar.egnyte.com), or an AccountID/Username email; the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)" }
+            $token = & $pick @('Token', 'AccessToken', 'Access Token', 'ApiToken', 'Api Token', 'Bearer')
+            if ($token) { Connect-CtgEgnyte -Domain $domain -Token $token; return }
+            $clientId = & $pick @('ClientID', 'ClientId', 'Client ID', 'Key', 'APIKey', 'API Key', 'Api Key', 'ApiKey')
+            $clientSecret = & $pick @('ClientSecret', 'Client Secret', 'Secret', 'API Secret', 'APISecret')
+            $password = & $pick @('Password', 'Pass')
+            if (-not $clientId -or -not $clientSecret -or -not $account -or -not $password) {
+                throw "the 'egnyte' secret needs a long-lived Token, OR all four of ClientID (key) + ClientSecret + AccountID/Username (the admin login email) + Password for the password grant; the secret has: $(@($s.Fields.Keys) -join ', ') (see /help/egnyte)"
             }
+            $cred = [pscredential]::new([string]$account, (ConvertTo-SecureString ([string]$password) -AsPlainText -Force))
+            Connect-CtgEgnyte -Domain $domain -ClientId $clientId -ClientSecret $clientSecret -Credential $cred
         }
         Onboard  = { param($job, $creds) Invoke-CtgEgnyteOnboarding  -User $job.payload -Config $job.config }
         Offboard = { param($job, $creds) Invoke-CtgEgnyteOffboarding -User $job.payload -Config $job.config }

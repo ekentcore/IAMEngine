@@ -5,7 +5,9 @@
 // panel polls the results until every test settles. Four stages per system: Fields (app-side —
 // does the secret read + carry the right fields, stamped at queue time), Can access (runner
 // resolved the secret), API works (connect + one live read), Rights (per-operation permission
-// check where the probe supports it). Per-row "Retest" replaces only that system's row.
+// check where the probe supports it). Per-row "Retest" replaces only that system's row. The staged
+// badges + rights table are the shared renderer (conn-test-badges), also used by the guided-setup
+// wizard so the two surfaces stay identical.
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { StageBadge, RightsBadge, RightsDetail, stageDetail, hasRights, type ConnTest } from "@/lib/jobs/conn-test-badges";
 
@@ -19,14 +21,20 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<Test[] | null> => {
     try {
       const r = await fetch(`/api/clients/${slug}/conn-test`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
-      setTests(d.tests ?? []);
-    } catch (e) { setError((e as Error).message); }
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return null; }
+      const loaded: Test[] = d.tests ?? [];
+      setTests(loaded);
+      return loaded;
+    } catch (e) { setError((e as Error).message); return null; }
   }, [slug]);
+
+  // Load current results on mount so prior tests — and read-only "not needed" rows for manual-step
+  // systems — are visible without first pressing "Test connections".
+  useEffect(() => { void load(); }, [load]);
 
   // Poll while anything is unsettled; stop once all tests are ok/fail.
   useEffect(() => {
@@ -50,8 +58,11 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
       const r = await fetch(`/api/clients/${slug}/conn-test`, { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
-      if ((d.tests ?? []).length === 0) { setTests([]); setError("No testable systems — add an api system with a wired secret first."); return; }
-      await load();
+      // Always reload: even when nothing was QUEUED (d.tests empty), the client may still have
+      // manual-step ("not needed") systems to surface as read-only rows. Only warn when the reloaded
+      // list is truly empty — no testable systems and no not-needed ones either.
+      const loaded = await load();
+      if ((loaded ?? []).length === 0) setError("No testable systems — add an api system with a wired secret first.");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -95,6 +106,23 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
           </tr></thead>
           <tbody>
             {tests.map((t) => {
+              // Manual-step system: the credential is marked "not needed", so there's nothing to test.
+              // Show the name, N/A under every stage column, and say so in Detail — no Retest button and
+              // no probe is ever dispatched for it (runner-service excludes it from the testable set).
+              if (t.status === "not_needed") {
+                return (
+                  <tr key={t.systemKey}>
+                    <td>{systemNames[t.systemKey] ?? t.systemKey}</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted" style={{ maxWidth: 300, whiteSpace: "normal" }}>Cred Has Been Marked as Not Needed</td>
+                    <td></td>
+                  </tr>
+                );
+              }
               const rightsOpen = openRights === t.systemKey;
               return (
                 <Fragment key={t.systemKey}>

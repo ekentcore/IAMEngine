@@ -8,7 +8,10 @@ import { summarizeRights, type RightsRow } from "@/lib/jobs/conn-test-logic";
 // The result shape both surfaces consume (a subset of the /conn-test GET row).
 export type ConnTest = {
   systemKey: string;
-  status: "pending" | "running" | "ok" | "fail";
+  // "not_needed" is a synthetic, read-only row for a manual-step system (every required secret marked
+  // NOT_NEEDED): there's nothing to connect to, so it's never dispatched or tested. Callers short-circuit
+  // these before the stage badges (which only describe a real probe), so the badge helpers never see it.
+  status: "pending" | "running" | "ok" | "fail" | "not_needed";
   detail: string | null;
   accessOk: boolean | null;
   accessDetail: string | null;

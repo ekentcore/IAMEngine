@@ -108,6 +108,27 @@ test("proofpoint: admin email + password required; org domain from field or clie
   assert.deepEqual(checkFieldShape("proofpoint", ["X-User"], { clientHasTenantHint: true }), { ok: false, missing: ["admin password (X-Password)"] });
 });
 
+test("egnyte: the four password-grant fields are required (ClientID/ClientSecret/AccountID email/Password)", () => {
+  // Full password-grant credential — the stock "Automation - API" spelling (accountid holds the login email).
+  assert.deepEqual(checkFieldShape("egnyte", ["ClientID", "ClientSecret", "accountid", "Password"]), { ok: true, missing: [] });
+  // Synonyms: Key / Secret / Username-as-the-login-email / Pass, plus an explicit Domain — still clean.
+  assert.deepEqual(checkFieldShape("egnyte", ["Key", "Secret", "Username", "Pass", "Domain"]), { ok: true, missing: [] });
+  // Missing the secret + password -> both flagged (and the domain, being optional, never appears).
+  assert.deepEqual(checkFieldShape("egnyte", ["ClientID", "accountid"]), { ok: false, missing: ["client secret", "password"] });
+});
+
+test("egnyte: a pre-minted Token waives all four mint fields (the browser-harvested secret still passes)", () => {
+  // What the browser auto-setup vaults: just a Domain + Token. Must NOT flag the four mint fields.
+  assert.deepEqual(checkFieldShape("egnyte", ["Domain", "Token"]), { ok: true, missing: [] });
+  // A token alone (domain derived from the login email at runtime, so optional here) also passes.
+  assert.deepEqual(checkFieldShape("egnyte", ["AccessToken"]), { ok: true, missing: [] });
+  // But with NEITHER a token NOR the mint fields, all four mint fields are flagged.
+  assert.deepEqual(checkFieldShape("egnyte", ["Notes"]), {
+    ok: false,
+    missing: ["client id (key)", "client secret", "account id (login email)", "password"],
+  });
+});
+
 test("unknown secret name has no rule -> never flagged", () => {
   assert.deepEqual(checkFieldShape("some-future-system", []), { ok: true, missing: [] });
 });
