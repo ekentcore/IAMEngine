@@ -66,6 +66,16 @@ function log(msg) {
   process.stderr.write(`[browser] ${msg}\n`);
 }
 
+// Coarse stage marker for a browser-based credential setup — one of the SETUP_STAGES vocabulary
+// (signin | create | harvest | vault). Flows call reportStage() at each boundary; it writes a
+// distinctly-prefixed stderr line the PowerShell runner can parse and forward to the job's progress
+// channel (/api/jobs/:id/progress), which the guided-setup wizard mirrors as a checklist. Best-effort
+// and side-effect-free beyond the write — a flow that never calls it simply produces no stage markers
+// (the wizard then shows an indeterminate "working…" step). Never throws into the flow.
+function reportStage(stage) {
+  try { process.stderr.write(`[browser] @@stage:${String(stage)}\n`); } catch { /* progress is best-effort */ }
+}
+
 // Print the single result line + set the exit code. Kept tolerant: a result is always emitted so the
 // PowerShell caller never has to interpret "no output" as anything but a crash.
 let emitted = false;
@@ -141,7 +151,7 @@ async function main() {
   }
 
   try {
-    const result = await run({ page: harness.page, shot: harness.shot, input, log });
+    const result = await run({ page: harness.page, shot: harness.shot, input, log, reportStage });
     emit(result ?? { ok: false, error: `flow "${flowName}" returned no result` });
   } catch (e) {
     // A flow SHOULD return a structured error rather than throw, but if it throws we still emit a
