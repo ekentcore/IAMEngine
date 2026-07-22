@@ -249,6 +249,34 @@ export async function startFleetM365Test(
   return { started: true, id: run.id, clients: sweptClients, tests: queued };
 }
 
+export type RetestOneResult = { ok: boolean; reason?: string; tests?: number };
+
+// Retest ONE client's M365-family systems (the per-row "Retest"), scope-checked. Queues via the same
+// sweep-sourced path so it's picked up by the runner and reflected in the roll-up; does NOT touch the
+// fleet run row (a targeted retest isn't a new sweep). Never `deep`.
+export async function retestFleetM365Client(
+  db: PrismaClient,
+  svc: Pick<RunnerService, "requestConnectionTests">,
+  slug: string,
+  scope: ClientScope
+): Promise<RetestOneResult> {
+  const target = (await loadTargets(db, scope)).find((t) => t.slug === slug);
+  // Out of scope / not an M365 client reads as not-found (mirrors clientSlugInScope semantics).
+  if (!target) return { ok: false, reason: "not found" };
+  const specs = testableSystems(target.m365Systems, target.hasAd);
+  if (specs.length === 0) return { ok: false, reason: "this client has no wired M365 credential to test" };
+  let queued = 0;
+  for (const spec of specs) {
+    try {
+      const out = await svc.requestConnectionTests(slug, spec.systemKey, "sweep");
+      queued += out.tests.length;
+    } catch {
+      /* skip this system — the others still run */
+    }
+  }
+  return { ok: true, tests: queued };
+}
+
 export type FleetM365Row = {
   slug: string;
   name: string;
