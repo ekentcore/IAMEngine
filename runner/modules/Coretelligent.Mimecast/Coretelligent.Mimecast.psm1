@@ -436,8 +436,11 @@ function New-CtgMimecastConsoleInput {
 function Invoke-CtgMimecastConsoleSetup {
     <#
     .SYNOPSIS
-        Drive the Mimecast Administration Console via the browser sidecar. Phase 1: SIGN-IN TEST
-        (Config.signInOnly) — prove the console login + MFA work; changes nothing.
+        Drive the Mimecast Administration Console via the browser sidecar. Config.signInOnly=$true
+        (Phase 1): SIGN-IN TEST — prove the console login + MFA work; changes nothing. signInOnly=$false
+        (Phase 2): additionally create the "iam-engine" API 2.0 application, enable its products, generate
+        + HARVEST its Client ID/Secret, and return them as a `Credentials` note-property (never logged) so
+        the APP vaults them to Delinea. Selectors for the create-app path are LIVE-VALIDATION PENDING.
     .DESCRIPTION
         Resolves the console login from the brokered 'mimecast-console' secret and runs the
         'mimecast-console-signin' flow. UNLIKE the Google OAuth sign-in (whose browser failure is a
@@ -461,22 +464,34 @@ function Invoke-CtgMimecastConsoleSetup {
 
     $params = @{ signInOnly = $signInOnly }
     if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    # Phase 2 may pass an app name (default "iam-engine" in the flow); the idempotency key is this name.
+    $appName = [string](Get-CtgProp $Config 'appName')
+    if (-not [string]::IsNullOrWhiteSpace($appName)) { $params['appName'] = $appName }
     $flowInput = New-CtgMimecastConsoleInput -Secret $Secret -SecretName $SecretName -OtpRequest $OtpRequest -Params $params -Actions $actions
     if (-not $flowInput) {
         throw "Mimecast console sign-in could not start — $([string]::Join(' ', $actions))"
     }
 
-    # -TimeoutSeconds 240: browser launch + Mimecast sign-in + MFA (can wait out a TOTP window).
-    $res = Invoke-CtgBrowserFlow -Flow 'mimecast-console-signin' -InputObject $flowInput -TimeoutSeconds 240
+    # -TimeoutSeconds 300: sign-in + MFA + (Phase 2) create-app wizard + credential generation.
+    $res = Invoke-CtgBrowserFlow -Flow 'mimecast-console-signin' -InputObject $flowInput -TimeoutSeconds 300
     if ($res.ok) {
         $msg = if ($res.message) { $res.message } else { 'signed in to the Mimecast Administration Console' }
         $actions.Add($msg)
-        return [pscustomobject]@{ System = 'mimecast-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        $out = [pscustomobject]@{ System = 'mimecast-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        # Phase 2: carry the harvested API 2.0 credential back so the APP can vault it to Delinea. The
+        # values are NEVER logged/added to Actions — only attached for the app's single-fire result handler.
+        if ($res.harvested -and $res.harvested.clientId -and $res.harvested.clientSecret) {
+            Add-Member -InputObject $out -NotePropertyName Credentials -NotePropertyValue ([pscustomobject]@{
+                clientId     = [string]$res.harvested.clientId
+                clientSecret = [string]$res.harvested.clientSecret
+            })
+        }
+        return $out
     }
     $err = if ($res.error) { $res.error } else { 'unknown error' }
     $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
-    # THROW (fail the job) so the app's sign-in test reads as failed, with the error + screenshot path.
-    throw "Mimecast console sign-in failed — $err$ev"
+    # THROW (fail the job) so the app's setup/sign-in test reads as failed, with the error + screenshot path.
+    throw "Mimecast console setup failed — $err$ev"
 }
 
 Export-ModuleMember -Function Connect-CtgMimecast, Invoke-CtgMimecastApi, Get-CtgMimecastProfile, Test-CtgMimecastPermissionForbidden, Find-CtgMimecastGroup, Invoke-CtgMimecastOnboarding, Invoke-CtgMimecastOffboarding, Confirm-CtgMimecast, Resolve-CtgMimecastConsoleLogin, Invoke-CtgMimecastConsoleSetup

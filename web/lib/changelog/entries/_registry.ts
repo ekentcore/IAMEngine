@@ -128,6 +128,7 @@ export { entry as manualCaseNumbersAndFixStatus } from "./manual-case-numbers-an
 export { entry as manualSetPasswordOption } from "./manual-set-password-option";
 export { entry as mfaDefaultMethodRemovedLast } from "./mfa-default-method-removed-last";
 export { entry as mimecastConntestAndSubfolderRequired } from "./mimecast-conntest-and-subfolder-required";
+export { entry as mimecastConsolePhase2 } from "./mimecast-console-phase2";
 export { entry as mimecastConsoleSigninSecretRef } from "./mimecast-console-signin-secret-ref";
 export { entry as mimecastConsoleSigninTest } from "./mimecast-console-signin-test";
 export { entry as mimecastConsoleUrlFix } from "./mimecast-console-url-fix";

@@ -62,6 +62,8 @@ export function GuidedApiSetup({
   const [consoleSecretRef, setConsoleSecretRef] = useState("");
   // Automatic tab: the live status line for the console sign-in test ("Signing in…", pass, fail).
   const [signinStatus, setSigninStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
+  // Automatic tab: Phase-2 "create the API app & vault" status.
+  const [createStatus, setCreateStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
   // Refresh the page ONCE per successful save, mirroring M365SetupButton's refreshedOnDone guard.
   const refreshedOnDone = useRef(false);
 
@@ -221,9 +223,48 @@ export function GuidedApiSetup({
     }
   }
 
+  // Automatic tab, Phase 2: create the API 2.0 app in the console, harvest its Client ID/Secret, and
+  // vault them to Delinea. Dispatches the full (signInOnly:false) console job, polls to completion; the
+  // GET vaults the harvested credential and returns the new Delinea secret id. Do a sign-in test first.
+  async function createApiApp() {
+    setCreateStatus({ state: "running" });
+    try {
+      const ref = consoleSecretRef.trim();
+      const r = await fetch(`/api/clients/${slug}/mimecast-console/create-api-app`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ref ? { consoleSecretRef: ref } : {}),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.jobId) {
+        setCreateStatus({ state: "done", verdict: { ok: false, text: d.error ?? `couldn't start (${r.status})` } });
+        return;
+      }
+      for (let i = 0; i < SIGNIN_MAX_POLLS; i++) {
+        await sleep(SIGNIN_POLL_MS);
+        const s = await fetch(`/api/clients/${slug}/mimecast-console/create-api-app?jobId=${encodeURIComponent(d.jobId)}`);
+        const sd = await s.json().catch(() => ({}));
+        if (sd.done) {
+          setCreateStatus({
+            state: "done",
+            verdict: sd.ok
+              ? { ok: true, text: `API application created and its credential vaulted${sd.externalId ? ` (Delinea secret ${sd.externalId})` : ""}.` }
+              : { ok: false, text: sd.error ?? "the automated setup failed" },
+          });
+          if (sd.ok && !refreshedOnDone.current) { refreshedOnDone.current = true; router.refresh(); }
+          return;
+        }
+      }
+      setCreateStatus({ state: "done", verdict: { ok: false, text: "still running after several minutes — check the agent and re-run." } });
+    } catch (e) {
+      setCreateStatus({ state: "done", verdict: { ok: false, text: (e as Error).message } });
+    }
+  }
+
   const canSubmitPaste = fields.every((f) => (values[f.label] ?? "").trim() !== "");
   const canSubmitExisting = externalId.trim() !== "";
   const signinRunning = signinStatus.state === "running";
+  const createRunning = createStatus.state === "running";
 
   return (
     <>
@@ -368,9 +409,13 @@ export function GuidedApiSetup({
                 style={{ width: 320 }}
               />
             </label>
-            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
-              <button type="button" className="primary" disabled={signinRunning} onClick={testConsoleSignin}>
+            <div className="toolbar" style={{ marginTop: "0.5rem", gap: 8 }}>
+              <button type="button" disabled={signinRunning || createRunning} onClick={testConsoleSignin}>
                 {signinRunning ? "Signing in…" : "Test sign-in"}
+              </button>
+              <button type="button" className="primary" disabled={signinRunning || createRunning} onClick={createApiApp}
+                title="Create the API 2.0 application in the console, harvest its Client ID/Secret, and vault them to Delinea. Run a sign-in test first.">
+                {createRunning ? "Creating & vaulting…" : "Create API app & vault"}
               </button>
             </div>
             {signinStatus.verdict && (
@@ -378,9 +423,15 @@ export function GuidedApiSetup({
                 {signinStatus.verdict.ok ? "✓ " : "✗ "}{signinStatus.verdict.text}
               </p>
             )}
+            {createStatus.verdict && (
+              <p className="note" style={{ color: createStatus.verdict.ok ? "#2e7d32" : "#b91c1c" }}>
+                {createStatus.verdict.ok ? "✓ " : "✗ "}{createStatus.verdict.text}
+              </p>
+            )}
             <p className="note muted" style={{ marginTop: "0.5rem" }}>
-              Creating the API application automatically is coming next. For now, use <b>Paste fields</b> after a
-              successful sign-in test.
+              Creates an “iam-engine” API 2.0 app (Basic Administrator + Account/Domain/User &amp; Group
+              Management) and vaults the credential. Needs live-console validation. If it can’t drive the
+              console, use <b>Paste fields</b> after a successful sign-in test.
             </p>
           </div>
         )}

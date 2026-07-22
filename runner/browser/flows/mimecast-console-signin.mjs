@@ -242,8 +242,150 @@ export default async function mimecastConsoleSignin({ page, shot, input, log }) 
     return { ok: true, message: "signed in to the Mimecast Administration Console" };
   }
 
-  // Phase 2 (create the API 2.0 application + harvest the credential) is not built yet. Reaching here
-  // means a caller dispatched a full run against a Phase-1 runner — fail clearly rather than silently
-  // no-op so it's obvious the automated setup isn't available on this agent.
-  return { ok: false, error: "automated Mimecast API-app creation is not implemented in this runner version — use the guided setup's Paste fields tab to enter the credential." };
+  // Phase 2: create the API 2.0 application and harvest its Client ID + Client Secret.
+  const appName = input?.params?.appName || "iam-engine";
+  return createApiApp({ page, shot, input, log, appName });
+}
+
+// -------------------------------------------------------------------------------------------------
+// PHASE 2 — CREATE THE API 2.0 APPLICATION + HARVEST (LIVE-VALIDATION PENDING)
+// -------------------------------------------------------------------------------------------------
+// Drives, post-sign-in: Services/Integrations -> API and Platform Integrations -> Add API Application
+// -> name + role (Basic Administrator) + products (Account Management, Domain Management, User & Group
+// Management) -> save/activate -> open the app -> Manage API 2.0 credentials -> Generate -> read the
+// shown-once Client ID + Client Secret. Idempotent-ish: if an app of this name already exists, it opens
+// it and regenerates the 2.0 credential rather than erroring.
+//
+// EVERY selector here is BEST-EFFORT — the console DOM is unverified (no live tenant / Chromium in this
+// env). Each is a small union in this file's style, tagged with its console location, and every step
+// logs which stage it reached so a live run pinpoints the first wrong selector. The harvested secret is
+// NEVER logged.
+const A = {
+  // Left-nav / menu route to the API applications list. Mimecast has shipped this under both
+  // "Services > API and Platform Integrations" and "Administration > ...". Try a direct link first.
+  apiIntegrationsLink: 'a:has-text("API and Platform Integrations"), a:has-text("API Applications"), a[href*="api-applications" i], a[href*="integrations" i]',
+  servicesMenu: 'button:has-text("Services"), a:has-text("Services"), button:has-text("Administration"), [role="button"]:has-text("Services")',
+  addApp: 'button:has-text("Add API Application"), button:has-text("Add Application"), a:has-text("Add API Application"), button:has-text("Create Application")',
+  // Existing app row by name (idempotency).
+  appRow: (name) => `tr:has-text("${name}"), [role="row"]:has-text("${name}"), a:has-text("${name}")`,
+  appName: 'input[name*="name" i], input[id*="name" i], input[placeholder*="name" i]',
+  next: 'button:has-text("Next"), button:has-text("Continue"), button[type="submit"]',
+  save: 'button:has-text("Save and Exit"), button:has-text("Save"), button:has-text("Add"), button:has-text("Create"), button[type="submit"]',
+  role: 'select[name*="role" i], [aria-label*="role" i], button:has-text("Basic Administrator")',
+  product: (label) => `label:has-text("${label}"), text="${label}"`,
+  manageCreds: 'button:has-text("Manage API 2.0 credentials"), a:has-text("Manage API 2.0 credentials"), button:has-text("API 2.0"), a:has-text("API 2.0")',
+  generate: 'button:has-text("Generate"), button:has-text("Create Keys"), button:has-text("Generate Keys")',
+  // The shown-once credential fields. Read from labelled read-only inputs, else nearby monospace text.
+  clientId: 'input[readonly][value], [data-testid*="client-id" i], [aria-label*="Client ID" i]',
+  clientSecret: 'input[readonly][value], [data-testid*="client-secret" i], [aria-label*="Client Secret" i]',
+};
+
+const PRODUCTS = ["Account Management", "Domain Management", "User & Group Management"];
+
+async function createApiApp({ page, shot, input, log, appName }) {
+  try {
+    // 1. Reach the API applications list. Prefer a direct link; fall back to a Services/Admin menu.
+    log("opening API and Platform Integrations");
+    let link = page.locator(A.apiIntegrationsLink).first();
+    if (!(await link.isVisible().catch(() => false))) {
+      await page.locator(A.servicesMenu).first().click().catch(() => {});
+      await page.waitForTimeout(1000);
+      link = page.locator(A.apiIntegrationsLink).first();
+    }
+    if (!(await link.isVisible().catch(() => false))) {
+      return { ok: false, error: "could not find 'API and Platform Integrations' in the console — VERIFY the navigation selectors against the live Mimecast console.", evidence: await shot("mc-no-integrations") };
+    }
+    await link.click().catch(() => {});
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForTimeout(1500);
+
+    // 2. Idempotency: reuse an existing app of this name if present; else Add API Application.
+    const existing = page.locator(A.appRow(appName)).first();
+    if (await existing.isVisible().catch(() => false)) {
+      log(`an API application named "${appName}" already exists — opening it to (re)generate its 2.0 credential`);
+      await existing.click().catch(() => {});
+      await page.waitForTimeout(1500);
+    } else {
+      log(`creating API application "${appName}"`);
+      const add = page.locator(A.addApp).first();
+      if (!(await add.isVisible().catch(() => false))) {
+        return { ok: false, error: "could not find the 'Add API Application' button — VERIFY the selector against the live console.", evidence: await shot("mc-no-add") };
+      }
+      await add.click().catch(() => {});
+      await page.waitForTimeout(1000);
+      // Name.
+      const nameField = page.locator(A.appName).first();
+      if (await nameField.isVisible().catch(() => false)) await nameField.fill(appName);
+      await page.locator(A.next).first().click().catch(() => {});
+      await page.waitForTimeout(1000);
+
+      // Role: Basic Administrator (the wizard step varies — best-effort).
+      log("setting role to Basic Administrator");
+      const roleSel = page.locator(A.role).first();
+      if (await roleSel.isVisible().catch(() => false)) {
+        await roleSel.selectOption({ label: "Basic Administrator" }).catch(async () => { await roleSel.click().catch(() => {}); });
+      }
+      // Products: enable the three required.
+      for (const p of PRODUCTS) {
+        log(`enabling product: ${p}`);
+        const prod = page.locator(A.product(p)).first();
+        if (await prod.isVisible().catch(() => false)) await prod.click().catch(() => {});
+      }
+      // Save / create the application.
+      await page.locator(A.save).first().click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForTimeout(2000);
+      // Open the freshly-created app (list may re-render with it selected, or we re-open by name).
+      const created = page.locator(A.appRow(appName)).first();
+      if (await created.isVisible().catch(() => false)) { await created.click().catch(() => {}); await page.waitForTimeout(1500); }
+    }
+
+    // 3. Manage API 2.0 credentials -> Generate.
+    log("generating the API 2.0 credential");
+    const manage = page.locator(A.manageCreds).first();
+    if (await manage.isVisible().catch(() => false)) { await manage.click().catch(() => {}); await page.waitForTimeout(1200); }
+    const gen = page.locator(A.generate).first();
+    if (!(await gen.isVisible().catch(() => false))) {
+      return { ok: false, error: "could not find 'Manage API 2.0 credentials' / 'Generate' — VERIFY the selectors against the live console (the app may need a few minutes to activate before credentials can be generated).", evidence: await shot("mc-no-generate") };
+    }
+    await gen.click().catch(() => {});
+    await page.waitForTimeout(2500);
+
+    // 4. Harvest the shown-once Client ID + Client Secret. Read read-only inputs' values, never log them.
+    const harvested = await harvestCredential(page);
+    if (!harvested.clientId || !harvested.clientSecret) {
+      return { ok: false, error: "the API 2.0 credential was generated but the Client ID / Client Secret could not be read from the page — VERIFY the credential-field selectors against the live console (and that products/role were accepted).", evidence: await shot("mc-no-harvest") };
+    }
+    log("API 2.0 credential generated and harvested"); // values NEVER logged
+    return { ok: true, message: `created/updated the API application "${appName}" and harvested its API 2.0 credential`, harvested };
+  } catch (e) {
+    return { ok: false, error: `Mimecast API-app creation failed: ${e?.message ?? e}`, evidence: await shot("mc-createapp-error") };
+  }
+}
+
+// Read the two shown-once credential values off the page. Best-effort: prefer read-only inputs whose
+// nearby label mentions ID vs Secret; fall back to the first two read-only value inputs (ID then
+// Secret, the console's render order). Never logs the values.
+async function harvestCredential(page) {
+  const readVal = async (loc) => {
+    const el = page.locator(loc).first();
+    if (!(await el.count().catch(() => 0))) return "";
+    return (await el.inputValue().catch(() => "")) || (await el.getAttribute("value").catch(() => "")) || (await el.innerText().catch(() => "")) || "";
+  };
+  // Try labelled fields first.
+  let clientId = (await readVal('input[readonly][aria-label*="Client ID" i], input[readonly][id*="client-id" i], input[readonly][name*="clientid" i]')).trim();
+  let clientSecret = (await readVal('input[readonly][aria-label*="Client Secret" i], input[readonly][id*="client-secret" i], input[readonly][name*="secret" i]')).trim();
+  if (!clientId || !clientSecret) {
+    // Fallback: the two read-only value inputs on the credential panel, in render order (ID, Secret).
+    const ro = page.locator('input[readonly]');
+    const n = await ro.count().catch(() => 0);
+    const vals = [];
+    for (let i = 0; i < n && vals.length < 2; i++) {
+      const v = (await ro.nth(i).inputValue().catch(() => "")).trim();
+      if (v) vals.push(v);
+    }
+    if (!clientId && vals[0]) clientId = vals[0];
+    if (!clientSecret && vals[1]) clientSecret = vals[1];
+  }
+  return { clientId, clientSecret };
 }
