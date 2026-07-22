@@ -10,11 +10,11 @@ BeforeAll {
 
     # Global stubs so Pester can Mock these in the module scope (real cmdlets come from Microsoft.Graph).
     function global:Get-MgSubscribedSku { param($SubscribedSkuId, [switch]$All) }
-    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel, $Property) }
+    function global:Get-MgUser { param($UserId, $Filter, [switch]$All, $ConsistencyLevel, $CountVariable, $Top, $Property) }
     function global:New-MgUser {}
     function global:Get-MgUserLicenseDetail {}
     function global:Set-MgUserLicense { param($UserId, $AddLicenses, $RemoveLicenses) }
-    function global:Get-MgGroup { param($GroupId, $Filter, $Property, $Top, [switch]$All) }
+    function global:Get-MgGroup { param($GroupId, $Filter, $Property, $Top, $ConsistencyLevel, $CountVariable, [switch]$All) }
     function global:Get-MgGroupMember {}
     function global:New-MgGroupMember { param($GroupId, $DirectoryObjectId) }
     function global:Update-MgUser { param($UserId, $Department, $OfficeLocation, $JobTitle, $MobilePhone, $CompanyName, $StreetAddress, $City, $State, $PostalCode, $Country, $BusinessPhones, $OnPremisesExtensionAttributes, $AccountEnabled, $ProxyAddresses, $UsageLocation, $PasswordProfile) }
@@ -1439,6 +1439,102 @@ Describe 'Invoke-CtgM365PasswordReset' {
             try { Invoke-CtgM365PasswordReset -User $user -Config $config } catch { $err = [string]$_.Exception.Message }
             $err | Should -BeLike '*temporarily unavailable*'
             $err | Should -Not -BeLike '*PasswordProfile*'
+        }
+    }
+}
+
+Describe 'proxyAddresses conflict feedback' {
+    Context 'Test-CtgGraphProxyConflictMessage' {
+        It 'recognizes the raw Graph BadRequest wording' {
+            InModuleScope Coretelligent.M365 {
+                Test-CtgGraphProxyConflictMessage 'Another object with the same value for property proxyAddresses already exists.'
+            } | Should -BeTrue
+        }
+        It 'does not fire on an unrelated error' {
+            InModuleScope Coretelligent.M365 {
+                Test-CtgGraphProxyConflictMessage 'Insufficient privileges to complete the operation.'
+            } | Should -BeFalse
+        }
+    }
+
+    Context 'Get-CtgProxyAddressConflict' {
+        BeforeEach {
+            # Default: nothing holds the address anywhere.
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { @() }
+            Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
+            Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith { @{ value = @() } }
+        }
+
+        It 'identifies a live user holding the address (and its disabled state)' {
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'proxyAddresses' } -MockWith {
+                @([pscustomobject]@{ DisplayName = 'Jane Prior'; UserPrincipalName = 'jane@six-one.com'; AccountEnabled = $false })
+            }
+            $msg = InModuleScope Coretelligent.M365 { Get-CtgProxyAddressConflict -Address 'jsmith@six-one.com' }
+            $msg | Should -BeLike '*existing user*Jane Prior*jane@six-one.com*'
+            $msg | Should -BeLike '*disabled*'
+        }
+
+        It 'identifies a SOFT-DELETED user (the rehire case) via raw Graph' {
+            Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+                @{ value = @(
+                    @{ displayName = 'John Rehire'; userPrincipalName = 'jrehire@six-one.com'; proxyAddresses = @('SMTP:jsmith@six-one.com'); mail = 'jsmith@six-one.com'; deletedDateTime = '2026-07-01T00:00:00Z' }
+                ) }
+            }
+            $msg = InModuleScope Coretelligent.M365 { Get-CtgProxyAddressConflict -Address 'smtp:jsmith@six-one.com' }
+            $msg | Should -BeLike '*SOFT-DELETED*John Rehire*'
+            $msg | Should -BeLike '*Remove-MgDirectoryDeletedItem*'
+        }
+
+        It 'identifies a mail-enabled group when no user matches' {
+            Mock Get-MgGroup -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'proxyAddresses' } -MockWith {
+                @([pscustomobject]@{ DisplayName = 'Sales DL'; Mail = 'sales@six-one.com' })
+            }
+            $msg = InModuleScope Coretelligent.M365 { Get-CtgProxyAddressConflict -Address 'sales@six-one.com' }
+            $msg | Should -BeLike '*mail-enabled group*Sales DL*'
+        }
+
+        It 'returns $null when nothing holds it (caller falls back to a generic hint)' {
+            $msg = InModuleScope Coretelligent.M365 { Get-CtgProxyAddressConflict -Address 'free@six-one.com' }
+            $msg | Should -BeNullOrEmpty
+        }
+
+        It 'stays best-effort: a lookup error yields $null, never throws' {
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { throw 'graph exploded' }
+            Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith { throw 'graph exploded' }
+            Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { throw 'graph exploded' }
+            $msg = InModuleScope Coretelligent.M365 { Get-CtgProxyAddressConflict -Address 'x@six-one.com' }
+            $msg | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'onboarding surfaces an actionable alias-collision error' {
+        BeforeEach {
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Property -contains 'ProxyAddresses' -or $Property -eq 'ProxyAddresses' } -MockWith {
+                [pscustomobject]@{ ProxyAddresses = @() }
+            }
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }  # user doesn't exist yet -> create path
+            Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-new' } }
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }      # profile/usageLocation writes ok
+            Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+            Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:Skus }
+            # The alias write is the one that collides.
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $null -ne $ProxyAddresses } -MockWith {
+                throw '[Request_BadRequest] : Another object with the same value for property proxyAddresses already exists.'
+            }
+            # ...and the conflict lookup pins it on a soft-deleted rehire.
+            Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+                @{ value = @(@{ displayName = 'John Rehire'; userPrincipalName = 'jrehire@six-one.com'; proxyAddresses = @('SMTP:alias@six-one.com'); mail = 'alias@six-one.com' }) }
+            }
+            Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
+        }
+
+        It 'replaces the raw BadRequest with who-holds-it detail' {
+            $user = [pscustomobject]@{ DisplayName = 'New Hire'; FirstName = 'New'; LastName = 'Hire'; UserPrincipalName = 'nhire@six-one.com' }
+            $config = [pscustomobject]@{ alias = [pscustomobject]@{ enabled = $true; address = 'alias@six-one.com' } }
+            $err = $null
+            try { Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword (ConvertTo-SecureString 'P@ssw0rd!23456' -AsPlainText -Force) } catch { $err = [string]$_.Exception.Message }
+            $err | Should -BeLike "*alias 'alias@six-one.com' can't be added*"
+            $err | Should -BeLike '*SOFT-DELETED*John Rehire*'
         }
     }
 }

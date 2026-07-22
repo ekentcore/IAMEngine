@@ -82,6 +82,81 @@ function Get-CtgGraphError {
     [pscustomobject]@{ Status = $status; Code = $code; Message = $message }
 }
 
+function Test-CtgGraphProxyConflictMessage([string]$Message) {
+    # Graph's "Another object with the same value for property proxyAddresses already exists"
+    # (Request_BadRequest). Match a couple of phrasings so a wording change doesn't slip past.
+    $Message -match 'same value for property proxyAddresses|proxyAddresses already exists'
+}
+
+function Get-CtgProxyAddressConflict {
+    <#
+    .SYNOPSIS
+        Given an SMTP address Graph rejected with "proxyAddresses already exists", find WHICH tenant
+        object already holds it, so the operator gets an actionable message instead of the raw
+        BadRequest. Checks live users, then SOFT-DELETED users (the common rehire / failed-re-run
+        case — a deleted user reserves its addresses for ~30 days), then mail-enabled groups.
+        Best-effort: returns a human-readable string, or $null when nothing is found or the lookup
+        can't run (permissions / a transient read failure — the caller falls back to a generic hint).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Address)
+
+    $bare = ([string]$Address) -replace '(?i)^smtp:', ''   # strip smtp:/SMTP: (case-insensitive)
+    if ([string]::IsNullOrWhiteSpace($bare)) { return $null }
+    # proxyAddresses is a collection — filtering it is an advanced query, so ConsistencyLevel=eventual
+    # + a CountVariable ($count=true) are required. Match either prefix (SMTP: primary, smtp: alias).
+    $addrFilter = "proxyAddresses/any(x:x eq 'SMTP:$bare') or proxyAddresses/any(x:x eq 'smtp:$bare') or mail eq '$bare'"
+
+    # 1. A live user holding the address — the hardest blocker (can't just purge it).
+    try {
+        $c = 0
+        # Guard against a $null result: @($null) has Count 1, which would falsely "find" an empty holder.
+        $hit = @(Get-MgUser -Filter $addrFilter -ConsistencyLevel eventual -CountVariable c `
+                 -Property 'DisplayName', 'UserPrincipalName', 'AccountEnabled' -Top 1 -ErrorAction Stop | Where-Object { $_ })
+        if ($hit.Count) {
+            $h = $hit[0]
+            $state = if ((Get-CtgProp $h 'AccountEnabled') -eq $false) { ' (currently disabled)' } else { '' }
+            return "it already belongs to an existing user — $((Get-CtgProp $h 'DisplayName')) <$((Get-CtgProp $h 'UserPrincipalName'))>$state. Remove the address from that account, or use a different alias."
+        }
+    } catch { }
+
+    # 2. A soft-deleted user — the #1 cause (rehire, or an earlier failed onboard left a deleted copy);
+    #    its addresses stay reserved until it's permanently removed or the retention window lapses.
+    #    Query via raw Graph: the deletedItems cmdlets live in a Graph submodule the manifest doesn't
+    #    require, but Invoke-MgGraphRequest needs only Graph.Authentication (already loaded). Page the
+    #    full set (usually small) and match in-memory — deletedItems can't be $filter'd on proxyAddresses.
+    try {
+        $sel = 'displayName,userPrincipalName,proxyAddresses,mail,deletedDateTime'
+        $uri = "https://graph.microsoft.com/v1.0/directory/deletedItems/microsoft.graph.user?`$select=$sel&`$top=100"
+        while ($uri) {
+            $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            foreach ($d in @(Get-CtgProp $resp 'value')) {
+                $mail = [string](Get-CtgProp $d 'mail')
+                $proxies = @(Get-CtgProp $d 'proxyAddresses')
+                $match = ($mail -ieq $bare) -or @($proxies | Where-Object { ($_ -replace '(?i)^smtp:', '') -ieq $bare }).Count
+                if ($match) {
+                    $when = [string](Get-CtgProp $d 'deletedDateTime')
+                    return "it's reserved by a SOFT-DELETED user (a rehire or an earlier failed run) — $((Get-CtgProp $d 'displayName')) <$((Get-CtgProp $d 'userPrincipalName'))>$(if ($when) { ", deleted $when" }). Restore & adopt that account, or permanently remove it (Remove-MgDirectoryDeletedItem) to free the address."
+                }
+            }
+            $uri = [string](Get-CtgProp $resp '@odata.nextLink')
+        }
+    } catch { }
+
+    # 3. A mail-enabled group holding the address.
+    try {
+        $gc = 0
+        $g = @(Get-MgGroup -Filter $addrFilter -ConsistencyLevel eventual -CountVariable gc `
+               -Property 'DisplayName', 'Mail' -Top 1 -ErrorAction Stop | Where-Object { $_ })
+        if ($g.Count) {
+            $g0 = $g[0]
+            return "it already belongs to a mail-enabled group — $((Get-CtgProp $g0 'DisplayName')) <$((Get-CtgProp $g0 'Mail'))>. Remove the address from that group, or use a different alias."
+        }
+    } catch { }
+
+    return $null
+}
+
 function Test-CtgGraphNotFoundMessage([string]$Message) {
     $Message -match 'NotFound|does not exist|ResourceNotFound|\b404\b'
 }
@@ -1038,8 +1113,21 @@ function Invoke-CtgM365Onboarding {
             $actions.Add("alias present: $address")
         }
         elseif ($PSCmdlet.ShouldProcess($upn, "Add alias $address")) {
-            Invoke-CtgM365Write { Update-MgUser -UserId $userId -ProxyAddresses ($current + $proxy) }
-            $actions.Add("added alias: $address")
+            try {
+                Invoke-CtgM365Write { Update-MgUser -UserId $userId -ProxyAddresses ($current + $proxy) -ErrorAction Stop }
+                $actions.Add("added alias: $address")
+            } catch {
+                # Graph's raw "Another object with the same value for property proxyAddresses already
+                # exists" says nothing about WHICH object. Look it up (live user / soft-deleted user /
+                # group) and re-throw an actionable message; other failures re-throw unchanged.
+                $ge = Get-CtgGraphError $_
+                if (Test-CtgGraphProxyConflictMessage $ge.Message) {
+                    $who = Get-CtgProxyAddressConflict -Address $address
+                    $detail = if ($who) { $who } else { "another object in the tenant already uses it, but the holder couldn't be identified (check live users, soft-deleted users, contacts and groups for '$address')." }
+                    throw "alias '$address' can't be added: $detail"
+                }
+                throw
+            }
         }
     }
 
