@@ -473,7 +473,11 @@ function Invoke-CtgMimecastConsoleSetup {
     }
 
     # -TimeoutSeconds 300: sign-in + MFA + (Phase 2) create-app wizard + credential generation.
-    $res = Invoke-CtgBrowserFlow -Flow 'mimecast-console-signin' -InputObject $flowInput -TimeoutSeconds 300
+    # -OnStage forwards each coarse stage the sidecar reaches to the job's progress channel (via the
+    # runner's global Send-CtgStage), so the guided-setup run checklist advances live. Best-effort:
+    # when the runner globals aren't loaded (unit tests), the hook simply no-ops.
+    $onStage = { param($stage) if (Get-Command Send-CtgStage -ErrorAction SilentlyContinue) { Send-CtgStage $stage } }
+    $res = Invoke-CtgBrowserFlow -Flow 'mimecast-console-signin' -InputObject $flowInput -TimeoutSeconds 300 -OnStage $onStage
     if ($res.ok) {
         $msg = if ($res.message) { $res.message } else { 'signed in to the Mimecast Administration Console' }
         $actions.Add($msg)

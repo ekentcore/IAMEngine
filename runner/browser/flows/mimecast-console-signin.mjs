@@ -224,11 +224,12 @@ export async function signInMimecast({ page, shot, input, log }) {
 // -------------------------------------------------------------------------------------------------
 // FLOW ENTRY
 // -------------------------------------------------------------------------------------------------
-export default async function mimecastConsoleSignin({ page, shot, input, log }) {
+export default async function mimecastConsoleSignin({ page, shot, input, log, reportStage }) {
   const consoleUrl = input?.params?.consoleUrl ?? DEFAULT_CONSOLE_URL;
   const signInOnly = input?.params?.signInOnly !== false; // default to sign-in-only (Phase 1)
 
   try {
+    reportStage?.("signin");
     log("navigating to the Mimecast Administration Console sign-in");
     await page.goto(consoleUrl, { waitUntil: "domcontentloaded" });
   } catch (e) {
@@ -243,8 +244,9 @@ export default async function mimecastConsoleSignin({ page, shot, input, log }) 
   }
 
   // Phase 2: create the API 2.0 application and harvest its Client ID + Client Secret.
+  reportStage?.("create");
   const appName = input?.params?.appName || "iam-engine";
-  return createApiApp({ page, shot, input, log, appName });
+  return createApiApp({ page, shot, input, log, appName, reportStage });
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -282,7 +284,7 @@ const A = {
 
 const PRODUCTS = ["Account Management", "Domain Management", "User & Group Management"];
 
-async function createApiApp({ page, shot, input, log, appName }) {
+async function createApiApp({ page, shot, input, log, appName, reportStage }) {
   try {
     // 1. Reach the API applications list. Prefer a direct link; fall back to a Services/Admin menu.
     log("opening API and Platform Integrations");
@@ -341,6 +343,7 @@ async function createApiApp({ page, shot, input, log, appName }) {
     }
 
     // 3. Manage API 2.0 credentials -> Generate.
+    reportStage?.("harvest");
     log("generating the API 2.0 credential");
     const manage = page.locator(A.manageCreds).first();
     if (await manage.isVisible().catch(() => false)) { await manage.click().catch(() => {}); await page.waitForTimeout(1200); }

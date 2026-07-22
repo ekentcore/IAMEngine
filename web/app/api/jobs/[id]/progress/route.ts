@@ -1,24 +1,28 @@
-// POST /api/jobs/{id}/progress — { agentId, phase }. Lightweight live-progress beacon the runner
-// posts as it enters each phase of a job (connecting, enabling mailbox, validating…). Append-only;
-// ignored once the job is terminal. Surfaced in the run report so an operator can see what a step
-// is doing in real time.
+// POST /api/jobs/{id}/progress — { agentId, phase?, stage? }. Lightweight live-progress beacon the
+// runner posts as it enters each phase of a job (connecting, enabling mailbox, validating…).
+// Append-only; ignored once the job is terminal. `phase` is free-text narration shown in the run
+// report; `stage` is a coarse setup-stage marker (signin|create|harvest|vault) for a browser
+// credential-setup run, stored on a scalar column the guided-setup run checklist reads. At least one
+// of the two must be present.
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  let body: { agentId?: unknown; phase?: unknown };
+  let body: { agentId?: unknown; phase?: unknown; stage?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 422 });
   }
   if (typeof body.agentId !== "string" || !body.agentId) return NextResponse.json({ error: "agentId is required" }, { status: 422 });
-  if (typeof body.phase !== "string" || !body.phase) return NextResponse.json({ error: "phase is required" }, { status: 422 });
+  const phase = typeof body.phase === "string" && body.phase ? body.phase : undefined;
+  const stage = typeof body.stage === "string" && body.stage ? body.stage : undefined;
+  if (!phase && !stage) return NextResponse.json({ error: "phase or stage is required" }, { status: 422 });
 
   try {
-    const out = await makeRunnerService(db).recordProgress(params.id, body.agentId, body.phase);
+    const out = await makeRunnerService(db).recordProgress(params.id, body.agentId, phase, stage);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

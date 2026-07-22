@@ -475,6 +475,7 @@ model Job {
   validation       Json? // post-action read-back: { ok, checks:[{name,expected,actual,pass}] }
   progress         Json? // live phase trail while running: [{ ts, phase }] — shown in the run report
   progressAt       DateTime? // when progress last moved — the per-job "is it still working?" signal
+  stage            String? // coarse setup-stage for a browser credential-setup run (signin|create|harvest|vault) — a SCALAR sibling to the narration trail; the guided-setup run checklist reads it to advance live
   error            String?
   // WHY the credential broker last failed for this job (code/secretName/externalId/fix) — stamped by
   // brokerCredential, cleared on a clean broker, copied onto the RunOutcome so fixes can be scripted.

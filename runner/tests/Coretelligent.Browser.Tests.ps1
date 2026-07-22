@@ -79,6 +79,59 @@ Describe 'Invoke-CtgBrowserFlow' {
     }
 }
 
+Describe 'ConvertFrom-CtgStageLine' {
+    It 'extracts the stage name from a sidecar "@@stage:" marker line' {
+        ConvertFrom-CtgStageLine '[browser] @@stage:signin' | Should -Be 'signin'
+        ConvertFrom-CtgStageLine '[browser] @@stage:create' | Should -Be 'create'
+        ConvertFrom-CtgStageLine '[browser] @@stage:harvest' | Should -Be 'harvest'
+    }
+    It 'returns $null for an ordinary log line (not a stage marker)' {
+        ConvertFrom-CtgStageLine '[browser] entering the Mimecast admin email' | Should -BeNullOrEmpty
+        ConvertFrom-CtgStageLine '' | Should -BeNullOrEmpty
+    }
+    It 'ignores surrounding text and stops at the first non-name character' {
+        ConvertFrom-CtgStageLine 'noise @@stage:vault more noise' | Should -Be 'vault'
+    }
+}
+
+Describe 'Invoke-CtgBrowserFlow -OnStage forwarding' {
+    It 'invokes the OnStage hook for each stage marker the sidecar emits, in order' {
+        # Drive a fake sidecar: a tiny node script that prints the two stderr stage markers with a beat
+        # between them, then the single JSON result line on stdout. Proves the live line-by-line drain
+        # forwards markers via OnStage — not just at exit. Markers are spaced comfortably past the 200ms
+        # drain interval so each is dequeued in its own iteration, matching real runs where stages are
+        # seconds apart (the app keeps the LAST-posted stage, so arrival order must follow emission).
+        # Skipped when node isn't available.
+        $node = $null
+        try { $node = Resolve-CtgNodeTool 'node' } catch { }
+        if (-not $node) { Set-ItResult -Skipped -Because 'node is not available on this host'; return }
+
+        $fake = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-fake-sidecar-" + [guid]::NewGuid() + ".mjs")
+        @'
+process.stdin.on('data', () => {});
+process.stderr.write('[browser] @@stage:signin\n');
+setTimeout(() => { process.stderr.write('[browser] @@stage:create\n'); }, 700);
+setTimeout(() => {
+  process.stdout.write(JSON.stringify({ ok: true, message: 'done' }) + '\n');
+  process.exit(0);
+}, 1200);
+'@ | Set-Content -LiteralPath $fake -Encoding utf8
+
+        # Point the flow runner at the fake script instead of run-flow.mjs.
+        Mock Test-CtgBrowserAvailable -ModuleName Coretelligent.Browser -MockWith { $true }
+        Mock Get-CtgBrowserRoot -ModuleName Coretelligent.Browser -MockWith { Split-Path -Parent $fake }
+        Mock Join-Path -ModuleName Coretelligent.Browser -MockWith { $fake } -ParameterFilter { $ChildPath -eq 'run-flow.mjs' }
+
+        $seen = [System.Collections.Generic.List[string]]::new()
+        $r = Invoke-CtgBrowserFlow -Flow 'x' -InputObject @{} -TimeoutSeconds 20 -OnStage { param($s) $seen.Add($s) }
+
+        $r.ok | Should -BeTrue
+        $seen | Should -Be @('signin', 'create')
+
+        Remove-Item -LiteralPath $fake -ErrorAction SilentlyContinue
+    }
+}
+
 Describe 'Invoke-CtgSpanningForceSync' {
     BeforeAll {
         $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@medipost.com' }
