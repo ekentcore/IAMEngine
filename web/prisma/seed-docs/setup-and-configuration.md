@@ -4,6 +4,8 @@ IAM Engine Setup and Configuration Guide: exact permissions and steps, system by
 
 Companion to the IAM Engine client overview · Prepared for client IT and security teams
 
+Version 2.0 · 22 July 2026. This edition adds the automatic setup paths for Microsoft 365, Google Workspace, and six SaaS systems, and the Google key converter. See the version history at the end.
+
 ### About this guide
 
 This is the companion technical reference to the Coretelligent IAM Engine overview. Where that document explains what the platform does and why it is safe to grant it access, this guide gives your IT and security teams the exact screens, permissions, and artifacts needed to configure each system in scope.
@@ -38,9 +40,21 @@ Configuration is not a spreadsheet exchange. Each system has a guided setup page
 
 A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure.
 
+### Automatic and manual setup
+
+Each system can be set up in one of two ways, and you choose per system.
+
+- Manual. You create the credential in the vendor's console yourself, following the exact screens in the sections below, and record its vault reference. This path exists for every system and is always available.
+
+- Automatic. For the systems that support it, the application creates the credential for you. Microsoft 365 and Google Workspace are provisioned through the vendor's API from a single administrator sign-in (see those sections). Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast are provisioned by driving the vendor's admin console in a headless browser: you sign in once, and the runner creates the API application or token and vaults it. The automatic path uses the same safeguards as any browser step — the password reaches the browser on standard input only, a second factor is minted from the vault when the console asks for it, and push, SMS, and phone-call factors cannot be automated. An account that signs in only through SSO cannot be driven this way; use the manual path for it.
+
+Whichever path is used, the application records which credential and vault folder performed the setup, so the provenance of every connector is on the record and you know exactly what to revisit if a permission later needs changing.
+
 ### Microsoft 365 and Entra ID
 
 This is the one that matters most, and the one with the most nuance.
+
+You can set this up automatically. "Set up Microsoft 365 automatically" in the application creates the application registration described below, adds and admin-consents the Graph and Exchange permissions (including the optional ones you choose to grant), generates the client secret and the Exchange certificate, and vaults the finished credential, all from a single device-code sign-in with a Global Administrator. The rest of this section is what that automation configures, and the reference for doing it, or auditing it, by hand.
 
 #### You create: an Entra application registration
 
@@ -116,6 +130,8 @@ A note on OU paths. "The server is unwilling to process the request" on user cre
 
 ### Google Workspace
 
+This too can be set up automatically. "Set up Google Workspace automatically" creates the service account, grants it domain-wide delegation for the scopes below, and vaults the key. If the delegation grant cannot be confirmed automatically, the setup page gives you the client ID and the exact scopes to paste into the Admin console, then re-verifies. To do it entirely by hand, create the artifacts and authorize the scopes below. On a locked-down machine that cannot run command-line tools, the Google key converter (under More, then Tools) turns a downloaded service-account JSON key into the exact vault fields in the browser, with nothing installed.
+
 You provide two artifacts:
 
 - A Google Cloud service account with a downloaded JSON key, in a project with the Admin SDK API enabled. No project IAM roles are needed.
@@ -137,7 +153,7 @@ Google's delegation is all-or-nothing per token request, which has a pleasant co
 
 ### The rest of the estate
 
-Each of these is set up once, and only if you use it. The application's setup guide for each names the exact console screens.
+Each of these is set up once, and only if you use it. The application's setup guide for each names the exact console screens. Six of them — Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast — additionally offer an "Automatic (browser)" option that creates and vaults the credential from a single administrator sign-in, as described under Automatic and manual setup above; the columns below are what that automation produces, and the reference for creating it by hand.
 
 | System | Auth method | What you create and hand over |
 | --- | --- | --- |
@@ -160,7 +176,7 @@ Each of these is set up once, and only if you use it. The application's setup gu
 
 ### Not yet built
 
-These appear in the catalog but have no executor today and are planned as manual checklist steps until they do: SharePoint, Slack, Teams and Teams Phone, Dropbox, Notion, Printix, Azure Virtual Desktop, MDM (Intune/Jamf/Addigy), bulk data transfer, and mailbox archive. We would rather tell you this than have you discover it.
+These appear in the catalog but have no executor today and are planned as manual checklist steps until they do: SharePoint, Slack, Teams and Teams Phone, Dropbox, Notion, Printix, Azure Virtual Desktop, MDM (Intune/Jamf/Addigy), bulk data transfer, and mailbox archive. We would rather tell you this than have you discover it. (Slack's API credential can already be captured through the automatic browser setup, ahead of its provisioning executor being built.)
 
 ### Credential rotation
 
@@ -173,3 +189,10 @@ The IAM Engine executes your onboarding and offboarding runbook, across your who
 No credential is stored in the platform. The vault holds them; the application holds references; a runner receives exactly one credential, for exactly one job, at the moment of execution, and holds it only in memory. Anything irreversible is withheld from automation until a named, senior human approves it, and the evidence of what someone had is captured before it is taken away.
 
 For the narrative version of this material (what the platform does, how it works, and why it is safe to grant this access), see the companion Coretelligent IAM Engine overview document. Questions should go to your Coretelligent engagement contact.
+
+## 3. Version history
+
+| Version | Date | What changed |
+| --- | --- | --- |
+| 2.0 | 22 July 2026 | Added automatic setup: Microsoft 365 and Google Workspace can now be provisioned end to end from a single administrator sign-in, and Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast gained an automatic browser-driven credential setup alongside the manual steps, which are unchanged. Documented the Google key converter for locked-down machines, and the setup-provenance record kept for every connector. |
+| 1.0 | 14 July 2026 | Initial version. |

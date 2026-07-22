@@ -19,8 +19,8 @@ const DOCS: DocSeed[] = [
   { slug: "internal-reference", title: "IAM Engine — Internal Reference", audience: "internal", sortOrder: 40, summary: "The internal counterpart to the client docs: implementation, deployment status, and the unshipped security roadmap. Coretelligent staff only." },
 ];
 
-const SEED_VERSION = "1.0";
-const SEED_DATE = new Date("2026-07-14T00:00:00.000Z"); // the "Version 1.0 · 14 July 2026" the docs carried
+const SEED_VERSION = "2.0";
+const SEED_DATE = new Date("2026-07-22T00:00:00.000Z"); // the "Version 2.0 · 22 July 2026" the docs carry
 
 export async function seedDocuments(prisma: PrismaClient): Promise<void> {
   let created = 0;
@@ -40,7 +40,7 @@ export async function seedDocuments(prisma: PrismaClient): Promise<void> {
           version: SEED_VERSION,
           status: "published",
           markdown,
-          changeNote: "Initial version.",
+          changeNote: "Baseline (v2.0 edition).",
           generatedByAi: false,
           createdByLabel: "Seed",
           publishedAt: SEED_DATE,

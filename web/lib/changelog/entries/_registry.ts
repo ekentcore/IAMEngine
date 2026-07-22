@@ -162,6 +162,7 @@ export { entry as pr7Pr10Batch } from "./pr7-pr10-batch";
 export { entry as proofpointHttpsSchemeWedge } from "./proofpoint-https-scheme-wedge";
 export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrations-and-worktree-retire";
 export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
+export { entry as referenceDocsV2 } from "./reference-docs-v2";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";
 export { entry as requestedGroupsReachThePlan } from "./requested-groups-reach-the-plan";
 export { entry as resetChildToParent } from "./reset-child-to-parent";
