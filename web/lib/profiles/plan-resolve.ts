@@ -10,6 +10,7 @@ import { hideFromGalOptedOut, adLaneHidesViaAttribute } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = {
+  backbone?: string | null;
   personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown;
   // Discovered group catalogs (see prisma schema): adObjects = { groups: string[] } from the DC,
   // cloudGroups = { groups: [{ name, type }] } from Entra/Graph. Used to route location groups.
@@ -311,6 +312,22 @@ export function resolvePlannedConfigs(
         return { ...j, config: { ...cfg, usernameCollisionPolicy: "adopt" } };
       });
 
+  // AD-synced clients (FR #25): the M365/Entra account originates on-prem via Entra Connect, so the
+  // cloud lane must ADOPT the synced user, never create one. Stamp a create policy the runner enforces
+  // at its create gate. Absent key = allow (every non-ad-synced client + pre-existing plan is
+  // unchanged). Overrides that flip it back to allow: a persistent `allowCloudCreate` on the m365/entra
+  // config, or the per-case `payload.allowCloudCreate` (set via /api/cases/[id]/m365-override).
+  const CLOUD_CREATE_SYSTEMS = new Set(["m365", "entra"]);
+  const caseAllowsCloudCreate = payload.allowCloudCreate === true;
+  const withCloudCreate = client.backbone !== "ad_synced"
+    ? withRehire
+    : withRehire.map((j) => {
+        if (!CLOUD_CREATE_SYSTEMS.has(j.systemKey)) return j;
+        const cfg = (j.config as Record<string, unknown> | null) ?? {};
+        const allow = caseAllowsCloudCreate || cfg.allowCloudCreate === true;
+        return { ...j, config: { ...cfg, cloudCreate: allow ? "allow" : "deny" } };
+      });
+
   // Per-client M365 licensing rules: ADD the intake-selected license(s) (e.g. needsComputer → E5 else
   // E1) to the client's base config.licenses — UNION, so a static add-on like "Defender for Office 365"
   // is kept alongside the rule-chosen tier. v2.0 + v2.1 alike. SKIP when the ticket explicitly listed
@@ -319,8 +336,8 @@ export function resolvePlannedConfigs(
     && payload.productLicenses.some((x) => typeof x === "string" && x.trim() !== "");
   const licenseName = (l: unknown): string => (typeof l === "string" ? l : String((l as { name?: unknown; skuId?: unknown })?.name ?? (l as { skuId?: unknown })?.skuId ?? ""));
   const withLicenses = explicitLicenses
-    ? withRehire
-    : withRehire.map((j) => {
+    ? withCloudCreate
+    : withCloudCreate.map((j) => {
         if (j.systemKey !== "m365") return j;
         const cfg = (j.config as Record<string, unknown> | null) ?? {};
         const ruleLicenses = evaluateLicenseRules((cfg as { licenseRules?: unknown }).licenseRules, context);
