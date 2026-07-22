@@ -129,6 +129,38 @@ test("replan RE-RUNS a kept api step whose config changed (e.g. a new license)",
   assert.ok(updated.find((u) => u.status === "pending"), "changed step reset to pending to re-run");
 });
 
+test("replan RE-DERIVES a never-run scim step when the client mode was corrected to api", async () => {
+  // The phantom: a scim step is born status:"succeeded" WITHOUT ever dispatching (startedAt null).
+  // The operator later corrects the system scim->api on the client page. Because the phantom is a
+  // "succeeded" kept job, plain incremental replan used to keep it AND never rewrite its mode — so it
+  // stayed a no-op "verified" step forever. It must now be re-derived to api/pending so it dispatches.
+  const kept = [{ id: "j1", systemKey: "adobe", sequence: 2, mode: "scim", status: "succeeded", startedAt: null, request: { config: {} } }];
+  const { db, updated } = fakeDb({
+    serviceNowCaseNumber: null, action: "onboard", payload: { userPrincipalName: "jane@acme.com" },
+    client: { id: "c1", slug: "acme", primaryDomain: "acme.com", identity: {}, systems: [sys("adobe", {})] },
+    jobs: [{ status: "succeeded" }],
+  }, kept);
+  const res = await replanCase(db, "case-1", "test");
+  assert.equal(res.ok, true);
+  assert.equal(res.ok === true && res.rerun, 1);
+  const u = updated.find((u) => u.mode === "api");
+  assert.ok(u, "phantom scim step re-derived to mode api");
+  assert.equal(u?.status, "pending", "re-derived step is pending so it actually dispatches");
+});
+
+test("replan does NOT disturb a scim step that genuinely stays scim", async () => {
+  const kept = [{ id: "j1", systemKey: "zoom", sequence: 4, mode: "scim", status: "succeeded", startedAt: null, request: { config: {} } }];
+  const { db, updated } = fakeDb({
+    serviceNowCaseNumber: null, action: "onboard", payload: {},
+    client: { id: "c1", slug: "acme", primaryDomain: "acme.com", identity: {}, systems: [{ ...sys("zoom", {}), mode: "scim" }] },
+    jobs: [{ status: "succeeded" }],
+  }, kept);
+  const res = await replanCase(db, "case-1", "test");
+  assert.equal(res.ok, true);
+  assert.equal(res.ok === true && res.rerun, 0);
+  assert.ok(!updated.find((u) => u.mode !== undefined), "no mode rewrite when the mode is unchanged");
+});
+
 test("replan re-sequences a kept step to its planned position and does NOT re-run when config is unchanged", async () => {
   const kept = [{ id: "j1", systemKey: "m365", sequence: 9, mode: "api", status: "succeeded", request: { config: { licenses: ["E3"] } } }];
   const { db, updated } = fakeDb({

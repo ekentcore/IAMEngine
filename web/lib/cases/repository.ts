@@ -378,7 +378,7 @@ export function makeCaseRepository(db: PrismaClient) {
         await tx.job.deleteMany({ where: { caseRequestId: caseId, status: { notIn: ["dispatched", "running", "succeeded", "failed"] } } });
         const kept = await tx.job.findMany({
           where: { caseRequestId: caseId },
-          select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true },
+          select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, startedAt: true },
         });
         const existing = await tx.caseRequest.findUnique({ where: { id: caseId }, select: { dryRun: true, action: true } });
         const dryRun = existing?.dryRun ?? false; // replanned jobs inherit the case's current mode
@@ -398,6 +398,10 @@ export function makeCaseRepository(db: PrismaClient) {
           dryRun,
         });
         const isTerminal = (s: string) => s === "succeeded" || s === "failed";
+        // The status a freshly-planned job of a given mode is BORN with (mirrors the create path above
+        // and createCaseWithJobs): api waits to dispatch; scim is provisioned by the IdP so it's born
+        // satisfied; everything else is a manual checklist item.
+        const bornStatus = (m: string) => (m === "api" ? "pending" : m === "scim" ? "succeeded" : "manual");
 
         await tx.caseRequest.update({
           where: { id: caseId },
@@ -427,17 +431,29 @@ export function makeCaseRepository(db: PrismaClient) {
           const oldReq = (k.request ?? {}) as { config?: unknown; approved?: boolean };
           const configChanged = JSON.stringify(oldReq.config ?? null) !== JSON.stringify(p.config ?? null);
           const willRerun = configChanged && k.mode === "api" && isTerminal(k.status);
+          // A scim step is born status:"succeeded" WITHOUT ever dispatching (startedAt stays null), so
+          // it lands in the kept set even though nothing ran. If the operator then corrects the system's
+          // mode on the client page (e.g. scim->api because it's really an API integration), plain kept
+          // reconciliation never rewrites `mode` — the phantom "verified" step sticks forever and the
+          // corrected step never dispatches. Detect that exact shape (born-succeeded, never ran, planned
+          // mode now differs) and re-derive it to the new mode + its born status so it actually runs. A
+          // genuinely-executed job always has startedAt set, so this can never clobber real work.
+          const neverRan = k.status === "succeeded" && k.startedAt == null;
+          const modeCorrected = neverRan && p.mode !== k.mode;
+          const reset = { result: Prisma.DbNull, validation: Prisma.DbNull, evidence: Prisma.DbNull, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null, assignedAgentId: null };
           await tx.job.update({
             where: { id: k.id },
             data: {
               sequence: p.sequence,
               request: { ...newReq, approved: oldReq.approved } as Prisma.InputJsonValue,
-              ...(willRerun
-                ? { status: "pending", result: Prisma.DbNull, validation: Prisma.DbNull, evidence: Prisma.DbNull, progress: Prisma.DbNull, error: null, startedAt: null, finishedAt: null, assignedAgentId: null }
+              ...(modeCorrected
+                ? { mode: p.mode, status: bornStatus(p.mode), ...reset }
+                : willRerun
+                ? { status: "pending", ...reset }
                 : {}),
             },
           });
-          if (willRerun) rerun++;
+          if (willRerun || modeCorrected) rerun++;
         }
         // Systems removed from the plan: drop their not-yet-started kept jobs (started ones stay as history).
         for (const k of kept) {
