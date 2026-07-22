@@ -8,6 +8,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { parseRights, summarizeRights, testableSystems, type RightsRow } from "./conn-test-logic";
 import type { RunnerService } from "./runner-service";
+import { ALWAYS_ON_PREM_SYSTEMS } from "@/lib/cases/case-secrets";
 import { GRAPH_OPTIONAL_CAPS, suggestedRole } from "@/lib/secrets/graph-caps";
 import { scopeAllows, type ClientScope } from "@/lib/auth/client-scope";
 
@@ -161,6 +162,11 @@ export type FleetM365Target = {
   primaryDomain: string | null;
   m365Systems: { systemKey: string; mode: string; secretNames: string[] | null; config: unknown }[];
   hasAdminSecret: boolean;
+  // The client runs an on-prem AD/sync system — makes `exchange` a hybrid (on-prem) test that only the
+  // client's own agent can run. Must be computed from the client's FULL system set (not the M365
+  // subset), exactly as requestConnectionTests does, or a hybrid client's Exchange test is misrouted
+  // to the central runner, which has no path into the on-prem environment.
+  hasAd: boolean;
 };
 
 async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM365Target[]> {
@@ -172,10 +178,9 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       name: true,
       coreId: true,
       primaryDomain: true,
-      systems: {
-        where: { systemKey: { in: [...M365_FAMILY] } },
-        select: { systemKey: true, mode: true, secretNames: true, config: true },
-      },
+      // ALL systems — so hasAd (on-prem AD/sync presence) is detected the same way the per-client
+      // conn-test path does. The M365-family subset is filtered out of this in JS below.
+      systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } },
       secrets: { where: { name: M365_ADMIN_SECRET }, select: { name: true } },
     },
     orderBy: { name: "asc" },
@@ -188,8 +193,9 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       name: c.name,
       coreId: c.coreId,
       primaryDomain: c.primaryDomain,
-      m365Systems: c.systems,
+      m365Systems: c.systems.filter((s) => (M365_FAMILY as readonly string[]).includes(s.systemKey)),
       hasAdminSecret: c.secrets.length > 0,
+      hasAd: c.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey)),
     }));
 }
 
@@ -212,8 +218,7 @@ export async function startFleetM365Test(
   let queued = 0;
   let sweptClients = 0;
   for (const t of targets) {
-    const hasAd = false; // M365-family systems are cloud; on-prem AD isn't in this sweep's set
-    const specs = testableSystems(t.m365Systems, hasAd);
+    const specs = testableSystems(t.m365Systems, t.hasAd);
     if (specs.length === 0) continue; // no wired credential -> nothing to test (a no_creds row)
     let any = false;
     for (const spec of specs) {
@@ -278,7 +283,7 @@ export async function rollupFleetM365Test(db: PrismaClient, scope: ClientScope):
 
   const rows: FleetM365Row[] = targets.map((t) => {
     const clientTests = testsByClient.get(t.id) ?? [];
-    const testableSystemKeys = testableSystems(t.m365Systems, false).map((s) => s.systemKey);
+    const testableSystemKeys = testableSystems(t.m365Systems, t.hasAd).map((s) => s.systemKey);
     const cls = classifyM365Client({ hasAdminSecret: t.hasAdminSecret, testableSystemKeys, tests: clientTests });
     return {
       slug: t.slug,
@@ -292,8 +297,14 @@ export async function rollupFleetM365Test(db: PrismaClient, scope: ClientScope):
 
   const run = await db.fleetM365TestRun.findFirst({ where: { scope: FLEET_M365_SCOPE }, orderBy: { startedAt: "desc" } });
   if (run && run.status === "running") {
-    const unsettled = tests.some((t) => t.status === "pending" || t.status === "running");
-    if (!unsettled) {
+    // Settle from the sweep's OWN unsettled tests across the whole fleet — NOT the caller's scoped
+    // view. A narrower-scoped operator polling must not mark the run done while tests it can't see are
+    // still running (which would let a second sweep start and delete in-flight rows). `source:"sweep"`
+    // is how the sweep tags what it queued, so this ignores unrelated manual per-client retests.
+    const unsettled = await db.connectionTest.count({
+      where: { status: { in: ["pending", "running"] }, source: "sweep", systemKey: { in: [...M365_FAMILY] } },
+    });
+    if (unsettled === 0) {
       await db.fleetM365TestRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "done", finishedAt: new Date() } });
       run.status = "done";
       run.finishedAt = new Date();
@@ -317,6 +328,9 @@ export async function cancelFleetM365Test(db: PrismaClient): Promise<CancelFleet
   if (!live) return { cancelled: false, reason: "no fleet M365 test is in progress" };
   const flipped = await db.fleetM365TestRun.updateMany({ where: { id: live.id, status: "running" }, data: { status: "cancelled", finishedAt: new Date() } });
   if (flipped.count === 0) return { cancelled: false, reason: "the sweep just finished", id: live.id };
-  await db.connectionTest.deleteMany({ where: { status: "pending", systemKey: { in: [...M365_FAMILY] } } });
+  // Delete only the sweep's OWN still-pending tests (source:"sweep") so the runner stops claiming them
+  // — never an operator's unrelated manual per-client retest that happens to be pending. Running tests
+  // finish naturally (there's no mid-probe abort).
+  await db.connectionTest.deleteMany({ where: { status: "pending", source: "sweep", systemKey: { in: [...M365_FAMILY] } } });
   return { cancelled: true, id: live.id };
 }
