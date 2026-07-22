@@ -18,6 +18,12 @@ export const M365_FAMILY = ["m365", "entra", "exchange"] as const;
 // The scope string for the sweep's one-running guard (see the partial unique index).
 export const FLEET_M365_SCOPE = "fleet-m365";
 
+// A running sweep older than this is treated as finished: the tests it queued are either done or
+// stuck pending (no runner claimed them / an on-prem client with no agent), and either way the run
+// must not freeze the page's "Testing…" button forever. Both the roll-up (auto-settle) and a new
+// "Retest all" (supersede) honor it, so a stuck run always self-heals.
+export const FLEET_M365_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
+
 // The app credential every M365-family system authenticates with. Its absence is "no creds".
 const M365_ADMIN_SECRET = "m365-admin";
 
@@ -61,7 +67,14 @@ export type ClassifyResult = {
   missingPerms: number; // total missing required ops across tests (for the badge)
   surplus: number; // total surplus roles across tests
   escalation: number; // of the surplus, how many are an escalation risk
+  // The app holds AppRoleAssignment.ReadWrite.All (a flagged surplus) AND has missing permissions — so
+  // the gaps can be self-granted using that role, no Global Admin sign-in. Drives "Correct permissions"
+  // down the self-grant path instead of the device-code modal.
+  canSelfGrant: boolean;
 };
+
+// The surplus role that lets an app assign app roles to itself — see lib/secrets/self-grant-m365.ts.
+const SELF_GRANT_ROLE_LC = "approleassignment.readwrite.all";
 
 // Pure: turn a client's connection-test state into the table's status / tags / action. No I/O.
 export function classifyM365Client(input: ClassifyInput): ClassifyResult {
@@ -78,6 +91,7 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
   let escalation = 0;
   const missingOptionalRoles = new Set<string>();
   let connFailed = false;
+  let hasSelfGrantRole = false;
 
   for (const t of tests) {
     if (t.status === "not_needed") continue;
@@ -96,7 +110,11 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     if (t.status === "fail" && sr.state !== "missing") connFailed = true;
     // Missing OPTIONAL capabilities -> the roles to pre-check when correcting. Required gaps are
     // always granted by provisioning, so they need no pre-check.
-    for (const r of rows ?? []) collectMissingOptionalRole(r, missingOptionalRoles);
+    for (const r of rows ?? []) {
+      collectMissingOptionalRole(r, missingOptionalRoles);
+      // The self-grant primitive shows up as a flagged surplus row (over-permission).
+      if (r.surplus && r.op.toLowerCase() === SELF_GRANT_ROLE_LC) hasSelfGrantRole = true;
+    }
   }
 
   if (surplus > 0) tags.add("over_permissioned");
@@ -139,6 +157,8 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     missingPerms,
     surplus,
     escalation,
+    // Self-grant is only meaningful when there's a gap to close AND the app can close it itself.
+    canSelfGrant: hasSelfGrantRole && tags.has("missing_perms"),
   };
 }
 
@@ -212,7 +232,14 @@ export async function startFleetM365Test(
   args: StartFleetArgs
 ): Promise<StartFleetResult> {
   const live = await db.fleetM365TestRun.findFirst({ where: { scope: FLEET_M365_SCOPE, status: "running" }, orderBy: { startedAt: "desc" } });
-  if (live) return { started: false, reason: "a fleet M365 test is already in progress", id: live.id };
+  if (live) {
+    // A genuinely in-progress sweep blocks a duplicate. A STALE one (its tests never settled) is
+    // finished off so "Retest all" can always start a fresh sweep instead of wedging on a dead run.
+    if (Date.now() - live.startedAt.getTime() <= FLEET_M365_STALE_AFTER_MS) {
+      return { started: false, reason: "a fleet M365 test is already in progress", id: live.id };
+    }
+    await db.fleetM365TestRun.updateMany({ where: { id: live.id, status: "running" }, data: { status: "done", finishedAt: new Date() } });
+  }
 
   const targets = await loadTargets(db, args.scope);
   let queued = 0;
@@ -247,6 +274,34 @@ export async function startFleetM365Test(
     throw e;
   }
   return { started: true, id: run.id, clients: sweptClients, tests: queued };
+}
+
+export type RetestOneResult = { ok: boolean; reason?: string; tests?: number };
+
+// Retest ONE client's M365-family systems (the per-row "Retest"), scope-checked. Queues via the same
+// sweep-sourced path so it's picked up by the runner and reflected in the roll-up; does NOT touch the
+// fleet run row (a targeted retest isn't a new sweep). Never `deep`.
+export async function retestFleetM365Client(
+  db: PrismaClient,
+  svc: Pick<RunnerService, "requestConnectionTests">,
+  slug: string,
+  scope: ClientScope
+): Promise<RetestOneResult> {
+  const target = (await loadTargets(db, scope)).find((t) => t.slug === slug);
+  // Out of scope / not an M365 client reads as not-found (mirrors clientSlugInScope semantics).
+  if (!target) return { ok: false, reason: "not found" };
+  const specs = testableSystems(target.m365Systems, target.hasAd);
+  if (specs.length === 0) return { ok: false, reason: "this client has no wired M365 credential to test" };
+  let queued = 0;
+  for (const spec of specs) {
+    try {
+      const out = await svc.requestConnectionTests(slug, spec.systemKey, "sweep");
+      queued += out.tests.length;
+    } catch {
+      /* skip this system — the others still run */
+    }
+  }
+  return { ok: true, tests: queued };
 }
 
 export type FleetM365Row = {
@@ -304,7 +359,10 @@ export async function rollupFleetM365Test(db: PrismaClient, scope: ClientScope):
     const unsettled = await db.connectionTest.count({
       where: { status: { in: ["pending", "running"] }, source: "sweep", systemKey: { in: [...M365_FAMILY] } },
     });
-    if (unsettled === 0) {
+    // Settle when the sweep's tests are all done — OR when the run has gone stale (tests stuck pending
+    // because no runner claimed them), so the page's "Testing…" button can never be frozen forever.
+    const stale = Date.now() - run.startedAt.getTime() > FLEET_M365_STALE_AFTER_MS;
+    if (unsettled === 0 || stale) {
       await db.fleetM365TestRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "done", finishedAt: new Date() } });
       run.status = "done";
       run.finishedAt = new Date();
