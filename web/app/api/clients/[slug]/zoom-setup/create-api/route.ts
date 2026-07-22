@@ -118,10 +118,10 @@ export async function GET(req: Request, { params }: { params: { slug: string } }
 
   const jobId = new URL(req.url).searchParams.get("jobId")?.trim();
   if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 422 });
-  const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, status: true, error: true, result: true, case: { select: { clientId: true } } } });
+  const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, status: true, error: true, result: true, progress: true, case: { select: { clientId: true } } } });
   if (!job || job.case.clientId !== client.id) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  if (!TERMINAL.has(job.status)) return NextResponse.json({ done: false, status: job.status });
+  if (!TERMINAL.has(job.status)) return NextResponse.json({ done: false, status: job.status, stage: (job.progress as { stage?: string } | null)?.stage });
   if (job.status !== "succeeded") return NextResponse.json({ done: true, ok: false, error: job.error || "the Zoom API-app setup did not complete — see the run screenshot/logs" });
 
   const alreadyScrubbed = (job.result as { _harvestScrubbed?: boolean } | null)?._harvestScrubbed === true;
