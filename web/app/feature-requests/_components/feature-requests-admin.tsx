@@ -17,6 +17,7 @@ import type { FeatureRequestRow } from "@/lib/feature-requests/serialize";
 import { FeatureStatusBadge } from "./status-badge";
 import { CompletedTable } from "../../feature-requests/_components/completed-table";
 import { StatusSelect, type SendFn } from "../../feature-requests/_components/status-select";
+import { FrSendToChat } from "./fr-send-to-chat";
 
 function Row({ req, canHide, send, onChange }: {
   req: FeatureRequestRow;
@@ -77,6 +78,10 @@ function Row({ req, canHide, send, onChange }: {
         {req.hideNote && <span className="note">{req.hideNote}</span>}
         {busy && <span className="note">saving…</span>}
         {err && <span className="note" style={{ color: "#b3261e" }}>{err}</span>}
+      </div>
+      {/* Announce this request to the client chats (any status) — its own line so the panel has room. */}
+      <div style={{ marginTop: "0.55rem" }}>
+        <FrSendToChat id={req.id} number={req.number} />
       </div>
     </div>
   );

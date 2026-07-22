@@ -199,3 +199,4 @@ export { entry as zoomChunkRealCap } from "./zoom-chunk-real-cap";
 export { entry as zoomSenderPaginationGuard } from "./zoom-sender-pagination-guard";
 export { entry as m365SetupAutodetectFolder } from "./m365-setup-autodetect-folder";
 export { entry as adConntestOptionalDcSecret } from "./ad-conntest-optional-dc-secret";
+export { entry as featureRequestSendToChat } from "./feature-request-send-to-chat";
