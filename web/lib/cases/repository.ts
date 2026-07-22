@@ -129,6 +129,7 @@ export function makeCaseRepository(db: PrismaClient) {
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
           engineOptOut: boolean;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
+          adObjects: unknown; cloudGroups: unknown;
           intakeRules: unknown;
           notNeededSecrets: string[];
           wiredOptionalSecrets: string[];
@@ -141,6 +142,7 @@ export function makeCaseRepository(db: PrismaClient) {
           id: true, name: true, slug: true, primaryDomain: true,
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true, engineOptOut: true,
           identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
+          adObjects: true, cloudGroups: true,
           intakeRules: true,
           parentId: true, inheritParentSystems: true,
         },
@@ -156,7 +158,7 @@ export function makeCaseRepository(db: PrismaClient) {
       if (c.systems.length === 0 && c.parentId && c.inheritParentSystems) {
         const p = await db.client.findUnique({
           where: { id: c.parentId },
-          select: { identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true },
+          select: { identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true, adObjects: true, cloudGroups: true },
         });
         if (p && p.systems.length > 0) {
           return {
@@ -169,6 +171,8 @@ export function makeCaseRepository(db: PrismaClient) {
             globals: c.globals ?? p.globals,
             globalsOffboard: c.globalsOffboard ?? p.globalsOffboard,
             locations: c.locations ?? p.locations,
+            adObjects: c.adObjects ?? p.adObjects,
+            cloudGroups: c.cloudGroups ?? p.cloudGroups,
           };
         }
       }
@@ -256,6 +260,7 @@ export function makeCaseRepository(db: PrismaClient) {
             id: string; slug: string; primaryDomain: string;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
             identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
+            adObjects: unknown; cloudGroups: unknown;
             intakeRules: unknown;
             notNeededSecrets: string[];
             wiredOptionalSecrets: string[];
@@ -271,6 +276,7 @@ export function makeCaseRepository(db: PrismaClient) {
               id: true, slug: true, primaryDomain: true,
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
               identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
+              adObjects: true, cloudGroups: true,
               intakeRules: true,
               parentId: true,
             },

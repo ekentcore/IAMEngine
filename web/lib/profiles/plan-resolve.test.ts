@@ -342,6 +342,59 @@ test("printers only (no groups) still emits the manual job", () => {
   assert.equal(resolved.filter((j) => j.systemKey === "printers").length, 1);
 });
 
+// ── cloud-only location groups must not be pushed to the AD lane ──────────────────────────────────
+// A location group is multi-lane, but a group discovery proves is cloud-only (in the tenant's Entra
+// groups, absent from the DC's AD groups) makes the AD runner warn "group not found in AD". Skip it
+// on the AD lane; keep it on the cloud lanes. Only filter with positive catalog evidence.
+const houstonPayload = { firstName: "A", lastName: "B", officeLocation: "Houston", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+
+test("cloud-only location group (in cloudGroups, not adObjects) is skipped on AD but kept on m365", () => {
+  const locClient = {
+    personas: null, globals: null,
+    adObjects: { groups: ["Back Office Users"] },
+    cloudGroups: { groups: [{ name: "Houston Printix Group", type: "Security" }] },
+    locations: { Houston: { city: "Houston", groups: ["Houston Printix Group"] } },
+  };
+  const resolved = resolvePlannedConfigs(locClient, houstonPayload, "onboard",
+    [job("active-directory", { groups: ["Back Office Users"] }), job("m365", {})]);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  const m365 = resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["Back Office Users"]); // Printix NOT added to AD
+  assert.deepEqual(m365.groups, ["Houston Printix Group"]); // still added in 365
+});
+
+test("cloud-only filter is case-insensitive on the catalog names", () => {
+  const locClient = {
+    personas: null, globals: null,
+    adObjects: { groups: [] },
+    cloudGroups: { groups: [{ name: "houston printix group" }] },
+    locations: { Houston: { city: "Houston", groups: ["Houston Printix Group"] } },
+  };
+  const resolved = resolvePlannedConfigs(locClient, houstonPayload, "onboard", [job("active-directory", {})]);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, []); // skipped despite casing difference
+});
+
+test("location group that IS a discovered AD group stays on the AD lane", () => {
+  const locClient = {
+    personas: null, globals: null,
+    adObjects: { groups: ["FalconBOS"] },
+    cloudGroups: { groups: [{ name: "FalconBOS" }] }, // present in both → NOT cloud-only
+    locations: { Boston: { city: "Boston", groups: ["FalconBOS"] } },
+  };
+  const p = { firstName: "A", lastName: "B", officeLocation: "Boston", samAccountName: "ab", userPrincipalName: "ab@x.com", primaryDomain: "x.com" };
+  const resolved = resolvePlannedConfigs(locClient, p, "onboard", [job("active-directory", {})]);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["FalconBOS"]);
+});
+
+test("no discovery catalogs → legacy union into AD is preserved (nothing silently dropped)", () => {
+  const locClient = { personas: null, globals: null, locations: { Houston: { city: "Houston", groups: ["Houston Printix Group"] } } };
+  const resolved = resolvePlannedConfigs(locClient, houstonPayload, "onboard", [job("active-directory", {})]);
+  const ad = resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>;
+  assert.deepEqual(ad.groups, ["Houston Printix Group"]);
+});
+
 // ── FR #0000021: offboard hide-from-GAL injection ────────────────────────────────────────────────
 const galJob = (systemKey: string, config: Record<string, unknown> = {}): PlannedJob => job(systemKey, config);
 const galClient = {}; // v2.0 client: no personas/globals — GAL default must still apply

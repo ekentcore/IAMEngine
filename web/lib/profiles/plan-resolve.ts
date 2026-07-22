@@ -9,7 +9,37 @@ import { evaluateLicenseRules } from "../m365/license-rules";
 import { hideFromGalOptedOut, adLaneHidesViaAttribute } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
-type PlanClient = { personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown };
+type PlanClient = {
+  personas?: unknown; globals?: unknown; globalsOffboard?: unknown; locations?: unknown;
+  // Discovered group catalogs (see prisma schema): adObjects = { groups: string[] } from the DC,
+  // cloudGroups = { groups: [{ name, type }] } from Entra/Graph. Used to route location groups.
+  adObjects?: unknown; cloudGroups?: unknown;
+};
+
+// A location group is inherently multi-lane, but a group discovery proves is CLOUD-ONLY — present in
+// the tenant's discovered Entra groups and absent from the DC's discovered AD groups — must never be
+// pushed to the AD lane: AD can't find it and the runner warns "group not found in AD". Returns the
+// lower-cased names of such groups. Only classifies with positive evidence — if either catalog is
+// missing the set is empty and the legacy union (fan out to every directory lane) is preserved.
+function cloudOnlyGroupNames(client: PlanClient): ReadonlySet<string> {
+  const cg = (client.cloudGroups as { groups?: unknown } | null)?.groups;
+  if (!Array.isArray(cg)) return new Set();
+  const adRaw = (client.adObjects as { groups?: unknown } | null)?.groups;
+  const adSet = new Set(
+    (Array.isArray(adRaw) ? adRaw : [])
+      .map((g) => (typeof g === "string" ? g.trim().toLowerCase() : ""))
+      .filter(Boolean),
+  );
+  const out = new Set<string>();
+  for (const g of cg) {
+    const name = typeof g === "string"
+      ? g
+      : (g && typeof g === "object" && typeof (g as { name?: unknown }).name === "string" ? (g as { name: string }).name : "");
+    const k = name.trim().toLowerCase();
+    if (k && !adSet.has(k)) out.add(k);
+  }
+  return out;
+}
 
 // System keys the selected persona pulls in — feeds planCase's by_persona lane gate. Onboard: the
 // persona's `systems` keys. Offboard: the UNION of `systems` + `offboardSystems`, so whatever a
@@ -147,15 +177,21 @@ export function resolvePlannedConfigs(
   const locGroups = Array.isArray(location?.groups) ? (location!.groups as string[]).filter((g) => typeof g === "string" && g.trim()) : [];
   const locOu = typeof location?.ou === "string" ? location.ou : null;
   const locAttrs = location?.attributes && typeof location.attributes === "object" ? location.attributes as Record<string, unknown> : null;
+  // Groups discovery proves are cloud-only are dropped from the AD lane only (kept on entra/m365/
+  // exchange). Without discovery data this set is empty and every directory lane gets the full union.
+  const cloudOnly = cloudOnlyGroupNames(client);
   const withLoc = (locGroups.length === 0 && !locOu && !locAttrs)
     ? resolved
     : resolved.map((j) => {
         if (!DIRECTORY_SYSTEMS.has(j.systemKey)) return j;
         const cfg = { ...((j.config as Record<string, unknown> | null) ?? {}) };
         if (locGroups.length) {
+          const applicable = (j.systemKey === "active-directory" && cloudOnly.size)
+            ? locGroups.filter((g) => !cloudOnly.has(g.toLowerCase()))
+            : locGroups;
           const base = Array.isArray(cfg.groups) ? [...(cfg.groups as unknown[])] : [];
           const seen = new Set(base.map((g) => String(g).toLowerCase()));
-          for (const g of locGroups) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
+          for (const g of applicable) { const k = g.toLowerCase(); if (!seen.has(k)) { seen.add(k); base.push(g); } }
           cfg.groups = base;
         }
         if (j.systemKey === "active-directory" && locOu && !cfg.ou) cfg.ou = locOu;
