@@ -7,7 +7,7 @@
     Description       = 'Idempotent KnowBe4 user lifecycle via SCIM 2.0 (KnowBe4 has no create-user REST API). Onboard creates/adopts; offboard deactivates. No external module dependencies.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgKnowBe4', 'Invoke-CtgKnowBe4Scim', 'Get-CtgKnowBe4User', 'Invoke-CtgKnowBe4Onboarding', 'Invoke-CtgKnowBe4Offboarding', 'Confirm-CtgKnowBe4')
+    FunctionsToExport = @('Connect-CtgKnowBe4', 'Invoke-CtgKnowBe4Scim', 'Get-CtgKnowBe4User', 'Invoke-CtgKnowBe4Onboarding', 'Invoke-CtgKnowBe4Offboarding', 'Confirm-CtgKnowBe4', 'Resolve-CtgKnowBe4ConsoleLogin', 'Invoke-CtgKnowBe4ConsoleSetup')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

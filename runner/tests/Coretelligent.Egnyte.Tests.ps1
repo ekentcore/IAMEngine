@@ -115,3 +115,24 @@ Describe 'Confirm-CtgEgnyte' {
         $r.ok | Should -BeTrue
     }
 }
+
+Describe 'Resolve-CtgEgnyteConsoleLogin (browser auto-setup)' {
+    # The console login the browser flow signs in WITH — DISTINCT from the egnyte API token it harvests.
+    It 'accepts an admin email + password (from a .Fields bag)' {
+        $secret = [pscustomobject]@{ Fields = @{ Username = 'admin@drakestar.com'; Password = 'pw' } }
+        $r = Resolve-CtgEgnyteConsoleLogin -Secret $secret
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be 'admin@drakestar.com'
+    }
+    It 'rejects a non-email username (an API token is not a console login) without echoing it' {
+        $r = Resolve-CtgEgnyteConsoleLogin -Secret ([pscustomobject]@{ Fields = @{ Username = 'not-an-email-token'; Password = 'pw' } })
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Match 'must be an admin email'
+        $r.Reason | Should -Not -Match 'not-an-email-token'
+    }
+    It 'fails with an actionable reason when nothing is wired' {
+        $r = Resolve-CtgEgnyteConsoleLogin -Secret ([pscustomobject]@{ Fields = @{} })
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Match "no 'egnyte-console' admin login wired"
+    }
+}

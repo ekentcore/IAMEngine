@@ -210,3 +210,25 @@ Describe 'Find-CtgSlackUser — untrusted intake email' {
         }
     }
 }
+
+Describe "Resolve-CtgSlackConsoleLogin (browser auto-setup login resolver)" {
+    It "accepts an email + password admin login" {
+        $r = Resolve-CtgSlackConsoleLogin -Secret ([pscustomobject]@{ Fields = @{ Username = "admin@acme.com"; Password = "pw" } })
+        $r.Ok | Should -BeTrue
+        $r.Username | Should -Be "admin@acme.com"
+    }
+    It "refuses when the username is not an email (a SCIM token is not a console login)" {
+        $r = Resolve-CtgSlackConsoleLogin -Secret ([pscustomobject]@{ Fields = @{ Username = "xoxp-not-an-email"; Password = "pw" } })
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Match "must be an admin email"
+        $r.Reason | Should -Not -Match "xoxp-not-an-email"
+    }
+    It "refuses when there is no password" {
+        $r = Resolve-CtgSlackConsoleLogin -Secret ([pscustomobject]@{ Fields = @{ Username = "admin@acme.com" } })
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Match "no Password"
+    }
+    It "refuses when nothing is wired" {
+        (Resolve-CtgSlackConsoleLogin -Secret ([pscustomobject]@{ Fields = @{} })).Ok | Should -BeFalse
+    }
+}

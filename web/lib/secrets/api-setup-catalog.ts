@@ -13,9 +13,13 @@ export type ApiSetupEntry = {
   derive?: "spanning";
   serviceOptions?: string[]; // Spanning: the email-service picker (o365 | google)
   // When set, the modal shows an "Automatic (browser)" tab that drives the vendor console via the
-  // runner. Phase 1: a "Test sign-in" button (proves the console login works). Value is the ad-hoc
-  // browser systemKey the flow runs under. Only Mimecast declares it today.
-  autoBrowser?: "mimecast-console-setup";
+  // runner to CREATE + harvest + vault the API credential. `autoBrowser` is the ad-hoc browser
+  // systemKey the flow runs under; `autoCreateEndpoint` is the route (under /api/clients/[slug]/) the
+  // modal POSTs to start it and GETs to poll; `autoConsoleSecret` is the console LOGIN secret the flow
+  // signs in with. All three together make the Automatic tab work for a vendor via one shared code path.
+  autoBrowser?: string;
+  autoCreateEndpoint?: string;
+  autoConsoleSecret?: string;
   // The client-folder SUBFOLDER the vaulted credential should target in Delinea. Vendor API creds go
   // in the client's "Vendor" subfolder; identity creds (m365) default to "Identity Services" when this
   // is unset. The create route tries this subfolder first, then "Identity Services", then refuses (a
@@ -29,6 +33,8 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     consoleUrl: "https://login.mimecast.com/",
     helpPath: "/help/mimecast",
     autoBrowser: "mimecast-console-setup",
+    autoCreateEndpoint: "mimecast-console/create-api-app",
+    autoConsoleSecret: "mimecast-console",
     delineaSubfolder: "Vendor",
     steps: [
       "In the Mimecast Administration Console, go to Integrations → API and Platform Integrations → Add API Application.",
@@ -42,6 +48,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     systemKey: "spanning", secretName: "spanning", label: "Spanning",
     consoleUrl: "https://o365.spanningbackup.com/",
     helpPath: "/help/spanning",
+    autoBrowser: "spanning-console-setup",
+    autoCreateEndpoint: "spanning-setup/create-api",
+    autoConsoleSecret: "spanning-portal",
     delineaSubfolder: "Vendor",
     derive: "spanning",
     serviceOptions: ["o365", "google"],
@@ -67,6 +76,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "adobe", secretName: "adobe", label: "Adobe",
     consoleUrl: "https://developer.adobe.com/console",
+    autoBrowser: "adobe-console-setup",
+    autoCreateEndpoint: "adobe-setup/create-api",
+    autoConsoleSecret: "adobe-console",
     delineaSubfolder: "Vendor",
     steps: [
       "In the Adobe Developer Console (developer.adobe.com/console), open (or create) a project for this client's Adobe org, then Add API → User Management API.",
@@ -78,6 +90,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "zoom", secretName: "zoom", label: "Zoom",
     consoleUrl: "https://marketplace.zoom.us/",
+    autoBrowser: "zoom-console-setup",
+    autoCreateEndpoint: "zoom-setup/create-api",
+    autoConsoleSecret: "zoom-console",
     delineaSubfolder: "Vendor",
     steps: [
       "In the Zoom App Marketplace (marketplace.zoom.us) → Develop → Build App, create a Server-to-Server OAuth app for this client's Zoom account.",
@@ -89,6 +104,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "egnyte", secretName: "egnyte", label: "Egnyte",
     consoleUrl: "https://developers.egnyte.com/",
+    autoBrowser: "egnyte-console-setup",
+    autoCreateEndpoint: "egnyte-setup/create-api",
+    autoConsoleSecret: "egnyte-console",
     delineaSubfolder: "Vendor",
     steps: [
       "Note the client's Egnyte domain (the <domain> in https://<domain>.egnyte.com).",
@@ -99,6 +117,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "knowbe4", secretName: "knowbe4", label: "KnowBe4",
     consoleUrl: "https://training.knowbe4.com/",
+    autoBrowser: "knowbe4-console-setup",
+    autoCreateEndpoint: "knowbe4-setup/create-api",
+    autoConsoleSecret: "knowbe4-console",
     delineaSubfolder: "Vendor",
     steps: [
       "In the KnowBe4 console, go to your account settings → API and enable the Reporting / User Management API, then generate an API token.",
@@ -109,6 +130,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
   {
     systemKey: "slack", secretName: "slack", label: "Slack",
     consoleUrl: "https://api.slack.com/apps",
+    autoBrowser: "slack-console-setup",
+    autoCreateEndpoint: "slack-setup/create-api",
+    autoConsoleSecret: "slack-console",
     delineaSubfolder: "Vendor",
     steps: [
       "SCIM provisioning requires a Slack Business+ or Enterprise Grid plan and a Workspace/Org Owner.",

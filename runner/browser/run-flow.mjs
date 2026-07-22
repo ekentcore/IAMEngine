@@ -14,6 +14,9 @@ import { launch } from "./lib/launch.mjs";
 // Registry of available flows. Each module default-exports async ({ page, input, shot, log }) => result.
 const FLOWS = {
   "spanning-force-sync": () => import("./flows/spanning-force-sync.mjs"),
+  // Sign into the Spanning admin console (M365 SSO) and generate + harvest the Settings → API Token
+  // (vaulted as the `spanning` credential). LIVE-VALIDATION PENDING — see the flow file.
+  "spanning-console-setup": () => import("./flows/spanning-console-setup.mjs"),
   // Complete Microsoft's device-login page (microsoft.com/devicelogin) as a Global Admin, reusing
   // the shared MS-SSO login lib (lib/ms-sso-login.mjs). LIVE-VALIDATION PENDING — see the flow file.
   "entra-devicecode": () => import("./flows/entra-devicecode.mjs"),
@@ -26,6 +29,20 @@ const FLOWS = {
   // Sign in to the Mimecast Administration Console (Phase 1: sign-in test only; Phase 2 will create
   // the API 2.0 app + harvest the credential). LIVE-VALIDATION PENDING — see the flow file.
   "mimecast-console-signin": () => import("./flows/mimecast-console-signin.mjs"),
+  // Sign in to Zoom + create/harvest a Server-to-Server OAuth app (the `zoom` API credential).
+  // signInOnly proves the login; otherwise it harvests Account ID/Client ID/Client Secret.
+  // LIVE-VALIDATION PENDING — see the flow file.
+  "zoom-console-setup": () => import("./flows/zoom-console-setup.mjs"),
+  // Sign in to Slack + BEST-EFFORT harvest a SCIM token (the `slack` API credential). signInOnly proves
+  // the login; otherwise it attempts to read a token (usually not console-exposed — operator pastes it).
+  // LIVE-VALIDATION PENDING — see the flow file.
+  "slack-console-setup": () => import("./flows/slack-console-setup.mjs"),
+  // Sign in to a client's Egnyte admin + harvest a domain API token (the `egnyte` API credential).
+  // LIVE-VALIDATION PENDING — see the flow file.
+  "egnyte-console-setup": () => import("./flows/egnyte-console-setup.mjs"),
+  // Sign in to the KnowBe4 console + enable/harvest the SCIM provisioning token (the 'knowbe4' API
+  // credential). LIVE-VALIDATION PENDING — see the flow file.
+  "knowbe4-console-setup": () => import("./flows/knowbe4-console-setup.mjs"),
   // Generic interpreter for low-code browser connectors (docs/CONNECTOR_BUILDER.md) — the definition
   // + case context travel in `input.params`, so one flow serves every custom-* browser connector.
   "connector-steps": () => import("./flows/connector-steps.mjs"),

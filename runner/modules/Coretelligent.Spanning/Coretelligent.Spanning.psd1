@@ -7,7 +7,7 @@
     Description       = 'Spanning Backup for Microsoft 365 user lifecycle: assign a Standard backup license on onboard; retain backups and swap to the Archive license on offboard. HTTP Basic (Client ID : Client Secret) against o365-api-{region}.spanningbackup.com/external.'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgSpanning', 'Invoke-CtgSpanningApi', 'Test-CtgSpanning404', 'Test-CtgSpanningSeatError', 'Test-CtgSpanningLicensed', 'Test-CtgSpanningArchived', 'Find-CtgSpanningUser', 'Set-CtgSpanningLicense', 'Invoke-CtgSpanningOnboarding', 'Invoke-CtgSpanningOffboarding', 'Confirm-CtgSpanning', 'Get-CtgSpanningSecretField', 'Invoke-CtgSpanningForceSync', 'Resolve-CtgSpanningPortalLogin', 'Test-CtgSpanningPortalLogin')
+    FunctionsToExport = @('Connect-CtgSpanning', 'Invoke-CtgSpanningApi', 'Test-CtgSpanning404', 'Test-CtgSpanningSeatError', 'Test-CtgSpanningLicensed', 'Test-CtgSpanningArchived', 'Find-CtgSpanningUser', 'Set-CtgSpanningLicense', 'Invoke-CtgSpanningOnboarding', 'Invoke-CtgSpanningOffboarding', 'Confirm-CtgSpanning', 'Get-CtgSpanningSecretField', 'Invoke-CtgSpanningForceSync', 'Invoke-CtgSpanningConsoleSetup', 'Resolve-CtgSpanningPortalLogin', 'Test-CtgSpanningPortalLogin')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

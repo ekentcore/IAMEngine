@@ -81,6 +81,13 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "egnyte domain", anyOf: ["Domain", "EgnyteDomain", "Egnyte Domain", "Tenant", "AccountID", "AccountId"], hint: "the tenant subdomain — 'drakestar' for drakestar.egnyte.com" },
     { label: "api token", anyOf: ["Token", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Bearer"], hint: "a long-lived Egnyte API token authorized by a domain admin (developers.egnyte.com)" },
   ],
+  // Egnyte admin CONSOLE login — the credential the browser auto-setup signs in WITH (email +
+  // password, optional TOTP seed). DISTINCT from the `egnyte` API credential (domain + token) it
+  // harvests. Used only by the egnyte-console-setup browser flow.
+  "egnyte-console": [
+    { label: "Egnyte admin email", anyOf: ["Username", "Email", "AdminEmail", "Admin Email", "User", "Login"], hint: "an Egnyte admin login that can read/generate the domain API token" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword", "Pass"], hint: "that admin account's password (enable One-Time Password / a TOTP seed on the Delinea secret for MFA)" },
+  ],
   // KnowBe4 SCIM — synonyms MIRROR the runner's KnowBe4 Connect $pick. The token is required; the base
   // URL is optional (defaults to the US endpoint, https://training.knowbe4.com/scim/v2).
   knowbe4: [
@@ -113,6 +120,14 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   // plan — that can't be checked from the field names, so the connection test names it instead.
   slack: [
     { label: "SCIM token (admin scope)", anyOf: ["Token", "ApiToken", "API Token", "AccessToken", "Access Token", "ApiKey", "API Key", "SCIMToken", "SCIM Token", "Password"] },
+  ],
+  // Slack admin console login the browser auto-setup signs in WITH — DISTINCT from the "slack" SCIM
+  // token it attempts to harvest. An email+password Owner/Admin login; a TOTP seed (or One-Time
+  // Password on the secret) clears MFA. NOTE: a workspace behind SSO or email magic-link can't use a
+  // password login — those paste the SCIM token instead. Synonyms mirror Resolve-CtgSlackConsoleLogin.
+  "slack-console": [
+    { label: "Slack admin email", anyOf: ["Username", "Email", "AdminEmail", "User", "Login"], hint: "a Slack Owner/Admin login for the workspace (Business+/Enterprise Grid) that can manage apps + SCIM" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword", "Pass"], hint: "that admin account's password (enable One-Time Password / a TOTP seed on the Delinea secret for MFA)" },
   ],
   // Spanning ADMIN CONSOLE sign-in — the credential the browser force-sync signs in WITH. The console
   // is Microsoft 365 SSO, so this is an interactive M365 admin login (an email + that account's
@@ -151,6 +166,29 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
   // the generic pair — on a dedicated secret the generic Username/Password are the natural fields).
   "mimecast-console": [
     { label: "Mimecast admin email", anyOf: ["Username", "AdminEmail", "AdminUser", "Email", "User"], hint: "a Mimecast admin login with access to the Administration Console (Integrations → API and Platform Integrations)" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword"], hint: "that admin account's password (enable One-Time Password on the Delinea secret for MFA)" },
+  ],
+  // Zoom admin console login the browser auto-setup signs in WITH to CREATE the Server-to-Server OAuth
+  // app — DISTINCT from the "zoom" API credential (accountId/clientId/clientSecret) it produces. An
+  // email+password admin login; a TOTP seed (or One-Time Password on the secret) clears MFA. NOTE: a
+  // Zoom account behind org SSO won't accept a password login — those tenants paste the API cred instead.
+  // Synonyms mirror the runner's Resolve-CtgZoomConsoleLogin pick order.
+  "zoom-console": [
+    { label: "Zoom admin email", anyOf: ["Username", "Email", "AdminEmail", "User", "Login"], hint: "a Zoom admin login that can create apps in the Zoom App Marketplace (Develop → Build App)" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword", "Pass"], hint: "that admin account's password (enable One-Time Password / a TOTP seed on the Delinea secret for MFA)" },
+  ],
+  // Adobe Developer Console sign-in — the credential the browser console-setup flow signs in WITH
+  // (developer.adobe.com/console) to create the User Management API OAuth Server-to-Server credential.
+  // SEPARATE from the `adobe` API secret (client id/secret/org id) it PRODUCES: an Adobe admin login
+  // (Adobe ID / federated email + password), with System/Developer role in the target Adobe org.
+  "adobe-console": [
+    { label: "Adobe admin email", anyOf: ["Username", "AdminEmail", "AdminUser", "Email", "User"], hint: "an Adobe admin (System or Developer role) that can create projects + credentials in the Adobe Developer Console for this org" },
+    { label: "that account's password", anyOf: ["Password", "AdminPassword"], hint: "that admin account's password (enable One-Time Password on the Delinea secret for MFA)" },
+  ],
+  // KnowBe4 admin console interactive sign-in — the login the browser flow signs in WITH to enable and
+  // harvest the SCIM token. NOT the SCIM token itself (that's the "knowbe4" secret above).
+  "knowbe4-console": [
+    { label: "KnowBe4 admin email", anyOf: ["Username", "AdminEmail", "AdminUser", "Email", "User"], hint: "a KnowBe4 admin login with access to Account Settings → User Management → SCIM" },
     { label: "that account's password", anyOf: ["Password", "AdminPassword"], hint: "that admin account's password (enable One-Time Password on the Delinea secret for MFA)" },
   ],
   // M365 Global Admin interactive sign-in — the credential the device-code browser flow logs in WITH.

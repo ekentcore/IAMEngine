@@ -258,4 +258,87 @@ function Confirm-CtgSlack {
     [pscustomobject]@{ ok = (@($checks | Where-Object { -not $_.pass }).Count -eq 0); checks = $checks }
 }
 
-Export-ModuleMember -Function Connect-CtgSlack, Invoke-CtgSlackScim, Test-CtgSlackNoScim, Find-CtgSlackUser, Test-CtgSlackActive, Invoke-CtgSlackOnboarding, Invoke-CtgSlackOffboarding, Confirm-CtgSlack
+# -------------------------------------------------------------------------------------------------
+# BROWSER AUTO-SETUP (sign in + BEST-EFFORT harvest the SCIM token) — LIVE-VALIDATION PENDING
+# -------------------------------------------------------------------------------------------------
+# DISTINCT from the 'slack' SCIM API token itself: this drives the Slack **console** with a
+# 'slack-console' admin login (email + password, optional TOTP) to prove the login and BEST-EFFORT
+# locate a SCIM token. Mirrors Coretelligent.Zoom's console setup. A value is never logged.
+#
+# CAVEAT: a Slack SCIM token is generally NOT exposed as a readable console field (it comes from an app
+# install with the admin scope), so the harvest usually returns nothing — that is EXPECTED, and the
+# operator pastes the token via the guided form instead. This never fabricates a token.
+
+# Read a field off a brokered secret by any of its synonyms (case/space-insensitive). The secret is
+# either a pscustomobject or a hashtable, with the fields on the object or under a .Fields member.
+function Get-CtgSlackConsoleField {
+    param($Secret, [string[]]$Names)
+    if (-not $Secret) { return $null }
+    $bag = $Secret
+    $fields = Get-CtgProp $Secret 'Fields'
+    if ($fields) { $bag = $fields }
+    foreach ($n in $Names) {
+        $v = Get-CtgProp $bag $n
+        if ($null -ne $v -and "$v".Trim() -ne '') { return [string]$v }
+    }
+    return $null
+}
+
+function Resolve-CtgSlackConsoleLogin {
+    param($Secret)
+    $email = Get-CtgSlackConsoleField $Secret @('Username', 'Email', 'User', 'Login', 'AdminEmail', 'Admin Email')
+    $password = Get-CtgSlackConsoleField $Secret @('Password', 'Pass', 'Secret')
+    if ([string]::IsNullOrWhiteSpace($email) -or $email -notmatch '@') {
+        return [pscustomobject]@{ Ok = $false; Reason = "no 'slack-console' admin login wired (an email + password) — the Username must be an admin email, not a SCIM token." }
+    }
+    if ([string]::IsNullOrWhiteSpace($password)) {
+        return [pscustomobject]@{ Ok = $false; Reason = "the 'slack-console' secret has no Password." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $email; Password = $password }
+}
+
+function Invoke-CtgSlackConsoleSetup {
+    <#
+    .SYNOPSIS
+        Drive Slack via the browser sidecar. Config.signInOnly=$true: SIGN-IN TEST (prove the console
+        login works; change nothing). signInOnly=$false: additionally BEST-EFFORT locate + harvest a
+        SCIM token and return it as a `Credentials` note-property (never logged) so the APP vaults it.
+        Slack SCIM tokens usually are NOT console-harvestable (they come from an app with the admin
+        scope) — a "signed in, no token" result is EXPECTED and NOT an error; the operator pastes the
+        token instead. Selectors are LIVE-VALIDATION PENDING. THROWS only on a failed flow (bad login).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'slack-console'
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $login = Resolve-CtgSlackConsoleLogin -Secret $Secret
+    if (-not $login.Ok) { throw "Slack console sign-in could not start — $($login.Reason)" }
+
+    $signInOnlyProp = Get-CtgProp $Config 'signInOnly'
+    $signInOnly = ($null -eq $signInOnlyProp) -or [bool]$signInOnlyProp
+    $params = @{ signInOnly = $signInOnly }
+    $consoleUrl = [string](Get-CtgProp $Config 'consoleUrl'); if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    $workspace = [string](Get-CtgProp $Config 'workspace'); if (-not [string]::IsNullOrWhiteSpace($workspace)) { $params['workspace'] = $workspace }
+    $totpSeed = Get-CtgSlackConsoleField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'MFASeed', 'AuthenticatorSeed', 'otpauth')
+    if ($totpSeed) { $params['otp'] = @{ totpSeed = $totpSeed }; $actions.Add("WARN using a stored TOTP seed — prefer enabling One-Time Password on the Delinea secret") }
+
+    $flowInput = @{ username = $login.Username; password = $login.Password; params = $params }
+    $res = Invoke-CtgBrowserFlow -Flow 'slack-console-setup' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        $actions.Add($(if ($res.message) { $res.message } else { 'signed in to Slack' }))
+        $out = [pscustomobject]@{ System = 'slack-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        if ($res.harvested -and $res.harvested.token) {
+            Add-Member -InputObject $out -NotePropertyName Credentials -NotePropertyValue ([pscustomobject]@{ token = [string]$res.harvested.token })
+        }
+        return $out
+    }
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ex = [System.Exception]::new("Slack console setup failed: $err")
+    if ($res.evidence) { $ex.Data['Evidence'] = [string]$res.evidence }
+    throw $ex
+}
+
+Export-ModuleMember -Function Connect-CtgSlack, Invoke-CtgSlackScim, Test-CtgSlackNoScim, Find-CtgSlackUser, Test-CtgSlackActive, Invoke-CtgSlackOnboarding, Invoke-CtgSlackOffboarding, Confirm-CtgSlack, Resolve-CtgSlackConsoleLogin, Invoke-CtgSlackConsoleSetup

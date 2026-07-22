@@ -164,4 +164,100 @@ function Confirm-CtgAdobe {
     [pscustomobject]@{ ok = (@($all | Where-Object { -not $_.pass }).Count -eq 0); checks = $all }
 }
 
-Export-ModuleMember -Function Connect-CtgAdobe, Invoke-CtgAdobeAction, Invoke-CtgAdobeOnboarding, Invoke-CtgAdobeOffboarding, Get-CtgAdobeUser, Confirm-CtgAdobe
+# ---- Adobe Developer Console browser auto-setup (create the UMAPI OAuth Server-to-Server credential) ----
+# DISTINCT from the API path above: this signs into the Developer Console with an 'adobe-console' admin
+# login and drives the browser (adobe-console-setup.mjs) to CREATE the `adobe` API credential, then
+# returns it as a Credentials note-property (never logged) for the APP to vault. LIVE-VALIDATION PENDING.
+
+function Get-CtgAdobeConsoleField {
+    param($Secret, [Parameter(Mandatory)][string[]]$Names)
+    if (-not $Secret) { return $null }
+    $fields = Get-CtgProp $Secret 'Fields'
+    foreach ($n in $Names) {
+        if ($fields -and ($fields -is [System.Collections.IDictionary]) -and $fields.ContainsKey($n) -and $fields[$n]) { return $fields[$n] }
+    }
+    return $null
+}
+
+# Decide what may be typed into Adobe's console login. Returns @{ Ok; Username; Password; Reason }.
+# Synonyms mirror field-requirements.ts 'adobe-console'. The rejected VALUE is never echoed.
+function Resolve-CtgAdobeConsoleLogin {
+    param($Secret, [string]$SecretName = 'adobe-console')
+    $username = Get-CtgAdobeConsoleField $Secret @('Username', 'AdminEmail', 'AdminUser', 'Email', 'User')
+    $password = Get-CtgAdobeConsoleField $Secret @('Password', 'AdminPassword')
+    if (-not $username -and -not $password) {
+        $cred = Get-CtgProp $Secret 'Credential'
+        if ($cred) { $username = $cred.UserName; try { $password = $cred.GetNetworkCredential().Password } catch { } }
+    }
+    if (-not $username -or -not $password) {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "no '$SecretName' secret is wired with an Adobe admin email + password (fields Username/Password, or AdminEmail/AdminPassword) — wire one in Delinea, and enable One-Time Password on it so Delinea can supply the verification code." }
+    }
+    if ($username -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+        return [pscustomobject]@{ Ok = $false; Username = $null; Password = $null; Reason = "the brokered '$SecretName' username is not an email, so it cannot be an Adobe console sign-in. Set the secret's Username to an Adobe admin's email. The value is not repeated here because it may be credential material." }
+    }
+    return [pscustomobject]@{ Ok = $true; Username = [string]$username; Password = [string]$password; Reason = $null }
+}
+
+function New-CtgAdobeConsoleInput {
+    param($Secret, [string]$SecretName, [hashtable]$OtpRequest, [hashtable]$Params, [System.Collections.Generic.List[string]]$Actions)
+    $login = Resolve-CtgAdobeConsoleLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) { $Actions.Add("WARN $($login.Reason)"); return $null }
+    if ($OtpRequest) { $Actions.Add("one-time password will be minted by Delinea at the verification prompt") }
+    $totpSeed = Get-CtgAdobeConsoleField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'OTP Seed', 'MFASeed', 'AuthenticatorSeed', 'OneTimePasswordSeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest) { $Actions.Add("WARN using a stored TOTP seed — enable One-Time Password on the Delinea secret instead, so the seed never leaves the vault") }
+    $p = @{}
+    if ($Params) { foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] } }
+    if ($OtpRequest) { $p['otp'] = $OtpRequest }
+    if ($totpSeed)   { $p['totpSeed'] = $totpSeed }
+    return @{ username = $login.Username; password = $login.Password; params = $p }
+}
+
+function Invoke-CtgAdobeConsoleSetup {
+    <#
+    .SYNOPSIS
+        Drive the Adobe Developer Console via the browser sidecar to create the User Management API
+        OAuth Server-to-Server credential and HARVEST its Client ID / Client Secret / Organization ID.
+        Config.signInOnly=$true is a sign-in test (changes nothing). Selectors are LIVE-VALIDATION PENDING.
+    .DESCRIPTION
+        Resolves the console login from the brokered 'adobe-console' secret and runs the
+        'adobe-console-setup' flow. THROWS on a non-ok flow result (missing browser, bad credentials,
+        unautomatable MFA), carrying the error + screenshot path, so the app's setup reads as failed. No
+        credential value is ever logged; harvested values ride back only as a Credentials note-property.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'adobe-console',
+        [hashtable]$OtpRequest
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $consoleUrl = [string](Get-CtgProp $Config 'consoleUrl')
+    $signInOnlyProp = Get-CtgProp $Config 'signInOnly'
+    $signInOnly = ($null -ne $signInOnlyProp) -and [bool]$signInOnlyProp  # default FALSE (full setup)
+
+    $params = @{ signInOnly = $signInOnly }
+    if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    $appName = [string](Get-CtgProp $Config 'appName')
+    if (-not [string]::IsNullOrWhiteSpace($appName)) { $params['appName'] = $appName }
+    $flowInput = New-CtgAdobeConsoleInput -Secret $Secret -SecretName $SecretName -OtpRequest $OtpRequest -Params $params -Actions $actions
+    if (-not $flowInput) { throw "Adobe console setup could not start — $([string]::Join(' ', $actions))" }
+
+    $res = Invoke-CtgBrowserFlow -Flow 'adobe-console-setup' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        $msg = if ($res.message) { $res.message } else { 'created the Adobe User Management API credential' }
+        $actions.Add($msg)
+        $out = [pscustomobject]@{ System = 'adobe-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        if ($res.harvested -and $res.harvested.clientId -and $res.harvested.clientSecret) {
+            $cred = [pscustomobject]@{ clientId = [string]$res.harvested.clientId; clientSecret = [string]$res.harvested.clientSecret }
+            if ($res.harvested.orgId) { Add-Member -InputObject $cred -NotePropertyName orgId -NotePropertyValue ([string]$res.harvested.orgId) }
+            Add-Member -InputObject $out -NotePropertyName Credentials -NotePropertyValue $cred
+        }
+        return $out
+    }
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+    throw "Adobe console setup failed — $err$ev"
+}
+
+Export-ModuleMember -Function Connect-CtgAdobe, Invoke-CtgAdobeAction, Invoke-CtgAdobeOnboarding, Invoke-CtgAdobeOffboarding, Get-CtgAdobeUser, Confirm-CtgAdobe, Resolve-CtgAdobeConsoleLogin, Invoke-CtgAdobeConsoleSetup

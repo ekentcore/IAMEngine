@@ -17,6 +17,12 @@ export const GOOGLE_AUTOSETUP_MARKER = "googleAutoSetup" as const;
 // additive shape as the others.
 export const MIMECAST_AUTOSETUP_MARKER = "mimecastAutoSetup" as const;
 
+// ONE shared marker for the generalized per-module browser setups (Spanning/Adobe/Zoom/… console
+// harvest — see lib/secrets/dispatch-*-console-job.ts). Unlike the per-provider markers above, the
+// generalized vendor setups all reuse this single marker so each new vendor PR needs NO edit to this
+// filter — it just stamps MODULE_AUTOSETUP_MARKER on its synthetic case.
+export const MODULE_AUTOSETUP_MARKER = "moduleAutoSetup" as const;
+
 // Per-marker "exclude rows where this marker is true" fragment. The obvious
 // `NOT: { payload: { path: [marker], equals: true } }` is WRONG on its own: for the overwhelming
 // majority of cases the payload has no marker key at all, so the JSON path resolves to SQL NULL,
@@ -38,5 +44,5 @@ function excludeMarkerTrue(marker: string): Prisma.CaseRequestWhereInput {
 // the AND across markers is independent — a case can only be flagged by at most one dispatcher, so
 // this reads as "keep it unless SOME marker is true", not a joint condition.
 export const notM365AutoSetupCase: Prisma.CaseRequestWhereInput = {
-  AND: [excludeMarkerTrue(M365_AUTOSETUP_MARKER), excludeMarkerTrue(GOOGLE_AUTOSETUP_MARKER), excludeMarkerTrue(MIMECAST_AUTOSETUP_MARKER)],
+  AND: [excludeMarkerTrue(M365_AUTOSETUP_MARKER), excludeMarkerTrue(GOOGLE_AUTOSETUP_MARKER), excludeMarkerTrue(MIMECAST_AUTOSETUP_MARKER), excludeMarkerTrue(MODULE_AUTOSETUP_MARKER)],
 };

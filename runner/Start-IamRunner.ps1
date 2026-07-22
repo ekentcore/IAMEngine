@@ -1623,6 +1623,80 @@ $DISPATCH['mimecast-console-setup'] = @{
 }
 $DISPATCH['mimecast-console-setup'].Offboard = $DISPATCH['mimecast-console-setup'].Onboard
 
+# Ad-hoc "Spanning console setup" (browser automation): sign into the Spanning admin console (M365 SSO)
+# and generate + harvest the Settings → API Token, which the app vaults as the `spanning` credential.
+# Rides the 'spanning-portal' secret (the M365 admin login for the console, OTP enabled), NOT the
+# 'spanning' API credential we're creating; no Connect lane (the browser flow does its own MS sign-in,
+# reusing lib/ms-sso-login.mjs). One executor serves both lanes. Withheld from agents without the
+# 'browser' capability. LIVE-VALIDATION PENDING (see runner/browser/flows/spanning-console-setup.mjs).
+$DISPATCH['spanning-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'spanning-portal'
+        Invoke-CtgSpanningConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['spanning-console-setup'].Offboard = $DISPATCH['spanning-console-setup'].Onboard
+
+# zoom-console-setup — sign in to Zoom + create/harvest the Server-to-Server OAuth app (the 'zoom' API
+# credential). Browser-only; claimable solely by a browser-capable agent (BROWSER_SYSTEMS app-side).
+# LIVE-VALIDATION PENDING (see the flow file header) — the Zoom sign-in + Marketplace DOM are unverified.
+$DISPATCH['zoom-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'zoom-console'
+        Invoke-CtgZoomConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName
+    }
+}
+$DISPATCH['zoom-console-setup'].Offboard = $DISPATCH['zoom-console-setup'].Onboard
+# Ad-hoc "Adobe console setup" (browser automation): sign into the Adobe Developer Console
+# (developer.adobe.com/console) to create the User Management API OAuth Server-to-Server credential and
+# harvest its Client ID / Client Secret / Org ID. Rides the 'adobe-console' secret (an Adobe admin email
+# + password + One-Time Password), NOT the 'adobe' API clientId/secret it PRODUCES; no Connect lane (the
+# browser flow does its own Adobe sign-in). Withheld from agents without the 'browser' capability
+# (BROWSER_SYSTEMS app-side). LIVE-VALIDATION PENDING — the Adobe login + Developer Console DOM are
+# unverified (see runner/browser/flows/adobe-console-setup.mjs header).
+$DISPATCH['adobe-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'adobe-console'
+        Invoke-CtgAdobeConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+    }
+}
+$DISPATCH['adobe-console-setup'].Offboard = $DISPATCH['adobe-console-setup'].Onboard
+# slack-console-setup — sign in to Slack + BEST-EFFORT harvest a SCIM token (the 'slack' API cred).
+# Browser-only; claimable solely by a browser-capable agent (BROWSER_SYSTEMS app-side). Slack SCIM
+# tokens usually are NOT console-harvestable (they come from an app install with the admin scope), so
+# a "signed in, no token" result is expected and the operator pastes the token instead.
+# LIVE-VALIDATION PENDING (see the flow file header) — the Slack sign-in + console DOM are unverified.
+$DISPATCH['slack-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'slack-console'
+        Invoke-CtgSlackConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName
+    }
+}
+$DISPATCH['slack-console-setup'].Offboard = $DISPATCH['slack-console-setup'].Onboard
+# egnyte-console-setup — sign in to a client's Egnyte admin + harvest the domain API token (the 'egnyte'
+# API credential). Browser-only; claimable solely by a browser-capable agent (BROWSER_SYSTEMS app-side).
+# LIVE-VALIDATION PENDING (see the flow file header) — the Egnyte sign-in + API-token DOM are unverified.
+$DISPATCH['egnyte-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'egnyte-console'
+        Invoke-CtgEgnyteConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName
+    }
+}
+$DISPATCH['egnyte-console-setup'].Offboard = $DISPATCH['egnyte-console-setup'].Onboard
+# knowbe4-console-setup — sign in to KnowBe4 + enable/harvest the SCIM provisioning token (the 'knowbe4'
+# API credential). Browser-only; claimable solely by a browser-capable agent (BROWSER_SYSTEMS app-side).
+# Rides the 'knowbe4-console' secret (admin email + password + optional OTP), NOT the SCIM token it
+# creates. LIVE-VALIDATION PENDING (see the flow file header) — the KnowBe4 console DOM is unverified.
+$DISPATCH['knowbe4-console-setup'] = @{
+    Onboard = { param($job, $creds)
+        $secretName = 'knowbe4-console'
+        Invoke-CtgKnowBe4ConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName
+    }
+}
+$DISPATCH['knowbe4-console-setup'].Offboard = $DISPATCH['knowbe4-console-setup'].Onboard
+
 # tap issues an Entra Temporary Access Pass — same Graph connection as m365, its own onboard executor.
 # Offboard/Validate are no-ops (the TAP is short-lived and self-expires; nothing to tear down/verify).
 $DISPATCH['tap'] = @{

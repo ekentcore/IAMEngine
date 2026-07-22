@@ -149,4 +149,72 @@ function Confirm-CtgKnowBe4 {
     [pscustomobject]@{ ok = [bool]$ok; checks = @($checks) }
 }
 
-Export-ModuleMember -Function Connect-CtgKnowBe4, Invoke-CtgKnowBe4Scim, Get-CtgKnowBe4User, Invoke-CtgKnowBe4Onboarding, Invoke-CtgKnowBe4Offboarding, Confirm-CtgKnowBe4
+# ---------------------------------------------------------------------------------------------------
+# Browser console setup (ad-hoc): sign into the KnowBe4 console and enable/harvest the SCIM token — the
+# 'knowbe4' API credential. DISTINCT from the SCIM token itself: this rides a 'knowbe4-console' admin
+# login (email + password + optional TOTP). Drives the browser sidecar (LIVE-VALIDATION PENDING).
+# ---------------------------------------------------------------------------------------------------
+function Get-CtgKnowBe4ConsoleField {
+    param($Secret, [string[]]$Names)
+    $bag = if ($Secret -and (Get-CtgProp $Secret 'Fields')) { Get-CtgProp $Secret 'Fields' } else { $Secret }
+    foreach ($n in $Names) {
+        $v = Get-CtgProp $bag $n
+        if ($null -ne $v -and "$v".Trim() -ne '') { return [string]$v }
+    }
+    return $null
+}
+
+function Resolve-CtgKnowBe4ConsoleLogin {
+    param($Secret)
+    $email = Get-CtgKnowBe4ConsoleField $Secret @('Username', 'Email', 'User', 'Login', 'AdminEmail', 'Admin Email')
+    $password = Get-CtgKnowBe4ConsoleField $Secret @('Password', 'Pass', 'Secret')
+    if ([string]::IsNullOrWhiteSpace($email) -or $email -notmatch '@') {
+        return [pscustomobject]@{ Ok = $false; Reason = "no 'knowbe4-console' admin login wired (an email + password) — the Username must be an admin email, not a SCIM token." }
+    }
+    if ([string]::IsNullOrWhiteSpace($password)) {
+        return [pscustomobject]@{ Ok = $false; Reason = "the 'knowbe4-console' secret has no Password." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $email; Password = $password }
+}
+
+function Invoke-CtgKnowBe4ConsoleSetup {
+    <#
+    .SYNOPSIS
+        Drive KnowBe4 via the browser sidecar. Config.signInOnly=$true: SIGN-IN TEST (prove the console
+        login works; change nothing). signInOnly=$false: additionally enable + harvest the SCIM
+        provisioning token, and return it as a `Credentials` note-property (never logged) so the APP
+        vaults it to Delinea. Selectors are LIVE-VALIDATION PENDING. THROWS on a non-ok flow result.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][pscustomobject]$Config, $Secret, [string]$SecretName = 'knowbe4-console')
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $login = Resolve-CtgKnowBe4ConsoleLogin -Secret $Secret
+    if (-not $login.Ok) { throw "KnowBe4 console sign-in could not start — $($login.Reason)" }
+
+    $signInOnlyProp = Get-CtgProp $Config 'signInOnly'
+    $signInOnly = ($null -eq $signInOnlyProp) -or [bool]$signInOnlyProp
+    $params = @{ signInOnly = $signInOnly }
+    $consoleUrl = [string](Get-CtgProp $Config 'consoleUrl'); if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    $totpSeed = Get-CtgKnowBe4ConsoleField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'MFASeed', 'AuthenticatorSeed', 'otpauth')
+    if ($totpSeed) { $params['otp'] = @{ totpSeed = $totpSeed }; $actions.Add("WARN using a stored TOTP seed — prefer enabling One-Time Password on the Delinea secret") }
+
+    $flowInput = @{ username = $login.Username; password = $login.Password; params = $params }
+    $res = Invoke-CtgBrowserFlow -Flow 'knowbe4-console-setup' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        $actions.Add($(if ($res.message) { $res.message } else { 'signed in to KnowBe4' }))
+        $out = [pscustomobject]@{ System = 'knowbe4-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        if ($res.harvested -and $res.harvested.scimToken) {
+            Add-Member -InputObject $out -NotePropertyName Credentials -NotePropertyValue ([pscustomobject]@{
+                scimToken = [string]$res.harvested.scimToken
+                baseUrl   = [string]$res.harvested.baseUrl
+            })
+        }
+        return $out
+    }
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ex = [System.Exception]::new("KnowBe4 console setup failed: $err")
+    if ($res.evidence) { $ex.Data['Evidence'] = [string]$res.evidence }
+    throw $ex
+}
+
+Export-ModuleMember -Function Connect-CtgKnowBe4, Invoke-CtgKnowBe4Scim, Get-CtgKnowBe4User, Invoke-CtgKnowBe4Onboarding, Invoke-CtgKnowBe4Offboarding, Confirm-CtgKnowBe4, Resolve-CtgKnowBe4ConsoleLogin, Invoke-CtgKnowBe4ConsoleSetup

@@ -639,4 +639,65 @@ function Invoke-CtgSpanningForceSync {
     [pscustomobject]@{ System = 'spanning-force-sync'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
-Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning, Get-CtgSpanningSecretField, Invoke-CtgSpanningForceSync, Resolve-CtgSpanningPortalLogin, Test-CtgSpanningPortalLogin
+function Invoke-CtgSpanningConsoleSetup {
+    <#
+    .SYNOPSIS
+        Browser auto-setup for the Spanning API credential: sign into the Spanning admin console (M365
+        SSO) and generate + HARVEST the Settings → API Token, returning it note-only for the app to
+        vault as the `spanning` secret. The setup analog of Invoke-CtgSpanningForceSync — SAME portal
+        login (spanning-portal secret, M365 SSO), same OTP-at-the-prompt machinery — but it reads the
+        API key instead of triggering a sync.
+    .DESCRIPTION
+        Unlike force-sync (a convenience that soft-warns on failure), a SETUP that cannot harvest the
+        token THROWS, so the job fails and the app surfaces "did not complete" rather than silently
+        vaulting nothing. The harvested token rides a `Credentials` note-property the app scrubs after
+        vaulting; it is never logged here. LIVE-VALIDATION PENDING — the post-login Settings → API Token
+        selectors (flows/spanning-console-setup.mjs) are best-effort against an unreachable console.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'spanning-portal',
+        [hashtable]$OtpRequest,
+        [scriptblock]$OtpProvider
+    )
+    $login = Resolve-CtgSpanningPortalLogin -Secret $Secret -SecretName $SecretName
+    if (-not $login.Ok) { throw "Spanning console setup: $($login.Reason)" }
+
+    $signInOnly = [bool](Get-CtgProp $Config 'signInOnly')
+    $params = @{ signInOnly = $signInOnly }
+    $consoleUrl = Get-CtgProp $Config 'consoleUrl'
+    if ($consoleUrl) { $params['consoleUrl'] = $consoleUrl }
+    if ($OtpRequest) { $params['otp'] = $OtpRequest }
+    elseif ($OtpProvider) {
+        $otp = & $OtpProvider
+        if ($otp -and $otp.Code) { $params['otpCode'] = [string]$otp.Code }
+    }
+    $totpSeed = Get-CtgSpanningSecretField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'MFASeed', 'AuthenticatorSeed', 'otpauth')
+    if ($totpSeed -and -not $OtpRequest) { $params['totpSeed'] = $totpSeed }
+
+    $flowInput = @{ username = $login.Username; password = $login.Password; params = $params }
+    $res = Invoke-CtgBrowserFlow -Flow 'spanning-console-setup' -InputObject $flowInput -TimeoutSeconds 300
+
+    if (-not $res.ok) {
+        $err = if ($res.error) { $res.error } else { 'unknown error' }
+        $ev  = if ($res.evidence) { " (screenshot: $($res.evidence))" } else { '' }
+        throw "Spanning console setup did not complete: $err$ev"
+    }
+    if ($signInOnly) {
+        return [pscustomobject]@{ System = 'spanning-console-setup'; Status = 'ok'; Actions = @('Spanning console sign-in test succeeded (no changes made)') }
+    }
+    $token = $null
+    if ($res.Credentials) { $token = [string]$res.Credentials.apiToken }
+    if (-not $token) { throw 'Spanning console setup: signed in but no API token was harvested from the console' }
+    # The token rides a Credentials note-property (never logged); the app vaults it then scrubs the result.
+    [pscustomobject]@{
+        System      = 'spanning-console-setup'
+        Status      = 'ok'
+        Actions     = @('created/read the Spanning API Token in the admin console and harvested it for vaulting')
+        Credentials = [pscustomobject]@{ apiToken = $token }
+    }
+}
+
+Export-ModuleMember -Function Connect-CtgSpanning, Invoke-CtgSpanningApi, Test-CtgSpanning404, Test-CtgSpanningSeatError, Test-CtgSpanningLicensed, Test-CtgSpanningArchived, Find-CtgSpanningUser, Set-CtgSpanningLicense, Invoke-CtgSpanningOnboarding, Invoke-CtgSpanningOffboarding, Confirm-CtgSpanning, Get-CtgSpanningSecretField, Invoke-CtgSpanningForceSync, Invoke-CtgSpanningConsoleSetup, Resolve-CtgSpanningPortalLogin, Test-CtgSpanningPortalLogin

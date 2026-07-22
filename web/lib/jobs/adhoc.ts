@@ -24,9 +24,35 @@ export const GOOGLE_DWD_GRANT_KEY = "google-dwd-grant";
 // the sign-in test (config.signInOnly) and the full setup run. See
 // lib/secrets/dispatch-mimecast-console-job.ts.
 export const MIMECAST_CONSOLE_SETUP_KEY = "mimecast-console-setup";
+// Zoom console browser auto-setup: sign in + create/harvest the Server-to-Server OAuth app. See
+// lib/secrets/dispatch-zoom-console-job.ts.
+export const ZOOM_CONSOLE_SETUP_KEY = "zoom-console-setup";
+
+// The systemKey for the ad-hoc Spanning console browser flow: sign into the Spanning admin console
+// (Microsoft-365 SSO) and generate + harvest the Settings → API Token, which is vaulted as the
+// `spanning` API credential. See lib/secrets/dispatch-spanning-console-job.ts.
+export const SPANNING_CONSOLE_SETUP_KEY = "spanning-console-setup";
+
+// The systemKey for the ad-hoc Adobe Developer Console browser flow: sign into the Adobe Developer
+// Console, create/open an "iam-engine" project, add the User Management API as an OAuth
+// Server-to-Server credential, and harvest its Client ID / Client Secret / Organization ID. See
+// lib/secrets/dispatch-adobe-console-job.ts. Browser-capable agents only (BROWSER_SYSTEMS).
+export const ADOBE_CONSOLE_SETUP_KEY = "adobe-console-setup";
+
+// Slack console browser auto-setup: sign in + best-effort harvest a SCIM token. See
+// lib/secrets/dispatch-slack-console-job.ts.
+export const SLACK_CONSOLE_SETUP_KEY = "slack-console-setup";
+
+// Egnyte console browser auto-setup: sign in + harvest the domain API token. See
+// lib/secrets/dispatch-egnyte-console-job.ts.
+export const EGNYTE_CONSOLE_SETUP_KEY = "egnyte-console-setup";
+
+// KnowBe4 console browser setup: sign in + enable/harvest the SCIM provisioning token (the 'knowbe4'
+// API credential). See lib/secrets/dispatch-knowbe4-console-job.ts.
+export const KNOWBE4_CONSOLE_SETUP_KEY = "knowbe4-console-setup";
 
 export const ADHOC_SYSTEM_KEYS = [
-  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY, MIMECAST_CONSOLE_SETUP_KEY]),
+  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY, MIMECAST_CONSOLE_SETUP_KEY, SPANNING_CONSOLE_SETUP_KEY, ZOOM_CONSOLE_SETUP_KEY, ADOBE_CONSOLE_SETUP_KEY, SLACK_CONSOLE_SETUP_KEY, EGNYTE_CONSOLE_SETUP_KEY, KNOWBE4_CONSOLE_SETUP_KEY]),
 ];
 
 export function isAdhocSystemKey(systemKey: string): boolean {

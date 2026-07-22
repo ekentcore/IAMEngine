@@ -62,7 +62,8 @@ export function GuidedApiSetup({
   const [consoleSecretRef, setConsoleSecretRef] = useState("");
   // Automatic tab: the live status line for the console sign-in test ("Signing in…", pass, fail).
   const [signinStatus, setSigninStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
-  // Automatic tab: Phase-2 "create the API app & vault" status.
+  // Automatic tab: the live status for the generic "create API app & vault" action (driven by
+  // entry.autoCreateEndpoint) — one code path for every vendor (mimecast/spanning/zoom/adobe/…).
   const [createStatus, setCreateStatus] = useState<{ state: "idle" | "running" | "done"; verdict?: Verdict }>({ state: "idle" });
   // Refresh the page ONCE per successful save, mirroring M365SetupButton's refreshedOnDone guard.
   const refreshedOnDone = useRef(false);
@@ -85,6 +86,7 @@ export function GuidedApiSetup({
     setService(entry.serviceOptions?.[0] ?? "");
     setConsoleSecretRef("");
     setSigninStatus({ state: "idle" });
+    setCreateStatus({ state: "idle" });
     setMode("paste");
     refreshedOnDone.current = false;
     dialogRef.current?.showModal();
@@ -223,39 +225,48 @@ export function GuidedApiSetup({
     }
   }
 
-  // Automatic tab, Phase 2: create the API 2.0 app in the console, harvest its Client ID/Secret, and
-  // vault them to Delinea. Dispatches the full (signInOnly:false) console job, polls to completion; the
-  // GET vaults the harvested credential and returns the new Delinea secret id. Do a sign-in test first.
+  // Automatic tab: the generic "create API app & vault" action. POSTs to entry.autoCreateEndpoint to
+  // dispatch the runner's browser flow (sign in → create the API app in the vendor console → harvest
+  // the credential), then polls its GET to a terminal { done, ok, externalId, error }. On success the
+  // route has already vaulted the harvested credential to Delinea and wired it. Same contract for every
+  // vendor (mimecast's /mimecast-console/create-api-app and the /<vendor>-setup/create-api routes agree),
+  // so this one function replaces the old per-vendor special-casing. An optional Delinea secret id is
+  // sent transiently as the console login (never stored); left blank, the route needs a wired
+  // <vendor>-console login and returns actionable guidance on a 409.
   async function createApiApp() {
+    if (!entry.autoCreateEndpoint) return;
     setCreateStatus({ state: "running" });
     try {
       const ref = consoleSecretRef.trim();
-      const r = await fetch(`/api/clients/${slug}/mimecast-console/create-api-app`, {
+      const r = await fetch(`/api/clients/${slug}/${entry.autoCreateEndpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ref ? { consoleSecretRef: ref } : {}),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.jobId) {
-        setCreateStatus({ state: "done", verdict: { ok: false, text: d.error ?? `couldn't start (${r.status})` } });
+        setCreateStatus({ state: "done", verdict: { ok: false, text: [d.error, d.hint].filter(Boolean).join(" — ") || `couldn't start the setup (${r.status})` } });
         return;
       }
       for (let i = 0; i < SIGNIN_MAX_POLLS; i++) {
         await sleep(SIGNIN_POLL_MS);
-        const s = await fetch(`/api/clients/${slug}/mimecast-console/create-api-app?jobId=${encodeURIComponent(d.jobId)}`);
+        const s = await fetch(`/api/clients/${slug}/${entry.autoCreateEndpoint}?jobId=${encodeURIComponent(d.jobId)}`);
         const sd = await s.json().catch(() => ({}));
+        if (!s.ok) {
+          setCreateStatus({ state: "done", verdict: { ok: false, text: sd.error ?? `couldn't read the setup status (${s.status})` } });
+          return;
+        }
         if (sd.done) {
-          setCreateStatus({
-            state: "done",
-            verdict: sd.ok
-              ? { ok: true, text: `API application created and its credential vaulted${sd.externalId ? ` (Delinea secret ${sd.externalId})` : ""}.` }
-              : { ok: false, text: sd.error ?? "the automated setup failed" },
-          });
-          if (sd.ok && !refreshedOnDone.current) { refreshedOnDone.current = true; router.refresh(); }
+          if (sd.ok) {
+            setCreateStatus({ state: "done", verdict: { ok: true, text: `Created and vaulted — wired as ${entry.secretName}${sd.externalId ? ` (Delinea id ${sd.externalId})` : ""}.` } });
+            markDone();
+          } else {
+            setCreateStatus({ state: "done", verdict: { ok: false, text: sd.error ?? "the automated setup did not complete" } });
+          }
           return;
         }
       }
-      setCreateStatus({ state: "done", verdict: { ok: false, text: "still running after several minutes — check the agent and re-run." } });
+      setCreateStatus({ state: "done", verdict: { ok: false, text: "the setup is still running after several minutes — check the agent/run, then try again or paste the credential." } });
     } catch (e) {
       setCreateStatus({ state: "done", verdict: { ok: false, text: (e as Error).message } });
     }
@@ -265,6 +276,8 @@ export function GuidedApiSetup({
   const canSubmitExisting = externalId.trim() !== "";
   const signinRunning = signinStatus.state === "running";
   const createRunning = createStatus.state === "running";
+  // Any Automatic-tab job in flight — locks the tab switches + Cancel while a browser run is going.
+  const autoRunning = signinRunning || createRunning;
 
   return (
     <>
@@ -294,14 +307,14 @@ export function GuidedApiSetup({
         </div>
 
         <div className="toolbar" style={{ marginTop: "0.75rem" }}>
-          <button type="button" className={mode === "paste" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("paste"); setVerdict(null); }}>
+          <button type="button" className={mode === "paste" ? "primary" : undefined} disabled={busy || autoRunning} onClick={() => { setMode("paste"); setVerdict(null); }}>
             Paste fields
           </button>
-          <button type="button" className={mode === "existing" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("existing"); setVerdict(null); }}>
+          <button type="button" className={mode === "existing" ? "primary" : undefined} disabled={busy || autoRunning} onClick={() => { setMode("existing"); setVerdict(null); }}>
             Existing Delinea id
           </button>
           {entry.autoBrowser && (
-            <button type="button" className={mode === "automatic" ? "primary" : undefined} disabled={busy || signinRunning} onClick={() => { setMode("automatic"); setVerdict(null); }}>
+            <button type="button" className={mode === "automatic" ? "primary" : undefined} disabled={busy || autoRunning} onClick={() => { setMode("automatic"); setVerdict(null); }}>
               Automatic (browser)
             </button>
           )}
@@ -385,38 +398,43 @@ export function GuidedApiSetup({
         ) : (
           <div style={{ marginTop: "0.75rem" }}>
             <p className="note">
-              The runner drives the Mimecast console for you. First confirm it can sign in; once that works,
-              the automated setup will create the API application and save the credential to Delinea.
+              The runner drives the {entry.label} console for you: it signs in, creates the API application,
+              harvests the credential, and saves it to Delinea — then wires it onto this client.
             </p>
             <p className="note muted">
-              Sign in with a <code>mimecast-console</code> login — the Mimecast admin email + password, with
-              One-Time Password enabled on the Delinea secret for MFA. Enter a Delinea secret id below to use it
-              just for this test (nothing is stored), or leave it blank to use a <code>mimecast-console</code>
-              {" "}secret already wired on this client.
+              Sign in with a <code>{entry.autoConsoleSecret ?? "console"}</code> login (admin email + password,
+              with One-Time Password on the Delinea secret for MFA). Enter a Delinea secret id below to use it
+              just for this run (nothing extra is stored), or leave it blank to use a{" "}
+              <code>{entry.autoConsoleSecret ?? "console"}</code> secret already wired on this client.
             </p>
             <label style={{ display: "block", marginTop: "0.5rem", marginBottom: 10 }}>
               <span className="note" style={{ display: "block", marginBottom: 2 }}>Delinea secret id (optional)</span>
               <input
                 type="text"
                 autoComplete="off"
-                disabled={signinRunning}
+                disabled={autoRunning}
                 value={consoleSecretRef}
-                placeholder="e.g. 8404 — used for this test only, not saved"
+                placeholder="e.g. 8404 — the console login, used for this run only"
                 onChange={(e) => {
                   setConsoleSecretRef(e.target.value);
                   setSigninStatus({ state: "idle" });
+                  setCreateStatus({ state: "idle" });
                 }}
                 style={{ width: 320 }}
               />
             </label>
-            <div className="toolbar" style={{ marginTop: "0.5rem", gap: 8 }}>
-              <button type="button" disabled={signinRunning || createRunning} onClick={testConsoleSignin}>
-                {signinRunning ? "Signing in…" : "Test sign-in"}
-              </button>
-              <button type="button" className="primary" disabled={signinRunning || createRunning} onClick={createApiApp}
-                title="Create the API 2.0 application in the console, harvest its Client ID/Secret, and vault them to Delinea. Run a sign-in test first.">
-                {createRunning ? "Creating & vaulting…" : "Create API app & vault"}
-              </button>
+            <div className="toolbar" style={{ marginTop: "0.5rem" }}>
+              {/* mimecast keeps its Phase-1 "just test the login" affordance (only it has a signin-test route). */}
+              {entry.systemKey === "mimecast" && (
+                <button type="button" disabled={autoRunning} onClick={testConsoleSignin}>
+                  {signinRunning ? "Signing in…" : "Test sign-in"}
+                </button>
+              )}
+              {entry.autoCreateEndpoint && (
+                <button type="button" className="primary" disabled={autoRunning} onClick={createApiApp}>
+                  {createRunning ? "Setting up…" : "Create API app & vault"}
+                </button>
+              )}
             </div>
             {signinStatus.verdict && (
               <p className="note" style={{ color: signinStatus.verdict.ok ? "#2e7d32" : "#b91c1c" }}>
@@ -429,9 +447,8 @@ export function GuidedApiSetup({
               </p>
             )}
             <p className="note muted" style={{ marginTop: "0.5rem" }}>
-              Creates an “iam-engine” API 2.0 app (Basic Administrator + Account/Domain/User &amp; Group
-              Management) and vaults the credential. Needs live-console validation. If it can’t drive the
-              console, use <b>Paste fields</b> after a successful sign-in test.
+              Browser automation is best-effort — selectors vary by console/SSO. If it can’t complete, use{" "}
+              <b>Paste fields</b> to enter the credential by hand.
             </p>
           </div>
         )}
@@ -444,7 +461,7 @@ export function GuidedApiSetup({
 
         <div className="toolbar" style={{ marginTop: "0.9rem" }}>
           <span className="grow" />
-          <button type="button" onClick={closeModal} disabled={busy || signinRunning}>{done ? "Close" : "Cancel"}</button>
+          <button type="button" onClick={closeModal} disabled={busy || autoRunning}>{done ? "Close" : "Cancel"}</button>
           {/* Verify & save belongs to the two credential-entry tabs; the Automatic tab has its own action. */}
           {!done && mode !== "automatic" && (
             <button

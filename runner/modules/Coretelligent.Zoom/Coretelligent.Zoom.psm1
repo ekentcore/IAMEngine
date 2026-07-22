@@ -342,4 +342,87 @@ function Confirm-CtgZoom {
     [pscustomobject]@{ ok = $check.pass; checks = @($check) }
 }
 
-Export-ModuleMember -Function Connect-CtgZoom, Get-CtgZoomGrantedScopes, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom
+# -------------------------------------------------------------------------------------------------
+# BROWSER AUTO-SETUP (create the Server-to-Server OAuth app + harvest) — LIVE-VALIDATION PENDING
+# -------------------------------------------------------------------------------------------------
+# DISTINCT from the 'zoom' API credential (accountId/clientId/clientSecret): this drives the Zoom
+# **console** with a 'zoom-console' admin login (email + password, optional TOTP seed) to CREATE that
+# API credential and harvest it. Mirrors Coretelligent.Mimecast's console setup. A value is never logged.
+
+# Read a field off a brokered secret by any of its synonyms (case/space-insensitive). The secret is
+# either a pscustomobject or a hashtable, with the fields on the object or under a .Fields member.
+function Get-CtgZoomConsoleField {
+    param($Secret, [string[]]$Names)
+    if (-not $Secret) { return $null }
+    $bag = $Secret
+    $fields = Get-CtgProp $Secret 'Fields'
+    if ($fields) { $bag = $fields }
+    foreach ($n in $Names) {
+        $v = Get-CtgProp $bag $n
+        if ($null -ne $v -and "$v".Trim() -ne '') { return [string]$v }
+    }
+    return $null
+}
+
+function Resolve-CtgZoomConsoleLogin {
+    param($Secret)
+    $email = Get-CtgZoomConsoleField $Secret @('Username', 'Email', 'User', 'Login', 'AdminEmail', 'Admin Email')
+    $password = Get-CtgZoomConsoleField $Secret @('Password', 'Pass', 'Secret')
+    if ([string]::IsNullOrWhiteSpace($email) -or $email -notmatch '@') {
+        return [pscustomobject]@{ Ok = $false; Reason = "no 'zoom-console' admin login wired (an email + password) — the Username must be an admin email, not an API key." }
+    }
+    if ([string]::IsNullOrWhiteSpace($password)) {
+        return [pscustomobject]@{ Ok = $false; Reason = "the 'zoom-console' secret has no Password." }
+    }
+    [pscustomobject]@{ Ok = $true; Username = $email; Password = $password }
+}
+
+function Invoke-CtgZoomConsoleSetup {
+    <#
+    .SYNOPSIS
+        Drive Zoom via the browser sidecar. Config.signInOnly=$true: SIGN-IN TEST (prove the console
+        login works; change nothing). signInOnly=$false: additionally create the "iam-engine"
+        Server-to-Server OAuth app, harvest its Account ID / Client ID / Client Secret, and return them
+        as a `Credentials` note-property (never logged) so the APP vaults them to Delinea. Selectors are
+        LIVE-VALIDATION PENDING. THROWS on a non-ok flow result (so a sign-in test reports red).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$Config,
+        $Secret,
+        [string]$SecretName = 'zoom-console'
+    )
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $login = Resolve-CtgZoomConsoleLogin -Secret $Secret
+    if (-not $login.Ok) { throw "Zoom console sign-in could not start — $($login.Reason)" }
+
+    $signInOnlyProp = Get-CtgProp $Config 'signInOnly'
+    $signInOnly = ($null -eq $signInOnlyProp) -or [bool]$signInOnlyProp
+    $params = @{ signInOnly = $signInOnly }
+    $consoleUrl = [string](Get-CtgProp $Config 'consoleUrl'); if (-not [string]::IsNullOrWhiteSpace($consoleUrl)) { $params['consoleUrl'] = $consoleUrl }
+    $appName = [string](Get-CtgProp $Config 'appName'); if (-not [string]::IsNullOrWhiteSpace($appName)) { $params['appName'] = $appName }
+    # Optional TOTP: a stored seed on the secret (a full OTP-broker round-trip is a follow-up).
+    $totpSeed = Get-CtgZoomConsoleField $Secret @('TOTPSeed', 'TOTP Seed', 'TOTP', 'OTPSeed', 'MFASeed', 'AuthenticatorSeed', 'otpauth')
+    if ($totpSeed) { $params['otp'] = @{ totpSeed = $totpSeed }; $actions.Add("WARN using a stored TOTP seed — prefer enabling One-Time Password on the Delinea secret") }
+
+    $flowInput = @{ username = $login.Username; password = $login.Password; params = $params }
+    $res = Invoke-CtgBrowserFlow -Flow 'zoom-console-setup' -InputObject $flowInput -TimeoutSeconds 300
+    if ($res.ok) {
+        $actions.Add($(if ($res.message) { $res.message } else { 'signed in to Zoom' }))
+        $out = [pscustomobject]@{ System = 'zoom-console-setup'; Status = 'ok'; Actions = $actions.ToArray() }
+        if ($res.harvested -and $res.harvested.accountId -and $res.harvested.clientId -and $res.harvested.clientSecret) {
+            Add-Member -InputObject $out -NotePropertyName Credentials -NotePropertyValue ([pscustomobject]@{
+                accountId    = [string]$res.harvested.accountId
+                clientId     = [string]$res.harvested.clientId
+                clientSecret = [string]$res.harvested.clientSecret
+            })
+        }
+        return $out
+    }
+    $err = if ($res.error) { $res.error } else { 'unknown error' }
+    $ex = [System.Exception]::new("Zoom console setup failed: $err")
+    if ($res.evidence) { $ex.Data['Evidence'] = [string]$res.evidence }
+    throw $ex
+}
+
+Export-ModuleMember -Function Connect-CtgZoom, Get-CtgZoomGrantedScopes, Invoke-CtgZoomApi, Get-CtgZoomUser, Resolve-CtgZoomEmail, Find-CtgZoomUserByName, Resolve-CtgZoomTarget, Invoke-CtgZoomOnboarding, Invoke-CtgZoomOffboarding, Confirm-CtgZoom, Resolve-CtgZoomConsoleLogin, Invoke-CtgZoomConsoleSetup
