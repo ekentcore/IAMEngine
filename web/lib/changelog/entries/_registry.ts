@@ -5,6 +5,7 @@
 export { entry as acceptedFailureCaseStatus } from "./accepted-failure-case-status";
 export { entry as adAmbientAuthFirst } from "./ad-ambient-auth-first";
 export { entry as adDcOptional } from "./ad-dc-optional";
+export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case-resolution";
 export { entry as adobeConsoleAutoSetup } from "./adobe-console-auto-setup";
@@ -107,6 +108,7 @@ export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-cor
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
 export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
+export { entry as m365LicenseDependencySelfheal } from "./m365-license-dependency-selfheal";
 export { entry as m365SetupAutomaticallyOverview } from "./m365-setup-automatically-overview";
 export { entry as m365AutosetupSurfacesDelineaId } from "./m365-autosetup-surfaces-delinea-id";
 export { entry as m365CredsToIdentityServices } from "./m365-creds-to-identity-services";
@@ -213,3 +215,5 @@ export { entry as m365ProxyaddressConflictFeedback } from "./m365-proxyaddress-c
 export { entry as replanRederiveNeverrunMode } from "./replan-rederive-neverrun-mode";
 
 export { entry as fleetAuditEscalationHolders } from "./fleet-audit-escalation-holders";
+export { entry as adobeOnboardEmptyProfiles } from "./adobe-onboard-empty-profiles";
+export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";

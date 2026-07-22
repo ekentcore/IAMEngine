@@ -18,7 +18,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const g = await guard("case.dispatch"); if (g.res) return g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown; mailboxOversizePolicy?: unknown };
+  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown; mailboxOversizePolicy?: unknown; allowCloudCreate?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
   // BOTH lanes: the M365 executor serves `m365` AND `entra` (entra is an alias of the same handler),
@@ -60,6 +60,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const n = await writeJobConfig("mailboxOversizePolicy", body.mailboxOversizePolicy);
     if (!n) return NextResponse.json({ error: "this case has no M365/Entra step to record the choice on" }, { status: 422 });
     changed.push(`mailboxOversize:${body.mailboxOversizePolicy}`);
+  }
+
+  // Per-case override for the FR#25 adopt-only guard: the operator confirms this ad-synced hire really
+  // does need a cloud-created account (not an AD-synced one). Writes the runner's allow policy directly
+  // so a plain re-run picks it up; a later re-plan re-derives the same 'allow' from cfg.allowCloudCreate.
+  if (body.allowCloudCreate === true) {
+    const n = await writeJobConfig("cloudCreate", "allow");
+    if (!n) return NextResponse.json({ error: "this case has no M365/Entra step to record the choice on" }, { status: 422 });
+    changed.push("cloudCreate:allow");
   }
 
   if (typeof body.userPrincipalName === "string" && body.userPrincipalName.trim()) {

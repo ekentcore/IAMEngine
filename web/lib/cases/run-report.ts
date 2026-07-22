@@ -46,6 +46,13 @@ export type RunReportStep = {
   // When an M365 license couldn't be assigned for lack of seats, the tenant's license inventory
   // (owned SKUs + free seat counts) so the operator can pick another and re-run. null otherwise.
   licenseOptions: { skuId: string; skuPartNumber: string; name: string; available: number; enabled: number; consumed: number }[] | null;
+  // M365 onboard: service-plan(s) the runner had to hold back because a hard prerequisite wasn't met
+  // (e.g. Defender for O365 P2 with no Exchange Online plan). The user got the base license; these
+  // plans are OFF until the prerequisite exists. The UI shows a "retry license assignment" box; a
+  // re-run re-enables any plan whose prerequisite is now present. null when the license is complete.
+  licenseIssues:
+    | { plan: string; sku: string; requires: string[]; resolution: string }[]
+    | null;
   // OFFBOARD only: the executor could not tell WHICH person to offboard — the ticket's name matched
   // several users, or none — so it returned the shortlist it found instead of acting. The operator
   // picks one; the pick lands on the CASE payload (every system resolves the leaver from there) and the
@@ -198,6 +205,28 @@ function licenseOptionsOf(result: unknown): RunReportStep["licenseOptions"] {
       consumed: Number(o.consumed ?? 0),
     }));
   return opts.length ? opts : null;
+}
+
+// Service-plan dependencies the M365 onboard held back (result.LicenseDependencyIssues), or null.
+// Mirrors licenseOptionsOf — the runner already shaped the data; we just normalize the field casing
+// (the runner emits PascalCase PlanName/SkuName/RequiresNames/Resolution).
+function licenseIssuesOf(result: unknown): RunReportStep["licenseIssues"] {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  const raw = r.LicenseDependencyIssues ?? r.licenseDependencyIssues;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const issues = raw
+    .map((o) => o as Record<string, unknown>)
+    .map((o) => {
+      const req = o.RequiresNames ?? o.requiresNames ?? o.Requires ?? o.requires;
+      return {
+        plan: String(o.PlanName ?? o.planName ?? o.PlanId ?? o.planId ?? "a service plan"),
+        sku: String(o.SkuName ?? o.skuName ?? o.SkuId ?? o.skuId ?? "a license"),
+        requires: Array.isArray(req) ? req.map((x) => String(x)).filter(Boolean) : [],
+        resolution: String(o.Resolution ?? o.resolution ?? ""),
+      };
+    });
+  return issues.length ? issues : null;
 }
 
 // The offboard-target shortlist a step returned when it couldn't resolve the leaver (result.Candidates),
@@ -396,6 +425,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       manualCompleted,
       pendingReason,
       licenseOptions: licenseOptionsOf(jr),
+      licenseIssues: licenseIssuesOf(jr),
       offboardCandidates: offboardCandidatesFor(jr),
       autoRetry: autoRetryData,
       intent: req.intent ?? null,

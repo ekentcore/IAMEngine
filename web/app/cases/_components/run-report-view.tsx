@@ -10,7 +10,7 @@ import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
 import { ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY } from "@/lib/jobs/adhoc";
 import { CopyButton } from "@/app/_components/copy-button";
-import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker } from "@/lib/cases/decision-markers";
+import { parseMailboxOversize, parseMailboxNotConverted, canConvert, isDecisionMarker, parseSyncedUpnMismatch } from "@/lib/cases/decision-markers";
 
 const VERDICT: Record<StepVerdict, { label: string; color: string }> = {
   verified: { label: "verified", color: "#15803d" },
@@ -192,6 +192,49 @@ function LicensePicker({ jobId, options, refresh, onWait, waiting }: { jobId: st
         </button>
         <button style={{ fontSize: 12 }} disabled={busy} onClick={() => { setCollapsed(true); onWait(); }} title="Don't assign now — order the license and watch its procurement case">
           I&rsquo;ll wait
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Some license service plans couldn't be enabled because a hard prerequisite was missing (e.g.
+// Defender for Office 365 P2 needs an Exchange Online plan). The base license DID land — these plans
+// are just off. Once the operator supplies the prerequisite (assign the base license / free a seat),
+// "Retry license assignment" re-runs the step; the runner re-enables any plan whose prerequisite now
+// exists. Mirrors LicensePicker: self-contained, re-uses the same in-place job re-run.
+function LicenseRecoveryBox({ jobId, issues, refresh }: { jobId: string; issues: NonNullable<RunReport["steps"][number]["licenseIssues"]>; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="note" style={{ marginTop: 4, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
+      <div style={{ fontWeight: 600, color: "#92400e" }}>
+        Some licenses couldn&rsquo;t be fully assigned — {issues.length} service plan{issues.length > 1 ? "s were" : " was"} held back
+      </div>
+      <ul style={{ margin: "0.4rem 0", paddingLeft: "1.1rem", color: "var(--fg)", fontSize: 12 }}>
+        {issues.map((iss, i) => (
+          <li key={i} style={{ marginBottom: 2 }}>
+            <strong>{iss.plan}</strong>{iss.sku ? <span className="muted"> (in {iss.sku})</span> : null} is <strong>off</strong>
+            {iss.requires.length ? <> — needs {iss.requires.join(" or ")}</> : null}
+          </li>
+        ))}
+      </ul>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+        The account and the rest of the license were assigned. Add/enable a prerequisite license (or free a seat for one), then retry — the plan turns on once its prerequisite exists.
+      </div>
+      {err && <div style={{ color: "#b91c1c" }}>{err}</div>}
+      <div className="toolbar" style={{ marginTop: 4 }}>
+        <button className="primary" style={{ fontSize: 12 }} disabled={busy}
+          onClick={async () => {
+            setBusy(true); setErr(null);
+            try {
+              const r = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+              if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+              await refresh();
+            } catch (e) { setErr((e as Error).message); }
+            finally { setBusy(false); }
+          }}>
+          {busy ? "Retrying…" : "Retry license assignment"}
         </button>
       </div>
     </div>
@@ -449,6 +492,39 @@ function CollisionDecision({ caseId, jobId, error, refresh }: { caseId: string; 
       <div className="toolbar" style={{ marginTop: 8 }}>
         <button className="primary" disabled={!!busy} onClick={() => decide("adopt")}>{busy === "adopt" ? "Adopting…" : "Adopt — it's this person (re-run)"}</button>
         <button disabled={!!busy} onClick={() => decide("new")}>{busy === "new" ? "…" : "Different person — use a new username"}</button>
+      </div>
+      {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
+    </div>
+  );
+}
+
+// AD-synced client: the runner found a synced account under a different UPN (or none) and refused to
+// create a cloud duplicate. The operator either fixes the on-prem AD email and re-syncs (then re-runs),
+// or — if this hire legitimately needs a cloud-created account — allows creation for this case.
+function SyncedMismatchDecision({ caseId, jobId, error, refresh }: { caseId: string; jobId: string; error: string; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const d = parseSyncedUpnMismatch(error);
+  if (!d) return null;
+  async function allowCreate() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ allowCloudCreate: true }) });
+      if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+      await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+      await refresh();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div style={{ border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.6rem 0.8rem", marginTop: 6 }}>
+      <div style={{ fontSize: 13, color: "#92400e" }}>
+        <b>Decision needed</b> — this AD-synced client&apos;s account should come from on-prem AD, so nothing was created in the cloud.
+        {d.found ? <> A synced account for <b>{d.name}</b> exists at <code>{d.found}</code> but onboarding expected <code>{d.expected}</code>.</> : null}
+      </div>
+      <div className="note" style={{ marginTop: 4 }}>Fix the on-prem AD email/UPN and re-sync (then re-run this step), or allow a cloud account for this case:</div>
+      <div className="toolbar" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy} onClick={allowCreate}>{busy ? "Allowing…" : "Allow cloud account for this case & re-run"}</button>
       </div>
       {err && <p className="note danger" style={{ marginTop: 4 }}>{err}</p>}
     </div>
@@ -1163,6 +1239,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.error?.includes("DECISION_NEEDED:username_collision") && step.jobId && (
                 <CollisionDecision caseId={caseId} jobId={step.jobId} error={step.error} refresh={refresh} />
               )}
+              {step.error?.includes("DECISION_NEEDED:synced_upn_mismatch") && step.jobId && (
+                <SyncedMismatchDecision caseId={caseId} jobId={step.jobId} error={step.error} refresh={refresh} />
+              )}
               {/* Gated on the ACTIONS, not the error: this step succeeded — only the licence is
                   unresolved. The component returns null when its marker isn't present. */}
               {step.jobId && <MailboxOversizeDecision caseId={caseId} jobId={step.jobId} actions={step.actions} refresh={refresh} />}
@@ -1176,6 +1255,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 </div>
               )}
               {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} waiting={waiting.has(step.seq)} onWait={() => setWaiting((s) => new Set(s).add(step.seq))} />}
+              {step.licenseIssues && step.jobId && <LicenseRecoveryBox jobId={step.jobId} issues={step.licenseIssues} refresh={refresh} />}
               {step.offboardCandidates && <OffboardTargetPicker caseId={report.caseId} data={step.offboardCandidates} refresh={refresh} />}
               <ProcurementWatchRow step={step} refresh={refresh} forceShow={waiting.has(step.seq)} />
               {step.phaseTrail.length > 0 && (
