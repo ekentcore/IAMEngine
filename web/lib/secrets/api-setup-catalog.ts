@@ -109,9 +109,9 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     autoConsoleSecret: "egnyte-console",
     delineaSubfolder: "Vendor",
     steps: [
-      "Note the client's Egnyte domain (the <domain> in https://<domain>.egnyte.com).",
-      "Get an API key/token with admin scope: register/enable an API application for the domain at developers.egnyte.com (or use the domain admin's existing API key), and generate an access token authorized by a domain administrator.",
-      "Enter the Egnyte domain and the API token below (or the Delinea id), then Verify & save.",
+      "In developers.egnyte.com, register/enable an API application for the domain, then copy its Key (the OAuth client_id) and Secret (the client_secret).",
+      "Have an Egnyte admin login (email + password) that can manage users — the runner mints the token on that account's behalf via the password grant.",
+      "Enter Client ID (the Key), Client Secret, Account ID (the admin login email) and Password below (or the Delinea id), then Verify & save. The Egnyte domain is optional — leave it blank and it's derived from the login email.",
     ],
   },
   {
