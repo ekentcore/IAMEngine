@@ -21,6 +21,21 @@ test("aliases exist for the automated M365 + Google login secrets", () => {
   assert.ok(SUGGESTION_ALIASES["google-admin"]?.length, "google-admin needs aliases");
 });
 
+test("spanning-portal surfaces O365 global-admin logins (its console login is usually the M365 GA)", () => {
+  const aliases = SUGGESTION_ALIASES["spanning-portal"] ?? [];
+  for (const a of ["spanning", "o365", "office 365", "global admin", "global administrator", "m365", "365", "azure"]) {
+    assert.ok(aliases.includes(a), `spanning-portal should alias '${a}'`);
+  }
+  // A candidate named for the global admin (no "spanning" in the name) is now a name match, where
+  // before it scored 0 and was filtered out entirely.
+  const out = rankDelineaSuggestions(
+    [rec({ id: 7, name: "Global Administrator login", folderPath: "\\Clients\\Acme\\Vendor" })],
+    { secretName: "spanning-portal", templateName: null, subfolders: ["Vendor"] },
+  );
+  assert.equal(out[0]?.secretId, 7);
+  assert.ok(out[0].reasons.some((r) => /name matches/i.test(r)));
+});
+
 test("template match, name match, and folder match each contribute, with reasons", () => {
   const cands = [
     rec({ id: 1, name: "Adobe Admin Console (auto)", folderPath: "\\Clients\\Acme !CORE1!\\Vendor", secretTemplateName: "Automation - API" }),

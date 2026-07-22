@@ -147,6 +147,20 @@ export function apiSetupFor(systemKey: string): ApiSetupEntry | undefined {
   return API_SETUP_CATALOG.find((e) => e.systemKey === systemKey);
 }
 
+// The set of secrets that are a browser CONSOLE LOGIN (admin email + password) rather than an API
+// credential — every vendor's `autoConsoleSecret` (spanning-portal, mimecast-console, …) plus the
+// M365 device-code Global Admin login. These can't be API-tested (a login box doesn't return a
+// verdict), so the guided-setup wizard treats them as Delinea-id-ONLY: paste/pick a reference, no
+// typed username/password create form and no field-shape "Test" button.
+export const CONSOLE_LOGIN_SECRETS = new Set<string>([
+  ...(API_SETUP_CATALOG.map((e) => e.autoConsoleSecret).filter(Boolean) as string[]),
+  "m365-global-admin",
+]);
+
+export function isBrowserLoginSecret(name: string): boolean {
+  return CONSOLE_LOGIN_SECRETS.has(name);
+}
+
 // The catalog entry whose credential this secret NAME vaults — the create route uses it to pick the
 // module's Delinea subfolder and record setup provenance. (secretName is the durable key; systemKey
 // and secretName coincide for these vendors, but look up by the name the vault path actually uses.)

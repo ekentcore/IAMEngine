@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { API_SETUP_CATALOG, apiSetupFor } from "./api-setup-catalog";
+import { API_SETUP_CATALOG, apiSetupFor, isBrowserLoginSecret } from "./api-setup-catalog";
 import { SECRET_FIELD_REQUIREMENTS } from "./field-requirements";
 
 test("catalog covers the guided-setup vendors, each with a real field-requirements secret", () => {
@@ -25,4 +25,11 @@ test("spanning entry derives its URL/account id from service + region pickers", 
 });
 test("apiSetupFor returns undefined for an unknown system", () => {
   assert.equal(apiSetupFor("google"), undefined);
+});
+test("isBrowserLoginSecret marks console-login secrets, not API creds", () => {
+  assert.equal(isBrowserLoginSecret("spanning-portal"), true); // a vendor console login
+  assert.equal(isBrowserLoginSecret("spanning"), false); // the API credential itself
+  assert.equal(isBrowserLoginSecret("m365-global-admin"), true); // the device-code GA login
+  assert.equal(isBrowserLoginSecret("mimecast-console"), true);
+  assert.equal(isBrowserLoginSecret("mimecast"), false);
 });

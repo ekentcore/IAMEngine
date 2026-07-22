@@ -7,8 +7,15 @@
 // requests; nothing is echoed back or persisted here.
 import { useState } from "react";
 import type { FieldReq } from "@/lib/secrets/field-requirements";
+import type { ApiSetupEntry } from "@/lib/secrets/api-setup-catalog";
+import { buildGuidedValues, deriveSpanningValues } from "@/lib/secrets/guided-api-values";
 import { FIELD_SEEDERS } from "@/lib/secrets/field-seeders";
 import { ManualDelineaModal } from "./manual-delinea-modal";
+
+// The requirement label the Spanning derivation OWNS: its value comes from the service/region selects
+// (deriveSpanningValues), so the form must not also render it as a free-text input. Mirrors
+// guided-api-setup's SPANNING_DERIVED_LABEL so the two entry surfaces stay in lockstep.
+const SPANNING_DERIVED_LABEL = "region or base url";
 
 // Heuristic: which fields render as password inputs (so a shoulder-surfer can't read the value).
 export const isSecretish = (label: string) => /pass|secret|token|key|certificate|thumbprint/i.test(label);
@@ -28,6 +35,7 @@ export function CreateInDelineaForm({
   secretName,
   fieldRequirements,
   capability,
+  entry,
   onCreated,
   onCancel,
 }: {
@@ -35,10 +43,17 @@ export function CreateInDelineaForm({
   secretName: string;
   fieldRequirements: FieldReq[];
   capability: CreateCapability;
+  // The guided-setup catalog entry for this secret, when it has one (Spanning etc.). Drives the
+  // service/region dropdowns + Spanning derivation. Absent for ad-hoc creds — the form then just
+  // re-keys typed labels to their canonical synonyms (a no-op for secrets whose labels already ARE
+  // synonyms, e.g. google-admin).
+  entry?: ApiSetupEntry;
   onCreated: (externalId: string) => void;
   onCancel: () => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
+  const [service, setService] = useState(entry?.serviceOptions?.[0] ?? "");
+  const [region, setRegion] = useState(entry?.regionOptions?.[0] ?? "");
   const [folderId, setFolderId] = useState("");
   const [phase, setPhase] = useState<"idle" | "testing" | "creating">("idle");
   const [probe, setProbe] = useState<ProbeResult | null>(null);
@@ -50,6 +65,29 @@ export function CreateInDelineaForm({
   const seeder = FIELD_SEEDERS[secretName];
   const needsFolder = !capability.folderId;
   const busy = phase !== "idle";
+
+  // Only the REQUIRED fields are collected (optional ones have a runner fallback); operators can still
+  // add extra fields to the secret in Delinea directly. A Spanning entry ALSO drops its derived
+  // "region or base url" field — that value comes from the service/region selects below, not a text box.
+  const fields = fieldRequirements
+    .filter((f) => !f.optional)
+    .filter((f) => entry?.derive !== "spanning" || f.label !== SPANNING_DERIVED_LABEL);
+
+  // The POST body's `values`, keyed by each requirement's CANONICAL synonym (anyOf[0]) rather than the
+  // human label — the exact shape the probe/create routes and the runner's pickField expect (a label
+  // like "login email" is not itself a synonym, so posting by label made spanning's shape check + probe
+  // read the field as missing). For a Spanning entry, also derive apiURL + AccountID from the login
+  // email + service/region selects, merged OVER the typed values. For everything else this re-key is a
+  // no-op when labels already equal their synonym (e.g. google-admin's ClientSecret/accountid).
+  function buildPostValues(): Record<string, string> {
+    const typed = buildGuidedValues(fields, values, entry?.derive === "spanning" ? undefined : entry?.regionOptions ? region : undefined);
+    if (entry?.derive === "spanning") {
+      const loginEmailField = fields.find((f) => f.anyOf[0] === "ClientID");
+      const derived = deriveSpanningValues(loginEmailField ? values[loginEmailField.label] ?? "" : "", service, region);
+      return { ...typed, ...derived };
+    }
+    return typed;
+  }
 
   // Read the picked file LOCALLY (it is never uploaded), parse it, and fill the matching fields —
   // exactly as if the operator had typed the values. A parse failure names what was wrong with the
@@ -76,7 +114,7 @@ export function CreateInDelineaForm({
       const res = await fetch(`/api/clients/${slug}/secrets/probe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: secretName, values }),
+        body: JSON.stringify({ name: secretName, values: buildPostValues() }),
       });
       const data = (await res.json().catch(() => ({}))) as ProbeResult & { error?: string };
       if (!res.ok) {
@@ -96,7 +134,7 @@ export function CreateInDelineaForm({
       const res = await fetch(`/api/clients/${slug}/secrets/create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: secretName, values, folderId: needsFolder ? folderId.trim() : undefined }),
+        body: JSON.stringify({ name: secretName, values: buildPostValues(), folderId: needsFolder ? folderId.trim() : undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -142,9 +180,6 @@ export function CreateInDelineaForm({
     setPhase("idle");
   }
 
-  // Only the REQUIRED fields are collected (optional ones have a runner fallback); operators can still
-  // add extra fields to the secret in Delinea directly.
-  const fields = fieldRequirements.filter((f) => !f.optional);
   const canSubmit = fields.length > 0 && !(needsFolder && !folderId.trim());
 
   return (
@@ -186,6 +221,25 @@ export function CreateInDelineaForm({
       ))}
       {fields.length === 0 && (
         <p className="note muted">No field requirements known for this secret — add its fields in Delinea directly.</p>
+      )}
+
+      {/* Spanning (and any catalog entry with pickers): email-service + region selects. Their values feed
+          deriveSpanningValues (apiURL + AccountID) instead of a "region or base url" text box. */}
+      {entry?.serviceOptions && (
+        <label style={{ display: "block", marginBottom: 10 }}>
+          <span className="note" style={{ display: "block", marginBottom: 2 }}>Email service</span>
+          <select value={service} disabled={busy} onChange={(e) => { setService(e.target.value); setProbe(null); }}>
+            {entry.serviceOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+      )}
+      {entry?.regionOptions && (
+        <label style={{ display: "block", marginBottom: 10 }}>
+          <span className="note" style={{ display: "block", marginBottom: 2 }}>Region</span>
+          <select value={region} disabled={busy} onChange={(e) => { setRegion(e.target.value); setProbe(null); }}>
+            {entry.regionOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </label>
       )}
 
       {/* Test verdict */}

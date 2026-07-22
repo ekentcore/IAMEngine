@@ -92,6 +92,7 @@ export { entry as graphSigninsModuleMissing } from "./graph-signins-module-missi
 export { entry as guidedApiSetup } from "./guided-api-setup";
 export { entry as guidedSetupAutomatedAndSuggest } from "./guided-setup-automated-and-suggest";
 export { entry as guidedSetupFullerInstructions } from "./guided-setup-fuller-instructions";
+export { entry as guidedSetupSpanningPasteAndBrowserLabels } from "./guided-setup-spanning-paste-and-browser-labels";
 export { entry as guidedSetupTestThenWrite } from "./guided-setup-test-then-write";
 export { entry as guidedSetupWizardAndSuggestions } from "./guided-setup-wizard-and-suggestions";
 export { entry as hideDryRunOption } from "./hide-dry-run-option";
@@ -189,6 +190,7 @@ export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-cen
 export { entry as spanningGuidedSetupDerived } from "./spanning-guided-setup-derived";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
 export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
+export { entry as spanningHeadlessTokenHarvest } from "./spanning-headless-token-harvest";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";

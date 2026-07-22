@@ -102,10 +102,13 @@ export async function GET(req: Request, { params }: { params: { slug: string } }
   if (!harvested) {
     return NextResponse.json({ done: true, ok: false, error: "the setup completed but no API token was harvested from the console — check the run and re-run, or paste the token manually." });
   }
-  // The non-secret derived values were echoed onto the job config at dispatch time.
+  // The non-secret derived values were echoed onto the job config at dispatch time. Prefer the login
+  // email the console ITSELF returned with the token (harvested.username = its msUserPrincipalName) —
+  // it is what the API authenticates as — falling back to the operator-supplied value on the config.
   const cfg = (job.request as { config?: { loginEmail?: string; apiUrl?: string; accountId?: string } } | null)?.config ?? {};
   const values: Record<string, string> = { "api token": harvested.apiToken };
-  if (cfg.loginEmail) values["login email"] = cfg.loginEmail;
+  const loginEmail = harvested.username || cfg.loginEmail;
+  if (loginEmail) values["login email"] = loginEmail;
   if (cfg.apiUrl) values["region or base url"] = cfg.apiUrl;
   if (cfg.accountId) values["account id"] = cfg.accountId;
 

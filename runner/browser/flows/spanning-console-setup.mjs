@@ -1,84 +1,171 @@
 // Flow: spanning-console-setup
 // ---------------------------------------------------------------------------------------------
-// Sign into the Spanning Backup admin console (Microsoft-365 SSO) and generate + HARVEST the
-// Settings → API Token, which the app then vaults as the `spanning` API credential. This is the
-// setup analog of spanning-force-sync (which uses the SAME M365 SSO login); here we don't sync — we
-// read the API key so onboarding/offboarding can use the Spanning API without a human copying it.
+// Sign into the Spanning Backup admin console (Microsoft-365 SSO) and HARVEST the API token, which the
+// app then vaults as the client's `spanning` API credential. This is the setup analog of
+// spanning-force-sync (which uses the SAME M365 SSO login); here we don't sync — we read the API key so
+// onboarding/offboarding can use the Spanning API without a human copying it out of the console.
+//
+// HAR-DERIVED (data/apisetup-<service>-<region>.spanningbackup.com.har, a real capture of the live
+// flow): once signed in, the token is created/read by TWO same-origin API calls — NO fragile
+// Settings-UI clicking:
+//   1. GET  /api/apiUser/token  -> `false` (JSON) when no token exists yet, or the token OBJECT when one
+//      does: { msUserPrincipalName, token }.
+//   2. POST /api/apiUser/token  (content-type: application/json, body "{}") -> { msUserPrincipalName,
+//      token }. NO XSRF/CSRF header — same-origin cookies (present after login) are enough.
+// `msUserPrincipalName` is the Spanning API username (the login email); `token` is the API key.
 //
 // The M365 SSO sign-in reuses the shared, live-verified helper runner/browser/lib/ms-sso-login.mjs
-// (same machinery spanning-force-sync relies on) — so only the POST-login Spanning navigation +
-// token harvest below is new, and it is the part that NEEDS LIVE SELECTOR VALIDATION against the
-// real console (no live console was reachable when this was written).
+// (same machinery spanning-force-sync relies on) — headless: email -> password -> MFA/OTP.
 //
-// input:  { username, password, params: { otp?, consoleUrl?, signInOnly? } }  (creds NEVER logged)
-// result: { ok:true, Credentials:{ apiToken } }  — the token rides a `Credentials` note-property the
-//         app scrubs after vaulting; on signInOnly it's omitted. { ok:false, error, evidence } on fail.
+// input:  { username, password, params: { service?, region?, apiUrl?, consoleUrl?, signInOnly?,
+//                                          otp?, otpCode?, totpSeed? } }  (creds NEVER logged)
+// result: { ok:true, session:{ token, username } }  — the harvested token/username ride the `session`
+//         field (the ONLY rich channel run-flow.mjs + Coretelligent.Browser pass through unmodified);
+//         the runner repackages it into the `Credentials` note-property the app vaults then scrubs. On
+//         signInOnly the token is omitted. { ok:false, error, evidence } on failure (incl. the
+//         "a token already exists but its value isn't returned — paste or regenerate it" manual case).
 import { signInMicrosoft } from "../lib/ms-sso-login.mjs";
 
-const DEFAULT_PORTAL_URL = "https://o365.spanningbackup.com/login.html";
-const portalUrl = (input) => (input?.params?.consoleUrl || process.env.SPANNING_PORTAL_URL || DEFAULT_PORTAL_URL);
+const SPANNING_SERVICES = new Set(["o365", "google"]);
+const SPANNING_REGIONS = new Set(["us", "eu", "ap", "uk", "ca"]);
+const DEFAULT_CONSOLE_HOST = "https://o365-us.spanningbackup.com";
 
-// Post-login Spanning console selectors — BEST-EFFORT, each commented with where it lives in the UI.
-// VERIFY against the live console: the exact route to the API Token panel and the field/button labels.
-const SEL = {
-  // The provider chooser on o365.spanningbackup.com before MS SSO takes over ("Log In with Microsoft").
-  msProvider: 'button:has-text("Microsoft"), a:has-text("Log In with Microsoft"), a:has-text("Microsoft 365"), [data-provider="microsoft"]',
-  // Settings entry (top-nav or gear). Spanning's console: Settings link/gear.
-  settingsLink: 'a:has-text("Settings"), a[href*="settings" i], button:has-text("Settings"), [aria-label="Settings"]',
-  // The API Token section lives at the BOTTOM of Settings. Anchor + the key field + generate button.
-  apiTokenSection: 'text=/API Token/i',
-  apiKeyField: 'input[name*="token" i], input[id*="token" i], input[readonly][value], code:has-text("-"), [data-testid*="api-token" i]',
-  generateBtn: 'button:has-text("Generate"), button:has-text("Create Token"), button:has-text("New Token")',
-  // Regenerate is DESTRUCTIVE (invalidates the current key everywhere) — never click it; only Generate
-  // when no key exists.
-  regenerateBtn: 'button:has-text("Regenerate")',
-};
-
-async function harvestApiToken(page, shot, log) {
-  log("navigating to Settings → API Token");
-  // Open Settings.
-  const settings = page.locator(SEL.settingsLink).first();
-  if (await settings.isVisible().catch(() => false)) {
-    await settings.click().catch(() => {});
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
+// The Spanning admin-console origin that serves the same-origin /api/apiUser/token endpoint:
+//   https://<service>-<region>.spanningbackup.com     (service o365|google, region us|eu|ap|uk|ca)
+// Resolution order, most explicit first:
+//   1. params.service + params.region     (the dispatch derives these).
+//   2. params.apiUrl  — the API base is https://<service>-api-<region>.spanningbackup.com; drop the
+//      "-api-" segment to get the console host (o365-api-us -> o365-us).
+//   3. params.consoleUrl — an explicit override; use its origin.
+//   4. the o365/us default.
+// Returns an origin (scheme + host, no trailing slash).
+function resolveConsoleHost(input) {
+  const p = input?.params ?? {};
+  const service = String(p.service ?? "").trim().toLowerCase();
+  const region = String(p.region ?? "").trim().toLowerCase();
+  if (SPANNING_SERVICES.has(service) && SPANNING_REGIONS.has(region)) {
+    return `https://${service}-${region}.spanningbackup.com`;
   }
-  // Scroll to the API Token section (bottom of the page).
-  const section = page.locator(SEL.apiTokenSection).first();
-  await section.scrollIntoViewIfNeeded().catch(() => {});
-
-  // Read an existing key if one is already displayed; else Generate one (never Regenerate).
-  const readKey = async () => {
-    const field = page.locator(SEL.apiKeyField).first();
-    if (!(await field.isVisible().catch(() => false))) return "";
-    const val = (await field.inputValue().catch(() => null)) ?? (await field.textContent().catch(() => null));
-    const t = (val ?? "").trim();
-    return t && t.length >= 12 ? t : ""; // a real key, not a placeholder
-  };
-
-  let token = await readKey();
-  if (!token) {
-    const gen = page.locator(SEL.generateBtn).first();
-    if (await gen.isVisible().catch(() => false)) {
-      log("no existing API key found — generating one");
-      await gen.click().catch(() => {});
-      await page.waitForTimeout(2000);
-      token = await readKey();
-    }
+  const apiUrl = String(p.apiUrl ?? "").trim();
+  if (apiUrl) {
+    try {
+      const host = new URL(apiUrl.match(/^https?:\/\//i) ? apiUrl : `https://${apiUrl}`).hostname;
+      // o365-api-us.spanningbackup.com -> o365-us.spanningbackup.com
+      const consoleHost = host.replace(/-api-/i, "-");
+      if (/\.spanningbackup\.com$/i.test(consoleHost)) return `https://${consoleHost}`;
+    } catch { /* fall through */ }
   }
-  if (!token) {
-    return { ok: false, error: "signed in, but could not read or generate the Spanning API Token — VERIFY the Settings → API Token selectors against the live console", evidence: await shot("no-api-token") };
+  const consoleUrl = String(p.consoleUrl ?? "").trim();
+  if (consoleUrl) {
+    try {
+      return new URL(consoleUrl.match(/^https?:\/\//i) ? consoleUrl : `https://${consoleUrl}`).origin;
+    } catch { /* fall through */ }
   }
-  // The token is returned note-only; NEVER logged.
-  return { ok: true, Credentials: { apiToken: token } };
+  return DEFAULT_CONSOLE_HOST;
 }
 
-export default async function spanningConsoleSetup({ page, shot, input, log }) {
-  const signInOnly = input?.params?.signInOnly === true;
+// The provider chooser on the Spanning login page before MS SSO takes over ("Log In with Microsoft").
+const MS_PROVIDER_SEL =
+  'button:has-text("Microsoft"), a:has-text("Log In with Microsoft"), a:has-text("Microsoft 365"), a:has-text("Sign in with Microsoft"), [data-provider="microsoft"]';
+
+// Same-origin GET of the current API token. Returns the parsed JSON: `false` / null when none exists
+// yet, the token object ({ token, msUserPrincipalName }) when one does, or { __error } on a transport
+// failure. Runs INSIDE the page so it rides the authenticated console cookies — never logs the value.
+async function getExistingToken(page) {
+  return page.evaluate(async () => {
+    try {
+      const r = await fetch("/api/apiUser/token", { credentials: "include", headers: { accept: "application/json" } });
+      if (!r.ok) return { __error: `GET /api/apiUser/token -> HTTP ${r.status}` };
+      return await r.json();
+    } catch (e) {
+      return { __error: String((e && e.message) || e) };
+    }
+  });
+}
+
+// Same-origin POST that creates a fresh token. Body is "{}" with content-type application/json; no
+// XSRF/CSRF header (same-origin cookies suffice, per the HAR). Returns the created token object or
+// { __error }. Only called when NO token exists — a POST when one does would REGENERATE (invalidating
+// the existing key everywhere), which we must never do.
+async function createToken(page) {
+  return page.evaluate(async () => {
+    try {
+      const r = await fetch("/api/apiUser/token", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        credentials: "include",
+        body: "{}",
+      });
+      if (!r.ok) return { __error: `POST /api/apiUser/token -> HTTP ${r.status}` };
+      return await r.json();
+    } catch (e) {
+      return { __error: String((e && e.message) || e) };
+    }
+  });
+}
+
+// Harvest the token via the console's own API (see the HAR notes above). `consoleHost` is the origin
+// we signed into and must be on for the same-origin fetches to carry the session cookies.
+async function harvestApiToken(page, shot, log, reportStage, consoleHost) {
+  // Guarantee we're on the console ORIGIN (the SSO redirect can leave us mid-hop) so the relative
+  // fetches below hit the authenticated console, not login.microsoftonline.com.
   try {
-    log(`opening the Spanning admin console`);
-    await page.goto(portalUrl(input), { waitUntil: "domcontentloaded" }).catch(() => {});
+    if (new URL(page.url()).origin !== consoleHost) {
+      await page.goto(consoleHost, { waitUntil: "domcontentloaded" }).catch(() => {});
+    }
+  } catch {
+    await page.goto(consoleHost, { waitUntil: "domcontentloaded" }).catch(() => {});
+  }
+
+  log("reading the current Spanning API token via the console API");
+  const existing = await getExistingToken(page);
+
+  if (existing && typeof existing === "object" && existing.__error) {
+    return { ok: false, error: `signed in, but could not read the Spanning API token: ${existing.__error}`, evidence: await shot("token-read-failed") };
+  }
+
+  // A token already exists — REUSE it (never POST: regenerating invalidates the current key everywhere).
+  if (existing && typeof existing === "object" && typeof existing.token === "string" && existing.token.trim()) {
+    reportStage("harvest");
+    log("an API token already exists — reusing it (not regenerating)"); // the VALUE is never logged
+    return { ok: true, session: { token: existing.token.trim(), username: existing.msUserPrincipalName ?? null } };
+  }
+
+  // No token yet (`false` or null) — create one.
+  if (existing === false || existing == null) {
+    reportStage("create");
+    log("no Spanning API token exists yet — creating one");
+    const created = await createToken(page);
+    if (created && typeof created === "object" && created.__error) {
+      return { ok: false, error: `could not create the Spanning API token: ${created.__error}`, evidence: await shot("token-create-failed") };
+    }
+    if (created && typeof created === "object" && typeof created.token === "string" && created.token.trim()) {
+      reportStage("harvest");
+      return { ok: true, session: { token: created.token.trim(), username: created.msUserPrincipalName ?? null } };
+    }
+    return { ok: false, error: "created a Spanning API token but the console did not return its value — read it from the Spanning console (Settings → API Token) and paste it manually", evidence: await shot("token-create-empty") };
+  }
+
+  // Truthy, but no `.token` field — a token exists whose value the API won't return. Do NOT POST (that
+  // would regenerate and break the live key). Hand it back for manual entry.
+  return {
+    ok: false,
+    error: "a Spanning API token already exists but the console did not return its value. Paste the existing token manually, or explicitly regenerate it in the Spanning console (Settings → API Token) — regenerating invalidates the current key everywhere — and re-run.",
+    evidence: await shot("token-value-withheld"),
+  };
+}
+
+export default async function spanningConsoleSetup({ page, shot, input, log, reportStage }) {
+  const stage = typeof reportStage === "function" ? reportStage : () => {};
+  const signInOnly = input?.params?.signInOnly === true;
+  const consoleHost = resolveConsoleHost(input);
+
+  stage("signin");
+  try {
+    log("opening the Spanning admin console");
+    await page.goto(consoleHost, { waitUntil: "domcontentloaded" }).catch(() => {});
     // Provider chooser → Microsoft, then the shared MS SSO login handles username/password/MFA.
-    const provider = page.locator(SEL.msProvider).first();
+    const provider = page.locator(MS_PROVIDER_SEL).first();
     if (await provider.isVisible().catch(() => false)) {
       log('choosing "Log In with Microsoft"');
       await provider.click().catch(() => {});
@@ -95,5 +182,6 @@ export default async function spanningConsoleSetup({ page, shot, input, log }) {
     log("sign-in test succeeded (no changes made)");
     return { ok: true };
   }
-  return harvestApiToken(page, shot, log);
+
+  return harvestApiToken(page, shot, log, stage, consoleHost);
 }

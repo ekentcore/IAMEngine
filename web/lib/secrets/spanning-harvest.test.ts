@@ -8,6 +8,19 @@ test("findSpanningToken deep-finds the harvested API token under common key spel
   assert.deepEqual(findSpanningToken({ token: "tok-1234567890" }), { apiToken: "tok-1234567890" });
 });
 
+test("findSpanningToken captures the sibling username (the console's msUserPrincipalName)", () => {
+  assert.deepEqual(
+    findSpanningToken({ Credentials: { apiToken: "abc123def456", username: "coretelligent@willowridge.com" } }),
+    { apiToken: "abc123def456", username: "coretelligent@willowridge.com" },
+  );
+  assert.deepEqual(
+    findSpanningToken({ token: "tok-1234567890", msUserPrincipalName: "admin@x.com" }),
+    { apiToken: "tok-1234567890", username: "admin@x.com" },
+  );
+  // No username sibling -> token only, no username key.
+  assert.deepEqual(findSpanningToken({ apiToken: "abc123def456" }), { apiToken: "abc123def456" });
+});
+
 test("findSpanningToken returns null when no token present", () => {
   assert.equal(findSpanningToken({ System: "spanning-console-setup", Status: "ok", Actions: ["did a thing"] }), null);
   assert.equal(findSpanningToken(null), null);
