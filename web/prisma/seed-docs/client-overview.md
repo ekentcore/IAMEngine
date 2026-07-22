@@ -4,6 +4,8 @@ IAM Engine Automated user onboarding and offboarding across your identity and Sa
 
 Client overview · summary · Prepared for client review
 
+Version 2.0 · 22 July 2026. This edition folds in automated system setup, the offboarding address-book and mailbox defaults, and the client-lifecycle roles. A full list of changes is in the version history at the end of this document.
+
 ### What this document covers
 
 - What the platform does. The problem it solves and the shape of the solution.
@@ -159,6 +161,8 @@ A typical onboarding plan for an organization with on-premises Active Directory 
 
 The initial password is generated at dispatch or set to a default stored in CoreSecret. When it is generated, it is shown to an operator exactly once, and is wiped at the moment it is revealed: two people opening the case cannot both see it, and the second is told plainly that it has already been revealed and cannot be recalled. The value is never written to the run log, the audit record, or the ServiceNow work note. The audit records that it was revealed, and by whom, never what it was.
 
+Where a specific password is required rather than a generated one, an operator can enter it directly on the account's line. A password entered this way is validated against the account's complexity policy before it is set, and, because whoever entered it already holds it, it is set as-is with no one-time reveal.
+
 Where your tenant supports it, we prefer to issue no password at all: a Temporary Access Pass lets the new starter register their own credentials and MFA directly, and nothing reusable ever transits a person.
 
 ## 5. The offboarding path
@@ -170,12 +174,16 @@ Offboarding is designed around one principle: contain first, destroy later, and 
 | 1 | Capture evidence | Before anything is removed, the user's current state is captured and attached to the case: every group membership, every application assignment. If the termination is disputed, or the person is reinstated, the record of what they had is on the case. |
 | 2 | Active Directory | Password is reset (and captured for the manager, where your runbook says so). All group memberships are removed. The user is hidden from the address book, the manager link is cleared, the account is disabled, and, unless your profile carries the do-not-move guardrail, the object is moved to the Disabled Users OU. |
 | 3 | Entra ID | The account is confirmed disabled, cloud group memberships and enterprise-application assignments are removed, registered MFA factors are stripped, and active sessions are revoked. |
-| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. Delegated access is granted to the named recipient. |
+| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When your runbook removes the Microsoft 365 licence, converting the mailbox to shared is the default, so the seat is reclaimed and the mail is kept. A mailbox too large to convert surfaces a decision for the operator (keep the licence and the mail, or remove it and lose the mail) rather than being skipped silently. Delegated access is granted to the named recipient. |
 | 5 | Endpoint | Where SentinelOne is in scope, the departing user's registered devices are identified and disconnected from the network. Isolation is reversible; shutdown is not, and is gated. |
 | 6 | SaaS estate | Access removed and seats reclaimed across the estate: Mimecast, Adobe, Zoom, Spanning, Duo, VPN, Jira, and the rest. License downticks happen after the mailbox conversion, not before. |
 | 7 | Data custody | Drive and file ownership transfer, per your runbook. |
 | 8 | Deferred archive | Where a grace period applies (typically 30 to 90 days), the archive or delete step is scheduled rather than executed. An immediate-termination flag collapses the grace period to now. |
 | 9 | Equipment return | Checklist item. |
+
+### Hidden from the address book by default
+
+Every offboarding hides the departing person from the global address list (on Exchange and Microsoft 365) and from directory and contact sharing (on Google), so a leaver stops appearing to colleagues immediately rather than only where a specific attribute was configured. You can opt a client out of this in its offboard configuration, and you can keep a single leaver listed by ticking "Keep in global address list" on that one case.
 
 ### Approval gates
 
@@ -226,6 +234,16 @@ Configuration is not a spreadsheet exchange. Each system has a guided setup page
 | Dry run | The real case, executed read-only against the real system, showing exactly what it would change. |
 
 A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure.
+
+### Setup can configure the vendor for you
+
+For the systems where it is possible, the setup page does more than tell you what to click; it does the work. There are two flavors.
+
+- Microsoft 365 and Google Workspace can be set up automatically. Choosing "Set up Microsoft 365 automatically" creates the Entra application registration in your tenant, adds and admin-consents the named Graph and Exchange permissions (including the optional ones you choose to grant), generates the client secret and the Exchange certificate, and writes the finished credential into the vault. "Set up Google Workspace automatically" creates the Google Cloud service account, grants it domain-wide delegation for the required scopes, and vaults the key. Each runs as a live, step-by-step tracker you can watch and can cancel mid-run. You sign in once with your own administrator account (Microsoft 365 uses a device-code prompt), the automation acts as you for that one setup, and it holds nothing afterward.
+
+- Several SaaS systems can be set up through the vendor's own console, driven by the browser. Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast each offer an "Automatic (browser)" option: you provide an administrator sign-in for that console once, and the runner creates the API application or token the connector needs and vaults it. The same last-resort browser mechanism described under Path C applies here: the password is passed on standard input only, any second-factor code is minted from the vault at the moment it is asked for, and push, SMS, and phone-call factors cannot be automated. Where a vendor account signs in only through SSO, the automatic path cannot complete, and you paste the credential by hand instead.
+
+The manual path is never removed. Every system can still be set up by creating the credential yourself and pasting its reference, and the companion setup guide gives the exact screens for doing so. The application records which credential and vault folder performed each automatic setup, so if a permission ever needs changing you know exactly what set it up.
 
 ### What each system needs, in brief
 
@@ -302,13 +320,17 @@ Sign-in. Coretelligent staff sign in with Microsoft Entra SSO (OpenID Connect, a
 
 Sessions are not bearer tokens and are not JWTs. A session is an opaque, high-entropy random value in an HTTP-only, same-site, secure cookie. The server stores only its SHA-256 hash, so a database disclosure yields nothing replayable. Sessions expire after 12 hours and can be revoked centrally and immediately.
 
-Authorization is permission-based, across six roles. Permissions, not role names, are checked at every server-side entry point. The separations that matter:
+Authorization is permission-based, across eight roles. Permissions, not role names, are checked at every server-side entry point. The separations that matter:
 
 - An engineer can plan and run cases, but cannot approve destructive steps.
 
 - An auditor is strictly read-only.
 
 - An importer can bring cases in but not execute them.
+
+- A client-onboarding role can add clients and configure them, wiring credentials and running setup, with read-only visibility of cases, but cannot run a case.
+
+- A client-offboarding role can do all of that and can additionally archive a client. Archiving, and restoring, is its own distinct capability: it is held only by the client-offboarding role and the two administrator roles, so an operations manager who runs cases every day still cannot archive a client.
 
 - Granting or removing the highest role is restricted to that role, so an administrator cannot promote themselves out of a control.
 
@@ -358,3 +380,10 @@ The IAM Engine executes your onboarding and offboarding runbook, across your who
 No credential is stored in the platform. The vault holds them; the application holds references; a runner receives exactly one credential, for exactly one job, at the moment of execution, and holds it only in memory. Anything irreversible is withheld from automation until a named, senior human approves it, and the evidence of what someone had is captured before it is taken away.
 
 Questions, and requests for the detailed setup guide for any individual system, should go to your Coretelligent engagement contact.
+
+## 9. Version history
+
+| Version | Date | What changed |
+| --- | --- | --- |
+| 2.0 | 22 July 2026 | Automated setup: "Set up Microsoft 365 automatically" and "Set up Google Workspace automatically" now provision the application registration and the service account end to end, and six SaaS systems (Adobe, Zoom, Egnyte, KnowBe4, Spanning, Mimecast) gained an automatic browser-driven credential setup alongside the unchanged manual path. Offboarding now hides the leaver from the address book by default, and converts the mailbox to shared by default when a licence is removed, each with a per-case opt-out. Added the client-onboarding and client-offboarding roles, with archiving a client as its own restricted capability. Passwords can now be set to a specific value as well as generated. |
+| 1.0 | 14 July 2026 | Initial version, prepared for client review. |

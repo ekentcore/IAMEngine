@@ -4,6 +4,8 @@ IAM Engine Internal reference: architecture, mechanics, and security implementat
 
 INTERNAL: CORETELLIGENT STAFF ONLY. NOT FOR CLIENT DISTRIBUTION.
 
+Version 2.0 · 22 July 2026. Tracks the client documents to their 2.0 edition: automatic system setup, the offboarding address-book and mailbox defaults, and the client-lifecycle roles. Version history at the end.
+
 ### About this document
 
 This is the internal counterpart to the two client-facing IAM Engine documents (the client overview and the Setup and Configuration Guide). It covers the same architecture and mechanics in the same language we use with clients, plus the implementation and security detail we do not put in front of them: current deployment status, and the security roadmap items that are planned but not yet shipped.
@@ -119,7 +121,7 @@ A small number of systems have no API for the thing that needs doing. For those,
 
 - A browser step that fails is recorded as a warning with a screenshot, and does not fail the case.
 
-Today exactly one browser flow ships: forcing a Spanning directory sync, because Spanning's API has no endpoint for it. We treat browser automation as a liability to be retired, not a strategy. Every one is replaced with an API call the moment the vendor offers one.
+At execution time this remains a single browser flow: forcing a Spanning directory sync, because Spanning's API has no endpoint for it. Browser automation is now also used at setup time, to provision vendor API credentials — Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast — by driving each vendor's admin console once; the same stdin-only password handling and vault-minted second factor apply there. We treat browser automation as a liability to be retired, not a strategy. Every one is replaced with an API call the moment the vendor offers one.
 
 ### Path D: manual steps, as first-class checklist items
 
@@ -149,6 +151,8 @@ A typical onboarding plan for an organization with on-premises Active Directory 
 
 The initial password is generated at dispatch. It is shown to an operator exactly once, and is wiped at the moment it is revealed: two people opening the case cannot both see it, and the second is told plainly that it has already been revealed and cannot be recalled. The value is never written to the run log, the audit record, or the ServiceNow work note. The audit records that it was revealed, and by whom, never what it was.
 
+Where a specific password is required rather than a generated one, an operator can enter it directly on the account's line. It is validated against the account's complexity policy before it is set, and, because whoever entered it already holds it, it is set as-is with no one-time reveal.
+
 Where your tenant supports it, we prefer to issue no password at all: a Temporary Access Pass lets the new starter register their own credentials and MFA directly, and nothing reusable ever transits a person.
 
 ## 5. The offboarding path
@@ -160,12 +164,16 @@ Offboarding is designed around one principle: contain first, destroy later, and 
 | 1 | Capture evidence | Before anything is removed, the user's current state is captured and attached to the case: every group membership, every application assignment. If the termination is disputed, or the person is reinstated, the record of what they had is on the case. |
 | 2 | Active Directory | Password is reset (and captured for the manager, where your runbook says so). All group memberships are removed. The user is hidden from the address book, the manager link is cleared, the account is disabled, and, unless your profile carries the do-not-move guardrail, the object is moved to the Disabled Users OU. |
 | 3 | Entra ID | The account is confirmed disabled, cloud group memberships and enterprise-application assignments are removed, registered MFA factors are stripped, and active sessions are revoked. |
-| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. Delegated access is granted to the named recipient. |
+| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When the runbook removes the Microsoft 365 licence, converting to shared is the default, so the seat is reclaimed and the mail is kept; a mailbox too large to convert surfaces an operator decision (keep licence and mail, or remove and lose the mail) rather than being skipped silently. Delegated access is granted to the named recipient. |
 | 5 | Endpoint | Where SentinelOne is in scope, the departing user's registered devices are identified and disconnected from the network. Isolation is reversible; shutdown is not, and is gated. |
 | 6 | SaaS estate | Access removed and seats reclaimed across the estate: Mimecast, Adobe, Zoom, Spanning, Duo, VPN, Jira, and the rest. License downticks happen after the mailbox conversion, not before. |
 | 7 | Data custody | Drive and file ownership transfer, per your runbook. |
 | 8 | Deferred archive | Where a grace period applies (typically 30 to 90 days), the archive or delete step is scheduled rather than executed. An immediate-termination flag collapses the grace period to now. |
 | 9 | Equipment return | Checklist item. |
+
+### Hidden from the address book by default
+
+Every offboarding hides the departing person from the global address list (Exchange and Microsoft 365) and from directory and contact sharing (Google), rather than only where a client had a specific attribute configured. Precedence is per-case over per-client over the default: a client can opt out in its offboard configuration (hideFromGal: false on the exchange or google lane), and a single case can keep the person listed with the "Keep in global address list" checkbox.
 
 ### Approval gates
 
@@ -217,6 +225,10 @@ The runner has no vault credentials of its own. It cannot talk to Delinea, and i
 
 The runner holds the credential in process memory for the lifetime of the job and no longer. It is never written to disk, never written into a profile, never cached, and never re-used for a subsequent job.
 
+#### Provisioning credentials into the vault
+
+The platform can create a credential in the client's systems and vault it, rather than requiring an operator to create it and paste a reference: Microsoft 365 and Google Workspace through the vendor API from a device-code sign-in, and Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast by driving the vendor console in a headless browser. The operator's sign-in authorizes that one setup and is not retained; the created credential is written straight to the vault; and the platform records which credential and folder performed each setup — as a reference — so provenance is auditable without the record ever holding a value.
+
 ### Secrets never reach a log, a ticket, or an error message
 
 Error text is the classic leak path: a stack trace containing a connection string, pasted into a ticket. Before any failure text leaves a runner, it passes through a scrubber that removes:
@@ -248,13 +260,17 @@ Sign-in. Coretelligent staff sign in with Microsoft Entra SSO (OpenID Connect, a
 
 Sessions are not bearer tokens and are not JWTs. A session is an opaque, high-entropy random value in an HTTP-only, same-site, secure cookie. The server stores only its SHA-256 hash, so a database disclosure yields nothing replayable. Sessions expire after 12 hours and can be revoked centrally and immediately.
 
-Authorization is permission-based, across six roles. Permissions, not role names, are checked at every server-side entry point. The separations that matter:
+Authorization is permission-based, across eight roles. Permissions, not role names, are checked at every server-side entry point. The separations that matter:
 
 - An engineer can plan and run cases, but cannot approve destructive steps.
 
 - An auditor is strictly read-only.
 
 - An importer can bring cases in but not execute them.
+
+- The client-onboarding and client-offboarding roles can add and configure clients, wiring credentials and running setup, with read-only visibility of cases, but cannot run a case.
+
+- Archiving a client is its own permission, held only by the client-offboarding role and the two administrator roles; an operations manager cannot archive a client.
 
 - Granting or removing the highest role is restricted to that role, so an administrator cannot promote themselves out of a control.
 
@@ -317,3 +333,10 @@ The IAM Engine executes your onboarding and offboarding runbook, across your who
 No credential is stored in the platform. The vault holds them; the application holds references; a runner receives exactly one credential, for exactly one job, at the moment of execution, and holds it only in memory. Anything irreversible is withheld from automation until a named, senior human approves it, and the evidence of what someone had is captured before it is taken away.
 
 For the client-facing narrative and the per-system setup guide, see the companion Coretelligent IAM Engine documents. Questions about anything in this reference should go to the IAM Engine engineering lead.
+
+## 8. Version history
+
+| Version | Date | What changed |
+| --- | --- | --- |
+| 2.0 | 22 July 2026 | Tracks the client documents to 2.0. Added automatic credential provisioning (Microsoft 365 and Google via vendor API from a device-code sign-in; Adobe, Zoom, Egnyte, KnowBe4, Spanning, Mimecast via browser), and its handling in the security section. Documented the offboarding address-book-hide and convert-to-shared defaults with their opt-outs, the specific-password option, and the two client-lifecycle roles with archiving as its own permission. |
+| 1.0 | 14 July 2026 | Initial version. |

@@ -4,6 +4,11 @@
  *   npx tsx scripts/publish-seed-doc.ts --slug setup-and-configuration --publish \
  *     --note "Add the Graph permissions asked for in PR #103."
  *
+ * A minor bump (1.0 → 1.1) is the default. Add --major (1.0 → 2.0) for a substantial edition — e.g.
+ * publishing the 2.0 documentation refresh over the seeded v1.0:
+ *   npx tsx scripts/publish-seed-doc.ts --slug client-overview --publish --major \
+ *     --note "2.0: automatic setup, offboarding defaults, client-lifecycle roles."
+ *
  * Why this is needed: prisma/seed-docs.ts only creates a version when a document has NONE, so that
  * re-seeding can never clobber an AI update or a hand edit. Correct — but it means editing a file in
  * prisma/seed-docs/ changes NOTHING that a reader sees. /docs serves the DB. That is how the M365
@@ -21,6 +26,7 @@ import { resolve } from "node:path";
 import { db } from "@/lib/db";
 import { latestPublished, pendingDraft, createDraft, publishDraft } from "@/lib/docs/store";
 import { diffLines } from "@/lib/docs/diff";
+import { parseVersion } from "@/lib/docs/versioning";
 
 // What this script stamps on a version it publishes — and, on the way back in, one of the two labels
 // that mean "the seed file is still authoritative for this document".
@@ -32,6 +38,9 @@ const slug = flag("--slug");
 const note = flag("--note");
 const publish = argv.includes("--publish");
 const force = argv.includes("--force");
+// A minor bump (1.0 → 1.1) is the default. --major (1.4 → 2.0) is for a substantial edition, e.g. the
+// 2.0 documentation refresh, matching the "reviewer promotes to major" path in lib/docs/versioning.ts.
+const bump: "minor" | "major" = argv.includes("--major") ? "major" : "minor";
 
 // What a publish would change — through the SAME diff /docs renders its redline with. A second
 // implementation here would be a preview that disagrees with the review screen about the very edit
@@ -86,8 +95,10 @@ function lineDiff(before: string, after: string): { added: string[]; removed: st
     process.exit(1);
   }
 
+  const cur = parseVersion(current.version);
+  const nextVer = bump === "major" ? `${cur.major + 1}.0` : `${cur.major}.${cur.minor + 1}`;
   if (!publish) {
-    console.log(`\nNothing published. Re-run with --publish --note "<what changed>" to publish as v${Number(current.version.split(".")[0])}.${Number(current.version.split(".")[1]) + 1}.`);
+    console.log(`\nNothing published. Re-run with --publish --note "<what changed>" to publish as v${nextVer}${bump === "minor" ? " (or add --major for a new major version)" : ""}.`);
     await db.$disconnect();
     return;
   }
@@ -103,7 +114,7 @@ function lineDiff(before: string, after: string): { added: string[]; removed: st
     generatedByAi: false, // a file the repo already reviewed, not a model's draft
   });
   if (d.error || !d.draft) throw new Error(d.error ?? "could not create the draft");
-  const p = await publishDraft(d.draft.id, "minor", SYNC_LABEL, null);
+  const p = await publishDraft(d.draft.id, bump, SYNC_LABEL, null);
   if (p.error || !p.version) throw new Error(p.error ?? "could not publish the draft");
   console.log(`\npublished "${slug}" v${p.version.version}.`);
   await db.$disconnect();

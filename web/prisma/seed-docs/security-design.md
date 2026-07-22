@@ -2,6 +2,8 @@
 
 IAM Engine Security Design: how the platform is secured, and why each decision was made
 
+Version 2.0 · 22 July 2026. This edition adds the security reasoning for automatic credential provisioning (section 3.6) and the client-lifecycle roles (section 7.3). The version history is at the end.
+
 This document is written for the person whose job is to say no. It does not summarize our security controls; it explains the reasoning behind each one: what we were defending against, what we considered, what we chose, and what the choice costs. Where we have not finished something, it is in section 12, stated plainly.
 
 The claim this document defends. An automation platform that can create and delete identities across your estate is, by construction, a high-value target. We have therefore built it so that compromising the platform does not compromise your estate. The system that executes the work holds no standing credentials. The system that holds the references cannot execute. The vault that holds the values is reachable by neither in a standing way. And nothing irreversible happens without a named human.
@@ -111,6 +113,14 @@ The scrubbed text is what is persisted, what is shown in the UI, and what is pos
 ### 3.5 The AI boundary
 
 The platform uses a language model to help parse written runbooks into structured configuration. That is a text-egress path, and it is treated as one. A separate, independent redaction layer sits in front of it and strips vault URLs, passwords, national identifiers, phone numbers, and email local parts before any text is sent. Secrets do not cross that boundary, and the boundary is a single choke point rather than a convention applied at each call site.
+
+### 3.6 Provisioning a credential is not the same as holding one
+
+The platform can now create a credential in your systems — an Entra application registration, a Google service account, a SaaS API token — and place it in the vault for you, rather than asking you to create it and paste a reference. This is a convenience, and we built it to the same rule as everything else: the platform ends the process holding a reference, not a value.
+
+An operator signs in once, with their own administrator account, to authorize the one setup in front of them: a device-code prompt for Microsoft 365 and Google, a console sign-in driven through the browser for the SaaS systems. That sign-in authorizes that setup and is not retained afterward. Where the setup drives a vendor console in the browser, the password is supplied to the browser process on standard input only — never a log, a command line, or a temporary file — a second factor is minted from the vault at the moment the console prompts for it, and a factor that cannot be automated (push, SMS, phone call) stops the flow cleanly rather than being guessed.
+
+The credential the setup creates is written straight to the vault. The application records which credential and vault folder performed each setup, so the provenance of every connector is auditable; but that record is a reference too. It names the secret. It does not contain it.
 
 ## 4. Why certificates for Microsoft 365
 
@@ -268,13 +278,17 @@ The decision. A session is an opaque, high-entropy random value in an HTTP-only,
 
 ### 7.3 Roles, permissions, and separation of duties
 
-Authorization is checked against permissions, not role names, at every server-side entry point. Six roles map onto twelve permissions. The separations that matter:
+Authorization is checked against permissions, not role names, at every server-side entry point. Eight roles map onto the permission set. The separations that matter:
 
 - An engineer can plan and run cases but cannot approve destructive steps. The person doing the work is not the person authorizing the irreversible part of it.
 
 - An auditor is strictly read-only.
 
 - An importer can bring cases in but not execute them.
+
+- The client-onboarding and client-offboarding roles can add and configure clients — wiring credentials, running setup — but cannot run a case. Provisioning a client's connectors does not, by itself, confer the ability to execute against it.
+
+- Archiving a client is its own permission, held only by the client-offboarding role and the two administrator roles. An operations manager, who can approve destructive steps inside a case, still cannot archive a client; the two powers are separated deliberately rather than bundled under "senior enough."
 
 - Granting or removing the highest role is restricted to that role. An administrator cannot promote themselves out of a control, and cannot demote a peer in order to reset their password and inherit their access.
 
@@ -463,3 +477,10 @@ Everything in this list you can do unilaterally, at any moment, without our invo
 The engine holds a great deal of privilege, and the correct response to that is not reassurance, it is architecture that limits what the privilege is worth to anyone who takes it. The credential the platform does not store cannot be stolen from it. The vault the agent cannot reach cannot be reached through the agent. The permission the app registration cannot grant itself cannot be escalated into. And the step that cannot be dispatched without an approval cannot be executed by a bug.
 
 Questions, and any control in this document you would like evidenced rather than asserted, to your Coretelligent engagement contact. We would rather be audited than believed.
+
+## 15. Version history
+
+| Version | Date | What changed |
+| --- | --- | --- |
+| 2.0 | 22 July 2026 | Added the security reasoning for automatic credential provisioning (section 3.6): the platform can now create a credential in your systems and vault it, and does so holding a reference and never a value, with the browser-setup safeguards stated. Documented the two client-lifecycle roles and archiving as its own separated permission (section 7.3). No control described in the previous edition was weakened; the roadmap in section 12 is unchanged. |
+| 1.0 | 14 July 2026 | Initial version, for client security review. |
