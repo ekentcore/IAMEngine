@@ -38,6 +38,8 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
   // Self-contained operator utilities — no data access, no role gate (everything runs in the browser).
   const tools: Item[] = [
     ["/tools/google-key", "Google key converter"],
+    // Fleet sweep + credential fixes across every M365 client — same capability as wiring one.
+    ...(flags.showFleetAudit ? ([["/tools/fleet-m365", "Fleet setup — M365"]] as const) : []),
   ];
   const admin: Item[] = [
     ...(flags.showAudit ? ([["/audit", "Audit"]] as const) : []),

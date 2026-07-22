@@ -1036,3 +1036,21 @@ model ModuleSetupRunClient {
 
   @@index([runId])
 }
+
+// A fleet-wide connection-test sweep for the M365-family systems (m365 / entra / exchange), started
+// from the Fleet Setup — M365 tool. The sweep record is the concurrency guard + "is a sweep running"
+// signal; the per-client/per-system state is NOT duplicated here — it lives in ConnectionTest (the
+// durable source of truth), which this run queues and the roll-up derives from. Mirrors
+// M365SetupRun's one-running-per-scope shape (partial unique index in the migration).
+model FleetM365TestRun {
+  id         String   @id @default(cuid())
+  scope      String   @default("fleet-m365") // future-proofed for a scoped variant
+  status     String   @default("running") // running | done | cancelled
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  startedBy  String? // actor label snapshot ("user:jane@core.tech")
+  total      Int      @default(0) // client×system connection tests queued
+  clients    Int      @default(0) // distinct clients swept
+
+  @@index([scope, startedAt]) // "the latest sweep of this scope"
+}
