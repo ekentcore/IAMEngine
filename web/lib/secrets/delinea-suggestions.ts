@@ -16,7 +16,9 @@ export const SUGGESTION_ALIASES: Record<string, string[]> = {
   slack: ["slack", "scim"],
   "slack-console": ["slack"],
   spanning: ["spanning", "backup"],
-  "spanning-portal": ["spanning"],
+  // The Spanning console login is Microsoft-365 SSO, so it is usually the O365 global admin — surface
+  // those logins too so the portal secret can be matched from an M365/global-admin candidate.
+  "spanning-portal": ["spanning", "o365", "office 365", "global admin", "global administrator", "m365", "365", "azure"],
   proofpoint: ["proofpoint"],
   "m365-admin": ["m365", "azure", "entra", "graph", "global admin", "365"],
   "m365-global-admin": ["m365", "global admin", "365", "azure", "entra", "global administrator"],

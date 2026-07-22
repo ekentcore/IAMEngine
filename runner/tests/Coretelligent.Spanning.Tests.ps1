@@ -457,3 +457,59 @@ Describe 'Connect-CtgSpanning BaseUrl scheme normalization' {
         InModuleScope Coretelligent.Spanning { $script:SpanningApiUrl | Should -Be 'https://o365-api-eu.spanningbackup.com/external' }
     }
 }
+
+# Browser auto-setup: sign into the console (M365 SSO) and harvest the API token via the console's own
+# API. The harvested token/username ride the browser flow's `session` field (the only rich channel the
+# sidecar surfaces); the module repackages them into the Credentials note-property the app vaults+scrubs.
+Describe 'Invoke-CtgSpanningConsoleSetup' {
+    BeforeEach {
+        $script:captured = $null
+        $script:portal = [pscustomobject]@{ Fields = @{ Username = 'admin@x.com'; Password = 'pw' } }
+    }
+
+    It 'harvests the token from the flow session and returns it on Credentials.apiToken' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject, $TimeoutSeconds)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = $null; error = $null; evidence = $null; retryAfterMinutes = $null; session = [pscustomobject]@{ token = 'f9477202-4cca-4f5b'; username = 'coretelligent@willowridge.com' } }
+        }
+        $cfg = [pscustomobject]@{ signInOnly = $false; apiUrl = 'https://o365-api-us.spanningbackup.com'; service = 'o365'; region = 'us' }
+        $r = Invoke-CtgSpanningConsoleSetup -Config $cfg -Secret $script:portal -SecretName 'spanning-portal'
+        $r.Status | Should -Be 'ok'
+        $r.Credentials.apiToken | Should -Be 'f9477202-4cca-4f5b'
+        $r.Credentials.username | Should -Be 'coretelligent@willowridge.com'
+        # The regional-host inputs are forwarded so the flow can build https://<service>-<region>...
+        $script:captured.params.service | Should -Be 'o365'
+        $script:captured.params.region  | Should -Be 'us'
+        $script:captured.params.apiUrl  | Should -Be 'https://o365-api-us.spanningbackup.com'
+        $script:captured.params.signInOnly | Should -BeFalse
+    }
+
+    It 'signInOnly proves the login and harvests nothing' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            param($Flow, $InputObject, $TimeoutSeconds)
+            $script:captured = $InputObject
+            [pscustomobject]@{ ok = $true; message = 'signed in'; error = $null; session = $null }
+        }
+        $r = Invoke-CtgSpanningConsoleSetup -Config ([pscustomobject]@{ signInOnly = $true }) -Secret $script:portal -SecretName 'spanning-portal'
+        $r.Status | Should -Be 'ok'
+        $r.PSObject.Properties['Credentials'] | Should -BeNullOrEmpty
+        $script:captured.params.signInOnly | Should -BeTrue
+    }
+
+    It 'throws when signed in but no token was harvested (so the app never vaults nothing)' {
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith {
+            [pscustomobject]@{ ok = $true; message = $null; error = $null; session = $null }
+        }
+        { Invoke-CtgSpanningConsoleSetup -Config ([pscustomobject]@{ signInOnly = $false }) -Secret $script:portal -SecretName 'spanning-portal' } |
+            Should -Throw '*no API token was harvested*'
+    }
+
+    It 'throws (never launches the browser) when only the API credential is available' {
+        $apiOnly = [pscustomobject]@{ Fields = @{ ClientID = 'abc123'; ClientSecret = 'shh' } }
+        Mock Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -MockWith { [pscustomobject]@{ ok = $true } }
+        { Invoke-CtgSpanningConsoleSetup -Config ([pscustomobject]@{ signInOnly = $false }) -Secret $apiOnly -SecretName 'spanning' } |
+            Should -Throw '*spanning-portal*'
+        Should -Invoke Invoke-CtgBrowserFlow -ModuleName Coretelligent.Spanning -Times 0 -Exactly
+    }
+}

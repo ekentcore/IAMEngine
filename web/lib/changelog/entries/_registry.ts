@@ -188,6 +188,7 @@ export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-cen
 export { entry as spanningGuidedSetupDerived } from "./spanning-guided-setup-derived";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
 export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
+export { entry as spanningHeadlessTokenHarvest } from "./spanning-headless-token-harvest";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";

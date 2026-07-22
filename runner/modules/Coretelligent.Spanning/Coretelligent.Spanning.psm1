@@ -643,16 +643,17 @@ function Invoke-CtgSpanningConsoleSetup {
     <#
     .SYNOPSIS
         Browser auto-setup for the Spanning API credential: sign into the Spanning admin console (M365
-        SSO) and generate + HARVEST the Settings → API Token, returning it note-only for the app to
+        SSO) and HARVEST the API token via the console's OWN API, returning it note-only for the app to
         vault as the `spanning` secret. The setup analog of Invoke-CtgSpanningForceSync — SAME portal
         login (spanning-portal secret, M365 SSO), same OTP-at-the-prompt machinery — but it reads the
         API key instead of triggering a sync.
     .DESCRIPTION
-        Unlike force-sync (a convenience that soft-warns on failure), a SETUP that cannot harvest the
-        token THROWS, so the job fails and the app surfaces "did not complete" rather than silently
-        vaulting nothing. The harvested token rides a `Credentials` note-property the app scrubs after
-        vaulting; it is never logged here. LIVE-VALIDATION PENDING — the post-login Settings → API Token
-        selectors (flows/spanning-console-setup.mjs) are best-effort against an unreachable console.
+        HAR-derived (flows/spanning-console-setup.mjs): after the headless MS-SSO login, the flow calls
+        the console's same-origin API — GET /api/apiUser/token (reuses an existing key), or POST when
+        none exists (never regenerates) — so there is NO fragile Settings-UI clicking. Unlike force-sync
+        (a convenience that soft-warns on failure), a SETUP that cannot harvest the token THROWS, so the
+        job fails and the app surfaces "did not complete" rather than silently vaulting nothing. The
+        harvested token rides a `Credentials` note-property the app scrubs after vaulting; never logged.
     #>
     [CmdletBinding()]
     param(
@@ -667,6 +668,14 @@ function Invoke-CtgSpanningConsoleSetup {
 
     $signInOnly = [bool](Get-CtgProp $Config 'signInOnly')
     $params = @{ signInOnly = $signInOnly }
+    # The flow derives the regional console host (https://<service>-<region>.spanningbackup.com) from
+    # any of these, most explicit first — service+region, else the apiURL, else an explicit consoleUrl.
+    $service = Get-CtgProp $Config 'service'
+    $region  = Get-CtgProp $Config 'region'
+    $apiUrl  = Get-CtgProp $Config 'apiUrl'
+    if ($service) { $params['service'] = $service }
+    if ($region)  { $params['region']  = $region }
+    if ($apiUrl)  { $params['apiUrl']  = $apiUrl }
     $consoleUrl = Get-CtgProp $Config 'consoleUrl'
     if ($consoleUrl) { $params['consoleUrl'] = $consoleUrl }
     if ($OtpRequest) { $params['otp'] = $OtpRequest }
@@ -688,15 +697,22 @@ function Invoke-CtgSpanningConsoleSetup {
     if ($signInOnly) {
         return [pscustomobject]@{ System = 'spanning-console-setup'; Status = 'ok'; Actions = @('Spanning console sign-in test succeeded (no changes made)') }
     }
-    $token = $null
-    if ($res.Credentials) { $token = [string]$res.Credentials.apiToken }
+    # The flow harvests the token via the console's OWN API (GET/POST /api/apiUser/token) and returns it
+    # on the `session` field — the only rich channel Invoke-CtgBrowserFlow surfaces (Credentials would be
+    # stripped by the sidecar result normalizer). Repackage into the `Credentials` note-property the app
+    # vaults then scrubs; both `token` and the harvested `username` (the API's msUserPrincipalName) ride
+    # it, and neither is ever logged here.
+    $session  = Get-CtgProp $res 'session'
+    $token    = if ($session) { [string](Get-CtgProp $session 'token') } else { $null }
+    $username = if ($session) { [string](Get-CtgProp $session 'username') } else { $null }
     if (-not $token) { throw 'Spanning console setup: signed in but no API token was harvested from the console' }
-    # The token rides a Credentials note-property (never logged); the app vaults it then scrubs the result.
+    $creds = [pscustomobject]@{ apiToken = $token }
+    if ($username) { $creds | Add-Member -NotePropertyName username -NotePropertyValue $username }
     [pscustomobject]@{
         System      = 'spanning-console-setup'
         Status      = 'ok'
-        Actions     = @('created/read the Spanning API Token in the admin console and harvested it for vaulting')
-        Credentials = [pscustomobject]@{ apiToken = $token }
+        Actions     = @('read/created the Spanning API token via the admin-console API and harvested it for vaulting')
+        Credentials = $creds
     }
 }
 

@@ -15,6 +15,23 @@ export const SPANNING_CONSOLE_URL = "https://o365.spanningbackup.com/";
 type ClientRef = { id: string };
 type DispatchResult = { ok: true; jobId: string } | { ok: false; error: string };
 
+// Derive { service, region } from the Spanning apiURL so the runner flow can build the REGIONAL console
+// host it harvests the token from (https://<service>-<region>.spanningbackup.com). The apiURL shape is
+// https://<service>-api-<region>.spanningbackup.com (deriveSpanningValues), e.g. o365-api-us -> the
+// console host o365-us. Returns {} when the URL doesn't match (the flow then falls back to the apiURL
+// itself, then consoleUrl, then its o365/us default — all resolved flow-side).
+export function deriveSpanningConsoleTarget(apiUrl: string | undefined | null): { service?: string; region?: string } {
+  if (!apiUrl) return {};
+  try {
+    const host = new URL(/^https?:\/\//i.test(apiUrl) ? apiUrl : `https://${apiUrl}`).hostname;
+    const m = host.match(/^([a-z0-9]+)-api-([a-z0-9]+)\.spanningbackup\.com$/i);
+    if (!m) return {};
+    return { service: m[1].toLowerCase(), region: m[2].toLowerCase() };
+  } catch {
+    return {};
+  }
+}
+
 // Dispatch the Spanning console browser job. The runner signs into the admin console, opens
 // Settings → API Token, generates the key if absent, and HARVESTS it (returned note-only in the job
 // result; the web result handler vaults it as the `spanning` secret and scrubs it). `signInOnly:true`
@@ -60,8 +77,9 @@ export async function dispatchSpanningConsoleJob(input: {
       // spanning-portal secret OR the per-run override above.
       secretNames: [SPANNING_CONSOLE_SECRET_NAME],
       // The derived API values ride the config so the runner can echo them back for vaulting alongside
-      // the harvested token (the values themselves are non-secret — email/URL/account id).
-      config: { consoleUrl, signInOnly, loginEmail: input.loginEmail ?? "", apiUrl: input.apiUrl ?? "", accountId: input.accountId ?? "" },
+      // the harvested token (the values themselves are non-secret — email/URL/account id). service +
+      // region are derived from the apiURL so the flow builds the regional console host it harvests from.
+      config: { consoleUrl, signInOnly, loginEmail: input.loginEmail ?? "", apiUrl: input.apiUrl ?? "", accountId: input.accountId ?? "", ...deriveSpanningConsoleTarget(input.apiUrl) },
       dependsOn: [],
       requiresApproval: false,
       captureEvidence: false,
