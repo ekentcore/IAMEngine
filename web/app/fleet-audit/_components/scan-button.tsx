@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 
 type Run = { status: string; scanned: number; total: number; error: string | null; finishedAt: string | null } | null;
 
-export function ScanButton({ kind, initial }: { kind: "permissions" | "leaked_seats"; initial: Run }) {
+export function ScanButton({ kind, initial }: { kind: "permissions" | "leaked_seats" | "escalation_holders"; initial: Run }) {
   const router = useRouter();
   const [run, setRun] = useState<Run>(initial);
   const [busy, setBusy] = useState(false);

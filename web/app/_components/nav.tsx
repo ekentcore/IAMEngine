@@ -31,15 +31,16 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ["/feature-requests", "Feature requests"],
     ["/modules", "Modules"],
     ["/health", "Health"],
-    // Fleet sweeps over every client's M365 credential — same capability as wiring one.
-    ...(flags.showFleetAudit ? ([["/fleet-audit", "Fleet audits"]] as const) : []),
     ["/help", "Help"],
   ];
-  // Self-contained operator utilities — no data access, no role gate (everything runs in the browser).
+  // Self-contained operator utilities — no data access, no role gate (everything runs in the browser),
+  // plus the fleet-wide M365 tools (gated: reading/fixing every client's credential is the same
+  // capability as wiring one).
   const tools: Item[] = [
     ["/tools/google-key", "Google key converter"],
-    // Fleet sweep + credential fixes across every M365 client — same capability as wiring one.
     ...(flags.showFleetAudit ? ([["/tools/fleet-m365", "Fleet setup — M365"]] as const) : []),
+    // Read-only fleet sweeps: who's missing permissions, who holds an escalation role, leaked seats.
+    ...(flags.showFleetAudit ? ([["/fleet-audit", "Fleet audits"]] as const) : []),
   ];
   const admin: Item[] = [
     ...(flags.showAudit ? ([["/audit", "Audit"]] as const) : []),

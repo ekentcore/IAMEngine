@@ -4,9 +4,9 @@
 // it cannot happen inside a request: the route starts it, returns immediately, and /fleet-audit renders the
 // last FINISHED run. The work runs in-process, detached from the request.
 import type { PrismaClient } from "@prisma/client";
-import { scanPermissions, scanLeakedSeats, auditTargets, type PermissionRow, type LeakRow } from "./m365-audit";
+import { scanPermissions, scanLeakedSeats, scanEscalationHolders, auditTargets, type PermissionRow, type LeakRow, type EscalationHolderRow } from "./m365-audit";
 
-export const AUDIT_KINDS = ["permissions", "leaked_seats"] as const;
+export const AUDIT_KINDS = ["permissions", "leaked_seats", "escalation_holders"] as const;
 export type AuditKind = (typeof AUDIT_KINDS)[number];
 
 export function isAuditKind(v: unknown): v is AuditKind {
@@ -79,8 +79,10 @@ export async function startRun(
       const total = (await auditTargets(db)).length;
       await db.fleetAudit.update({ where: { id: run.id }, data: { total } }).catch(() => {});
       const onProgress = async (done: number) => { await db.fleetAudit.update({ where: { id: run.id }, data: { scanned: done } }).catch(() => {}); };
-      const findings: PermissionRow[] | LeakRow[] =
-        kind === "permissions" ? await scanPermissions(db, { onProgress }) : await scanLeakedSeats(db, { onProgress });
+      const findings: PermissionRow[] | LeakRow[] | EscalationHolderRow[] =
+        kind === "permissions" ? await scanPermissions(db, { onProgress })
+        : kind === "escalation_holders" ? await scanEscalationHolders(db, { onProgress })
+        : await scanLeakedSeats(db, { onProgress });
       await db.fleetAudit.update({
         where: { id: run.id },
         data: { status: "done", finishedAt: new Date(), findings: findings as unknown as object, scanned: total },

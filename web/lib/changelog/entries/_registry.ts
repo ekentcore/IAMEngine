@@ -213,5 +213,7 @@ export { entry as fleetM365SelfGrant } from "./fleet-m365-self-grant";
 export { entry as conntestNotNeededRows } from "./conntest-not-needed-rows";
 export { entry as m365ProxyaddressConflictFeedback } from "./m365-proxyaddress-conflict-feedback";
 export { entry as replanRederiveNeverrunMode } from "./replan-rederive-neverrun-mode";
+
+export { entry as fleetAuditEscalationHolders } from "./fleet-audit-escalation-holders";
 export { entry as adobeOnboardEmptyProfiles } from "./adobe-onboard-empty-profiles";
 export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";
