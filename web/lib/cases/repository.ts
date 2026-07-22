@@ -126,6 +126,7 @@ export function makeCaseRepository(db: PrismaClient) {
     async clientForPlanning(slug: string): Promise<
       | {
           id: string; name: string; slug: string; primaryDomain: string;
+          backbone: string | null;
           emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
           engineOptOut: boolean;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
@@ -140,6 +141,7 @@ export function makeCaseRepository(db: PrismaClient) {
         where: { slug },
         select: {
           id: true, name: true, slug: true, primaryDomain: true,
+          backbone: true,
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true, engineOptOut: true,
           identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
           adObjects: true, cloudGroups: true,
