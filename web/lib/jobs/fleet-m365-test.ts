@@ -18,6 +18,12 @@ export const M365_FAMILY = ["m365", "entra", "exchange"] as const;
 // The scope string for the sweep's one-running guard (see the partial unique index).
 export const FLEET_M365_SCOPE = "fleet-m365";
 
+// A running sweep older than this is treated as finished: the tests it queued are either done or
+// stuck pending (no runner claimed them / an on-prem client with no agent), and either way the run
+// must not freeze the page's "Testing…" button forever. Both the roll-up (auto-settle) and a new
+// "Retest all" (supersede) honor it, so a stuck run always self-heals.
+export const FLEET_M365_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
+
 // The app credential every M365-family system authenticates with. Its absence is "no creds".
 const M365_ADMIN_SECRET = "m365-admin";
 
@@ -212,7 +218,14 @@ export async function startFleetM365Test(
   args: StartFleetArgs
 ): Promise<StartFleetResult> {
   const live = await db.fleetM365TestRun.findFirst({ where: { scope: FLEET_M365_SCOPE, status: "running" }, orderBy: { startedAt: "desc" } });
-  if (live) return { started: false, reason: "a fleet M365 test is already in progress", id: live.id };
+  if (live) {
+    // A genuinely in-progress sweep blocks a duplicate. A STALE one (its tests never settled) is
+    // finished off so "Retest all" can always start a fresh sweep instead of wedging on a dead run.
+    if (Date.now() - live.startedAt.getTime() <= FLEET_M365_STALE_AFTER_MS) {
+      return { started: false, reason: "a fleet M365 test is already in progress", id: live.id };
+    }
+    await db.fleetM365TestRun.updateMany({ where: { id: live.id, status: "running" }, data: { status: "done", finishedAt: new Date() } });
+  }
 
   const targets = await loadTargets(db, args.scope);
   let queued = 0;
@@ -332,7 +345,10 @@ export async function rollupFleetM365Test(db: PrismaClient, scope: ClientScope):
     const unsettled = await db.connectionTest.count({
       where: { status: { in: ["pending", "running"] }, source: "sweep", systemKey: { in: [...M365_FAMILY] } },
     });
-    if (unsettled === 0) {
+    // Settle when the sweep's tests are all done — OR when the run has gone stale (tests stuck pending
+    // because no runner claimed them), so the page's "Testing…" button can never be frozen forever.
+    const stale = Date.now() - run.startedAt.getTime() > FLEET_M365_STALE_AFTER_MS;
+    if (unsettled === 0 || stale) {
       await db.fleetM365TestRun.updateMany({ where: { id: run.id, status: "running" }, data: { status: "done", finishedAt: new Date() } });
       run.status = "done";
       run.finishedAt = new Date();

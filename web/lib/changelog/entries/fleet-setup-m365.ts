@@ -14,5 +14,6 @@ export const entry: ChangelogEntry = {
     "The automated M365 setup modal no longer jumps straight to the success screen for an already-configured client — it now always opens on the form (with an 'already configured' banner and the last run one click away), so you can work through it and adjust permissions any time",
     "Results are stored, so leaving and returning to the page shows the last scan instantly instead of re-testing the whole fleet — the first visit tests everything, after that you retest on demand",
     "Each row has its own 'Retest' button beside the action, and a client that hasn't been tested yet shows a greyed-out 'Not tested yet' (its action button stays disabled until there's a result to act on)",
+    "A sweep can be stopped from the top toolbar, and a sweep whose tests never come back (no runner online) now self-clears instead of leaving the button stuck on 'Testing…' — the per-client Retest works regardless",
   ],
 };
