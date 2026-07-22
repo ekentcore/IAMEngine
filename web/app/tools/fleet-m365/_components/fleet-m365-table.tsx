@@ -59,6 +59,12 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
 
   const rows = rollup.rows;
 
+  // When a fix finishes, M365SetupButton calls router.refresh(), which re-runs the server page and
+  // hands us a fresh `initial`. Sync it in so the table reflects the corrected client without a manual
+  // reload. `initial` only changes identity on a server re-render (refresh / navigation), so this
+  // can't loop against our own polling setState.
+  useEffect(() => { setRollup(initial); }, [initial]);
+
   const load = useCallback(async (): Promise<FleetM365Rollup | null> => {
     try {
       const r = await fetch("/api/tools/fleet-m365", { cache: "no-store" });
