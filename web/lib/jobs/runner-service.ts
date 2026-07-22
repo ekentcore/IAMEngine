@@ -16,7 +16,7 @@ import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } 
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken, getOneTimePasswordCode } from "../secrets/delinea";
 import { checkFieldShape } from "../secrets/field-requirements";
 import { classifyDelineaError, credFailure, type CredFailure } from "./cred-failure";
-import { testableSystems, type RightsRow } from "./conn-test-logic";
+import { testableSystems, isNotNeededForTest, type RightsRow } from "./conn-test-logic";
 import { wiredOptionalSecrets } from "../secrets/auxiliary";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
@@ -1224,7 +1224,11 @@ export function makeRunnerService(db: PrismaClient) {
         if (target.mode !== "api" || (target.secretNames?.length ?? 0) === 0)
           throw new HttpError(422, `system '${systemKey}' has no connection to test (needs mode=api and at least one secret)`);
       }
-      const specs = testableSystems(client.systems, hasAd, systemKey);
+      // Manual-step systems (every required secret marked NOT_NEEDED) are excluded from dispatch: there
+      // is nothing to connect to, and dispatching one only fails the broker with "secret is marked not
+      // needed — nothing to test". listConnectionTests surfaces them as read-only "not needed" rows.
+      const externalIdByName = new Map(client.secrets.map((s) => [s.name, s.externalId] as const));
+      const specs = testableSystems(client.systems, hasAd, systemKey, externalIdByName);
       await db.connectionTest.deleteMany({ where: { clientId: client.id, ...(systemKey ? { systemKey } : {}) } });
       if (specs.length === 0) return { tests: [] };
       // Retesting ONE system, by hand, is the only place a deep (interactive, browser) probe may run.
@@ -1250,7 +1254,8 @@ export function makeRunnerService(db: PrismaClient) {
       let total = 0, onPrem = 0, withTests = 0;
       for (const client of clients) {
         const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
-        const specs = testableSystems(client.systems, hasAd);
+        const externalIdByName = new Map(client.secrets.map((s) => [s.name, s.externalId] as const));
+        const specs = testableSystems(client.systems, hasAd, undefined, externalIdByName);
         await db.connectionTest.deleteMany({ where: { clientId: client.id } });
         if (specs.length === 0) continue;
         // Same row shape as the per-client path (optional secrets attached), but NEVER deep: a fleet
@@ -1272,14 +1277,43 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async listConnectionTests(clientSlug: string) {
-      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+      const client = await db.client.findUnique({
+        where: { slug: clientSlug },
+        select: { id: true, systems: { select: { systemKey: true, mode: true, secretNames: true } }, secrets: { select: { name: true, externalId: true } } },
+      });
       if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
       const tests = await db.connectionTest.findMany({
         where: { clientId: client.id },
         orderBy: { systemKey: "asc" },
         select: { systemKey: true, status: true, detail: true, accessOk: true, accessDetail: true, fieldsOk: true, fieldsDetail: true, rights: true, credExpiresAt: true, onPrem: true, finishedAt: true },
       });
-      return { tests };
+      // Manual-step systems (every required secret marked NOT_NEEDED) are never dispatched, so they have
+      // no real test row — surface them as read-only "not_needed" rows so the operator sees them
+      // accounted for (N/A across the stages), not silently absent. A stale real row for a system that
+      // has SINCE been marked not-needed is superseded by the synthetic row so it can't linger as a fail.
+      const externalIdByName = new Map(client.secrets.map((s) => [s.name, s.externalId] as const));
+      const hasAd = client.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey));
+      const notNeededSystems = client.systems.filter(
+        (s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0 && isNotNeededForTest(s.secretNames, externalIdByName)
+      );
+      const notNeededKeys = new Set(notNeededSystems.map((s) => s.systemKey));
+      const notNeededRows = notNeededSystems.map((s) => ({
+        systemKey: s.systemKey,
+        status: "not_needed",
+        detail: null,
+        accessOk: null,
+        accessDetail: null,
+        fieldsOk: null,
+        fieldsDetail: null,
+        rights: null,
+        credExpiresAt: null,
+        onPrem: systemIsOnPrem(s.systemKey, hasAd),
+        finishedAt: null,
+      }));
+      const rows = [...tests.filter((t) => !notNeededKeys.has(t.systemKey)), ...notNeededRows].sort((a, b) =>
+        a.systemKey.localeCompare(b.systemKey)
+      );
+      return { tests: rows };
     },
 
     // Atomic claim, same scope rule as job claim: a central runner (no clientId) takes only cloud
