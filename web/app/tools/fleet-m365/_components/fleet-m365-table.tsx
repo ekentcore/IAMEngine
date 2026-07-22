@@ -175,12 +175,28 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
 
   const running = rollup.run?.status === "running";
 
+  // Stop a stuck/unwanted sweep: cancel the run (deletes its still-pending tests) so the top button
+  // frees immediately instead of waiting out the stale timeout.
+  async function stop() {
+    setStarting(true); setError(null);
+    try {
+      await fetch("/api/tools/fleet-m365", { method: "DELETE" });
+      await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setStarting(false); }
+  }
+
   return (
     <div style={{ marginTop: "0.6rem" }}>
       <div className="toolbar">
         <button className="primary" onClick={() => void start()} disabled={starting || running}>
           {starting ? "Starting…" : running ? "Testing…" : "Retest all"}
         </button>
+        {running && (
+          <button onClick={() => void stop()} disabled={starting} title="Stop the current sweep (frees the button; per-client Retest still works)">
+            Stop
+          </button>
+        )}
         <span className="note">
           {running
             ? `Testing ${rollup.run?.clients ?? 0} clients… results fill in below.`
@@ -303,7 +319,10 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                           className="btn-quiet"
                           style={{ marginLeft: 6 }}
                           onClick={() => void retestRow(row)}
-                          disabled={retesting !== null || row.status === "running"}
+                          // Enabled even when the row shows "testing" — a test stuck pending (no runner
+                          // yet) must still be re-kickable. Only blocked while THIS row's retest is in
+                          // flight.
+                          disabled={retesting === row.slug}
                           title="Re-run the connection test for this client"
                         >
                           {retesting === row.slug ? "Retesting…" : "Retest"}
