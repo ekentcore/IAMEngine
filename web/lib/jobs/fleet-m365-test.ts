@@ -157,7 +157,7 @@ export type FleetM365Target = {
   id: string;
   slug: string;
   name: string;
-  coreId: string;
+  coreId: string | null;
   primaryDomain: string | null;
   m365Systems: { systemKey: string; mode: string; secretNames: string[] | null; config: unknown }[];
   hasAdminSecret: boolean;
@@ -247,7 +247,7 @@ export async function startFleetM365Test(
 export type FleetM365Row = {
   slug: string;
   name: string;
-  coreId: string;
+  coreId: string | null;
   systems: string[]; // the M365-family systems this client has
   hasAdminSecret: boolean;
 } & ClassifyResult;
