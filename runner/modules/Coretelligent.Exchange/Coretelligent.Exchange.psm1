@@ -579,6 +579,72 @@ function Invoke-CtgExchangeSharedMailboxMirror {
     return $actions.ToArray()
 }
 
+function Invoke-CtgExchangeSharedMailboxMirrorBounded {
+    <#
+    .SYNOPSIS
+        Time-bounded, best-effort wrapper around Invoke-CtgExchangeSharedMailboxMirror. Runs the mirror
+        in a background runspace (its OWN app-only EXO connection) and ABANDONS it past a wall-clock
+        budget, so a single stalled EXO call can never wedge the onboard.
+    .DESCRIPTION
+        The mirror does one un-timed EXO read (Get-MailboxPermission/…) per shared mailbox. A dropped or
+        stalled app-only EXO session on any one of them blocks the whole onboard indefinitely — and every
+        system that dependsOn m365 (e.g. Adobe) stalls behind it — until the process stall-watchdog
+        restarts the runner. Because the mirror is BEST-EFFORT, we don't let it hold the onboard hostage:
+        it runs in a Start-ThreadJob and the caller thread waits at most $TimeBudgetSeconds, emitting the
+        $Heartbeat each poll so the run report keeps moving and the stall-watchdog stays fed. If the job
+        overruns the budget it is stopped/abandoned and a WARN is returned; the onboard then finishes and
+        the operator re-runs the m365 step to complete mirroring. If ThreadJob is unavailable, or anything
+        goes wrong arming the bounded run, we FALL BACK to the inline mirror (today's behavior) — never a
+        regression, and a hang there is still caught by the process stall-watchdog.
+
+        LIVE-VALIDATION PENDING: the child-runspace app-only EXO reconnect (cert-based) needs a live run
+        to confirm ExchangeOnlineManagement connects cleanly in a second runspace of the same process.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$MirrorUser,
+        [Parameter(Mandatory)][string]$NewUser,
+        [string]$AppId,
+        [string]$Organization,
+        [hashtable]$CertArgs = @{},
+        [int]$TimeBudgetSeconds = 300,
+        [int]$PollSeconds = 5,
+        [scriptblock]$Heartbeat
+    )
+    # No ThreadJob (or no connection args to reconnect with in the child) -> inline, exactly as before.
+    if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) -or -not $AppId -or -not $Organization) {
+        return Invoke-CtgExchangeSharedMailboxMirror -MirrorUser $MirrorUser -NewUser $NewUser
+    }
+    $modulePath = $PSCommandPath  # this .psm1 — the child re-imports it to get the mirror + connect
+    try {
+        $job = Start-ThreadJob -ScriptBlock {
+            param($modulePath, $mirror, $newUser, $appId, $org, $certArgs)
+            Import-Module ExchangeOnlineManagement -ErrorAction Stop
+            Import-Module $modulePath -Force -ErrorAction Stop
+            Connect-CtgExchange -AppId $appId -Organization $org @certArgs
+            Invoke-CtgExchangeSharedMailboxMirror -MirrorUser $mirror -NewUser $newUser
+        } -ArgumentList $modulePath, $MirrorUser, $NewUser, $AppId, $Organization, $CertArgs
+
+        $deadline = [datetime]::UtcNow.AddSeconds($TimeBudgetSeconds)
+        while ($job.State -eq 'Running' -and [datetime]::UtcNow -lt $deadline) {
+            if ($Heartbeat) { try { & $Heartbeat } catch { } }  # narration must never break the wait
+            if ($PollSeconds -gt 0) { Start-Sleep -Seconds $PollSeconds }
+        }
+        if ($job.State -eq 'Running') {
+            # Budget blown — a shared mailbox almost certainly stalled the EXO session. Abandon it; the
+            # onboard MUST NOT wait on a best-effort mirror. The orphaned runspace dies with the process.
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            return @("WARN shared-mailbox mirror from ${MirrorUser} exceeded ${TimeBudgetSeconds}s and was abandoned (best-effort) — a shared mailbox likely stalled the EXO session. The onboard completed; re-run the m365 step to finish shared-mailbox mirroring.")
+        }
+        $out = @(Receive-Job $job -ErrorAction SilentlyContinue)
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        return $out
+    } catch {
+        return @("WARN shared-mailbox mirror could not run bounded ($($_.Exception.Message)) — skipped (best-effort); re-run the m365 step to mirror shared mailboxes.")
+    }
+}
+
 function Invoke-CtgExchangeNamedGroups {
     # Add the new user to EXPLICITLY-REQUESTED groups BY NAME over Exchange Online — the groups the
     # Graph/m365 lane couldn't write (DLs/mail-enabled) or couldn't resolve (a 365 group whose alias
@@ -1304,4 +1370,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
