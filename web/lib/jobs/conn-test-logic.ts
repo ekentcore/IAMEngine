@@ -1,8 +1,8 @@
 // Pure helpers for the connection-test lane (no I/O), mirroring runner-logic.ts: the request
 // scoping and result normalization live here so they stay unit-testable and the whole-client /
 // single-system / fleet-sweep paths can't drift apart.
-import { systemIsOnPrem } from "../cases/case-secrets";
-import { OPTIONAL_SECRETS } from "../secrets/optional-secrets";
+import { NOT_NEEDED, systemIsOnPrem } from "../cases/case-secrets";
+import { OPTIONAL_SECRETS, isOptionalSecret } from "../secrets/optional-secrets";
 
 export type TestableSystemInput = {
   systemKey: string;
@@ -33,14 +33,22 @@ export type ConnTestRowSpec = {
 //
 // The testable filter still keys off the RAW secret list (a system whose only secret is optional, like
 // AD/ad-dc, DOES connect to something and must still be tested — via ambient auth).
+//
+// `externalIdByName` (client secret NAME -> externalId) is optional: when supplied, systems whose every
+// REQUIRED secret is marked NOT_NEEDED are dropped — a manual step has nothing to connect to, so it
+// must NOT be dispatched (the runner would only fail the broker with "secret is marked not needed").
+// Such systems are surfaced separately as read-only "not needed" rows (see listConnectionTests). Older
+// callers that pass no map keep the previous behaviour.
 export function testableSystems(
   systems: TestableSystemInput[],
   hasAd: boolean,
-  onlySystemKey?: string
+  onlySystemKey?: string,
+  externalIdByName?: Map<string, string | null>
 ): ConnTestRowSpec[] {
   return systems
     .filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0)
     .filter((s) => !onlySystemKey || s.systemKey === onlySystemKey)
+    .filter((s) => !externalIdByName || !isNotNeededForTest(s.secretNames, externalIdByName))
     .map((s) => {
       const optionalForSys = OPTIONAL_SECRETS[s.systemKey] ?? [];
       return {
@@ -50,6 +58,19 @@ export function testableSystems(
         onPrem: systemIsOnPrem(s.systemKey, hasAd),
       };
     });
+}
+
+// Is this system a manual step for connection-testing — every one of its REQUIRED secrets marked with
+// the NOT_NEEDED sentinel? Mirrors readiness.ts: OPTIONAL secrets (e.g. ad-dc) are excluded FIRST, so
+// an AD system that authenticates as ambient SYSTEM — whose only secret is a not-needed ad-dc — is
+// never treated as not-needed (it still has a real Get-ADDomain probe to run). Keyed off the client's
+// externalId values so it agrees with the broker's effectiveExternalId ("not needed" → nothing to test).
+export function isNotNeededForTest(
+  secretNames: string[] | null,
+  externalIdByName: Map<string, string | null>
+): boolean {
+  const required = (secretNames ?? []).filter((n) => !isOptionalSecret(n));
+  return required.length > 0 && required.every((n) => (externalIdByName.get(n) ?? "").trim() === NOT_NEEDED);
 }
 
 // Per-operation rights results a runner probe may report: ok=true (verified), ok=false (the

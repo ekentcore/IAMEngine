@@ -11,7 +11,9 @@ import { summarizeRights, type RightsRow } from "@/lib/jobs/conn-test-logic";
 
 type Test = {
   systemKey: string;
-  status: "pending" | "running" | "ok" | "fail";
+  // "not_needed" is a synthetic, read-only row for a manual-step system (every required secret marked
+  // NOT_NEEDED): there's nothing to connect to, so it's never dispatched or tested — see runner-service.
+  status: "pending" | "running" | "ok" | "fail" | "not_needed";
   detail: string | null;
   accessOk: boolean | null;
   accessDetail: string | null;
@@ -75,14 +77,20 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<Test[] | null> => {
     try {
       const r = await fetch(`/api/clients/${slug}/conn-test`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
-      setTests(d.tests ?? []);
-    } catch (e) { setError((e as Error).message); }
+      if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return null; }
+      const loaded: Test[] = d.tests ?? [];
+      setTests(loaded);
+      return loaded;
+    } catch (e) { setError((e as Error).message); return null; }
   }, [slug]);
+
+  // Load current results on mount so prior tests — and read-only "not needed" rows for manual-step
+  // systems — are visible without first pressing "Test connections".
+  useEffect(() => { void load(); }, [load]);
 
   // Poll while anything is unsettled; stop once all tests are ok/fail.
   useEffect(() => {
@@ -106,8 +114,11 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
       const r = await fetch(`/api/clients/${slug}/conn-test`, { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setError(d.error ?? `failed (${r.status})`); return; }
-      if ((d.tests ?? []).length === 0) { setTests([]); setError("No testable systems — add an api system with a wired secret first."); return; }
-      await load();
+      // Always reload: even when nothing was QUEUED (d.tests empty), the client may still have
+      // manual-step ("not needed") systems to surface as read-only rows. Only warn when the reloaded
+      // list is truly empty — no testable systems and no not-needed ones either.
+      const loaded = await load();
+      if ((loaded ?? []).length === 0) setError("No testable systems — add an api system with a wired secret first.");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -151,6 +162,23 @@ export function ConnectionTestPanel({ slug, systemNames }: { slug: string; syste
           </tr></thead>
           <tbody>
             {tests.map((t) => {
+              // Manual-step system: the credential is marked "not needed", so there's nothing to test.
+              // Show the name, N/A under every stage column, and say so in Detail — no Retest button and
+              // no probe is ever dispatched for it (runner-service excludes it from the testable set).
+              if (t.status === "not_needed") {
+                return (
+                  <tr key={t.systemKey}>
+                    <td>{systemNames[t.systemKey] ?? t.systemKey}</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted">N/A</td>
+                    <td className="muted" style={{ maxWidth: 300, whiteSpace: "normal" }}>Cred Has Been Marked as Not Needed</td>
+                    <td></td>
+                  </tr>
+                );
+              }
               const flds = fieldsBadge(t);
               const acc = accessBadge(t);
               const api = apiBadge(t);
