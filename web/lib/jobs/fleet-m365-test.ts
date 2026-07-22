@@ -67,7 +67,14 @@ export type ClassifyResult = {
   missingPerms: number; // total missing required ops across tests (for the badge)
   surplus: number; // total surplus roles across tests
   escalation: number; // of the surplus, how many are an escalation risk
+  // The app holds AppRoleAssignment.ReadWrite.All (a flagged surplus) AND has missing permissions — so
+  // the gaps can be self-granted using that role, no Global Admin sign-in. Drives "Correct permissions"
+  // down the self-grant path instead of the device-code modal.
+  canSelfGrant: boolean;
 };
+
+// The surplus role that lets an app assign app roles to itself — see lib/secrets/self-grant-m365.ts.
+const SELF_GRANT_ROLE_LC = "approleassignment.readwrite.all";
 
 // Pure: turn a client's connection-test state into the table's status / tags / action. No I/O.
 export function classifyM365Client(input: ClassifyInput): ClassifyResult {
@@ -84,6 +91,7 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
   let escalation = 0;
   const missingOptionalRoles = new Set<string>();
   let connFailed = false;
+  let hasSelfGrantRole = false;
 
   for (const t of tests) {
     if (t.status === "not_needed") continue;
@@ -102,7 +110,11 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     if (t.status === "fail" && sr.state !== "missing") connFailed = true;
     // Missing OPTIONAL capabilities -> the roles to pre-check when correcting. Required gaps are
     // always granted by provisioning, so they need no pre-check.
-    for (const r of rows ?? []) collectMissingOptionalRole(r, missingOptionalRoles);
+    for (const r of rows ?? []) {
+      collectMissingOptionalRole(r, missingOptionalRoles);
+      // The self-grant primitive shows up as a flagged surplus row (over-permission).
+      if (r.surplus && r.op.toLowerCase() === SELF_GRANT_ROLE_LC) hasSelfGrantRole = true;
+    }
   }
 
   if (surplus > 0) tags.add("over_permissioned");
@@ -145,6 +157,8 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     missingPerms,
     surplus,
     escalation,
+    // Self-grant is only meaningful when there's a gap to close AND the app can close it itself.
+    canSelfGrant: hasSelfGrantRole && tags.has("missing_perms"),
   };
 }
 

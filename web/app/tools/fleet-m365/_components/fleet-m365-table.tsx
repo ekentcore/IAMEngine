@@ -8,7 +8,7 @@
 // and every client (even a healthy one) can still be worked through.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { M365SetupButton } from "@/app/clients/_components/m365-setup-button";
-import { summarizeRights, parseRights, type RightsRow } from "@/lib/jobs/conn-test-logic";
+import { parseRights, type RightsRow } from "@/lib/jobs/conn-test-logic";
 import type { FleetM365Rollup, FleetM365Row, FleetM365Tag } from "@/lib/jobs/fleet-m365-test";
 
 // The filterable states, in the order the chips appear — with a human label. `untested` is offered
@@ -51,6 +51,8 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
   const [selectedStates, setSelectedStates] = useState<Set<FleetM365Tag>>(new Set());
   const [openRights, setOpenRights] = useState<string | null>(null);
   const [retesting, setRetesting] = useState<string | null>(null);
+  const [selfGranting, setSelfGranting] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedOnMount = useRef(false);
 
@@ -173,6 +175,27 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
     finally { setRetesting(null); }
   }
 
+  // Self-grant: use the client's own AppRoleAssignment.ReadWrite.All to assign the missing Graph roles
+  // (no Global Admin). On success, retest the row so its state re-verifies. Surplus roles are left
+  // marked — this only adds.
+  async function selfGrant(row: FleetM365Row) {
+    setSelfGranting(row.slug); setError(null); setFlash(null);
+    try {
+      const r = await fetch("/api/tools/fleet-m365", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: row.slug, selfGrant: true, optionalRoles: row.missingOptionalRoles }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setError(`${row.name}: ${d.reason ?? d.error ?? `failed (${r.status})`}`); return; }
+      const n = d.granted?.length ?? 0;
+      const failed = d.failed?.length ?? 0;
+      setFlash(`${row.name}: granted ${n} permission${n === 1 ? "" : "s"}${failed ? `, ${failed} failed — check the run log` : ""}. Retesting…`);
+      await retestRow(row); // re-verify against the tenant
+    } catch (e) { setError((e as Error).message); }
+    finally { setSelfGranting(null); }
+  }
+
   const running = rollup.run?.status === "running";
 
   // Stop a stuck/unwanted sweep: cancel the run (deletes its still-pending tests) so the top button
@@ -209,6 +232,7 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
       </div>
 
       {error && <p className="note danger">{error}</p>}
+      {flash && <p className="note" style={{ color: "#15803d" }}>{flash}</p>}
 
       <div className="filters" style={{ marginTop: "0.5rem" }}>
         <div className="search-field">
@@ -301,8 +325,23 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                         // "Set up M365" stays active. A row mid-test shows a disabled "Testing…".
                         const untested = row.tags.includes("untested");
                         const testingNow = row.status === "running" || retesting === row.slug;
+                        if (selfGranting === row.slug) return <button disabled>Granting…</button>;
                         if (testingNow) return <button disabled>Testing…</button>;
                         if (untested) return <button disabled title="Run the connection test first to see what this client needs">Not tested yet</button>;
+                        // A client that's missing permissions AND holds AppRoleAssignment.ReadWrite.All
+                        // can grant its own gaps with no Global Admin — route "Correct permissions"
+                        // straight to the self-grant instead of the device-code modal.
+                        if (row.action === "correct" && row.canSelfGrant) {
+                          return (
+                            <button
+                              className="primary"
+                              onClick={() => void selfGrant(row)}
+                              title="Grant the missing permissions using the app's own AppRoleAssignment.ReadWrite.All — no Global Admin sign-in. Surplus roles stay flagged, not removed."
+                            >
+                              Correct permissions
+                            </button>
+                          );
+                        }
                         return (
                           <button
                             className={row.action === "none" ? undefined : "primary"}
@@ -356,6 +395,20 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
 
 // Per-client rights breakdown, fetched on expand from the same per-client conn-test endpoint the
 // client page uses — so the fleet table shows the exact per-operation detail without duplicating it.
+// Group systems whose rights are identical (m365 + entra share one app registration) so the expanded
+// list shows each distinct permission set once, labelled with every system it covers. Order is
+// preserved by first appearance.
+function dedupeRightsBySystem(tests: { systemKey: string; rights: RightsRow[] | null }[]): { systemKeys: string[]; rights: RightsRow[] | null }[] {
+  const groups: { key: string; systemKeys: string[]; rights: RightsRow[] | null }[] = [];
+  for (const t of tests) {
+    const fp = JSON.stringify((t.rights ?? []).map((r) => [r.op, r.ok, r.optional ?? false, r.surplus ?? false, r.escalation ?? false]));
+    const existing = groups.find((g) => g.key === fp);
+    if (existing) existing.systemKeys.push(t.systemKey);
+    else groups.push({ key: fp, systemKeys: [t.systemKey], rights: t.rights });
+  }
+  return groups.map(({ systemKeys, rights }) => ({ systemKeys, rights }));
+}
+
 function RightsDetail({ slug }: { slug: string }) {
   const [tests, setTests] = useState<{ systemKey: string; rights: RightsRow[] | null }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -380,11 +433,14 @@ function RightsDetail({ slug }: { slug: string }) {
       <td colSpan={5} style={{ background: "var(--bg-soft)" }}>
         {error && <p className="note danger" style={{ margin: "0.3rem 1rem" }}>{error}</p>}
         {!tests && !error && <p className="note" style={{ margin: "0.3rem 1rem" }}><span className="spinner" /> Loading…</p>}
-        {tests?.map((t) => {
-          const s = summarizeRights(t.rights);
+        {/* m365 and entra probe the SAME app registration, so their Graph rights are identical —
+            collapse systems that share an identical rights fingerprint into one block (labelled with
+            every system it covers, e.g. "m365, entra") instead of listing the same permissions twice.
+            exchange has its own (Exchange.ManageAsApp) rights, so it stays separate. */}
+        {tests && dedupeRightsBySystem(tests).map((t) => {
           return (
-            <div key={t.systemKey} style={{ margin: "0.3rem 0 0.3rem 1rem" }}>
-              <div className="note" style={{ fontWeight: 600 }}>{t.systemKey}</div>
+            <div key={t.systemKeys.join("+")} style={{ margin: "0.3rem 0 0.3rem 1rem" }}>
+              <div className="note" style={{ fontWeight: 600 }}>{t.systemKeys.join(", ")}</div>
               <table style={{ width: "auto", marginTop: 2 }}>
                 <tbody>
                   {(t.rights ?? []).map((r) => {
