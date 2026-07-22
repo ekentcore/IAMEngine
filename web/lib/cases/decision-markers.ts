@@ -54,6 +54,20 @@ export function canConvert(d: MailboxNotConvertedDecision): boolean {
   return size >= 0 && size <= threshold;
 }
 
+// The M365 onboard emits this when an ad-synced client's cloud account can't be found under the
+// expected UPN but a synced user for the same person exists under a DIFFERENT one — the tell of a
+// wrong on-prem email/UPN. Emitted as a thrown ERROR (not an action line), so the picker reads
+// step.error. The exact runner string is pinned in decision-markers.test.ts.
+export type SyncedUpnMismatch = { message: string; expected: string; found: string; name: string };
+
+const SYNCED_UPN_MISMATCH = /DECISION_NEEDED:synced_upn_mismatch \| ([^|]+?) \| expected=([^|]+?) \| found=([^|]+?) \| name=(.+)$/;
+
+export function parseSyncedUpnMismatch(error: string): SyncedUpnMismatch | null {
+  const m = SYNCED_UPN_MISMATCH.exec(error.trim());
+  if (!m) return null;
+  return { message: m[1].trim(), expected: m[2].trim(), found: m[3].trim(), name: m[4].trim() };
+}
+
 // Markers are for the pickers, not for people: every one is emitted alongside a human-readable line.
 export const isDecisionMarker = (line: string): boolean => line.startsWith("DECISION_NEEDED:");
 
