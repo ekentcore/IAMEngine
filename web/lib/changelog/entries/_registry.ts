@@ -108,6 +108,7 @@ export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-cor
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
 export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
+export { entry as m365LicenseDependencySelfheal } from "./m365-license-dependency-selfheal";
 export { entry as m365SetupAutomaticallyOverview } from "./m365-setup-automatically-overview";
 export { entry as m365AutosetupSurfacesDelineaId } from "./m365-autosetup-surfaces-delinea-id";
 export { entry as m365CredsToIdentityServices } from "./m365-creds-to-identity-services";

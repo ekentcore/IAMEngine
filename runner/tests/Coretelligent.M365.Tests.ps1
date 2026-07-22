@@ -1576,3 +1576,107 @@ Describe 'proxyAddresses conflict feedback' {
         }
     }
 }
+
+Describe 'license service-plan dependency handling' {
+    BeforeAll {
+        # GUIDs from the real error: THREAT_INTELLIGENCE (Defender for O365 P2) depends on Exchange plans.
+        $script:MDO  = '8e0c0a52-6a6c-4d40-8370-dd62790dcd70'
+        $script:EXO2 = 'efb87545-963c-4e0d-99df-69c6916d9eb0'
+        $script:DEPMSG = "License assignment failed because service plan $script:MDO depends on the service plan(s) 4a82b400-a79f-41a4-b4e2-e94f5787b113,$script:EXO2,9aaf7827-d63c-4b61-89c3-182f06f82e5c"
+        # A tenant catalog: E3 carries Exchange Online P2; the Defender add-on carries MDO P2.
+        $script:DepSkus = @(
+            [pscustomobject]@{ SkuId = 'sku-e3';  SkuPartNumber = 'SPE_E3';         ServicePlans = @([pscustomobject]@{ ServicePlanId = $script:EXO2; ServicePlanName = 'EXCHANGE_S_ENTERPRISE' }) }
+            [pscustomobject]@{ SkuId = 'sku-atp'; SkuPartNumber = 'ATP_ENTERPRISE'; ServicePlans = @([pscustomobject]@{ ServicePlanId = $script:MDO;  ServicePlanName = 'THREAT_INTELLIGENCE' }) }
+        )
+    }
+
+    Context 'Get-CtgLicenseDependencyInfo' {
+        It 'parses the dependent plan and its prerequisites out of the raw Graph message' {
+            $info = InModuleScope Coretelligent.M365 -Parameters @{ M = $script:DEPMSG } { param($M) Get-CtgLicenseDependencyInfo $M }
+            $info.Plan | Should -Be '8e0c0a52-6a6c-4d40-8370-dd62790dcd70'
+            @($info.Requires).Count | Should -Be 3
+            $info.Requires | Should -Contain 'efb87545-963c-4e0d-99df-69c6916d9eb0'
+        }
+        It 'returns $null for an unrelated error' {
+            InModuleScope Coretelligent.M365 { Get-CtgLicenseDependencyInfo 'Subscription does not have any available licenses.' } | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Invoke-CtgM365LicenseHealingAssign' {
+        It 'assigns in one call when there is no dependency problem' {
+            Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:DepSkus }
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
+            $res = InModuleScope Coretelligent.M365 {
+                Invoke-CtgM365LicenseHealingAssign -UserId 'u1' -SkuSpecs @(@{ SkuId = 'sku-e3'; Name = 'E3' })
+            }
+            $res.Ok | Should -BeTrue
+            @($res.Issues).Count | Should -Be 0
+            Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        }
+
+        It 'disables the unsatisfiable dependent plan, retries, and reports the issue' {
+            Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:DepSkus }
+            # First attempt (no disabled plans) fails the dependency; the retry with MDO disabled succeeds.
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -ParameterFilter {
+                -not (@($AddLicenses) | Where-Object { $_.DisabledPlans -contains '8e0c0a52-6a6c-4d40-8370-dd62790dcd70' })
+            } -MockWith { throw $script:DEPMSG }
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -ParameterFilter {
+                @($AddLicenses) | Where-Object { $_.DisabledPlans -contains '8e0c0a52-6a6c-4d40-8370-dd62790dcd70' }
+            } -MockWith { }
+            $res = InModuleScope Coretelligent.M365 {
+                Invoke-CtgM365LicenseHealingAssign -UserId 'u1' -SkuSpecs @(@{ SkuId = 'sku-atp'; Name = 'Defender for O365 P2' })
+            }
+            $res.Ok | Should -BeTrue
+            @($res.Issues).Count | Should -Be 1
+            $res.Issues[0].PlanName   | Should -Be 'Microsoft Defender for Office 365 (Plan 2)'
+            $res.Issues[0].SkuName    | Should -Be 'Defender for O365 P2'
+            ($res.Issues[0].RequiresNames -join ' ') | Should -Match 'Exchange Online'
+            $res.Issues[0].Resolution | Should -Match 'retry the license assignment'
+        }
+
+        It 'hands a NON-dependency failure back unhealed (so seat/usage diagnostics still fire)' {
+            Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:DepSkus }
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { throw 'Subscription with SKU cbdc14ab does not have any available licenses.' }
+            $res = InModuleScope Coretelligent.M365 {
+                Invoke-CtgM365LicenseHealingAssign -UserId 'u1' -SkuSpecs @(@{ SkuId = 'sku-atp'; Name = 'Defender' })
+            }
+            $res.Ok | Should -BeFalse
+            $res.Error | Should -Not -BeNullOrEmpty
+            @($res.Issues).Count | Should -Be 0
+        }
+    }
+
+    Context 'onboarding surfaces held-back plans on the result (Six One scenario)' {
+        BeforeEach {
+            Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { $script:DepSkus }
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }   # create path
+            Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-new' } }
+            Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+            Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }  # nothing assigned yet
+            Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'grp-1' } }
+            Mock Get-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { @() }
+            Mock New-MgGroupMember -ModuleName Coretelligent.M365 -MockWith { }
+            # The batch (E3 + Defender together) has Exchange enabled, so it SUCCEEDS unless MDO is enabled
+            # WITHOUT any Exchange plan. Simulate the real failure: E3's Exchange is absent from the call
+            # that carries MDO -> dependency error until MDO is disabled.
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -ParameterFilter {
+                (@($AddLicenses) | Where-Object { $_.SkuId -eq 'sku-atp' -and -not ($_.DisabledPlans -contains '8e0c0a52-6a6c-4d40-8370-dd62790dcd70') })
+            } -MockWith { throw $script:DEPMSG }
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
+        }
+
+        It 'still assigns the licenses, and reports the held-back Defender plan + LicenseIncomplete' {
+            $user = [pscustomobject]@{ DisplayName = 'New Hire'; FirstName = 'New'; LastName = 'Hire'; UserPrincipalName = 'nhire@six-one.com'; UsageLocation = 'US' }
+            $config = [pscustomobject]@{ licenses = @(
+                [pscustomobject]@{ name = 'Microsoft 365 E3'; skuId = 'sku-e3' }
+                [pscustomobject]@{ name = 'Microsoft Defender for Office 365 (Plan 2)'; skuId = 'sku-atp' }
+            ) }
+            $r = Invoke-CtgM365Onboarding -User $user -Config $config -InitialPassword (ConvertTo-SecureString 'P@ssw0rd!23456' -AsPlainText -Force)
+            $r.Status | Should -Be 'ok'                       # non-fatal — the account + base license still land
+            $r.LicenseIncomplete | Should -BeTrue
+            @($r.LicenseDependencyIssues).Count | Should -BeGreaterThan 0
+            $r.LicenseDependencyIssues[0].PlanName | Should -Be 'Microsoft Defender for Office 365 (Plan 2)'
+            ($r.Actions -join ' ') | Should -Match 'couldn.t be enabled'
+        }
+    }
+}

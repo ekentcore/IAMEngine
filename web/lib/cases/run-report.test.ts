@@ -239,3 +239,34 @@ test("a real unmet api dependency still reads as a blocker", () => {
   const mimecast = rr.steps.find((s) => s.systemKey === "mimecast");
   assert.equal(mimecast?.pendingReason, "waiting for Microsoft 365 to finish first");
 });
+
+test("M365 LicenseDependencyIssues surface as step.licenseIssues (held-back plans + how to fix)", () => {
+  const rr = buildRunReport(input({
+    jobs: [{
+      systemKey: "m365", sequence: 0, mode: "api", status: "succeeded", request: {},
+      result: {
+        Actions: ["assigned license: Microsoft 365 E3", "WARN Microsoft Defender for Office 365 (Plan 2) couldn't be enabled — it requires Exchange Online (Plan 2)"],
+        LicenseIncomplete: true,
+        LicenseDependencyIssues: [{
+          SkuId: "sku-atp", SkuName: "Microsoft Defender for Office 365 (Plan 2)",
+          PlanId: "8e0c0a52-6a6c-4d40-8370-dd62790dcd70", PlanName: "Microsoft Defender for Office 365 (Plan 2)",
+          Requires: ["efb87545-963c-4e0d-99df-69c6916d9eb0"], RequiresNames: ["Exchange Online (Plan 2)"],
+          Resolution: "Microsoft Defender for Office 365 (Plan 2) couldn't be enabled — it requires Exchange Online (Plan 2), which this user doesn't have. Add/enable a prerequisite license, then retry the license assignment to turn it on.",
+        }],
+      },
+      validation: { ok: true, checks: [{ name: "user exists", pass: true }] }, error: null, startedAt: null, finishedAt: null,
+    }],
+    names: new Map([["m365", "Microsoft 365"]]),
+  }));
+  const issues = rr.steps[0].licenseIssues;
+  assert.ok(issues, "licenseIssues parsed");
+  assert.equal(issues!.length, 1);
+  assert.equal(issues![0].plan, "Microsoft Defender for Office 365 (Plan 2)");
+  assert.deepEqual(issues![0].requires, ["Exchange Online (Plan 2)"]);
+  assert.match(issues![0].resolution, /retry the license assignment/);
+});
+
+test("no LicenseDependencyIssues => step.licenseIssues is null", () => {
+  const rr = buildRunReport(input());
+  assert.equal(rr.steps[0].licenseIssues, null);
+});

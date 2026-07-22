@@ -431,6 +431,131 @@ function Get-CtgM365LicenseInventory {
     }) | Where-Object { $_.enabled -gt 0 } | Sort-Object -Property @{ Expression = 'available'; Descending = $true }, skuPartNumber
 }
 
+# --- License service-plan dependency handling --------------------------------------------------
+# Microsoft rejects a license assignment when a service plan being ENABLED has a hard prerequisite
+# that isn't also enabled — e.g. THREAT_INTELLIGENCE (Defender for Office 365 P2) needs an Exchange
+# Online plan; Teams Phone needs Teams. Graph returns a Request_BadRequest / DependencyViolation:
+#   "License assignment failed because service plan <X> depends on the service plan(s) <A,B,C>".
+# We assign the whole license set in ONE call so intra-bundle prerequisites enable atomically; if a
+# dependency STILL can't be satisfied (the prerequisite plan lives in no assigned/owned license), we
+# disable just the unsatisfiable plan so the rest of the license lands, and report exactly what was
+# held back. This is generic — it parses Graph's own dependency list, so it covers every dependency,
+# not a hardcoded set.
+
+# Friendly names for the plans we see most; anything else falls back to the tenant's own
+# ServicePlanName (from Get-MgSubscribedSku), then the raw GUID.
+$script:FriendlyServicePlanNames = @{
+    '8e0c0a52-6a6c-4d40-8370-dd62790dcd70' = 'Microsoft Defender for Office 365 (Plan 2)'
+    'efb87545-963c-4e0d-99df-69c6916d9eb0' = 'Exchange Online (Plan 2)'
+    '9aaf7827-d63c-4b61-89c3-182f06f82e5c' = 'Exchange Online (Plan 1)'
+    '4a82b400-a79f-41a4-b4e2-e94f5787b113' = 'Exchange Online Kiosk'
+}
+
+function Resolve-CtgServicePlanName([string]$PlanId, $Catalog) {
+    if ([string]::IsNullOrWhiteSpace($PlanId)) { return $PlanId }
+    if ($script:FriendlyServicePlanNames.ContainsKey($PlanId)) { return $script:FriendlyServicePlanNames[$PlanId] }
+    if ($Catalog -and $Catalog.PlanNames -and $Catalog.PlanNames.ContainsKey($PlanId)) {
+        $n = [string]$Catalog.PlanNames[$PlanId]; if ($n) { return $n }
+    }
+    return $PlanId
+}
+
+function Test-CtgGraphDependencyViolation([string]$Message) {
+    $Message -match 'depends on (?:the )?service plan|DependencyViolation'
+}
+
+function Get-CtgLicenseDependencyInfo([string]$Message) {
+    # Parse "service plan <X> depends on the service plan(s) <A,B,C>" into @{ Plan=<X>; Requires=@(A,B,C) }.
+    # Returns $null when the message isn't a service-plan dependency violation.
+    if (-not (Test-CtgGraphDependencyViolation $Message)) { return $null }
+    $g = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    $m = [regex]::Match($Message, "service plan\s+($g).*?depends on(?:\s+the)?\s+service plan\(s\)\s+((?:$g[\s,]*)+)")
+    if (-not $m.Success) { return $null }
+    $reqs = @([regex]::Matches($m.Groups[2].Value, $g) | ForEach-Object { $_.Value })
+    return @{ Plan = $m.Groups[1].Value; Requires = $reqs }
+}
+
+function Get-CtgM365ServicePlanCatalog {
+    # Map every owned SKU to its service-plan ids, and every plan id to its ServicePlanName — read
+    # straight from the tenant's subscribed SKUs, so no plan→sku table has to be maintained by hand.
+    $skuPlans = @{}; $planNames = @{}
+    foreach ($sku in @(Get-MgSubscribedSku -All -ErrorAction SilentlyContinue)) {
+        $sid = [string](Get-CtgProp $sku 'SkuId')
+        $plans = @(Get-CtgProp $sku 'ServicePlans')
+        $ids = @($plans | ForEach-Object { [string](Get-CtgProp $_ 'ServicePlanId') } | Where-Object { $_ })
+        if ($sid) { $skuPlans[$sid] = $ids }
+        foreach ($p in $plans) {
+            $pid = [string](Get-CtgProp $p 'ServicePlanId'); $pn = [string](Get-CtgProp $p 'ServicePlanName')
+            if ($pid -and -not $planNames.ContainsKey($pid)) { $planNames[$pid] = $pn }
+        }
+    }
+    @{ SkuPlans = $skuPlans; PlanNames = $planNames }
+}
+
+function Invoke-CtgM365LicenseHealingAssign {
+    <#
+    .SYNOPSIS
+        Assign a set of SKUs in ONE Set-MgUserLicense call so interdependent service plans enable
+        together. On a service-plan DependencyViolation ("plan X depends on A,B,C"), move the
+        unsatisfiable dependent plan into that SKU's disabledPlans and retry — looping to clear
+        chained/multiple violations — so the base license still lands. Idempotent: re-running with a
+        SKU already assigned re-enables any plan that CAN now be enabled (that's how the operator's
+        "retry license assignment" recovers a plan once its prerequisite exists).
+    .OUTPUTS
+        @{ Ok=<bool>; Assigned=@(skuId...); Issues=@(@{ SkuId; SkuName; PlanId; PlanName; Requires;
+           RequiresNames; Resolution }...); Error=<non-dependency ErrorRecord or $null> }
+        A non-dependency failure (no seats, usage location) is returned in .Error unhealed, so the
+        caller's existing per-license diagnostics still handle it.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$UserId,
+        [Parameter(Mandatory)]$SkuSpecs,   # @( @{ SkuId=<id>; Name=<friendly> }, ... )
+        $Catalog
+    )
+    if (-not $Catalog) { $Catalog = Get-CtgM365ServicePlanCatalog }
+    $disabled = @{}   # skuId -> [List[string]] disabled plan ids
+    $issues = [System.Collections.Generic.List[object]]::new()
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        $add = @($SkuSpecs | ForEach-Object {
+            $sid = [string]$_.SkuId
+            $e = @{ SkuId = $sid }
+            if ($disabled.ContainsKey($sid) -and $disabled[$sid].Count) { $e['DisabledPlans'] = @($disabled[$sid]) }
+            $e
+        })
+        try {
+            Invoke-CtgM365Write { Set-MgUserLicense -UserId $UserId -AddLicenses $add -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+            return @{ Ok = $true; Assigned = @($SkuSpecs | ForEach-Object { [string]$_.SkuId }); Issues = $issues.ToArray(); Error = $null }
+        }
+        catch {
+            $ge = Get-CtgGraphError $_
+            $dep = Get-CtgLicenseDependencyInfo $ge.Message
+            if (-not $dep) { return @{ Ok = $false; Assigned = @(); Issues = $issues.ToArray(); Error = $_ } }
+            # Find which SKU in this set owns the dependent plan, so we can disable it there.
+            $planId = [string]$dep.Plan
+            $owner = $null
+            foreach ($spec in $SkuSpecs) {
+                $sid = [string]$spec.SkuId
+                if ($Catalog.SkuPlans.ContainsKey($sid) -and (@($Catalog.SkuPlans[$sid]) -contains $planId)) { $owner = $spec; break }
+            }
+            # The dependent plan isn't in any SKU we're assigning (or the catalog is unknown) — we can't
+            # heal by disabling. Hand the error back so the caller surfaces it rather than looping.
+            if (-not $owner) { return @{ Ok = $false; Assigned = @(); Issues = $issues.ToArray(); Error = $_ } }
+            $osid = [string]$owner.SkuId
+            if (-not $disabled.ContainsKey($osid)) { $disabled[$osid] = [System.Collections.Generic.List[string]]::new() }
+            if (@($disabled[$osid]) -notcontains $planId) { $disabled[$osid].Add($planId) }
+            $reqNames = @($dep.Requires | ForEach-Object { Resolve-CtgServicePlanName $_ $Catalog })
+            $planName = Resolve-CtgServicePlanName $planId $Catalog
+            $issues.Add([ordered]@{
+                SkuId = $osid; SkuName = [string]$owner.Name
+                PlanId = $planId; PlanName = $planName
+                Requires = @($dep.Requires); RequiresNames = $reqNames
+                Resolution = "$planName couldn't be enabled — it requires $((@($reqNames) -join ' or ')), which this user doesn't have. The rest of '$([string]$owner.Name)' was assigned. Add/enable a prerequisite license (or free a seat for one), then retry the license assignment to turn it on."
+            })
+        }
+    }
+    return @{ Ok = $false; Assigned = @(); Issues = $issues.ToArray(); Error = $null }
+}
+
 # Seat-aware E5/E3 fallback (the internal script's rule): read LIVE SKU consumption — a decision the
 # planner can't make — and add the user to the E5 Entra group when a seat is free, else fall back to
 # E3. Config.seatAwareLicense: { skuId, entraGroupWhenAvailable, entraGroupFallback?, adGroupFallback? }.
@@ -944,6 +1069,11 @@ function Invoke-CtgM365Onboarding {
     # Canonical config uses `licenses` (name strings or {name,skuId}); fall back to the older
     # `defaultLicenses` shape. Names resolve to SkuIds against the tenant.
     $seatShortage = $false  # set when an assignment fails for no seats -> return the SKU inventory so the operator can pick another
+    # Service-plan dependencies Graph couldn't satisfy (e.g. Defender P2 with no Exchange plan): each is
+    # a plan we had to hold back so the base license could land. Surfaced on the result so the app shows
+    # a "retry license assignment" box (see Get-CtgLicenseDependencyInfo / Invoke-CtgM365LicenseHealingAssign).
+    $licenseDependencyIssues = [System.Collections.Generic.List[object]]::new()
+    $planCatalog = $null  # lazily built (one Get-MgSubscribedSku) the first time we assign a license
     $allLicenseSpecs = @(Get-CtgProp $Config 'licenses') + @(Get-CtgProp $Config 'defaultLicenses') | Where-Object { $_ }
     # A { assignVia: 'group' } entry licenses via GROUP MEMBERSHIP, not Set-MgUserLicense: entra-source
     # groups are added here (Graph); ad-source groups were appended to the AD job's groups at PLAN time
@@ -990,27 +1120,36 @@ function Invoke-CtgM365Onboarding {
     }
     $assigned = @(Get-MgUserLicenseDetail -UserId $userId -ErrorAction SilentlyContinue | ForEach-Object { $_.SkuId })
     # Batch pass: assign ALL missing licenses in ONE Set-MgUserLicense call so INTERDEPENDENT service
-    # plans across licenses are enabled together. Assigning one-by-one fails Graph's dependency check —
-    # e.g. Microsoft Defender for Office 365 (Plan 2)'s plan depends on Exchange Online (which lives in
-    # E3), and Teams Phone depends on Teams; added separately, the dependency isn't yet satisfied. On ANY
-    # batch failure we fall through to the per-license loop below (which keeps per-license seat/usage-
-    # location diagnostics). Only batch when 2+ licenses are new (a lone license has no cross-dependency).
+    # plans across licenses are enabled together — e.g. Microsoft Defender for Office 365 (Plan 2)'s
+    # plan depends on Exchange Online (which lives in E3), and Teams Phone depends on Teams; added
+    # separately, the dependency isn't yet satisfied. Invoke-CtgM365LicenseHealingAssign also disables
+    # any plan whose prerequisite genuinely can't be met so the base license still lands (reported on
+    # the result). On a NON-dependency failure (no seats / usage location) we fall through to the
+    # per-license loop below, which keeps its per-license diagnostics.
     $newSku = [ordered]@{}
     foreach ($lic in $licenseSpecs) {
         $sk = Resolve-CtgSkuId $lic
         $nm = if ($lic -is [string]) { $lic } else { (Get-CtgProp $lic 'name') ?? (Get-CtgProp $lic 'skuId') }
         if ($sk -and ($assigned -notcontains $sk) -and -not $newSku.Contains($sk)) { $newSku[$sk] = $nm }
     }
-    if (@($newSku.Keys).Count -gt 1 -and $PSCmdlet.ShouldProcess($upn, "Assign licenses together: $(@($newSku.Values) -join ', ')")) {
-        $addAll = @(@($newSku.Keys) | ForEach-Object { @{ SkuId = $_ } })
-        Write-CtgM365Step "assigning licenses together: $(@($newSku.Values) -join ', ')"
-        try {
-            Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses $addAll -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+    if (@($newSku.Keys).Count -ge 1 -and $PSCmdlet.ShouldProcess($upn, "Assign licenses: $(@($newSku.Values) -join ', ')")) {
+        if (-not $planCatalog) { $planCatalog = Get-CtgM365ServicePlanCatalog }
+        $specs = @(@($newSku.Keys) | ForEach-Object { @{ SkuId = $_; Name = [string]$newSku[$_] } })
+        Write-CtgM365Step "assigning licenses: $(@($newSku.Values) -join ', ')"
+        $res = Invoke-CtgM365LicenseHealingAssign -UserId $userId -SkuSpecs $specs -Catalog $planCatalog
+        if ($res.Ok) {
             foreach ($nm in @($newSku.Values)) { $actions.Add("assigned license: $nm") }
             $assigned = @($assigned) + @($newSku.Keys)  # so the per-license loop sees them as present
-            Write-CtgM365Step "✓ assigned licenses together: $(@($newSku.Values) -join ', ')"
-        } catch {
-            $actions.Add("batch license assign failed ($($_.Exception.Message)) — retrying per-license")
+            foreach ($iss in @($res.Issues)) {
+                $actions.Add("WARN $($iss.Resolution)")
+                $licenseDependencyIssues.Add($iss)
+                Write-CtgM365Step "⚠ $($iss.PlanName) left OFF — needs $((@($iss.RequiresNames) -join ' or '))"
+            }
+            if (@($res.Issues).Count) { Write-CtgM365Step "✓ assigned licenses (held back $(@($res.Issues).Count) plan(s) with unmet prerequisites): $(@($newSku.Values) -join ', ')" }
+            else { Write-CtgM365Step "✓ assigned licenses: $(@($newSku.Values) -join ', ')" }
+        } else {
+            $emsg = if ($res.Error) { [string]$res.Error.Exception.Message } else { 'unresolved service-plan dependency' }
+            $actions.Add("batch license assign failed ($emsg) — retrying per-license")
             Write-CtgM365Step "batch assign failed — retrying per-license"
         }
     }
@@ -1025,8 +1164,18 @@ function Invoke-CtgM365Onboarding {
         if ($PSCmdlet.ShouldProcess($upn, "Assign license $name")) {
             Write-CtgM365Step "assigning license: $name"
             try {
-                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @(@{ SkuId = $skuId }) -RemoveLicenses @() -ErrorAction Stop } | Out-Null
+                if (-not $planCatalog) { $planCatalog = Get-CtgM365ServicePlanCatalog }
+                # Route through the healing assign so a lone add-on (e.g. Defender P2) whose prerequisite
+                # is missing gets that plan disabled instead of throwing. A non-dependency failure (no
+                # seats / usage location) comes back in .Error and is re-thrown into the diagnostics below.
+                $r1 = Invoke-CtgM365LicenseHealingAssign -UserId $userId -SkuSpecs @(@{ SkuId = $skuId; Name = $name }) -Catalog $planCatalog
+                if (-not $r1.Ok) { if ($r1.Error) { throw $r1.Error } else { throw "assigning '$name' failed — an unresolved service-plan dependency" } }
                 $actions.Add("assigned license: $name")
+                foreach ($iss in @($r1.Issues)) {
+                    $actions.Add("WARN $($iss.Resolution)")
+                    $licenseDependencyIssues.Add($iss)
+                    Write-CtgM365Step "⚠ $($iss.PlanName) left OFF — needs $((@($iss.RequiresNames) -join ' or '))"
+                }
                 Write-CtgM365Step "✓ assigned license: $name"
             } catch {
                 $lm = [string]$_.Exception.Message
@@ -1205,6 +1354,11 @@ function Invoke-CtgM365Onboarding {
         # Explicit "the user was left UNLICENSED" flag: the app holds the license-dependent steps
         # (Mimecast/Spanning discover users via the mailbox, which an unlicensed user doesn't have).
         SeatShortage = [bool]$seatShortage
+        # Service-plan dependencies we had to hold back (e.g. Defender P2 with no Exchange plan). The app
+        # renders a "retry license assignment" box from these; re-running the step re-enables any plan
+        # whose prerequisite now exists. LicenseIncomplete flags that the license isn't fully as-specified.
+        LicenseDependencyIssues = $licenseDependencyIssues.ToArray()
+        LicenseIncomplete = [bool]($licenseDependencyIssues.Count -gt 0)
         Actions = $actions.ToArray()
     }
 }

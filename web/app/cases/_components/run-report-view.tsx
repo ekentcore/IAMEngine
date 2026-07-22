@@ -198,6 +198,49 @@ function LicensePicker({ jobId, options, refresh, onWait, waiting }: { jobId: st
   );
 }
 
+// Some license service plans couldn't be enabled because a hard prerequisite was missing (e.g.
+// Defender for Office 365 P2 needs an Exchange Online plan). The base license DID land — these plans
+// are just off. Once the operator supplies the prerequisite (assign the base license / free a seat),
+// "Retry license assignment" re-runs the step; the runner re-enables any plan whose prerequisite now
+// exists. Mirrors LicensePicker: self-contained, re-uses the same in-place job re-run.
+function LicenseRecoveryBox({ jobId, issues, refresh }: { jobId: string; issues: NonNullable<RunReport["steps"][number]["licenseIssues"]>; refresh: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="note" style={{ marginTop: 4, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "0.5rem 0.65rem" }}>
+      <div style={{ fontWeight: 600, color: "#92400e" }}>
+        Some licenses couldn&rsquo;t be fully assigned — {issues.length} service plan{issues.length > 1 ? "s were" : " was"} held back
+      </div>
+      <ul style={{ margin: "0.4rem 0", paddingLeft: "1.1rem", color: "var(--fg)", fontSize: 12 }}>
+        {issues.map((iss, i) => (
+          <li key={i} style={{ marginBottom: 2 }}>
+            <strong>{iss.plan}</strong>{iss.sku ? <span className="muted"> (in {iss.sku})</span> : null} is <strong>off</strong>
+            {iss.requires.length ? <> — needs {iss.requires.join(" or ")}</> : null}
+          </li>
+        ))}
+      </ul>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+        The account and the rest of the license were assigned. Add/enable a prerequisite license (or free a seat for one), then retry — the plan turns on once its prerequisite exists.
+      </div>
+      {err && <div style={{ color: "#b91c1c" }}>{err}</div>}
+      <div className="toolbar" style={{ marginTop: 4 }}>
+        <button className="primary" style={{ fontSize: 12 }} disabled={busy}
+          onClick={async () => {
+            setBusy(true); setErr(null);
+            try {
+              const r = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+              if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+              await refresh();
+            } catch (e) { setErr((e as Error).message); }
+            finally { setBusy(false); }
+          }}>
+          {busy ? "Retrying…" : "Retry license assignment"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // The executor could not tell WHICH person to offboard — the ticket's name matched several people, or
 // nobody. Rather than guess (offboarding the wrong person is not undoable) it returns the shortlist it
 // found and stops. The operator picks; the pick goes on the CASE payload, so every system resolves the
@@ -1212,6 +1255,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                 </div>
               )}
               {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} waiting={waiting.has(step.seq)} onWait={() => setWaiting((s) => new Set(s).add(step.seq))} />}
+              {step.licenseIssues && step.jobId && <LicenseRecoveryBox jobId={step.jobId} issues={step.licenseIssues} refresh={refresh} />}
               {step.offboardCandidates && <OffboardTargetPicker caseId={report.caseId} data={step.offboardCandidates} refresh={refresh} />}
               <ProcurementWatchRow step={step} refresh={refresh} forceShow={waiting.has(step.seq)} />
               {step.phaseTrail.length > 0 && (
