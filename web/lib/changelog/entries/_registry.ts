@@ -133,6 +133,7 @@ export { entry as mimecastConsoleSigninTest } from "./mimecast-console-signin-te
 export { entry as mimecastConsoleUrlFix } from "./mimecast-console-url-fix";
 export { entry as mimecastDocProductsPoc } from "./mimecast-doc-products-poc";
 export { entry as modelFilesReadwritePerm } from "./model-files-readwrite-perm";
+export { entry as moduleSetupGuidedVault } from "./module-setup-guided-vault";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";
 export { entry as offboardCaseRequestedDelegate } from "./offboard-case-requested-delegate";
 export { entry as offboardClearsManagerInEntra } from "./offboard-clears-manager-in-entra";

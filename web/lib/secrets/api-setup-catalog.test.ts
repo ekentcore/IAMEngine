@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { API_SETUP_CATALOG, apiSetupFor } from "./api-setup-catalog";
 import { SECRET_FIELD_REQUIREMENTS } from "./field-requirements";
 
-test("catalog has mimecast, spanning, proofpoint, each with a real field-requirements secret", () => {
+test("catalog covers the guided-setup vendors, each with a real field-requirements secret", () => {
   const keys = API_SETUP_CATALOG.map((e) => e.systemKey).sort();
-  assert.deepEqual(keys, ["mimecast", "proofpoint", "spanning"]);
+  assert.deepEqual(keys, ["adobe", "egnyte", "knowbe4", "mimecast", "proofpoint", "slack", "spanning", "zoom"]);
   for (const e of API_SETUP_CATALOG) {
     assert.ok(SECRET_FIELD_REQUIREMENTS[e.secretName], `${e.secretName} must be a known secret`);
     assert.ok(e.label && e.consoleUrl.startsWith("https://") && e.steps.length > 0);
-    assert.ok(e.helpPath?.startsWith("/help/"), `${e.systemKey} should link its in-app setup guide`);
+    // helpPath is optional — only the vendors with an in-app /help guide set it; when present it must point there.
+    if (e.helpPath !== undefined) assert.ok(e.helpPath.startsWith("/help/"), `${e.systemKey} helpPath must be a /help/ link`);
   }
 });
 test("proofpoint entry offers region options", () => {

@@ -181,6 +181,7 @@ model Client {
   setupStates     SystemSetupState[]
   connHealth      ConnHealthState[]
   userAccess      UserClientAccess[]
+  setupCredentials ModuleSetupCredential[]
 }
 
 model SystemCatalog {
@@ -966,6 +967,71 @@ model GoogleSetupRunClient {
   userAction Json? // manual-DWD fallback card: { kind:"dwd", clientId, scopes } — non-secret only
   log        String[]
   updatedAt  DateTime       @updatedAt
+
+  @@index([runId])
+}
+
+// PROVENANCE: which Delinea credential was used to SET UP a given module for a client — so when the
+// vendor's permissions need changing later, an operator knows exactly which secret (and folder) to go
+// edit, without spelunking the wiring. ONE current row per (client, module), upserted on each setup.
+// Independent of the Secret wiring row (which is keyed by the logical secret NAME); this adds the
+// module dimension + a stable "who/when/where it was set up" record. Additive — touches no existing data.
+model ModuleSetupCredential {
+  id              String   @id @default(cuid())
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId        String
+  moduleKey       String // the system/module the credential set up (e.g. "spanning", "adobe", "m365")
+  delineaSecretId String // the Delinea externalId used/vaulted for this module's setup
+  delineaFolderId String? // the folder it was written to (null when unknown / an overwrite in place)
+  setBy           String? // userId of the operator who ran the setup (null for a system/agent caller)
+  setAt           DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([clientId, moduleKey])
+  @@index([clientId])
+}
+
+// Generalized async setup run, keyed by moduleKey — the vendor-agnostic successor to the bespoke
+// M365SetupRun/GoogleSetupRun pairs. The per-vendor BROWSER auto-provisioning flows (built in later
+// PRs) reuse this one run/row/sweep instead of a new table pair each. Vendor-specific fields ride in
+// the per-client `detail` JSON so no schema change is needed per vendor.
+model ModuleSetupRun {
+  id          String                 @id @default(cuid())
+  moduleKey   String // e.g. "spanning", "adobe", "mimecast"
+  scope       String // "client:<clientId>" | "fleet"
+  status      String                 @default("running") // running | done | needs_action | failed
+  startedAt   DateTime               @default(now())
+  finishedAt  DateTime?
+  startedBy   String? // actor label snapshot ("user:jane@core.tech")
+  startedById String? // FK to the initiating user, for automation-on-behalf audit attribution
+  total       Int                    @default(0)
+  completed   Int                    @default(0)
+  succeeded   Int                    @default(0)
+  skipped     Int                    @default(0)
+  failed      Int                    @default(0)
+  error       String?
+  clients     ModuleSetupRunClient[]
+
+  @@index([moduleKey, scope, startedAt]) // "the latest run of this module+scope"
+}
+
+// One client's outcome within a ModuleSetupRun. `detail` carries the vendor-specific result (e.g.
+// { appId } for Mimecast, { tokenId } for a portal) so the model stays vendor-agnostic.
+model ModuleSetupRunClient {
+  id        String         @id @default(cuid())
+  run       ModuleSetupRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId     String
+  clientId  String
+  slug      String
+  name      String
+  status    String         @default("pending") // pending | running | done | needs_action | skipped | failed
+  stage     String?
+  error     String?
+  skipReason String?
+  warnings  String[]
+  detail    Json? // vendor-specific, non-secret (e.g. { appId } / { tokenId } / { userAction })
+  log       String[]
+  updatedAt DateTime       @updatedAt
 
   @@index([runId])
 }

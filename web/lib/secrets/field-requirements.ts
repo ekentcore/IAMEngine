@@ -68,6 +68,25 @@ export const SECRET_FIELD_REQUIREMENTS: Record<string, FieldReq[]> = {
     { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key", "Password"], hint: "same credential → Client Secret (Retrieve client secret)" },
     { label: "org id (…@AdobeOrg)", anyOf: ["OrgId", "OrgID", "Org ID", "Org", "OrganizationId", "OrganizationID", "Organization ID", "accountid", "AccountId", "AccountID", "Account ID", "Account"], hint: "same credential → Organization ID, ends in @AdobeOrg" },
   ],
+  // Zoom Server-to-Server OAuth app — synonyms MIRROR the runner's Use-CtgZoomSecret $pick (client id
+  // also falls back to the secret's Username, client secret to its Password). All three are required.
+  zoom: [
+    { label: "account id", anyOf: ["AccountId", "AccountID", "Account ID", "Account"], hint: "Zoom App Marketplace → your Server-to-Server OAuth app → App Credentials → Account ID" },
+    { label: "client id", anyOf: ["ClientId", "ClientID", "Client ID", "Username"], hint: "same app → Client ID" },
+    { label: "client secret", anyOf: ["ClientSecret", "Client Secret", "Secret", "ApiKey", "Key", "Password"], hint: "same app → Client Secret" },
+  ],
+  // Egnyte — synonyms MIRROR the runner's Egnyte Connect $pick. Preferred setup is a long-lived bearer
+  // Token; the Domain is the tenant subdomain (drakestar for drakestar.egnyte.com), not the email domain.
+  egnyte: [
+    { label: "egnyte domain", anyOf: ["Domain", "EgnyteDomain", "Egnyte Domain", "Tenant", "AccountID", "AccountId"], hint: "the tenant subdomain — 'drakestar' for drakestar.egnyte.com" },
+    { label: "api token", anyOf: ["Token", "AccessToken", "Access Token", "ApiToken", "API Key", "APIKey", "Api Key", "ApiKey", "Bearer"], hint: "a long-lived Egnyte API token authorized by a domain admin (developers.egnyte.com)" },
+  ],
+  // KnowBe4 SCIM — synonyms MIRROR the runner's KnowBe4 Connect $pick. The token is required; the base
+  // URL is optional (defaults to the US endpoint, https://training.knowbe4.com/scim/v2).
+  knowbe4: [
+    { label: "SCIM token", anyOf: ["ScimToken", "SCIMToken", "SCIM Token", "Token", "ApiToken", "Key", "Password"], hint: "KnowBe4 console → Account Settings → User Management → SCIM → generate token" },
+    { label: "base url (region)", anyOf: ["BaseUrl", "Base URL", "ScimUrl", "Url"], optional: true, hint: "override for non-US regions, e.g. https://eu.api.knowbe4.com/scim/v2 (EU) — leave blank for US" },
+  ],
   // Mimecast API 2.0 application: client id + client secret.
   mimecast: [
     { label: "client id", anyOf: ["ClientID", "ClientId", "Client ID", "AppId", "Application ID", "Username"], hint: "Mimecast Administration Console → Services → API and Platform Integrations → your 2.0 app → Client ID" },

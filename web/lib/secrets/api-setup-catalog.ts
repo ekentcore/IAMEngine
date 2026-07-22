@@ -16,6 +16,11 @@ export type ApiSetupEntry = {
   // runner. Phase 1: a "Test sign-in" button (proves the console login works). Value is the ad-hoc
   // browser systemKey the flow runs under. Only Mimecast declares it today.
   autoBrowser?: "mimecast-console-setup";
+  // The client-folder SUBFOLDER the vaulted credential should target in Delinea. Vendor API creds go
+  // in the client's "Vendor" subfolder; identity creds (m365) default to "Identity Services" when this
+  // is unset. The create route tries this subfolder first, then "Identity Services", then refuses (a
+  // credential is never written to the client ROOT — it "reads as not viewable" there). See PRs #180/#182.
+  delineaSubfolder?: string;
 };
 
 export const API_SETUP_CATALOG: ApiSetupEntry[] = [
@@ -24,6 +29,7 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     consoleUrl: "https://login.mimecast.com/",
     helpPath: "/help/mimecast",
     autoBrowser: "mimecast-console-setup",
+    delineaSubfolder: "Vendor",
     steps: [
       "In the Mimecast Administration Console, go to Integrations → API and Platform Integrations → Add API Application.",
       "Name it \"iam-engine — <client>\", category SIEM/Integration, point of contact Coretelligent (<coreid>@help.support.tech), and enable it (new applications can take a few minutes to activate).",
@@ -36,6 +42,7 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     systemKey: "spanning", secretName: "spanning", label: "Spanning",
     consoleUrl: "https://o365.spanningbackup.com/",
     helpPath: "/help/spanning",
+    delineaSubfolder: "Vendor",
     derive: "spanning",
     serviceOptions: ["o365", "google"],
     regionOptions: ["us", "eu", "ap", "uk", "ca"],
@@ -49,6 +56,7 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     systemKey: "proofpoint", secretName: "proofpoint", label: "Proofpoint",
     consoleUrl: "https://us1.proofpointessentials.com/",
     helpPath: "/help/proofpoint",
+    delineaSubfolder: "Vendor",
     steps: [
       "Use a Proofpoint Essentials admin login that has API access enabled for the org.",
       "Note the org's primary domain and your data region (from the console URL: us1..us5, eu1, au1).",
@@ -56,8 +64,68 @@ export const API_SETUP_CATALOG: ApiSetupEntry[] = [
     ],
     regionOptions: ["us1", "us2", "us3", "us4", "us5", "eu1", "au1"],
   },
+  {
+    systemKey: "adobe", secretName: "adobe", label: "Adobe",
+    consoleUrl: "https://developer.adobe.com/console",
+    delineaSubfolder: "Vendor",
+    steps: [
+      "In the Adobe Developer Console (developer.adobe.com/console), open (or create) a project for this client's Adobe org, then Add API → User Management API.",
+      "Choose OAuth Server-to-Server as the authentication type and save — this generates the credential.",
+      "From the credential's Overview, copy the Client ID and Client Secret (Retrieve client secret), and the Organization ID (the ...@AdobeOrg value under Credential details / Project overview).",
+      "Paste Client ID, Client Secret, and Org ID below (or the Delinea id), then Verify & save.",
+    ],
+  },
+  {
+    systemKey: "zoom", secretName: "zoom", label: "Zoom",
+    consoleUrl: "https://marketplace.zoom.us/",
+    delineaSubfolder: "Vendor",
+    steps: [
+      "In the Zoom App Marketplace (marketplace.zoom.us) → Develop → Build App, create a Server-to-Server OAuth app for this client's Zoom account.",
+      "On the app's App Credentials page, copy the Account ID, Client ID, and Client Secret.",
+      "Under Scopes, add user read/write scopes (user:read:admin, user:write:admin) so the runner can create/deactivate users, then Activate the app.",
+      "Paste Account ID, Client ID, and Client Secret below (or the Delinea id), then Verify & save.",
+    ],
+  },
+  {
+    systemKey: "egnyte", secretName: "egnyte", label: "Egnyte",
+    consoleUrl: "https://developers.egnyte.com/",
+    delineaSubfolder: "Vendor",
+    steps: [
+      "Note the client's Egnyte domain (the <domain> in https://<domain>.egnyte.com).",
+      "Get an API key/token with admin scope: register/enable an API application for the domain at developers.egnyte.com (or use the domain admin's existing API key), and generate an access token authorized by a domain administrator.",
+      "Enter the Egnyte domain and the API token below (or the Delinea id), then Verify & save.",
+    ],
+  },
+  {
+    systemKey: "knowbe4", secretName: "knowbe4", label: "KnowBe4",
+    consoleUrl: "https://training.knowbe4.com/",
+    delineaSubfolder: "Vendor",
+    steps: [
+      "In the KnowBe4 console, go to your account settings → API and enable the Reporting / User Management API, then generate an API token.",
+      "Note your KnowBe4 region — it sets the API base URL (US = https://us.api.knowbe4.com, EU = https://eu.api.knowbe4.com).",
+      "Enter the API token and region/base URL below (or the Delinea id), then Verify & save.",
+    ],
+  },
+  {
+    systemKey: "slack", secretName: "slack", label: "Slack",
+    consoleUrl: "https://api.slack.com/apps",
+    delineaSubfolder: "Vendor",
+    steps: [
+      "SCIM provisioning requires a Slack Business+ or Enterprise Grid plan and a Workspace/Org Owner.",
+      "Create (or reuse) a Slack app for the workspace at api.slack.com/apps and grant it the admin scope needed for SCIM (the app must be installed by an Owner).",
+      "Generate the SCIM API token (a bearer token with admin scope for https://api.slack.com/scim/v2).",
+      "Paste the SCIM token below (or the Delinea id), then Verify & save.",
+    ],
+  },
 ];
 
 export function apiSetupFor(systemKey: string): ApiSetupEntry | undefined {
   return API_SETUP_CATALOG.find((e) => e.systemKey === systemKey);
+}
+
+// The catalog entry whose credential this secret NAME vaults — the create route uses it to pick the
+// module's Delinea subfolder and record setup provenance. (secretName is the durable key; systemKey
+// and secretName coincide for these vendors, but look up by the name the vault path actually uses.)
+export function apiSetupBySecretName(secretName: string): ApiSetupEntry | undefined {
+  return API_SETUP_CATALOG.find((e) => e.secretName === secretName);
 }

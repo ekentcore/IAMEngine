@@ -17,10 +17,11 @@ import { guard } from "@/lib/auth/route-guard";
 import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope, scopeAllows } from "@/lib/auth/client-scope";
-import { recordAudit } from "@/lib/auth/audit";
-import { createSecret, updateSecretFields, findTemplateIdByName, getDelineaToken, resolveCreateFolderId } from "@/lib/secrets/delinea";
+import { recordAudit, auditActor } from "@/lib/auth/audit";
+import { createSecret, updateSecretFields, findTemplateIdByName, getDelineaToken, resolveVaultFolderId } from "@/lib/secrets/delinea";
 import { SECRET_FIELD_REQUIREMENTS, checkFieldShape } from "@/lib/secrets/field-requirements";
 import { delineaWriteConfigured, delineaWriteConfigFromEnv, defaultFieldMap, defaultTemplateName, folderIdFor, templateFor, identitySubfolderName } from "@/lib/secrets/delinea-templates";
+import { apiSetupBySecretName } from "@/lib/secrets/api-setup-catalog";
 import { probeSecretValues } from "@/lib/secrets/value-probe";
 import { secretRunnerReach } from "@/lib/runner/reachability";
 import { secretIsSet } from "@/lib/secrets/wiring";
@@ -37,6 +38,11 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
 
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return NextResponse.json({ error: "name is required" }, { status: 422 });
+  // The setup-catalog module this secret name vaults for (if any): drives the Delinea subfolder target
+  // and the setup-provenance record. Absent for ad-hoc creds not in the guided-setup catalog.
+  const moduleEntry = apiSetupBySecretName(name);
+  // The folder the credential was actually vaulted into (for the provenance record) — set on a create.
+  let vaultedFolderId: string | null = null;
   const overwriteId = typeof body.overwriteExternalId === "string" ? body.overwriteExternalId.trim() : "";
   const conflictCheck = (body as { conflictCheck?: unknown }).conflictCheck === true;
   const values: Record<string, string> = {};
@@ -176,16 +182,18 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     // one already exists) passes a distinct `label` — createSecret dedups by name in the folder, so the
     // default `${client.name} — ${name}` would otherwise reuse the existing same-named secret.
     const ssName = label ?? `${client.name} — ${name}`;
-    // Identity/cloud credentials belong in the client's "Identity Services" subfolder (correct team view
-    // permissions), NEVER the client ROOT — a secret in the ROOT "can't be viewed" by the team. Resolve the
-    // subfolder; if the client's folder has no such child we REFUSE rather than vault into the ROOT (the
-    // operator must create the subfolder in Delinea first). The stored delineaFolderId stays the ROOT below.
-    const subName = identitySubfolderName();
-    const createFolderId = await resolveCreateFolderId(cfg, folderId!, subName, token);
+    // Credentials belong in a client SUBFOLDER (correct team view permissions), NEVER the client ROOT —
+    // a secret in the ROOT "can't be viewed" by the team. Target the module's configured subfolder first
+    // ("Vendor" for vendor API creds), then "Identity Services" (the identity-cred default); if neither
+    // exists we REFUSE rather than vault into the ROOT (the operator creates the subfolder in Delinea
+    // first). The stored delineaFolderId stays the ROOT below. See PRs #180/#182 + the setup catalog.
+    const subOrder = [moduleEntry?.delineaSubfolder ?? "", identitySubfolderName()].filter((s, i, a) => a.indexOf(s) === i);
+    const createFolderId = await resolveVaultFolderId(cfg, folderId!, subOrder, token);
     if (!createFolderId) {
+      const tried = subOrder.filter(Boolean).map((s) => `"${s}"`).join(" or ");
       return NextResponse.json(
         {
-          error: `Can't create this secret — ${client.name}'s Delinea folder has no "${subName}" subfolder to vault it in. Create that subfolder (with the identity team's view permissions) in Delinea, then retry. Credentials are never written to the client root.`,
+          error: `Can't create this secret — ${client.name}'s Delinea folder has no ${tried} subfolder to vault it in. Create that subfolder (with the right team view permissions) in Delinea, then retry. Credentials are never written to the client root.`,
           manualFallback: true,
         },
         { status: 409 },
@@ -195,6 +203,7 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     if (!result.ok || !result.id) {
       return NextResponse.json({ error: result.error ?? "Delinea create failed", manualFallback: true }, { status: 502 });
     }
+    vaultedFolderId = createFolderId;
     // Remember the folder we ACTUALLY created in (folderId) — but only when the client had none stored,
     // so an inline folderId in the body can't repoint the client at a folder its secrets aren't in
     // (folderIdFor already prefers the stored/env folder over the body, so `folderId` is the real one).
@@ -207,6 +216,18 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
   // Wire the reference onto the client (reuses the same store the paste-id path uses). For an overwrite
   // this re-affirms the same id (and refreshes the label); for a create it points the client at the new one.
   await makeClientRepository(db).upsertSecrets(client.id, [{ name, externalId, label }]);
+
+  // Setup provenance: record WHICH Delinea credential set this module up (and where), so when the
+  // vendor's permissions need changing later an operator can find the exact secret to edit without
+  // spelunking the wiring. Only for guided-setup catalog modules (a real "setup"), and best-effort —
+  // never fail the create over the provenance write. One current row per (client, module).
+  if (moduleEntry) {
+    await db.moduleSetupCredential.upsert({
+      where: { clientId_moduleKey: { clientId: client.id, moduleKey: moduleEntry.systemKey } },
+      update: { delineaSecretId: externalId, delineaFolderId: vaultedFolderId, setBy: auditActor(g.user, "ui").userId, setAt: new Date() },
+      create: { clientId: client.id, moduleKey: moduleEntry.systemKey, delineaSecretId: externalId, delineaFolderId: vaultedFolderId, setBy: auditActor(g.user, "ui").userId },
+    }).catch(() => {});
+  }
 
   // Audit: names + field slugs (keys) only — NEVER the values. externalId is a reference, not a secret.
   await recordAudit("secret.create", {

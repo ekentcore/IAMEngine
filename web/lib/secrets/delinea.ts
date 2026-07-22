@@ -209,6 +209,27 @@ export async function resolveCreateFolderId(
   return await findChildFolderByName(cfg, parentFolderId, subfolderName, token, fetcher); // child id, or null if none
 }
 
+// Resolve the vault folder for a credential from an ORDERED list of candidate subfolder names, returning
+// the first one that exists under `parentFolderId`, or `null` if none do. This generalizes
+// resolveCreateFolderId to a per-module target with a fallback chain — e.g. a vendor API cred prefers the
+// client's "Vendor" subfolder, falling back to "Identity Services"; when neither exists the caller REFUSES
+// rather than write to the ROOT (a ROOT secret "reads as not viewable" to the team). An empty string in
+// the list means "the parent folder itself" (redirect disabled) and short-circuits to the parent.
+export async function resolveVaultFolderId(
+  cfg: DelineaConfig,
+  parentFolderId: string | number,
+  subfolderNames: string[],
+  token: string,
+  fetcher: Fetcher = defaultFetcher
+): Promise<string | null> {
+  for (const name of subfolderNames) {
+    if (!name) return String(parentFolderId); // explicit opt-out (empty name) -> parent
+    const hit = await findChildFolderByName(cfg, parentFolderId, name, token, fetcher);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // The Secret Server folder a given secret LIVES in — read from the metadata-only /summary endpoint
 // (no field values pulled, so no "require comment on view" policy is triggered). Used to auto-detect a
 // client's Delinea folder from a secret the operator already pointed at (e.g. the Global-Admin login

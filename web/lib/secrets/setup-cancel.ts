@@ -16,7 +16,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ActorInput } from "@/lib/auth/actor";
 
-export type SetupRunKind = "m365" | "google";
+export type SetupRunKind = "m365" | "google" | "module";
 
 // globalThis-stashed so Next's dev hot-reload reuses one registry (same pattern as lib/db.ts).
 const store = globalThis as unknown as { __setupRunControllers?: Map<string, AbortController> };
