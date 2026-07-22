@@ -69,7 +69,12 @@ function Invoke-CtgAdobeOnboarding {
 
     $actions = [System.Collections.Generic.List[string]]::new()
     $email = $User.UserPrincipalName
-    $profiles = @(Get-CtgProp $Config 'productProfiles') | Where-Object { $_ }
+    # Wrap the WHOLE pipeline in @(): `@(x) | Where-Object` returns the pipeline's result, which is
+    # $null (not an empty array) when nothing survives the filter — and `$null.Count` THROWS under
+    # Set-StrictMode -Version Latest ("The property 'Count' cannot be found on this object"). A client
+    # with no productProfiles configured (Adobe onboard is often just "ensure in org") hit exactly that,
+    # failing the whole step before it could report "nothing to grant".
+    $profiles = @(@(Get-CtgProp $Config 'productProfiles') | Where-Object { $_ })
 
     if ($profiles.Count -and $PSCmdlet.ShouldProcess($email, "Add to Adobe profiles: $($profiles -join ', ')")) {
         $cmd = @(@{ user = $email; do = @(@{ add = @{ product = @($profiles) } }) })
