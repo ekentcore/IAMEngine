@@ -40,6 +40,28 @@ test("testableSystems: onPrem stamping follows systemIsOnPrem", () => {
   assert.equal(cloudOnly[0].onPrem, false);
 });
 
+// FR #24: an on-prem AD / directory-sync system whose ONLY secret is the OPTIONAL ad-dc must still be
+// tested — the runner authenticates as ambient SYSTEM on a domain controller and needs no credential —
+// and ad-dc must NOT ride in the row's required secretNames. If it does, the runner brokers it up
+// front, a not-needed/unwired ad-dc fails that broker, and the AD probe (the real Get-ADDomain call
+// that proves the agent works) never runs, so a correctly-set-up client with an agent reads not-ready.
+test("testableSystems: an optional-only secret (ad-dc) keeps the system testable but is NOT required", () => {
+  const rows = testableSystems(
+    [sys({ systemKey: "active-directory", secretNames: ["ad-dc"] }), sys({ systemKey: "directory-sync", secretNames: ["ad-dc"] })],
+    true
+  );
+  // both systems are still enqueued for a test (they connect to AD via ambient auth)…
+  assert.deepEqual(rows.map((r) => r.systemKey).sort(), ["active-directory", "directory-sync"]);
+  // …but the optional ad-dc is stripped from the REQUIRED secretNames on every row.
+  for (const r of rows) assert.deepEqual(r.secretNames, [], `${r.systemKey} must not require the optional ad-dc`);
+});
+
+test("testableSystems: a required secret alongside an optional one keeps only the required one", () => {
+  // A member-server AD lane could list both a real required secret and ad-dc; only ad-dc is stripped.
+  const rows = testableSystems([sys({ systemKey: "active-directory", secretNames: ["ad-svc", "ad-dc"] })], true);
+  assert.deepEqual(rows[0].secretNames, ["ad-svc"]);
+});
+
 test("parseRights: normalizes, drops malformed, caps detail", () => {
   const rows = parseRights([
     { op: "create users", ok: true, detail: "granted" },

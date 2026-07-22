@@ -2,6 +2,7 @@
 // scoping and result normalization live here so they stay unit-testable and the whole-client /
 // single-system / fleet-sweep paths can't drift apart.
 import { systemIsOnPrem } from "../cases/case-secrets";
+import { OPTIONAL_SECRETS } from "../secrets/optional-secrets";
 
 export type TestableSystemInput = {
   systemKey: string;
@@ -18,9 +19,20 @@ export type ConnTestRowSpec = {
 };
 
 // The single definition of "which of a client's systems get a connection test": api-mode systems
-// that actually connect to something (have a required secret). Optionally scoped to ONE system —
+// that actually connect to something (have a secret listed). Optionally scoped to ONE system —
 // the per-system retest path — which callers pair with a scoped delete so other systems' latest
 // results survive.
+//
+// The row's `secretNames` are the REQUIRED ones only — OPTIONAL secrets (e.g. ad-dc for the on-prem
+// AD systems, which authenticate as ambient SYSTEM on a domain controller and need no credential) are
+// stripped here so the runner never brokers them up front. A not-needed/unwired ad-dc in the required
+// list fails that broker and skips the AD probe entirely — the exact "AD fails even with an agent
+// installed" bug in FR #24. wiredOptionalSecrets (in connTestRow) still re-attaches a WIRED ad-dc into
+// its own optionalSecretNames list, where a broker miss is best-effort and can't fail the test.
+// Mirrors the job planner's split (orchestrator.ts).
+//
+// The testable filter still keys off the RAW secret list (a system whose only secret is optional, like
+// AD/ad-dc, DOES connect to something and must still be tested — via ambient auth).
 export function testableSystems(
   systems: TestableSystemInput[],
   hasAd: boolean,
@@ -29,12 +41,15 @@ export function testableSystems(
   return systems
     .filter((s) => s.mode === "api" && (s.secretNames?.length ?? 0) > 0)
     .filter((s) => !onlySystemKey || s.systemKey === onlySystemKey)
-    .map((s) => ({
-      systemKey: s.systemKey,
-      secretNames: s.secretNames ?? [],
-      config: s.config ?? undefined,
-      onPrem: systemIsOnPrem(s.systemKey, hasAd),
-    }));
+    .map((s) => {
+      const optionalForSys = OPTIONAL_SECRETS[s.systemKey] ?? [];
+      return {
+        systemKey: s.systemKey,
+        secretNames: (s.secretNames ?? []).filter((n) => !optionalForSys.includes(n)),
+        config: s.config ?? undefined,
+        onPrem: systemIsOnPrem(s.systemKey, hasAd),
+      };
+    });
 }
 
 // Per-operation rights results a runner probe may report: ok=true (verified), ok=false (the
