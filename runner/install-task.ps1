@@ -21,7 +21,12 @@ param(
   [string]$Pwsh = '',                          # default: this pwsh
   [int]$StallTimeoutSeconds = 600,
   [string]$TaskName = 'iam-runner',
-  [string]$RunnerApiToken = $env:RUNNER_API_TOKEN   # bearer for the app's runner APIs; required once the app fails-closed
+  [string]$RunnerApiToken = $env:RUNNER_API_TOKEN,   # bearer for the app's runner APIs; required once the app fails-closed
+  # PoolSize=1 (default) supervises Start-IamRunner.ps1 directly — byte-identical to the single-agent
+  # task. PoolSize>1 supervises Start-IamRunnerPool.ps1 (N distinct-identity members; needs feature #4's
+  # governor active, else the pool refuses >1 and runs a single member).
+  [int]$PoolSize = 1,
+  [string]$RunnerEnrollToken = $env:RUNNER_ENROLL_TOKEN   # signed enroll token so the pool can mint members #1..N-1
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'install-task.ps1 is Windows-only — use install-launchd.sh on macOS/Linux.' }
@@ -31,6 +36,10 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 if (-not $Pwsh) { $Pwsh = (Get-Process -Id $PID).Path; if (-not $Pwsh) { $Pwsh = (Get-Command pwsh).Source } }
 $script = Join-Path $InstallDir 'Start-IamRunner.ps1'
 if (-not (Test-Path $script)) { throw "runner not found at $script — pull it first (Setup-IamRunner.ps1), or set -InstallDir." }
+if ($PoolSize -gt 1) {
+  $script = Join-Path $InstallDir 'Start-IamRunnerPool.ps1'
+  if (-not (Test-Path $script)) { throw "pool supervisor not found at $script — pull a runner build >= 1.95.0, or set -InstallDir." }
+}
 
 # The runner reads RUNNER_SUPERVISED + RUNNER_API_TOKEN from env; set them Machine-wide so the SYSTEM
 # task inherits them (the token is NOT put on the task's command line, so it's not visible in the task
@@ -43,8 +52,17 @@ if (-not [string]::IsNullOrWhiteSpace($RunnerApiToken)) {
 } else {
   Write-Host 'WARN no -RunnerApiToken given and $env:RUNNER_API_TOKEN is empty — the agent will NOT authenticate; it will 401 once the app fails-closed. Re-run with -RunnerApiToken <token> (get it from Agents > Add runner, or the admin runner-token endpoint).' -ForegroundColor Yellow
 }
+# Pool enroll token (Machine env, out of the task command line) so the supervisor can mint members.
+if (-not [string]::IsNullOrWhiteSpace($RunnerEnrollToken)) {
+  [Environment]::SetEnvironmentVariable('RUNNER_ENROLL_TOKEN', $RunnerEnrollToken, 'Machine')
+  $env:RUNNER_ENROLL_TOKEN = $RunnerEnrollToken
+}
 
+# Size 1 = the runner directly (unchanged arg string); size >1 = the pool supervisor with -PoolSize.
 $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -AppUrl `"$AppUrl`" -AgentId `"$AgentId`" -StallTimeoutSeconds $StallTimeoutSeconds"
+if ($PoolSize -gt 1) {
+  $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -AppUrl `"$AppUrl`" -AgentId `"$AgentId`" -PoolSize $PoolSize -StallTimeoutSeconds $StallTimeoutSeconds"
+}
 $action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arg -WorkingDirectory $InstallDir
 
 # Trigger: at startup + repeat every 1 minute indefinitely (the keep-alive heartbeat).

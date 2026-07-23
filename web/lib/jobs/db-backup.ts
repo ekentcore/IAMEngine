@@ -25,6 +25,7 @@ import path from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { claimAppSetting, getAppSetting, setAppSetting } from "../settings";
 import { fireNotification } from "../notifications/sender";
+import { azureConfigured, loadAzureBackup, redactAzureSecrets, uploadDumpToBlob, type AzureBackupConfig } from "./backup-blob";
 
 const execFileP = promisify(execFile);
 
@@ -37,6 +38,12 @@ export type DbBackupResult = {
   dataTables?: number;
   error?: string;
   at: string; // ISO
+  // Phase 2 (off-box copy) — populated only when Azure upload is enabled + configured. Backward
+  // compatible: normalizeDbBackup ignores unknown fields, so an older row simply has none of these.
+  blobUrl?: string;
+  blobUploadedAt?: string;
+  checksum?: string;    // SHA-256 of the dump, recorded so the drill can re-verify the off-box copy
+  uploadError?: string; // set (sanitized) when the local dump succeeded but the Blob upload did not
 };
 
 export type DbBackupSetting = {
@@ -101,9 +108,10 @@ export function backupDue(s: DbBackupSetting, now: Date): boolean {
   return !Number.isFinite(last) || last < boundary.getTime();
 }
 
-// pg_dump/pg_restore live outside PATH under launchd; probe the usual Homebrew kegs.
+// pg_dump/pg_restore/psql live outside PATH under launchd; probe the usual Homebrew kegs.
 // (backup.sh/restore.sh carry the same list for the standalone layer — keep them in step.)
-function findPgBin(tool: string): string {
+// Exported so the restore drill (restore-drill.ts) locates pg_restore/psql the same way.
+export function findPgBin(tool: string): string {
   const candidates = [
     process.env.PG_BIN_DIR,
     "/opt/homebrew/opt/libpq/bin",
@@ -118,14 +126,22 @@ function findPgBin(tool: string): string {
 }
 
 // Node's execFile error message embeds the full command line — including the connection URL and
-// its password. Anything stored, rendered, or notified must pass through here first.
-function sanitizeError(msg: string): string {
-  return msg.replace(/postgres(ql)?:\/\/[^@\s"']*@/gi, "postgresql://***@");
+// its password. Anything stored, rendered, or notified must pass through here first. Extended for
+// feature #5 to also scrub Azure SAS tokens / account keys / connection strings that an `az` failure
+// can echo (redactAzureSecrets). Exported so the restore drill reuses the identical scrubber.
+export function sanitizeError(msg: string): string {
+  const noPg = msg.replace(/postgres(ql)?:\/\/[^@\s"']*@/gi, "postgresql://***@");
+  return redactAzureSecrets(noPg);
 }
 
 // Take one backup now. Exported separately from the sweep so the admin route can offer an
 // explicit "Back up now" that bypasses the nightly schedule.
-export async function runDbBackup(s: DbBackupSetting): Promise<DbBackupResult> {
+//
+// Phase 2 (feature #5, SHIPS DARK per D1): if `azure` is passed AND enabled+configured, the verified
+// dump is ALSO pushed off-box to Azure Blob. By default `azure` is undefined ⇒ nothing calls Azure ⇒
+// behaviour is byte-identical to before the feature. An UPLOAD failure never fails the backup (the
+// local dump is still a valid restore point) — it is surfaced as `uploadError` for the caller to alert.
+export async function runDbBackup(s: DbBackupSetting, azure?: AzureBackupConfig): Promise<DbBackupResult> {
   const at = new Date().toISOString();
   try {
     const rawUrl = process.env.DATABASE_URL ?? "";
@@ -161,7 +177,21 @@ export async function runDbBackup(s: DbBackupSetting): Promise<DbBackupResult> {
         // a broken symlink must not fail the backup
       }
       await pruneOldDumps(dir, dbName, s.keepDays);
-      return { ok: true, file, sizeBytes: (await fs.stat(file)).size, dataTables, at };
+      const result: DbBackupResult = { ok: true, file, sizeBytes: (await fs.stat(file)).size, dataTables, at };
+      // Off-box copy (dark by default). Only reached when an operator has enabled + configured Azure.
+      if (azure && azureConfigured(azure)) {
+        try {
+          const up = await uploadDumpToBlob(azure, file, dbName, stamp);
+          result.blobUrl = up.blobUrl;
+          result.blobUploadedAt = up.uploadedAt;
+          result.checksum = up.checksum;
+        } catch (err) {
+          // A dump that exists only on a soon-to-be-gone box is a silent single point of failure — do
+          // NOT fail the backup, but record the (scrubbed) error so the caller fires a backupFailed alert.
+          result.uploadError = sanitizeError(err instanceof Error ? err.message : String(err));
+        }
+      }
+      return result;
     } finally {
       await fs.rm(tmp, { force: true }).catch(() => {});
     }
@@ -213,7 +243,10 @@ export async function sweepDbBackup(db: PrismaClient): Promise<void> {
   const claimed: DbBackupSetting = { ...s, lastStartedAt: new Date().toISOString() };
   if (!(await claimAppSetting(db, DB_BACKUP_KEY, raw, claimed))) return;
 
-  const result = await runDbBackup(claimed);
+  // Off-box upload is DARK by default: loadAzureBackup resolves enabled=false unless an operator set
+  // backup.azure.enabled, so this reads a setting but never calls Azure until then.
+  const azure = await loadAzureBackup(db);
+  const result = await runDbBackup(claimed, azure);
   await recordRunResult(db, result);
 
   await db.auditLog
@@ -231,6 +264,16 @@ export async function sweepDbBackup(db: PrismaClient): Promise<void> {
       event: "backupFailed",
       title: "Nightly database backup failed",
       detail: result.error ?? "unknown error",
+      at: result.at,
+    }).catch(() => {});
+  } else if (result.uploadError) {
+    // The local dump is good, but the durable off-box copy did not land — on a soon-to-be-gone box
+    // that is a silent single point of failure, so it MUST reach chat.
+    await db.auditLog.create({ data: { actor: "system:db-backup", action: "db.backup.upload_failed", detail: { ...result } } }).catch(() => {});
+    await fireNotification({
+      event: "backupFailed",
+      title: "Database backup off-box upload failed",
+      detail: `The nightly dump was taken and verified locally, but the copy to Azure Blob failed: ${result.uploadError}`,
       at: result.at,
     }).catch(() => {});
   }

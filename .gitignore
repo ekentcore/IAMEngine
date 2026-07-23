@@ -78,6 +78,13 @@ exo.pfx
 runner/.claude/
 runner/.remember/
 
+# runner-pool runtime state (never tracked; also excluded from the bundle hash — dot-files)
+runner/.runner.lock
+runner/.runner.*.lock
+runner/.runner-pool.json
+runner/.runner-pool.lock
+runner/.runner-pool.update
+
 # spanning login-test scratch (screenshots, network capture, browser profile)
 runner/browser/scripts/.spanning-test-run/
 runner/browser/scripts/.spanning-profile/

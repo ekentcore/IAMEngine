@@ -7,7 +7,7 @@
 #
 # Run it once (re-run any time to update the settings). Override defaults via env — same names as
 # update-mac-runner.sh:
-#   APP_URL  AGENT_ID  RUNNER_DIR  PWSH  RUNNER_API_TOKEN  STALL_TIMEOUT  RUNNER_LOG
+#   APP_URL  AGENT_ID  RUNNER_DIR  PWSH  RUNNER_API_TOKEN  STALL_TIMEOUT  RUNNER_LOG  POOL_SIZE  RUNNER_ENROLL_TOKEN
 set -euo pipefail
 
 APP="${APP_URL:-http://192.168.0.81:3000}"
@@ -17,12 +17,40 @@ PWSH="${PWSH:-$HOME/.local/pwsh/pwsh}"
 TOKEN="${RUNNER_API_TOKEN:-}"
 STALL="${STALL_TIMEOUT:-600}"
 LOG="${RUNNER_LOG:-$HOME/iam-runner.log}"
+# POOL_SIZE=1 (default) supervises Start-IamRunner.ps1 DIRECTLY — byte-identical to the single-agent
+# install. POOL_SIZE>1 supervises Start-IamRunnerPool.ps1, which runs N distinct-identity members on
+# this box (needs feature #4's governor active, else the pool refuses >1 and runs a single member).
+POOL="${POOL_SIZE:-1}"
+ENROLL="${RUNNER_ENROLL_TOKEN:-}"
 LABEL="com.coretelligent.iam-runner"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
 [ -x "$PWSH" ] || command -v "$PWSH" >/dev/null 2>&1 || { echo "pwsh not found at '$PWSH' — set PWSH=/path/to/pwsh"; exit 1; }
 [ -f "$DIR/Start-IamRunner.ps1" ] || { echo "runner not found at $DIR/Start-IamRunner.ps1 — run update-mac-runner.sh first"; exit 1; }
+
+# Supervised target: a single agent runs Start-IamRunner.ps1 directly (unchanged); a pool runs the
+# supervisor with -PoolSize. Build the whole ProgramArguments <string> block as one variable so the
+# POOL=1 plist is byte-for-byte identical to before (no stray lines).
+if [ "$POOL" -gt 1 ]; then
+  [ -f "$DIR/Start-IamRunnerPool.ps1" ] || { echo "pool supervisor not found at $DIR/Start-IamRunnerPool.ps1 — pull a runner build >= 1.95.0"; exit 1; }
+  ARGS_BLOCK=$(cat <<ARGS_EOF
+    <string>-File</string><string>$DIR/Start-IamRunnerPool.ps1</string>
+    <string>-AppUrl</string><string>$APP</string>
+    <string>-AgentId</string><string>$AGENT</string>
+    <string>-PoolSize</string><string>$POOL</string>
+    <string>-StallTimeoutSeconds</string><string>$STALL</string>
+ARGS_EOF
+)
+else
+  ARGS_BLOCK=$(cat <<ARGS_EOF
+    <string>-File</string><string>$DIR/Start-IamRunner.ps1</string>
+    <string>-AppUrl</string><string>$APP</string>
+    <string>-AgentId</string><string>$AGENT</string>
+    <string>-StallTimeoutSeconds</string><string>$STALL</string>
+ARGS_EOF
+)
+fi
 
 echo "==> stopping any hand-started (nohup) runner so launchd is the sole owner"
 pkill -f Start-IamRunner 2>/dev/null || true
@@ -31,6 +59,9 @@ sleep 1
 # Optional token line for the EnvironmentVariables dict (kept out of argv so it's not visible in `ps`).
 TOKEN_LINE=""
 [ -n "$TOKEN" ] && TOKEN_LINE="    <key>RUNNER_API_TOKEN</key><string>$TOKEN</string>"
+# Enroll token (pool only) so the supervisor can mint members #1..N-1. Also kept out of argv.
+ENROLL_LINE=""
+[ -n "$ENROLL" ] && ENROLL_LINE="    <key>RUNNER_ENROLL_TOKEN</key><string>$ENROLL</string>"
 
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<PLIST_EOF
@@ -44,15 +75,13 @@ cat > "$PLIST" <<PLIST_EOF
     <string>$PWSH</string>
     <string>-NoProfile</string>
     <string>-ExecutionPolicy</string><string>Bypass</string>
-    <string>-File</string><string>$DIR/Start-IamRunner.ps1</string>
-    <string>-AppUrl</string><string>$APP</string>
-    <string>-AgentId</string><string>$AGENT</string>
-    <string>-StallTimeoutSeconds</string><string>$STALL</string>
+$ARGS_BLOCK
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>RUNNER_SUPERVISED</key><string>1</string>
 $TOKEN_LINE
+$ENROLL_LINE
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

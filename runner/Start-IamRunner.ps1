@@ -35,6 +35,8 @@ param(
 Import-Module "$PSScriptRoot/lib/Coretelligent.Watchdog/Coretelligent.Watchdog.psm1" -Force
 # Pure -AppUrl rewrite helpers (Set-CtgAppUrlInArgString / Set-CtgAppUrlInPlist), used by Invoke-CtgMigrate.
 . (Join-Path $PSScriptRoot 'lib/CtgMigrate.ps1')
+# Invoke-CtgManifestPull — the self-update file pull (no relaunch), shared with the pool supervisor.
+. (Join-Path $PSScriptRoot 'lib/CtgUpdate.ps1')
 if (-not $PSBoundParameters.ContainsKey('StallTimeoutSeconds') -and $env:RUNNER_STALL_TIMEOUT) { $StallTimeoutSeconds = [int]$env:RUNNER_STALL_TIMEOUT }
 $HeartbeatFile = Get-CtgHeartbeatPath -Explicit $HeartbeatFile -AgentId $AgentId
 if ($HealthCheck) {
@@ -2048,34 +2050,12 @@ function Repair-CtgMissingModule {
 }
 
 function Update-CtgRunner {
-    # Operator clicked "Update": re-pull every runner file from the app's manifest into our own
-    # folder, then relaunch this script (new pwsh process = new code) and exit. Re-runnable and
-    # self-contained so the operator never has to hand-walk a re-pull on the host again.
-    $H = @{ 'ngrok-skip-browser-warning' = 'true' }
-    if ($ApiToken) { $H['Authorization'] = "Bearer $ApiToken" }
-    Write-Host "self-update: pulling latest runner from $AppUrl" -ForegroundColor Yellow
-    $manifest = Invoke-RestMethod -Uri "$AppUrl/api/runner/manifest" -Headers $H -TimeoutSec 30
-    foreach ($rel in $manifest.files) {
-        # Manifest paths are POSIX-style ('a/b/c'); Join-Path accepts '/' on Windows and it's native
-        # on macOS/Linux, so use $rel as-is rather than forcing a backslash (which would corrupt
-        # paths on a non-Windows central runner).
-        $dest = Join-Path $PSScriptRoot $rel
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-        $resp = Invoke-WebRequest -Uri "$AppUrl/api/runner/file?path=$([uri]::EscapeDataString($rel))" -UseBasicParsing -Headers $H -TimeoutSec 60
-        [System.IO.File]::WriteAllText($dest, $resp.Content)
-    }
-    # PRUNE files no longer in the bundle. Pulling-without-deleting leaves stale leftovers (a removed/
-    # renamed module), and Get-CtgBuildId hashes EVERY file in the folder — so one leftover makes our
-    # build id differ from the app's forever: "update available" that re-pulls but never converges
-    # ("updated, back online… still the same version"). Keep only manifest files + the runtime files
-    # the hash already excludes (.build, .runner.lock, *.log). Mirrors Get-CtgBuildId's skip-list.
-    $want = @{}; foreach ($rel in $manifest.files) { $want[(Join-Path $PSScriptRoot $rel)] = $true }
-    foreach ($f in Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue) {
-        if ($want.ContainsKey($f.FullName)) { continue }
-        if ($f.Name -eq '.build' -or $f.Name -eq '.runner.lock' -or $f.Name -eq '.DS_Store' -or $f.Name -like '*.log') { continue }
-        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; Write-Host "self-update: pruned stale $($f.Name)" -ForegroundColor DarkYellow } catch { }
-    }
-    Write-Host "self-update: pulled $($manifest.files.Count) files (build $($manifest.buildId)) — restarting" -ForegroundColor Green
+    # Operator clicked "Update" (or auto-update): re-pull every runner file from the app's manifest
+    # into our own folder, then relaunch this script (new pwsh process = new code) and exit. The pull
+    # itself lives in Invoke-CtgManifestPull (lib/CtgUpdate.ps1) so the pool supervisor can reuse it
+    # once for the whole pool; here we pull then relaunch, exactly as before.
+    $m = Invoke-CtgManifestPull -AppUrl $AppUrl -ApiToken $ApiToken -RunnerDir $PSScriptRoot
+    Write-Host "self-update: pulled $($m.count) files (build $($m.buildId)) — restarting" -ForegroundColor Green
     Invoke-CtgRelaunch -Reason 'self-update'
 }
 
@@ -3158,12 +3138,16 @@ if (Test-CtgBrowserAvailable) { $script:RunnerCapabilities += 'browser' }
 $script:RunnerCapabilitiesJson = if ($script:RunnerCapabilities.Count -eq 0) { '[]' } else { ($script:RunnerCapabilities | ConvertTo-Json -Compress -AsArray) }
 Write-Host "on-prem capabilities: $script:RunnerCapabilitiesJson" -ForegroundColor DarkGray
 
-# Single-instance guard. The newest runner process for this folder claims .runner.lock with its PID
-# at startup; an OLDER process (e.g. one a half-landed self-update failed to replace) sees a different
-# PID on its next loop and exits. Without this, a stale process keeps claiming jobs with OLD in-memory
-# modules while a newer process reports the new build — "agent up to date but running old code", which
-# silently ran outdated executors after an update. Lock I/O is best-effort (never fatal).
-$script:LockPath = Join-Path $PSScriptRoot '.runner.lock'
+# Single-instance guard, keyed PER AGENT. The newest runner process for THIS agentId claims
+# .runner.<agentId>.lock with its PID at startup; an OLDER process for the same agent (e.g. one a
+# half-landed self-update failed to replace) sees a different PID on its next loop and exits. Without
+# this, a stale process keeps claiming jobs with OLD in-memory modules while a newer process reports
+# the new build — "agent up to date but running old code", which silently ran outdated executors.
+# The agentId in the filename is what lets a runner POOL (Start-IamRunnerPool.ps1) run N members in
+# one folder without them evicting each other — each member owns its own lock; the newest-PID-wins
+# eviction still fires WITHIN one agentId. (Keep this format in lockstep with Get-CtgPoolLockPath in
+# lib/Coretelligent.Pool.) Lock I/O is best-effort (never fatal).
+$script:LockPath = Join-Path $PSScriptRoot ".runner.$AgentId.lock"
 try { [System.IO.File]::WriteAllText($script:LockPath, [string]$PID) } catch { }
 
 Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild, pid $PID) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
@@ -3226,10 +3210,38 @@ while ($true) {
         if ($script:LastMigrateError) { $hbBody['migrateError'] = $script:LastMigrateError }
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' $hbBody
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
-        if ($hb.update -eq $true) { Update-CtgRunner }  # operator requested self-update — re-pull + restart (never returns)
+        if ($hb.update -eq $true) {
+            # Self-update. A STANDALONE runner (single-agent install, RUNNER_POOL_MEMBER unset) pulls +
+            # relaunches itself, exactly as before. A POOL MEMBER yields: it must NOT pull, because N
+            # members sharing one folder all pulling at once races (half-written files) and stampedes
+            # the relaunch. Instead it drops a sentinel the supervisor sees and exits; the supervisor
+            # pulls ONCE for the whole pool and respawns members staggered (Start-IamRunnerPool.ps1).
+            if ($env:RUNNER_POOL_MEMBER) {
+                try { [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot '.runner-pool.update'), [string]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) } catch { }
+                Write-Host "self-update requested — pooled member: signaling the supervisor to pull once + exiting" -ForegroundColor Yellow
+                Invoke-CtgRelaunch -Reason 'pool-update-yield'  # supervised -> exit 0; the supervisor pulls + respawns
+            }
+            Update-CtgRunner  # standalone: re-pull + restart (never returns)
+        }
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
         if ($hb.migrate -and $hb.migrate.appUrl) { Invoke-CtgMigrate -NewAppUrl ([string]$hb.migrate.appUrl) }  # operator moved the app — verify + rewrite supervisor + switch
+        # Maintenance drain (feature #7): the app is quiescing the fleet (e.g. an Azure host cutover).
+        # Any job already in hand finished normally in the foreach below on a prior cycle (with its
+        # -finally teardown); we simply CLAIM NOTHING NEW and idle until the operator clears maintenance.
+        # Honored AFTER update/restart/migrate (each of those re-execs/moves and never returns, so this
+        # only fires when none of them did — the correct precedence). Named $script:Draining /
+        # 'maintenanceDrain' to avoid colliding with the local "drain the queue" idiom in the sleep-tail.
+        # Backward-compatible: a runner that never learns this field just keeps claiming, but the app's
+        # claim() gate returns [] during a global drain, so it is still starved of work (defense in depth).
+        $script:Draining = ($hb.PSObject.Properties['drain'] -and $hb.drain -eq $true)
+        if ($script:Draining) {
+            Update-CtgHeartbeat -Path $global:CtgHeartbeatFile -Phase 'draining'  # keep the watchdog armed while idle
+            Write-Host "maintenance drain active — claiming nothing new; idling until it clears" -ForegroundColor Yellow
+            $jobs = @()            # nothing claimed this cycle (keeps the sleep-tail invariant intact)
+            Start-Sleep -Seconds $PollSeconds
+            continue               # skip claim + the job foreach; loop back to the heartbeat next cycle
+        }
         # Send our build id so the app refuses to dispatch to a STALE runner (a half-landed update can
         # leave an old process alive; this stops it claiming jobs with old modules in memory).
         $jobs = Invoke-AppApi POST '/api/jobs/claim' @{ agentId = $AgentId; batchSize = $BatchSize; version = $script:RunnerBuild }

@@ -31,6 +31,8 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ["/feature-requests", "Feature requests"],
     ["/modules", "Modules"],
     ["/health", "Health"],
+    ["/health/fleet", "Fleet health"],
+    ["/golive", "Go-live readiness"],
     ["/help", "Help"],
   ];
   // Self-contained operator utilities — no data access, no role gate (everything runs in the browser),
@@ -47,6 +49,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ...(flags.showUsers ? ([["/users", "Users"]] as const) : []),
     ...(flags.showConnectors ? ([["/connectors", "Connectors"]] as const) : []),
     ...(flags.showChangelog ? ([["/changelog", "Change log"]] as const) : []),
+    ...(flags.showSettings ? ([["/cutover", "Azure cutover"]] as const) : []),
     ...(flags.showSettings ? ([["/settings", "Settings"]] as const) : []),
   ];
   return [

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, type JobLite } from "./runner-logic";
+import { dependencyGateOpen, deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, maintenanceBlocks, type JobLite, type MaintenanceScope } from "./runner-logic";
 import { offboardCandidatesOf, offboardCandidateQuery } from "./runner-service";
 
 function j(over: Partial<JobLite>): JobLite {
@@ -179,6 +179,42 @@ test("setupGateBlocks: default policy never blocks; enforce blocks only failing-
   assert.equal(setupGateBlocks({ test: "untested", attested: false }, on).block, false); // never strand legacy clients
   assert.equal(setupGateBlocks({ test: "unknown", attested: false }, on).block, false);
   assert.equal(setupGateBlocks({ test: "ok", attested: false }, on).block, false);
+});
+
+// --- maintenance / drain admission gate (feature #7) ---------------------------------------------
+const NONE: MaintenanceScope = { global: false, systems: [], clients: [] };
+const cand = (systemKey: string, clientId: string) => ({ systemKey, clientId });
+
+test("maintenanceBlocks: empty scope blocks nothing (fail-open)", () => {
+  assert.equal(maintenanceBlocks(NONE, cand("m365", "c1")), false);
+  assert.equal(maintenanceBlocks(NONE, cand("mimecast", "c2")), false);
+});
+
+test("maintenanceBlocks: a global drain blocks every candidate", () => {
+  const scope: MaintenanceScope = { global: true, systems: [], clients: [] };
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c1")), true);
+  assert.equal(maintenanceBlocks(scope, cand("anything", "whoever")), true);
+});
+
+test("maintenanceBlocks: a paused system blocks only that systemKey", () => {
+  const scope: MaintenanceScope = { global: false, systems: ["mimecast"], clients: [] };
+  assert.equal(maintenanceBlocks(scope, cand("mimecast", "c1")), true);  // paused system, any client
+  assert.equal(maintenanceBlocks(scope, cand("mimecast", "c2")), true);
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c1")), false);      // sibling system on same case still runs
+});
+
+test("maintenanceBlocks: a paused client blocks only that client id", () => {
+  const scope: MaintenanceScope = { global: false, systems: [], clients: ["c1"] };
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c1")), true);       // every system for the paused client
+  assert.equal(maintenanceBlocks(scope, cand("mimecast", "c1")), true);
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c2")), false);      // another client untouched
+});
+
+test("maintenanceBlocks: system-pause and client-pause combine (either matches)", () => {
+  const scope: MaintenanceScope = { global: false, systems: ["spanning"], clients: ["c9"] };
+  assert.equal(maintenanceBlocks(scope, cand("spanning", "c1")), true); // matched by system
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c9")), true);     // matched by client
+  assert.equal(maintenanceBlocks(scope, cand("m365", "c1")), false);    // matched by neither
 });
 
 // --- offboard-target candidates ------------------------------------------------------------------

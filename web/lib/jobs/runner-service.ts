@@ -3,8 +3,10 @@
 // Pure decisions live in runner-logic.ts; this layer is the I/O around them.
 import type { AgentScope, CaseStatus, JobStatus, Mode, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, LICENSE_DEPENDENT_SYSTEMS, type JobLite, type SetupGatePolicy } from "./runner-logic";
+import { deriveCaseStatus, isClaimable, shouldStandBy, setupGateBlocks, maintenanceBlocks, LICENSE_DEPENDENT_SYSTEMS, type JobLite, type SetupGatePolicy } from "./runner-logic";
 import { getAppSetting, setAppSetting } from "../settings";
+import { MAINTENANCE_KEY, normalizeMaintenance, maintenanceScope, type MaintenanceState } from "./maintenance";
+import { CONCURRENCY_KEY, resolveCaps, admitUnderCaps, governorActive, groupKey, type ConcurrencySetting, type Inflight } from "./concurrency";
 
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
 export const SETUP_GATE_KEY = "setup_gate";
@@ -20,6 +22,8 @@ import { testableSystems, isNotNeededForTest, type RightsRow } from "./conn-test
 import { wiredOptionalSecrets } from "../secrets/auxiliary";
 import { diffConnOutcome, sweepConnTests } from "./conn-sweep";
 import { sweepDbBackup } from "./db-backup";
+import { sweepRestoreDrill } from "./restore-drill";
+import { sweepFleetAlerts } from "./fleet-alerts";
 import { AGENT_MIGRATION_KEY, migrateDecision, type AgentMigrationSetting } from "./agent-migration";
 import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions, BROWSER_SYSTEMS } from "../runner/capabilities";
@@ -127,6 +131,40 @@ const LEASE_MS = 10 * 60 * 1000;
 // past the runner's 10-min watchdog). Generous so a genuinely-slow-but-narrating step never trips it.
 const PROGRESS_STALE_MS = 20 * 60 * 1000;
 const MAX_PROGRESS_RECLAIMS = 1; // re-queue a wedged job once; if it wedges again, FAIL it (don't loop)
+
+// Feature #4 (concurrency governor): a stable, single fleet-wide advisory-lock key. "0004" = feature
+// #4 — never reuse this bigint for another lock. `pg_advisory_xact_lock` serializes the count→admit→
+// assign critical section across every claim() (all runners, all app instances — the lock lives in
+// Postgres), auto-releasing on commit OR rollback so a thrown error can't strand it. Keep the section
+// TIGHT: it serializes ALL claims fleet-wide, and the runner pool (#1) depends on it staying short.
+const ADMISSION_LOCK_KEY = 0x1a3c0004n;
+
+// Live in-flight counts for the concurrency caps, read UNDER the advisory lock. Job has no clientId
+// column, so join through CaseRequest→Client and COALESCE the parent (D7: a child account shares its
+// parent's Graph/EXO tenant, so caps + rule (d) key on the parent tenant). One grouped scan yields
+// the global, per-tenant, and per-(tenant, systemKey) views at once. Counts ALL dispatched/running
+// work — including ad-hoc/singleRun jobs — because they occupy the same shared session a normal job
+// would collide with; the cap-exemption for those jobs is applied in admitUnderCaps, not here.
+async function countInflight(tx: Prisma.TransactionClient): Promise<Inflight> {
+  const rows = await tx.$queryRaw<{ tenantId: string; systemKey: string; n: number | bigint }[]>`
+    SELECT COALESCE(cl."parentId", cl.id) AS "tenantId", j."systemKey" AS "systemKey", COUNT(*)::int AS n
+    FROM "Job" j
+    JOIN "CaseRequest" c ON c.id = j."caseRequestId"
+    JOIN "Client" cl ON cl.id = c."clientId"
+    WHERE j.status IN ('dispatched','running')
+    GROUP BY COALESCE(cl."parentId", cl.id), j."systemKey"
+  `;
+  let global = 0;
+  const byTenant: Record<string, number> = {};
+  const byTenantSystem: Record<string, number> = {};
+  for (const r of rows) {
+    const n = Number(r.n);
+    global += n;
+    byTenant[r.tenantId] = (byTenant[r.tenantId] ?? 0) + n;
+    byTenantSystem[groupKey(r.tenantId, r.systemKey)] = n;
+  }
+  return { global, byTenant, byTenantSystem };
+}
 
 // systemKeys on this case whose FAILED run the operator ACCEPTED ("ignore warning — mark complete",
 // which resolves the run-log outcome). The claim gate builds the same set inline for the dependency
@@ -382,7 +420,7 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null }> {
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean }> {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
@@ -474,7 +512,28 @@ export function makeRunnerService(db: PrismaClient) {
       // Same pulse: the nightly pg_dump database backup (default ON; durable AppSetting throttle,
       // one run per night after the configured local hour). See lib/jobs/db-backup.ts.
       void sweepDbBackup(db).catch(() => {});
-      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate };
+      // Same pulse (feature #5): the WEEKLY restore drill — restore the latest dump into a scratch DB,
+      // assert integrity, drop it, alert on failure — plus the ">26h no backup" staleness watch. Self-
+      // throttles + claims its own AppSetting; default ON. See lib/jobs/restore-drill.ts.
+      void sweepRestoreDrill(db).catch(() => {});
+      // Same pulse (feature #3): proactive fleet alerts — agent-offline / queue-backlog / repeated-
+      // failures / backup-stale, evaluated at query time and delivered via fireNotification. Self-
+      // throttles + claims its own AppSetting (alerts.state); dedupes with a deadline-read cooldown.
+      void sweepFleetAlerts(db).catch(() => {});
+      // Maintenance drain (feature #7, S2): tell the runner to finish the job in hand and then idle.
+      // A PURE READ (no atomic-consume) — drain is a level, not a one-shot edge, so it must keep being
+      // reported every beat until an operator clears maintenance. Driven by `global` ONLY: a
+      // per-system/per-client pause does NOT idle the whole runner (it keeps working un-paused systems);
+      // those scoped pauses are enforced purely by the claim() gate. An older runner ignores this field.
+      const maint = normalizeMaintenance(await getAppSetting<Partial<MaintenanceState>>(db, MAINTENANCE_KEY));
+      const drain = maint.global === true;
+      // S7 governor contract (feature #4 ⇄ #1): tell the runner whether the concurrency governor is
+      // ACTIVE. The pool supervisor (Start-IamRunnerPool.ps1) refuses -PoolSize > 1 while this is false
+      // — an ungoverned pool lets two members run the same tenant+system concurrently (UM0029840 across
+      // processes). Fail-open: an absent/disabled/unparseable setting reads as inactive (single-runner
+      // safe). An older runner simply ignores the extra field.
+      const governor = governorActive(resolveCaps(await getAppSetting<ConcurrencySetting>(db, CONCURRENCY_KEY)));
+      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate, drain, governorActive: governor };
     },
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
@@ -562,6 +621,18 @@ export function makeRunnerService(db: PrismaClient) {
       const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true, priority: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
+
+      // ===== ADMISSION GATE (a): maintenance / drain — feature #7. THE FIRST admission decision (S1a). =====
+      // One settings read; fail-open (an absent/corrupt setting reads as "no maintenance"). A GLOBAL
+      // drain short-circuits the whole claim BEFORE the stale/wedged reclaims below — deliberately: we
+      // do not want reclaims re-queuing work into a fleet we're trying to quiesce for the Azure cutover.
+      // When drain clears, the next claim runs the reclaims normally, so a genuinely-stale lease is
+      // still recovered — just deferred until resume. This is the "claiming agent is draining" branch.
+      const maint = normalizeMaintenance(await getAppSetting<Partial<MaintenanceState>>(db, MAINTENANCE_KEY));
+      if (maint.global) return [];
+      const maintScope = maintenanceScope(maint); // scoped (per-system/per-client) pauses are applied per-candidate below
+      // (Feature #4's global/per-tenant/per-(client,system) concurrency caps layer AFTER this gate —
+      // see the per-candidate insertion point in the eligibility loop below.)
 
       // Priority failover: stand by (claim nothing) while a STRICTLY higher-priority peer of the same
       // scope is online — a client's other agents for a client runner, the other central runners for the
@@ -773,6 +844,22 @@ export function makeRunnerService(db: PrismaClient) {
       const eligible: string[] = [];
       const notNeeded: { id: string; caseRequestId: string; clientId: string; systemKey: string; singleRun: boolean }[] = [];
       for (const c of candidates) {
+        // ADMISSION GATE (a) per-candidate: maintenance / drain (feature #7) — the FIRST per-candidate
+        // check. A scoped pause (this system OR this client is in maintenance) drops the candidate as
+        // early and cheaply as possible, before any dependency/secret/host-affinity work. (A GLOBAL
+        // drain already returned [] above, so only per-system/per-client pauses reach here.)
+        const cMeta = caseMetaById.get(c.caseRequestId);
+        if (cMeta && maintenanceBlocks(maintScope, { systemKey: c.systemKey, clientId: cMeta.clientId })) continue;
+        // ===== INSERTION POINT FOR FEATURE #4 (concurrency caps, gates b–d) =====
+        // #4's caps (b global / c per-tenant / d per-(tenant,systemKey) ≤ 1) layer AFTER #7's
+        // maintenance gate (S1) — but they are NOT applied per-candidate here. The eligibility loop
+        // stays purely subtractive (deps/secrets/host/setup), producing `eligible[]`; #4's caps then
+        // run as a single FINAL admission stage below (just before the assignment write), where the
+        // count → admit → assign are wrapped in one fleet-wide `pg_advisory_xact_lock` transaction so
+        // the caps hold under concurrent claims from multiple runners (see the ADMISSION LOCK block).
+        // A bare per-candidate count-then-assign here would race (write skew under READ COMMITTED).
+        // The counts key on the PARENT tenant for child accounts (D7 / cMeta.client.parentId).
+
         // A single-step job bypasses the dependency gate AND the terminal/paused-case exclusion
         // (it's an explicit, operator-confirmed run), but still honors the approval gate below and
         // the secret/host-affinity preflight. Everything else uses the normal claim rules.
@@ -857,15 +944,61 @@ export function makeRunnerService(db: PrismaClient) {
 
       if (eligible.length === 0) return [];
 
-      // atomic: only rows still pending flip; a racing agent's updateMany skips already-claimed rows.
-      // Clear progress here so every (re-)run starts with a fresh phase trail, not stale phases from a
-      // prior attempt — DbNull writes SQL NULL.
-      await db.job.updateMany({
-        where: { id: { in: eligible }, status: "pending" },
-        data: { status: "dispatched", assignedAgentId: agent.id, startedAt: new Date(), progress: Prisma.DbNull },
-      });
+      // ===== ADMISSION GATES (b)(c)(d): concurrency governor — feature #4. The FINAL admission stage. =====
+      // Read the caps once (only now that we actually have candidates to admit — an idle agent never
+      // pays for this). Fail-open: an absent/unparseable/disabled setting resolves to enabled:false,
+      // and the governor is a no-op (behavior byte-identical to pre-feature).
+      const concCaps = resolveCaps(await getAppSetting<ConcurrencySetting>(db, CONCURRENCY_KEY));
+      let admitted: string[];
+      let capSkips: { id: string; reason: string }[] = [];
+      if (!concCaps.enabled) {
+        // Governor OFF (default / dark): the original single atomic assignment, no lock, no extra read.
+        // Only rows still pending flip; a racing agent's updateMany skips already-claimed rows. Clear
+        // progress so every (re-)run starts with a fresh phase trail — DbNull writes SQL NULL.
+        await db.job.updateMany({
+          where: { id: { in: eligible }, status: "pending" },
+          data: { status: "dispatched", assignedAgentId: agent.id, startedAt: new Date(), progress: Prisma.DbNull },
+        });
+        admitted = eligible;
+      } else {
+        // Governor ON: enforce the caps inside a fleet-wide advisory-locked critical section. Only
+        // count → admit → assign live inside the lock; all the (expensive) candidate/case/secret loads
+        // above stayed outside it. The lock serializes this section against every other claim(), so the
+        // in-flight count a claim reads and the assignment it writes can't interleave — closing the
+        // write-skew window that lets two agents each flip a different job of the same (tenant, system).
+        const byId = new Map(candidates.map((c) => [c.id, c] as const));
+        const tenantOf = (id: string) => {
+          const m = caseMetaById.get(byId.get(id)!.caseRequestId);
+          return m?.client?.parentId ?? m!.clientId; // D7: PARENT tenant for a child account
+        };
+        const systemKeyOf = (id: string) => byId.get(id)!.systemKey;
+        const exemptOf = (id: string) => {
+          const c = byId.get(id)!;
+          return c.singleRun || ADHOC_SYSTEM_KEYS.includes(c.systemKey); // D7: ad-hoc / singleRun exempt
+        };
+        admitted = await db.$transaction(async (tx) => {
+          // Serialize the admission critical section fleet-wide; auto-released at tx end (commit OR
+          // rollback). Blocks until acquired — keep everything inside this callback minimal.
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`;
+          const inflight = await countInflight(tx); // FRESH counts, read under the lock
+          const admit = admitUnderCaps({ eligible, tenantOf, systemKeyOf, exemptOf, inflight, caps: concCaps });
+          capSkips = admit.skipped;
+          if (admit.ids.length === 0) return [];
+          await tx.job.updateMany({
+            where: { id: { in: admit.ids }, status: "pending" },
+            data: { status: "dispatched", assignedAgentId: agent.id, startedAt: new Date(), progress: Prisma.DbNull },
+          });
+          return admit.ids;
+        }, { timeout: 20_000, maxWait: 10_000 });
+      }
+      // Surface the governor acting (outside the locked tx — an audit write must not extend the section).
+      if (capSkips.length) {
+        await db.auditLog.create({ data: { actor: `agent:${agent.id}`, action: "job.claim.capped", detail: { capped: capSkips.slice(0, 50) } } });
+      }
+      if (admitted.length === 0) return []; // everything the agent could run is at capacity this poll
+
       const claimed = await db.job.findMany({
-        where: { id: { in: eligible }, assignedAgentId: agent.id, status: "dispatched" },
+        where: { id: { in: admitted }, assignedAgentId: agent.id, status: "dispatched" },
         include: { case: { include: { client: { select: { slug: true, primaryDomain: true, backbone: true, identity: true } } } } },
         orderBy: { sequence: "asc" },
       });

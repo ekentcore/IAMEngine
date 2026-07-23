@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backupDue, dbBackupStatus, normalizeDbBackup } from "./db-backup";
+import { backupDue, dbBackupStatus, normalizeDbBackup, sanitizeError } from "./db-backup";
 
 // backupDue anchors to the LOCAL hourLocal boundary, so tests build local dates
 // (new Date(y, m, d, h)) — an ISO Z string would shift with the runner's timezone.
@@ -57,4 +57,22 @@ test("backupDue: honors a custom hourLocal", () => {
   const s = normalizeDbBackup({ hourLocal: 22, lastStartedAt: local(12, 22, 1).toISOString() });
   assert.equal(backupDue(s, local(13, 21)), false);
   assert.equal(backupDue(s, local(13, 22)), true);
+});
+
+// sanitizeError still scrubs the Postgres URL/password (the original job) AND now the Azure
+// SAS/AccountKey/connection-string an `az` failure can echo (feature #5 extension).
+test("sanitizeError: still masks the Postgres connection URL password", () => {
+  const msg = 'pg_dump: error connecting to postgresql://user:s3cr3t@db.host:5432/iam failed';
+  const out = sanitizeError(msg);
+  assert.ok(!out.includes("s3cr3t"));
+  assert.match(out, /postgresql:\/\/\*\*\*@/);
+});
+
+test("sanitizeError: also scrubs Azure SAS signature and account key", () => {
+  const msg = 'az error: ...?se=2026-07-30&sig=SECRETSIGVALUE and AccountKey=KEYMATERIAL==;';
+  const out = sanitizeError(msg);
+  assert.ok(!out.includes("SECRETSIGVALUE"));
+  assert.ok(!out.includes("KEYMATERIAL"));
+  assert.match(out, /sig=\*\*\*/);
+  assert.match(out, /AccountKey=\*\*\*/);
 });

@@ -8,7 +8,7 @@ export const NOTIFICATIONS_SETTING_KEY = "failure_notifications";
 export type NotifChannel = "teams" | "slack" | "zoom" | "email";
 // "announcement" is manual-only (change-log sends): it never fires from triggers, bypasses the
 // master switch + event toggles like a test send, and deliberately has no NOTIF_EVENTS toggle row.
-export type NotifEvent = "caseFailed" | "stepFailed" | "stepWarning" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "mailboxPurge" | "announcement";
+export type NotifEvent = "caseFailed" | "stepFailed" | "stepWarning" | "autoStopped" | "needsApproval" | "connTestFailed" | "credExpiring" | "backupFailed" | "mailboxPurge" | "agentOffline" | "queueBacklog" | "repeatedFailures" | "backupStale" | "announcement";
 export type NotifVariant = "default" | "restricted";
 
 export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
@@ -26,6 +26,13 @@ export const NOTIF_EVENTS: { key: NotifEvent; label: string }[] = [
   // step is verified-green by design — decided is not unresolved — but Exchange will purge the mail
   // after the 30-day grace, and an irreversible clock starting must reach chat, not just the case.
   { key: "mailboxPurge", label: "Mailbox purge scheduled (license removed without convert)" },
+  // Feature #3 (fleet health) — proactive alerts for STANDING conditions the fleet board watches, fired
+  // by the heartbeat-driven sweepFleetAlerts (lib/jobs/fleet-alerts.ts). Numeric thresholds live in the
+  // separate `alerts` AppSetting; these toggles are the per-rule enable (like connTestFailed's).
+  { key: "agentOffline", label: "Agent offline (a runner went dark)" },
+  { key: "queueBacklog", label: "Job queue backing up (sustained depth)" },
+  { key: "repeatedFailures", label: "Repeated job failures (clustering)" },
+  { key: "backupStale", label: "Database backup stale (silently stopped)" },
 ];
 
 // kind drives the sender + the form fields (webhook URL vs Zoom URL+token vs email recipients).
@@ -70,7 +77,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
     zoom: { default: emptyWebhook(), restricted: emptyWebhook() },
     email: { default: emptyEmail(), restricted: emptyEmail() },
   },
-  events: { caseFailed: true, stepFailed: true, stepWarning: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, mailboxPurge: true, announcement: true },
+  events: { caseFailed: true, stepFailed: true, stepWarning: true, autoStopped: true, needsApproval: true, connTestFailed: true, credExpiring: true, backupFailed: true, mailboxPurge: true, agentOffline: true, queueBacklog: true, repeatedFailures: true, backupStale: true, announcement: true },
   credExpiryDays: 30,
 };
 

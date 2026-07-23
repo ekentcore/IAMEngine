@@ -42,7 +42,7 @@ Import-Module $wd -Force
 
 $script:HbPath  = Get-CtgHeartbeatPath -Explicit $HeartbeatFile -AgentId $AgentId
 $script:Self    = Join-Path $RunnerDir 'Start-IamRunner.ps1'
-$script:LockPath = Join-Path $RunnerDir '.runner.lock'
+$script:LockPath = Join-Path $RunnerDir ".runner.$AgentId.lock"   # per-agent lock (matches Start-IamRunner + pool members)
 $script:LogPath = if ($env:RUNNER_LOG) { $env:RUNNER_LOG } else { Join-Path $HOME 'iam-runner.log' }
 if (-not (Test-Path -LiteralPath $script:Self)) { throw "can't find the runner at $($script:Self) — check -RunnerDir." }
 $pwshPath = (Get-Process -Id $PID).Path; if (-not $pwshPath) { $pwshPath = (Get-Command pwsh).Source }

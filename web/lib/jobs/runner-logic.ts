@@ -69,6 +69,27 @@ export function dependencyGateOpen(job: JobLite, caseJobs: JobLite[]): boolean {
   return blockingJobs(job, caseJobs).length === 0;
 }
 
+// --- Maintenance / drain admission gate (feature #7) ------------------------------------------------
+// The FIRST admission decision in claim() (S1a). Pure + I/O-free so it unit-tests alongside its
+// siblings; the live state (an AppSetting JSON blob) is read in runner-service and passed in here.
+//   - global: pause ALL dispatch fleet-wide (the Azure-cutover switch — also drives heartbeat.drain).
+//   - systems: dispatch of these systemKeys is paused across every client.
+//   - clients: dispatch of all systems for these client ids is paused.
+export type MaintenanceScope = { global: boolean; systems: string[]; clients: string[] };
+
+// A candidate is admitted only if maintenance does NOT cover it. Global drain blocks everything; a
+// scoped pause blocks a candidate whose systemKey OR clientId is listed. Fail-open by construction:
+// an empty scope ({ global:false, systems:[], clients:[] }) blocks nothing.
+export function maintenanceBlocks(
+  scope: MaintenanceScope,
+  candidate: { systemKey: string; clientId: string },
+): boolean {
+  if (scope.global) return true;
+  if (scope.systems.includes(candidate.systemKey)) return true;
+  if (scope.clients.includes(candidate.clientId)) return true;
+  return false;
+}
+
 // Priority failover: should THIS runner stand by (claim nothing) because a higher-priority peer of the
 // same scope is currently online? LOWER priority number = higher precedence. Only a STRICTLY higher peer
 // forces stand-by — equal-priority peers load-balance (the pre-failover behavior). So primary=1 + backup=2

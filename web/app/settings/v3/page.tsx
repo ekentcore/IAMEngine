@@ -15,8 +15,9 @@ import { NotificationForm } from "../_components/notification-form";
 import { RestartServerButton } from "../_components/restart-server-button";
 import { AutoFixToggle } from "../_components/auto-fix-toggle";
 import { LlmProviders } from "../_components/llm-providers";
-import { loadDbBackupStatus } from "../_lib/loader";
+import { loadDbBackupStatus, loadMaintenance } from "../_lib/loader";
 import { DbBackupCard } from "../_components/db-backup-card";
+import { MaintenanceCard } from "../_components/maintenance-card";
 import { AgentAutoUpdateToggle } from "../_components/agent-auto-update-toggle";
 import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
 import { AgentMigrationSettings } from "../_components/agent-migration-settings";
@@ -35,13 +36,14 @@ export default async function SettingsV3Page() {
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
   // independent single-row reads — fetch in parallel, not as six serial round trips
-  const [rawSettings, autoFix, llmProviders, dbBackup, autoUpdate, agentMigration] = await Promise.all([
+  const [rawSettings, autoFix, llmProviders, dbBackup, autoUpdate, agentMigration, maintenance] = await Promise.all([
     getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
     getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
     listProvidersMasked(db),
     loadDbBackupStatus(),
     getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY),
     getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY),
+    loadMaintenance(),
   ]);
   const settings = normalizeSettings(rawSettings);
   return (
@@ -70,6 +72,11 @@ export default async function SettingsV3Page() {
         <AutoFixToggle initialEnabled={autoFix?.enabled === true} />
         <AgentAutoUpdateToggle initialEnabled={autoUpdate?.enabled !== false} />
         <AgentMigrationSettings initial={{ enabled: agentMigration?.enabled === true, targetUrl: agentMigration?.targetUrl ?? "" }} />
+      </CollapsibleSection>
+
+      {/* MaintenanceCard renders its own <h2>Maintenance &amp; drain</h2>. */}
+      <CollapsibleSection title="Maintenance & drain">
+        <MaintenanceCard initial={maintenance} clients={maintenance.clients} />
       </CollapsibleSection>
 
       {/* DbBackupCard's own <h2> is "Database backups" — specific content under the broader "Backups". */}
