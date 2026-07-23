@@ -122,16 +122,18 @@ export function DbCopyView() {
 
   const destOk = !!probe?.dest.ok && !!probe?.source.ok;
   const canTest = form.host.trim() && form.user.trim() && form.database.trim() && form.password && !testing && !running;
-  const canRun = destOk && !!preview && !preview.sameTarget && confirm.trim() === preview.destDbName && !running;
+  const canRun = destOk && !!preview && !preview.sameTarget && preview.missingCount === 0 && confirm.trim() === preview.destDbName && !running;
 
   return (
     <main style={{ maxWidth: 820, margin: "0 auto", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
         <h1 style={{ fontSize: 20, margin: "0 0 4px" }}>DB copy</h1>
         <p style={{ margin: 0, color: muted, fontSize: 14 }}>
-          Copy this app&apos;s database (source) into a destination Postgres you fill in below. Tables missing in the
-          destination are created; tables that already exist are truncated and reloaded. The Prisma migration ledger is
-          not copied. The destination password is used only for this test/copy — it is never stored.
+          Copy this app&apos;s data (source) into a destination Postgres you fill in below. The destination schema must
+          already exist — build it first by running <code>prisma migrate deploy</code> against the destination. This tool
+          then clears the destination tables and loads the source data (data only — it never touches schema, so it works
+          on managed Postgres like Azure). The Prisma migration ledger is not copied. The destination password is used
+          only for this test/copy — it is never stored.
         </p>
       </div>
 
@@ -218,15 +220,18 @@ export function DbCopyView() {
 
       {preview && !preview.sameTarget && (
         <>
-          <div style={box}>
-            <p style={{ margin: 0, fontSize: 14 }}>
-              The whole source database will be cloned into the destination — {preview.tables.length} table(s) plus
-              their types, sequences and constraints. The destination&apos;s copies of these objects are dropped and
-              recreated (idempotent, safe to re-run).
-              {preview.existingCount > 0 && (
-                <> {preview.existingCount} of them already exist in the destination and will be replaced.</>
-              )}
-            </p>
+          <div style={{ ...box, ...(preview.missingCount > 0 ? { borderColor: errFg } : {}) }}>
+            {preview.missingCount > 0 ? (
+              <p style={{ margin: 0, fontSize: 14, color: errFg }}>
+                {preview.missingCount} of {preview.tables.length} source table(s) don&apos;t exist on the destination yet.
+                Build the schema first — run <code>prisma migrate deploy</code> against the destination — then copy.
+              </p>
+            ) : (
+              <p style={{ margin: 0, fontSize: 14 }}>
+                {preview.tables.length} table(s) of data will be copied. Each destination table is cleared
+                (TRUNCATE … RESTART IDENTITY) and reloaded from the source — idempotent, safe to re-run.
+              </p>
+            )}
           </div>
 
           <div style={{ ...box, maxHeight: 280, overflow: "auto", padding: 0 }}>
@@ -242,7 +247,7 @@ export function DbCopyView() {
                 {preview.tables.map((t) => (
                   <tr key={t.name} style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}>
                     <td style={{ padding: "6px 12px" }}>{t.name}</td>
-                    <td style={{ padding: "6px 12px" }}>{t.inDest ? "replace" : "create"}</td>
+                    <td style={{ padding: "6px 12px", color: t.inDest ? undefined : errFg }}>{t.inDest ? "load data" : "missing — migrate first"}</td>
                     <td style={{ padding: "6px 12px", textAlign: "right" }}>{t.approxRows.toLocaleString()}</td>
                   </tr>
                 ))}
@@ -274,7 +279,7 @@ export function DbCopyView() {
         <div style={{ ...box, borderColor: okFg }}>
           <strong>Copied.</strong>
           <p style={{ margin: "6px 0 0", fontSize: 14 }}>
-            Cloned the whole database — {result.tables} table(s) in {Math.round(result.durationMs / 100) / 10}s.
+            Copied data for {result.tables} table(s) in {Math.round(result.durationMs / 100) / 10}s.
           </p>
         </div>
       )}

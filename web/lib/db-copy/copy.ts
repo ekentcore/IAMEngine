@@ -1,17 +1,18 @@
-// DB-copy tool — runtime orchestration. Makes the destination (POSTGRES_*1) a faithful copy of the
-// source (POSTGRES_*):
-//   1. list source tables (public-schema base tables, minus Prisma's _prisma_migrations ledger);
-//   2. for tables MISSING in the destination: pg_dump --schema-only (one call → correct FK/sequence
-//      ordering, indexes + constraints + defaults included) piped into the dest;
-//   3. for tables that ALREADY exist: TRUNCATE … RESTART IDENTITY CASCADE (the "replace" choice);
-//   4. load all data: pg_dump --data-only --disable-triggers piped in (FK checks off during bulk load,
-//      so cross-table ordering and self-references can't fail).
+// DB-copy tool — runtime orchestration. Copies the DATA from the source (POSTGRES_*) into the
+// destination's EXISTING schema (POSTGRES_*1). The destination schema is built separately by
+// `prisma migrate deploy` — so this tool never emits schema DDL, which is what a managed Postgres
+// (Azure) withholds from its admin login (schema/type ownership, superuser triggers). Steps:
+//   1. list source tables (base tables, minus Prisma's _prisma_migrations ledger);
+//   2. verify the destination already has those tables (else: "run prisma migrate deploy first");
+//   3. TRUNCATE … RESTART IDENTITY CASCADE the destination tables (their owner can, no superuser);
+//   4. load data: pg_dump --data-only piped in (no --disable-triggers; TRUNCATE + pg_dump's
+//      dependency ordering keep the load FK-clean without needing superuser).
 // Credentials go to pg_dump/psql via PG* env (see pgChildEnv) so the password never lands in argv.
 import { spawn } from "node:child_process";
 import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
 import { type PgConn, pgChildEnv, connLabel, sameTarget, pgSsl } from "./config";
-import { classifyTables, shortVersion, PG_DUMP_BASE } from "./plan";
+import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE } from "./plan";
 import { dumpLineFilter } from "./dump-filter";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
@@ -156,14 +157,15 @@ export type CopyResult = {
 };
 
 /**
- * pg_dump flags for a whole-database CLONE: drop + recreate everything the source has — custom types
- * (enums), tables, sequences, constraints, indexes — and load all data, in one dependency-ordered pass.
- * `--clean --if-exists` makes it idempotent (DROP … IF EXISTS before CREATE). PG_DUMP_BASE adds
- * --no-owner --no-privileges so it restores under the destination login regardless of source roles.
- * This replaced the per-table -t approach, which omitted enum types the tables depend on.
+ * pg_dump flags for a DATA-ONLY load into a schema that already exists on the destination (built by
+ * `prisma migrate deploy`). No schema DDL, so it never touches type/table/`public`-schema ownership —
+ * which is what a managed Postgres like Azure withholds from the admin login. Deliberately NO
+ * `--disable-triggers`: that emits `ALTER TABLE … DISABLE TRIGGER ALL`, which needs superuser Azure
+ * doesn't grant. We rely on the destination being TRUNCATEd first and pg_dump's dependency ordering
+ * for a clean load. Restricted to the given tables via -t; PG_DUMP_BASE adds --no-owner --no-privileges.
  */
-export function fullCopyDumpArgs(): string[] {
-  return ["--clean", "--if-exists"];
+export function dataCopyDumpArgs(schema: string, tables: string[]): string[] {
+  return ["--data-only", ...dumpTableArgs(schema, tables)];
 }
 
 /** Audit detail for a copy attempt: WHERE it went (source→dest identity, never a password) + outcome.
@@ -190,20 +192,43 @@ export function copyAuditDetail(
 
 export type CopyProgress = (phase: string) => void;
 
-/** Execute the copy. Throws on any failure (with the password scrubbed from the message). */
+/**
+ * Copy the DATA from source into the destination's EXISTING schema (created by `prisma migrate deploy`
+ * on the destination). Steps: verify the destination already has the source's tables (else tell the
+ * operator to run the migration first), TRUNCATE them, then load data-only. No schema DDL is emitted,
+ * so it never trips managed-Postgres restrictions (schema/type ownership, superuser triggers). Throws
+ * on any failure (password scrubbed from the message).
+ */
 export async function runCopy(source: PgConn, dest: PgConn, onProgress: CopyProgress = () => {}): Promise<CopyResult> {
   if (sameTarget(source, dest)) throw new Error("source and destination are the same database — refusing to copy onto itself");
   const startedAt = Date.now();
 
-  onProgress("reading source tables");
+  onProgress("reading source + destination tables");
   const srcTables = await withClient(source, (c) => listTables(c, source.schema));
   if (!srcTables.length) throw new Error(`source schema "${source.schema}" has no tables to copy`);
+  const destTables = await withClient(dest, (c) => listTables(c, dest.schema).then((t) => new Set(t)));
 
-  // One whole-database dump→restore: drops + recreates every object (types, tables, sequences,
-  // constraints) and reloads data in the correct dependency order. Correct for a fresh migration and
-  // idempotent on re-runs. The pipe strips the transaction_timeout GUC an older destination rejects.
-  onProgress(`cloning the whole database (${srcTables.length} table(s)): drop + recreate types, tables and data`);
-  await dumpIntoDest(fullCopyDumpArgs(), source, dest);
+  // The destination schema must already exist. If tables are missing, the operator hasn't run the
+  // migration on the destination yet — say so explicitly rather than failing mid-load.
+  const plan = classifyTables(srcTables, destTables);
+  if (plan.missing.length) {
+    const sample = plan.missing.slice(0, 5).join(", ");
+    throw new Error(
+      `destination schema "${dest.schema}" is missing ${plan.missing.length} of ${srcTables.length} table(s) ` +
+        `(e.g. ${sample}). Build the schema on the destination first — run \`prisma migrate deploy\` against it — ` +
+        `then copy the data.`,
+    );
+  }
 
-  return { tables: srcTables.length, durationMs: Date.now() - startedAt };
+  // Empty the destination tables (as their owner — no superuser needed), then bulk-load the data.
+  const truncate = truncateStatement(dest.schema, plan.all);
+  if (truncate) {
+    onProgress(`clearing ${plan.all.length} destination table(s) before load`);
+    await withClient(dest, (c) => c.query(truncate));
+  }
+
+  onProgress(`copying data for ${plan.all.length} table(s)`);
+  await dumpIntoDest(dataCopyDumpArgs(source.schema, plan.all), source, dest);
+
+  return { tables: plan.all.length, durationMs: Date.now() - startedAt };
 }

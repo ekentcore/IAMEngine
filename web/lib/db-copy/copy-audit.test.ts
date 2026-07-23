@@ -1,18 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fullCopyDumpArgs, copyAuditDetail } from "./copy";
+import { dataCopyDumpArgs, copyAuditDetail } from "./copy";
 import type { PgConn } from "./config";
 
 const SRC: PgConn = { host: "192.168.0.11", port: 5432, user: "evanhkent", password: "SRC-SECRET", database: "automationUM", schema: "public", sslmode: "disable" };
 const DEST: PgConn = { host: "core-psql-1.postgres.database.azure.com", port: 5432, user: "psql_admin", password: "DEST-SECRET", database: "automationUM", schema: "public", sslmode: "require" };
 
-test("fullCopyDumpArgs is a whole-database clone (clean + if-exists), NOT the old per-table/data-only flags", () => {
-  const args = fullCopyDumpArgs();
-  assert.deepEqual(args, ["--clean", "--if-exists"]);
-  // must not carry the per-table / data-only / disable-triggers flags that omitted types & needed superuser
-  for (const bad of ["--data-only", "--schema-only", "--disable-triggers", "-t"]) {
-    assert.equal(args.includes(bad), false, `full clone must not use ${bad}`);
+test("dataCopyDumpArgs is a DATA-only load into an existing schema — no schema DDL, no superuser-only flags", () => {
+  const args = dataCopyDumpArgs("public", ["Client", "Agent"]);
+  assert.equal(args[0], "--data-only");
+  // no schema-ownership statements (--clean/schema DDL) and no --disable-triggers (needs superuser on Azure)
+  for (const bad of ["--disable-triggers", "--clean", "--if-exists", "--schema-only"]) {
+    assert.equal(args.includes(bad), false, `data-only load must not use ${bad}`);
   }
+  // restricted to the given tables via -t
+  assert.deepEqual(args, ["--data-only", "-t", 'public."Client"', "-t", 'public."Agent"']);
 });
 
 test("copyAuditDetail records where it went (source→dest identities) and who — never a password", () => {
