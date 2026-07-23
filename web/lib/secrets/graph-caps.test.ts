@@ -4,9 +4,11 @@ import {
   GRAPH_REQUIRED_CAPS,
   GRAPH_OPTIONAL_CAPS,
   GRAPH_ESCALATION_ROLES,
+  GRAPH_WATCHED_ROLES,
   graphCapGaps,
   graphCapRows,
   graphSurplusRoles,
+  watchedRolesHeld,
   suggestedRole,
   GRAPH_APP_ROLE_IDS,
   optionalCapChoices,
@@ -216,6 +218,22 @@ test("the escalation list names the two roles our own setup guide promises we do
     assert.ok(GRAPH_ESCALATION_ROLES[r], `${r} must be treated as escalation`);
   }
   assert.ok(graphSurplusRoles(["AppRoleAssignment.ReadWrite.All"])[0].escalation);
+});
+
+test("Application.Read.All is WATCHED, not escalation — and stays out of surplus", () => {
+  // The Extra-access sweep surfaces who holds it (watchedRolesHeld), but it satisfies the
+  // secret-expiry optional cap, so graphSurplusRoles must never report it as surplus/escalation.
+  assert.ok(GRAPH_WATCHED_ROLES["Application.Read.All"], "must be a watched role");
+  assert.ok(!GRAPH_ESCALATION_ROLES["Application.Read.All"], "must NOT be an escalation role");
+  const held = watchedRolesHeld([...NARROW, "application.read.all"]); // case-insensitive match
+  assert.deepEqual(held.map((r) => r.role), ["Application.Read.All"]);
+  assert.equal(held[0].escalation, false);
+  // The invariant that makes the watched/escalation split necessary: it is a used, needed role.
+  assert.ok(graphSurplusRoles([...NARROW, "Application.Read.All"]).every((r) => r.role !== "Application.Read.All"));
+});
+
+test("a tenant holding no watched role reports none", () => {
+  assert.deepEqual(watchedRolesHeld(NARROW), []);
 });
 
 // This file is the web's copy of $GRAPH_REQUIRED_CAPS / $GRAPH_OPTIONAL_CAPS in

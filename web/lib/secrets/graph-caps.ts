@@ -208,6 +208,25 @@ export const GRAPH_ESCALATION_ROLES: Readonly<Record<string, string>> = {
   "Sites.FullControl.All": "full control of every SharePoint site in the tenant",
 };
 
+// ── Watched roles (visibility, NOT escalation) ─────────────────────────────────────────────────
+//
+// Sensitive app-management roles we want a fleet answer to "who holds this?" for — but that the
+// engine LEGITIMATELY uses, so they are NOT escalation and NOT surplus. They are surfaced in the
+// Extra-access sweep for review alongside the escalation roles, tagged distinctly so nobody reads
+// them as authority we never asked for.
+//
+// This is deliberately a SEPARATE list from GRAPH_ESCALATION_ROLES and it does NOT feed
+// graphSurplusRoles: Application.Read.All satisfies the "warn before the app's own secret expires"
+// optional capability (see GRAPH_OPTIONAL_CAPS above), so the surplus scan, the per-client connection
+// test, and the runner's mirrored copy must all keep treating it as a used, needed role. Folding it
+// into escalation instead would invent a fleet-wide false "extra access" for a permission we asked for
+// on purpose, and contradict web/app/help/cloud-auth. graph-caps.test.ts pins that it stays out of
+// surplus — keep it here, not there.
+export const GRAPH_WATCHED_ROLES: Readonly<Record<string, string>> = {
+  "Application.Read.All":
+    "can read every app registration and service principal in the tenant (their configuration, owners and credential metadata — not secret values). The engine uses it only to warn before its own secret expires; surfaced here so a review can see which tenants have granted it",
+};
+
 // Roles on OTHER resources (not Graph) that the engine genuinely uses, so the surplus check does not
 // report them as unused. Exchange Online app-only auth needs Exchange.ManageAsApp — see
 // Connect-CtgExchange.
@@ -274,4 +293,16 @@ export function graphSurplusRoles(granted: readonly string[]): SurplusRole[] {
   }
   // Escalation first: that is the part a security review needs to see.
   return out.sort((a, b) => Number(b.escalation) - Number(a.escalation) || a.role.localeCompare(b.role));
+}
+
+// Which GRAPH_WATCHED_ROLES does this credential hold? Reported as SurplusRole with escalation:false,
+// so the Extra-access sweep can list its holders next to the escalation roles without claiming it is
+// surplus. Matched by name, case-insensitively, exactly like the escalation check. Independent of
+// graphSurplusRoles on purpose (see GRAPH_WATCHED_ROLES) — a watched role that also satisfies a
+// capability is still surfaced here, because the question is "who holds it?", not "is it needed?".
+export function watchedRolesHeld(granted: readonly string[]): SurplusRole[] {
+  const have = new Set(granted.map((g) => g.toLowerCase()));
+  return Object.entries(GRAPH_WATCHED_ROLES)
+    .filter(([role]) => have.has(role.toLowerCase()))
+    .map(([role, why]) => ({ role, escalation: false, why }));
 }

@@ -17,7 +17,7 @@ import {
   M365_TENANT_FIELDS,
 } from "../secrets/m365-credential";
 import { readGrantedAppRoles, listDisabledLicensedUsers, readSkuNames, readMailboxPurpose } from "../secrets/graph-app-roles";
-import { graphCapGaps, graphCapRows, graphSurplusRoles, suggestedRole } from "../secrets/graph-caps";
+import { graphCapGaps, graphCapRows, graphSurplusRoles, watchedRolesHeld, suggestedRole } from "../secrets/graph-caps";
 import type { SurplusRole } from "../secrets/graph-caps";
 
 // The "not set" sentinels every secret sweep skips. An empty slot is not a finding.
@@ -178,17 +178,24 @@ export async function scanLeakedSeats(db: PrismaClient, opts: { onlyClient?: str
   return out;
 }
 
-// WHO HOLDS an escalation-capable role (AppRoleAssignment.ReadWrite.All and friends) — the INVERSE of
-// the missing-permission sweep: not "who is short a permission" but "which app registrations can
-// expand their own authority / reach the whole tenant". Same read-only walk as scanPermissions; the
-// finding is the escalation roles each credential actually holds (via graphSurplusRoles, which flags
-// them). A credential we can't read is reported as unverified, never silently treated as "holds none".
+// WHO HOLDS a sensitive app-management role — the INVERSE of the missing-permission sweep: not "who
+// is short a permission" but "which app registrations can expand their own authority / reach the whole
+// tenant, and which hold a watched-but-legitimate app permission". Same read-only walk as
+// scanPermissions. Two categories, matched by name:
+//   - escalations: authority the engine never needs (via graphSurplusRoles, escalation === true) —
+//                  e.g. AppRoleAssignment.ReadWrite.All. Reported loudly for a security review.
+//   - watched:     sensitive but legitimately used (via watchedRolesHeld) — e.g. Application.Read.All.
+//                  Surfaced for visibility, explicitly NOT flagged as surplus.
+// A credential we can't read is reported as unverified, never silently treated as "holds none".
 export type EscalationHolderRow = {
   clientId: string;
   client: string;
   slug: string;
   status: AuditStatus; // ok | cred-bad | no-cred | unverified
   escalations: SurplusRole[]; // the escalation roles this credential holds (escalation === true)
+  // Watched-but-legitimate roles this credential holds (escalation === false). Optional so that
+  // findings written before this field existed still read cleanly (treated as none).
+  watched?: SurplusRole[];
   detail?: string;
 };
 
@@ -205,33 +212,38 @@ export async function scanEscalationHolders(db: PrismaClient, opts: { onlyClient
     if (!tok.ok) { out.push({ ...base, status: tok.status, detail: tok.detail }); await opts.onProgress?.(i + 1); continue; }
     const granted = await readGrantedAppRoles(tok.token, tok.appId);
     if (!granted.ok) { out.push({ ...base, status: "unverified", detail: `could not read the app's role assignments: ${granted.error}` }); await opts.onProgress?.(i + 1); continue; }
-    // A held escalation role is present in `granted` regardless of read completeness — absence can only
+    // A held role is present in `granted` regardless of read completeness — absence can only
     // UNDER-report a holder, never invent one — so this is safe on a partial read (unlike "missing").
     const escalations = graphSurplusRoles(granted.roles).filter((s) => s.escalation);
-    out.push({ ...base, status: "ok", escalations, detail: granted.complete ? undefined : `${granted.unresolved} assignment(s) unresolved — a held role may be under-reported` });
+    const watched = watchedRolesHeld(granted.roles);
+    out.push({ ...base, status: "ok", escalations, watched, detail: granted.complete ? undefined : `${granted.unresolved} assignment(s) unresolved — a held role may be under-reported` });
     await opts.onProgress?.(i + 1);
   }
   return out;
 }
 
-export type EscalationPivot = { role: string; why: string; clients: { slug: string; client: string }[] };
+export type EscalationPivot = { role: string; why: string; escalation: boolean; clients: { slug: string; client: string }[] };
 
-// Pivot escalation-holder rows into "who holds THIS role" — the direct answer to "who has
-// AppRoleAssignment.ReadWrite.All". AppRoleAssignment.ReadWrite.All sorts first (the tenant-takeover
-// route), then by holder count.
+// Pivot holder rows into "who holds THIS role" — the direct answer to "who has
+// AppRoleAssignment.ReadWrite.All / Application.Read.All". Covers both categories: escalation roles
+// (escalation === true) and watched-but-legitimate roles (escalation === false). Ordering: every
+// escalation role first (a security review must not scroll past a watched note to reach a
+// takeover route), with AppRoleAssignment.ReadWrite.All first within them; then watched roles; ties
+// broken by holder count, then name.
 export function pivotEscalationHolders(rows: EscalationHolderRow[]): EscalationPivot[] {
-  const byRole = new Map<string, { why: string; clients: { slug: string; client: string }[] }>();
+  const byRole = new Map<string, { why: string; escalation: boolean; clients: { slug: string; client: string }[] }>();
   for (const r of rows) {
-    for (const s of r.escalations) {
-      const e = byRole.get(s.role) ?? { why: s.why, clients: [] };
+    for (const s of [...r.escalations, ...(r.watched ?? [])]) {
+      const e = byRole.get(s.role) ?? { why: s.why, escalation: s.escalation, clients: [] };
       e.clients.push({ slug: r.slug, client: r.client });
       byRole.set(s.role, e);
     }
   }
   const SELF_GRANT = "approleassignment.readwrite.all";
   return [...byRole]
-    .map(([role, e]) => ({ role, why: e.why, clients: e.clients }))
+    .map(([role, e]) => ({ role, why: e.why, escalation: e.escalation, clients: e.clients }))
     .sort((a, b) =>
+      Number(b.escalation) - Number(a.escalation) ||
       Number(b.role.toLowerCase() === SELF_GRANT) - Number(a.role.toLowerCase() === SELF_GRANT) ||
       b.clients.length - a.clients.length ||
       a.role.localeCompare(b.role)

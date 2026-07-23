@@ -88,3 +88,23 @@ test("escalation pivot groups holders by role, AppRoleAssignment.ReadWrite.All f
 test("escalation pivot: no holders -> empty", () => {
   assert.deepEqual(pivotEscalationHolders([eRow({ escalations: [] })]), []);
 });
+
+test("watched roles surface too, tagged escalation:false and sorted BELOW every escalation role", () => {
+  const p = pivotEscalationHolders([
+    eRow({ slug: "a", watched: [{ role: "Application.Read.All", escalation: false, why: "reads all app registrations" }] }),
+    eRow({ slug: "b", escalations: [{ role: "AppRoleAssignment.ReadWrite.All", escalation: true, why: "can consent app roles to itself" }],
+      watched: [{ role: "Application.Read.All", escalation: false, why: "reads all app registrations" }] }),
+  ]);
+  // Escalation first, watched last — a review must not scroll past a note to reach a takeover route.
+  assert.deepEqual(p.map((x) => x.role), ["AppRoleAssignment.ReadWrite.All", "Application.Read.All"]);
+  assert.equal(p[0].escalation, true);
+  const watched = p.find((x) => x.role === "Application.Read.All")!;
+  assert.equal(watched.escalation, false, "a watched role is never flagged as escalation");
+  assert.deepEqual(watched.clients.map((c) => c.slug).sort(), ["a", "b"]);
+});
+
+test("a row written before the watched field existed reads cleanly (no watched → escalations only)", () => {
+  const legacy = { clientId: "c1", client: "C", slug: "old", status: "ok" as const, escalations: [{ role: "AppRoleAssignment.ReadWrite.All", escalation: true, why: "x" }] };
+  const p = pivotEscalationHolders([legacy as EscalationHolderRow]);
+  assert.deepEqual(p.map((x) => x.role), ["AppRoleAssignment.ReadWrite.All"]);
+});

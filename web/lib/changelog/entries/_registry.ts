@@ -16,6 +16,7 @@ export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as auditAttributesDiscoveryToUser } from "./audit-attributes-discovery-to-user";
+export { entry as auditWatchedGraphAppPerms } from "./audit-watched-graph-app-perms";
 export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";

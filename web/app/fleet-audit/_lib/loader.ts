@@ -76,7 +76,7 @@ export async function loadAuditsPage(searchParams: AuditsSearchParams): Promise<
     const rows = visible as EscalationHolderRow[];
     escalation = {
       pivot: pivotEscalationHolders(rows),
-      holders: rows.filter((r) => r.escalations.length > 0).length,
+      holders: rows.filter((r) => r.escalations.length > 0 || (r.watched?.length ?? 0) > 0).length,
       unverified: rows.filter((r) => r.status === "unverified"),
       noCred: rows.filter((r) => r.status === "cred-bad" || r.status === "no-cred"),
     };
