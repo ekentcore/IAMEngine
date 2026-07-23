@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { SITE_VERSION_COOKIE, readSiteVersion, resolveVersionedPath } from "./lib/v2";
 import { isRunnerApi, isRunnerBootstrap, isSecretBearing, isDestructiveApproval } from "./lib/auth/runner-paths";
+import { edgeRunnerAuthDecision } from "./lib/auth/edge-runner-auth";
 
 const PUBLIC = ["/login", "/api/auth"];
 const SESSION_COOKIE = "iam_session";
@@ -39,21 +40,19 @@ export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (isRunnerApi(pathname)) {
-    const token = process.env.RUNNER_API_TOKEN;
-    if (!token) {
-      // Fail-CLOSED in prod (or when explicitly required) — a missing token is a misconfiguration.
-      // ALSO fail closed, in every environment, for the routes that return resolved Delinea secret
-      // VALUES: "no token configured" must never mean "serve tenant-admin credentials to an
-      // unauthenticated caller". A dev/tunnel box is exactly where this used to be wide open.
-      const required = process.env.NODE_ENV === "production" || process.env.RUNNER_AUTH_REQUIRED === "true";
-      if (required || isSecretBearing(pathname)) {
-        return NextResponse.json({ error: "runner auth not configured" }, { status: 503 });
-      }
-      return NextResponse.next();
-    }
     const auth = req.headers.get("authorization") ?? "";
-    if (!auth.startsWith("Bearer ") || auth.slice(7) !== token) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    const decision = edgeRunnerAuthDecision({
+      bearer,
+      sharedToken: process.env.RUNNER_API_TOKEN,
+      requirePerAgent: process.env.RUNNER_REQUIRE_PER_AGENT === "true",
+      perAgentEdgeEnabled: process.env.RUNNER_PER_AGENT_EDGE_ENABLED === "true",
+      secretBearing: isSecretBearing(pathname),
+      prod: process.env.NODE_ENV === "production" || process.env.RUNNER_AUTH_REQUIRED === "true",
+    });
+    if (decision.action === "reject") {
+      const msg = decision.status === 503 ? "runner auth not configured" : "unauthorized";
+      return NextResponse.json({ error: msg }, { status: decision.status });
     }
     return NextResponse.next();
   }

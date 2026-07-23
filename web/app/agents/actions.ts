@@ -111,6 +111,55 @@ export async function requestAgentUpdate(id: string) {
   }
 }
 
+// Operator action: arm a per-agent token refresh for one runner (joint->individual switch, or a
+// rotate once it's already on its own token). Mirrors requestAgentUpdate's exact shape — the next
+// heartbeat mints + delivers the token, then confirms once the runner authenticates with it.
+export async function requestAgentTokenRefresh(id: string) {
+  try {
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).requestTokenRefresh(id, auditActor(me, "ui"));
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
+// Fleet action: arm a token refresh for every enabled, non-deleted agent still on the shared
+// token (tokenConfirmedAt null) — the one-click joint->individual migration. Per-agent failures
+// don't stop the rest, mirroring updateAllOutdatedAgents.
+export async function switchAllToPerAgentTokens() {
+  let me;
+  try { me = await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e), queued: 0 }; }
+  const ids = (
+    await db.agent.findMany({ where: { enabled: true, deletedAt: null, tokenConfirmedAt: null }, select: { id: true } })
+  ).map((a) => a.id);
+  const svc = makeRunnerService(db);
+  let queued = 0;
+  for (const id of ids) {
+    try { await svc.requestTokenRefresh(id, auditActor(me, "ui")); queued++; } catch { /* skip */ }
+  }
+  revalidatePath("/agents");
+  return { ok: true as const, queued };
+}
+
+// Fleet action: rotate the per-agent token for EVERY enabled, non-deleted agent (already on
+// individual tokens or not — a rotate arms the same refresh flag either way).
+export async function rotateAllTokens() {
+  let me;
+  try { me = await requirePermission("agent.manage"); } catch (e) { return { ok: false as const, error: errMsg(e), queued: 0 }; }
+  const ids = (
+    await db.agent.findMany({ where: { enabled: true, deletedAt: null }, select: { id: true } })
+  ).map((a) => a.id);
+  const svc = makeRunnerService(db);
+  let queued = 0;
+  for (const id of ids) {
+    try { await svc.requestTokenRefresh(id, auditActor(me, "ui")); queued++; } catch { /* skip */ }
+  }
+  revalidatePath("/agents");
+  return { ok: true as const, queued };
+}
+
 // Failover priority (LOWER = higher precedence): a backup runner stands by while a higher-priority peer
 // of the same scope is online. Clamped to 1..999.
 export async function setAgentPriority(id: string, priority: number) {

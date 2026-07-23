@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError, type ResultInput } from "@/lib/jobs/types";
 
 const STATUSES = ["succeeded", "failed", "skipped"];
@@ -27,7 +28,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   };
 
   try {
-    const out = await makeRunnerService(db).recordResult(params.id, body.agentId, input);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).recordResult(params.id, authed.id, input);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

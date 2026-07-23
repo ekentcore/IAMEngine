@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity, requestAgentTokenRefresh, switchAllToPerAgentTokens, rotateAllTokens } from "../actions";
 import { CopyButton } from "@/app/_components/copy-button";
 import { migrateStatus } from "@/lib/agents/migrate-status";
 import { normalizeUrl } from "@/lib/jobs/agent-migration";
@@ -53,6 +53,13 @@ export type AgentVM = {
   migrateDeliveredAt: string | null;
   migratedAt: string | null;
   migrateError: string | null;
+  // Per-agent auth: joint (shared) token vs its own. tokenConfirmedAt is set the first time the
+  // runner authenticates WITH its per-agent token — everything after that is a rotate, not a switch.
+  tokenConfirmedAt: string | null;
+  tokenRefreshRequested: boolean;
+  tokenRefreshRequestedAt: string | null;
+  tokenRefreshRequestedBy: string | null;
+  tokenRefreshDeliveredAt: string | null;
 };
 
 // Live self-update status from the lifecycle timestamps: queued (set, not yet polled) -> updating
@@ -126,6 +133,34 @@ function restartStatus(a: AgentVM): { label: string; color: string } | null {
     return { label: `↻ restarting${by} — re-launching…`, color: "var(--info-fg)" };
   }
   return null;
+}
+
+// Live per-agent-token status from the lifecycle timestamps, mirroring updateStatus/restartStatus:
+// queued (armed, not yet polled) -> delivered (runner pulled the new token, hasn't authenticated
+// with it yet) -> confirmed (tokenConfirmedAt lands at/after delivery). Returns null once nothing
+// is in flight (or the delivery is >5 min stale).
+function tokenRefreshStatus(a: AgentVM): { label: string; color: string } | null {
+  const by = a.tokenRefreshRequestedBy ? ` (by ${a.tokenRefreshRequestedBy})` : "";
+  if (a.tokenRefreshRequested) return { label: `↻ token refresh queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
+  if (a.tokenRefreshDeliveredAt) {
+    const del = new Date(a.tokenRefreshDeliveredAt).getTime();
+    if (Date.now() - del > 5 * 60_000) return null;
+    const confirmed = !!a.tokenConfirmedAt && new Date(a.tokenConfirmedAt).getTime() >= del;
+    if (confirmed) return { label: `✓ confirmed${by} — runner authenticated with its individual token`, color: "var(--ok-fg)" };
+    return { label: `↻ delivered${by} — waiting for the runner to authenticate…`, color: "var(--info-fg)" };
+  }
+  return null;
+}
+
+// Auth column cell: "shared" vs "per-agent ✓", plus the live requested→delivered→confirmed chip.
+function AuthCell({ a }: { a: AgentVM }) {
+  const chip = tokenRefreshStatus(a);
+  return (
+    <>
+      <span style={{ color: a.tokenConfirmedAt ? "var(--ok-fg)" : undefined }}>{a.tokenConfirmedAt ? "per-agent ✓" : "shared"}</span>
+      {chip && <div className="note" style={{ color: chip.color, marginTop: 2 }}>{chip.label}</div>}
+    </>
+  );
 }
 
 // Live app-URL migration status now lives in lib/agents/migrate-status.ts (pure + unit-tested).
@@ -361,6 +396,8 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
         (a.restartRequested && fresh(a.restartRequestedAt, 10 * 60_000)) ||
         fresh(a.restartDeliveredAt, 5 * 60_000) ||
         (a.migrateRequested && fresh(a.migrateRequestedAt, 10 * 60_000)) ||
+        (a.tokenRefreshRequested && fresh(a.tokenRefreshRequestedAt, 10 * 60_000)) ||
+        fresh(a.tokenRefreshDeliveredAt, 5 * 60_000) ||
         // A delivered migration polls for up to an hour (not 5 min): the "moving URL — not
         // communicating yet" window is exactly when the operator is watching, and the proof-
         // succeeded dialog should pop without a manual refresh. Once migrated, it's done.
@@ -467,6 +504,26 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
     router.refresh();
   }
 
+  // Fleet token actions: "Switch all" arms only agents still on the shared token; "Rotate all" arms
+  // every enabled agent. Separate busy flag from bulkUpdate — an independent control, not the same op.
+  const [tokenBulkBusy, setTokenBulkBusy] = useState(false);
+  const switchableCount = agents.filter((a) => a.enabled && !a.tokenConfirmedAt).length;
+  const perAgentCount = agents.filter((a) => !!a.tokenConfirmedAt).length;
+  async function switchAllTokens() {
+    setTokenBulkBusy(true); setError(null);
+    const res = await switchAllToPerAgentTokens();
+    setTokenBulkBusy(false);
+    if (!res.ok) setError(res.error ?? "failed");
+    router.refresh();
+  }
+  async function rotateAllTokensClick() {
+    setTokenBulkBusy(true); setError(null);
+    const res = await rotateAllTokens();
+    setTokenBulkBusy(false);
+    if (!res.ok) setError(res.error ?? "failed");
+    router.refresh();
+  }
+
   return (
     <>
       <div className="toolbar" style={{ marginBottom: "1rem" }}>
@@ -486,6 +543,16 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
           }>
           {bulkBusy ? "Queuing…" : "Update all"}
         </button>
+        <button onClick={switchAllTokens} disabled={tokenBulkBusy || switchableCount === 0}
+          title={switchableCount > 0
+            ? `Arm a token refresh for every enabled runner still on the shared token (${switchableCount})`
+            : "Every enabled runner is already on its own per-agent token"}>
+          {tokenBulkBusy ? "Queuing…" : "Switch all to individual tokens"}
+        </button>
+        <button onClick={rotateAllTokensClick} disabled={tokenBulkBusy || agents.filter((a) => a.enabled).length === 0}
+          title="Rotate the per-agent token for every enabled runner (including ones still on the shared token)">
+          {tokenBulkBusy ? "Queuing…" : "Rotate all"}
+        </button>
         <span className="grow" />
         <button onClick={() => setUrlModal({ agentId: null })}
           title={migration.targetUrl
@@ -495,6 +562,12 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
         </button>
         <button className="primary" onClick={open}>Add runner</button>
       </div>
+
+      {agents.length > 0 && (
+        <p className="note" style={{ margin: "0 0 1rem" }}>
+          {perAgentCount}/{agents.length} agents on per-agent auth — cutover available at {agents.length}/{agents.length}.
+        </p>
+      )}
 
       <details style={{ margin: "0 0 1rem", fontSize: 13 }}>
         <summary style={{ cursor: "pointer", color: "var(--muted)" }}>Runner maintenance &amp; troubleshooting (restart, Exchange Online module)</summary>
@@ -526,7 +599,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
               />
             </th>
-            <th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Uptime</th><th>Status</th><th></th>
+            <th>Name</th><th>Scope</th><th>Client</th><th>Version</th><th>Last seen</th><th>Uptime</th><th>Status</th><th>Auth</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -597,6 +670,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {(() => { const r = restartStatus(a); return r ? <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div> : null; })()}
                   {(() => { const m = migrateStatus(a, migration.targetUrl, nowMs); return m ? <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div> : null; })()}
                 </td>
+                <td><AuthCell a={a} /></td>
                 <td>
                   {/* 2-column grid so the per-runner actions stack 2×2 instead of a long row. */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, minWidth: 172 }}>
@@ -613,6 +687,16 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     {a.enabled && (
                       <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner.">
                         {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
+                      </button>
+                    )}
+                    {a.enabled && !a.tokenConfirmedAt && (
+                      <button onClick={() => run(a.id, requestAgentTokenRefresh)} disabled={toggling === a.id || a.tokenRefreshRequested} title="Switch this runner from the shared token to its own per-agent token">
+                        {toggling === a.id ? "Requesting…" : a.tokenRefreshRequested ? "Queued…" : "Switch to individual token"}
+                      </button>
+                    )}
+                    {a.enabled && a.tokenConfirmedAt && (
+                      <button onClick={() => run(a.id, requestAgentTokenRefresh)} disabled={toggling === a.id || a.tokenRefreshRequested} title="Issue this runner a fresh per-agent token">
+                        {toggling === a.id ? "Requesting…" : a.tokenRefreshRequested ? "Queued…" : "Rotate token"}
                       </button>
                     )}
                     {a.enabled && !a.migratedAt && (
@@ -635,7 +719,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             );
           })}
           {agents.length === 0 && (
-            <tr><td colSpan={9} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
+            <tr><td colSpan={10} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
           )}
         </tbody>
       </table>
@@ -656,7 +740,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                 onChange={(e) => setSelected(e.target.checked ? new Set(updatableAgents.map((a) => a.id)) : new Set())}
               />
             </th>
-            <th>Runner</th><th>Version</th><th>Activity</th><th style={{ textAlign: "right" }}>Actions</th>
+            <th>Runner</th><th>Version</th><th>Activity</th><th>Auth</th><th style={{ textAlign: "right" }}>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -704,6 +788,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {r && <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div>}
                   {m && <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div>}
                 </td>
+                <td><AuthCell a={a} /></td>
                 <td style={{ textAlign: "right" }}>
                   {/* Every per-agent action behind one shared "Actions ▾" menu (the classic view
                       shows every button inline). */}
@@ -719,6 +804,9 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     ...(a.enabled
                       ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
                       : []),
+                    ...(a.enabled
+                      ? [{ label: a.tokenRefreshRequested ? "Queued…" : (a.tokenConfirmedAt ? "Rotate token" : "Switch to individual token"), disabled: toggling === a.id || a.tokenRefreshRequested, onClick: () => run(a.id, requestAgentTokenRefresh) }]
+                      : []),
                     ...(a.enabled && !a.migratedAt
                       ? [{ label: a.migrateRequested ? "Migrating…" : "Migrate to new URL", disabled: toggling === a.id || a.migrateRequested, onClick: () => (migration.targetUrl ? run(a.id, requestAgentMigrate) : setUrlModal({ agentId: a.id })) }]
                       : []),
@@ -731,7 +819,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             );
           })}
           {agents.length === 0 && (
-            <tr><td colSpan={5} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
+            <tr><td colSpan={6} className="muted" style={{ textAlign: "center" }}>No agents yet. Enroll one to start a runner.</td></tr>
           )}
         </tbody>
       </table>

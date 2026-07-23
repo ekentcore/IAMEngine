@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
@@ -19,7 +20,8 @@ export async function POST(request: Request) {
         .map((g) => ({ name: String((g as { name: unknown }).name), type: String((g as { type?: unknown }).type ?? "security") }))
     : [];
   try {
-    const out = await makeRunnerService(db).reportCloudGroups(body.agentId, body.clientSlug, groups);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).reportCloudGroups(authed.id, body.clientSlug, groups);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

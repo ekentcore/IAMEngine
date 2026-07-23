@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { parseRights } from "@/lib/jobs/conn-test-logic";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
@@ -24,7 +25,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const rights = parseRights(body.rights);
   const credExpiresAt = typeof body.credExpiresAt === "string" && !Number.isNaN(Date.parse(body.credExpiresAt)) ? new Date(body.credExpiresAt) : null;
   try {
-    const out = await makeRunnerService(db).reportConnectionTest(params.id, body.agentId, body.ok, detail, accessOk, accessDetail, rights, credExpiresAt);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).reportConnectionTest(params.id, authed.id, body.ok, detail, accessOk, accessDetail, rights, credExpiresAt);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

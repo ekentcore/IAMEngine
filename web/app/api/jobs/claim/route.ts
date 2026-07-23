@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
@@ -18,7 +19,8 @@ export async function POST(request: Request) {
   const version = typeof body.version === "string" ? body.version : null;
 
   try {
-    const jobs = await makeRunnerService(db).claim(body.agentId, batchSize, version);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const jobs = await makeRunnerService(db).claim(authed.id, batchSize, version);
     return NextResponse.json(jobs);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

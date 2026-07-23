@@ -10,6 +10,58 @@ thereafter authenticates with mutual TLS. `scope=central` for the cloud runner;
 `scope=client-network` agents are bound to one `clientId` and only ever see that client's
 jobs.
 
+## Authentication (runner-API bearer)
+
+Every runner-API call (`heartbeat`, `claim`, `credential`, `result`, and the connector-test
+equivalents) carries `Authorization: Bearer <token>`. Two schemes coexist during the
+per-agent migration:
+
+- **Per-agent token** (`agt_...`, opaque, hashed at rest on the `Agent` row) — authoritative.
+  `authenticateAgent()` resolves the bearer by its prefix, verifies the hash, and returns
+  the agent's own `clientId`. **Identity comes from the token, never from the body** — a
+  request body's `agentId` is only a hint (used for the legacy shared-token path below); a
+  per-agent-authenticated caller cannot claim/broker as another client by lying in the body.
+- **Shared token** (legacy `RUNNER_API_TOKEN`) — identity is the body `agentId`, trusted
+  as-is. Allowed only until cutover, and refused outright for any agent that has already
+  confirmed a per-agent token (`tokenConfirmedAt` set) even before cutover, so a rollback of
+  a single already-migrated agent can't be used to re-widen the fleet-wide shared secret's
+  blast radius.
+
+### Remote provisioning and rotation (heartbeat push-down)
+
+Switching an agent to a per-agent token — or rotating an existing one — is a remote,
+zero-touch operator action from the Agents page, delivered through the same push-down
+pattern as `update`/`restart`/`discover`:
+
+1. Operator action sets `Agent.tokenRefreshRequested = true`.
+2. The agent's next `heartbeat` call: the app mints a fresh token (hashed before storage),
+   atomically clears `tokenRefreshRequested`, and returns it **once**, in that response only,
+   as `provisionToken`. It is never re-delivered — a runner that misses it (crashes before
+   persisting) needs a new operator-triggered refresh.
+3. **Adopt-and-confirm:** on seeing `provisionToken`, the runner persists it, switches its
+   bearer to the per-agent token, drops the shared token, and relaunches
+   (`lib/CtgAgentAuth.ps1: Set-CtgAgentToken`). The *next* authenticated call the runner
+   makes — ordinarily its next heartbeat — presents the per-agent token, so
+   `authenticateAgent` resolves `via: "per-agent"`; the heartbeat handler then sets
+   `Agent.tokenConfirmedAt` (first confirmation) or, on a later rotation, both
+   `tokenConfirmedAt` and `tokenRotatedAt`. Confirmation is what makes the shared-token
+   fallback permanently refused for that agent, independent of the fleet-wide cutover flag.
+
+### Flags
+
+- `RUNNER_REQUIRE_PER_AGENT` — the hard cutover. Once `"true"`, the shared token is refused
+  (`401`) on every identity-bearing route regardless of confirmation state; only per-agent
+  tokens authenticate. Set this only after the fleet has been switched over and is claiming
+  cleanly on individual tokens.
+- `RUNNER_PER_AGENT_EDGE_ENABLED` — edge (middleware) safety gate, independent of the
+  cutover. The Edge runtime has no DB, so it cannot verify a per-agent token itself — it can
+  only decide whether to let the request through to the handler that does. An `agt_`-
+  prefixed bearer is admitted at the edge only when this flag is `"true"` **or** cutover
+  (`RUNNER_REQUIRE_PER_AGENT=true`) has already happened; until then an `agt_` bearer falls
+  through to the same rejection path as an unrecognized token, so a partial deploy (edge
+  code shipped, handler validation not yet live) can never admit an unvalidated token. The
+  rollout sets this right after the app deploy, before switching any agent over.
+
 ## Endpoints (app side)
 
 - `POST /api/agents/heartbeat` — agent reports liveness + version; updates `lastSeenAt`. Response

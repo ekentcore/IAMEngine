@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,8 @@ export async function POST(request: Request) {
   }
   if (typeof body.agentId !== "string" || !body.agentId) return NextResponse.json({ error: "agentId is required" }, { status: 422 });
   try {
-    const work = await makeRunnerService(db).claimCloudGroupDiscovery(body.agentId);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const work = await makeRunnerService(db).claimCloudGroupDiscovery(authed.id);
     return NextResponse.json(work, { headers: NO_STORE });
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

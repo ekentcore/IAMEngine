@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export const dynamic = "force-dynamic";
@@ -16,8 +17,9 @@ export async function POST(req: Request) {
   }
   if (typeof body.agentId !== "string" || !body.agentId) return NextResponse.json({ error: "agentId is required" }, { status: 422 });
   try {
+    const authed = await authenticateAgent(db, req, typeof body.agentId === "string" ? body.agentId : null);
     const res = await makeRunnerService(db).recordAdObjects(
-      body.agentId,
+      authed.id,
       Array.isArray(body.ous) ? (body.ous as string[]) : [],
       Array.isArray(body.groups) ? (body.groups as string[]) : []
     );

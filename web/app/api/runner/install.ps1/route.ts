@@ -164,6 +164,7 @@ foreach ($rel in $manifest.files) {
 Step "enrolling agent"
 $enroll = Invoke-RestMethod -Method Post -Uri "$AppUrl/api/agents" -ContentType 'application/json' -Headers $H -Body (@{ name = "${agentName}"; enrollToken = $Token } | ConvertTo-Json)
 $AgentId = $enroll.id
+$AgentToken = $enroll.agentToken
 if (-not $AgentId) { Write-Error "Enrollment failed (no agent id returned)."; return }
 Write-Host "  enrolled: $AgentId" -ForegroundColor Green
 
@@ -174,6 +175,15 @@ if ($ApiToken) {
   [Environment]::SetEnvironmentVariable('RUNNER_API_TOKEN', $ApiToken, 'Machine')
   $env:RUNNER_API_TOKEN = $ApiToken   # also this session, so the task we launch inherits it now
   Write-Host "  set RUNNER_API_TOKEN (Machine env)" -ForegroundColor Green
+}
+# Every fresh enrollment now mints its own per-agent token (enroll() in runner-service.ts) — prefer
+# it over the shared $ApiToken above (kept only so a mid-migration installer still works). Baked the
+# same way: machine env (post-reboot) + this session's env (so the task launched in step 6 has it),
+# and also passed as -AgentToken on the launch line so a same-session start doesn't need the reboot.
+if ($AgentToken) {
+  [Environment]::SetEnvironmentVariable('RUNNER_AGENT_TOKEN', $AgentToken, 'Machine')
+  $env:RUNNER_AGENT_TOKEN = $AgentToken
+  Write-Host "  set RUNNER_AGENT_TOKEN (Machine env) — this agent authenticates with its own token" -ForegroundColor Green
 }
 # Browser automation (headless Chromium via the Playwright sidecar) is a CENTRAL-runner concern: it
 # drives vendor portals that have no API (e.g. the Spanning force-sync). A client-network agent runs
@@ -189,6 +199,7 @@ if ($NoBrowser) {
 Step "registering Scheduled Task 'iam-runner'"
 $start = Join-Path $InstallDir 'Start-IamRunner.ps1'
 $arg = '-NoProfile -ExecutionPolicy Bypass -File "' + $start + '" -AppUrl "' + $AppUrl + '" -AgentId "' + $AgentId + '"'
+if ($AgentToken) { $arg += ' -AgentToken "' + $AgentToken + '"' }
 $action  = New-ScheduledTaskAction -Execute $pwsh -Argument $arg
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings= New-ScheduledTaskSettingsSet -RestartCount 9999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)

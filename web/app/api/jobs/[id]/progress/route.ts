@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
@@ -22,7 +23,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (!phase && !stage) return NextResponse.json({ error: "phase or stage is required" }, { status: 422 });
 
   try {
-    const out = await makeRunnerService(db).recordProgress(params.id, body.agentId, phase, stage);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).recordProgress(params.id, authed.id, phase, stage);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

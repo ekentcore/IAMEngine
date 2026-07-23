@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export const dynamic = "force-dynamic";
@@ -20,8 +21,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (typeof body.secretName !== "string" || !body.secretName) return NextResponse.json({ error: "secretName is required" }, { status: 422 });
 
   try {
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
     // otp:true also mints a CURRENT one-time password from Delinea (see brokerCredential).
-    const cred = await makeRunnerService(db).brokerCredential(params.id, body.agentId, body.secretName, body.otp === true);
+    const cred = await makeRunnerService(db).brokerCredential(params.id, authed.id, body.secretName, body.otp === true);
     return NextResponse.json(cred, { headers: NO_STORE });
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

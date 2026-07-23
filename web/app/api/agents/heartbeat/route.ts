@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
 import { parseCapabilities } from "@/lib/runner/capabilities";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
@@ -23,7 +24,8 @@ export async function POST(request: Request) {
   const migrateError = typeof body.migrateError === "string" ? body.migrateError : null; // last migrate failure the agent hit
 
   try {
-    const out = await makeRunnerService(db).heartbeat(body.agentId, version, semver, startedAt, capabilities, appUrl, migrateError);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).heartbeat(authed.id, version, semver, startedAt, capabilities, appUrl, migrateError, authed.via);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });

@@ -307,9 +307,22 @@ model Agent {
   migrateError       String?
   // Soft-delete: a disabled runner moved to the trash. Restorable for 30 days, then purged.
   deletedAt          DateTime?
+  // Per-agent auth (replaces the fleet-wide shared RUNNER_API_TOKEN). The token itself is the
+  // identity: authenticateAgent() resolves it to THIS row, so clientId can't be forged via the body.
+  tokenHash               String?    // sha256(fullToken) hex — NEVER the token itself
+  tokenPrefix             String?    // first 12 chars of the token (agt_ + 8) — INDEXED lookup, not secret
+  tokenProvisionedAt      DateTime?  // last mint+deliver (may be unconfirmed if the runner didn't adopt)
+  tokenConfirmedAt        DateTime?  // set when the agent first authenticates WITH its per-agent token
+  tokenRotatedAt          DateTime?  // last rotate of an already-confirmed token
+  // Operator-armed remote refresh — mirrors updateRequested/restartRequested/migrateRequested.
+  tokenRefreshRequested   Boolean    @default(false)
+  tokenRefreshRequestedAt DateTime?
+  tokenRefreshRequestedBy String?
+  tokenRefreshDeliveredAt DateTime?
   jobs               Job[]
 
   @@index([deletedAt])
+  @@index([tokenPrefix])
 }
 
 // Operator-entered setup state for one (client, system) pair — the bits of the setup checklist

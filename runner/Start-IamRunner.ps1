@@ -12,6 +12,7 @@ param(
     [Parameter(Mandatory)][string]$AppUrl,        # https://iam-engine.internal
     [Parameter(Mandatory)][string]$AgentId,
     [string]$ApiToken = $env:RUNNER_API_TOKEN,    # interim shared bearer (until mTLS)
+    [string]$AgentToken = $env:RUNNER_AGENT_TOKEN, # per-agent token (preferred); falls back to $ApiToken
     [int]$PollSeconds = 5,
     [int]$BatchSize   = 5,
     # ExchangeOnlineManagement 3.10.0's REST cmdlets break on PowerShell 7.6 ("[HttpResponseMessage]
@@ -37,6 +38,8 @@ Import-Module "$PSScriptRoot/lib/Coretelligent.Watchdog/Coretelligent.Watchdog.p
 . (Join-Path $PSScriptRoot 'lib/CtgMigrate.ps1')
 # Invoke-CtgManifestPull — the self-update file pull (no relaunch), shared with the pool supervisor.
 . (Join-Path $PSScriptRoot 'lib/CtgUpdate.ps1')
+# Get-CtgBearer (per-agent-preferred bearer accessor) + Set-CtgAgentToken (provisionToken adoption).
+. (Join-Path $PSScriptRoot 'lib/CtgAgentAuth.ps1')
 if (-not $PSBoundParameters.ContainsKey('StallTimeoutSeconds') -and $env:RUNNER_STALL_TIMEOUT) { $StallTimeoutSeconds = [int]$env:RUNNER_STALL_TIMEOUT }
 $HeartbeatFile = Get-CtgHeartbeatPath -Explicit $HeartbeatFile -AgentId $AgentId
 if ($HealthCheck) {
@@ -1572,7 +1575,7 @@ $DISPATCH['spanning-force-sync'] = @{
         # the one-time password is enrolled on the portal login, not on the API credential.
         $secretName = if ($creds.ContainsKey('spanning-portal') -and $creds['spanning-portal']) { 'spanning-portal' } else { 'spanning' }
         Invoke-CtgSpanningForceSync -User $job.payload -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['spanning-force-sync'].Offboard = $DISPATCH['spanning-force-sync'].Onboard
@@ -1591,7 +1594,7 @@ $DISPATCH['entra-devicecode'] = @{
         $secretName = 'm365-global-admin'
         Invoke-CtgEntraDeviceCode -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
             -UserCode (Get-CtgProp $job.config 'userCode') `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['entra-devicecode'].Offboard = $DISPATCH['entra-devicecode'].Onboard
@@ -1607,7 +1610,7 @@ $DISPATCH['google-oauth-signin'] = @{
     Onboard = { param($job, $creds)
         $secretName = 'google-super-admin'
         Invoke-CtgGoogleOAuthSignin -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['google-oauth-signin'].Offboard = $DISPATCH['google-oauth-signin'].Onboard
@@ -1621,7 +1624,7 @@ $DISPATCH['google-dwd-grant'] = @{
     Onboard = { param($job, $creds)
         $secretName = 'google-super-admin'
         Invoke-CtgGoogleDwdGrant -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['google-dwd-grant'].Offboard = $DISPATCH['google-dwd-grant'].Onboard
@@ -1637,7 +1640,7 @@ $DISPATCH['mimecast-console-setup'] = @{
     Onboard = { param($job, $creds)
         $secretName = 'mimecast-console'
         Invoke-CtgMimecastConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['mimecast-console-setup'].Offboard = $DISPATCH['mimecast-console-setup'].Onboard
@@ -1652,7 +1655,7 @@ $DISPATCH['spanning-console-setup'] = @{
     Onboard = { param($job, $creds)
         $secretName = 'spanning-portal'
         Invoke-CtgSpanningConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['spanning-console-setup'].Offboard = $DISPATCH['spanning-console-setup'].Onboard
@@ -1678,7 +1681,7 @@ $DISPATCH['adobe-console-setup'] = @{
     Onboard = { param($job, $creds)
         $secretName = 'adobe-console'
         Invoke-CtgAdobeConsoleSetup -Config $job.config -Secret $creds[$secretName] -SecretName $secretName `
-            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = $ApiToken; agentId = $AgentId; secretName = $secretName }
+            -OtpRequest @{ url = "$AppUrl/api/jobs/$($job.id)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = $secretName }
     }
 }
 $DISPATCH['adobe-console-setup'].Offboard = $DISPATCH['adobe-console-setup'].Onboard
@@ -1939,7 +1942,8 @@ function Invoke-AppApi {
     param([string]$Method, [string]$Path, $Body)
     # ngrok-skip-browser-warning bypasses ngrok-free's HTML interstitial (harmless on other hosts).
     $headers = @{ 'ngrok-skip-browser-warning' = 'true' }
-    if ($ApiToken) { $headers['Authorization'] = "Bearer $ApiToken" }
+    $bearer = Get-CtgBearer
+    if ($bearer) { $headers['Authorization'] = "Bearer $bearer" }
     $json = if ($Body) { ($Body | ConvertTo-Json -Depth 12) } else { $null }
     Invoke-CtgHttp -Method $Method -Uri "$AppUrl$Path" -Headers $headers -Body $json  # mTLS replaces the bearer in production
 }
@@ -2054,7 +2058,9 @@ function Update-CtgRunner {
     # into our own folder, then relaunch this script (new pwsh process = new code) and exit. The pull
     # itself lives in Invoke-CtgManifestPull (lib/CtgUpdate.ps1) so the pool supervisor can reuse it
     # once for the whole pool; here we pull then relaunch, exactly as before.
-    $m = Invoke-CtgManifestPull -AppUrl $AppUrl -ApiToken $ApiToken -RunnerDir $PSScriptRoot
+    # INTEGRATION (#226 ⇄ #229): authenticate the pull with Get-CtgBearer, NOT the raw $ApiToken —
+    # after a per-agent-token adoption $ApiToken is nulled, so passing it would 401 a migrated runner.
+    $m = Invoke-CtgManifestPull -AppUrl $AppUrl -ApiToken (Get-CtgBearer) -RunnerDir $PSScriptRoot
     Write-Host "self-update: pulled $($m.count) files (build $($m.buildId)) — restarting" -ForegroundColor Green
     Invoke-CtgRelaunch -Reason 'self-update'
 }
@@ -2080,7 +2086,10 @@ function Invoke-CtgRelaunch {
            ' -AppUrl ' + (& $qq $AppUrl) + ' -AgentId ' + (& $qq $AgentId) +
            ' -PollSeconds ' + $PollSeconds + ' -BatchSize ' + $BatchSize +
            ' -ExoModuleVersion ' + (& $qq $ExoModuleVersion)
-    if ($ApiToken) { $cmd += ' -ApiToken ' + (& $qq $ApiToken) }
+    # Once a per-agent token is adopted, the shared token is dropped — never re-embed it in the
+    # rewritten launcher, or a migrated agent could fall back to a token it no longer holds.
+    if ($script:AgentToken) { $cmd += ' -AgentToken ' + (& $qq $script:AgentToken) }
+    elseif ($ApiToken) { $cmd += ' -ApiToken ' + (& $qq $ApiToken) }
     if ($IsWindows) {
         try {
             $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
@@ -2089,7 +2098,10 @@ function Invoke-CtgRelaunch {
         }
         catch {
             Write-Warning "${Reason} relaunch via WMI failed ($($_.Exception.Message)); using Start-Process"
-            Start-Process -FilePath $pwshPath -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion) | Out-Null
+            $fbArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion)
+            if ($script:AgentToken) { $fbArgs += @('-AgentToken', $script:AgentToken) }
+            elseif ($ApiToken) { $fbArgs += @('-ApiToken', $ApiToken) }
+            Start-Process -FilePath $pwshPath -ArgumentList $fbArgs | Out-Null
         }
     }
     else {
@@ -2097,10 +2109,11 @@ function Invoke-CtgRelaunch {
         # the dead tty; the Start-Process child survives our exit on Unix).
         $log = if ($env:RUNNER_LOG) { $env:RUNNER_LOG } else { Join-Path $HOME 'iam-runner.log' }
         $a = @($pwshPath, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AppUrl', $AppUrl, '-AgentId', $AgentId, '-PollSeconds', "$PollSeconds", '-BatchSize', "$BatchSize", '-ExoModuleVersion', $ExoModuleVersion)
-        if ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
+        if ($script:AgentToken) { $a += @('-AgentToken', $script:AgentToken) }
+        elseif ($ApiToken) { $a += @('-ApiToken', $ApiToken) }
         $q = { param($s) "'" + ([string]$s -replace "'", "'\''") + "'" }
         $line = (($a | ForEach-Object { & $q $_ }) -join ' ') + " >> $(& $q $log) 2>&1"
-        # The launcher embeds -ApiToken, so it must NOT be world-readable. Put it in a private per-launch
+        # The launcher embeds -AgentToken/-ApiToken, so it must NOT be world-readable. Put it in a private per-launch
         # dir (0700) so it's unreadable even during the brief window before the file's own 0600 lands,
         # and have the launcher delete itself before exec so the token doesn't linger on disk.
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("iam-runner-" + [guid]::NewGuid().ToString('N'))
@@ -2138,7 +2151,8 @@ function Invoke-CtgMigrate {
     #    existing token validates). Anything else → stay put and report.
     try {
         $H = @{ 'ngrok-skip-browser-warning' = 'true' }
-        if ($ApiToken) { $H['Authorization'] = "Bearer $ApiToken" }
+        $bearer = Get-CtgBearer
+        if ($bearer) { $H['Authorization'] = "Bearer $bearer" }
         $null = Invoke-RestMethod -Uri "$NewAppUrl/api/runner/manifest" -Headers $H -TimeoutSec 30 -ErrorAction Stop
     } catch {
         $script:LastMigrateError = "unreachable: $($_.Exception.Message)"
@@ -2217,7 +2231,7 @@ function Protect-CtgSecretsInText {
     }
     # Never leak the runner's OWN bearer / per-job progress token into a persisted error.
     $prog = if (Get-Variable -Name CtgProgressToken -Scope Global -ErrorAction SilentlyContinue) { $global:CtgProgressToken } else { $null }
-    foreach ($t in @($ApiToken, $prog)) {
+    foreach ($t in @($ApiToken, $AgentToken, $prog)) {
         $ts = [string]$t
         if ($ts.Length -ge 4 -and $Text.Contains($ts)) { $Text = $Text.Replace($ts, '***') }
     }
@@ -2851,7 +2865,7 @@ $CONNTEST_PROBE['spanning']    = { param($job, $creds)
         return "$detail · console sign-in not checked (no browser runtime on this agent)"
     }
     # Mint the MFA code from the CONN-TEST credential endpoint, at the prompt (same contract as a job).
-    $otpReq = @{ url = "$AppUrl/api/runner/conn-tests/$($job.connTestId)/credential"; token = $ApiToken; agentId = $AgentId; secretName = 'spanning-portal' }
+    $otpReq = @{ url = "$AppUrl/api/runner/conn-tests/$($job.connTestId)/credential"; token = (Get-CtgBearer); agentId = $AgentId; secretName = 'spanning-portal' }
     $signin = Test-CtgSpanningPortalLogin -Secret $portal -SecretName 'spanning-portal' -OtpRequest $otpReq
     $rights.Add(@{ op = 'console sign-in (browser)'; ok = $signin.Ok; detail = [string]$signin.Detail })
     $script:ConnTestRights = @($rights)
@@ -3153,7 +3167,7 @@ try { [System.IO.File]::WriteAllText($script:LockPath, [string]$PID) } catch { }
 Write-Host "iam-engine runner $AgentId (build $script:RunnerBuild, pid $PID) polling $AppUrl every ${PollSeconds}s" -ForegroundColor Cyan
 # Per-process progress globals, read by Send-CtgProgress (callable from the Coretelligent.* modules).
 $global:CtgProgressUrl   = $AppUrl
-$global:CtgProgressToken = $ApiToken
+$global:CtgProgressToken = Get-CtgBearer
 $global:CtgProgressAgent = $AgentId
 
 # Arm the stall watchdog (lib/Coretelligent.Watchdog) on its own thread: if no progress for
@@ -3164,7 +3178,8 @@ $wdPwsh = (Get-Process -Id $PID).Path
 if (-not $wdPwsh) { $wdPwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
 $wdSelf = Join-Path $PSScriptRoot 'Start-IamRunner.ps1'
 $wdArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$wdSelf,'-AppUrl',$AppUrl,'-AgentId',$AgentId,'-PollSeconds',$PollSeconds,'-BatchSize',$BatchSize,'-ExoModuleVersion',$ExoModuleVersion)
-if ($ApiToken) { $wdArgs += @('-ApiToken',$ApiToken) }
+if ($AgentToken) { $wdArgs += @('-AgentToken',$AgentToken) }
+elseif ($ApiToken) { $wdArgs += @('-ApiToken',$ApiToken) }
 $script:Watchdog = Start-CtgWatchdog -HeartbeatFile $global:CtgHeartbeatFile -TimeoutSeconds $StallTimeoutSeconds -PwshPath $wdPwsh -RelaunchArgs $wdArgs
 Write-Host "watchdog armed: restart if no progress for ${StallTimeoutSeconds}s (heartbeat $global:CtgHeartbeatFile)" -ForegroundColor DarkGray
 
@@ -3206,10 +3221,26 @@ while ($true) {
     try {
         # Report the app URL we're polling (so the app knows where each agent lives + can detect a
         # completed migration) and any last migrate failure (surfaced on the Agents page).
-        $hbBody = @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson; appUrl = $AppUrl }
+        $hbBody = @{ agentId = $AgentId; version = $script:RunnerBuild; semver = $script:RunnerSemver; startedAt = $script:RunnerStartedAt; capabilities = $script:RunnerCapabilitiesJson; appUrl = $AppUrl; authMode = $(if ($script:AgentToken) { 'per-agent' } else { 'shared' }) }
         if ($script:LastMigrateError) { $hbBody['migrateError'] = $script:LastMigrateError }
         $hb = Invoke-AppApi POST '/api/agents/heartbeat' $hbBody
         if ($hb.enabled -eq $false) { Write-Warning "agent disabled server-side; stopping."; break }
+        # Adopt a delivered per-agent token BEFORE update/restart handling below: the token is a
+        # one-shot delivery (see runner-service.ts heartbeat/provisionToken), so if it lands on the
+        # same heartbeat as a pending update or restart and we processed those first, we'd never
+        # return from Update-CtgRunner/Restart-CtgRunner and the token would be discarded forever.
+        # Ordering it first is harmless the other way: a pending auto-update simply re-emits on the
+        # runner's NEXT heartbeat (a plain relaunch here doesn't change the reported build, so the
+        # app still sees it as stale), and a missed one-shot restart is harmless because the adopt's
+        # own relaunch already restarted the process.
+        if ($hb.provisionToken) {
+            # The app is arming (or completing) our migration to a per-agent token. Adopt it (persist +
+            # switch bearer + drop the shared token — see lib/CtgAgentAuth.ps1), then re-exec via the
+            # same self-rewrite path a plain restart uses so the launcher/env is clean going forward.
+            Write-Host "token: received a per-agent token — adopting and restarting" -ForegroundColor Yellow
+            Set-CtgAgentToken -Token ([string]$hb.provisionToken)
+            Invoke-CtgRelaunch -Reason 'token-adopt'  # never returns
+        }
         if ($hb.update -eq $true) {
             # Self-update. A STANDALONE runner (single-agent install, RUNNER_POOL_MEMBER unset) pulls +
             # relaunches itself, exactly as before. A POOL MEMBER yields: it must NOT pull, because N

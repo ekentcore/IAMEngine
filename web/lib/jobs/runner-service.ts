@@ -25,6 +25,7 @@ import { sweepDbBackup } from "./db-backup";
 import { sweepRestoreDrill } from "./restore-drill";
 import { sweepFleetAlerts } from "./fleet-alerts";
 import { AGENT_MIGRATION_KEY, migrateDecision, type AgentMigrationSetting } from "./agent-migration";
+import { generateAgentToken } from "../runner/agent-token";
 import { effectiveExternalId, missingRequiredSecrets, allSecretsNotNeeded, ALWAYS_ON_PREM_SYSTEMS, systemIsOnPrem } from "../cases/case-secrets";
 import { parseCapabilities, onPremExclusions, browserExclusions, BROWSER_SYSTEMS } from "../runner/capabilities";
 import { connectorNeedsBrowser } from "../connectors/definition";
@@ -43,6 +44,7 @@ import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
 import { resolveActor, type ActorInput } from "../auth/actor";
+import { planTokenRefresh, planTokenConfirm } from "./agent-token-refresh";
 
 type JobRequest = { config?: unknown; requiresApproval?: boolean; captureEvidence?: boolean; secretNames?: string[]; approved?: boolean; dryRun?: boolean; validateOnly?: boolean };
 
@@ -352,7 +354,7 @@ async function assertCentralAgentForClient(db: PrismaClient, agentId: string, cl
 
 export function makeRunnerService(db: PrismaClient) {
   return {
-    async enroll(input: { name: string; scope: AgentScope; clientSlug?: string | null }): Promise<{ id: string; scope: AgentScope; clientId: string | null }> {
+    async enroll(input: { name: string; scope: AgentScope; clientSlug?: string | null }): Promise<{ id: string; scope: AgentScope; clientId: string | null; agentToken?: string }> {
       let clientId: string | null = null;
       const slug = input.clientSlug?.trim() || null; // tolerate a stray space in a token's client
       if (slug) {
@@ -363,12 +365,31 @@ export function makeRunnerService(db: PrismaClient) {
       if (input.scope === "client_network" && !clientId) {
         throw new HttpError(422, "a client_network agent must be bound to a client");
       }
+      // Only mint a per-agent token once the edge is actually configured to admit agt_ bearers
+      // (RUNNER_PER_AGENT_EDGE_ENABLED) or we've reached the RUNNER_REQUIRE_PER_AGENT cutover — see
+      // edge-runner-auth.ts. Minting before then would hand the runner a token the edge rejects,
+      // locking it out with no fallback (the shared token is dropped on adopt). Until the flag is on,
+      // a freshly enrolled agent has no token fields at all and simply uses the shared token like
+      // every other pre-migration agent.
+      const edgeReady = process.env.RUNNER_PER_AGENT_EDGE_ENABLED === "true" || process.env.RUNNER_REQUIRE_PER_AGENT === "true";
+      const now = new Date();
+      if (edgeReady) {
+        // A freshly enrolled agent mints its own per-agent token and starts confirmed on it —
+        // it never falls back to the shared token (unlike a pre-existing agent mid-migration).
+        const { token, prefix, hash } = generateAgentToken();
+        const agent = await db.agent.create({
+          data: { name: input.name, scope: input.scope, clientId, lastSeenAt: now, tokenHash: hash, tokenPrefix: prefix, tokenProvisionedAt: now, tokenConfirmedAt: now },
+          select: { id: true, scope: true, clientId: true },
+        });
+        await db.auditLog.create({ data: { actor: "system", action: "agent.enroll", clientId, detail: { agentId: agent.id, scope: agent.scope } } });
+        return { ...agent, agentToken: token };
+      }
       const agent = await db.agent.create({
-        data: { name: input.name, scope: input.scope, clientId, lastSeenAt: new Date() },
+        data: { name: input.name, scope: input.scope, clientId, lastSeenAt: now },
         select: { id: true, scope: true, clientId: true },
       });
       await db.auditLog.create({ data: { actor: "system", action: "agent.enroll", clientId, detail: { agentId: agent.id, scope: agent.scope } } });
-      return agent;
+      return { ...agent };
     },
 
     // Operator action: enable/disable an agent (a disabled agent can't claim/broker/post).
@@ -420,8 +441,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, client: { select: { adDiscoverRequestedAt: true } } } });
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null, authVia?: "per-agent" | "shared" | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean; provisionToken?: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, tokenRefreshRequested: true, tokenConfirmedAt: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -533,7 +554,25 @@ export function makeRunnerService(db: PrismaClient) {
       // processes). Fail-open: an absent/disabled/unparseable setting reads as inactive (single-runner
       // safe). An older runner simply ignores the extra field.
       const governor = governorActive(resolveCaps(await getAppSetting<ConcurrencySetting>(db, CONCURRENCY_KEY)));
-      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate, drain, governorActive: governor };
+      // Per-agent token lifecycle. Deliver an armed refresh once; confirm on a per-agent heartbeat.
+      let provisionToken: string | undefined;
+      // Gate on agent.enabled — same as update/restart/discover above — so a disabled/trashed agent
+      // never gets a freshly minted credential. Gating before planTokenRefresh also avoids minting a
+      // token we'd just discard. ALSO gate on edgeReady (RUNNER_PER_AGENT_EDGE_ENABLED or the
+      // RUNNER_REQUIRE_PER_AGENT cutover — see edge-runner-auth.ts): the edge must be able to admit
+      // agt_ bearers before we ever hand one out, or an adopting runner would lock itself out with no
+      // fallback. When not edgeReady we deliberately do NOT consume tokenRefreshRequested (leave it
+      // set) so the token is delivered on a later heartbeat once the flag flips on.
+      const edgeReady = process.env.RUNNER_PER_AGENT_EDGE_ENABLED === "true" || process.env.RUNNER_REQUIRE_PER_AGENT === "true";
+      const refresh = (agent.enabled && edgeReady) ? planTokenRefresh({ tokenRefreshRequested: agent.tokenRefreshRequested }) : null;
+      if (refresh) {
+        // Atomic consume so overlapping heartbeats can't both mint.
+        const consumed = await db.agent.updateMany({ where: { id: agentId, tokenRefreshRequested: true }, data: refresh.update });
+        if (consumed.count > 0) provisionToken = refresh.token;
+      }
+      const confirm = planTokenConfirm({ via: authVia, tokenConfirmedAt: agent.tokenConfirmedAt });
+      if (confirm) await db.agent.update({ where: { id: agentId }, data: confirm }).catch(() => {});
+      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate, drain, governorActive: governor, provisionToken };
     },
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
@@ -582,6 +621,25 @@ export function makeRunnerService(db: PrismaClient) {
       const who = resolveActor(actor);
       await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: displayActor(who.actor), updateDeliveredAt: null } });
       await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.update_requested", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Operator action: arm a per-agent token refresh (joint->individual, or rotate). Mirrors
+    // requestUpdate — the next heartbeat mints + delivers the token, then clears the flag.
+    async requestTokenRefresh(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      // Mirrors requestUpdate's guard: a disabled/trashed agent won't heartbeat to consume the flag
+      // (and now can't mint a token even if it did — see heartbeat's agent.enabled gate above), so
+      // reject here rather than leave the request pending indefinitely.
+      if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
+      if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting a token refresh");
+      const who = resolveActor(actor);
+      await db.agent.update({
+        where: { id: agentId },
+        data: { tokenRefreshRequested: true, tokenRefreshRequestedAt: new Date(), tokenRefreshRequestedBy: displayActor(who.actor), tokenRefreshDeliveredAt: null },
+      });
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.token_refresh_requested", detail: { agentId } } });
       return { id: agentId };
     },
 

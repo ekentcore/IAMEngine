@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { makeRunnerService } from "@/lib/jobs/runner-service";
+import { authenticateAgent } from "@/lib/auth/agent-auth";
 import { HttpError } from "@/lib/jobs/types";
 
 export async function POST(request: Request) {
@@ -21,7 +22,8 @@ export async function POST(request: Request) {
         .map((m) => ({ address: String(m.address), displayName: typeof m.displayName === "string" ? m.displayName : "" }))
     : [];
   try {
-    const out = await makeRunnerService(db).reportCloudMailboxes(body.agentId, body.clientSlug, mailboxes);
+    const authed = await authenticateAgent(db, request, typeof body.agentId === "string" ? body.agentId : null);
+    const out = await makeRunnerService(db).reportCloudMailboxes(authed.id, body.clientSlug, mailboxes);
     return NextResponse.json(out);
   } catch (e) {
     if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });
