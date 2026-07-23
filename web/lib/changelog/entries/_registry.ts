@@ -241,3 +241,5 @@ export { entry as fixEdgeCryptoBuildCrash } from "./fix-edge-crypto-build-crash"
 export { entry as dbCopyConnectionForm } from "./db-copy-connection-form";
 
 export { entry as dbCopySslmodeToggle } from "./db-copy-sslmode-toggle";
+
+export { entry as dbCopyCrossVersionGuc } from "./db-copy-cross-version-guc";

@@ -47,6 +47,7 @@ export function DbCopyView() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CopyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showPw, setShowPw] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -164,7 +165,27 @@ export function DbCopyView() {
               <input value={form.database} onChange={set("database")} placeholder="automationUM" style={field} disabled={running} />
             </Labeled>
             <Labeled label="Password" wide>
-              <input type="password" value={form.password} onChange={set("password")} placeholder="(re-typed each time)" style={field} disabled={running} autoComplete="off" />
+              <div style={{ position: "relative" }}>
+                <input
+                  type={showPw ? "text" : "password"}
+                  value={form.password}
+                  onChange={set("password")}
+                  placeholder="(re-typed each time)"
+                  style={{ ...field, paddingRight: 36 }}
+                  disabled={running}
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((v) => !v)}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  aria-pressed={showPw}
+                  title={showPw ? "Hide password" : "Show password"}
+                  style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4, lineHeight: 1, color: muted }}
+                >
+                  {showPw ? "🙈" : "👁"}
+                </button>
+              </div>
             </Labeled>
             <label style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
               <input

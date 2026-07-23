@@ -12,6 +12,7 @@ import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
 import { type PgConn, pgChildEnv, connLabel, sameTarget, pgSsl } from "./config";
 import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE, type TablePlan } from "./plan";
+import { dumpLineFilter } from "./dump-filter";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
 // history and can desync a separately-managed dest. Excluded from "all tables" by default.
@@ -123,7 +124,11 @@ function dumpIntoDest(dumpArgs: string[], source: PgConn, dest: PgConn): Promise
     load.stderr.on("data", (d) => (loadErr += d.toString()));
     dump.on("error", (e) => fail(`pg_dump failed to start: ${e.message}`));
     load.on("error", (e) => fail(`psql failed to start: ${e.message}`));
-    dump.stdout.pipe(load.stdin);
+    // Filter the stream so GUCs the (possibly older) destination doesn't recognize — e.g. the PG17+
+    // `transaction_timeout` pg_dump 17+ emits — are dropped before psql sees them.
+    const filter = dumpLineFilter();
+    filter.on("error", (e) => fail(`dump filter failed: ${e.message}`));
+    dump.stdout.pipe(filter).pipe(load.stdin);
 
     let dumpDone = false;
     let loadDone = false;
