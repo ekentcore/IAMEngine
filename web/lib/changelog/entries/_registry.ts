@@ -248,4 +248,5 @@ export { entry as dbCopyFullCloneAndAudit } from "./db-copy-full-clone-and-audit
 
 export { entry as dbCopyDataOnlyIntoMigratedSchema } from "./db-copy-data-only-into-migrated-schema";
 
+export { entry as delineaNeverVaultToRoot } from "./delinea-never-vault-to-root";
 export { entry as dbCopyBuildSchemaButton } from "./db-copy-build-schema-button";

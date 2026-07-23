@@ -406,9 +406,17 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // credential was provisioned by the automated setup (not hand-entered).
     const ssName = `${client.name} — ${secretName} (auto)`;
     // Identity credentials belong in the client's "Identity Services" subfolder (correct team view
-    // permissions), not the client ROOT — resolve it, falling back to the root if there's no such child so
-    // an in-flight provisioning run is never hard-blocked (the create route is stricter and refuses).
-    const createFolderId = (await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher)) ?? folderId;
+    // permissions), and NEVER the client ROOT — a root secret's permissions are narrower, so it "reads as
+    // not viewable" to the team. If there's no such subfolder we REFUSE rather than fall back to the root
+    // (silently vaulting an unviewable credential is worse than a loud failure the operator can fix).
+    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
+    if (!createFolderId || String(createFolderId) === String(folderId)) {
+      return {
+        ok: false,
+        wroteCreds: false,
+        error: `Can't vault ${secretName} — ${client.name}'s Delinea folder has no "${identitySubfolderName(env)}" subfolder to write it into. Create that subfolder (with the identity team's view permissions) in Delinea, then retry. Credentials are never written to the client root.`,
+      };
+    }
     const createdSecret = await createSecret(cfg, { name: ssName, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!createdSecret.ok || !createdSecret.id) {
       return { ok: false, wroteCreds: false, error: createdSecret.error ?? "Delinea create failed" };

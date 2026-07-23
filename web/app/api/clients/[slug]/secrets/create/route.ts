@@ -187,9 +187,18 @@ export async function POST(req: Request, { params }: { params: { slug: string } 
     // ("Vendor" for vendor API creds), then "Identity Services" (the identity-cred default); if neither
     // exists we REFUSE rather than vault into the ROOT (the operator creates the subfolder in Delinea
     // first). The stored delineaFolderId stays the ROOT below. See PRs #180/#182 + the setup catalog.
-    const subOrder = [moduleEntry?.delineaSubfolder ?? "", identitySubfolderName()].filter((s, i, a) => a.indexOf(s) === i);
+    // Drop EMPTY names before resolving: a secret name with no catalog module yields
+    // `moduleEntry?.delineaSubfolder ?? ""` === "", and resolveVaultFolderId reads a leading "" as the
+    // "opt-out -> write to the parent (ROOT)" sentinel and short-circuits there — the exact bug that
+    // stranded m365-admin (a non-catalog name) in the client ROOT. Matching vault-module-credential's
+    // filter (`s && ...`) keeps only real subfolder names, so identity/ad-hoc creds resolve to "Identity
+    // Services" and can never fall through to the root.
+    const subOrder = [moduleEntry?.delineaSubfolder ?? "", identitySubfolderName()].filter((s, i, a) => s && a.indexOf(s) === i);
     const createFolderId = await resolveVaultFolderId(cfg, folderId!, subOrder, token);
-    if (!createFolderId) {
+    // Hard invariant: a credential must NEVER land in the client ROOT — its permissions are narrower than
+    // the subfolders', so a root secret "reads as not viewable" to the team. Refuse if no subfolder
+    // resolved, OR if resolution somehow returned the root itself (defence-in-depth against a future regression).
+    if (!createFolderId || String(createFolderId) === String(folderId)) {
       const tried = subOrder.filter(Boolean).map((s) => `"${s}"`).join(" or ");
       return NextResponse.json(
         {
