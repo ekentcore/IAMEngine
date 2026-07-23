@@ -22,7 +22,7 @@ type Preview = {
   missingCount: number;
   existingCount: number;
 };
-type CopyResult = { totalTables: number; createdTables: string[]; truncatedTables: string[]; durationMs: number };
+type CopyResult = { tables: number; durationMs: number };
 type DestForm = { host: string; port: string; user: string; database: string; schema: string; password: string; sslmode: "disable" | "require" };
 
 // Default the toggle ON: the primary destination is managed Postgres (Azure), which refuses non-TLS
@@ -220,8 +220,12 @@ export function DbCopyView() {
         <>
           <div style={box}>
             <p style={{ margin: 0, fontSize: 14 }}>
-              {preview.tables.length} table(s): <strong>{preview.missingCount}</strong> to create,{" "}
-              <strong>{preview.existingCount}</strong> already in the destination (their data will be replaced).
+              The whole source database will be cloned into the destination — {preview.tables.length} table(s) plus
+              their types, sequences and constraints. The destination&apos;s copies of these objects are dropped and
+              recreated (idempotent, safe to re-run).
+              {preview.existingCount > 0 && (
+                <> {preview.existingCount} of them already exist in the destination and will be replaced.</>
+              )}
             </p>
           </div>
 
@@ -270,8 +274,7 @@ export function DbCopyView() {
         <div style={{ ...box, borderColor: okFg }}>
           <strong>Copied.</strong>
           <p style={{ margin: "6px 0 0", fontSize: 14 }}>
-            {result.totalTables} table(s) in {Math.round(result.durationMs / 100) / 10}s — created{" "}
-            {result.createdTables.length}, replaced {result.truncatedTables.length}.
+            Cloned the whole database — {result.tables} table(s) in {Math.round(result.durationMs / 100) / 10}s.
           </p>
         </div>
       )}

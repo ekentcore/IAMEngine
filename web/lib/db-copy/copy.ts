@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
 import { type PgConn, pgChildEnv, connLabel, sameTarget, pgSsl } from "./config";
-import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE, type TablePlan } from "./plan";
+import { classifyTables, shortVersion, PG_DUMP_BASE } from "./plan";
 import { dumpLineFilter } from "./dump-filter";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
@@ -151,11 +151,42 @@ function dumpIntoDest(dumpArgs: string[], source: PgConn, dest: PgConn): Promise
 }
 
 export type CopyResult = {
-  totalTables: number;
-  createdTables: string[];
-  truncatedTables: string[];
+  tables: number;
   durationMs: number;
 };
+
+/**
+ * pg_dump flags for a whole-database CLONE: drop + recreate everything the source has — custom types
+ * (enums), tables, sequences, constraints, indexes — and load all data, in one dependency-ordered pass.
+ * `--clean --if-exists` makes it idempotent (DROP … IF EXISTS before CREATE). PG_DUMP_BASE adds
+ * --no-owner --no-privileges so it restores under the destination login regardless of source roles.
+ * This replaced the per-table -t approach, which omitted enum types the tables depend on.
+ */
+export function fullCopyDumpArgs(): string[] {
+  return ["--clean", "--if-exists"];
+}
+
+/** Audit detail for a copy attempt: WHERE it went (source→dest identity, never a password) + outcome.
+ * Any error string is scrubbed of both connection passwords. */
+export function copyAuditDetail(
+  source: PgConn,
+  dest: PgConn,
+  extra: { ok: boolean; tables?: number; durationMs?: number; error?: string },
+): { source: string; dest: string; ok: boolean; tables?: number; durationMs?: number; error?: string } {
+  const scrub = (m: string) => {
+    let s = sanitizeError(m);
+    for (const pw of [source.password, dest.password]) if (pw) s = s.split(pw).join("***");
+    return s;
+  };
+  return {
+    source: `${source.host}:${source.port}/${source.database}`,
+    dest: `${dest.host}:${dest.port}/${dest.database}`,
+    ok: extra.ok,
+    ...(extra.tables != null ? { tables: extra.tables } : {}),
+    ...(extra.durationMs != null ? { durationMs: extra.durationMs } : {}),
+    ...(extra.error != null ? { error: scrub(extra.error) } : {}),
+  };
+}
 
 export type CopyProgress = (phase: string) => void;
 
@@ -164,30 +195,15 @@ export async function runCopy(source: PgConn, dest: PgConn, onProgress: CopyProg
   if (sameTarget(source, dest)) throw new Error("source and destination are the same database — refusing to copy onto itself");
   const startedAt = Date.now();
 
-  onProgress("reading source + destination tables");
+  onProgress("reading source tables");
   const srcTables = await withClient(source, (c) => listTables(c, source.schema));
   if (!srcTables.length) throw new Error(`source schema "${source.schema}" has no tables to copy`);
-  const destTables = await withClient(dest, (c) => listTables(c, dest.schema).then((t) => new Set(t)));
-  const plan: TablePlan = classifyTables(srcTables, destTables);
 
-  if (plan.missing.length) {
-    onProgress(`creating ${plan.missing.length} missing table(s) in the destination`);
-    await dumpIntoDest(["--schema-only", ...dumpTableArgs(source.schema, plan.missing)], source, dest);
-  }
+  // One whole-database dump→restore: drops + recreates every object (types, tables, sequences,
+  // constraints) and reloads data in the correct dependency order. Correct for a fresh migration and
+  // idempotent on re-runs. The pipe strips the transaction_timeout GUC an older destination rejects.
+  onProgress(`cloning the whole database (${srcTables.length} table(s)): drop + recreate types, tables and data`);
+  await dumpIntoDest(fullCopyDumpArgs(), source, dest);
 
-  const truncate = truncateStatement(dest.schema, plan.existing);
-  if (truncate) {
-    onProgress(`truncating ${plan.existing.length} existing table(s) before reload`);
-    await withClient(dest, (c) => c.query(truncate));
-  }
-
-  onProgress(`copying data for ${plan.all.length} table(s)`);
-  await dumpIntoDest(["--data-only", "--disable-triggers", ...dumpTableArgs(source.schema, plan.all)], source, dest);
-
-  return {
-    totalTables: plan.all.length,
-    createdTables: plan.missing,
-    truncatedTables: plan.existing,
-    durationMs: Date.now() - startedAt,
-  };
+  return { tables: srcTables.length, durationMs: Date.now() - startedAt };
 }

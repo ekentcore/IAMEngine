@@ -12,7 +12,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { db } from "@/lib/db";
 import { readCopyConfigs, connLabel, type PgConn } from "@/lib/db-copy/config";
-import { runCopy } from "@/lib/db-copy/copy";
+import { runCopy, copyAuditDetail } from "@/lib/db-copy/copy";
 import { getDestProfile, saveDestProfile, connFromProfile, pickProfile, normalizeProfileInput } from "@/lib/db-copy/dest-profile";
 
 export const dynamic = "force-dynamic";
@@ -57,20 +57,20 @@ export async function POST(req: Request) {
 
   try {
     const result = await runCopy(src.source, dest);
+    // Audit the SUCCESS: who (g.user), where (source→dest), and how much/how long.
     await recordAudit("db_copy.run", {
       user: g.user,
-      detail: {
-        source: `${src.source.host}:${src.source.port}/${src.source.database}`,
-        dest: `${dest.host}:${dest.port}/${dest.database}`, // never the password
-        totalTables: result.totalTables,
-        created: result.createdTables.length,
-        truncated: result.truncatedTables.length,
-        durationMs: result.durationMs,
-      },
+      detail: copyAuditDetail(src.source, dest, { ok: true, tables: result.tables, durationMs: result.durationMs }),
     });
     return NextResponse.json({ ok: true as const, result });
   } catch (e) {
-    return NextResponse.json({ ok: false as const, error: msg(e) }, { status: 200 });
+    const error = msg(e);
+    // Audit the FAILURE too: who, where, and WHY (error scrubbed of both passwords).
+    await recordAudit("db_copy.failed", {
+      user: g.user,
+      detail: copyAuditDetail(src.source, dest, { ok: false, error }),
+    });
+    return NextResponse.json({ ok: false as const, error }, { status: 200 });
   }
 }
 
