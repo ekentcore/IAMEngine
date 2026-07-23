@@ -26,6 +26,9 @@ export const FLEET_M365_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
 
 // The app credential every M365-family system authenticates with. Its absence is "no creds".
 const M365_ADMIN_SECRET = "m365-admin";
+// Delinea externalId values that mean "no real secret number" — a row exists but points at nothing
+// usable, so it can't broker. Mirrors the UNSET sentinels the fleet audit skips.
+const M365_ADMIN_UNSET = ["", "REPLACE_ME", "NOT_NEEDED"];
 
 // need -> the narrowest role that satisfies that optional capability. The runner reports a rights
 // row's `op` AS the capability's `need` string (runner/Start-IamRunner.ps1), and the need strings in
@@ -83,9 +86,22 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
   const tags = new Set<FleetM365Tag>();
 
   // No credential to connect with: the systems exist but nothing is (or can be) tested. This is the
-  // "Set up M365" case — the app registration + credential don't exist yet.
+  // "Set up M365" case — the app registration + Delinea secret number don't exist yet. Short-circuit
+  // BEFORE looking at any test rows: with no usable secret the runner can only fail at the broker, and
+  // that broker failure must read as "No Delinea secret number", never "connection failed".
   const noCreds = !hasAdminSecret || testableSystemKeys.length === 0;
-  if (noCreds) tags.add("no_creds");
+  if (noCreds) {
+    return {
+      status: "untested",
+      tags: ["no_creds"],
+      action: "setup",
+      missingOptionalRoles: [],
+      missingPerms: 0,
+      surplus: 0,
+      escalation: 0,
+      canSelfGrant: false,
+    };
+  }
 
   const missingOptionalRoles = new Set<string>();
   let connFailed = false;
@@ -233,7 +249,7 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       // ALL systems — so hasAd (on-prem AD/sync presence) is detected the same way the per-client
       // conn-test path does. The M365-family subset is filtered out of this in JS below.
       systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } },
-      secrets: { where: { name: M365_ADMIN_SECRET }, select: { name: true } },
+      secrets: { where: { name: M365_ADMIN_SECRET }, select: { externalId: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -246,7 +262,10 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       coreId: c.coreId,
       primaryDomain: c.primaryDomain,
       m365Systems: c.systems.filter((s) => (M365_FAMILY as readonly string[]).includes(s.systemKey)),
-      hasAdminSecret: c.secrets.length > 0,
+      // "Has a credential" means a USABLE Delinea secret number, not just a wired row: a placeholder /
+      // unset externalId can't broker, so a test would fail at connect and read as "connection failed"
+      // when the real state is "no Delinea secret number". Treat those as no-creds (→ Set up M365).
+      hasAdminSecret: c.secrets.some((s) => !M365_ADMIN_UNSET.includes((s.externalId ?? "").trim())),
       hasAd: c.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey)),
     }));
 }

@@ -39,7 +39,7 @@ function statusBadge(row: FleetM365Row): { text: string; color: string } {
       return { text: "testing…", color: "#92400e" };
     case "untested":
       return row.tags.includes("no_creds")
-        ? { text: "no credential", color: "var(--muted)" }
+        ? { text: "No Delinea secret number", color: "var(--muted)" }
         : { text: "not tested yet", color: "var(--muted)" };
     default:
       return { text: row.status, color: "var(--muted)" };

@@ -65,6 +65,20 @@ test("missing required permission -> missing_perms + correct", () => {
   assert.ok(!r.tags.includes("connection_failed"));
 });
 
+test("no usable secret + a broker-failed test -> no_creds (NOT connection_failed)", () => {
+  // A client whose m365-admin has no real Delinea number: the queued test fails at the broker. That
+  // must read as "No Delinea secret number", never a connection failure.
+  const r = classifyM365Client({
+    hasAdminSecret: false,
+    testableSystemKeys: ["m365"],
+    tests: [{ systemKey: "m365", status: "fail", accessOk: false, rights: null }],
+  });
+  assert.ok(r.tags.includes("no_creds"));
+  assert.ok(!r.tags.includes("connection_failed"));
+  assert.equal(r.status, "untested");
+  assert.equal(r.action, "setup");
+});
+
 test("failed with no rights data -> connection_failed + setup (re-provision)", () => {
   const r = classifyM365Client({
     hasAdminSecret: true,
