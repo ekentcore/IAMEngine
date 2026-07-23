@@ -221,3 +221,5 @@ export { entry as adobeOnboardEmptyProfiles } from "./adobe-onboard-empty-profil
 export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";
 
 export { entry as fleetM365SelfgrantOptional } from "./fleet-m365-selfgrant-optional";
+
+export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-fix-selfcorrect-filter";

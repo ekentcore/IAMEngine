@@ -26,6 +26,9 @@ export const FLEET_M365_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
 
 // The app credential every M365-family system authenticates with. Its absence is "no creds".
 const M365_ADMIN_SECRET = "m365-admin";
+// Delinea externalId values that mean "no real secret number" — a row exists but points at nothing
+// usable, so it can't broker. Mirrors the UNSET sentinels the fleet audit skips.
+const M365_ADMIN_UNSET = ["", "REPLACE_ME", "NOT_NEEDED"];
 
 // need -> the narrowest role that satisfies that optional capability. The runner reports a rights
 // row's `op` AS the capability's `need` string (runner/Start-IamRunner.ps1), and the need strings in
@@ -37,6 +40,7 @@ export type FleetM365Tag =
   | "no_creds" // no m365-admin secret / no testable M365 system — nothing to connect with
   | "missing_perms" // a test's required rights are missing
   | "over_permissioned" // a test reports surplus (roles the engine never uses)
+  | "self_correctable" // holds AppRoleAssignment.ReadWrite.All AND is missing something → can self-grant
   | "connection_failed" // a test failed on access/API, not on rights
   | "completed" // every test connects and its required rights verify
   | "untested"; // has a wired credential but no result yet (sweep not run / just started)
@@ -82,39 +86,50 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
   const tags = new Set<FleetM365Tag>();
 
   // No credential to connect with: the systems exist but nothing is (or can be) tested. This is the
-  // "Set up M365" case — the app registration + credential don't exist yet.
+  // "Set up M365" case — the app registration + Delinea secret number don't exist yet. Short-circuit
+  // BEFORE looking at any test rows: with no usable secret the runner can only fail at the broker, and
+  // that broker failure must read as "No Delinea secret number", never "connection failed".
   const noCreds = !hasAdminSecret || testableSystemKeys.length === 0;
-  if (noCreds) tags.add("no_creds");
+  if (noCreds) {
+    return {
+      status: "untested",
+      tags: ["no_creds"],
+      action: "setup",
+      missingOptionalRoles: [],
+      missingPerms: 0,
+      surplus: 0,
+      escalation: 0,
+      canSelfGrant: false,
+    };
+  }
 
-  let missingPerms = 0;
-  let surplus = 0;
-  let escalation = 0;
   const missingOptionalRoles = new Set<string>();
   let connFailed = false;
-  let hasSelfGrantRole = false;
 
+  // m365 and entra probe the SAME app registration, so they report the SAME Graph rights. Summing
+  // counts per-test double-counts every surplus / missing / escalation across those two systems (a
+  // client with 3 extra roles read "6"). Merge all the M365-family rights by op FIRST — exchange's one
+  // EXO op is distinct and rides along untouched — then summarize once, so every count is per unique
+  // permission, not per system that reported it.
+  const merged = mergeRightsByOp(tests);
+  const msr = summarizeRights(merged);
+  const missingPerms = msr.state === "missing" ? msr.missing : 0;
+  const surplus = msr.state === "unknown" ? 0 : msr.surplus;
+  const escalation = msr.state === "unknown" ? 0 : msr.escalation;
+  if (msr.state === "missing") tags.add("missing_perms");
+
+  let hasSelfGrantRole = false;
+  for (const r of merged) {
+    collectMissingOptionalRole(r, missingOptionalRoles);
+    // The self-grant primitive shows up as a flagged surplus row (over-permission).
+    if (r.surplus && r.op.toLowerCase() === SELF_GRANT_ROLE_LC) hasSelfGrantRole = true;
+  }
+
+  // A failed test is a connection problem UNLESS the failure is explained by missing rights (a
+  // permissions problem, handled above). A fail with no rights data at all reads as connection.
   for (const t of tests) {
-    if (t.status === "not_needed") continue;
-    const rows = parseRights(t.rights);
-    const sr = summarizeRights(rows);
-    if (sr.state === "missing") {
-      tags.add("missing_perms");
-      missingPerms += sr.missing;
-    }
-    if (sr.state !== "unknown") {
-      surplus += sr.surplus;
-      escalation += sr.escalation;
-    }
-    // A failed test is a connection problem UNLESS the failure is explained by missing rights (that's
-    // a permissions problem, handled above). A fail with no rights data at all reads as connection.
-    if (t.status === "fail" && sr.state !== "missing") connFailed = true;
-    // Missing OPTIONAL capabilities -> the roles to pre-check when correcting. Required gaps are
-    // always granted by provisioning, so they need no pre-check.
-    for (const r of rows ?? []) {
-      collectMissingOptionalRole(r, missingOptionalRoles);
-      // The self-grant primitive shows up as a flagged surplus row (over-permission).
-      if (r.surplus && r.op.toLowerCase() === SELF_GRANT_ROLE_LC) hasSelfGrantRole = true;
-    }
+    if (t.status !== "fail") continue;
+    if (summarizeRights(parseRights(t.rights)).state !== "missing") connFailed = true;
   }
 
   if (surplus > 0) tags.add("over_permissioned");
@@ -149,6 +164,14 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
   else if (tags.has("missing_perms")) action = "correct";
   else action = "none";
 
+  // Self-grant is offered when the app can grant its own roles (holds AppRoleAssignment.ReadWrite.All)
+  // AND there's ANYTHING to grant — a missing REQUIRED permission or a missing OPTIONAL one. A client
+  // whose required perms are all covered but that's short some optional caps (e.g. Apollon) still gets
+  // the button, so the operator can top up the gaps without a Global Admin.
+  const canSelfGrant = hasSelfGrantRole && (tags.has("missing_perms") || missingOptionalRoles.size > 0);
+  // Its own filter so an operator can jump straight to the clients the self-grant button will act on.
+  if (canSelfGrant) tags.add("self_correctable");
+
   return {
     status,
     tags: [...tags],
@@ -157,11 +180,7 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     missingPerms,
     surplus,
     escalation,
-    // Self-grant is offered when the app can grant its own roles (holds AppRoleAssignment.ReadWrite.All)
-    // AND there's ANYTHING to grant — a missing REQUIRED permission or a missing OPTIONAL one. A client
-    // whose required perms are all covered but that's short some optional caps (e.g. Apollon) still gets
-    // the button, so the operator can top up the gaps without a Global Admin.
-    canSelfGrant: hasSelfGrantRole && (tags.has("missing_perms") || missingOptionalRoles.size > 0),
+    canSelfGrant,
   };
 }
 
@@ -172,6 +191,32 @@ function collectMissingOptionalRole(r: RightsRow, into: Set<string>): void {
   if (!r.optional || r.surplus || r.ok !== false) return;
   const role = OPTIONAL_ROLE_BY_NEED.get(r.op);
   if (role) into.add(role);
+}
+
+// Merge the rights rows of a client's M365-family tests into ONE row per operation. m365 and entra
+// share an app registration, so they report identical Graph rights — deduping by op collapses those
+// twins to one (exchange's distinct EXO op rides along unchanged), so downstream counts are per unique
+// permission, not per system that reported it. When two tests disagree on an op (typically one was
+// Graph-throttled to `ok:null`), the definitive verdict wins, and true beats false: on the same app
+// registration a role read as granted anywhere IS granted. Flags (optional/surplus/escalation) union.
+function mergeRightsByOp(tests: ClassifyTestInput[]): RightsRow[] {
+  const byOp = new Map<string, RightsRow>();
+  for (const t of tests) {
+    if (t.status === "not_needed") continue;
+    for (const r of parseRights(t.rights) ?? []) {
+      const prev = byOp.get(r.op);
+      if (!prev) { byOp.set(r.op, { ...r }); continue; }
+      const ok = prev.ok === true || r.ok === true ? true : prev.ok === false || r.ok === false ? false : null;
+      byOp.set(r.op, {
+        ...prev,
+        ok,
+        optional: prev.optional || r.optional,
+        surplus: prev.surplus || r.surplus,
+        escalation: prev.escalation || r.escalation,
+      });
+    }
+  }
+  return [...byOp.values()];
 }
 
 // ── I/O: sweep orchestration on top of the connection-test lane ──────────────────────────────────
@@ -204,7 +249,7 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       // ALL systems — so hasAd (on-prem AD/sync presence) is detected the same way the per-client
       // conn-test path does. The M365-family subset is filtered out of this in JS below.
       systems: { select: { systemKey: true, mode: true, secretNames: true, config: true } },
-      secrets: { where: { name: M365_ADMIN_SECRET }, select: { name: true } },
+      secrets: { where: { name: M365_ADMIN_SECRET }, select: { externalId: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -217,7 +262,10 @@ async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM
       coreId: c.coreId,
       primaryDomain: c.primaryDomain,
       m365Systems: c.systems.filter((s) => (M365_FAMILY as readonly string[]).includes(s.systemKey)),
-      hasAdminSecret: c.secrets.length > 0,
+      // "Has a credential" means a USABLE Delinea secret number, not just a wired row: a placeholder /
+      // unset externalId can't broker, so a test would fail at connect and read as "connection failed"
+      // when the real state is "no Delinea secret number". Treat those as no-creds (→ Set up M365).
+      hasAdminSecret: c.secrets.some((s) => !M365_ADMIN_UNSET.includes((s.externalId ?? "").trim())),
       hasAd: c.systems.some((s) => ALWAYS_ON_PREM_SYSTEMS.includes(s.systemKey)),
     }));
 }

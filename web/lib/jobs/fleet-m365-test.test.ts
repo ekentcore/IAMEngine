@@ -65,6 +65,20 @@ test("missing required permission -> missing_perms + correct", () => {
   assert.ok(!r.tags.includes("connection_failed"));
 });
 
+test("no usable secret + a broker-failed test -> no_creds (NOT connection_failed)", () => {
+  // A client whose m365-admin has no real Delinea number: the queued test fails at the broker. That
+  // must read as "No Delinea secret number", never a connection failure.
+  const r = classifyM365Client({
+    hasAdminSecret: false,
+    testableSystemKeys: ["m365"],
+    tests: [{ systemKey: "m365", status: "fail", accessOk: false, rights: null }],
+  });
+  assert.ok(r.tags.includes("no_creds"));
+  assert.ok(!r.tags.includes("connection_failed"));
+  assert.equal(r.status, "untested");
+  assert.equal(r.action, "setup");
+});
+
 test("failed with no rights data -> connection_failed + setup (re-provision)", () => {
   const r = classifyM365Client({
     hasAdminSecret: true,
@@ -200,6 +214,77 @@ test("surplus AppRoleAssignment.ReadWrite.All but NO missing perms -> canSelfGra
     ],
   });
   assert.equal(r.canSelfGrant, false); // nothing to grant
+});
+
+test("m365 + entra share an app reg: surplus/escalation counted ONCE, not doubled", () => {
+  // Identical rights on both systems (same app registration) — the Apollon shape: required all ok,
+  // some optional missing, three escalation-capable surplus roles.
+  const rights = [
+    { op: "create / update users + assign licenses", ok: true, detail: "" },
+    { op: "add users to groups", ok: true, detail: "" },
+    { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+    { op: "OVER-PERMISSIONED:Application.ReadWrite.All", ok: false, detail: "", surplus: true },
+    { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "", surplus: true },
+    { op: "OVER-PERMISSIONED:DelegatedPermissionGrant.ReadWrite.All", ok: false, detail: "", surplus: true },
+  ];
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365", "entra"],
+    tests: [
+      { systemKey: "m365", status: "ok", accessOk: true, rights },
+      { systemKey: "entra", status: "ok", accessOk: true, rights: JSON.parse(JSON.stringify(rights)) },
+    ],
+  });
+  // THREE surplus roles, all escalation — not six.
+  assert.equal(r.surplus, 3);
+  assert.equal(r.escalation, 3);
+  assert.ok(r.tags.includes("over_permissioned"));
+});
+
+test("self_correctable tag mirrors canSelfGrant (holds the role + something to grant)", () => {
+  const optCap = GRAPH_OPTIONAL_CAPS[0];
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365"],
+    tests: [
+      {
+        systemKey: "m365",
+        status: "ok",
+        accessOk: true,
+        rights: [
+          { op: "create / update users + assign licenses", ok: true, detail: "" },
+          { op: "add users to groups", ok: true, detail: "" },
+          { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+          { op: optCap.need, ok: false, optional: true, detail: "" },
+          { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "", surplus: true },
+        ],
+      },
+    ],
+  });
+  assert.equal(r.canSelfGrant, true);
+  assert.ok(r.tags.includes("self_correctable"));
+});
+
+test("holds the self-grant role but fully covered -> not self_correctable", () => {
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365"],
+    tests: [
+      {
+        systemKey: "m365",
+        status: "ok",
+        accessOk: true,
+        rights: [
+          { op: "create / update users + assign licenses", ok: true, detail: "" },
+          { op: "add users to groups", ok: true, detail: "" },
+          { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+          { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "", surplus: true },
+        ],
+      },
+    ],
+  });
+  assert.equal(r.canSelfGrant, false);
+  assert.ok(!r.tags.includes("self_correctable"));
 });
 
 test("worst-of across systems: one entra fail makes the client fail", () => {
