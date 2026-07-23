@@ -50,6 +50,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ...(flags.showConnectors ? ([["/connectors", "Connectors"]] as const) : []),
     ...(flags.showChangelog ? ([["/changelog", "Change log"]] as const) : []),
     ...(flags.showSettings ? ([["/cutover", "Azure cutover"]] as const) : []),
+    ...(flags.showSettings ? ([["/tools/db-copy", "DB copy"]] as const) : []),
     ...(flags.showSettings ? ([["/settings", "Settings"]] as const) : []),
   ];
   return [
