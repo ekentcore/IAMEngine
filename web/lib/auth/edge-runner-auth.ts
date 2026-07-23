@@ -4,7 +4,9 @@
 // wiring that validates them has shipped) or we have reached the RUNNER_REQUIRE_PER_AGENT cutover;
 // until then an agt_ bearer is treated like any other non-shared bearer. The shared token keeps its
 // fast edge check until the cutover, after which only per-agent tokens are admitted.
-import { isAgentToken } from "@/lib/runner/agent-token";
+// Import from the crypto-free scheme module (NOT ./agent-token, which pulls in `node:crypto` and
+// cannot be bundled into the Edge runtime that middleware runs in).
+import { isAgentToken } from "@/lib/runner/agent-token-scheme";
 
 export function edgeRunnerAuthDecision(input: {
   bearer: string | null;
