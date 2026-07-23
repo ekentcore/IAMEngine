@@ -51,3 +51,13 @@ export function classifyTables(sourceTables: string[], destTables: Set<string>):
 
 /** Shared pg_dump flags: no ownership/ACL noise (dest role may differ), fail loudly on bad input. */
 export const PG_DUMP_BASE = ["--no-owner", "--no-privileges"] as const;
+
+/**
+ * Trim Postgres' verbose `version()` string to "PostgreSQL <x.y>" for display. Postgres reports e.g.
+ * "PostgreSQL 16.2 (Homebrew) on aarch64-apple-darwin…"; we keep just the product + version.
+ */
+export function shortVersion(version: string | undefined | null): string {
+  if (!version) return "unknown";
+  const m = /^(PostgreSQL)\s+([\d.]+)/i.exec(version.trim());
+  return m ? `${m[1]} ${m[2]}` : version.trim().split(/\s+/).slice(0, 2).join(" ");
+}

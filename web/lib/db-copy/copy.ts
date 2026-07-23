@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
 import { type PgConn, pgChildEnv, connLabel, sameTarget } from "./config";
-import { classifyTables, dumpTableArgs, truncateStatement, PG_DUMP_BASE, type TablePlan } from "./plan";
+import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE, type TablePlan } from "./plan";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
 // history and can desync a separately-managed dest. Excluded from "all tables" by default.
@@ -47,6 +47,38 @@ async function approxRowCounts(client: Client, schema: string): Promise<Map<stri
     [schema],
   );
   return new Map(rows.map((r) => [r.relname, Math.max(0, Number(r.n))]));
+}
+
+export type ConnHealth = { ok: boolean; label: string; server?: string; tableCount?: number; error?: string };
+
+/**
+ * Independently test connectivity to one database: connect, read the server version, and count its
+ * base tables. Never throws — a failure is reported as { ok:false, error } (password scrubbed) so the
+ * caller can show per-database status even when the other side is down.
+ */
+export async function checkConnection(conn: PgConn): Promise<ConnHealth> {
+  const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database });
+  try {
+    await client.connect();
+    const v = await client.query<{ version: string }>("SELECT version() AS version");
+    const t = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`,
+      [conn.schema],
+    );
+    return { ok: true, label: connLabel(conn), server: shortVersion(v.rows[0]?.version), tableCount: Number(t.rows[0]?.n ?? 0) };
+  } catch (e) {
+    return { ok: false, label: connLabel(conn), error: sanitizeError(e instanceof Error ? e.message : String(e)) };
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+export type ConnHealthPair = { source: ConnHealth; dest: ConnHealth };
+
+/** Health-test BOTH databases (source and destination) in parallel. */
+export async function checkConnections(source: PgConn, dest: PgConn): Promise<ConnHealthPair> {
+  const [src, dst] = await Promise.all([checkConnection(source), checkConnection(dest)]);
+  return { source: src, dest: dst };
 }
 
 export type TablePreview = { name: string; inDest: boolean; approxRows: number };

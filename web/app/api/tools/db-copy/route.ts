@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { recordAudit } from "@/lib/auth/audit";
 import { readCopyConfigs } from "@/lib/db-copy/config";
-import { previewCopy, runCopy } from "@/lib/db-copy/copy";
+import { previewCopy, runCopy, checkConnections } from "@/lib/db-copy/copy";
 
 export const dynamic = "force-dynamic";
 
@@ -20,8 +20,14 @@ export async function GET() {
   const cfg = readCopyConfigsSafely();
   if ("error" in cfg) return NextResponse.json(cfg, { status: 200 }); // a config problem is shown in-page, not a 500
   try {
+    // Health-test both connections first, so the page can show per-database status. Only build the
+    // (heavier) table preview when both sides are actually reachable.
+    const health = await checkConnections(cfg.source, cfg.dest);
+    if (!health.source.ok || !health.dest.ok) {
+      return NextResponse.json({ ok: true as const, health, preview: null });
+    }
     const preview = await previewCopy(cfg.source, cfg.dest);
-    return NextResponse.json({ ok: true as const, preview });
+    return NextResponse.json({ ok: true as const, health, preview });
   } catch (e) {
     return NextResponse.json({ ok: false as const, error: msg(e) }, { status: 200 });
   }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { quoteIdent, qualified, dumpTableArg, dumpTableArgs, truncateStatement, classifyTables } from "./plan";
+import { quoteIdent, qualified, dumpTableArg, dumpTableArgs, truncateStatement, classifyTables, shortVersion } from "./plan";
 
 test("quoteIdent escapes embedded double-quotes", () => {
   assert.equal(quoteIdent("Client"), '"Client"');
@@ -31,4 +31,11 @@ test("classifyTables splits source tables into missing vs existing against the d
   assert.deepEqual(plan.all, ["Client", "Job", "Agent"]);
   assert.deepEqual(plan.missing, ["Job"]);
   assert.deepEqual(plan.existing, ["Client", "Agent"]);
+});
+
+test("shortVersion trims Postgres' verbose version() to product + number", () => {
+  assert.equal(shortVersion("PostgreSQL 16.2 (Homebrew) on aarch64-apple-darwin23.4.0"), "PostgreSQL 16.2");
+  assert.equal(shortVersion("PostgreSQL 15.6"), "PostgreSQL 15.6");
+  assert.equal(shortVersion(undefined), "unknown");
+  assert.equal(shortVersion(""), "unknown");
 });

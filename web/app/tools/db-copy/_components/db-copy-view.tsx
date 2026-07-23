@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+type ConnHealth = { ok: boolean; label: string; server?: string; tableCount?: number; error?: string };
+type ConnHealthPair = { source: ConnHealth; dest: ConnHealth };
 type TablePreview = { name: string; inDest: boolean; approxRows: number };
 type Preview = {
   sourceLabel: string;
@@ -20,23 +22,25 @@ const mono: React.CSSProperties = { fontFamily: "ui-monospace, SFMono-Regular, M
 export function DbCopyView() {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [health, setHealth] = useState<ConnHealthPair | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [confirm, setConfirm] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CopyResult | null>(null);
 
-  const loadPreview = useCallback(async () => {
+  const load = useCallback(async () => {
     setStatus("loading");
     setError(null);
     try {
       const res = await fetch("/api/tools/db-copy", { cache: "no-store" });
       const data = await res.json();
       if (data.error || data.ok === false) {
-        setError(data.error ?? "could not build the preview");
+        setError(data.error ?? "could not read the copy configuration");
         setStatus("error");
         return;
       }
-      setPreview(data.preview as Preview);
+      setHealth((data.health as ConnHealthPair) ?? null);
+      setPreview((data.preview as Preview) ?? null);
       setStatus("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -45,8 +49,8 @@ export function DbCopyView() {
   }, []);
 
   useEffect(() => {
-    void loadPreview();
-  }, [loadPreview]);
+    void load();
+  }, [load]);
 
   const run = async () => {
     setRunning(true);
@@ -63,7 +67,7 @@ export function DbCopyView() {
       else {
         setResult(data.result as CopyResult);
         setConfirm("");
-        await loadPreview();
+        await load();
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -85,7 +89,7 @@ export function DbCopyView() {
         </p>
       </div>
 
-      {status === "loading" && <div style={box}>Loading preview…</div>}
+      {status === "loading" && <div style={box}>Testing connections…</div>}
 
       {status === "error" && (
         <div style={{ ...box, borderColor: "var(--err-fg, #c0392b)" }}>
@@ -94,24 +98,39 @@ export function DbCopyView() {
           <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--muted-fg, #888)" }}>
             Set the destination in <code>env.env</code> (<code>POSTGRES_HOST1</code>, <code>POSTGRES_USER1</code>,{" "}
             <code>POSTGRES_PASSWORD1</code>, <code>POSTGRES_DB1</code>; optional <code>POSTGRES_PORT1</code>,{" "}
-            <code>POSTGRES_SCHEMA1</code>) then reload.
+            <code>POSTGRES_SCHEMA1</code>) then re-test.
           </p>
-          <button onClick={() => void loadPreview()} style={{ marginTop: 10 }}>
-            Reload
+          <button onClick={() => void load()} style={{ marginTop: 10 }}>
+            Re-test
           </button>
+        </div>
+      )}
+
+      {status === "ready" && health && (
+        <div style={box}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <strong style={{ fontSize: 14 }}>Connections</strong>
+            <button onClick={() => void load()} disabled={running}>
+              Test connections
+            </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+            <ConnRow role="Source" h={health.source} />
+            <ConnRow role="Destination" h={health.dest} />
+          </div>
+          {(!health.source.ok || !health.dest.ok) && (
+            <p style={{ margin: "10px 0 0", fontSize: 13, color: "var(--muted-fg, #888)" }}>
+              Both databases must be reachable before a copy can run. Fix the failing connection (check the{" "}
+              <code>POSTGRES_*{health.dest.ok ? "" : "1"}</code> values in <code>env.env</code>) and re-test.
+            </p>
+          )}
         </div>
       )}
 
       {status === "ready" && preview && (
         <>
           <div style={box}>
-            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", ...mono }}>
-              <span style={{ color: "var(--muted-fg, #888)" }}>from</span>
-              <span>{preview.sourceLabel}</span>
-              <span style={{ color: "var(--muted-fg, #888)" }}>to</span>
-              <span>{preview.destLabel}</span>
-            </div>
-            <p style={{ margin: "10px 0 0", fontSize: 14 }}>
+            <p style={{ margin: 0, fontSize: 14 }}>
               {preview.tables.length} table(s): <strong>{preview.missingCount}</strong> to create,{" "}
               <strong>{preview.existingCount}</strong> already in the destination (their data will be replaced).
             </p>
@@ -128,7 +147,7 @@ export function DbCopyView() {
               <thead>
                 <tr style={{ textAlign: "left", color: "var(--muted-fg, #888)" }}>
                   <th style={{ padding: "8px 12px" }}>Table</th>
-                  <th style={{ padding: "8px 12px" }}>In destination?</th>
+                  <th style={{ padding: "8px 12px" }}>Action</th>
                   <th style={{ padding: "8px 12px", textAlign: "right" }}>Rows (approx)</th>
                 </tr>
               </thead>
@@ -136,9 +155,7 @@ export function DbCopyView() {
                 {preview.tables.map((t) => (
                   <tr key={t.name} style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}>
                     <td style={{ padding: "6px 12px" }}>{t.name}</td>
-                    <td style={{ padding: "6px 12px" }}>
-                      {t.inDest ? "replace" : "create"}
-                    </td>
+                    <td style={{ padding: "6px 12px" }}>{t.inDest ? "replace" : "create"}</td>
                     <td style={{ padding: "6px 12px", textAlign: "right" }}>{t.approxRows.toLocaleString()}</td>
                   </tr>
                 ))}
@@ -183,5 +200,30 @@ export function DbCopyView() {
         </>
       )}
     </main>
+  );
+}
+
+function ConnRow({ role, h }: { role: string; h: ConnHealth }) {
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "baseline", ...mono }}>
+      <span aria-hidden style={{ color: h.ok ? "var(--ok-fg, #2e7d32)" : "var(--err-fg, #c0392b)", width: 16 }}>
+        {h.ok ? "✓" : "✗"}
+      </span>
+      <span style={{ width: 84, color: "var(--muted-fg, #888)" }}>{role}</span>
+      <span style={{ flex: 1 }}>
+        {h.label}
+        {h.ok ? (
+          <span style={{ color: "var(--muted-fg, #888)" }}>
+            {" — "}
+            {h.server}, {h.tableCount} table(s)
+          </span>
+        ) : (
+          <span style={{ color: "var(--err-fg, #c0392b)" }}>
+            {" — "}
+            {h.error}
+          </span>
+        )}
+      </span>
+    </div>
   );
 }
