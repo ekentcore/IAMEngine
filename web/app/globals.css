@@ -761,3 +761,42 @@ dialog.doc-modal::backdrop { background: color-mix(in srgb, #000 45%, transparen
 }
 .group-multiselect .gm-option:hover { background: var(--bg-soft); }
 .group-multiselect .gm-option input[type="checkbox"] { width: auto; margin: 0; flex: none; }
+
+/* ── v3 collapsible section (app/_components/collapsible-section.tsx) ──────────────
+   A page section that folds. The <summary> reads like the <h2> it replaces; the chevron
+   rotates open. Server-safe (native <details>), so it works without client JS. */
+.collapsible { margin: 1.75rem 0 0; }
+.collapsible > .collapsible-summary {
+  display: flex; align-items: baseline; gap: 0.5rem; cursor: pointer;
+  list-style: none; user-select: none; padding: 0.15rem 0; border-radius: 6px;
+}
+.collapsible > .collapsible-summary::-webkit-details-marker { display: none; }
+.collapsible > .collapsible-summary:hover .collapsible-title { color: var(--accent-press); }
+.collapsible-chevron {
+  color: var(--faint); font-size: 11px; line-height: 1; flex: none;
+  transition: transform 120ms ease; transform: translateY(-1px);
+}
+.collapsible[open] > .collapsible-summary .collapsible-chevron { transform: translateY(-1px) rotate(90deg); }
+.collapsible-title { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; }
+.collapsible-count {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--bg-soft); border-radius: 999px; padding: 1px 8px; align-self: center;
+}
+.collapsible-subtitle { font-weight: 400; }
+.collapsible-body { margin-top: 0.35rem; }
+.collapsible:focus-visible, .collapsible > .collapsible-summary:focus-visible {
+  outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px;
+}
+
+/* ── v3 generic data table (app/_components/data-table.tsx) — inherits the shared table +
+   .sortable/.search-field rules; this just makes whole-row links behave. */
+.data-table td a { color: var(--accent-press); }
+.data-row-link:hover { background: var(--bg-soft); }
+
+/* ── v3 case detail "Actions ▾" (app/cases/_components/case-actions-menu.tsx) — wider than the
+   generic popover because it hosts full action controls (schedule picker trigger, domain select…),
+   each on its own row. */
+.case-actions-menu { min-width: 232px; gap: 2px; }
+.case-actions-row { display: flex; align-items: center; padding: 2px; }
+.case-actions-row > * { width: 100%; }
+.case-actions-row button:not(.primary) { text-align: left; }

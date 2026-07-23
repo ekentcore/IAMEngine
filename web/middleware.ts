@@ -15,19 +15,21 @@
 //      hard-match) fail CLOSED when AUTH_ENABLED is off — see isDestructiveApproval.
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { V2_COOKIE, V2_ROUTES, V2_CANONICAL } from "./lib/v2";
+import { SITE_VERSION_COOKIE, readSiteVersion, resolveVersionedPath } from "./lib/v2";
 import { isRunnerApi, isRunnerBootstrap, isSecretBearing, isDestructiveApproval } from "./lib/auth/runner-paths";
 
 const PUBLIC = ["/login", "/api/auth"];
 const SESSION_COOKIE = "iam_session";
 
-// Site-wide Version 2: when the cookie is on, route a canonical page to its /v2 variant; when off,
-// route a /v2 page back to canonical. EXACT-match only (detail pages + v2 subpages pass through).
-function v2Redirect(req: NextRequest, pathname: string): NextResponse | null {
+// Site-wide UI version routing. v1 is retired: the bare canonical page (/cases) always resolves to
+// v2. The `site_version` cookie then picks v2 or v3, and we route the request to that version's route
+// (falling back to v2 for a page with no v3 yet). EXACT-match only (detail pages + sub-routes pass
+// through untouched).
+function versionRedirect(req: NextRequest, pathname: string): NextResponse | null {
   if (req.method !== "GET") return null;
-  const on = req.cookies.get(V2_COOKIE)?.value === "on";
-  const target = on ? V2_ROUTES[pathname] : V2_CANONICAL[pathname];
-  if (!target) return null;
+  const version = readSiteVersion(req.cookies.get(SITE_VERSION_COOKIE)?.value);
+  const target = resolveVersionedPath(pathname, version);
+  if (!target || target === pathname) return null;
   const url = req.nextUrl.clone();
   url.pathname = target;
   return NextResponse.redirect(url);
@@ -77,11 +79,11 @@ export function middleware(req: NextRequest) {
         { status: 503 },
       );
     }
-    return v2Redirect(req, pathname) ?? pass();
+    return versionRedirect(req, pathname) ?? pass();
   }
   if (PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return pass();
 
-  if (req.cookies.get(SESSION_COOKIE)?.value) return v2Redirect(req, pathname) ?? pass();
+  if (req.cookies.get(SESSION_COOKIE)?.value) return versionRedirect(req, pathname) ?? pass();
 
   if (pathname.startsWith("/api/")) return NextResponse.json({ error: "not signed in" }, { status: 401 });
   const url = req.nextUrl.clone();

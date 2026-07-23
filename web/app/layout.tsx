@@ -3,10 +3,10 @@ import Link from "next/link";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
-import { V2Toggle } from "./_components/v2-toggle";
+import { VersionToggle } from "./_components/version-toggle";
 import { ThemeToggle } from "./_components/theme-toggle";
 import { MobileNav } from "./_components/mobile-nav";
-import { V2_COOKIE } from "@/lib/v2";
+import { SITE_VERSION_COOKIE, readSiteVersion } from "@/lib/v2";
 import { UserMenu } from "./_components/user-menu";
 import { FeatureRequestButton } from "./_components/feature-request-button";
 import { FeatureRequestCountSync } from "./_components/feature-request-count-sync";
@@ -88,7 +88,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               />
               {(!authEnabled() || !!user) && <FeatureRequestButton />}
               <ThemeToggle dark={theme === "dark"} />
-              <V2Toggle enabled={cookies().get(V2_COOKIE)?.value === "on"} />
+              <VersionToggle version={readSiteVersion(cookies().get(SITE_VERSION_COOKIE)?.value)} />
               {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
             </div>
           </header>

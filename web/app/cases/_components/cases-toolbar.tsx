@@ -9,7 +9,18 @@ type PlanFields = { personas: { name: string; titles: string[] }[]; locations: s
 const EMPLOYMENT_TYPES = ["Full-Time", "Part-Time", "Contractor", "Temp"];
 type PlanOutcome = { caseId: string; status: string; jobCount: number; manualCount: number; approvalCount: number };
 
-export function CasesToolbar({ clients, snScan = false }: { clients: ClientOpt[]; snScan?: boolean }) {
+export function CasesToolbar({ clients, snScan = false, variant = "row" }: { clients: ClientOpt[]; snScan?: boolean; variant?: "row" | "menu" }) {
+  // v3 collapses the action buttons behind one "Actions ▾" menu; the auto-import toggle stays inline
+  // (it's a persistent setting, not an action). v2/v1 keep the flat button row.
+  if (variant === "menu") {
+    return (
+      <div className="toolbar" style={{ marginTop: "1rem" }}>
+        <CasesActionsMenu clients={clients} snScan={snScan} />
+        <span className="grow" />
+        <AutoImportToggle />
+      </div>
+    );
+  }
   return (
     <div className="toolbar" style={{ marginTop: "1rem" }}>
       <ImportButton />
@@ -17,6 +28,33 @@ export function CasesToolbar({ clients, snScan = false }: { clients: ClientOpt[]
       {snScan && <ScanServiceNowButton />}
       <span className="grow" />
       <AutoImportToggle />
+    </div>
+  );
+}
+
+// v3 "Actions ▾" menu for the cases list. Like the case-detail menu, the panel stays mounted and
+// toggles `display` so each action's dialog (Import / New case / Scan) survives the menu closing.
+function CasesActionsMenu({ clients, snScan }: { clients: ClientOpt[]; snScan: boolean }) {
+  const wrap = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <div ref={wrap} style={{ position: "relative" }}>
+      <button type="button" className="actions-trigger-lg primary" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        Actions <span aria-hidden="true">▾</span>
+      </button>
+      <div role="menu" className="actions-menu case-actions-menu" style={{ display: open ? "flex" : "none", left: 0, right: "auto" }}>
+        <div className="case-actions-row"><ImportButton /></div>
+        <div className="case-actions-row"><NewCaseDialog clients={clients} /></div>
+        {snScan && <div className="case-actions-row"><ScanServiceNowButton /></div>}
+      </div>
     </div>
   );
 }

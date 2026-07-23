@@ -18,15 +18,11 @@ import { RunReportView } from "../_components/run-report-view";
 import { ChangePreview } from "../_components/change-preview";
 import { buildChangeDiffs } from "@/lib/cases/change-service";
 import type { ChangePayload } from "@/lib/cases/change-types";
-import { ReplanButton } from "../_components/replan-button";
-import { CaseDomainSelect } from "../_components/case-domain-select";
+import { CaseActionsMenu } from "../_components/case-actions-menu";
 import { RescanButton } from "../_components/rescan-button";
-import { RevealPasswordButton } from "../_components/reveal-password-button";
-import { HardMatchButton } from "../_components/hard-match-button";
 import { ExitDryRunButton } from "../_components/exit-dry-run-button";
-import { PauseButton } from "../_components/pause-button";
-import { ScheduleButton } from "../_components/schedule-button";
 import { LocalDateTime } from "../../_components/local-datetime";
+import { CollapsibleSection } from "../../_components/collapsible-section";
 import { caseEffectiveDate } from "@/lib/cases/schedule";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
@@ -151,25 +147,19 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
             {" · "}{c.createdAt.toLocaleString()}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {showHardMatch && <HardMatchButton caseId={c.id} />}
-          {hasInitialPassword && <RevealPasswordButton caseId={c.id} />}
-          {/* A completed/failed case can't be scheduled (the API refuses it too). */}
-          {!["completed", "failed"].includes(c.status) && (
-            <ScheduleButton caseId={c.id} action={c.action} scheduledForIso={scheduledForIso} effectiveDate={effectiveDate} />
-          )}
-          <PauseButton caseId={c.id} paused={paused} />
-          {c.action === "onboard" && domainInfo && (
-            <CaseDomainSelect
-              caseId={c.id}
-              options={domainInfo.options}
-              defaultDomain={domainInfo.defaultDomain}
-              override={domainInfo.override}
-              started={started}
-            />
-          )}
-          <ReplanButton caseId={c.id} canReplan={true} started={started} />
-        </div>
+        {/* All case actions live behind one "Actions ▾" menu, matching the client detail header. */}
+        <CaseActionsMenu
+          caseId={c.id}
+          action={c.action}
+          started={started}
+          paused={paused}
+          canSchedule={!["completed", "failed"].includes(c.status)}
+          scheduledForIso={scheduledForIso}
+          effectiveDate={effectiveDate}
+          showHardMatch={showHardMatch}
+          hasInitialPassword={hasInitialPassword}
+          domain={domainInfo}
+        />
       </div>
       {paused && (
         <p className="note" style={{ color: "#8a6d00" }}>
@@ -193,23 +183,22 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
       )}
 
       {playbook && playbook.steps.length > 0 && (
-        <>
-          <h2>Playbook (dry run)</h2>
+        <CollapsibleSection title="Playbook (dry run)" count={playbook.steps.length}>
           <PlaybookView playbook={playbook} caseId={c.id} />
-        </>
+        </CollapsibleSection>
       )}
 
-      <h2>Credentials</h2>
-      <CaseSecretsPanel caseId={c.id} />
+      <CollapsibleSection title="Credentials">
+        <CaseSecretsPanel caseId={c.id} />
+      </CollapsibleSection>
 
       {runReport && runReport.steps.length > 0 && (
-        <>
-          <h2>Run report</h2>
+        <CollapsibleSection title="Run report" count={runReport.steps.length}>
           <RunReportView initial={runReport} caseId={c.id} writeEnabled={writeEnabled} />
-        </>
+        </CollapsibleSection>
       )}
 
-      <h2>Planned steps ({c.jobs.length})</h2>
+      <CollapsibleSection title="Planned steps" count={c.jobs.length}>
       {c.jobs.length === 0 ? (
         <p className="note">No steps planned — no systems matched this client + action.</p>
       ) : (
@@ -239,29 +228,29 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           </tbody>
         </table>
       )}
+      </CollapsibleSection>
 
       {manual.length > 0 && (
-        <>
-          <h2>Manual checklist ({manual.length})</h2>
+        <CollapsibleSection title="Manual checklist" count={manual.length}>
           <ul className="note">
             {manual.map((j) => <li key={j.id}>{j.systemName} — {j.mode}</li>)}
           </ul>
-        </>
+        </CollapsibleSection>
       )}
 
       {c.serviceNowCaseNumber && (
-        <>
-          <h2>Intake form ({c.serviceNowCaseNumber})</h2>
+        <CollapsibleSection title={`Intake form (${c.serviceNowCaseNumber})`}>
           <p className="note">Live from ServiceNow — what the requester filled in, and what they left blank.</p>
           <IntakePanel caseId={c.id} />
-        </>
+        </CollapsibleSection>
       )}
 
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-        <h2 style={{ marginBottom: 0 }}>Intake details</h2>
-        {c.serviceNowCaseNumber && <RescanButton caseId={c.id} caseNumber={c.serviceNowCaseNumber} />}
-      </div>
-      <p className="note" style={{ marginTop: "0.25rem" }}>The fields from the ServiceNow request that drive this case&apos;s plan.</p>
+      <CollapsibleSection title="Intake details" subtitle="The fields from the ServiceNow request that drive this case's plan.">
+      {c.serviceNowCaseNumber && (
+        <div style={{ margin: "0 0 0.6rem" }}>
+          <RescanButton caseId={c.id} caseNumber={c.serviceNowCaseNumber} />
+        </div>
+      )}
       <table>
         <tbody>
           {Object.entries(c.payload)
@@ -279,6 +268,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           )}
         </tbody>
       </table>
+      </CollapsibleSection>
       <p className="note" style={{ marginTop: "1rem" }}>
         {automated.length} automated, {manual.length} manual. Review the playbook before dispatch; the run report tracks execution.
       </p>
