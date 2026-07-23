@@ -17,6 +17,9 @@ const STATE_FILTERS: { tag: FleetM365Tag; label: string }[] = [
   { tag: "missing_perms", label: "Missing permissions" },
   { tag: "no_creds", label: "Missing credentials" },
   { tag: "over_permissioned", label: "Over-permissioned" },
+  // Holds AppRoleAssignment.ReadWrite.All AND is missing something — the clients the self-grant button
+  // will act on (grant their own gaps with no Global Admin).
+  { tag: "self_correctable", label: "Can self-correct" },
   { tag: "connection_failed", label: "Connection failed" },
   { tag: "completed", label: "Completed" },
   { tag: "untested", label: "Untested" },
