@@ -48,6 +48,8 @@ export function DbCopyView() {
   const [result, setResult] = useState<CopyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showPw, setShowPw] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrateOutput, setMigrateOutput] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -120,6 +122,27 @@ export function DbCopyView() {
     }
   };
 
+  const migrate = async () => {
+    setMigrating(true);
+    setError(null);
+    setMigrateOutput(null);
+    try {
+      const res = await fetch("/api/tools/db-copy/migrate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      setMigrateOutput(data.output ?? (data.ok ? "done" : data.error ?? "migration failed"));
+      if (data.ok) await test(); // re-probe so the preview refreshes (tables now exist → Copy unlocks)
+      else if (data.error) setError(data.error);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   const destOk = !!probe?.dest.ok && !!probe?.source.ok;
   const canTest = form.host.trim() && form.user.trim() && form.database.trim() && form.password && !testing && !running;
   const canRun = destOk && !!preview && !preview.sameTarget && preview.missingCount === 0 && confirm.trim() === preview.destDbName && !running;
@@ -129,11 +152,12 @@ export function DbCopyView() {
       <div>
         <h1 style={{ fontSize: 20, margin: "0 0 4px" }}>DB copy</h1>
         <p style={{ margin: 0, color: muted, fontSize: 14 }}>
-          Copy this app&apos;s data (source) into a destination Postgres you fill in below. The destination schema must
-          already exist — build it first by running <code>prisma migrate deploy</code> against the destination. This tool
-          then clears the destination tables and loads the source data (data only — it never touches schema, so it works
-          on managed Postgres like Azure). The Prisma migration ledger is not copied. The destination password is used
-          only for this test/copy — it is never stored.
+          Copy this app&apos;s data (source) into a destination Postgres you fill in below. Fill the form and{" "}
+          <strong>Test</strong>; use <strong>Build schema (migrate)</strong> to create the destination schema
+          (runs <code>prisma migrate deploy</code> against it); then <strong>Copy</strong> clears the destination tables
+          and loads the source data (data only — it never touches schema, so it works on managed Postgres like Azure).
+          The Prisma migration ledger is not copied. The destination password is used only for these actions — it is
+          never stored.
         </p>
       </div>
 
@@ -200,13 +224,23 @@ export function DbCopyView() {
               <span style={{ color: muted }}>— needed for Azure / managed Postgres</span>
             </label>
           </div>
-          <button onClick={() => void test()} disabled={!canTest} style={{ marginTop: 10 }}>
-            {testing ? "Testing…" : "Test connection"}
-          </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button onClick={() => void test()} disabled={!canTest}>
+              {testing ? "Testing…" : "Test connection"}
+            </button>
+            <button onClick={() => void migrate()} disabled={!destOk || migrating || running || testing} title="Runs `prisma migrate deploy` against the destination to create its schema">
+              {migrating ? "Building schema…" : "Build schema (migrate)"}
+            </button>
+          </div>
           {probe?.dest && (
             <div style={{ marginTop: 10 }}>
               <StepList steps={probe.dest.steps} />
             </div>
+          )}
+          {migrateOutput != null && (
+            <pre style={{ marginTop: 10, padding: "8px 10px", background: "var(--muted-bg, #1b1b1b)", borderRadius: 4, ...mono, fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
+              {migrateOutput}
+            </pre>
           )}
         </div>
       </div>
@@ -224,7 +258,7 @@ export function DbCopyView() {
             {preview.missingCount > 0 ? (
               <p style={{ margin: 0, fontSize: 14, color: errFg }}>
                 {preview.missingCount} of {preview.tables.length} source table(s) don&apos;t exist on the destination yet.
-                Build the schema first — run <code>prisma migrate deploy</code> against the destination — then copy.
+                Click <strong>Build schema (migrate)</strong> above to create the schema on the destination, then Test again — then copy.
               </p>
             ) : (
               <p style={{ margin: 0, fontSize: 14 }}>
