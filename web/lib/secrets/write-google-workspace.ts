@@ -152,7 +152,17 @@ export async function writeGoogleWorkspaceCreds(input: WriteGoogleInput): Promis
   } else {
     // No local row — create it fresh, named EXACTLY "Google API - IAM Engine" (a fixed literal name,
     // unlike m365's per-client name — each client's own Identity Services subfolder gets its own copy).
-    const createFolderId = (await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher)) ?? folderId;
+    // Identity credentials belong in the client's "Identity Services" subfolder, and NEVER the client
+    // ROOT (a root secret's narrower permissions make it unviewable to the team). REFUSE if there's no
+    // such subfolder rather than fall back to the root.
+    const createFolderId = await resolveCreateFolderId(cfg, folderId, identitySubfolderName(env), token, fetcher);
+    if (!createFolderId || String(createFolderId) === String(folderId)) {
+      return {
+        ok: false,
+        error: `Can't vault ${GOOGLE_SECRET_NAME} — ${client.name}'s Delinea folder has no "${identitySubfolderName(env)}" subfolder to write it into. Create that subfolder (with the identity team's view permissions) in Delinea, then retry. Credentials are never written to the client root.`,
+        actions,
+      };
+    }
     const created = await createSecret(cfg, { name: GOOGLE_SECRET_NAME, folderId: createFolderId, templateId: tmpl.templateId, fields }, token, fetcher);
     if (!created.ok || !created.id) {
       return { ok: false, error: created.error ?? "Delinea create failed", actions };

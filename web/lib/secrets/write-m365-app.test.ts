@@ -53,6 +53,11 @@ function fetcher(opts: {
   // Raw items served for the kept-valid completeness read (GET /secrets/{id}?autoComment=...).
   // Unset -> that GET falls through to "unexpected fetch" (read fails -> fail-safe "unknown").
   vaultItems?: Array<{ slug: string; itemValue?: string | null }>;
+  // The client folder's "Identity Services" child (findChildFolderByName lookup). Present by default so
+  // identity creds resolve to the subfolder; set noIdentityChild to simulate a folder without one.
+  identityChildId?: number | string;
+  noIdentityChild?: boolean;
+  capturedCreateFolderId?: (folderId: string) => void;
 } = {}): Fetcher {
   const putUrls: string[] = [];
   const puts: { slug: string; value: string }[] = [];
@@ -66,6 +71,12 @@ function fetcher(opts: {
     }
     if (url.includes("/oauth2/token")) {
       return { ok: true, status: 200, json: async () => ({ access_token: "delinea-tok" }) } as FetchResponse;
+    }
+    if (url.includes("filter.parentFolderId")) {
+      // findChildFolderByName's "Identity Services" lookup. Serve the child by default so identity creds
+      // land in the subfolder; noIdentityChild simulates a client folder missing it.
+      const records = opts.noIdentityChild ? [] : [{ id: opts.identityChildId ?? 9001, folderName: "Identity Services" }];
+      return { ok: true, status: 200, json: async () => ({ records }) } as FetchResponse;
     }
     if (url.includes("filter.folderId")) {
       return { ok: true, status: 200, json: async () => ({ records: opts.searchRecords ?? [] }) } as FetchResponse;
@@ -87,7 +98,8 @@ function fetcher(opts: {
       return { ok: true, status: 200, json: async () => ({ items: opts.vaultItems }) } as FetchResponse;
     }
     if (url.match(/\/api\/v1\/secrets$/) && init?.method === "POST") {
-      const body = JSON.parse(init.body ?? "{}") as { items: { slug: string; itemValue: string }[] };
+      const body = JSON.parse(init.body ?? "{}") as { items: { slug: string; itemValue: string }[]; folderId?: string | number };
+      opts.capturedCreateFolderId?.(String(body.folderId));
       opts.capturedCreateFields?.(Object.fromEntries(body.items.filter((i) => i.itemValue).map((i) => [i.slug, i.itemValue])));
       return { ok: true, status: 200, json: async () => ({ id: opts.createId ?? 90210 }) } as FetchResponse;
     }
@@ -222,6 +234,33 @@ test("no existing row -> create path: createSecret runs, then updateSecretFields
   assert.equal(createCalled, true);
   assert.equal(updateCalled, true);
   assert.equal(calls.upsert.length, 1);
+});
+
+test("create lands in the client's Identity Services subfolder, never the client root", async () => {
+  const { db } = fakeDb({ existingSecret: null });
+  let createFolder = "";
+  const f = fetcher({ identityChildId: 777, createId: "77002", capturedCreateFolderId: (id) => (createFolder = id) });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(createFolder, "777", "must vault in the Identity Services subfolder, not the client root (142)");
+});
+
+test("no Identity Services subfolder under the client folder -> refuses, never writes to the root", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
+  let createFolder = "";
+  const f = fetcher({ noIdentityChild: true, capturedCreateFolderId: (id) => (createFolder = id) });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_CONFIGURED }
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.wroteCreds, false);
+  assert.match(r.error ?? "", /Identity Services|subfolder|root/i);
+  assert.equal(createFolder, "", "create POST must never fire — nothing written to the root");
+  assert.equal(calls.upsert.length, 0, "nothing wired onto the client");
 });
 
 test("createSecret failure (no existing row) -> ok:false, nothing persisted", async () => {
@@ -649,9 +688,8 @@ function derivationFetcher(opts: { gaFolderId?: string | number; folderSearchRec
         ? ({ ok: true, status: 200, json: async () => ({ folderId: opts.gaFolderId }) } as FetchResponse)
         : ({ ok: false, status: 404, json: async () => ({}) } as FetchResponse);
     }
-    if (url.includes("/api/v1/folders?filter.parentFolderId")) {
-      return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse; // no Identity Services child
-    }
+    // The "Identity Services" child lookup (filter.parentFolderId) is served by the base fetcher (std),
+    // which returns the subfolder by default; pass base:{ noIdentityChild:true } to simulate its absence.
     if (url.includes("/api/v1/folders?filter.searchText")) {
       return { ok: true, status: 200, json: async () => ({ records: opts.folderSearchRecords ?? [] }) } as FetchResponse;
     }

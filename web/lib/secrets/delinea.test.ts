@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, resolveCreateFolderId, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, getSecretFolderId, findFolderIdByName, deriveClientFolderId, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
+import { checkSecret, resolveSecretFields, delineaConfigured, createSecret, updateSecretFields, findChildFolderByName, resolveCreateFolderId, resolveVaultFolderId, findTemplateIdByName, shapeStubItems, checkFolderRead, checkFolderWrite, parseDelineaExpiry, getOneTimePasswordCode, getSecretFolderId, findFolderIdByName, deriveClientFolderId, type DelineaConfig, type Fetcher, type FetchResponse } from "./delinea";
 
 const cfg: DelineaConfig = { baseUrl: "https://ctg.secretservercloud.com", username: "svc", password: "pw" };
 
@@ -426,6 +426,24 @@ test("resolveCreateFolderId returns the subfolder id when it exists, null on a m
   const neverCalled: Fetcher = async () => { called = true; return { ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse; };
   assert.equal(await resolveCreateFolderId(cfg, 10619, "", "tok", neverCalled), "10619");
   assert.equal(called, false);
+});
+
+test("resolveVaultFolderId: first matching subfolder wins, null on all-miss, and a LEADING empty name short-circuits to the ROOT", async () => {
+  // Ordered fallback: "Vendor" is tried first and exists -> returned, "Identity Services" never queried.
+  const vendorHit: Fetcher = async (url) =>
+    ({ ok: true, status: 200, json: async () => ({ records: /searchText=Vendor/.test(url) ? [{ id: 71, folderName: "Vendor" }] : [] }) } as FetchResponse);
+  assert.equal(await resolveVaultFolderId(cfg, 70, ["Vendor", "Identity Services"], "tok", vendorHit), "71");
+  // Neither subfolder exists -> null (caller REFUSES; never the ROOT).
+  const noneHit: Fetcher = async () => ({ ok: true, status: 200, json: async () => ({ records: [] }) } as FetchResponse);
+  assert.equal(await resolveVaultFolderId(cfg, 70, ["Vendor", "Identity Services"], "tok", noneHit), null);
+  // DANGER SENTINEL: a LEADING empty string is read as "redirect disabled -> return the parent (ROOT)"
+  // and short-circuits before any real subfolder is tried. This is exactly why the create route + the
+  // vaulting writers must FILTER OUT empties (a missing catalog module yields "") before calling this —
+  // otherwise a non-catalog cred (e.g. m365-admin) resolves straight to the client root.
+  let queried = false;
+  const wouldMatch: Fetcher = async () => { queried = true; return { ok: true, status: 200, json: async () => ({ records: [{ id: 99, folderName: "Identity Services" }] }) } as FetchResponse; };
+  assert.equal(await resolveVaultFolderId(cfg, 70, ["", "Identity Services"], "tok", wouldMatch), "70");
+  assert.equal(queried, false, "the leading empty sentinel returns the parent without ever querying for a subfolder");
 });
 
 test("findTemplateIdByName resolves a template id by exact name (case-insensitive), else null", async () => {

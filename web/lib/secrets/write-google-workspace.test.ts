@@ -232,14 +232,17 @@ test("issued + no existing row -> creates the exact secret name in the Identity 
   assert.equal(entry.create?.label ?? entry.update?.label, "Google service account (auto)");
 });
 
-// No "Identity Services" child folder found -> falls back to the client's root folder id.
-test("issued + no Identity Services subfolder -> falls back to the client's root folder", async () => {
-  const { db } = fakeDb({ existingSecret: null });
+// No "Identity Services" child folder found -> REFUSE, never fall back to the client ROOT (a root
+// secret's narrower permissions make it unviewable to the team).
+test("issued + no Identity Services subfolder -> refuses, never writes to the client root", async () => {
+  const { db, calls } = fakeDb({ existingSecret: null });
   let createdFolderId = "";
-  const f = fetcher({ createId: "1", capturedCreateFolderId: (id) => (createdFolderId = id) }); // no childFolderId set
+  const f = fetcher({ createId: "1", capturedCreateFolderId: (id) => (createdFolderId = id) }); // no childFolderId => no Identity Services child
   const r = await writeGoogleWorkspaceCreds({ db, client: CLIENT, provision: provision(), impersonate: "admin@acme.com", fetch: f, env: ENV_CONFIGURED });
-  assert.equal(r.ok, true);
-  assert.equal(createdFolderId, "142");
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /Identity Services|subfolder|root/i);
+  assert.equal(createdFolderId, "", "create POST must never fire — nothing written to the root (142)");
+  assert.equal(calls.upsert.length, 0, "nothing wired onto the client");
 });
 
 test("issued + existing real row -> updates in place, createSecret never called", async () => {
@@ -260,7 +263,7 @@ test("issued + existing row is a REPLACE_ME placeholder -> CREATE a real secret,
   const { db, calls } = fakeDb({ existingSecret: { externalId: "REPLACE_ME" } });
   let createCalled = false;
   let putUrls: string[] = [];
-  const f = fetcher({ createCalled: () => (createCalled = true), capturedPutUrls: (u) => (putUrls = u), createId: "55555" });
+  const f = fetcher({ createCalled: () => (createCalled = true), capturedPutUrls: (u) => (putUrls = u), createId: "55555", childFolderId: 9001 });
   const r = await writeGoogleWorkspaceCreds({ db, client: CLIENT, provision: provision(), impersonate: "admin@acme.com", fetch: f, env: ENV_CONFIGURED });
   assert.equal(r.ok, true);
   assert.equal(r.externalId, "55555");
@@ -292,7 +295,7 @@ test("Delinea write auth failure -> ok:false, nothing persisted", async () => {
 
 test("createSecret failure -> ok:false with an actions trail, key material never echoed", async () => {
   const { db, calls } = fakeDb({ existingSecret: null });
-  const f = fetcher({ createFails: true });
+  const f = fetcher({ createFails: true, childFolderId: 9001 }); // subfolder resolves; the CREATE itself fails
   const r = await writeGoogleWorkspaceCreds({
     db,
     client: CLIENT,
@@ -327,7 +330,7 @@ test("updateSecretFields failure (existing row) -> ok:false, nothing persisted, 
 
 test("updateSecretFields failure (create path) -> ok:false, nothing persisted", async () => {
   const { db, calls } = fakeDb({ existingSecret: null });
-  const f = fetcher({ updateFails: true });
+  const f = fetcher({ updateFails: true, childFolderId: 9001 }); // subfolder resolves + create ok; the field PUT fails
   const r = await writeGoogleWorkspaceCreds({ db, client: CLIENT, provision: provision(), impersonate: "admin@acme.com", fetch: f, env: ENV_CONFIGURED });
   assert.equal(r.ok, false);
   assert.match(r.error, /boom|Delinea/);
@@ -337,7 +340,7 @@ test("updateSecretFields failure (create path) -> ok:false, nothing persisted", 
 test("self-learns delineaFolderId when the client had none", async () => {
   const CLIENT_NO_FOLDER: WriteGoogleClientInput = { ...CLIENT, delineaFolderId: null };
   const { db, calls } = fakeDb({ existingSecret: null });
-  const f = fetcher({ createId: "1" });
+  const f = fetcher({ createId: "1", childFolderId: 501 }); // Identity Services subfolder present
   const env = { ...ENV_CONFIGURED, DELINEA_FOLDER_MAP: JSON.stringify({ acme: "500" }) };
   const r = await writeGoogleWorkspaceCreds({ db, client: CLIENT_NO_FOLDER, provision: provision(), impersonate: "admin@acme.com", fetch: f, env });
   assert.equal(r.ok, true);
@@ -349,7 +352,7 @@ test("self-learns delineaFolderId when the client had none", async () => {
 test("fields sent to Delinea never include an undefined value", async () => {
   const { db } = fakeDb({ existingSecret: null });
   let created: Record<string, string> = {};
-  const f = fetcher({ capturedCreateFields: (fields) => (created = fields) });
+  const f = fetcher({ capturedCreateFields: (fields) => (created = fields), childFolderId: 9001 }); // Identity Services subfolder present
   const r = await writeGoogleWorkspaceCreds({ db, client: CLIENT, provision: provision(), impersonate: "admin@acme.com", fetch: f, env: ENV_CONFIGURED });
   assert.equal(r.ok, true);
   assert.equal(created.clientid, "my_customer"); // default, since no customerId was passed
