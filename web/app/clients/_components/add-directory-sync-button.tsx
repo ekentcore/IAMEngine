@@ -2,14 +2,13 @@
 
 // Shown under the Systems heading when a hybrid client (on-prem active-directory + a cloud
 // identity system) has no `directory-sync` row. Renders the existing warning box plus a button
-// that opens a prefilled confirm dialog; confirming reads the client's CURRENT systems, appends
-// a canonical directory-sync row, and PUTs the FULL set back (the /systems route is a full
-// replace, so we must never send the single row alone). See
+// that opens a prefilled confirm dialog; confirming POSTs to /directory-sync, which atomically
+// adds the ClientSystem row, optionally sets backbone=ad_synced, AND inserts the directory-sync
+// runbook section into onboard + offboard. See
 // docs/superpowers/specs/2026-07-22-add-directory-sync-button-design.md.
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { EditableSystem } from "@/lib/clients/types";
-import { withDirectorySync, type DirectorySyncOpts } from "@/lib/clients/directory-sync-row";
+import type { DirectorySyncOpts } from "@/lib/clients/directory-sync-row";
 
 export function AddDirectorySyncButton({
   slug,
@@ -44,42 +43,16 @@ export function AddDirectorySyncButton({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/clients/${slug}`);
-      if (!res.ok) {
-        setError(`Could not load current systems (${res.status})`);
-        return;
-      }
-      const c = await res.json();
-      // The /systems route is a FULL REPLACE, so an empty/absent systems array would delete every
-      // system on save. That can't happen here (this island only renders when AD + a cloud system
-      // exist), but bail loudly rather than risk a silent wipe if the payload is ever unexpected.
-      if (!Array.isArray(c.systems) || c.systems.length === 0) {
-        setError("Could not read the client's current systems — nothing was changed.");
-        return;
-      }
-      // GET returns systems in the EditableSystem field shape already; keep only those fields so
-      // the PUT payload is clean (the route's sanitize() ignores extras, but this is explicit).
-      const current: EditableSystem[] = c.systems.map((s: Record<string, unknown>) => ({
-        systemKey: s.systemKey,
-        mode: s.mode,
-        onboardWhen: s.onboardWhen,
-        offboardWhen: s.offboardWhen,
-        dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn : [],
-        requiresApproval: Boolean(s.requiresApproval),
-        captureEvidence: Boolean(s.captureEvidence),
-        secretNames: Array.isArray(s.secretNames) ? s.secretNames : [],
-        config: s.config ?? null,
-      }));
-      const systems = withDirectorySync(current, { orderAfter });
-      const nextBackbone = setAdSynced ? "ad_synced" : (c.backbone ?? null);
-      const put = await fetch(`/api/clients/${slug}/systems`, {
-        method: "PUT",
+      // One atomic call: the server ensures the ClientSystem row, optionally sets the backbone, and
+      // inserts the runbook section into both lanes. Idempotent — safe to re-run.
+      const res = await fetch(`/api/clients/${slug}/directory-sync`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systems, backbone: nextBackbone }),
+        body: JSON.stringify({ orderAfter, setAdSynced }),
       });
-      const data = await put.json().catch(() => ({}));
-      if (!put.ok) {
-        setError(data.error ?? `Save failed (${put.status})`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? `Save failed (${res.status})`);
         return;
       }
       ref.current?.close();
@@ -117,10 +90,10 @@ export function AddDirectorySyncButton({
       <dialog ref={ref} style={{ maxWidth: 520, borderRadius: 8, border: "1px solid var(--line)" }}>
         <h3 style={{ marginTop: 0 }}>Add directory-sync</h3>
         <p className="note">
-          Adds a <code>directory-sync</code> system so AD accounts sync to Entra before the cloud
-          steps run. Mode <code>api</code>, runs on onboard <b>and</b> offboard. Uses the{" "}
-          <code>ad-dc</code> secret, which is optional — the DC agent authenticates as SYSTEM, so no
-          credential wiring is required for it to run.
+          Adds a <code>directory-sync</code> system <b>and</b> a matching runbook step (onboard and
+          offboard) so AD accounts sync to Entra before the cloud steps run. Mode <code>api</code>.
+          Uses the <code>ad-dc</code> secret, which is optional — the DC agent authenticates as
+          SYSTEM, so no credential wiring is required for it to run.
         </p>
 
         <label style={{ display: "block", margin: "0.75rem 0" }}>
