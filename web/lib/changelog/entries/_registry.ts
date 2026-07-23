@@ -247,3 +247,5 @@ export { entry as dbCopyCrossVersionGuc } from "./db-copy-cross-version-guc";
 export { entry as dbCopyFullCloneAndAudit } from "./db-copy-full-clone-and-audit";
 
 export { entry as dbCopyDataOnlyIntoMigratedSchema } from "./db-copy-data-only-into-migrated-schema";
+
+export { entry as dbCopyBuildSchemaButton } from "./db-copy-build-schema-button";
