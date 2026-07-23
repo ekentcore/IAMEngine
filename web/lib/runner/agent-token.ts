@@ -3,20 +3,13 @@
 // plaintext is returned once (on mint) and never persisted. SHA-256 (not bcrypt/scrypt) is correct
 // here: the token is 256 bits of randomness, not a guessable password.
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import { SCHEME, tokenPrefix } from "./agent-token-scheme";
 
-const SCHEME = "agt_";
-const PREFIX_LEN = SCHEME.length + 8; // "agt_" + 8 chars = 12
+// Re-export the edge-safe helpers so existing Node-side importers of this module keep working.
+export { SCHEME, PREFIX_LEN, isAgentToken, tokenPrefix } from "./agent-token-scheme";
 
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-export function tokenPrefix(token: string): string {
-  return token.slice(0, PREFIX_LEN);
-}
-
-export function isAgentToken(bearer: string): boolean {
-  return typeof bearer === "string" && bearer.startsWith(SCHEME);
 }
 
 export function generateAgentToken(): { token: string; prefix: string; hash: string } {
