@@ -23,9 +23,11 @@ type Preview = {
   existingCount: number;
 };
 type CopyResult = { totalTables: number; createdTables: string[]; truncatedTables: string[]; durationMs: number };
-type DestForm = { host: string; port: string; user: string; database: string; schema: string; password: string };
+type DestForm = { host: string; port: string; user: string; database: string; schema: string; password: string; sslmode: "disable" | "require" };
 
-const EMPTY: DestForm = { host: "", port: "5432", user: "", database: "", schema: "public", password: "" };
+// Default the toggle ON: the primary destination is managed Postgres (Azure), which refuses non-TLS
+// connections ("no pg_hba.conf entry … SSL off"). A saved profile or LAN target can turn it off.
+const EMPTY: DestForm = { host: "", port: "5432", user: "", database: "", schema: "public", password: "", sslmode: "require" };
 
 const box: React.CSSProperties = { border: "1px solid var(--border, #333)", borderRadius: 6, padding: "12px 14px" };
 const mono: React.CSSProperties = { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13 };
@@ -53,7 +55,7 @@ export function DbCopyView() {
       setSourceLabel(data.source?.label ?? null);
       setSourceError(data.source?.error ?? null);
       const p = data.destProfile;
-      if (p) setForm((f) => ({ ...f, host: p.host ?? "", port: String(p.port ?? 5432), user: p.user ?? "", database: p.database ?? "", schema: p.schema ?? "public" }));
+      if (p) setForm((f) => ({ ...f, host: p.host ?? "", port: String(p.port ?? 5432), user: p.user ?? "", database: p.database ?? "", schema: p.schema ?? "public", sslmode: p.sslmode === "require" ? "require" : "disable" }));
     } catch (e) {
       setSourceError(e instanceof Error ? e.message : String(e));
     }
@@ -164,6 +166,16 @@ export function DbCopyView() {
             <Labeled label="Password" wide>
               <input type="password" value={form.password} onChange={set("password")} placeholder="(re-typed each time)" style={field} disabled={running} autoComplete="off" />
             </Labeled>
+            <label style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={form.sslmode === "require"}
+                onChange={(e) => setForm((f) => ({ ...f, sslmode: e.target.checked ? "require" : "disable" }))}
+                disabled={running}
+              />
+              Require SSL <code>sslmode=require</code>
+              <span style={{ color: muted }}>— needed for Azure / managed Postgres</span>
+            </label>
           </div>
           <button onClick={() => void test()} disabled={!canTest} style={{ marginTop: 10 }}>
             {testing ? "Testing…" : "Test connection"}

@@ -3,15 +3,15 @@
 // single app-setting key; the password lives only in the browser field and the request body.
 import type { PrismaClient } from "@prisma/client";
 import { getAppSetting, setAppSetting } from "@/lib/settings";
-import type { PgConn } from "./config";
+import { type PgConn, type SslMode, normalizeSslMode } from "./config";
 
 export const DEST_PROFILE_KEY = "db_copy.destProfile";
 
-export type DestProfile = { host: string; port: number; user: string; database: string; schema: string };
+export type DestProfile = { host: string; port: number; user: string; database: string; schema: string; sslmode: SslMode };
 
 /** The connection identity WITHOUT the password — safe to persist and to send to the browser. */
 export function pickProfile(conn: PgConn): DestProfile {
-  return { host: conn.host, port: conn.port, user: conn.user, database: conn.database, schema: conn.schema };
+  return { host: conn.host, port: conn.port, user: conn.user, database: conn.database, schema: conn.schema, sslmode: conn.sslmode };
 }
 
 /** Re-attach a freshly-typed password to a stored profile to get a usable connection. */
@@ -30,6 +30,7 @@ export function normalizeProfileInput(input: {
   user?: unknown;
   database?: unknown;
   schema?: unknown;
+  sslmode?: unknown;
 }): NormalizeResult {
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "");
   const host = str(input.host);
@@ -37,13 +38,14 @@ export function normalizeProfileInput(input: {
   const database = str(input.database);
   const schema = str(input.schema) || "public";
   const port = Number(str(input.port)) || 5432;
+  const sslmode = normalizeSslMode(input.sslmode);
 
   const missing: string[] = [];
   if (!host) missing.push("host");
   if (!user) missing.push("user");
   if (!database) missing.push("database");
   if (missing.length) return { ok: false, missing };
-  return { ok: true, profile: { host, port, user, database, schema } };
+  return { ok: true, profile: { host, port, user, database, schema, sslmode } };
 }
 
 /** Load the saved destination profile (non-secret), or null if none saved yet. */

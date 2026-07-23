@@ -10,6 +10,7 @@ const CONN: PgConn = {
   password: "sup3r-s3cret-p@ss",
   database: "automationUM",
   schema: "public",
+  sslmode: "require",
 };
 
 // --- classifyConnectFailure: the pure attribution logic --------------------------------------
@@ -51,6 +52,12 @@ function fakeDeps(over: Partial<ProbeDeps>): ProbeDeps {
     ...over,
   };
 }
+
+test("probeConnection: the config step surfaces the sslmode", async () => {
+  const res = await probeConnection(CONN, fakeDeps({}));
+  const config = res.steps.find((s) => s.step === "config")!;
+  assert.match(config.detail ?? "", /sslmode=require/);
+});
 
 test("probeConnection: all steps succeed and report details", async () => {
   const res = await probeConnection(CONN, fakeDeps({}));

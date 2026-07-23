@@ -5,7 +5,7 @@
 import net from "node:net";
 import { Client } from "pg";
 import { sanitizeError } from "@/lib/jobs/db-backup";
-import { type PgConn, connLabel } from "./config";
+import { type PgConn, connLabel, pgSsl } from "./config";
 import { shortVersion } from "./plan";
 
 export type ProbeStepName = "config" | "reachable" | "authenticated" | "database" | "version" | "tables";
@@ -75,7 +75,7 @@ const realDeps: ProbeDeps = {
       socket.once("error", (e) => finish(() => reject(e)));
     }),
   connect: async (conn) => {
-    const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database });
+    const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database, ssl: pgSsl(conn) });
     await client.connect();
     return client as unknown as ProbeClient;
   },
@@ -93,7 +93,7 @@ export async function probeConnection(conn: PgConn, deps: ProbeDeps = realDeps):
   const set = (name: ProbeStepName, patch: Partial<ProbeStep>) => Object.assign(steps.find((x) => x.step === name)!, patch);
   const done = (ok: boolean): ProbeResult => ({ ok, label, steps });
 
-  set("config", { status: "ok", detail: `host=${conn.host} port=${conn.port} user=${conn.user} db=${conn.database} schema=${conn.schema}` });
+  set("config", { status: "ok", detail: `host=${conn.host} port=${conn.port} user=${conn.user} db=${conn.database} schema=${conn.schema} sslmode=${conn.sslmode}` });
 
   try {
     const ms = await deps.tcpCheck(conn.host, conn.port, 5000);

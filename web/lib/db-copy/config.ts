@@ -6,6 +6,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// TLS mode for the connection. Kept binary for now (the form is a toggle): "require" encrypts and is
+// mandatory for managed Postgres like Azure ("no pg_hba.conf entry … SSL off"); "disable" is plaintext
+// (fine for a trusted LAN source). Stored as a string so a fuller sslmode set (verify-full, …) can be
+// added later without a shape change.
+export type SslMode = "disable" | "require";
+
 export type PgConn = {
   host: string;
   port: number;
@@ -13,7 +19,22 @@ export type PgConn = {
   password: string;
   database: string;
   schema: string;
+  sslmode: SslMode;
 };
+
+/** Coerce arbitrary input to a known SslMode. Only "require" (case-insensitive) enables TLS. */
+export function normalizeSslMode(raw: unknown): SslMode {
+  return typeof raw === "string" && raw.trim().toLowerCase() === "require" ? "require" : "disable";
+}
+
+/**
+ * node-postgres `ssl` option for a connection. "require" → TLS on, without local CA verification
+ * (rejectUnauthorized:false) — matches sslmode=require semantics and works against Azure without
+ * shipping a CA bundle. "disable" → no TLS.
+ */
+export function pgSsl(conn: PgConn): false | { rejectUnauthorized: boolean } {
+  return conn.sslmode === "require" ? { rejectUnauthorized: false } : false;
+}
 
 // Ported from scripts/read-env.mjs (KEY="value" lines, no shell expansion, tolerant of trailing
 // comments + the "@Header" lines). Kept local so the Next server bundle doesn't reach into scripts/.
@@ -69,6 +90,7 @@ export function connFromEnv(env: Record<string, string>, suffix: "" | "1"): { co
       password: v("PASSWORD"),
       database: v("DB"),
       schema: v("SCHEMA") || "public",
+      sslmode: normalizeSslMode(v("SSLMODE")),
     },
     missing: [],
   };
@@ -98,6 +120,7 @@ export function pgChildEnv(conn: PgConn): NodeJS.ProcessEnv {
     PGUSER: conn.user,
     PGPASSWORD: conn.password,
     PGDATABASE: conn.database,
+    PGSSLMODE: conn.sslmode, // pg_dump/psql honour this — "require" forces TLS for managed Postgres
   };
 }
 

@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
-import { type PgConn, pgChildEnv, connLabel, sameTarget } from "./config";
+import { type PgConn, pgChildEnv, connLabel, sameTarget, pgSsl } from "./config";
 import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE, type TablePlan } from "./plan";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
@@ -18,7 +18,7 @@ import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP
 const EXCLUDED_TABLES = new Set(["_prisma_migrations"]);
 
 async function withClient<T>(conn: PgConn, fn: (c: Client) => Promise<T>): Promise<T> {
-  const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database });
+  const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database, ssl: pgSsl(conn) });
   await client.connect();
   try {
     return await fn(client);
@@ -57,7 +57,7 @@ export type ConnHealth = { ok: boolean; label: string; server?: string; tableCou
  * caller can show per-database status even when the other side is down.
  */
 export async function checkConnection(conn: PgConn): Promise<ConnHealth> {
-  const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database });
+  const client = new Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database, ssl: pgSsl(conn) });
   try {
     await client.connect();
     const v = await client.query<{ version: string }>("SELECT version() AS version");

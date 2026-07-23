@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseEnvFile, connFromEnv, sameTarget, connLabel } from "./config";
+import { parseEnvFile, connFromEnv, sameTarget, connLabel, pgSsl, pgChildEnv, normalizeSslMode } from "./config";
 
 const ENV = `
 # source
@@ -26,7 +26,7 @@ test("parseEnvFile keeps quoted values with special chars intact", () => {
 test("connFromEnv builds the SOURCE from POSTGRES_* (no suffix)", () => {
   const { conn, missing } = connFromEnv(parseEnvFile(ENV), "");
   assert.deepEqual(missing, []);
-  assert.deepEqual(conn, { host: "db.local", port: 5432, user: "iam", password: "p@ss$word", database: "iam_engine", schema: "public" });
+  assert.deepEqual(conn, { host: "db.local", port: 5432, user: "iam", password: "p@ss$word", database: "iam_engine", schema: "public", sslmode: "disable" });
 });
 
 test("connFromEnv builds the DEST from POSTGRES_*1; PORT1/SCHEMA1 default", () => {
@@ -46,12 +46,39 @@ test("connFromEnv reports exactly the missing required dest vars", () => {
 });
 
 test("sameTarget detects a copy-onto-itself", () => {
-  const c = { host: "h", port: 5432, user: "u", password: "p", database: "d", schema: "public" };
+  const c = { host: "h", port: 5432, user: "u", password: "p", database: "d", schema: "public", sslmode: "disable" as const };
   assert.equal(sameTarget(c, { ...c }), true);
   assert.equal(sameTarget(c, { ...c, database: "other" }), false);
 });
 
 test("connLabel never includes the password", () => {
-  const label = connLabel({ host: "h", port: 5432, user: "u", password: "TOPSECRET", database: "d", schema: "public" });
+  const label = connLabel({ host: "h", port: 5432, user: "u", password: "TOPSECRET", database: "d", schema: "public", sslmode: "disable" });
   assert.equal(label.includes("TOPSECRET"), false);
+});
+
+test("connFromEnv reads POSTGRES_SSLMODE1 and defaults to disable when absent", () => {
+  const withSsl = connFromEnv(parseEnvFile(ENV + "\nPOSTGRES_SSLMODE1=require\n"), "1");
+  assert.equal(withSsl.conn?.sslmode, "require");
+  const noSsl = connFromEnv(parseEnvFile(ENV), "1");
+  assert.equal(noSsl.conn?.sslmode, "disable", "SSLMODE1 absent → disable");
+});
+
+test("normalizeSslMode maps only 'require' to require, everything else to disable", () => {
+  assert.equal(normalizeSslMode("require"), "require");
+  assert.equal(normalizeSslMode("REQUIRE"), "require");
+  assert.equal(normalizeSslMode("disable"), "disable");
+  assert.equal(normalizeSslMode(""), "disable");
+  assert.equal(normalizeSslMode(undefined), "disable");
+});
+
+test("pgSsl maps sslmode to a node-postgres ssl option (require → TLS, no CA check)", () => {
+  const base = { host: "h", port: 5432, user: "u", password: "p", database: "d", schema: "public" } as const;
+  assert.deepEqual(pgSsl({ ...base, sslmode: "require" }), { rejectUnauthorized: false });
+  assert.equal(pgSsl({ ...base, sslmode: "disable" }), false);
+});
+
+test("pgChildEnv passes PGSSLMODE through for pg_dump/psql", () => {
+  const base = { host: "h", port: 5432, user: "u", password: "p", database: "d", schema: "public" } as const;
+  assert.equal(pgChildEnv({ ...base, sslmode: "require" }).PGSSLMODE, "require");
+  assert.equal(pgChildEnv({ ...base, sslmode: "disable" }).PGSSLMODE, "disable");
 });
