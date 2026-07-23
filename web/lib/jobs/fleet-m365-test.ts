@@ -157,8 +157,11 @@ export function classifyM365Client(input: ClassifyInput): ClassifyResult {
     missingPerms,
     surplus,
     escalation,
-    // Self-grant is only meaningful when there's a gap to close AND the app can close it itself.
-    canSelfGrant: hasSelfGrantRole && tags.has("missing_perms"),
+    // Self-grant is offered when the app can grant its own roles (holds AppRoleAssignment.ReadWrite.All)
+    // AND there's ANYTHING to grant — a missing REQUIRED permission or a missing OPTIONAL one. A client
+    // whose required perms are all covered but that's short some optional caps (e.g. Apollon) still gets
+    // the button, so the operator can top up the gaps without a Global Admin.
+    canSelfGrant: hasSelfGrantRole && (tags.has("missing_perms") || missingOptionalRoles.size > 0),
   };
 }
 

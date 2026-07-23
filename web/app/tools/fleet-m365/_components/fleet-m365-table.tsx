@@ -328,17 +328,19 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                         if (selfGranting === row.slug) return <button disabled>Granting…</button>;
                         if (testingNow) return <button disabled>Testing…</button>;
                         if (untested) return <button disabled title="Run the connection test first to see what this client needs">Not tested yet</button>;
-                        // A client that's missing permissions AND holds AppRoleAssignment.ReadWrite.All
-                        // can grant its own gaps with no Global Admin — route "Correct permissions"
-                        // straight to the self-grant instead of the device-code modal.
-                        if (row.action === "correct" && row.canSelfGrant) {
+                        // A client that holds AppRoleAssignment.ReadWrite.All AND is missing anything —
+                        // a required OR an optional permission — can grant its own gaps with no Global
+                        // Admin. Show the self-grant button regardless of the primary action: a client
+                        // whose required perms are all covered but that's short some optional caps still
+                        // gets a way to top them up. Label reflects whether required perms are at stake.
+                        if (row.canSelfGrant) {
                           return (
                             <button
                               className="primary"
                               onClick={() => void selfGrant(row)}
-                              title="Grant the missing permissions using the app's own AppRoleAssignment.ReadWrite.All — no Global Admin sign-in. Surplus roles stay flagged, not removed."
+                              title="Grant the missing permissions (required + optional) using the app's own AppRoleAssignment.ReadWrite.All — no Global Admin sign-in. Surplus roles stay flagged, not removed."
                             >
-                              Correct permissions
+                              {row.missingPerms > 0 ? "Correct permissions" : "Grant missing permissions"}
                             </button>
                           );
                         }

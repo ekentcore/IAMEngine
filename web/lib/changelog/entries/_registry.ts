@@ -219,3 +219,5 @@ export { entry as replanRederiveNeverrunMode } from "./replan-rederive-neverrun-
 export { entry as fleetAuditEscalationHolders } from "./fleet-audit-escalation-holders";
 export { entry as adobeOnboardEmptyProfiles } from "./adobe-onboard-empty-profiles";
 export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";
+
+export { entry as fleetM365SelfgrantOptional } from "./fleet-m365-selfgrant-optional";

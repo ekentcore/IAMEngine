@@ -153,6 +153,34 @@ test("missing perms + surplus AppRoleAssignment.ReadWrite.All -> canSelfGrant", 
   assert.equal(r.canSelfGrant, true);
 });
 
+test("holds AppRoleAssignment.ReadWrite.All + only OPTIONAL perms missing -> canSelfGrant (the Apollon case)", () => {
+  const optCap = GRAPH_OPTIONAL_CAPS[0];
+  const r = classifyM365Client({
+    hasAdminSecret: true,
+    testableSystemKeys: ["m365"],
+    tests: [
+      {
+        systemKey: "m365",
+        status: "ok", // all REQUIRED perms are granted → healthy
+        accessOk: true,
+        rights: [
+          { op: "create / update users + assign licenses", ok: true, detail: "" },
+          { op: "add users to groups", ok: true, detail: "" },
+          { op: "read licenses / groups (SKUs)", ok: true, detail: "" },
+          { op: optCap.need, ok: false, optional: true, detail: "optional — grant …" },
+          { op: "OVER-PERMISSIONED:AppRoleAssignment.ReadWrite.All", ok: false, detail: "", surplus: true },
+        ],
+      },
+    ],
+  });
+  // Required all covered, so status is healthy and there's no "missing_perms"…
+  assert.equal(r.status, "ok");
+  assert.ok(!r.tags.includes("missing_perms"));
+  // …but an optional gap + the self-grant role means the button should still appear.
+  assert.equal(r.canSelfGrant, true);
+  assert.deepEqual(r.missingOptionalRoles, [suggestedRole(optCap)]);
+});
+
 test("surplus AppRoleAssignment.ReadWrite.All but NO missing perms -> canSelfGrant false", () => {
   const r = classifyM365Client({
     hasAdminSecret: true,
