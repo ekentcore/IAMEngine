@@ -235,4 +235,5 @@ export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-
 
 export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 
+export { entry as dbCopyTool } from "./db-copy-tool";
 export { entry as fixEdgeCryptoBuildCrash } from "./fix-edge-crypto-build-crash";
