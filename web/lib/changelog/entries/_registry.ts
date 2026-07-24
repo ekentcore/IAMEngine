@@ -173,6 +173,7 @@ export { entry as offboardTargetPicker } from "./offboard-target-picker";
 export { entry as onedriveGrantRealError } from "./onedrive-grant-real-error";
 export { entry as optionalCredEmptyLabel } from "./optional-cred-empty-label";
 export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-at-first-login-optional";
+export { entry as passwordResetGuiFix } from "./password-reset-gui-fix";
 export { entry as perContactIntakeRules } from "./per-contact-intake-rules";
 export { entry as personaSystemMembership } from "./persona-system-membership";
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
@@ -235,6 +236,8 @@ export { entry as exoMirrorBoundedTimeout } from "./exo-mirror-bounded-timeout";
 export { entry as fleetM365SelfgrantOptional } from "./fleet-m365-selfgrant-optional";
 
 export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-fix-selfcorrect-filter";
+
+export { entry as fleetM365SkipsNoRunner } from "./fleet-m365-skips-no-runner";
 
 export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 

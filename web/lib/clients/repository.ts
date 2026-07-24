@@ -376,6 +376,11 @@ export function makeClientRepository(db: PrismaClient) {
     async setRunCloudOnOwnAgent(slug: string, runCloudOnOwnAgent: boolean) {
       return db.client.update({ where: { slug }, data: { runCloudOnOwnAgent } });
     },
+    // FR#26: flag a client as having no runner/agent at all (e.g. Dianthus) — the Fleet M365 sweep
+    // (and any other fleet-wide job enumeration) skips it entirely.
+    async setNoRunner(slug: string, noRunner: boolean) {
+      return db.client.update({ where: { slug }, data: { noRunner } });
+    },
     // "Do not use engine": the intake sweep / manual import skip this client's SN cases entirely.
     async setEngineOptOut(slug: string, engineOptOut: boolean) {
       return db.client.update({ where: { slug }, data: { engineOptOut } });

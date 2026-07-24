@@ -8,6 +8,7 @@ import { findClientByCoreIdSlug } from "@/lib/clients/coreid-redirect";
 import { currentIsSuperAdmin } from "@/lib/auth/acting";
 import { RestrictedToggle } from "../_components/restricted-toggle";
 import { OwnAgentToggle } from "../_components/own-agent-toggle";
+import { NoRunnerToggle } from "../_components/no-runner-toggle";
 import { EngineOptOutToggle } from "../_components/engine-opt-out-toggle";
 import { ParentInheritanceControl } from "../_components/parent-inheritance-control";
 import { kbUrl } from "@/lib/servicenow/kb-url";
@@ -302,6 +303,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
             />
           )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
+          <NoRunnerToggle slug={client.slug} on={client.noRunner} />
           <ClientActionsMenu
             slug={client.slug}
             personas={personaNames}
