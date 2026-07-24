@@ -185,13 +185,13 @@ export function GeneratePasswordButton({ jobId, systemName, refresh }: { jobId: 
                 type="text" value={customPw} onChange={(e) => setCustomPw(e.target.value)} autoComplete="off" spellCheck={false}
                 placeholder="the password to set" style={{ width: "100%", fontSize: 14, fontFamily: "var(--mono, monospace)" }}
               />
-              <p className="note" style={{ margin: "3px 0 0", color: customPw.length > 0 && pwError ? "#b3261e" : undefined }}>
+              <p className="note" style={{ margin: "3px 0 0", minHeight: "2.5em", color: customPw.length > 0 && pwError ? "#b3261e" : undefined }}>
                 {customPw.length > 0 && pwError ? pwError : MANUAL_PASSWORD_HINT}
               </p>
             </div>
           )}
           <label className="note" style={{ display: "flex", alignItems: "center", gap: 6, margin: "0.4rem 0" }}>
-            <input type="checkbox" checked={requireChange} onChange={(e) => setRequireChange(e.target.checked)} />
+            <input type="checkbox" checked={requireChange} onChange={(e) => setRequireChange(e.target.checked)} style={{ width: "auto" }} />
             Require the user to change this password at next sign-in
           </label>
           {!requireChange && (
