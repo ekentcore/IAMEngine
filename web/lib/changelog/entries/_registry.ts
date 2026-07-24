@@ -10,6 +10,7 @@ export { entry as adSyncedGalHide } from "./ad-synced-gal-hide";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as addDirectorySyncButton } from "./add-directory-sync-button";
 export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case-resolution";
+export { entry as adminAttentionModal } from "./admin-attention-modal";
 export { entry as adobeConsoleAutoSetup } from "./adobe-console-auto-setup";
 export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRemoteBrowserInstall } from "./agent-remote-browser-install";
@@ -286,3 +287,5 @@ export { entry as connTestOptionalFlagSurvivesWire } from "./conn-test-optional-
 export { entry as pirateEgg } from "./pirate-egg";
 
 export { entry as easterEggsPage } from "./easter-eggs-page";
+
+export { entry as tenNewEggs } from "./ten-new-eggs";

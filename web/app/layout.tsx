@@ -12,6 +12,8 @@ import { FeatureRequestCountSync } from "./_components/feature-request-count-syn
 import { AgentUpdateBanner } from "./_components/agent-update-banner";
 import { ImpersonationBanner } from "./_components/impersonation-banner";
 import { ServerWatchdog } from "./_components/server-watchdog";
+import { AdminAttentionModal } from "./_components/admin-attention-modal";
+import { adminAttentionData } from "@/lib/attention/data";
 import { isSupervised } from "@/lib/supervised";
 import { authEnabled, getActingContext } from "@/lib/auth/current-user";
 import { can, ROLE_RANK } from "@/lib/auth/permissions";
@@ -19,9 +21,10 @@ import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
 import { openFeatureRequestCount } from "./feature-requests/_lib/loader";
 import { occasionsFor } from "@/lib/eggs/occasions";
-import { effectiveEggDate } from "@/lib/eggs/effective-date";
+import { effectiveEggDate, todayEastern } from "@/lib/eggs/effective-date";
 import { OccasionBanner } from "./_components/eggs/occasion-banner";
 import { KonamiEgg } from "./_components/eggs/konami-egg";
+import { JurassicEgg } from "./_components/eggs/jurassic-egg";
 import { ConsoleSignature } from "./_components/eggs/console-signature";
 import { NewYearEgg } from "./_components/eggs/new-year-egg";
 import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
@@ -62,6 +65,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const outdatedAgents = loggedIn && !onLogin && !onAgents ? await outdatedAgentCount(db) : 0;
   // Open-request count for the "Feature requests" menu badge. Cheap COUNT; only when the nav renders.
   const openFeatureRequests = loggedIn && !onLogin ? await openFeatureRequestCount() : 0;
+
+  // Login-time attention popup for global/super admins: pending access requests + untriaged FRs.
+  // Keys off the REAL operator — impersonation blocks mutations, so the popup's approve links
+  // would 403 — and only queries when it could actually render. Failure-safe: DB trouble reads
+  // as "nothing pending" (adminAttentionData never throws).
+  const isRealAdmin = !authEnabled() || (!!acting.realUser && ROLE_RANK[acting.realUser.role] >= ROLE_RANK.global_admin);
+  const attention = loggedIn && !onLogin && !acting.impersonating && isRealAdmin ? await adminAttentionData() : null;
 
   // Easter eggs (see docs/superpowers/specs/2026-07-24-easter-eggs-design.md). The simulated_date
   // cookie is honored only for the REAL super-admin (auth off = dev = synthetic super), and only
@@ -114,13 +124,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         )}
         {acting.impersonating && user && <ImpersonationBanner name={user.name || user.email} role={user.role} />}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
-        {simActive && !onLogin && <SimulatedDateStrip date={eggDate} />}
+        {simActive && !onLogin && <SimulatedDateStrip date={eggDate} realDate={todayEastern()} />}
         {eggs.banners.map((b, i) => <OccasionBanner key={i} banner={b} />)}
         {loggedIn && !onLogin && (
           <>
             <KonamiEgg />
+            <JurassicEgg />
             <ConsoleSignature />
             {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
+            {attention && <AdminAttentionModal userId={user?.id ?? null} {...attention} />}
           </>
         )}
         {children}

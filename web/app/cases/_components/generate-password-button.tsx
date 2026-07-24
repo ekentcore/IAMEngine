@@ -32,6 +32,20 @@ function Overlay({ onBackdropClick, children }: { onBackdropClick?: () => void; 
 function RevealDialog({ resetJobId, systemName, onClose, requireChange }: { resetJobId: string; systemName: string; onClose: () => void; requireChange?: boolean }) {
   const [state, setState] = useState<{ pw?: string; status?: string; error?: string }>({ status: "pending" });
   const done = useRef(false);
+  // Mission Impossible easter egg (case-eggs.tsx): when body.mi-mode is armed, closing a shown
+  // password burns the card first. Cosmetic only — the wipe already happened server-side on reveal,
+  // and the burn NEVER fires on its own (an auto-close would lose a real password).
+  const [burning, setBurning] = useState(false);
+  const miArmed = typeof document !== "undefined" && document.body.classList.contains("mi-mode");
+
+  function close() {
+    if (state.pw && !burning && typeof document !== "undefined" && document.body.classList.contains("mi-mode")) {
+      setBurning(true);
+      setTimeout(onClose, 2100);
+      return;
+    }
+    onClose();
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -55,10 +69,10 @@ function RevealDialog({ resetJobId, systemName, onClose, requireChange }: { rese
   }, [resetJobId]);
 
   return (
-    <Overlay onBackdropClick={() => { if (state.pw || state.error) onClose(); }}>
+    <Overlay onBackdropClick={() => { if (state.pw || state.error) close(); }}>
       <h2 style={{ margin: "0 0 0.25rem" }}>New password — {systemName}</h2>
       {state.pw ? (
-        <>
+        <div style={{ position: "relative" }}>
           <p className="note" style={{ color: "#b3261e", marginTop: 0 }}>
             {/* Only assert the change-at-sign-in behavior when this dialog KNOWS it: the re-reveal
                 path (RevealResetPasswordButton) doesn't carry the generate-time choice, and telling
@@ -74,10 +88,13 @@ function RevealDialog({ resetJobId, systemName, onClose, requireChange }: { rese
                 the old `navigator.clipboard?.` call did on the LAN URL) loses the password outright. */}
             <CopyButton text={state.pw} label="Copy" copiedLabel="Copied ✓" style={{ fontSize: 13, padding: "0.3rem 0.7rem" }} />
           </div>
+          {miArmed && !burning && <p className="mi-burn-note">🧨 This password will self-destruct when you click “I saved it.”</p>}
+          {burning && <p className="mi-burn-note">Good luck. This message has self-destructed. 💥</p>}
           <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-            <button className="primary" onClick={onClose}>I saved it</button>
+            <button className="primary" onClick={close} disabled={burning}>I saved it</button>
           </div>
-        </>
+          {burning && <div className="mi-burn-overlay" aria-hidden />}
+        </div>
       ) : state.error ? (
         <>
           <p className="note" style={{ color: "#b3261e" }}>{state.error}</p>

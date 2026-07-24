@@ -10,6 +10,7 @@ import { migrateStatus } from "@/lib/agents/migrate-status";
 import { normalizeUrl } from "@/lib/jobs/agent-migration";
 import { ChangeUrlModal } from "./change-url-modal";
 import { ProofSuccessModal } from "./proof-success-modal";
+import { MatrixEgg } from "./matrix-egg";
 
 // The global app-URL migration state, as this view needs it: the target (status labels + modal
 // prefill) and the pending "prove it on one" pointer (drives the proof-succeeded dialog).
@@ -552,6 +553,8 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
 
   return (
     <>
+      {/* Easter egg: typing "matrix" rains the fleet (see matrix-egg.tsx). */}
+      <MatrixEgg agents={agents} now={nowMs} />
       <div className="toolbar" style={{ marginBottom: "1rem" }}>
         {selectedUpdatable.length > 0 && (
           <button onClick={() => bulkUpdate(selectedUpdatable.map((a) => a.id))} disabled={bulkBusy}
