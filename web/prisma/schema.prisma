@@ -148,6 +148,9 @@ model Client {
   // everything on-prem the way its native script did (e.g. Windows-store EXO cert). Falls back to the
   // central runner if the client has no agent. Off by default (cloud jobs go to the central runner).
   runCloudOnOwnAgent     Boolean      @default(false)
+  // This client is expected to have NO runner/agent at all (e.g. Dianthus): fleet sweeps skip it
+  // so it never queues tests that can only sit pending.
+  noRunner               Boolean      @default(false)
   // Per-client notification override: this client's own Zoom channel for failure alerts.
   // { webhookUrl, token, mode: "also" | "only" } — "also" = client channel PLUS the default/restricted
   // base, "only" = client channel alone. Null = use the global routing (default vs restricted).

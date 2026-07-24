@@ -1,0 +1,1 @@
+ALTER TABLE "Client" ADD COLUMN "noRunner" BOOLEAN NOT NULL DEFAULT false;

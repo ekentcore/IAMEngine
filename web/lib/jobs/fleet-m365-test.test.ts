@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyM365Client, type ClassifyTestInput } from "./fleet-m365-test";
+import type { PrismaClient } from "@prisma/client";
+import { classifyM365Client, rollupFleetM365Test, type ClassifyTestInput } from "./fleet-m365-test";
 import { GRAPH_OPTIONAL_CAPS, suggestedRole } from "@/lib/secrets/graph-caps";
 
 function okTest(systemKey = "m365"): ClassifyTestInput {
@@ -310,4 +311,25 @@ test("pending test -> running status, no premature completed", () => {
   });
   assert.equal(r.status, "running");
   assert.ok(!r.tags.includes("completed"));
+});
+
+// FR#26: a client flagged noRunner (e.g. Dianthus — no agent will ever serve it) must never be
+// swept, or its queued tests just sit pending forever. loadTargets is the ONE shared enumeration
+// behind start/retest/rollup, so asserting its `where` clause here covers all three.
+test("fleet sweep excludes noRunner clients", async () => {
+  const rows = [
+    {
+      id: "c1", slug: "a", name: "A", coreId: "1", primaryDomain: "a.com",
+      systems: [{ systemKey: "m365", mode: "api", secretNames: [], config: null }],
+      secrets: [],
+    },
+  ];
+  let captured: unknown;
+  const fakeDb = {
+    client: { findMany: async (args: unknown) => { captured = args; return rows; } },
+    connectionTest: { findMany: async () => [] },
+    fleetM365TestRun: { findFirst: async () => null },
+  } as unknown as PrismaClient;
+  await rollupFleetM365Test(fakeDb, null);
+  assert.equal((captured as { where: { noRunner: boolean } }).where.noRunner, false);
 });

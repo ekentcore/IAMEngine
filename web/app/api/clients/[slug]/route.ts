@@ -29,7 +29,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
-  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; printers?: unknown; ou?: unknown; scope?: unknown; systemKey?: unknown };
+  let body: { action?: string; domain?: unknown; lock?: unknown; backbone?: unknown; pattern?: unknown; intakeSource?: unknown; domains?: unknown; restricted?: unknown; runCloudOnOwnAgent?: unknown; noRunner?: unknown; engineOptOut?: unknown; inherit?: unknown; copy?: unknown; override?: unknown; name?: unknown; groups?: unknown; printers?: unknown; ou?: unknown; scope?: unknown; systemKey?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -197,6 +197,15 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (typeof body.runCloudOnOwnAgent !== "boolean") return NextResponse.json({ error: "runCloudOnOwnAgent must be a boolean" }, { status: 422 });
     const client = await repo.setRunCloudOnOwnAgent(params.slug, body.runCloudOnOwnAgent);
     await repo.writeAudit({ actor: who.label, userId: who.userId, action: "client.run_cloud_on_own_agent.set", clientId: client.id, detail: { runCloudOnOwnAgent: body.runCloudOnOwnAgent } });
+    return NextResponse.json(client);
+  }
+
+  // FR#26: flag this client as having NO runner/agent at all (e.g. Dianthus) — fleet sweeps
+  // (Fleet setup — M365, etc.) skip it entirely so it never queues tests that just sit pending.
+  if (body.action === "set-no-runner") {
+    if (typeof body.noRunner !== "boolean") return NextResponse.json({ error: "noRunner must be a boolean" }, { status: 422 });
+    const client = await repo.setNoRunner(params.slug, body.noRunner);
+    await repo.writeAudit({ actor: who.label, userId: who.userId, action: "client.no_runner.set", clientId: client.id, detail: { noRunner: body.noRunner } });
     return NextResponse.json(client);
   }
 
