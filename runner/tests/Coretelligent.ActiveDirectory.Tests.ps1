@@ -474,6 +474,18 @@ Describe 'Confirm-CtgAD' {
         Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -Times 0 -Exactly
     }
 
+    It 'offboard: a TRANSIENT hide-attribute read error stays FAIL-CLOSED — the check records a miss, not a skip (FR#36)' {
+        # Only a schema-missing read may skip the check; a DC timeout / ADWS hiccup must not
+        # green-light a leaver who may still be visible in the GAL.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Users,DC=x'; Enabled=$false } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith { throw 'The server is not operational' }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @() }
+        $config = [pscustomobject]@{ disableAccount=$true; hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists'; value='TRUE' }; guardrails=@('do-not-move-ou') }
+        $r = Confirm-CtgAD -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config $config -Action 'offboard'
+        $r.ok | Should -BeFalse
+        ($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).pass | Should -BeFalse
+    }
+
     It 'offboard: SKIPS the hide check when the attribute is not in the schema (read throws) — verify must not loop the case (FR#36)' {
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Users,DC=x'; Enabled=$false } }
         Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith { throw 'Get-ADUser : One or more properties are invalid.' }

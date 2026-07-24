@@ -6,7 +6,7 @@
 import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
-import { hideFromGalOptedOut, adLaneHidesViaAttribute } from "./hide-from-gal";
+import { hideFromGalOptedOut, adLaneHidesViaAttribute, readHideFromGal } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = {
@@ -137,7 +137,16 @@ function injectHideFromGal(planned: PlannedJob[], payload: Record<string, unknow
   return withAdHide.map((j) => {
     if (j.systemKey === "exchange") {
       const cfg = (j.config as Record<string, unknown> | null) ?? {};
-      if (adOwnsHide) return j;
+      if (adOwnsHide) {
+        // AD owns the hide — but an explicit truthy hideFromGal left on the exchange lane would
+        // still fire a guaranteed-failing EXO attempt on the synced mailbox (WARN noise every
+        // offboard). Stamp it false so the runner skips it; both web and runner read `hideFromGal`
+        // before the `hideFromGAL` spelling, so this single key wins. An absent or already-false
+        // value needs nothing.
+        const explicit = readHideFromGal(cfg);
+        if (explicit === undefined || hideFromGalOptedOut(cfg)) return j;
+        return { ...j, config: { ...cfg, hideFromGal: false } };
+      }
       if (hideFromGalOptedOut(cfg)) return j;
       return { ...j, config: { ...cfg, hideFromGal: true } };
     }

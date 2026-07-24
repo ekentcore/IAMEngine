@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@prisma/client";
 import { replanCase } from "./replan-service";
+import { makeCaseRepository } from "./repository";
 
 // Minimal fake PrismaClient covering only what replanCase touches for a no-ServiceNow case
 // (no network): caseRequest.findUnique (repo.replanInputs), $transaction (repo.replanCaseJobs),
@@ -172,4 +173,18 @@ test("replan re-sequences a kept step to its planned position and does NOT re-ru
   assert.equal(res.ok, true);
   assert.equal(res.ok === true && res.rerun, 0);
   assert.ok(updated.find((u) => u.sequence === 0), "kept step re-sequenced to planned order (was 9 -> 0)");
+});
+
+// FR#36 regression: replanInputs' client select MUST carry `backbone` — the planner's ad_synced
+// injections (the GAL-hide AD attribute, FR#25's cloudCreate deny) read client.backbone, and a
+// select that drops it makes every RE-plan silently revert them (the fake-db seam above ignores
+// Prisma selects, so this asserts the select shape directly).
+test("replanInputs selects the client backbone (ad_synced GAL hide + cloudCreate read it on re-plan)", async () => {
+  let captured: { select?: { client?: { select?: Record<string, unknown> } } } | null = null;
+  const db = {
+    caseRequest: { findUnique: async (args: never) => { captured = args; return null; } },
+  } as unknown as PrismaClient;
+  const res = await makeCaseRepository(db).replanInputs("case-1");
+  assert.equal(res, null);
+  assert.equal(captured!.select?.client?.select?.backbone, true);
 });

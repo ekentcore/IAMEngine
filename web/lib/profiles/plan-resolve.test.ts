@@ -447,6 +447,15 @@ test("offboard hide-from-GAL: AD attribute config takes over — exchange lane i
   assert.equal((cfgOf(out, "active-directory").hideFromGal as Record<string, unknown>).attribute, "msExchHideFromAddressLists");
 });
 
+test("offboard hide-from-GAL: when AD owns the hide, an explicit hideFromGal:true on the exchange lane is stamped false (no doomed EXO attempt)", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [
+    galJob("exchange", { hideFromGal: true }),
+    galJob("active-directory", { hideFromGal: { attribute: "msExchHideFromAddressLists", value: "TRUE" } }),
+  ]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false); // overridden — EXO would WARN on the synced mailbox
+  assert.equal((cfgOf(out, "active-directory").hideFromGal as Record<string, unknown>).attribute, "msExchHideFromAddressLists");
+});
+
 test("offboard hide-from-GAL: bare hideFromGal:true on the AD lane does NOT count as AD-owned — exchange still hides", () => {
   const out = resolvePlannedConfigs(galClient, {}, "offboard", [galJob("exchange"), galJob("active-directory", { hideFromGal: true })]);
   assert.equal(cfgOf(out, "exchange").hideFromGal, true);
@@ -491,6 +500,12 @@ test("offboard hide-from-GAL: ad_synced upgrades a bare hideFromGal:true on the 
   const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange"), galJob("active-directory", { hideFromGal: true })]);
   assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msExchHideFromAddressLists", value: "TRUE" });
   assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: ad_synced + explicit hideFromGal:true on the exchange lane → AD injected, exchange stamped false", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange", { hideFromGal: true }), galJob("active-directory")]);
+  assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msExchHideFromAddressLists", value: "TRUE" });
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false);
 });
 
 test("offboard hide-from-GAL: entra backbone never injects on the AD lane (regression)", () => {

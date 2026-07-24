@@ -31,6 +31,13 @@ function Write-CtgADStep([string]$Message) {
     if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) { Send-CtgProgress $Message }
 }
 
+# Does an AD error mean the requested attribute isn't in this directory's schema? (The msExch*
+# attributes exist only where the on-prem Exchange schema is installed — "One or more properties
+# are invalid" family.) Used to tell "can never work here" apart from a transient DC/ADWS error.
+function Test-CtgADSchemaMissingError([string]$Message) {
+    return $Message -match '(?i)properties are invalid|no such attribute|attribute .* (does not exist|not found)'
+}
+
 # Domain FQDN -> distinguished name: "61commodities.com" -> "DC=61commodities,DC=com".
 function ConvertTo-CtgDomainDn {
     param([string]$Domain)
@@ -692,7 +699,7 @@ function Invoke-CtgADOffboarding {
                 }
                 catch {
                     # "One or more properties are invalid" = the attribute isn't in this AD's schema.
-                    if ($_.Exception.Message -match '(?i)properties are invalid|no such attribute|attribute .* (does not exist|not found)') {
+                    if (Test-CtgADSchemaMissingError $_.Exception.Message) {
                         $actions.Add("WARN could not hide from GAL — $attr isn't in this AD schema (no on-prem Exchange schema); hide manually or configure a custom attribute + Entra Connect rule")
                     }
                     else {
@@ -932,17 +939,23 @@ function Confirm-CtgAD {
         if ($exists -and $hide -and (Get-CtgProp $hide 'attribute')) {
             # FR #36: verify against the CONFIGURED attribute (it may be a custom one, e.g.
             # msDS-cloudExtensionAttribute1 + an Entra Connect rule), compared to the configured
-            # value (truthy fallback for booleans / no value). Fetched best-effort: when the schema
-            # lacks the attribute the read throws — SKIP the check entirely then (the executor
-            # already WARNed, and a perpetually-red verify would loop the case).
+            # value (truthy fallback for booleans / no value). A SCHEMA-MISSING read (the attribute
+            # isn't in this AD — the executor already WARNed) skips the check entirely: a
+            # perpetually-red verify would loop the case. Any OTHER read error (DC timeout, ADWS
+            # hiccup) stays FAIL-CLOSED — record a miss rather than green-light a leaver who may
+            # still be visible.
             $hideAttr = [string](Get-CtgProp $hide 'attribute')
             $hideVal = [string](Get-CtgProp $hide 'value')
-            $hideReadable = $true; $curHide = $null
-            try { $curHide = Get-CtgProp (Get-ADUser -Identity $sam -Properties $hideAttr -ErrorAction Stop @AdConnection) $hideAttr } catch { $hideReadable = $false }
-            if ($hideReadable) {
+            $hideOutcome = 'read'; $curHide = $null
+            try { $curHide = Get-CtgProp (Get-ADUser -Identity $sam -Properties $hideAttr -ErrorAction Stop @AdConnection) $hideAttr }
+            catch { $hideOutcome = if (Test-CtgADSchemaMissingError $_.Exception.Message) { 'schema-missing' } else { 'error' } }
+            if ($hideOutcome -eq 'read') {
                 $hidden = if ([string]::IsNullOrWhiteSpace($hideVal)) { [bool]$curHide }
                           else { ("$curHide" -ieq $hideVal) -or (($curHide -is [bool]) -and $curHide -and ($hideVal -ieq 'TRUE')) }
                 & $add 'hidden from GAL' $true $hidden
+            }
+            elseif ($hideOutcome -eq 'error') {
+                & $add 'hidden from GAL' $true $false
             }
         }
         # do-not-move-ou guardrail: the DN must NOT sit under the Disabled Users OU.
