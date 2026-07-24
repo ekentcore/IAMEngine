@@ -5,7 +5,8 @@
 // reported in on the new URL — exactly the window an operator needs to watch. States, in
 // precedence order:
 //   failed          migrateError recorded (agent tried, couldn't verify/rewrite — still on old URL)
-//   migrated        heartbeat came back reporting the target URL
+//   migrated        heartbeat came back reporting the target URL — a "just happened" banner, shown
+//                   for 4 hours after migratedAt, then retired (the move is settled, not news)
 //   queued          operator asked, runner hasn't polled yet
 //   returned-old    delivered, then the agent reported in again still on the OLD URL with no error
 //                   (the move didn't stick) — shown for an hour after delivery, then treated as
@@ -35,11 +36,22 @@ export type MigrateStatus = {
 // forever on any agent whose fleet-off migration was delivered once and abandoned.
 const RETURNED_OLD_WINDOW_MS = 60 * 60_000;
 const MOVING_QUIET_AFTER_MS = 5 * 60_000;
+// The "✓ migrated" confirmation is a recent-event banner, not permanent state. After the move has
+// been settled for a while it's just noise on the row, so it retires 4 hours after migratedAt.
+const MIGRATED_WINDOW_MS = 4 * 60 * 60_000;
 
 export function migrateStatus(a: MigrateStatusAgent, targetUrl: string | null, now: number): MigrateStatus | null {
   const by = a.migrateRequestedBy ? ` (by ${a.migrateRequestedBy})` : "";
   if (a.migrateError) return { kind: "failed", label: `⚠ migration failed — ${a.migrateError} (still on the old URL)`, color: "var(--danger-fg, #b00)" };
-  if (a.migratedAt) return { kind: "migrated", label: `✓ migrated${by} — now on ${a.currentAppUrl ?? "the new URL"}`, color: "var(--ok-fg)" };
+  if (a.migratedAt) {
+    // A converged migration. Show the ✓ banner for 4 hours, then retire it — but never fall through
+    // to the queued/moving branches below (a lingering migrateRequested flag would misreport a
+    // finished move as still in flight). Once migrated, the only outcomes are the banner or nothing.
+    if (now - new Date(a.migratedAt).getTime() <= MIGRATED_WINDOW_MS) {
+      return { kind: "migrated", label: `✓ migrated${by} — now on ${a.currentAppUrl ?? "the new URL"}`, color: "var(--ok-fg)" };
+    }
+    return null;
+  }
   if (a.migrateRequested) return { kind: "queued", label: `↻ migration queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
   if (!a.migrateDeliveredAt) return null;
 

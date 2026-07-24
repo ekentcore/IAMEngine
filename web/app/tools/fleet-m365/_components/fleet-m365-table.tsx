@@ -296,7 +296,7 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                 : row.missingPerms > 0
                 ? `missing ${row.missingPerms}`
                 : row.status === "ok"
-                ? "ok"
+                ? "✓ Passed"
                 : "—";
               return (
                 <Fragment key={row.slug}>
@@ -317,7 +317,7 @@ export function FleetM365Table({ initial }: { initial: FleetM365Rollup }) {
                           {rightsText} {openRights === row.slug ? "▴" : "▾"}
                         </button>
                       ) : (
-                        <span className="muted" style={{ fontSize: 12 }}>{rightsText}</span>
+                        <span className="muted" style={{ fontSize: 12, color: row.status === "ok" ? "#15803d" : undefined }}>{rightsText}</span>
                       )}
                     </td>
                     <td className="row-actions">

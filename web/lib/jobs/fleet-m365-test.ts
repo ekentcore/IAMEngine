@@ -370,10 +370,37 @@ export type FleetM365Rollup = {
   rows: FleetM365Row[];
 };
 
+// Delete M365-family connection tests that have sat pending/running past the staleness window — the
+// row-level counterpart to the Job lease reclaim (runner-service.ts). A `pending` test older than the
+// cutoff was never claimed (no eligible runner — e.g. a hybrid client's on-prem exchange with no
+// agent); a `running` one claimed before the cutoff never reported (its agent died, and
+// reportConnectionTest is agent-id-locked so nothing else can settle it). Either way it's dead: we
+// clear it (not mark it failed) so the client is classified from the tests that DID run, matching the
+// run-level auto-settle. Reuses FLEET_M365_STALE_AFTER_MS — "no result in 10 min" is the same cutoff.
+// Scoped to M365_FAMILY so this only touches what the fleet-m365 tool owns. Returns how many it reaped.
+export async function reapStaleM365ConnTests(db: PrismaClient): Promise<number> {
+  const cutoff = new Date(Date.now() - FLEET_M365_STALE_AFTER_MS);
+  const { count } = await db.connectionTest.deleteMany({
+    where: {
+      systemKey: { in: [...M365_FAMILY] },
+      OR: [
+        { status: "pending", requestedAt: { lt: cutoff } },
+        { status: "running", claimedAt: { lt: cutoff } },
+      ],
+    },
+  });
+  return count;
+}
+
 // Roll up the current sweep: latest run + one classified row per in-scope M365 client. Also settles a
 // running run to "done" once no target connection test is still pending/running (the sweep is
 // advance-on-poll — this GET is where progress moves).
 export async function rollupFleetM365Test(db: PrismaClient, scope: ClientScope): Promise<FleetM365Rollup> {
+  // Reap stale M365-family tests BEFORE classifying, so a row no runner ever claimed (a hybrid
+  // client's on-prem exchange/AD test with no agent, or an agent that died mid-probe) can't pin the
+  // client on "testing…" forever. ConnectionTest — unlike Job — has no lease reclaim, so this poll is
+  // where the recovery happens: the client then settles from whatever tests DID run.
+  await reapStaleM365ConnTests(db);
   const targets = await loadTargets(db, scope);
   const clientIds = targets.map((t) => t.id);
   const tests = clientIds.length

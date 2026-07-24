@@ -14,6 +14,7 @@ export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
 export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
+export { entry as agentsMigratedBadge4hWindow } from "./agents-migrated-badge-4h-window";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as auditAttributesDiscoveryToUser } from "./audit-attributes-discovery-to-user";
 export { entry as azureCutoverAgentRehoming } from "./azure-cutover-agent-rehoming";
@@ -240,6 +241,8 @@ export { entry as fleetM365SelfgrantOptional } from "./fleet-m365-selfgrant-opti
 export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-fix-selfcorrect-filter";
 
 export { entry as fleetM365SkipsNoRunner } from "./fleet-m365-skips-no-runner";
+
+export { entry as fleetM365StuckTestReaper } from "./fleet-m365-stuck-test-reaper";
 
 export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 
