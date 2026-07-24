@@ -1161,6 +1161,39 @@ function Invoke-CtgExchangeOffboarding {
         $actions.Add("scanned $checked cloud distribution list(s); removed from $removed")
     }
 
+    # -a ADMIN-ACCOUNT SWEEP (config.adminAccountSuffix, e.g. '-a'): the person may hold a privileged
+    # secondary account named <local>-a@<domain> (mgallegos -> mgallegos-a). When it has a recipient in
+    # Exchange, run this same offboard on it with the suffix stripped (depth-1 recursion) — minus the
+    # mail-continuity keys (shared convert, delegates, OOO, forwarding): those are for the departing
+    # person's mailbox, the -a pass only hides/blocks. Looked up EXACTLY — a missing -a recipient is a
+    # plain note, never the candidates machinery, so it can never pause the case.
+    $adminSuffix = [string](Get-CtgProp $Config 'adminAccountSuffix')
+    if ($adminSuffix) {
+        if ($adminSuffix -notmatch '^[A-Za-z0-9._-]{1,16}$') {
+            $actions.Add("WARN admin-account check skipped: suffix '$adminSuffix' is not a valid account-name fragment")
+        }
+        elseif ($upn -notmatch '^([^@]+)@(.+)$') {
+            $actions.Add("WARN admin-account check skipped: cannot derive an admin address from '$upn'")
+        }
+        else {
+            $adminUpn = "$($Matches[1])$adminSuffix@$($Matches[2])"
+            $adminRcpt = Get-Recipient -Identity $adminUpn -ErrorAction SilentlyContinue
+            if (-not $adminRcpt) {
+                $actions.Add("admin account check: no $adminUpn recipient in Exchange — nothing extra to do")
+            }
+            else {
+                $actions.Add("admin account check: found $adminUpn — running the mailbox disable path on it")
+                $adminCfg = @{}
+                foreach ($p in $Config.PSObject.Properties) {
+                    if ($p.Name -in @('adminAccountSuffix', 'convertToShared', 'mailbox', 'delegateManagerFullAccess', 'grantFullAccessTo', 'autoReply', 'forwarding')) { continue }
+                    $adminCfg[$p.Name] = $p.Value
+                }
+                $adminResult = Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ UserPrincipalName = $adminUpn }) -Config ([pscustomobject]$adminCfg)
+                foreach ($a in @(Get-CtgProp $adminResult 'Actions')) { $actions.Add("[$adminUpn] $a") }
+            }
+        }
+    }
+
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Upn = $upn; MailboxSizeGB = $sizeGB; Actions = $actions.ToArray() }
 }
 

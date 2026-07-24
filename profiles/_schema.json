@@ -325,6 +325,7 @@
         "resetPassword":   { "type": "boolean" },
         "removeAllGroups": { "type": "boolean" },
         "disableAccount":  { "type": "boolean" },
+        "adminAccountSuffix": { "type": "string", "description": "Admin-account sweep: also disable the user's privileged secondary account named <sam><suffix> (e.g. '-a': mgallegos -> mgallegos-a), derived from the RESOLVED primary and looked up exactly. Same key works on the exchange and entra offboard lanes." },
         "hideFromGal": {
           "type": "object",
           "additionalProperties": false,
@@ -368,6 +369,7 @@
       "properties": {
         "blockSignIn":    { "type": "boolean" },
         "removeAllGroups":{ "type": "boolean" },
+        "adminAccountSuffix": { "type": "string", "description": "Admin-account sweep: also disable the user's privileged secondary account <local><suffix>@<domain> (e.g. '-a': mgallegos@x.com -> mgallegos-a@x.com), derived from the resolved primary UPN. Set it on the entra lane (not m365) so the sweep stays out of the license machinery; the license/mailbox/OneDrive keys are never applied to the -a pass." },
         "removeManager":  { "type": "boolean", "description": "Clear the user's manager link in Entra (default true). AD-synced users are routed to the AD step, which clears it on-prem." },
         "oneDriveBackup": { "type": "object", "description": "{ target }: archive the leaver's OneDrive into an 'Archive - <name>' folder on the target — a user email (their OneDrive) or a SharePoint site URL. Server-side Graph copies; the source is left for account deletion." },
         "oneDriveDelegateAccess": { "type": "boolean", "description": "Grant the case-requested delegate access to the leaver's OneDrive (default true when the case names one)." },

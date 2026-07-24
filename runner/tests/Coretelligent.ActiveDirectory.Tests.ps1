@@ -699,3 +699,66 @@ Describe 'Test-CtgAdCreateUserAce' {
         Test-CtgAdCreateUserAce -Rules @(@{ Type = 'Allow'; Sid = $me; Rights = 'ReadProperty, ListChildren'; ObjectType = '' }) -Sids @($me) | Should -BeFalse
     }
 }
+
+Describe 'Invoke-CtgADOffboarding admin-account (-a) sweep' {
+    BeforeEach {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            [pscustomobject]@{ SamAccountName='jdoe'; DistinguishedName='CN=Jane Doe,OU=Users,DC=x'; Enabled=$true; UserPrincipalName='jdoe@x.com' }
+        }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @() }
+        Mock Set-ADAccountPassword -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Move-ADObject -ModuleName Coretelligent.ActiveDirectory -MockWith { }
+        Mock Get-ADComputer -ModuleName Coretelligent.ActiveDirectory -MockWith { $null }
+        $user = [pscustomobject]@{ SamAccountName = 'jdoe' }
+        $config = [pscustomobject]@{ disableAccount = $true; adminAccountSuffix = '-a'; guardrails = @('do-not-move-ou') }
+    }
+
+    It 'disables the -a account the same way when it exists' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Filter" -match 'jdoe-a' } -MockWith {
+            [pscustomobject]@{ SamAccountName='jdoe-a'; DistinguishedName='CN=Jane Doe (admin),OU=Users,DC=x'; Enabled=$true }
+        }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        $r.Sam | Should -Be 'jdoe'   # the primary stays authoritative on the result
+        ($r.Actions -join "`n") | Should -Match 'admin account check: found jdoe-a'
+        ($r.Actions -join "`n") | Should -Match '\[jdoe-a\] disabled account'
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 2 -Exactly
+    }
+
+    It 'reports plainly when there is no -a account, and never offers candidates for it' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Filter" -match 'jdoe-a' } -MockWith { @() }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join "`n") | Should -Match 'admin account check: no jdoe-a'
+        $r.PSObject.Properties['Candidates'] | Should -BeNullOrEmpty
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly
+    }
+
+    It 'does nothing extra when adminAccountSuffix is not configured' {
+        $plain = [pscustomobject]@{ disableAccount = $true; guardrails = @('do-not-move-ou') }
+        $r = Invoke-CtgADOffboarding -User $user -Config $plain
+        ($r.Actions -join "`n") | Should -Not -Match 'admin account'
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly
+    }
+
+    It 'refuses a suffix that is not a valid sam/UPN fragment' {
+        $bad = [pscustomobject]@{ disableAccount = $true; adminAccountSuffix = "-a' OR x" }
+        $r = Invoke-CtgADOffboarding -User $user -Config $bad
+        ($r.Actions -join "`n") | Should -Match 'WARN admin-account check skipped'
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly
+    }
+
+    It 'strips the computer keys from the -a pass (the workstation is only handled once)' {
+        Mock Get-ADComputer -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            [pscustomobject]@{ Name='PC1'; DistinguishedName='CN=PC1,OU=Comp,DC=x'; Enabled=$true }
+        }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { "$Filter" -match 'jdoe-a' } -MockWith {
+            [pscustomobject]@{ SamAccountName='jdoe-a'; DistinguishedName='CN=Jane Doe (admin),OU=Users,DC=x'; Enabled=$true }
+        }
+        $cfg = [pscustomobject]@{ disableAccount = $true; adminAccountSuffix = '-a'; guardrails = @('do-not-move-ou'); disableComputer = $true; computerName = 'PC1' }
+        $r = Invoke-CtgADOffboarding -User $user -Config $cfg
+        Should -Invoke Get-ADComputer -ModuleName Coretelligent.ActiveDirectory -Times 1 -Exactly
+    }
+}
