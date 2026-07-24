@@ -36,6 +36,9 @@ BeforeAll {
         }
     }
 
+    # The customer-id validation warns through the runner's log seam — capture it.
+    function Write-CtgLog { param([Parameter(Position = 0)]$Message, [Parameter(Position = 1)]$Level) $script:Warned = "$Message" }
+
     # Build the shape Get-JobCredential hands the executors: .Fields plus .Username.
     function New-GoogleCreds {
         param([hashtable]$Fields, [string]$Username)
@@ -169,6 +172,134 @@ Describe 'Use-CtgGoogleSecret — existing shapes keep working (no regression)' 
     It 'throws when the job brokered no google-admin secret at all' {
         { Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds @{} } |
             Should -Throw -ExpectedMessage "*did not broker a 'google-admin' secret*"
+    }
+}
+
+Describe 'Use-CtgGoogleSecret — customer id validation (FR#35)' {
+
+    # The Automation - API template's ClientID field is SUPPOSED to hold the Workspace customer id
+    # (C0… from Admin Console → Account settings), but in the wild it frequently holds the service
+    # account's numeric OAuth client_id instead (UOVO Art, secret 57051) — the Directory API then
+    # 400s "Invalid Input". A value that doesn't look like a customer id must self-heal to
+    # my_customer with a WARN, never take down the connection test.
+
+    BeforeEach { $script:Connected = $null; $script:Warned = $null; $script:GoogleCustomerAdvisory = 'stale-from-previous-connect' }
+
+    It 'falls back to my_customer with a WARN when ClientID holds a numeric OAuth client id' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = '104857200000000012345'   # 21-digit SA OAuth client_id, NOT a customer id
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -Match 'customer id'
+        $script:Warned | Should -Not -Match '104857200000000012345'   # never log the full raw value
+        # the advisory must ALSO reach the conn-test output — the operator who can fix the
+        # secret never reads the runner host's log file
+        $script:GoogleCustomerAdvisory | Should -Match 'customer id'
+        $script:GoogleCustomerAdvisory | Should -Not -Match '104857200000000012345'
+    }
+
+    It 'falls back to my_customer with a WARN when the value contains an @ (an email, not a customer id)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = 'admin@client.com'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -Match 'customer id'
+    }
+
+    It 'passes a real Workspace customer id through untouched, with no WARN' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = 'C01ab2cd3'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'C01ab2cd3'
+        $script:Warned | Should -BeNullOrEmpty
+        $script:GoogleCustomerAdvisory | Should -BeNullOrEmpty   # a stale advisory from a prior connect must clear
+    }
+
+    It 'CustomerId field still takes precedence over ClientID (regression)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            CustomerId   = 'C0aaaa111'
+            ClientID     = 'C0bbbb222'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'C0aaaa111'
+        $script:Warned | Should -BeNullOrEmpty
+    }
+
+    It 'still defaults to my_customer when no customer fields exist, with no WARN (regression)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'google-workspace conn-test probe — the customer id must reach the wire (FR#35)' {
+
+    # THE actual UOVO Art bug: Connect-CtgGoogle stores the customer id in MODULE scope
+    # ($script:GoogleCustomer in the psm1), but the probe scriptblock is bound to the RUNNER
+    # SCRIPT's scope where that variable is never assigned — so the probe interpolated an EMPTY
+    # string and sent `GET /users?customer=&maxResults=1`, which Google 400s. The configured
+    # value (good or bad) never crossed the module boundary. The probe must read the customer
+    # through the module's exported seam (Get-CtgGoogleCustomer).
+
+    BeforeAll {
+        $m = [regex]::Match($script:Runner, "(?ms)^\`$CONNTEST_PROBE\['google-workspace'\] = \{.*?^\}")
+        $m.Success | Should -BeTrue -Because 'Start-IamRunner.ps1 must declare the google-workspace conn-test probe'
+        $body = $m.Value.Substring($m.Value.IndexOf('{'))
+        $script:Probe = [scriptblock]::Create($body.Substring(1, $body.Length - 2))
+
+        # Seams the probe calls, stubbed in THIS scope (exactly how the real scope split works —
+        # anything the probe needs from the module must arrive through a function, not a variable).
+        function Invoke-CtgGoogleApi { param($Method, $Path) $script:ProbePath = $Path; $null }
+        function Get-CtgGoogleSessionScopes { @('https://www.googleapis.com/auth/admin.directory.user', 'https://www.googleapis.com/auth/admin.directory.user.security') }
+        function Get-CtgGoogleCustomer { $script:StubCustomer }
+    }
+
+    BeforeEach {
+        $script:ProbePath = $null
+        $script:ConnTestRights = @()
+        $script:GoogleCustomerAdvisory = $null
+        $script:StubCustomer = 'my_customer'
+    }
+
+    It 'sends the customer id the session was connected with' {
+        $script:StubCustomer = 'C0123abcd'
+        & $script:Probe ([pscustomobject]@{}) @{} | Out-Null
+        $script:ProbePath | Should -Match 'customer=C0123abcd&'
+    }
+
+    It 'REGRESSION: never sends an empty customer= param' {
+        & $script:Probe ([pscustomobject]@{}) @{} | Out-Null
+        $script:ProbePath | Should -Not -Match 'customer=&'
+        $script:ProbePath | Should -Match 'customer=my_customer&'
+    }
+
+    It 'surfaces the customer-id fallback advisory as a rights row the operator can see' {
+        $script:GoogleCustomerAdvisory = "the google-admin secret's ClientID/CustomerId value '1048…' (21 chars) doesn't look like a Workspace customer id — using my_customer instead."
+        & $script:Probe ([pscustomobject]@{}) @{} | Out-Null
+        $advisory = @($script:ConnTestRights | Where-Object { $_.op -match 'customer' })
+        $advisory.Count | Should -Be 1
+        $advisory[0].ok | Should -BeNullOrEmpty
+        $advisory[0].detail | Should -Match 'customer id'
+    }
+
+    It 'adds no advisory row when the customer id was fine' {
+        & $script:Probe ([pscustomobject]@{}) @{} | Out-Null
+        @($script:ConnTestRights | Where-Object { $_.op -match 'customer' }).Count | Should -Be 0
     }
 }
 
