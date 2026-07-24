@@ -35,6 +35,13 @@ const ENV_CONFIGURED = {
   DELINEA_TEMPLATE_M365_ADMIN: "6001",
 };
 const ENV_NOT_CONFIGURED = { DELINEA_BASE_URL: "https://ctg.secretservercloud.com" };
+// Write account present but NO template-id env at all — the real prod shape: template ids were never
+// configured anywhere; the stock template name must resolve live from Secret Server instead.
+const ENV_NO_TEMPLATE_ID = {
+  DELINEA_BASE_URL: "https://ctg.secretservercloud.com",
+  DELINEA_WRITE_USER: "svc-write",
+  DELINEA_WRITE_PASSWORD: "pw",
+};
 
 // Routes: the Entra probe (login.microsoftonline.com), Delinea oauth2/token, the dedup search, the
 // template stub, the create POST, and the per-field PUT. `probeOk` controls the Entra grant's verdict.
@@ -58,6 +65,8 @@ function fetcher(opts: {
   identityChildId?: number | string;
   noIdentityChild?: boolean;
   capturedCreateFolderId?: (folderId: string) => void;
+  // Records served for findTemplateIdByName's /secret-templates search (no-template-id-env tests).
+  templateRecords?: { id: number | string; name: string }[];
 } = {}): Fetcher {
   const putUrls: string[] = [];
   const puts: { slug: string; value: string }[] = [];
@@ -71,6 +80,9 @@ function fetcher(opts: {
     }
     if (url.includes("/oauth2/token")) {
       return { ok: true, status: 200, json: async () => ({ access_token: "delinea-tok" }) } as FetchResponse;
+    }
+    if (url.includes("/secret-templates")) {
+      return { ok: true, status: 200, json: async () => ({ records: opts.templateRecords ?? [] }) } as FetchResponse;
     }
     if (url.includes("filter.parentFolderId")) {
       // findChildFolderByName's "Identity Services" lookup. Serve the child by default so identity creds
@@ -566,6 +578,53 @@ test("write not configured -> refuses with what's missing, before any Delinea wr
   assert.match(r.error ?? "", /not configured/);
   assert.match(r.error ?? "", /write account|template/);
   assert.equal(calls.upsert.length, 0);
+});
+
+test("no template-id env: resolves the stock template name live from Secret Server and vaults normally", async () => {
+  const { db, calls } = fakeDb();
+  let created: Record<string, string> = {};
+  const f = fetcher({
+    templateRecords: [{ id: 6042, name: "Entra Azure AD Account" }],
+    capturedCreateFields: (fields) => (created = fields),
+  });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: f, env: ENV_NO_TEMPLATE_ID }
+  );
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.wroteCreds, true);
+  assert.equal(created.username, "app-guid-1");
+  assert.equal(created.password, "shh");
+  assert.equal(created.tenantid, "acme.onmicrosoft.com");
+  assert.equal(calls.upsert.length, 1);
+});
+
+test("no template-id env and no matching Secret Server template -> refuses, naming the template it looked for", async () => {
+  const { db, calls } = fakeDb();
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ clientSecret: "shh" }) },
+    { db, fetch: fetcher({ templateRecords: [] }), env: ENV_NO_TEMPLATE_ID }
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /Entra Azure AD Account/);
+  assert.equal(calls.upsert.length, 0);
+});
+
+test("kept-valid + empty cert slug with NO template-id env -> still detected as half-vaulted/stranded (default slug)", async () => {
+  const { db } = fakeDb({ existingSecret: { externalId: "SS-777" } });
+  const f = fetcher({
+    vaultItems: [
+      { slug: "username", itemValue: "app-guid-1" },
+      { slug: "password", itemValue: "some-secret" },
+      { slug: "certificatebase64", itemValue: "" },
+    ],
+  });
+  const r = await writeProvisionedM365App(
+    { client: CLIENT, provision: provision({ credState: "kept-valid" }) },
+    { db, fetch: f, env: ENV_NO_TEMPLATE_ID }
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.stranded, true, "the completeness check must not be disabled just because no template-id env is set");
 });
 
 test("cert-only issue (no new client secret): skips the Entra probe, writes only appId/tenant/cert fields", async () => {

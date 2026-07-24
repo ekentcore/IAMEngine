@@ -268,3 +268,5 @@ export { entry as delineaNeverVaultToRoot } from "./delinea-never-vault-to-root"
 export { entry as dbCopyBuildSchemaButton } from "./db-copy-build-schema-button";
 
 export { entry as auditFullDetailExpand } from "./audit-full-detail-expand";
+
+export { entry as m365WritebackTemplateByName } from "./m365-writeback-template-by-name";
