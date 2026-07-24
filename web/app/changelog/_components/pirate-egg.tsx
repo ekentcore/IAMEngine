@@ -87,9 +87,11 @@ const CSS = `
   animation: pe-ball-y ${FLIGHT_MS}ms ${FLIGHT_DELAY_MS}ms both;
 }
 @keyframes pe-ball-y {
-  0% { transform: translateY(0); animation-timing-function: ease-out; }
+  0% { transform: translateY(0); opacity: 1; animation-timing-function: ease-out; }
   50% { transform: translateY(-36vh); animation-timing-function: ease-in; }
-  100% { transform: translateY(0); }
+  92% { opacity: 1; }
+  /* Fades at impact — with fill:both the element would otherwise sit parked by the target ship. */
+  100% { transform: translateY(0); opacity: 0; }
 }
 .pe-boom {
   position: absolute; bottom: 27vh; width: 90px; height: 90px; border-radius: 50%;
@@ -123,9 +125,10 @@ const CSS = `
   position: absolute; top: 34vh; left: 0; right: 0; text-align: center; padding: 0 2rem;
   font-family: Georgia, 'Times New Roman', serif; font-size: clamp(19px, 3.2vw, 30px); color: #f0e2bd;
   text-shadow: 0 2px 10px #000;
-  animation: pe-intro 4.5s ease-out forwards;
+  animation: pe-intro 1.6s ease-out forwards;
 }
-@keyframes pe-intro { 0% { opacity: 0; } 12% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; visibility: hidden; } }
+/* Gone by 1.6s — the first parchment card unfurls at 1.7s in the same band of the screen. */
+@keyframes pe-intro { 0% { opacity: 0; } 15% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; visibility: hidden; } }
 .pe-hint {
   position: absolute; bottom: 10px; left: 0; right: 0; text-align: center;
   color: #8b93a1; font-size: 12px;
