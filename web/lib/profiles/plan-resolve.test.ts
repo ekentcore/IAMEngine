@@ -301,6 +301,22 @@ test("requested privileged groups are filtered out of the plan", () => {
   assert.deepEqual((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, ["Team"]);
 });
 
+// FR #30: operator-typed "additional groups" on the case review panel merge into the same
+// mastering-lane routing as securityGroups (comma/semicolon string OR array), through the same
+// protected-groups filter.
+test("extraGroups land on the AD lane when the client has one", () => {
+  const planned = [job("active-directory", {}), job("m365", {})];
+  const resolved = resolvePlannedConfigs({}, { ...payload, extraGroups: "GIS Users, Finance Share" }, "onboard", planned);
+  assert.deepEqual((resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).groups, ["GIS Users", "Finance Share"]);
+  assert.equal((resolved.find((j) => j.systemKey === "m365")!.config as Record<string, unknown>).groups, undefined);
+});
+
+test("extraGroups never add a protected group", () => {
+  const planned = [job("active-directory", {})];
+  const resolved = resolvePlannedConfigs({}, { ...payload, extraGroups: ["Domain Admins", "Sales"] }, "onboard", planned);
+  assert.deepEqual((resolved.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).groups, ["Sales"]);
+});
+
 test("a matched location's persisted printers emit one manual 'printers' job", () => {
   const locClient = {
     personas: null, globals: null,
