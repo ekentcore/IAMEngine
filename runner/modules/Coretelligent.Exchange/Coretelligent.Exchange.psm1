@@ -1311,6 +1311,82 @@ function Invoke-CtgExchangeDefaultMailboxAccess {
     return $actions.ToArray()
 }
 
+function Invoke-CtgExchangeMailboxAudit {
+    <#
+    .SYNOPSIS
+        Apply the CVP-documented mailbox-auditing settings (FR #34) to a new mailbox — a config-driven,
+        allowlisted Set-Mailbox -AuditEnabled/-AuditAdmin/-AuditDelegate/-AuditOwner call. Config is DATA
+        (validated flag names), never a runnable command.
+    .NOTES
+        Idempotent by construction: EXO audit flags are absolute sets, so re-applying the same config is
+        just re-writing the same set — no pre-read needed (unlike the mailbox-access grants above, which
+        DO need a pre-read because they're additive). WARN-not-throw on both allowlist violations and
+        Set-Mailbox failures — never blocks the onboard over an auditing nicety.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$Upn, $Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    if (-not (Get-CtgProp $Config 'enabled')) { return $actions.ToArray() }
+
+    # The full EXO audit-action enum (AuditAdmin/AuditDelegate/AuditOwner accept a subset each in real
+    # EXO, but a lowercase-compared allowlist against the UNION is enough to keep this DATA, never
+    # runnable command text — Set-Mailbox itself rejects a value invalid for the wrong parameter).
+    $allowlist = @('copy', 'create', 'folderbind', 'harddelete', 'mailboxlogin', 'mailitemsaccessed', 'move', 'movetodeleteditems', 'sendas', 'sendonbehalf', 'softdelete', 'update', 'send', 'updatecalendardelegation', 'updatefolderpermissions', 'updateinboxrules', 'applyrecord', 'recorddelete')
+
+    # Filter one configured list against the allowlist (case-insensitive); WARN on anything dropped.
+    # Returns $null when the property was never configured (as opposed to an empty array, which means
+    # "configured but everything in it got filtered out" — those two cases are handled differently
+    # below: absent = just don't pass the flag, empty-after-filter = WARN + skip the WHOLE call).
+    $filterList = {
+        param($raw, $label)
+        if ($null -eq $raw) { return $null }
+        $entries = @($raw | Where-Object { $_ })
+        $kept = [System.Collections.Generic.List[string]]::new()
+        $dropped = [System.Collections.Generic.List[string]]::new()
+        foreach ($e in $entries) {
+            $s = [string]$e
+            if ($allowlist -contains $s.ToLowerInvariant()) { $kept.Add($s) } else { $dropped.Add($s) }
+        }
+        if ($dropped.Count -gt 0) { $actions.Add("WARN mailbox audit: dropped unrecognized $label action(s) (not in the allowlist): $($dropped -join ', ')") }
+        , $kept.ToArray()
+    }
+
+    $admin = & $filterList (Get-CtgProp $Config 'auditAdmin') 'AuditAdmin'
+    $delegate = & $filterList (Get-CtgProp $Config 'auditDelegate') 'AuditDelegate'
+    $owner = & $filterList (Get-CtgProp $Config 'auditOwner') 'AuditOwner'
+
+    # Fail-safe: a list that was CONFIGURED but ended up empty after filtering means every entry the
+    # client asked for was rejected — skip the whole Set-Mailbox rather than silently applying a
+    # different (emptier) audit policy than requested.
+    $emptyAfterFilter = @(
+        if ($null -ne $admin -and $admin.Count -eq 0) { 'AuditAdmin' }
+        if ($null -ne $delegate -and $delegate.Count -eq 0) { 'AuditDelegate' }
+        if ($null -ne $owner -and $owner.Count -eq 0) { 'AuditOwner' }
+    )
+    if ($emptyAfterFilter.Count -gt 0) {
+        $actions.Add("WARN mailbox audit: skipped Set-Mailbox for $Upn — $($emptyAfterFilter -join ', ') had no allowlisted actions left after filtering")
+        return $actions.ToArray()
+    }
+
+    $applied = [System.Collections.Generic.List[string]]::new()
+    $splat = @{ Identity = $Upn; AuditEnabled = $true }
+    if ($null -ne $admin -and $admin.Count -gt 0) { $splat['AuditAdmin'] = $admin; $applied.Add('AuditAdmin') }
+    if ($null -ne $delegate -and $delegate.Count -gt 0) { $splat['AuditDelegate'] = $delegate; $applied.Add('AuditDelegate') }
+    if ($null -ne $owner -and $owner.Count -gt 0) { $splat['AuditOwner'] = $owner; $applied.Add('AuditOwner') }
+
+    try {
+        if ($PSCmdlet.ShouldProcess($Upn, 'enable mailbox auditing')) {
+            Set-Mailbox @splat -ErrorAction Stop
+            $actions.Add("enabled mailbox auditing for $Upn ($($applied -join ', '))")
+            Write-CtgStep "✓ mailbox auditing enabled: $Upn ($($applied -join ', '))"
+        }
+    } catch {
+        $actions.Add("WARN mailbox auditing failed for $Upn`: $($_.Exception.Message)")
+        Write-CtgStep "✗ mailbox auditing — $($_.Exception.Message)"
+    }
+    return $actions.ToArray()
+}
+
 function Invoke-CtgExchangeChange {
     <#
     .SYNOPSIS
@@ -1384,4 +1460,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

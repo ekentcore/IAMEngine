@@ -59,6 +59,7 @@ export { entry as coreidSlugRedirect } from "./coreid-slug-redirect";
 export { entry as coretelligentPostResetRestore } from "./coretelligent-post-reset-restore";
 export { entry as credExpirySettings } from "./cred-expiry-settings";
 export { entry as credPlatform } from "./cred-platform";
+export { entry as cvpMailboxAuditing } from "./cvp-mailbox-auditing";
 export { entry as defaultSharedMailboxAccess } from "./default-shared-mailbox-access";
 export { entry as delineaSecretserverCloudCreateFix } from "./delinea-secretserver-cloud-create-fix";
 export { entry as delineaTemplateByName } from "./delinea-template-by-name";

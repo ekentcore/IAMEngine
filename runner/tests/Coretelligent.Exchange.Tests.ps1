@@ -6,7 +6,7 @@
 BeforeAll {
     function global:Connect-ExchangeOnline { [CmdletBinding()] param($AppId, $Organization, $CertificateThumbprint, $CertificateFilePath, $CertificatePassword, [switch]$ShowBanner) }
     function global:Get-MailboxStatistics { [CmdletBinding()] param($Identity) }
-    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, $HiddenFromAddressListsEnabled, [switch]$Confirm) }
+    function global:Set-Mailbox { [CmdletBinding()] param($Identity, $Type, $ForwardingSmtpAddress, [switch]$DeliverToMailboxAndForward, $GrantSendOnBehalfTo, $HiddenFromAddressListsEnabled, [switch]$Confirm, $AuditEnabled, $AuditAdmin, $AuditDelegate, $AuditOwner) }
     # shared-mailbox permission mirror (EXO)
     function global:Get-MailboxPermission { [CmdletBinding()] param($Identity) }
     function global:Add-MailboxPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, $InheritanceType, [switch]$AutoMapping, [switch]$Confirm) }
@@ -157,6 +157,38 @@ Describe 'Invoke-CtgExchangeDefaultMailboxAccess' {
     It 'returns nothing for an empty list' {
         $acts = Invoke-CtgExchangeDefaultMailboxAccess -NewUser 'new@x.com' -Mailboxes @()
         @($acts).Count | Should -Be 0
+    }
+}
+
+Describe 'Invoke-CtgExchangeMailboxAudit' {
+    BeforeEach {
+        Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
+    }
+
+    It 'applies the configured audit flags' {
+        $cfg = [pscustomobject]@{ enabled = $true; auditAdmin = @('copy', 'create'); auditDelegate = @('create'); auditOwner = @('create', 'mailboxlogin') }
+        $r = Invoke-CtgExchangeMailboxAudit -Upn 'new.user@x.com' -Config $cfg
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $AuditEnabled -eq $true -and ($AuditAdmin -contains 'copy') -and ($AuditOwner -contains 'mailboxlogin') }
+        ($r -join "`n") | Should -Match 'enabled mailbox auditing'
+    }
+
+    It 'refuses unknown audit actions (allowlist)' {
+        $cfg = [pscustomobject]@{ enabled = $true; auditOwner = @('create', 'Invoke-Expression') }
+        $r = Invoke-CtgExchangeMailboxAudit -Upn 'new.user@x.com' -Config $cfg
+        ($r -join "`n") | Should -Match 'WARN'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { -not ($AuditOwner -contains 'Invoke-Expression') }
+    }
+
+    It 'does nothing when not enabled' {
+        (Invoke-CtgExchangeMailboxAudit -Upn 'x@x.com' -Config ([pscustomobject]@{ enabled = $false })).Count | Should -Be 0
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0
+    }
+
+    It 'WARNs and skips Set-Mailbox entirely when a configured list is empty after allowlist filtering' {
+        $cfg = [pscustomobject]@{ enabled = $true; auditOwner = @('Invoke-Expression', 'rm-rf') }
+        $r = Invoke-CtgExchangeMailboxAudit -Upn 'new.user@x.com' -Config $cfg
+        ($r -join "`n") | Should -Match 'WARN'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0
     }
 }
 

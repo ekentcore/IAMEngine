@@ -1090,18 +1090,21 @@ function Invoke-CtgM365ExoFinish {
     # MIRRORING, (2) copy the mirror user's cloud DLs and (3) their SHARED-MAILBOX permissions
     # (FullAccess / SendAs / SendOnBehalf) — the part Graph can't do. One EXO connection for all of it.
     # Idempotent + best-effort; returns action lines.
-    param($Job, $Creds, [string[]]$Names, [string]$MirrorUser, $DefaultMailboxes)
+    param($Job, $Creds, [string[]]$Names, [string]$MirrorUser, $DefaultMailboxes, $MailboxAudit)
     $out = [System.Collections.Generic.List[string]]::new()
     $names = @($Names | Where-Object { $_ })
     $mirror = if ([string]::IsNullOrWhiteSpace($MirrorUser)) { $null } else { [string]$MirrorUser }
     # Per-client "add everyone to these shared mailboxes by default" list (FR #15): [{ address, access }].
     $defaultMbx = @($DefaultMailboxes | Where-Object { $_ })
-    if ($names.Count -eq 0 -and -not $mirror -and $defaultMbx.Count -eq 0) { return $out.ToArray() }
+    # FR #34: CVP-documented mailbox-auditing config ({ enabled, auditAdmin/auditDelegate/auditOwner }).
+    $audit = $MailboxAudit
+    if ($names.Count -eq 0 -and -not $mirror -and $defaultMbx.Count -eq 0 -and -not $audit) { return $out.ToArray() }
 
     if (-not (Get-Command Invoke-CtgExchangeNamedGroups -ErrorAction SilentlyContinue)) {
         if ($names.Count) { $out.Add("note: $($names.Count) distribution list(s) not added — ExchangeOnlineManagement isn't installed on this runner, so the Coretelligent.Exchange module didn't load. Install it (or run this client on a runner that has it).") }
         if ($mirror) { $out.Add("note: shared mailboxes / DLs not mirrored — ExchangeOnlineManagement isn't installed on this runner.") }
         if ($defaultMbx.Count) { $out.Add("note: $($defaultMbx.Count) default shared mailbox grant(s) skipped — ExchangeOnlineManagement isn't installed on this runner.") }
+        if ($audit) { $out.Add("note: mailbox auditing not applied — ExchangeOnlineManagement isn't installed on this runner.") }
         return $out.ToArray()
     }
     $s = $Creds['m365-admin']
@@ -1111,7 +1114,7 @@ function Invoke-CtgM365ExoFinish {
         return $out.ToArray()
     }
     try {
-        $what = @($(if ($names.Count) { 'distribution lists' }), $(if ($mirror) { 'mirror (DLs + shared mailboxes)' }), $(if ($defaultMbx.Count) { "$($defaultMbx.Count) default shared mailbox(es)" }) | Where-Object { $_ }) -join ' + '
+        $what = @($(if ($names.Count) { 'distribution lists' }), $(if ($mirror) { 'mirror (DLs + shared mailboxes)' }), $(if ($defaultMbx.Count) { "$($defaultMbx.Count) default shared mailbox(es)" }), $(if ($audit) { 'mailbox auditing' }) | Where-Object { $_ }) -join ' + '
         # Graph is already this client's here (the m365 lane's own Connect bound it just upstream), so
         # this is normally a no-op — but bind explicitly rather than trusting a caller two lanes away.
         # Depending on distant ordering for tenant correctness is exactly what produced UM0029840.
@@ -1135,6 +1138,8 @@ function Invoke-CtgM365ExoFinish {
         # FR #15: grant the per-client default shared mailboxes at their chosen level (list-driven,
         # independent of any mirror). Idempotent — a re-run only fills gaps.
         if ($defaultMbx.Count) { foreach ($a in (Invoke-CtgExchangeDefaultMailboxAccess -NewUser $upn -Mailboxes $defaultMbx)) { $out.Add($a) } }
+        # FR #34: CVP-documented mailbox-auditing settings — allowlisted config, applied every onboard.
+        if ($audit) { foreach ($a in (Invoke-CtgExchangeMailboxAudit -Upn $upn -Config $audit)) { $out.Add($a) } }
     } catch {
         # The AAD error tells you WHICH problem it is — don't always blame "grant Exchange.ManageAsApp".
         $emsg = [string]$_.Exception.Message
@@ -1187,13 +1192,15 @@ $DISPATCH = @{
             # FR #15: per-client default shared-mailbox grants ([{ address, access }]) — added to every
             # new user regardless of mirror. Read here and handed to the same one EXO connection.
             $defaultMbx = @(Get-CtgProp $job.config 'defaultSharedMailboxes')
+            # FR #34: CVP-documented mailbox-auditing config ({ enabled, auditAdmin/auditDelegate/auditOwner }).
+            $audit = Get-CtgProp $job.config 'mailboxAudit'
             # skipExoFinish: set by the planner on the entra lane when m365 is ALSO modeled (same module),
             # so the costly EXO mirror runs once on m365 instead of twice. Skip it here when set.
             if ((Get-CtgProp $job.config 'skipExoFinish')) {
                 $r.Actions = @($r.Actions) + "EXO finish skipped — handled by the m365 lane (entra is the same module)"
             }
-            elseif ($dls.Count -gt 0 -or $mirror -or $defaultMbx.Count -gt 0) {
-                foreach ($a in (Invoke-CtgM365ExoFinish -Job $job -Creds $creds -Names $dls -MirrorUser $mirror -DefaultMailboxes $defaultMbx)) { $r.Actions = @($r.Actions) + $a }
+            elseif ($dls.Count -gt 0 -or $mirror -or $defaultMbx.Count -gt 0 -or $audit) {
+                foreach ($a in (Invoke-CtgM365ExoFinish -Job $job -Creds $creds -Names $dls -MirrorUser $mirror -DefaultMailboxes $defaultMbx -MailboxAudit $audit)) { $r.Actions = @($r.Actions) + $a }
             }
             $r
         }
