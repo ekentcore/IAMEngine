@@ -1,5 +1,4 @@
 import "./globals.css";
-import Link from "next/link";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
@@ -26,6 +25,7 @@ import { KonamiEgg } from "./_components/eggs/konami-egg";
 import { ConsoleSignature } from "./_components/eggs/console-signature";
 import { NewYearEgg } from "./_components/eggs/new-year-egg";
 import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
+import { BrandTitle } from "./_components/eggs/brand-title";
 
 // Title template: each page sets its own title (e.g. "Agents") and the tab reads "Agents · iam-engine",
 // so people can tell pages apart from the title bar / tab strip.
@@ -80,7 +80,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <ServerWatchdog supervised={isSupervised()} />
         {!onLogin && (
           <header className="app-header">
-            <Link href="/clients" className="brand">iam-engine</Link>
+            <BrandTitle />
             <Nav
               showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
               showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
