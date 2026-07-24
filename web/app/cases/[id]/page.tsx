@@ -27,6 +27,7 @@ import { caseEffectiveDate } from "@/lib/cases/schedule";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
 import { isMilestoneCase } from "@/lib/eggs/occasions";
+import { pickResetSourceJob } from "@/lib/jobs/password-reset";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,12 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   const acting = authEnabled() ? await getActingContext() : { user: null, realUser: null, impersonating: false };
   const canRevealPassword = !authEnabled() || (!!acting.user && !acting.impersonating && can(acting.user.role, "case.dispatch"));
   const hasInitialPassword = Boolean(caseMeta?.initialPassword) && canRevealPassword;
+  // FR#31: offer "reset password" from the Actions menu even before any step has run (imported
+  // cases pause on import, and the reset route already supports paused cases) — pick whichever
+  // planned job the ad-hoc reset job should ride on. Excluded for dry runs: nothing in a dry-run
+  // case ever actually dispatches, so there's no real account yet to reset a password on.
+  const resetSourceJobId = c.dryRun ? null : pickResetSourceJob(c.jobs);
+  const resetSourceJob = resetSourceJobId ? c.jobs.find((j) => j.id === resetSourceJobId) ?? null : null;
   const scheduledForIso = caseMeta?.scheduledFor?.toISOString() ?? null;
   // The case's effective date string — the ScheduleButton computes its suggested time from this in
   // the BROWSER (so "08:00" / "+5 min" land in the operator's timezone, not the server's).
@@ -161,6 +168,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           effectiveDate={effectiveDate}
           showHardMatch={showHardMatch}
           hasInitialPassword={hasInitialPassword}
+          resetSourceJobId={resetSourceJobId}
+          resetSourceSystemName={resetSourceJob?.systemName ?? null}
+          canResetPassword={canRevealPassword}
           domain={domainInfo}
         />
       </div>

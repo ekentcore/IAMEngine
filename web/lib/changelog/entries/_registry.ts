@@ -24,6 +24,7 @@ export { entry as backupAzureRestoreDrill } from "./backup-azure-restore-drill";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
 export { entry as caseExitDryRun } from "./case-exit-dry-run";
+export { entry as casePrerunPasswordReset } from "./case-prerun-password-reset";
 export { entry as casesEmptyM365autosetupJsonFilter } from "./cases-empty-m365autosetup-json-filter";
 export { entry as casesV2AccessRules } from "./cases-v2-access-rules";
 export { entry as changeActionGroundwork } from "./change-action-groundwork";
@@ -239,6 +240,8 @@ export { entry as fleetM365SelfgrantOptional } from "./fleet-m365-selfgrant-opti
 export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-fix-selfcorrect-filter";
 
 export { entry as fleetM365SkipsNoRunner } from "./fleet-m365-skips-no-runner";
+
+export { entry as fleetM365StuckTestReaper } from "./fleet-m365-stuck-test-reaper";
 
 export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 
