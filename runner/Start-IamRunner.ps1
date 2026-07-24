@@ -2568,6 +2568,22 @@ function Get-CtgGraphRightsRows {
     $rows
 }
 
+# Rebuild rights rows for the result POST: every detail goes through the secret scrub, and the
+# row's CLASSIFICATION flags ride along untouched. `optional`/`surplus` MUST survive this rebuild —
+# a scrub that whitelists only op/ok/detail strips them, and the app then counts a missing OPTIONAL
+# cap as a REQUIRED miss, turning "✓ ops +6 optional" into a red "✗ missing 6" (core1747).
+function ConvertTo-CtgConnTestWireRights {
+    param($Rows, $Creds)
+    # Leading comma: a one-row result must stay an ARRAY through the function boundary, or it
+    # serializes as a bare object and the app's parseRights (Array.isArray) drops it entirely.
+    , @($Rows | ForEach-Object {
+        $row = @{ op = [string]$_.op; ok = $_.ok; detail = Protect-CtgSecretsInText ([string]$_.detail) $Creds }
+        if ($_.optional) { $row.optional = $true }
+        if ($_.surplus) { $row.surplus = $true }
+        $row
+    })
+}
+
 # The app-only blind spot: Get-MgContext.Scopes is EMPTY for client-credentials auth (app perms ride
 # the token's `roles` claim, not scopes), so the scope-gap check above can't see what's granted. This
 # reads the ACTUAL consented application permissions from the directory: the app's service principal
@@ -3028,9 +3044,7 @@ function Invoke-CtgConnectionTests {
         $body = @{ agentId = $AgentId; accessOk = $accessOk; accessDetail = "$accessDetail"; ok = $apiOk; detail = "$apiDetail" }
         if ($script:ConnTestRights) {
             # Scrub each row's detail like the top-level details — never a secret in a rights row.
-            $body.rights = @($script:ConnTestRights | ForEach-Object {
-                @{ op = [string]$_.op; ok = $_.ok; detail = Protect-CtgSecretsInText ([string]$_.detail) $creds }
-            })
+            $body.rights = ConvertTo-CtgConnTestWireRights $script:ConnTestRights $creds
         }
         if ($script:ConnTestCredExpiresAt) { $body.credExpiresAt = [string]$script:ConnTestCredExpiresAt }
         $script:ConnTestRights = $null

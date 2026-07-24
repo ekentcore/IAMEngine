@@ -271,3 +271,5 @@ export { entry as dbCopyBuildSchemaButton } from "./db-copy-build-schema-button"
 export { entry as auditFullDetailExpand } from "./audit-full-detail-expand";
 
 export { entry as m365WritebackTemplateByName } from "./m365-writeback-template-by-name";
+
+export { entry as connTestOptionalFlagSurvivesWire } from "./conn-test-optional-flag-survives-wire";

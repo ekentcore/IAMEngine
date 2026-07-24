@@ -3,6 +3,7 @@
 // single-system / fleet-sweep paths can't drift apart.
 import { NOT_NEEDED, systemIsOnPrem } from "../cases/case-secrets";
 import { OPTIONAL_SECRETS, isOptionalSecret } from "../secrets/optional-secrets";
+import { GRAPH_OPTIONAL_CAPS } from "../secrets/graph-caps";
 
 export type TestableSystemInput = {
   systemKey: string;
@@ -100,6 +101,19 @@ export type RightsRow = {
 const MAX_RIGHTS_OPS = 48;
 const MAX_RIGHTS_DETAIL = 300;
 
+// A Graph rights row's `op` IS the capability's `need` string (runner GRAPH_OPTIONAL_CAPS ↔
+// graph-caps.ts mirror each other exactly — the same contract OPTIONAL_ROLE_BY_NEED in
+// fleet-m365-test.ts relies on). Runners before 1.99.1 scrubbed the `optional` flag off the wire
+// (rebuilding rows as bare op/ok/detail before POST), so every already-stored row and every
+// not-yet-updated runner reports optional caps flagless — and a healthy credential missing only
+// optional caps read as a red "✗ missing 6" (core1747). Deriving the flag from the op heals both.
+const OPTIONAL_CAP_OPS = new Set<string>(GRAPH_OPTIONAL_CAPS.map((c) => c.need));
+
+function deriveOptional(row: RightsRow): RightsRow {
+  if (row.optional || !OPTIONAL_CAP_OPS.has(row.op)) return row;
+  return { ...row, optional: true };
+}
+
 // Normalize a runner-posted rights array: drop malformed entries, cap lengths. Returns null when
 // nothing usable was sent (older runner / probe without rights) so the column stays null.
 export function parseRights(raw: unknown): RightsRow[] | null {
@@ -134,7 +148,7 @@ export function parseRights(raw: unknown): RightsRow[] | null {
       }
       row.op = op;
     }
-    rows.push(row);
+    rows.push(deriveOptional(row));
   }
   return rows.length > 0 ? rows : null;
 }
@@ -149,8 +163,11 @@ export type RightsSummary =
   | { state: "missing"; missing: number; total: number; optionalMissing: number; surplus: number; escalation: number }
   | { state: "unverified"; unverified: number; total: number; optionalMissing: number; surplus: number; escalation: number };
 
-export function summarizeRights(rights: RightsRow[] | null | undefined): RightsSummary {
-  if (!rights || rights.length === 0) return { state: "unknown" };
+export function summarizeRights(rightsRaw: RightsRow[] | null | undefined): RightsSummary {
+  if (!rightsRaw || rightsRaw.length === 0) return { state: "unknown" };
+  // Rows stored before the wire carried the optional flag (see deriveOptional) reach some callers
+  // straight from the DB without a parseRights pass — normalize here too so no consumer can miss it.
+  const rights = rightsRaw.map(deriveOptional);
   // Surplus rows are optional+ok=false on the wire, but they are the opposite of a missing optional
   // permission — count them separately or the badge says "N optional missing" about permissions the
   // credential HAS too many of.
