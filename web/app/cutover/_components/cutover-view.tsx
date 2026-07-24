@@ -11,7 +11,6 @@ import { useCallback, useEffect, useState } from "react";
 import type { CutoverVM, CutoverAgentRow } from "../_lib/loader";
 import type { CutoverPhase, RehomeKind } from "@/lib/jobs/cutover";
 import type { DbVerifyResult } from "@/lib/jobs/cutover-db";
-import { migrationTargetMatchesCutover } from "../_lib/loader";
 
 const CHIP: Record<RehomeKind, { color: string; border: string; bg: string; label: string }> = {
   green: { color: "#1b5e20", border: "#c4e3c8", bg: "#eef7ef", label: "re-homed" },
@@ -28,6 +27,53 @@ const STEPS: { phase: CutoverPhase; label: string }[] = [
   { phase: "complete", label: "6 · Confirm" },
 ];
 const PHASE_ORDER: CutoverPhase[] = ["idle", "staged", "draining", "pushing", "verifying-agents", "verifying-db", "complete"];
+
+function normalizeComparableUrl(value: string | null | undefined): string {
+  const raw = value?.trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const url = new URL(raw);
+
+    // Ignore fragments and an insignificant final slash.
+    url.hash = "";
+
+    const path =
+      url.pathname === "/"
+        ? ""
+        : url.pathname.replace(/\/+$/, "");
+
+    return (
+      `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}` +
+      `${path}${url.search}`
+    );
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+function migrationTargetMatchesCutover(vm: CutoverVM): boolean {
+  if (
+    !vm.state.azureUrl ||
+    vm.state.phase === "idle" ||
+    vm.state.phase === "staged"
+  ) {
+    return true;
+  }
+
+  const expected =
+    vm.state.phase === "rolled-back"
+      ? vm.state.oldUrl
+      : vm.state.azureUrl;
+
+  return (
+    normalizeComparableUrl(vm.migration.targetUrl) ===
+    normalizeComparableUrl(expected)
+  );
+}
 
 function reachChip(r: { ok: boolean; detail: string } | null) {
   if (!r) return <span className="note" style={{ color: "var(--muted)" }}>not checked</span>;
