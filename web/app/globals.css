@@ -800,3 +800,15 @@ dialog.doc-modal::backdrop { background: color-mix(in srgb, #000 45%, transparen
 .case-actions-row { display: flex; align-items: center; padding: 2px; }
 .case-actions-row > * { width: 100%; }
 .case-actions-row button:not(.primary) { text-align: left; }
+
+/* --- easter eggs --- */
+@keyframes egg-fall {
+  from { transform: translateY(-1.4em); opacity: 0.9; }
+  to { transform: translateY(1.6em); opacity: 0; }
+}
+.egg-fall { display: inline-block; animation: egg-fall 2.6s linear infinite; }
+@keyframes egg-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.egg-spin { display: inline-block; animation: egg-spin 0.7s ease-in-out 1; }

@@ -1,5 +1,4 @@
 import "./globals.css";
-import Link from "next/link";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Nav } from "./_components/nav";
@@ -19,6 +18,14 @@ import { can, ROLE_RANK } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
 import { openFeatureRequestCount } from "./feature-requests/_lib/loader";
+import { occasionsFor } from "@/lib/eggs/occasions";
+import { effectiveEggDate } from "@/lib/eggs/effective-date";
+import { OccasionBanner } from "./_components/eggs/occasion-banner";
+import { KonamiEgg } from "./_components/eggs/konami-egg";
+import { ConsoleSignature } from "./_components/eggs/console-signature";
+import { NewYearEgg } from "./_components/eggs/new-year-egg";
+import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
+import { BrandTitle } from "./_components/eggs/brand-title";
 
 // Title template: each page sets its own title (e.g. "Agents") and the tab reads "Agents · iam-engine",
 // so people can tell pages apart from the title bar / tab strip.
@@ -56,6 +63,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Open-request count for the "Feature requests" menu badge. Cheap COUNT; only when the nav renders.
   const openFeatureRequests = loggedIn && !onLogin ? await openFeatureRequestCount() : 0;
 
+  // Easter eggs (see docs/superpowers/specs/2026-07-24-easter-eggs-design.md). The simulated_date
+  // cookie is honored only for the REAL super-admin (auth off = dev = synthetic super), and only
+  // decides which eggs render — nothing else reads it.
+  const isRealSuperAdmin = !authEnabled() || acting.realUser?.role === "super_admin";
+  const simCookie = cookies().get("simulated_date")?.value;
+  const eggDate = effectiveEggDate(simCookie, isRealSuperAdmin);
+  const eggs = loggedIn && !onLogin ? occasionsFor(eggDate) : { banner: null, bulbGlyph: "💡", newYear: false };
+  const simActive = isRealSuperAdmin && !!simCookie && eggDate === simCookie;
+
   return (
     <html lang="en" data-theme={theme}>
       <body>
@@ -64,7 +80,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <ServerWatchdog supervised={isSupervised()} />
         {!onLogin && (
           <header className="app-header">
-            <Link href="/clients" className="brand">iam-engine</Link>
+            <BrandTitle />
             <Nav
               showUsers={!authEnabled() || (!!user && can(user.role, "user.manage"))}
               showAudit={!authEnabled() || (!!user && can(user.role, "audit.view"))}
@@ -86,7 +102,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
                 showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
               />
-              {(!authEnabled() || !!user) && <FeatureRequestButton />}
+              {isRealSuperAdmin && !onLogin && <DateSimulatorButton current={simActive ? simCookie : undefined} />}
+              {(!authEnabled() || !!user) && <FeatureRequestButton glyph={eggs.bulbGlyph} />}
               <ThemeToggle dark={theme === "dark"} />
               <VersionToggle version={readSiteVersion(cookies().get(SITE_VERSION_COOKIE)?.value)} />
               {user && <UserMenu email={user.email} name={user.name} role={user.role} canImpersonate={canImpersonate} />}
@@ -95,6 +112,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         )}
         {acting.impersonating && user && <ImpersonationBanner name={user.name || user.email} role={user.role} />}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
+        {simActive && !onLogin && <SimulatedDateStrip date={eggDate} />}
+        {eggs.banner && <OccasionBanner banner={eggs.banner} />}
+        {loggedIn && !onLogin && (
+          <>
+            <KonamiEgg />
+            <ConsoleSignature />
+            {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
+          </>
+        )}
         {children}
       </body>
     </html>

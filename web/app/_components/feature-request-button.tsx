@@ -22,7 +22,7 @@ function Overlay({ onBackdropClick, children }: { onBackdropClick?: () => void; 
   );
 }
 
-export function FeatureRequestButton() {
+export function FeatureRequestButton({ glyph = "💡" }: { glyph?: string } = {}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -66,7 +66,7 @@ export function FeatureRequestButton() {
         onClick={() => setOpen(true)}
         style={{ padding: "0.15rem 0.4rem", fontSize: 14, lineHeight: 1 }}
       >
-        💡
+        {glyph}
       </button>
       {open && (
         <Overlay onBackdropClick={busy ? undefined : close}>
