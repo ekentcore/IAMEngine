@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@prisma/client";
-import { classifyM365Client, rollupFleetM365Test, type ClassifyTestInput } from "./fleet-m365-test";
+import { classifyM365Client, reapStaleM365ConnTests, rollupFleetM365Test, FLEET_M365_STALE_AFTER_MS, type ClassifyTestInput } from "./fleet-m365-test";
 import { GRAPH_OPTIONAL_CAPS, suggestedRole } from "@/lib/secrets/graph-caps";
 
 function okTest(systemKey = "m365"): ClassifyTestInput {
@@ -327,9 +327,54 @@ test("fleet sweep excludes noRunner clients", async () => {
   let captured: unknown;
   const fakeDb = {
     client: { findMany: async (args: unknown) => { captured = args; return rows; } },
-    connectionTest: { findMany: async () => [] },
+    connectionTest: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) },
     fleetM365TestRun: { findFirst: async () => null },
   } as unknown as PrismaClient;
   await rollupFleetM365Test(fakeDb, null);
   assert.equal((captured as { where: { noRunner: boolean } }).where.noRunner, false);
+});
+
+// The core fix for stuck "testing…": a pending test no runner ever claimed, or a running test whose
+// agent died, is reaped once it's older than the staleness window — the client then settles from the
+// tests that DID run (e.g. Agostino/Aurion: m365 + entra passed, the on-prem exchange test hung).
+test("reaper deletes only stale M365 pending/running tests, leaving fresh ones", async () => {
+  let captured: { where: unknown } | undefined;
+  const fakeDb = {
+    connectionTest: {
+      deleteMany: async (args: { where: unknown }) => { captured = args; return { count: 2 }; },
+    },
+  } as unknown as PrismaClient;
+
+  const reaped = await reapStaleM365ConnTests(fakeDb);
+  assert.equal(reaped, 2);
+
+  const where = captured!.where as {
+    systemKey: { in: string[] };
+    OR: [{ status: string; requestedAt: { lt: Date } }, { status: string; claimedAt: { lt: Date } }];
+  };
+  // Only the M365 family — never AD/other systems that other pages own.
+  assert.deepEqual(where.systemKey.in, ["m365", "entra", "exchange"]);
+  // Pending is aged by requestedAt (never claimed), running by claimedAt (claimed, never reported).
+  assert.equal(where.OR[0].status, "pending");
+  assert.equal(where.OR[1].status, "running");
+  // The cutoff is the staleness window in the past — a just-started test is younger and survives.
+  const cutoff = where.OR[0].requestedAt.lt.getTime();
+  const now = Date.now();
+  assert.ok(cutoff <= now - FLEET_M365_STALE_AFTER_MS + 2000, "cutoff is ~staleness window in the past");
+  assert.ok(cutoff > now - FLEET_M365_STALE_AFTER_MS - 5000, "cutoff is not wildly old");
+});
+
+// The roll-up must reap on every poll — that's what makes a stuck client self-heal on page load.
+test("rollup reaps stale tests before classifying", async () => {
+  let reapCalled = false;
+  const fakeDb = {
+    client: { findMany: async () => [] },
+    connectionTest: {
+      findMany: async () => [],
+      deleteMany: async () => { reapCalled = true; return { count: 1 }; },
+    },
+    fleetM365TestRun: { findFirst: async () => null },
+  } as unknown as PrismaClient;
+  await rollupFleetM365Test(fakeDb, null);
+  assert.ok(reapCalled, "rollupFleetM365Test called the reaper");
 });
