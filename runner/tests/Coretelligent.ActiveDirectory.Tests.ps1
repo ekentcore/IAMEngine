@@ -366,6 +366,43 @@ Describe 'Invoke-CtgADOffboarding' {
         $r.Evidence.ProtectedGroups | Should -Contain 'Tier0 Admins'
     }
 
+    # FR #36: the planner now injects hideFromGal={attribute,value} on ad_synced clients, so the
+    # hide write must be idempotent and must never abort the offboard on an AD without the
+    # on-prem Exchange schema (msExchHideFromAddressLists absent -> "properties are invalid").
+    It 'FR#36: skips the GAL write when the attribute already carries the value (idempotent re-run)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith {
+            [pscustomobject]@{ SamAccountName='jdoe'; msExchHideFromAddressLists=$true }
+        }
+        $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists'; value='TRUE' } }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match 'already hidden from GAL'
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.ContainsKey('msExchHideFromAddressLists') } -Times 0 -Exactly
+    }
+
+    It 'FR#36: writes the hide attribute when not yet hidden' {
+        $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists'; value='TRUE' } }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.ContainsKey('msExchHideFromAddressLists') } -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'hid from GAL: msExchHideFromAddressLists=TRUE'
+    }
+
+    It 'FR#36: a schema-missing hide attribute WARNs and continues — the disable still runs' {
+        Mock Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace.ContainsKey('msExchHideFromAddressLists') } -MockWith { throw 'Set-ADUser : One or more properties are invalid.' }
+        $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists'; value='TRUE' } }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match "WARN could not hide from GAL — msExchHideFromAddressLists isn't in this AD schema"
+        Should -Invoke Disable-ADAccount -ModuleName Coretelligent.ActiveDirectory -Times 1
+    }
+
+    It 'FR#36: defaults the hide value to TRUE when the config carries no value' {
+        $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists' } }
+        $r = Invoke-CtgADOffboarding -User $user -Config $config
+        Should -Invoke Set-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Replace -and $Replace['msExchHideFromAddressLists'] -eq 'TRUE' } -Times 1 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'hid from GAL: msExchHideFromAddressLists=TRUE'
+    }
+
     It 'protectPrivilegedGroups:false strips even privileged groups (opt-out)' {
         Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith {
             @([pscustomobject]@{ Name='Domain Admins'; DistinguishedName='CN=Domain Admins,CN=Users,DC=x' })
@@ -421,6 +458,30 @@ Describe 'Confirm-CtgAD' {
         $config = [pscustomobject]@{ disableAccount=$true; guardrails=@('do-not-move-ou'); disabledUsersOu='OU=Disabled,DC=x' }
         $r = Confirm-CtgAD -User $user -Config $config -Action 'offboard'
         ($r.checks | Where-Object { $_.name -eq 'not moved (do-not-move-ou)' }).pass | Should -BeFalse
+    }
+
+    It 'offboard: verifies hide-from-GAL against the CONFIGURED attribute, not a hardcoded msExch one (FR#36)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Users,DC=x'; Enabled=$false } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msDS-cloudExtensionAttribute1' } -MockWith {
+            [pscustomobject]@{ 'msDS-cloudExtensionAttribute1'='HideFromGAL' }
+        }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @() }
+        $config = [pscustomobject]@{ disableAccount=$true; hideFromGal=[pscustomobject]@{ attribute='msDS-cloudExtensionAttribute1'; value='HideFromGAL' }; guardrails=@('do-not-move-ou') }
+        $r = Confirm-CtgAD -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        ($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).pass | Should -BeTrue
+        Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msDS-cloudExtensionAttribute1' } -Times 1
+        Should -Invoke Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -Times 0 -Exactly
+    }
+
+    It 'offboard: SKIPS the hide check when the attribute is not in the schema (read throws) — verify must not loop the case (FR#36)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith { [pscustomobject]@{ DistinguishedName='CN=Jane Doe,OU=Users,DC=x'; Enabled=$false } }
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Properties -contains 'msExchHideFromAddressLists' } -MockWith { throw 'Get-ADUser : One or more properties are invalid.' }
+        Mock Get-ADPrincipalGroupMembership -ModuleName Coretelligent.ActiveDirectory -MockWith { @() }
+        $config = [pscustomobject]@{ disableAccount=$true; hideFromGal=[pscustomobject]@{ attribute='msExchHideFromAddressLists'; value='TRUE' }; guardrails=@('do-not-move-ou') }
+        $r = Confirm-CtgAD -User ([pscustomobject]@{ SamAccountName='jdoe' }) -Config $config -Action 'offboard'
+        $r.ok | Should -BeTrue
+        @($r.checks | Where-Object { $_.name -eq 'hidden from GAL' }).Count | Should -Be 0
     }
 
     It 'offboard: a kept privileged group does NOT fail the groups-removed check' {

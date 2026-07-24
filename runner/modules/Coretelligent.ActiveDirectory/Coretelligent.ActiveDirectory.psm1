@@ -665,12 +665,42 @@ function Invoke-CtgADOffboarding {
     }
 
     # 3. Hide from GAL ---------------------------------------------------------
+    # FR #36: on ad_synced clients the planner injects { attribute='msExchHideFromAddressLists',
+    # value='TRUE' } here (EXO refuses to modify a directory-synced mailbox, so the hide happens
+    # on-prem and syncs up). Hardened accordingly: the value defaults to TRUE, the write is
+    # read-first idempotent, and a schema-missing attribute (an AD without the on-prem Exchange
+    # schema) WARNs and CONTINUES — the manager clear / disable / OU move below must still run.
     $hide = Get-CtgProp $Config 'hideFromGal'
     if ($hide) {
         $attr = Get-CtgProp $hide 'attribute'; $val = Get-CtgProp $hide 'value'
+        if ($null -eq $val -or "$val" -eq '') { $val = 'TRUE' }
         if ($attr -and $PSCmdlet.ShouldProcess($sam, "Hide from GAL ($attr=$val)")) {
-            Set-ADUser -Identity $sam -Replace @{ $attr = $val } @AdConnection
-            $actions.Add("hid from GAL: $attr=$val")
+            # Read the current value first — a re-run (or an operator's manual hide) must not re-write.
+            # A failed read (schema missing) falls through to the write, whose catch owns the WARN.
+            $curHide = $null
+            try { $curHide = Get-CtgProp (Get-ADUser -Identity $sam -Properties $attr -ErrorAction Stop @AdConnection) $attr } catch { }
+            $alreadyHidden = ($null -ne $curHide) -and (
+                ("$curHide" -ieq "$val") -or (($curHide -is [bool]) -and $curHide -and ("$val" -ieq 'TRUE'))
+            )
+            if ($alreadyHidden) {
+                $actions.Add("already hidden from GAL ($attr)")
+            }
+            else {
+                try {
+                    Set-ADUser -Identity $sam -Replace @{ $attr = $val } -ErrorAction Stop @AdConnection
+                    $actions.Add("hid from GAL: $attr=$val")
+                }
+                catch {
+                    # "One or more properties are invalid" = the attribute isn't in this AD's schema.
+                    if ($_.Exception.Message -match '(?i)properties are invalid|no such attribute|attribute .* (does not exist|not found)') {
+                        $actions.Add("WARN could not hide from GAL — $attr isn't in this AD schema (no on-prem Exchange schema); hide manually or configure a custom attribute + Entra Connect rule")
+                    }
+                    else {
+                        $actions.Add("WARN could not hide from GAL ($attr): $($_.Exception.Message)")
+                    }
+                    Write-CtgADStep "✗ hide from GAL: $attr — $($_.Exception.Message)"
+                }
+            }
         }
     }
 
@@ -900,11 +930,20 @@ function Confirm-CtgAD {
         }
         $hide = Get-CtgProp $Config 'hideFromGal'
         if ($exists -and $hide -and (Get-CtgProp $hide 'attribute')) {
-            # Fetch the Exchange attr best-effort (see the read-back note) so a missing schema can't fail
-            # the whole validation — if it isn't queryable, treat "hidden" as not-yet-confirmed (false).
-            $hidden = $false
-            try { $hidden = [bool]((Get-ADUser -Identity $sam -Properties msExchHideFromAddressLists -ErrorAction Stop @AdConnection).msExchHideFromAddressLists) } catch { }
-            & $add 'hidden from GAL' $true $hidden
+            # FR #36: verify against the CONFIGURED attribute (it may be a custom one, e.g.
+            # msDS-cloudExtensionAttribute1 + an Entra Connect rule), compared to the configured
+            # value (truthy fallback for booleans / no value). Fetched best-effort: when the schema
+            # lacks the attribute the read throws — SKIP the check entirely then (the executor
+            # already WARNed, and a perpetually-red verify would loop the case).
+            $hideAttr = [string](Get-CtgProp $hide 'attribute')
+            $hideVal = [string](Get-CtgProp $hide 'value')
+            $hideReadable = $true; $curHide = $null
+            try { $curHide = Get-CtgProp (Get-ADUser -Identity $sam -Properties $hideAttr -ErrorAction Stop @AdConnection) $hideAttr } catch { $hideReadable = $false }
+            if ($hideReadable) {
+                $hidden = if ([string]::IsNullOrWhiteSpace($hideVal)) { [bool]$curHide }
+                          else { ("$curHide" -ieq $hideVal) -or (($curHide -is [bool]) -and $curHide -and ($hideVal -ieq 'TRUE')) }
+                & $add 'hidden from GAL' $true $hidden
+            }
         }
         # do-not-move-ou guardrail: the DN must NOT sit under the Disabled Users OU.
         $disabledOu = Get-CtgProp $Config 'disabledUsersOu'
