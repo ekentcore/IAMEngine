@@ -81,9 +81,10 @@ test("an ordinary day has no banner", () => {
 
 // ---- Stacking ----
 
-test("day-of greeting and eve banner stack (Dec 24 2026: Christmas eve + mid-Hanukkah greeting if table overlaps)", () => {
-  const banners = occasionsFor("2026-11-25").banners; // Thanksgiving eve 2026
-  assert.ok(banners.some((b) => b.kind === "holiday-eve"));
+test("a greeting and an eve banner stack for real (Dec 31 2026: New Year's eve + Kwanzaa)", () => {
+  const banners = occasionsFor("2026-12-31").banners;
+  assert.ok(banners.some((b) => b.kind === "holiday-eve" && b.message === "I HOPE YOU HAVE TOMORROW OFF FOR NEW YEAR'S DAY"));
+  assert.ok(banners.some((b) => b.kind === "greeting" && b.message === "JOYOUS KWANZAA"));
 });
 
 test("birthday stacks first when a greeting shares the day", () => {
