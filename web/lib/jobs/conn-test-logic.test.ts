@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isNotNeededForTest, parseRights, summarizeRights, testableSystems, type TestableSystemInput } from "./conn-test-logic";
 import { NOT_NEEDED } from "../cases/case-secrets";
+import { GRAPH_OPTIONAL_CAPS } from "../secrets/graph-caps";
 
 function sys(over: Partial<TestableSystemInput> & { systemKey: string }): TestableSystemInput {
   return { mode: "api", secretNames: ["s"], config: null, ...over };
@@ -173,6 +174,35 @@ test("parseRights: carries the optional flag through, only when true", () => {
   assert.equal(rows[0].optional, undefined);
   assert.equal(rows[1].optional, true);
   assert.equal(rows[2].optional, undefined);
+});
+
+// ── Flagless optional rows (core1747) ────────────────────────────────────────────────────────────
+// The runner's secret-scrub used to rebuild each rights row with only op/ok/detail, dropping the
+// `optional` flag on the wire — so a healthy credential missing 6 OPTIONAL caps rendered as a red
+// "✗ missing 6". The op strings ARE the graph-caps `need` strings, so the flag is derivable.
+
+test("parseRights: a flagless row whose op is a known optional Graph capability is derived optional (core1747)", () => {
+  const need = GRAPH_OPTIONAL_CAPS[0].need;
+  const rows = parseRights([
+    { op: "create / update users + assign licenses", ok: true, detail: "granted via User.ReadWrite.All" },
+    { op: need, ok: false, detail: `optional — grant ${GRAPH_OPTIONAL_CAPS[0].anyOf.join(" or ")} — …` },
+  ])!;
+  assert.equal(rows[0].optional, undefined, "a required op must never be derived optional");
+  assert.equal(rows[1].optional, true);
+});
+
+test("summarizeRights: stored flagless optional rows read as '+N optional', never as missing (core1747)", () => {
+  // Exactly the shape persisted for core1747: 11 rows, no `optional` keys — 5 granted, 6 optional missing.
+  const rows = [
+    { op: "create / update users + assign licenses", ok: true, detail: "granted via User.ReadWrite.All" },
+    { op: "add users to groups", ok: true, detail: "granted via Group.ReadWrite.All" },
+    { op: "read licenses / groups (SKUs)", ok: true, detail: "granted via Organization.Read.All" },
+    ...GRAPH_OPTIONAL_CAPS.slice(0, 6).map((c) => ({ op: c.need, ok: false, detail: `optional — grant ${c.anyOf.join(" or ")} — …` })),
+  ];
+  const s = summarizeRights(rows);
+  assert.equal(s.state, "verified", "a credential with every REQUIRED op granted must be green");
+  assert.equal(s.state === "verified" && s.total, 3);
+  assert.equal(s.state === "verified" && s.optionalMissing, 6);
 });
 
 // ── Over-permissioning ───────────────────────────────────────────────────────────────────────────
