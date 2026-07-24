@@ -447,6 +447,15 @@ test("offboard hide-from-GAL: AD attribute config takes over — exchange lane i
   assert.equal((cfgOf(out, "active-directory").hideFromGal as Record<string, unknown>).attribute, "msExchHideFromAddressLists");
 });
 
+test("offboard hide-from-GAL: when AD owns the hide, an explicit hideFromGal:true on the exchange lane is stamped false (no doomed EXO attempt)", () => {
+  const out = resolvePlannedConfigs(galClient, {}, "offboard", [
+    galJob("exchange", { hideFromGal: true }),
+    galJob("active-directory", { hideFromGal: { attribute: "msExchHideFromAddressLists", value: "TRUE" } }),
+  ]);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false); // overridden — EXO would WARN on the synced mailbox
+  assert.equal((cfgOf(out, "active-directory").hideFromGal as Record<string, unknown>).attribute, "msExchHideFromAddressLists");
+});
+
 test("offboard hide-from-GAL: bare hideFromGal:true on the AD lane does NOT count as AD-owned — exchange still hides", () => {
   const out = resolvePlannedConfigs(galClient, {}, "offboard", [galJob("exchange"), galJob("active-directory", { hideFromGal: true })]);
   assert.equal(cfgOf(out, "exchange").hideFromGal, true);
@@ -455,6 +464,54 @@ test("offboard hide-from-GAL: bare hideFromGal:true on the AD lane does NOT coun
 test("offboard hide-from-GAL: does nothing on onboard", () => {
   const out = resolvePlannedConfigs(galClient, {}, "onboard", [galJob("exchange")]);
   assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});
+
+// ── FR #0000036: ad_synced clients hide via the AD lane (EXO can't modify a synced mailbox) ─────
+const adSyncedGalClient = { backbone: "ad_synced" };
+
+test("offboard hide-from-GAL: ad_synced injects the AD attribute shape and exchange stands down", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange"), galJob("active-directory")]);
+  assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msExchHideFromAddressLists", value: "TRUE" });
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined); // AD owns it — INSTEAD of EXO, not in addition
+});
+
+test("offboard hide-from-GAL: ad_synced + per-case skipGalHide touches neither lane", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, { skipGalHide: true }, "offboard", [galJob("exchange"), galJob("active-directory")]);
+  assert.equal(cfgOf(out, "active-directory").hideFromGal, undefined);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: ad_synced preserves an explicit client AD attribute verbatim", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [
+    galJob("exchange"),
+    galJob("active-directory", { hideFromGal: { attribute: "msDS-cloudExtensionAttribute1", value: "HideFromGAL" } }),
+  ]);
+  assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msDS-cloudExtensionAttribute1", value: "HideFromGAL" });
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: ad_synced + exchange-lane opt-out means NO AD injection (not re-opted-in via AD)", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange", { hideFromGal: false }), galJob("active-directory")]);
+  assert.equal(cfgOf(out, "active-directory").hideFromGal, undefined);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false);
+});
+
+test("offboard hide-from-GAL: ad_synced upgrades a bare hideFromGal:true on the AD lane to the attribute shape", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange"), galJob("active-directory", { hideFromGal: true })]);
+  assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msExchHideFromAddressLists", value: "TRUE" });
+  assert.equal(cfgOf(out, "exchange").hideFromGal, undefined);
+});
+
+test("offboard hide-from-GAL: ad_synced + explicit hideFromGal:true on the exchange lane → AD injected, exchange stamped false", () => {
+  const out = resolvePlannedConfigs(adSyncedGalClient, {}, "offboard", [galJob("exchange", { hideFromGal: true }), galJob("active-directory")]);
+  assert.deepEqual(cfgOf(out, "active-directory").hideFromGal, { attribute: "msExchHideFromAddressLists", value: "TRUE" });
+  assert.equal(cfgOf(out, "exchange").hideFromGal, false);
+});
+
+test("offboard hide-from-GAL: entra backbone never injects on the AD lane (regression)", () => {
+  const out = resolvePlannedConfigs({ backbone: "entra" }, {}, "offboard", [galJob("exchange"), galJob("active-directory")]);
+  assert.equal(cfgOf(out, "active-directory").hideFromGal, undefined);
+  assert.equal(cfgOf(out, "exchange").hideFromGal, true);
 });
 
 // FR #25 — AD-synced clients must not create cloud accounts unless explicitly allowed. The planner

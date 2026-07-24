@@ -6,7 +6,7 @@
 import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
-import { hideFromGalOptedOut, adLaneHidesViaAttribute } from "./hide-from-gal";
+import { hideFromGalOptedOut, adLaneHidesViaAttribute, readHideFromGal } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = {
@@ -107,7 +107,7 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     return j;
   });
 
-  return injectHideFromGal(withDelegate, payload);
+  return injectHideFromGal(withDelegate, payload, client.backbone);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:
@@ -115,13 +115,38 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
 // Cloud GAL hide runs ONLY on the exchange lane — Graph can't set HiddenFromAddressListsEnabled, so
 // m365/entra are never touched here. When the AD lane carries a concrete hide ATTRIBUTE, AD owns the
 // hide (correct for directory-synced mailboxes) and exchange stands down to avoid the synced-object error.
-function injectHideFromGal(planned: PlannedJob[], payload: Record<string, unknown>): PlannedJob[] {
+// FR #0000036: on an ad_synced client EXO can't modify the directory-synced mailbox at all ("could not
+// hide from GAL — the mailbox is directory-synced" WARN), so the planner injects the AD attribute shape
+// the runner already honors — the hide happens on-prem and Entra Connect syncs it up. INSTEAD of the
+// EXO hide, not in addition: adOwnsHide is computed on the post-injection list.
+function injectHideFromGal(planned: PlannedJob[], payload: Record<string, unknown>, backbone?: string | null): PlannedJob[] {
   if (payload.skipGalHide === true) return planned;
-  const adOwnsHide = planned.some((j) => j.systemKey === "active-directory" && adLaneHidesViaAttribute(j.config));
-  return planned.map((j) => {
+  // First pass (ad_synced only): stamp the attribute shape on the AD job. An explicit client-configured
+  // attribute wins (never overwrite it); an opt-out on EITHER the AD or the exchange lane suppresses the
+  // injection (an exchange-lane opt-out must not be re-opted-in via AD); a bare `hideFromGal: true`
+  // already on the AD config is upgraded to the concrete shape (the only shape the AD module acts on).
+  const exchangeOptedOut = planned.some((j) => j.systemKey === "exchange" && hideFromGalOptedOut(j.config));
+  const withAdHide = backbone !== "ad_synced" ? planned : planned.map((j) => {
+    if (j.systemKey !== "active-directory") return j;
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    if (hideFromGalOptedOut(cfg) || exchangeOptedOut) return j;
+    if (adLaneHidesViaAttribute(cfg)) return j;
+    return { ...j, config: { ...cfg, hideFromGal: { attribute: "msExchHideFromAddressLists", value: "TRUE" } } };
+  });
+  const adOwnsHide = withAdHide.some((j) => j.systemKey === "active-directory" && adLaneHidesViaAttribute(j.config));
+  return withAdHide.map((j) => {
     if (j.systemKey === "exchange") {
       const cfg = (j.config as Record<string, unknown> | null) ?? {};
-      if (adOwnsHide) return j;
+      if (adOwnsHide) {
+        // AD owns the hide — but an explicit truthy hideFromGal left on the exchange lane would
+        // still fire a guaranteed-failing EXO attempt on the synced mailbox (WARN noise every
+        // offboard). Stamp it false so the runner skips it; both web and runner read `hideFromGal`
+        // before the `hideFromGAL` spelling, so this single key wins. An absent or already-false
+        // value needs nothing.
+        const explicit = readHideFromGal(cfg);
+        if (explicit === undefined || hideFromGalOptedOut(cfg)) return j;
+        return { ...j, config: { ...cfg, hideFromGal: false } };
+      }
       if (hideFromGalOptedOut(cfg)) return j;
       return { ...j, config: { ...cfg, hideFromGal: true } };
     }

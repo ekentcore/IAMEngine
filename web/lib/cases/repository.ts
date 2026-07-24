@@ -259,7 +259,7 @@ export function makeCaseRepository(db: PrismaClient) {
       | { serviceNowCaseNumber: string | null; action: Action; payload: Record<string, unknown>;
           emailDomainOverride: string | null;
           client: {
-            id: string; slug: string; primaryDomain: string;
+            id: string; slug: string; primaryDomain: string; backbone: string | null;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
             identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
             adObjects: unknown; cloudGroups: unknown;
@@ -275,7 +275,10 @@ export function makeCaseRepository(db: PrismaClient) {
           serviceNowCaseNumber: true, action: true, payload: true, emailDomainOverride: true,
           client: {
             select: {
-              id: true, slug: true, primaryDomain: true,
+              // `backbone` must stay in this select: the planner's ad_synced injections (the FR#36
+              // GAL-hide AD attribute and FR#25's cloudCreate deny) read client.backbone, and a
+              // re-plan without it would silently REVERT them on a freshly planned case.
+              id: true, slug: true, primaryDomain: true, backbone: true,
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
               identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
               adObjects: true, cloudGroups: true,
