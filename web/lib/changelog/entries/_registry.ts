@@ -64,6 +64,7 @@ export { entry as directorySyncAddsRunbookStep } from "./directory-sync-adds-run
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
 export { entry as documentsVersionedInApp } from "./documents-versioned-in-app";
+export { entry as easterEggs } from "./easter-eggs";
 export { entry as egnyteApiPasswordGrant } from "./egnyte-api-password-grant";
 export { entry as egnyteBrowserSetup } from "./egnyte-browser-setup";
 export { entry as engineOptOutHardening } from "./engine-opt-out-hardening";
@@ -113,6 +114,7 @@ export { entry as llmModelAwareRequests } from "./llm-model-aware-requests";
 export { entry as llmProviderApiVersionAndAsk } from "./llm-provider-api-version-and-ask";
 export { entry as llmProviderAzureForm } from "./llm-provider-azure-form";
 export { entry as locationGroupsPickerPrinters } from "./location-groups-picker-printers";
+export { entry as locationsActiveOnly } from "./locations-active-only";
 export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-core";
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
