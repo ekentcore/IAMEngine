@@ -4,7 +4,7 @@ IAM Engine Setup and Configuration Guide: exact permissions and steps, system by
 
 Companion to the IAM Engine client overview · Prepared for client IT and security teams
 
-Version 2.0 · 22 July 2026. This edition adds the automatic setup paths for Microsoft 365, Google Workspace, and six SaaS systems, and the Google key converter. See the version history at the end.
+Version 3.0 · 24 July 2026. This edition replaces the dry-run verification stage with the staged read-only checks, documents how optional permissions and not-needed systems report on connection tests, and corrects the Egnyte credential. See the version history at the end.
 
 ### About this guide
 
@@ -28,17 +28,18 @@ This guide is the practical companion to the IAM Engine overview. For each syste
 
 ### The setup wizard
 
-Configuration is not a spreadsheet exchange. Each system has a guided setup page in the application that walks through the vendor's own console, names the exact screens and the exact permissions, and then verifies the result in five stages:
+Configuration is not a spreadsheet exchange. Each system has a guided setup page in the application that walks through the vendor's own console, names the exact screens and the exact permissions, and then verifies the result in four stages:
 
 | Stage | What it proves |
 | --- | --- |
 | Wired | A vault reference exists for this system. |
 | Field check | The secret actually carries the fields this connector reads, before we try to use it. |
 | Connection test | A runner resolved the secret, connected to the live system, and performed one cheap authorized read. |
-| Rights probe | Each individual operation the automation will perform is probed and reported: create a user, add to a group, read licenses. Where a vendor exposes no way to introspect permissions, we say so rather than guess. |
-| Dry run | The real case, executed read-only against the real system, showing exactly what it would change. |
+| Rights probe | Each individual operation the automation will perform is probed and reported: create a user, add to a group, read licenses. An optional capability you chose not to grant is reported as optional, never as a failure. Where a vendor exposes no way to introspect permissions, we say so rather than guess. |
 
-A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure.
+(Earlier editions listed a fifth stage, a read-only dry run of the whole case. That mode is retired: the simulation switch it relied on suppresses the target system's real responses, so its report could disagree with a live run. The four stages above are all genuinely read-only against the live system.)
+
+A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure, and on the connection-test panel it appears as a read-only N/A row with no retest button rather than as an error.
 
 ### Automatic and manual setup
 
@@ -82,6 +83,8 @@ A Global Administrator user account cannot be used, and never will be able to be
 | Device.ReadWrite.All | Offboarding: disable the leaver's Entra-joined devices. Without it, their device objects stay enabled and the engine raises a warning. | If we disable devices |
 | Exchange.ManageAsApp | Exchange Online administration. Office 365 Exchange Online API, not Graph. Note this one is not sufficient on its own: the app's service principal must also hold the **Exchange Administrator** directory role, and Exchange Online app-only authenticates with a certificate rather than the client secret. | Only if Exchange is in scope |
 
+Required versus optional is honored in what you see: a connection test reports a missing optional capability as "+N optional", never as a red failure, so a deliberately narrow grant does not read as a broken one.
+
 By design, the application registration is not granted permission to grant itself permissions. It holds neither Application.ReadWrite.All nor AppRoleAssignment.ReadWrite.All. Adding a Graph permission is always a deliberate act by one of your administrators. This is a constraint we impose on ourselves.
 
 #### Exchange Online: certificate, not secret
@@ -117,6 +120,8 @@ The agent can run under an account that already holds the necessary rights, in w
 - Create user objects delegated on the target OU(s). This is genuinely probed. We read the OU's security descriptor and tell you, by name, if no access control entry grants the account that right, rather than letting you discover it on the first live onboard.
 
 - Modify, disable, and move rights on those OUs, for the offboard path.
+
+The connection test authenticates exactly the way a real job does: an agent running on a domain controller with ambient rights passes it — with a live directory read as proof — holding no stored credential at all. A wired AD credential is only ever used as a best-effort fallback for an agent on a member server that genuinely needs one.
 
 #### Directory sync
 
@@ -165,7 +170,7 @@ Each of these is set up once, and only if you use it. The application's setup gu
 | SentinelOne | API token (service user) | Settings, Users, Service Users, Create. A service user (not a personal login) with a role that can disconnect and shut down agents. Its API token, plus your management console URL. Offboard-only. |
 | Duo | Admin API, HMAC-signed | Applications, Protect an Application, Admin API, with both "Grant read resources" and "Grant write resources." Integration key, secret key, API hostname. Offboard-only. |
 | KnowBe4 | SCIM 2.0 bearer token | SAML SSO must be configured first; KnowBe4's REST API is read-only and cannot create users. Account Settings, User Management, SCIM, generate a SCIM bearer token. If you already provision KnowBe4 from Entra SCIM, you do not need this at all. |
-| Egnyte | OAuth2 bearer | An admin service account on your tenant, and your subdomain. (The API key is Coretelligent's and is reusable.) |
+| Egnyte | OAuth2 password grant (four fields) | An API key (the Client ID) and Client Secret for an app on your tenant, plus a dedicated admin login email and that account's password; the runner mints a short-lived bearer token from the four. The Egnyte domain is optional and derived from the login email. A pre-minted long-lived token also works in place of the four fields (it is what the automatic browser setup harvests). |
 | Jira / Atlassian | HTTP Basic: admin email and API token | An organization or user-access admin, their API token, and your site URL. Note each product granted consumes a paid seat. |
 | Salesforce | Connected App, OAuth 2.0 JWT bearer | App Manager, New Connected App, Enable OAuth, Use digital signatures, with a certificate you upload. Scopes: api, and refresh_token/offline_access. Permitted Users = "Admin approved users are pre-authorized." Consumer key, integration user, private key. No password is stored. |
 | HubSpot | Private app access token | A Super Admin creates Settings, Integrations, Private Apps, with settings.users.read and settings.users.write. The access token. |
@@ -194,5 +199,6 @@ For the narrative version of this material (what the platform does, how it works
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 3.0 | 24 July 2026 | Removed the dry-run verification stage — the mode is retired, and the four staged read-only checks are the verification. Documented optional-permission reporting ("+N optional", never a failure), not-needed systems as read-only N/A rows on connection tests, and the ambient-identity Active Directory connection test (an agent on a domain controller passes with no stored credential). Corrected the Egnyte credential to the Client ID + Client Secret + admin-login password grant, with a pre-minted token as the alternative. |
 | 2.0 | 22 July 2026 | Added automatic setup: Microsoft 365 and Google Workspace can now be provisioned end to end from a single administrator sign-in, and Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast gained an automatic browser-driven credential setup alongside the manual steps, which are unchanged. Documented the Google key converter for locked-down machines, and the setup-provenance record kept for every connector. |
 | 1.0 | 14 July 2026 | Initial version. |

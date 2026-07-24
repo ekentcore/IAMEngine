@@ -2,7 +2,7 @@
 
 IAM Engine Security Design: how the platform is secured, and why each decision was made
 
-Version 2.0 · 22 July 2026. This edition adds the security reasoning for automatic credential provisioning (section 3.6) and the client-lifecycle roles (section 7.3). The version history is at the end.
+Version 3.0 · 24 July 2026. This edition documents per-agent runner authentication (section 5.2), the retirement of the dry-run mode and the reasoning (section 8.2), the vault-subfolder guarantee for provisioned credentials (section 3.6), and the concurrency and drain controls (section 8.8); the roadmap in section 12 is updated. The version history is at the end.
 
 This document is written for the person whose job is to say no. It does not summarize our security controls; it explains the reasoning behind each one: what we were defending against, what we considered, what we chose, and what the choice costs. Where we have not finished something, it is in section 12, stated plainly.
 
@@ -122,6 +122,8 @@ An operator signs in once, with their own administrator account, to authorize th
 
 The credential the setup creates is written straight to the vault. The application records which credential and vault folder performed each setup, so the provenance of every connector is auditable; but that record is a reference too. It names the secret. It does not contain it.
 
+Where the credential is written matters as much as that it is vaulted. A provisioned credential always lands in a scoped subfolder of the client's vault folder, never the folder root — the root's narrower permissions would make the secret unreadable to the team that needs it, which is how a "successfully created" credential becomes an outage. Every create path resolves the subfolder first and hard-refuses if it cannot, or if the resolution lands on the root itself: a setup that cannot vault correctly stops and says so rather than degrading.
+
 ## 4. Why certificates for Microsoft 365
 
 This question comes up in every review, so it gets its own section.
@@ -196,6 +198,8 @@ We deliberately do not hold either of them, and we never will. This means that a
 
 This is a constraint we impose on ourselves, and we would encourage you to verify it rather than believe it. The consented permission list is visible to you, in your tenant, at any time, without our involvement.
 
+We also audit it from our side: a recurring fleet-wide sweep reads every client's app registration and flags any that holds an escalation-capable role, so a legacy registration that predates this constraint is surfaced for review rather than discovered in an incident. Flagged, never auto-removed — removing a permission is your decision, like granting one.
+
 ### 4.7 Expiry
 
 Client secrets expire. Certificates expire. An expiry that surprises you is an outage. The platform reads the expiry date from the vault and from the tenant itself, surfaces it on the client’s health view, and raises a notification ahead of the lapse, so rotation is a scheduled maintenance task rather than an incident. Rotation itself is currently a manual procedure; see section 12.
@@ -214,13 +218,15 @@ A token minted to enroll an agent for your organization can only ever enroll an 
 
 The signing key has no default value. If it is not configured, the platform refuses to mint or verify enrollment tokens at all rather than falling back to a known constant. A fallback would be worse than no control, because it would look like one.
 
-### 5.2 The runner API token
+### 5.2 The agent API token
 
 Once enrolled, an agent presents a bearer token on every call. It is baked into the installer at the point of generation and written to the machine environment so the service can read it.
 
-We will be precise about what this is and is not. It is a shared secret across the runner fleet, not a per-agent credential, and it is a bearer token, not a proof-of-possession one. Mutual TLS, where each agent presents a client certificate issued at enrollment, is the design we intend and have not yet shipped. It is in section 12. We are not going to describe the token as something it is not.
+As of this edition the token is per-agent, not fleet-shared. Each agent holds its own credential, and the token is the agent's identity: one agent's token cannot impersonate another, a misbehaving or compromised agent is cut off by revoking its token alone, and rotation is a per-agent, remote action from the application rather than a fleet-wide re-install. The application stores only a hash of each token, so a database disclosure yields nothing presentable.
 
-Retrieving that token inside the application is itself a privileged, audited action available only to senior administrators, and the audit records that it was retrieved and by whom, never the value.
+We will still be precise about what it is not: it is a bearer token, not a proof-of-possession credential. Mutual TLS, where each agent presents a client certificate issued at enrollment, remains the design we intend and have not yet shipped. It is in section 12.
+
+Retrieving a token inside the application is itself a privileged, audited action available only to senior administrators, and the audit records that it was retrieved and by whom, never the value.
 
 ### 5.3 The machine API fails closed
 
@@ -314,11 +320,11 @@ The threats in this section are not attackers. They are us: the platform doing s
 
 Every executor checks state before it changes it. A step re-run after a partial failure converges on the same end state rather than creating a duplicate, a conflict, or a second identity. This is what makes automatic retry safe, and a system that cannot safely retry is a system that fails half-way and leaves a human to work out what it did.
 
-### 8.2 Dry run
+### 8.2 Dry run is retired, and the reason matters
 
-Any case can be executed read-only. Every step connects for real, reads for real, and reports exactly what it would change, and writes nothing. This is the recommended first run for any newly configured client.
+Earlier editions described a dry-run mode and recommended it as the first run for a new client. We removed it. It ran executors under PowerShell's simulation switch, which suppresses the target system's real responses — so a dry run could report failures a live run would not produce, and imply confidence about behaviour it had not actually exercised. A safety control that can mislead is worse than the absence of one, because it teaches people to trust the wrong signal; by the principle in 2.5, it went.
 
-The mode is enforced at the moment a job is handed to a runner, reading from the case rather than a stamp on the job. That closes a real race: a job claimed while someone is toggling the mode cannot end up executing live against a case that is still marked dry-run.
+What replaces it is stronger where it counts. The staged verification at setup — a live connection with the real credential, then a per-operation rights probe — is genuinely read-only and genuinely exercises the live system. And every executor's own check-state-before-changing-it discipline (8.1) means the first live run converges on the intended state rather than assuming it.
 
 ### 8.3 The approval gate is at dispatch, not in the UI
 
@@ -360,7 +366,13 @@ Time arithmetic is done in absolute instants, so a server timezone or a daylight
 
 Each runner reports what it is actually able to do. A job whose requirements no available runner meets waits, with a stated reason, rather than being dispatched to a runner that will fail half-way through it. A step that fails part-way through an identity chain is a much worse outcome than a step that never started.
 
-### 8.8 Containment controls
+### 8.8 One run at a time against one tenant system
+
+Two jobs acting on the same client's same system concurrently can collide on a shared session — one run's sign-out or throttle surfacing as the other's failure, or a half-applied change from interleaved writes. An admission gate at the point work is handed out enforces at most one in-flight job per client-and-system, plus configurable fleet-wide and per-client ceilings, serialized with a database-level lock so the caps hold even when several runners claim in the same instant. A capped job is never failed; it stays pending and is picked up next. Operator side-actions — a password reset, a single-step re-run — are exempt, so the cap can never block a human intervening.
+
+Alongside it, a maintenance mode can drain the whole fleet: nothing new is dispatched, every runner finishes what it already holds, and the state is reported live until "fully drained." This is how the platform is moved between hosts without a job caught mid-flight, and it fails open — an absent or unreadable setting can never pause the fleet by accident.
+
+### 8.9 Containment controls
 
 | Control | Effect |
 | --- | --- |
@@ -393,7 +405,7 @@ The honest test of a design is not the list of its controls but what actually ha
 | If an attacker fully compromises... | What they get | What stops them |
 | --- | --- | --- |
 | The agent host in your network (SYSTEM on a domain controller) | The credentials for jobs executing on that host in that moment, and nothing else. No vault access. No standing credential. Nothing about any other client. | The runner holds no vault credentials and cannot reach the vault. Credentials are brokered per job, checked against job ownership and a per-job secret allowlist. An operator can disable the agent instantly, which cuts it off mid-flight. |
-| The runner API token | The ability to impersonate a runner: claim jobs and request the credentials for those specific jobs. This is the most valuable single artifact in the system, and we treat it that way. | It is disclosed only to senior administrators, and the disclosure is audited. Credentials are still constrained to jobs and their allowlists; the token does not open the vault. Per-agent credentials and mutual TLS are the fix, and are in section 12. |
+| One agent's API token | The ability to impersonate that one agent: claim the jobs it would be offered and request the credentials for those specific jobs. Not the fleet — tokens are per-agent, and one agent's token is no other agent's identity. | The application stores only a hash of it, and disclosure inside the application is restricted and audited. Credentials are still constrained to jobs and their allowlists; the token does not open the vault. Revoking or rotating that single token, remotely, cuts the attacker off without touching the rest of the fleet. Mutual TLS is the further step, in section 12. |
 | The application database | Your client configuration, case history, and a list of vault reference IDs. Not one credential. Not a replayable session. | Secrets are references only; the schema cannot hold a value. Sessions are stored as SHA-256 hashes. Operator passwords are scrypt-hashed. |
 | An operator's laptop / live session | That operator's permissions, on that operator's clients, for up to 12 hours. | Per-client scoping is a server boundary. Destructive steps still need an approval the operator may not hold. Disabling the user revokes every session atomically. Every action they take is attributed to them in the audit log. |
 | One SaaS credential (say, your Zoom app) | Zoom. That is the whole blast radius. | Each system has its own credential, scoped to that system, in its own vault entry. There is no master credential, and no credential that unlocks a second system. |
@@ -431,12 +443,12 @@ Everything above is implemented and in force today. This section is what is not,
 | Item | Where we are | Priority |
 | --- | --- | --- |
 | Cryptographically signed runner bundles. The agent should verify a signature over the code it is about to execute, rather than trusting the channel it arrived on. | Not shipped. The update channel is token-authenticated and TLS-encrypted, and the file endpoint is traversal-guarded, but the agent cannot independently verify integrity. See section 11.2. | Highest. In progress. |
-| Mutual TLS and per-agent credentials. Each agent should present its own client certificate, issued at enrollment, instead of a bearer token shared across the fleet. | Not shipped. Enrollment is already bound per-client by a signed, short-lived token; that half is done. The per-agent identity half is not. | High |
-| Encrypted database backups. Nightly backups are compressed but not encrypted at rest, and are held on the application host. | Not shipped. | High, and cheap. Being fixed now. |
-| Automated credential rotation. Rotating the runner token today is a configuration change plus a re-run of the installer on each host. | Not shipped. Expiry of tenant credentials is monitored and alerted; see section 4.7. | Medium |
+| Mutual TLS. Each agent should present a client certificate issued at enrollment, making its credential proof-of-possession rather than bearer. | The per-agent half of this item shipped: agents now authenticate with individual tokens, hashed at rest, revocable and rotatable per agent, remotely (section 5.2). The client-certificate half is not shipped. | High |
+| Encrypted database backups. Nightly backups are compressed but not encrypted at rest. | Partially addressed: a weekly restore drill now proves each dump actually restores (schema, row counts, referential integrity, into an isolated scratch database) and alerts loudly when it does not, and off-box copies to Azure Blob Storage with end-to-end checksums are built but disabled until the cloud cutover. Encryption at rest is still not shipped. | High, and cheap. |
+| Automated credential rotation. | Agent tokens now rotate remotely, per agent, from the application — no installer re-run. Rotation of tenant credentials (client secrets, certificates) remains a manual procedure; expiry is monitored and alerted, see section 4.7. | Medium |
 | Rate limiting and account lockout on the operator sign-in endpoint. Failed sign-ins are audited with the source address, but nothing throttles them. | Not shipped. The exposure is limited to break-glass local accounts; SSO accounts cannot be password-attacked through this path at all. | Medium, and cheap. |
 | A data retention policy. The ServiceNow intake payload, which contains personal data about your employees, is currently retained for the life of the case record, with no scheduled minimization after the case completes. | Not shipped. We are defining a policy that scrubs the personal fields once a case is closed and the automation no longer needs them, while retaining the audit trail and outcome. | Medium. See section 13. |
-| Azure hosting with a managed TLS certificate and platform secrets in Azure Key Vault via managed identity. | Roadmap; the next scheduled infrastructure work. | Medium |
+| Azure hosting with a managed TLS certificate and platform secrets in Azure Key Vault via managed identity. | In progress. The database now runs on Azure managed Postgres, and the application move is sequenced behind a guided, verified, reversible cutover console with a go-live preflight that checks migrations, agent convergence, credentials, and backups before the first real case. | Medium |
 
 ## 13. Data handling
 
@@ -482,5 +494,6 @@ Questions, and any control in this document you would like evidenced rather than
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 3.0 | 24 July 2026 | Runners now authenticate with per-agent tokens, hashed at rest and rotatable remotely; sections 5.2, 10, and 12 updated accordingly. Retired the dry-run mode and documented the reasoning (section 8.2). Added the vault-subfolder guarantee for provisioned credentials (section 3.6), the fleet-wide escalation-role audit (section 4.6), and the concurrency and drain controls (section 8.8). Section 12 updated: restore drills prove backups restorable and off-box copies are built; the Azure move is in progress behind a verified cutover. No control described in the previous edition was weakened. |
 | 2.0 | 22 July 2026 | Added the security reasoning for automatic credential provisioning (section 3.6): the platform can now create a credential in your systems and vault it, and does so holding a reference and never a value, with the browser-setup safeguards stated. Documented the two client-lifecycle roles and archiving as its own separated permission (section 7.3). No control described in the previous edition was weakened; the roadmap in section 12 is unchanged. |
 | 1.0 | 14 July 2026 | Initial version, for client security review. |
