@@ -1680,3 +1680,59 @@ Describe 'license service-plan dependency handling' {
         }
     }
 }
+
+Describe 'Invoke-CtgM365Offboarding admin-account (-a) sweep' {
+    BeforeEach {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true } }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserRegisteredDevice -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Update-MgDevice -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserAuthenticationMethod -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgUserManager -ModuleName Coretelligent.M365 -MockWith { $null }
+        Mock Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+    }
+
+    It 'disables the -a account the same way when it exists' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { "$Filter" -match 'jdoe-a@x\.com' } -MockWith {
+            [pscustomobject]@{ Id = 'uid-a'; UserPrincipalName = 'jdoe-a@x.com'; AccountEnabled = $true }
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; adminAccountSuffix = '-a' }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        $r.UserId | Should -Be 'uid-1'   # the primary stays authoritative on the result
+        ($r.Actions -join "`n") | Should -Match 'admin account check: found jdoe-a@x\.com'
+        ($r.Actions -join "`n") | Should -Match '\[jdoe-a@x\.com\]'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 2 -Exactly -ParameterFilter { $AccountEnabled -eq $false }
+        Should -Invoke Revoke-MgUserSignInSession -ModuleName Coretelligent.M365 -Times 2 -Exactly
+    }
+
+    It 'reports plainly when there is no -a account, and never offers candidates for it' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { "$Filter" -match 'jdoe-a@x\.com' } -MockWith { $null }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; adminAccountSuffix = '-a' }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join "`n") | Should -Match 'admin account check: no jdoe-a@x\.com'
+        $r.PSObject.Properties['Candidates'] | Should -BeNullOrEmpty
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $AccountEnabled -eq $false }
+    }
+
+    It 'strips the license/mailbox/OneDrive machinery from the -a pass' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { "$Filter" -match 'jdoe-a@x\.com' } -MockWith {
+            [pscustomobject]@{ Id = 'uid-a'; UserPrincipalName = 'jdoe-a@x.com'; AccountEnabled = $true }
+        }
+        $cfg = [pscustomobject]@{ blockSignIn = $true; adminAccountSuffix = '-a'; removeLicense = [pscustomobject]@{}; oneDriveBackup = [pscustomobject]@{ target = 'archives@x.com' } }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $cfg -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        # the -a pass must never mention license or OneDrive work — those keys are not passed down
+        ($r.Actions -join "`n") | Should -Not -Match '\[jdoe-a@x\.com\].*(license|DECISION|OneDrive)'
+    }
+
+    It 'does nothing extra when adminAccountSuffix is not configured' {
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
+        ($r.Actions -join "`n") | Should -Not -Match 'admin account'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $AccountEnabled -eq $false }
+    }
+}

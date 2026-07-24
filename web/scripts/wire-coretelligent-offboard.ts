@@ -54,7 +54,7 @@ const SPECS: Spec[] = [
   { systemKey: "exchange", mode: "api", secretNames: ["m365-admin", "exchange-onprem"], dependsOn: [],
     captureEvidence: true,
     config: { convertToShared: { skipIfMailboxOverGB: 50 }, delegateManagerFullAccess: true,
-              blockMobileDevices: true, onPremExchangeUri: ON_PREM_EXCHANGE_URI } },
+              blockMobileDevices: true, adminAccountSuffix: "-a", onPremExchangeUri: ON_PREM_EXCHANGE_URI } },
 
   // 2. Push the on-prem changes (AD disable + group/licensing-group removals) to the cloud. Runs
   //    AFTER active-directory so it actually carries those removals — that's what drops the
@@ -63,8 +63,11 @@ const SPECS: Spec[] = [
   { systemKey: "directory-sync", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange", "active-directory"], config: { host: AZSYNC_HOST } },
 
   // 3. Entra: block sign-in + revoke sessions + disable & capture the registered device(s).
+  //    adminAccountSuffix: the -a admin-account sweep — derive <local>-a@<domain> from the resolved
+  //    primary and disable it the same way. On entra, NOT m365 (same executor; the m365 lane owns the
+  //    license machinery and the sweep must stay out of it).
   { systemKey: "entra", mode: "api", secretNames: ["m365-admin"], dependsOn: ["exchange"], captureEvidence: true,
-    config: { blockSignIn: true, revokeSessions: true, disableDevices: true, captureDevices: true, removeAllGroups: true } },
+    config: { blockSignIn: true, revokeSessions: true, disableDevices: true, captureDevices: true, removeAllGroups: true, adminAccountSuffix: "-a" } },
 
   // 4. M365: remove the license (after the mailbox is safely shared).
   { systemKey: "m365", mode: "api", secretNames: ["m365-admin"], dependsOn: ["exchange"],
@@ -74,7 +77,7 @@ const SPECS: Spec[] = [
   //    licensing group), disable + move the computer. Runs after exchange; the sync follows IT.
   { systemKey: "active-directory", mode: "api", secretNames: ["ad-dc"], dependsOn: ["exchange"],
     captureEvidence: true,
-    config: { resetPassword: true, removeAllGroups: true, disableAccount: true,
+    config: { resetPassword: true, removeAllGroups: true, disableAccount: true, adminAccountSuffix: "-a",
               disabledUsersPrimaryGroup: DISABLED_USERS_GROUP, disabledUsersOu: DISABLED_USERS_OU,
               disableComputer: true, disabledComputersOu: DISABLED_COMPUTERS_OU } },
 
