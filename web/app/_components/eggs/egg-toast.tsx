@@ -1,13 +1,17 @@
 "use client";
 
 // Tiny fixed toast used by the egg components (Konami, New Year). Self-dismisses.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 export function EggToast({ message, onDone }: { message: string; onDone: () => void }) {
+  const done = useRef(onDone);
+  done.current = onDone;
+  // Mount-once: parents pass inline callbacks, and a dependency on them would
+  // reset the dismiss timer on every parent re-render.
   useEffect(() => {
-    const t = setTimeout(onDone, 6000);
+    const t = setTimeout(() => done.current(), 6000);
     return () => clearTimeout(t);
-  }, [onDone]);
+  }, []);
   return (
     <div
       role="status"
