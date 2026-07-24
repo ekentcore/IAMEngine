@@ -20,6 +20,7 @@ BeforeAll {
     function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled, $Type) }
     function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
     function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
+    function global:Get-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User) }
     function global:Get-Mailbox { [CmdletBinding()] param($Identity, $RecipientTypeDetails, $ResultSize) }
     # distribution-list mirror (EXO)
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
@@ -189,6 +190,50 @@ Describe 'Invoke-CtgExchangeMailboxAudit' {
         $r = Invoke-CtgExchangeMailboxAudit -Upn 'new.user@x.com' -Config $cfg
         ($r -join "`n") | Should -Match 'WARN'
         Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0
+    }
+}
+
+Describe 'Invoke-CtgExchangeCalendarReviewers' {
+    BeforeEach {
+        Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { $null }
+    }
+
+    It 'grants each configured reviewer on the calendar' {
+        $rs = @([pscustomobject]@{ user = 'calendar.delegate.reviewer@logicsource.com'; accessRights = 'Reviewer' })
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'new.user@logicsource.com' -Reviewers $rs
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Identity -eq 'new.user@logicsource.com:\Calendar' -and $User -eq 'calendar.delegate.reviewer@logicsource.com' -and $AccessRights -eq 'Reviewer' }
+        ($r -join "`n") | Should -Match 'granted calendar.delegate.reviewer@logicsource.com Reviewer on calendar'
+    }
+
+    It 'skips a grant the user already holds (idempotent)' {
+        Mock Get-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ User = 'calendar.delegate.reviewer@logicsource.com'; AccessRights = @('Reviewer') } }
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'calendar.delegate.reviewer@logicsource.com' })
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 0
+        ($r -join "`n") | Should -Match 'already holds Reviewer on calendar'
+    }
+
+    It 'falls back to Reviewer for an unlisted accessRights value' {
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'd@x.com'; accessRights = 'Owner' })
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $AccessRights -eq 'Reviewer' }
+        ($r -join "`n") | Should -Match 'WARN.*unrecognized accessRights .Owner.'
+    }
+
+    It 'accepts a bare-string entry as a user with the default right' {
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @('plain@x.com')
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'plain@x.com' -and $AccessRights -eq 'Reviewer' }
+    }
+
+    It 'does nothing when Reviewers is empty or absent' {
+        (Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @()).Count | Should -Be 0
+        (Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com').Count | Should -Be 0
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 0
+    }
+
+    It 'WARNs (not throws) when the grant fails' {
+        Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { throw 'user not found' }
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'ghost@x.com' })
+        ($r -join "`n") | Should -Match 'WARN calendar reviewer grant failed for ghost@x.com'
     }
 }
 
