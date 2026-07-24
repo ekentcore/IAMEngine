@@ -23,6 +23,8 @@ type Preview = {
   existingCount: number;
 };
 type CopyResult = { tables: number; durationMs: number };
+type TableComparison = { table: string; sourceRows: number | null; destRows: number | null; match: boolean };
+type Comparison = { sourceLabel: string; destLabel: string; rows: TableComparison[]; allMatch: boolean; mismatches: number };
 type DestForm = { host: string; port: string; user: string; database: string; schema: string; password: string; sslmode: "disable" | "require" };
 
 // Default the toggle ON: the primary destination is managed Postgres (Azure), which refuses non-TLS
@@ -50,6 +52,8 @@ export function DbCopyView() {
   const [showPw, setShowPw] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migrateOutput, setMigrateOutput] = useState<string | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [comparison, setComparison] = useState<Comparison | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -143,6 +147,26 @@ export function DbCopyView() {
     }
   };
 
+  const compare = async () => {
+    setComparing(true);
+    setError(null);
+    setComparison(null);
+    try {
+      const res = await fetch("/api/tools/db-copy/compare", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!data.ok) setError(data.error ?? "compare failed");
+      else setComparison(data.comparison as Comparison);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setComparing(false);
+    }
+  };
+
   const destOk = !!probe?.dest.ok && !!probe?.source.ok;
   const canTest = form.host.trim() && form.user.trim() && form.database.trim() && form.password && !testing && !running;
   const canRun = destOk && !!preview && !preview.sameTarget && preview.missingCount === 0 && confirm.trim() === preview.destDbName && !running;
@@ -231,6 +255,9 @@ export function DbCopyView() {
             <button onClick={() => void migrate()} disabled={!destOk || migrating || running || testing} title="Runs `prisma migrate deploy` against the destination to create its schema">
               {migrating ? "Building schema…" : "Build schema (migrate)"}
             </button>
+            <button onClick={() => void compare()} disabled={!destOk || comparing || running || testing || migrating} title="Read-only: compares exact per-table row counts, source vs destination">
+              {comparing ? "Comparing…" : "Compare tables"}
+            </button>
           </div>
           {probe?.dest && (
             <div style={{ marginTop: 10 }}>
@@ -249,6 +276,45 @@ export function DbCopyView() {
         <div style={{ ...box, borderColor: errFg }}>
           <strong>Couldn&apos;t {running ? "copy" : "test"}.</strong>
           <p style={{ margin: "6px 0 0", ...mono }}>{error}</p>
+        </div>
+      )}
+
+      {comparison && (
+        <div style={box}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <strong style={{ fontSize: 14 }}>Row-count comparison</strong>
+            <span style={{ fontSize: 13, color: comparison.allMatch ? okFg : errFg }}>
+              {comparison.allMatch
+                ? `✓ all ${comparison.rows.length} table(s) match`
+                : `✗ ${comparison.mismatches} of ${comparison.rows.length} table(s) differ`}
+            </span>
+          </div>
+          <div style={{ maxHeight: 320, overflow: "auto", marginTop: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", ...mono }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: muted }}>
+                  <th style={{ padding: "6px 12px" }}>Table</th>
+                  <th style={{ padding: "6px 12px", textAlign: "right" }}>Source</th>
+                  <th style={{ padding: "6px 12px", textAlign: "right" }}>Destination</th>
+                  <th style={{ padding: "6px 12px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.rows.map((r) => (
+                  <tr key={r.table} style={{ borderTop: "1px solid var(--border, #2a2a2a)", color: r.match ? undefined : errFg }}>
+                    <td style={{ padding: "5px 12px" }}>{r.table}</td>
+                    <td style={{ padding: "5px 12px", textAlign: "right" }}>{r.sourceRows ?? "—"}</td>
+                    <td style={{ padding: "5px 12px", textAlign: "right" }}>{r.destRows ?? "—"}</td>
+                    <td style={{ padding: "5px 12px" }}>{r.match ? "✓" : "✗"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ margin: "8px 0 0", fontSize: 12, color: muted }}>
+            Exact <code>count(*)</code> per table (not estimates). The Prisma migration ledger is excluded. A dash means the
+            table is absent on that side.
+          </p>
         </div>
       )}
 

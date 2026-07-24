@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { Client } from "pg";
 import { findPgBin, sanitizeError } from "@/lib/jobs/db-backup";
 import { type PgConn, pgChildEnv, connLabel, sameTarget, pgSsl } from "./config";
-import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE } from "./plan";
+import { classifyTables, dumpTableArgs, truncateStatement, shortVersion, PG_DUMP_BASE, qualified } from "./plan";
 import { dumpLineFilter } from "./dump-filter";
 
 // Prisma's migration ledger — copying it would stamp the destination with the source's migration
@@ -49,6 +49,40 @@ async function approxRowCounts(client: Client, schema: string): Promise<Map<stri
     [schema],
   );
   return new Map(rows.map((r) => [r.relname, Math.max(0, Number(r.n))]));
+}
+
+/** EXACT row counts (SELECT count(*)) per table — unlike approxRowCounts (pg_class.reltuples), these
+ * are real and don't read 0 right after a restore before ANALYZE runs. Used by the Compare feature. */
+async function exactRowCounts(client: Client, schema: string, tables: string[]): Promise<Map<string, number>> {
+  const m = new Map<string, number>();
+  for (const t of tables) {
+    const { rows } = await client.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${qualified(schema, t)}`);
+    m.set(t, Number(rows[0]?.n ?? 0));
+  }
+  return m;
+}
+
+export type TableComparison = { table: string; sourceRows: number | null; destRows: number | null; match: boolean };
+export type ComparisonResult = { sourceLabel: string; destLabel: string; rows: TableComparison[]; allMatch: boolean; mismatches: number };
+
+/** Pure: join source & destination row-count maps into a per-table comparison (union of both sides). */
+export function buildComparison(source: Map<string, number>, dest: Map<string, number>): { rows: TableComparison[]; allMatch: boolean; mismatches: number } {
+  const names = Array.from(new Set([...source.keys(), ...dest.keys()])).sort();
+  const rows: TableComparison[] = names.map((table) => {
+    const sourceRows = source.has(table) ? source.get(table)! : null;
+    const destRows = dest.has(table) ? dest.get(table)! : null;
+    return { table, sourceRows, destRows, match: sourceRows !== null && destRows !== null && sourceRows === destRows };
+  });
+  const mismatches = rows.filter((r) => !r.match).length;
+  return { rows, allMatch: mismatches === 0, mismatches };
+}
+
+/** Compare source vs destination by EXACT per-table row counts (excludes the Prisma ledger). Read-only. */
+export async function compareTables(source: PgConn, dest: PgConn): Promise<ComparisonResult> {
+  const srcCounts = await withClient(source, async (c) => exactRowCounts(c, source.schema, await listTables(c, source.schema)));
+  const destCounts = await withClient(dest, async (c) => exactRowCounts(c, dest.schema, await listTables(c, dest.schema)));
+  const { rows, allMatch, mismatches } = buildComparison(srcCounts, destCounts);
+  return { sourceLabel: connLabel(source), destLabel: connLabel(dest), rows, allMatch, mismatches };
 }
 
 export type ConnHealth = { ok: boolean; label: string; server?: string; tableCount?: number; error?: string };
