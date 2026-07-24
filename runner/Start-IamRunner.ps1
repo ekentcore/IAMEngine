@@ -646,6 +646,20 @@ function Use-CtgGoogleSecret {
         $clientIdField = & $pick @('ClientID')
         if ($clientIdField) { $customer = $clientIdField }
     }
+    if ($customer) {
+        # Validate what we resolved: a real Workspace customer id is C + alphanumerics (C0123abcd;
+        # Admin Console → Account settings), or the literal my_customer. In the wild the template's
+        # ClientID field frequently holds the service account's NUMERIC OAuth client_id instead —
+        # the Directory API then 400s "Invalid Input" and the connection test dies on valid creds
+        # (FR#35, UOVO Art). Fall back to my_customer with a WARN so the fleet self-heals; a genuine
+        # reseller-style C… value still passes through. Never log the full raw value.
+        $customer = ([string]$customer).Trim()
+        if ($customer -ne 'my_customer' -and $customer -notmatch '^[Cc][0-9a-zA-Z]{4,}$') {
+            $scrub = if ($customer.Length -gt 4) { $customer.Substring(0, 4) } else { $customer }
+            Write-CtgLog "google: the google-admin secret's ClientID/CustomerId value '$scrub…' ($($customer.Length) chars) doesn't look like a Workspace customer id (C0… from Admin Console → Account settings) — using my_customer instead. The service account's numeric OAuth client ID belongs on the DWD authorization screen, not in this field." 'WARN'
+            $customer = 'my_customer'
+        }
+    }
     if (-not $customer) { $customer = 'my_customer' }
     $scopesRaw = & $pick @('Scopes', 'Scope')
     $scopes = if ($scopesRaw) { @($scopesRaw -split '[,\s]+' | Where-Object { $_ }) } else { @() }

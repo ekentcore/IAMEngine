@@ -36,6 +36,9 @@ BeforeAll {
         }
     }
 
+    # The customer-id validation warns through the runner's log seam — capture it.
+    function Write-CtgLog { param([Parameter(Position = 0)]$Message, [Parameter(Position = 1)]$Level) $script:Warned = "$Message" }
+
     # Build the shape Get-JobCredential hands the executors: .Fields plus .Username.
     function New-GoogleCreds {
         param([hashtable]$Fields, [string]$Username)
@@ -169,6 +172,73 @@ Describe 'Use-CtgGoogleSecret — existing shapes keep working (no regression)' 
     It 'throws when the job brokered no google-admin secret at all' {
         { Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds @{} } |
             Should -Throw -ExpectedMessage "*did not broker a 'google-admin' secret*"
+    }
+}
+
+Describe 'Use-CtgGoogleSecret — customer id validation (FR#35)' {
+
+    # The Automation - API template's ClientID field is SUPPOSED to hold the Workspace customer id
+    # (C0… from Admin Console → Account settings), but in the wild it frequently holds the service
+    # account's numeric OAuth client_id instead (UOVO Art, secret 57051) — the Directory API then
+    # 400s "Invalid Input". A value that doesn't look like a customer id must self-heal to
+    # my_customer with a WARN, never take down the connection test.
+
+    BeforeEach { $script:Connected = $null; $script:Warned = $null }
+
+    It 'falls back to my_customer with a WARN when ClientID holds a numeric OAuth client id' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = '104857200000000012345'   # 21-digit SA OAuth client_id, NOT a customer id
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -Match 'customer id'
+        $script:Warned | Should -Not -Match '104857200000000012345'   # never log the full raw value
+    }
+
+    It 'falls back to my_customer with a WARN when the value contains an @ (an email, not a customer id)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = 'admin@client.com'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -Match 'customer id'
+    }
+
+    It 'passes a real Workspace customer id through untouched, with no WARN' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            ClientID     = 'C01ab2cd3'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'C01ab2cd3'
+        $script:Warned | Should -BeNullOrEmpty
+    }
+
+    It 'CustomerId field still takes precedence over ClientID (regression)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+            CustomerId   = 'C0aaaa111'
+            ClientID     = 'C0bbbb222'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'C0aaaa111'
+        $script:Warned | Should -BeNullOrEmpty
+    }
+
+    It 'still defaults to my_customer when no customer fields exist, with no WARN (regression)' {
+        $creds = New-GoogleCreds @{
+            ClientSecret = ConvertTo-B64 (New-FakeSaJson)
+            apiURL       = 'super-admin@client.com'
+        }
+        Use-CtgGoogleSecret -Job ([pscustomobject]@{}) -Creds $creds
+        $script:Connected.CustomerId | Should -Be 'my_customer'
+        $script:Warned | Should -BeNullOrEmpty
     }
 }
 

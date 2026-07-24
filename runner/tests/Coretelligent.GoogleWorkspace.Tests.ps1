@@ -328,3 +328,68 @@ Describe 'Connect-CtgGoogle session scopes' {
         @(Get-CtgGoogleSessionScopes) | Should -HaveCount 0
     }
 }
+
+Describe 'Invoke-CtgGoogleApi — error body surfacing (FR#35)' {
+    # A bare "Response status code does not indicate success: 400 (Bad Request)" hides Google's
+    # actual reason ("Invalid Input: …"), which PowerShell parks on $_.ErrorDetails.Message —
+    # never on the exception. The rethrow must carry it. 404 semantics stay exactly as before.
+
+    BeforeAll {
+        Connect-CtgGoogle -AccessToken 'ya29.test-token'
+
+        function script:New-HttpErrorRecord {
+            param([int]$Status, [string]$StatusText, [string]$Body)
+            $resp = [System.Net.Http.HttpResponseMessage]::new($Status)
+            $ex = [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+                "Response status code does not indicate success: $Status ($StatusText).", $resp)
+            $er = [System.Management.Automation.ErrorRecord]::new(
+                $ex, 'WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeRestMethodCommand',
+                [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+            if ($Body) { $er.ErrorDetails = [System.Management.Automation.ErrorDetails]::new($Body) }
+            $er
+        }
+    }
+
+    It 'appends Google''s reason from ErrorDetails to a 400 instead of the bare status line' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            throw (New-HttpErrorRecord -Status 400 -StatusText 'Bad Request' -Body '{"error":{"code":400,"message":"Invalid Input: 104857200000000012345","errors":[{"reason":"invalid"}]}}')
+        }
+        $thrown = $null
+        try { Invoke-CtgGoogleApi -Method GET -Path '/users?customer=104857200000000012345&maxResults=1' } catch { $thrown = $_ }
+        $thrown | Should -Not -BeNullOrEmpty
+        $thrown.Exception.Message | Should -Match '400'
+        $thrown.Exception.Message | Should -Match 'Invalid Input'
+    }
+
+    It 'truncates an oversized response body instead of dumping it wholesale' {
+        $huge = 'X' * 2000
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            throw (New-HttpErrorRecord -Status 400 -StatusText 'Bad Request' -Body "{`"error`":{`"code`":400,`"message`":`"$huge`"}}")
+        }
+        $thrown = $null
+        try { Invoke-CtgGoogleApi -Method GET -Path '/users?maxResults=1' } catch { $thrown = $_ }
+        $thrown.Exception.Message.Length | Should -BeLessThan 500
+    }
+
+    It 'still returns $null on a 404 GET (not-found contract unchanged)' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            throw (New-HttpErrorRecord -Status 404 -StatusText 'Not Found' -Body '{"error":{"code":404,"message":"Resource Not Found: userKey"}}')
+        }
+        Invoke-CtgGoogleApi -Method GET -Path '/users/missing@x.com' | Should -BeNullOrEmpty
+    }
+
+    It 'a 404 with -ThrowOn404 still throws (action-POST contract unchanged)' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            throw (New-HttpErrorRecord -Status 404 -StatusText 'Not Found' -Body '{"error":{"code":404,"message":"Resource Not Found: userKey"}}')
+        }
+        { Invoke-CtgGoogleApi -Method POST -Path '/users/missing@x.com/signOut' -ThrowOn404 } | Should -Throw
+    }
+
+    It 'rethrows untouched when there is no ErrorDetails body (transient/socket fault)' {
+        Mock Invoke-RestMethod -ModuleName Coretelligent.GoogleWorkspace -MockWith {
+            throw 'The remote name could not be resolved: admin.googleapis.com'
+        }
+        { Invoke-CtgGoogleApi -Method GET -Path '/users?maxResults=1' } |
+            Should -Throw '*could not be resolved*'
+    }
+}

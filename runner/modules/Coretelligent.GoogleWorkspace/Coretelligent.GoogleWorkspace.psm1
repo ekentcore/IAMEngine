@@ -170,7 +170,31 @@ function Invoke-CtgGoogleApi {
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { return Invoke-RestMethod @p }
     catch {
-        if (-not $ThrowOn404 -and $_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
+        $status = $null
+        try { $status = [int]$_.Exception.Response.StatusCode.value__ } catch { }
+        if (-not $ThrowOn404 -and $status -eq 404) { return $null }
+        # A bare "400 (Bad Request)" is useless — Google's actual reason ("Invalid Input:
+        # customer …") is in the response body, which PowerShell parks on $_.ErrorDetails.Message,
+        # never on the exception. Rethrow with it appended (truncated) so the failure reads like
+        # Google wrote it. No ErrorDetails (socket/DNS fault) → rethrow untouched.
+        $detail = $null
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        if ($detail) {
+            $reason = $null
+            try { $reason = [string](($detail | ConvertFrom-Json).error.message) } catch { }
+            if (-not $reason) { $reason = $detail }
+            $reason = ($reason -replace '\s+', ' ').Trim()
+            if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) + '…' }
+            $msg = "$(([string]$_.Exception.Message).TrimEnd() -replace '\.$', ''): $reason"
+            # Preserve the exception type + Response when we have one — callers (signOut) read
+            # $_.Exception.Response.StatusCode to tell a scope gap (403) from a bad token (401).
+            $resp = $null
+            try { $resp = $_.Exception.Response } catch { }
+            if ($resp -is [System.Net.Http.HttpResponseMessage]) {
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new($msg, $resp)
+            }
+            throw $msg
+        }
         throw
     }
 }
