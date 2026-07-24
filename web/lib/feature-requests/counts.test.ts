@@ -32,6 +32,13 @@ test("frCounts: a hidden request is never open, but a hidden done still counts a
   assert.deepEqual(frCounts(rows), { total: 3, open: 1, implemented: 1 });
 });
 
+test("frCounts: the archive timer never moves a figure — status alone decides", () => {
+  // A freshly implemented request (timer running, not archived yet) is off the board the same as one
+  // that archived weeks ago. If these two disagreed, the nav badge would count work that is done.
+  assert.deepEqual(frCounts([row("done", false)]), frCounts([row("done", true)]));
+  assert.deepEqual(frCounts([row("declined", false)]), frCounts([row("declined", true)]));
+});
+
 test("frCounts: no rows is all zeros", () => {
   assert.deepEqual(frCounts([]), { total: 0, open: 0, implemented: 0 });
 });
