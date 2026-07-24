@@ -191,6 +191,7 @@ export { entry as runnerPoolOneBox } from "./runner-pool-one-box";
 export { entry as runnerVersionStartupLog } from "./runner-version-startup-log";
 export { entry as securityP0Runner } from "./security-p0-runner";
 export { entry as selfHealWatchdog } from "./self-heal-watchdog";
+export { entry as settingsDeploymentStatus } from "./settings-deployment-status";
 export { entry as setupRunCancelButton } from "./setup-run-cancel-button";
 export { entry as slackCatalogBuilt } from "./slack-catalog-built";
 export { entry as slackConsoleBrowserSetup } from "./slack-console-browser-setup";
