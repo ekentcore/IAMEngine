@@ -21,8 +21,8 @@
 // the dev environment lacks DELINEA_WRITE_*, so this path is unit-tested only here and live-validated
 // by the operator once a write account + folder + template are configured.
 import type { PrismaClient } from "@prisma/client";
-import { createSecret, updateSecretFields, getDelineaToken, resolveCreateFolderId, deriveClientFolderId, type Fetcher, type FolderDerivation } from "./delinea";
-import { delineaWriteConfigured, delineaWriteConfigFromEnv, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
+import { createSecret, updateSecretFields, findTemplateIdByName, getDelineaToken, resolveCreateFolderId, deriveClientFolderId, type Fetcher, type FolderDerivation } from "./delinea";
+import { delineaWriteConfigured, delineaWriteConfigFromEnv, defaultFieldMap, defaultTemplateName, folderIdFor, templateFor, identitySubfolderName } from "./delinea-templates";
 import { probeEntraClientCredentials, type EntraProbe } from "./m365-credential";
 import { secretIsSet } from "./wiring";
 import { makeClientRepository } from "@/lib/clients/repository";
@@ -262,8 +262,11 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     // template supports it and it's EMPTY, the vaulted credential is half-written and its missing half
     // is unrecoverable → stranded, so the recovery path rotates BOTH and re-vaults complete material.
     // Any read failure (or no template/write config) degrades to the old "trust it" behaviour.
+    // The check only needs the cert SLUG, not a template id — so a deployment with no template env
+    // still detects a half-vaulted credential via the default slug (a template without that slug reads
+    // "unsupported" from the vault, which stays a non-gap).
     const keptTmpl = templateFor(secretName, env);
-    const certSlug = keptTmpl?.fieldMap["certificate (base64 pfx)"];
+    const certSlug = keptTmpl?.fieldMap["certificate (base64 pfx)"] ?? defaultFieldMap(secretName)["certificate (base64 pfx)"];
     // Only a cert-BEARING credential can be "half-vaulted" for a missing cert. When set up client-
     // secret-only (expectCert=false), an empty cert slug is intended, not stranded — skip the check.
     if (certSlug && input.expectCert !== false) {
@@ -319,13 +322,14 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
     propagationWarning = warning;
   }
 
-  // 3. Gate + folder resolution. The write ACCOUNT and TEMPLATE are pure env prerequisites — without
-  // either there's nothing to try, so refuse immediately (no network). The FOLDER is different: when
+  // 3. Gate + folder resolution. The write ACCOUNT is a pure env prerequisite and the TEMPLATE needs
+  // an env id OR a known stock-template name — without either there's nothing to try, so refuse
+  // immediately (no network). The FOLDER is different: when
   // it isn't already configured (on the client or in DELINEA_FOLDER_MAP) it can be AUTO-DETECTED — the
   // Global-Admin login the operator pointed at lives IN this client's folder, so its folderId IS the
   // answer; failing that, a folder whose name carries the client's core id. So: check account/template,
   // get a write token (reused for the create/update below and the detection reads), then resolve/derive.
-  const preGate = delineaWriteConfigured({ slug: client.slug, secretName, clientFolderId: client.delineaFolderId, env });
+  const preGate = delineaWriteConfigured({ slug: client.slug, secretName, clientFolderId: client.delineaFolderId, allowTemplateByName: true, env });
   if (!preGate.hasAccount || !preGate.hasTemplate) {
     // Drop the folder leg from the message — a missing folder is handled by detection below, not here.
     const missing = preGate.missing.filter((m) => !/folder/i.test(m));
@@ -339,6 +343,25 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
   } catch (e) {
     return { ok: false, wroteCreds: false, error: `Delinea write auth failed — ${(e as Error).message}` };
   }
+
+  // Template: an env-configured id wins (per-instance override); else resolve the secret's stock
+  // template NAME ("Entra Azure AD Account") live from Secret Server — the same convention as the
+  // manual create route, so no per-secret template env is needed. preGate.hasTemplate (with
+  // allowTemplateByName) guarantees one of the two paths exists.
+  let tmpl = templateFor(secretName, env);
+  if (!tmpl) {
+    const tmplName = defaultTemplateName(secretName, env)!;
+    const templateId = await findTemplateIdByName(cfg, tmplName, token, fetcher);
+    if (templateId == null) {
+      return {
+        ok: false,
+        wroteCreds: false,
+        error: `couldn't find a Secret Server template named "${tmplName}" — create/rename it in Delinea, or set its id via DELINEA_TEMPLATE_MAP`,
+      };
+    }
+    tmpl = { templateId, fieldMap: defaultFieldMap(secretName) };
+  }
+  const buckets = slugBuckets(tmpl);
 
   // Configured folder (client / DELINEA_FOLDER_MAP) wins; otherwise auto-detect it in Secret Server.
   let folderId = folderIdFor(client.slug, client.delineaFolderId, env);
@@ -358,9 +381,6 @@ export async function writeProvisionedM365App(input: WriteInput, deps: WriteDeps
         "Delinea write not configured — couldn't determine this client's Delinea folder: it isn't set on the client or in DELINEA_FOLDER_MAP, and couldn't be auto-detected from the Global Admin login's folder or a folder named for the client. Set the client's Delinea folder id and re-run.",
     };
   }
-
-  const tmpl = templateFor(secretName, env)!; // preGate.hasTemplate guarantees a template
-  const buckets = slugBuckets(tmpl);
 
   // 4. Map labels -> Secret Server slugs, skipping any label whose value is undefined this run.
   const fields: Record<string, string> = {};
