@@ -239,7 +239,9 @@ export type FleetM365Target = {
 
 async function loadTargets(db: PrismaClient, scope: ClientScope): Promise<FleetM365Target[]> {
   const clients = await db.client.findMany({
-    where: { archivedAt: null, systems: { some: { systemKey: { in: [...M365_FAMILY] } } } },
+    // noRunner: false — a client flagged as having no runner/agent at all (e.g. Dianthus) is skipped
+    // entirely: a sweep would only queue tests that sit pending forever with nothing to claim them.
+    where: { archivedAt: null, noRunner: false, systems: { some: { systemKey: { in: [...M365_FAMILY] } } } },
     select: {
       id: true,
       slug: true,
