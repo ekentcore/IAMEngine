@@ -10,6 +10,7 @@ import { ActionsMenu, type ActionsMenuItem } from "../../_components/actions-men
 import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
 import { ClaudeFixButton, ClaudeFixChip, FixReviewPanel, useClaudeFixes, type FixTaskInfo } from "./claude-fix";
+import { GodfatherEgg } from "./godfather-egg";
 import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
 import { copyText, copyFailureHint } from "@/lib/clipboard";
 
@@ -58,7 +59,8 @@ function CredChip({ cf }: { cf: CredFailure | null }) {
 
 function Badge({ verdict }: { verdict: string }) {
   const s = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.pending;
-  return <span style={{ background: s.bg, color: s.fg, borderRadius: 6, padding: "1px 7px", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>{s.label}</span>;
+  // gf-err-badge: hook for the godfather egg — inert outside body.gf-mode.
+  return <span className={verdict === "failed" ? "gf-err-badge" : undefined} style={{ background: s.bg, color: s.fg, borderRadius: 6, padding: "1px 7px", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>{s.label}</span>;
 }
 
 // Only OPEN errors/warnings can be Fixed — those are the selectable rows.
@@ -154,6 +156,8 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
 
   return (
     <>
+      {/* Easter egg: typing "godfather" restyles the error lines (see godfather-egg.tsx). */}
+      <GodfatherEgg />
       {sel.size > 0 && (
         <div className="toolbar" style={{ alignItems: "center", gap: 8, margin: "0.4rem 0" }}>
           <b>{sel.size} selected</b>
@@ -206,7 +210,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
                 <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
                 <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
                 <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-                <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: r.done ? "var(--muted)" : r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
+                <td className={r.verdict === "failed" ? "gf-err" : undefined} style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: r.done ? "var(--muted)" : r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
                   {/* Actions float top-right INSIDE the message cell: pinned to the row's right edge while
                       the message text fills the full width and wraps under them — no sparse actions column. */}
                   {(r.verdict === "warning" || r.verdict === "failed") && (
@@ -246,7 +250,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
               <span className="m-card-title" style={{ fontSize: 13 }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</span>
               <Badge verdict={r.verdict} />
             </div>
-            <div className="m-card-msg" style={{ color: r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
+            <div className={r.verdict === "failed" ? "m-card-msg gf-err" : "m-card-msg"} style={{ color: r.verdict === "failed" ? "var(--err-fg)" : r.verdict === "warning" ? "var(--warn-fg)" : "var(--muted)" }}>
               {r.credFailure ? `credential · ${r.credFailure.code} · ${r.credFailure.secretName} — ` : ""}{r.messages.length ? r.messages.join(" ") : (r.verdict === "verified" ? "—" : "")}
             </div>
             <div className="m-card-meta">
@@ -296,7 +300,7 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
                   <td style={{ padding: "4px 8px" }}>{r.clientName}</td>
                   <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><b>{r.systemKey}</b>{r.validateOnly && <span className="note" style={{ marginLeft: 4, fontSize: 10 }}>verify</span>}</td>
                   <td style={{ padding: "4px 8px" }}><Badge verdict={r.verdict} /></td>
-                  <td style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: "var(--muted)" }}>
+                  <td className={r.verdict === "failed" ? "gf-err" : undefined} style={{ padding: "4px 8px", overflowWrap: "anywhere", wordBreak: "break-word", color: "var(--muted)" }}>
                     <span style={{ float: "right", marginLeft: 10, whiteSpace: "nowrap" }}>
                       <ActionsMenu items={rowMenu(r)} />
                     </span>

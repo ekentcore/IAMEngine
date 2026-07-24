@@ -1,6 +1,7 @@
 // PATCH /api/feature-requests/:id — triage a request: { status?, resolutionNote? } (settings.manage).
-// Flipping a request to "done" (Implemented) arms its 7-day hide timer here; flipping it back to any
-// open status disarms it. See lib/feature-requests/visibility.ts for why the timer is a timestamp
+// The status alone decides which list the request renders in: resolving it (Implemented / Rejected)
+// moves it off the board into the tables below, reopening it moves it back. Resolving also arms the
+// 7-day archive timer here. See lib/feature-requests/visibility.ts for why that timer is a timestamp
 // rather than a swept flag.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
@@ -44,9 +45,11 @@ export async function PATCH(req: Request, { params }: Ctx) {
   const existing = await db.featureRequest.findUnique({ where: { id: params.id } });
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // Only a real transition touches the timer — undefined leaves an admin's manual hide intact.
+  // Only a real transition touches the timer — undefined leaves an admin's manual archive intact.
+  // The current timer goes in because "Rejected" arms one only when the request doesn't already have
+  // one; see frHideAtOnStatusChange.
   if (data.status !== undefined) {
-    const hideAt = frHideAtOnStatusChange(existing.status, data.status, new Date());
+    const hideAt = frHideAtOnStatusChange(existing.status, data.status, new Date(), existing.hideAt);
     if (hideAt !== undefined) data.hideAt = hideAt;
   }
 

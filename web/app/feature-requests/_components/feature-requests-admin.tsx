@@ -4,13 +4,18 @@
 // number, title, body, who filed it, from which page, and when. The status select saves immediately;
 // the resolution note saves on blur (only when changed).
 //
-// Rows live in one state array here rather than inside each Row, because hiding a request MOVES it —
-// off the board and into the collapsed Completed table below (and unhiding moves it back). Both
-// lists are derived from that array, so a request can never render in both at once. The array
-// re-adopts `initial` whenever the server sends a fresh one (router.refresh(), navigation),
-// otherwise the board would keep rendering a snapshot frozen at mount.
+// Rows live in one state array here rather than inside each Row, because resolving a request MOVES it
+// — off the board and into the tables below (and reopening it moves it back). Both lists are derived
+// from that array, so a request can never render in both at once, and the move happens on the status
+// select's own response with no reload. The array re-adopts `initial` whenever the server sends a
+// fresh one (router.refresh(), navigation), otherwise the board would keep rendering a snapshot frozen
+// at mount.
+//
+// Only OPEN requests render as cards here. The archive controls ("Archive now", the countdown) live in
+// the resolved tables below, because a card can no longer be in a state where they apply.
 import { useEffect, useRef, useState } from "react";
-import { frIsHideable, frNumber } from "@/lib/feature-requests/visibility";
+import { frIsOpen } from "@/lib/feature-requests/status";
+import { frNumber } from "@/lib/feature-requests/visibility";
 import { frCounts } from "@/lib/feature-requests/counts";
 import { broadcastFrCounts } from "@/lib/feature-requests/live";
 import type { FeatureRequestRow } from "@/lib/feature-requests/serialize";
@@ -19,9 +24,8 @@ import { CompletedTable } from "../../feature-requests/_components/completed-tab
 import { StatusSelect, type SendFn } from "../../feature-requests/_components/status-select";
 import { FrSendToChat } from "./fr-send-to-chat";
 
-function Row({ req, canHide, send, onChange }: {
+function Row({ req, send, onChange }: {
   req: FeatureRequestRow;
-  canHide: boolean;
   send: SendFn;
   onChange: (r: FeatureRequestRow) => void;
 }) {
@@ -61,21 +65,6 @@ function Row({ req, canHide, send, onChange }: {
           }}
           style={{ flex: "1 1 220px", minWidth: 180 }}
         />
-        {canHide && frIsHideable(req.status) && (
-          <button
-            type="button"
-            onClick={() => {
-              onBusy(true, null);
-              send(`/api/feature-requests/${req.id}/visibility`, "POST", { action: "hide" })
-                .then((d) => { onChange(d); onBusy(false, null); })
-                .catch((e2: Error) => onBusy(false, e2.message));
-            }}
-          >
-            Hide now
-          </button>
-        )}
-        {/* The timer the status flip armed: "Hides in 5 days". */}
-        {req.hideNote && <span className="note">{req.hideNote}</span>}
         {busy && <span className="note">saving…</span>}
         {err && <span className="note" style={{ color: "#b3261e" }}>{err}</span>}
       </div>
@@ -119,15 +108,15 @@ export function FeatureRequestsAdmin({ initial, canHide = false }: { initial: Fe
 
   if (rows.length === 0) return <p className="note">No feature requests yet — the 💡 button in the header files one.</p>;
 
-  const board = rows.filter((r) => !r.hidden);
-  const completed = rows.filter((r) => r.hidden);
+  const board = rows.filter((r) => frIsOpen(r.status));
+  const completed = rows.filter((r) => !frIsOpen(r.status));
 
   return (
     <div>
       {board.length === 0 ? (
-        <p className="note">Nothing open — every request has been completed and hidden.</p>
+        <p className="note">Nothing remaining — every request has been implemented or closed.</p>
       ) : (
-        board.map((r) => <Row key={r.id} req={r} canHide={canHide} send={send} onChange={replace} />)
+        board.map((r) => <Row key={r.id} req={r} send={send} onChange={replace} />)
       )}
       <CompletedTable rows={completed} canHide={canHide} send={send} onChange={replace} />
     </div>
