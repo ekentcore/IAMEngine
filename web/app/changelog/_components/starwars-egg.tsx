@@ -57,9 +57,9 @@ body.sw-shaking { animation: sw-shake ${SHAKE_MS}ms ease-in-out; }
   transform: rotateX(58deg);
 }
 .sw-scroll {
-  position: absolute; top: 100%; left: 50%; width: min(80vw, 640px);
-  color: #ffe81f; text-align: justify; font-weight: 700;
-  font-size: clamp(22px, 4.5vw, 40px); line-height: 1.6;
+  position: absolute; top: 100%; left: 50%; width: min(92vw, 880px);
+  color: #ffe81f; text-align: justify; font-weight: 700; overflow-wrap: break-word;
+  font-size: clamp(20px, 4vw, 36px); line-height: 1.6;
   animation: sw-scroll var(--sw-duration, 90s) linear 4.5s forwards;
   transform: translateX(-50%);
 }
@@ -119,8 +119,8 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
   if (phase === "idle") return null;
 
   const crawlEntries = entries.slice(0, CRAWL_ENTRIES);
-  // ~11s per entry keeps the pace readable; the classic crawl runs about 85s.
-  const duration = `${Math.max(45, crawlEntries.length * 11)}s`;
+  // ~14s per entry keeps the pace readable; the classic crawl runs about 85s.
+  const duration = `${Math.max(55, crawlEntries.length * 14)}s`;
 
   return (
     <>

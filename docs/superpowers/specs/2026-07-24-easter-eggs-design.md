@@ -9,8 +9,9 @@ date-simulator to test the date-driven ones. All eggs are cosmetic: no business
 logic (cases, jobs, audit, credentials) is touched, and the worst failure mode
 of any egg is "banner doesn't render."
 
-Changelog policy (per Evan): the shipped changelog entry says exactly
-**"Easters Eggs - Have fun!"** and nothing else. No separate easter-egg doc —
+Changelog policy (per Evan, updated 2026-07-24 second batch): easter eggs get
+**no changelog entry at all** — the original "Easters Eggs - Have fun!" teaser
+and the crawl teaser were both removed. No separate easter-egg doc —
 this spec is the only written detail.
 
 ## Core plumbing — `web/lib/eggs/`
@@ -119,7 +120,7 @@ starfield, blue "A long time ago in a data center far, far away...." intro,
 then the newest 8 changelog entries scrolling in tilted yellow text, closing
 with "MAY THE UPTIME BE WITH YOU." **Esc or a click** returns to the page.
 `prefers-reduced-motion` skips the shake and renders the crawl as static,
-scrollable text. Changelog teaser entry: `Easter Egg - The Log Awakens` / 🥚✨.
+scrollable text. No changelog entry, per the updated policy above.
 
 ## Shared confetti component
 Eggs 5 and 6 share one dependency-free canvas confetti component
@@ -143,9 +144,8 @@ added.**
   2027-11-14 (Sun) / 2027-11-15, a holiday eve, Dec 24, Jan 1.
 
 ## Conventions & shipping
-- One changelog entry, title exactly `Easters Eggs - Have fun!`, one file in
-  `web/lib/changelog/entries/` + `_registry.ts` line (alphabetical), Eastern
-  time on a 15-minute boundary.
+- No changelog entries for eggs (policy updated 2026-07-24: the original
+  `Easters Eggs - Have fun!` teaser was removed along with the crawl teaser).
 - Committed openly in a normal draft PR — nothing hidden from git history.
 - UI follows the flat/minimal design system; banners use existing banner
   styling patterns.

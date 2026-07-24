@@ -69,7 +69,6 @@ export { entry as directorySyncAddsRunbookStep } from "./directory-sync-adds-run
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
 export { entry as documentsVersionedInApp } from "./documents-versioned-in-app";
-export { entry as easterEggs } from "./easter-eggs";
 export { entry as egnyteApiPasswordGrant } from "./egnyte-api-password-grant";
 export { entry as egnyteBrowserSetup } from "./egnyte-browser-setup";
 export { entry as engineOptOutHardening } from "./engine-opt-out-hardening";
@@ -216,7 +215,6 @@ export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
 export { entry as spanningHeadlessTokenHarvest } from "./spanning-headless-token-harvest";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
-export { entry as starwarsEgg } from "./starwars-egg";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";
 export { entry as systemsEditorKb } from "./systems-editor-kb";
 export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
