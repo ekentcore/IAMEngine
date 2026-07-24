@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { PRIMARY, menuGroups, FEATURE_REQUESTS_HREF } from "./nav";
 import { FeatureRequestNavBadge } from "./feature-request-nav-badge";
 
-export function MobileNav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }) {
+export function MobileNav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean; showEasterEggs?: boolean }) {
   const [open, setOpen] = useState(false);
   const path = usePathname() ?? "";
   const groups = [{ label: "Operate", items: [...PRIMARY] }, ...menuGroups(flags)];

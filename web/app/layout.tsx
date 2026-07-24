@@ -89,6 +89,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
               showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
               showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
+              showEasterEggs={isRealSuperAdmin}
             />
             {/* Renders nothing; keeps the nav badge's open-count store seeded + live (see the component). */}
             <FeatureRequestCountSync serverCount={openFeatureRequests} />
@@ -101,6 +102,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
                 showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
                 showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
+                showEasterEggs={isRealSuperAdmin}
               />
               {isRealSuperAdmin && !onLogin && <DateSimulatorButton current={simActive ? simCookie : undefined} />}
               {(!authEnabled() || !!user) && <FeatureRequestButton glyph={eggs.bulbGlyph} />}
