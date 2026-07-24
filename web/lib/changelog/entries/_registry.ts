@@ -240,6 +240,8 @@ export { entry as fleetM365CountFixSelfcorrectFilter } from "./fleet-m365-count-
 
 export { entry as fleetM365SkipsNoRunner } from "./fleet-m365-skips-no-runner";
 
+export { entry as fleetM365StuckTestReaper } from "./fleet-m365-stuck-test-reaper";
+
 export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 
 export { entry as dbCopyTool } from "./db-copy-tool";
