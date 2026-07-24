@@ -33,8 +33,9 @@ const COPY: Record<string, { message: string; emoji?: string; solemn?: boolean }
   diwali: { message: "HAPPY DIWALI — FESTIVAL OF LIGHTS", emoji: "🪔" },
 };
 
-function toBanner(key: string): EggBanner {
-  return { kind: "greeting", ...COPY[key] };
+function toBanner(key: string): EggBanner | null {
+  const copy = COPY[key];
+  return copy ? { kind: "greeting", ...copy } : null;
 }
 
 // Anonymous Gregorian computus — Easter Sunday for a Gregorian year.
@@ -72,13 +73,19 @@ export function greetingsFor(date: string): EggBanner[] {
   // y-1 catches spans that started last December (Kwanzaa every year).
   for (const y of [p.y - 1, p.y]) {
     for (const h of computedFor(y)) {
-      if (inSpan(date, h.start, h.days)) out.push(toBanner(h.key));
+      if (inSpan(date, h.start, h.days)) {
+        const banner = toBanner(h.key);
+        if (banner) out.push(banner);
+      }
     }
   }
   // Table spans are matched flat, so cross-year Ramadan and double-occurrence years just work.
   for (const [key, spans] of Object.entries(HOLIDAY_TABLE)) {
     for (const s of spans) {
-      if (inSpan(date, s.start, s.days)) out.push(toBanner(key));
+      if (inSpan(date, s.start, s.days)) {
+        const banner = toBanner(key);
+        if (banner) out.push(banner);
+      }
     }
   }
   return out;

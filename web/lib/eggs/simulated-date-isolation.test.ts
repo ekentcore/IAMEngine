@@ -15,12 +15,11 @@ const ALLOWED = new Set([
   "lib/eggs/simulated-date-isolation.test.ts",   // this file
 ]);
 
-const ROOTS = ["app", "lib", "middleware.ts"];
-const SKIP = new Set(["node_modules", ".next", "generated"]);
+const SKIP = new Set(["node_modules", ".next", ".git", "generated"]);
 
 function* walk(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
-    if (SKIP.has(name)) continue;
+    if (SKIP.has(name)) continue; // name check BEFORE statSync — never follow node_modules symlink
     const p = join(dir, name);
     if (statSync(p).isDirectory()) yield* walk(p);
     else if (/\.(ts|tsx|js|jsx|mjs)$/.test(name)) yield p;
@@ -29,15 +28,16 @@ function* walk(dir: string): Generator<string> {
 
 test("simulated_date is confined to the eggs preview layer", () => {
   const offenders: string[] = [];
+  const scanned: string[] = [];
   const cwd = process.cwd(); // npm test runs from web/
-  for (const root of ROOTS) {
-    let stat; try { stat = statSync(join(cwd, root)); } catch { continue; }
-    const files = stat.isDirectory() ? [...walk(join(cwd, root))] : [join(cwd, root)];
-    for (const f of files) {
-      if (!readFileSync(f, "utf8").includes("simulated_date")) continue;
-      const rel = relative(cwd, f);
-      if (!ALLOWED.has(rel)) offenders.push(rel);
-    }
+  for (const f of walk(cwd)) {
+    const rel = relative(cwd, f);
+    scanned.push(rel);
+    if (!readFileSync(f, "utf8").includes("simulated_date")) continue;
+    if (!ALLOWED.has(rel)) offenders.push(rel);
   }
+  // Defeats a vacuous pass (e.g. running with cwd !== web/): prove the scan actually
+  // reached the one file guaranteed to contain the string.
+  assert.ok(scanned.includes("app/layout.tsx"), "scan did not reach the known read site (app/layout.tsx) — wrong cwd?");
   assert.deepEqual(offenders, [], `simulated_date leaked outside the eggs layer: ${offenders.join(", ")}`);
 });
