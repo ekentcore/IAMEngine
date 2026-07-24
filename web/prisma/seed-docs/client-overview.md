@@ -4,7 +4,7 @@ IAM Engine Automated user onboarding and offboarding across your identity and Sa
 
 Client overview · summary · Prepared for client review
 
-Version 2.0 · 22 July 2026. This edition folds in automated system setup, the offboarding address-book and mailbox defaults, and the client-lifecycle roles. A full list of changes is in the version history at the end of this document.
+Version 3.0 · 24 July 2026. This edition retires the dry-run mode in favour of staged read-only verification, moves runners to per-agent authentication, and adds the privileged secondary-account sweep on offboarding and the runbook-detail automation on onboarding. A full list of changes is in the version history at the end of this document.
 
 ### What this document covers
 
@@ -77,9 +77,9 @@ Steps declare what they depend on, and the engine sorts them. For a client with 
 
 Every executor checks state before it changes it. If a step is re-run after a partial failure, or run twice by accident, it converges on the same end state rather than creating a duplicate or a conflict. This is what makes it safe to retry, and it is the property that lets the engine recover automatically when a runner dies mid-job.
 
-### Dry run
+### Verification is read-only and real
 
-Any case can be run in dry-run mode. Every step connects for real, reads for real, and reports exactly what it would change, and writes nothing. This is the recommended first run for a newly configured client. Dry-run is enforced at the point a job is handed to a runner, so a case cannot be half-switched out of it.
+Earlier editions described a dry-run mode. We retired it, and the reason is worth stating: it ran executors under a simulation switch that suppresses the target system's real responses, so what it reported could disagree with what a live run would actually do — and a preview that can mislead is worse than none. Confidence for a newly configured client now comes from the staged verification described under the setup wizard: a real connection with the real credential, and a per-operation rights probe, both genuinely read-only against the live system.
 
 ### Verification, not assumption
 
@@ -110,6 +110,10 @@ What the agent needs:
 - Outbound HTTPS to the application endpoint. Nothing else.
 
 The agent installs as a Windows Scheduled Task running as SYSTEM, restarts on failure, and updates itself (see below). If you also want your Microsoft 365 work to run from inside your network rather than from Coretelligent’s cloud runner, that is a single configuration flag; all jobs for your organization will then be claimed by your own agent.
+
+#### Watched, and paced
+
+The platform watches the fleet as well as running it: an agent that stops reporting in, a queue backing up, or failures clustering raises a proactive alert to Coretelligent's operations channels, with cooldowns so a single outage pages once rather than continuously. And at most one job runs at a time against the same client and system, enforced at the point work is handed out, so two runs can never collide on one tenant session.
 
 #### Redundancy across domain controllers
 
@@ -157,6 +161,18 @@ A typical onboarding plan for an organization with on-premises Active Directory 
 | 8 | Manual items | Workstation build, welcome letter, first-day call: the checklist. |
 | 9 | Case resolution | Credentials are delivered, MFA registration is confirmed, tasks are closed. This step always runs last. |
 
+### The runbook's small print is configuration too
+
+The line items runbooks tend to leave as hand work are carried as per-client configuration and executed on the same case: mailbox-auditing settings applied to every new mailbox, standing calendar delegates (a named account granted Reviewer on every new hire's calendar), and per-office groups and printers. These are data, not scripts: every action or permission name is validated against the vendor's own allowlist before it is applied. An operator can also add one-off extras to a single case (an "Additional groups" field at review time), which pass the same protected-groups safety filter as everything else.
+
+### On a synced tenant, the account must come from your directory
+
+For a client whose identities sync up from on-premises Active Directory, the Microsoft 365 step adopts the account the sync delivers and never creates a cloud one — so a mistyped on-premises address can no longer cause a silent duplicate cloud identity. If the expected account has not appeared, the case pauses with a decision for an operator rather than guessing. Where a particular hire genuinely needs a cloud-created account, an operator can allow it for that one case, or the client can be configured to always allow it.
+
+### Licensing and address collisions explain themselves
+
+Interdependent license service plans are assigned together, and a plan whose prerequisite the user genuinely does not hold is held back individually: the base license still lands, the mailbox still provisions, and the case reports exactly which plan was held back, why, and offers a retry once the prerequisite is added. An email alias that collides with an existing object no longer surfaces as a raw directory error: the engine names who holds the address — a live user, a soft-deleted one (the usual culprit after a rehire), or a group — and says what to do about it.
+
 ### Password and credential delivery
 
 The initial password is generated at dispatch or set to a default stored in CoreSecret. When it is generated, it is shown to an operator exactly once, and is wiped at the moment it is revealed: two people opening the case cannot both see it, and the second is told plainly that it has already been revealed and cannot be recalled. The value is never written to the run log, the audit record, or the ServiceNow work note. The audit records that it was revealed, and by whom, never what it was.
@@ -174,7 +190,7 @@ Offboarding is designed around one principle: contain first, destroy later, and 
 | 1 | Capture evidence | Before anything is removed, the user's current state is captured and attached to the case: every group membership, every application assignment. If the termination is disputed, or the person is reinstated, the record of what they had is on the case. |
 | 2 | Active Directory | Password is reset (and captured for the manager, where your runbook says so). All group memberships are removed. The user is hidden from the address book, the manager link is cleared, the account is disabled, and, unless your profile carries the do-not-move guardrail, the object is moved to the Disabled Users OU. |
 | 3 | Entra ID | The account is confirmed disabled, cloud group memberships and enterprise-application assignments are removed, registered MFA factors are stripped, and active sessions are revoked. |
-| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When your runbook removes the Microsoft 365 licence, converting the mailbox to shared is the default, so the seat is reclaimed and the mail is kept. A mailbox too large to convert surfaces a decision for the operator (keep the licence and the mail, or remove it and lose the mail) rather than being skipped silently. Delegated access is granted to the named recipient. |
+| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When your runbook removes the Microsoft 365 licence, converting the mailbox to shared is the default, so the seat is reclaimed and the mail is kept. A mailbox too large to convert surfaces a decision for the operator (keep the licence and the mail, or remove it and lose the mail) rather than being skipped silently. A mailbox that is already shared — converted by an earlier run, or by hand — is recognized as already safe, and the licence step proceeds instead of parking the case. Delegated access is granted to the named recipient. |
 | 5 | Endpoint | Where SentinelOne is in scope, the departing user's registered devices are identified and disconnected from the network. Isolation is reversible; shutdown is not, and is gated. |
 | 6 | SaaS estate | Access removed and seats reclaimed across the estate: Mimecast, Adobe, Zoom, Spanning, Duo, VPN, Jira, and the rest. License downticks happen after the mailbox conversion, not before. |
 | 7 | Data custody | Drive and file ownership transfer, per your runbook. |
@@ -184,6 +200,10 @@ Offboarding is designed around one principle: contain first, destroy later, and 
 ### Hidden from the address book by default
 
 Every offboarding hides the departing person from the global address list (on Exchange and Microsoft 365) and from directory and contact sharing (on Google), so a leaver stops appearing to colleagues immediately rather than only where a specific attribute was configured. You can opt a client out of this in its offboard configuration, and you can keep a single leaver listed by ticking "Keep in global address list" on that one case.
+
+### Privileged secondary accounts are swept too
+
+Where your convention gives some people a privileged secondary account (for example jsmith and jsmith-a), the offboard can be configured to derive that second identity from the primary and disable it in the same pass: the directory disable, group strip, session revoke, MFA removal, device disable, and address-book hiding all run against it too. The match is exact, never fuzzy — a person without such an account simply gets a "nothing extra to disable" note — and mail-continuity and licensing decisions stay with the primary account only, so the sweep can never park a case on a mailbox decision for an account that has no mailbox.
 
 ### Approval gates
 
@@ -223,17 +243,16 @@ This section is the practical one. For each system in scope we need a service pr
 
 ### The setup wizard
 
-Configuration is not a spreadsheet exchange. Each system has a guided setup page in the application that walks through the vendor's own console, names the exact screens and the exact permissions, and then verifies the result in five stages:
+Configuration is not a spreadsheet exchange. Each system has a guided setup page in the application that walks through the vendor's own console, names the exact screens and the exact permissions, and then verifies the result in four stages:
 
 | Stage | What it proves |
 | --- | --- |
 | Wired | A vault reference exists for this system. |
 | Field check | The secret actually carries the fields this connector reads, before we try to use it. |
 | Connection test | A runner resolved the secret, connected to the live system, and performed one cheap authorized read. |
-| Rights probe | Each individual operation the automation will perform is probed and reported: create a user, add to a group, read licenses. Where a vendor exposes no way to introspect permissions, we say so rather than guess. |
-| Dry run | The real case, executed read-only against the real system, showing exactly what it would change. |
+| Rights probe | Each individual operation the automation will perform is probed and reported: create a user, add to a group, read licenses. An optional capability you chose not to grant is reported as optional, never as a failure. Where a vendor exposes no way to introspect permissions, we say so rather than guess. |
 
-A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure.
+A system that you handle by hand can be explicitly marked not needed. It is then shown as a checklist item, never as a failure, and on the connection-test panel it appears as a read-only N/A row rather than an error.
 
 ### Setup can configure the vendor for you
 
@@ -347,7 +366,7 @@ Two credentials are involved, and they do different jobs.
 | Credential | What it is | Lifetime |
 | --- | --- | --- |
 | Enrollment token | A short-lived, HMAC-signed token minted in the UI and bound to a specific scope and a specific client. It is self-describing: a token minted for your organization can only ever register an agent for your organization; it cannot be replayed to enroll an agent somewhere else. | One hour, by default |
-| Runner API token | A bearer token the agent presents on every subsequent call. It is baked into the installer at generation time and written to the machine environment so the SYSTEM service can read it. | Until rotated |
+| Agent API token | A per-agent bearer token the agent presents on every subsequent call. Each agent holds its own; the application stores only a hash of it, and one agent's token is no other agent's identity. It is baked into the installer at generation time and written to the machine environment so the SYSTEM service can read it. | Until rotated — rotation is per agent, remote, from the application |
 
 The machine API is fail-closed. A request to any runner endpoint without a valid token is rejected. If the token is not configured at all, the endpoints return a service error rather than opening; a missing configuration cannot become an open door. The endpoints that carry credentials fail closed in every environment including development, because "no token configured" must never resolve to "serve tenant-administrator credentials to an unauthenticated caller."
 
@@ -385,5 +404,6 @@ Questions, and requests for the detailed setup guide for any individual system, 
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 3.0 | 24 July 2026 | Retired the dry-run mode in favour of the staged read-only verification, and documented why. Runners now authenticate with per-agent tokens, rotated remotely. Offboarding gains the privileged secondary-account sweep and recognizes an already-shared mailbox so the licence step proceeds. Onboarding gains per-client mailbox-auditing and calendar-delegate automation, an additional-groups field on the case, adopt-only account handling on synced tenants, self-healing license dependency assignment, and named-holder address-collision errors. Fleet health monitoring with proactive alerts, and a one-run-per-tenant-system concurrency guard. |
 | 2.0 | 22 July 2026 | Automated setup: "Set up Microsoft 365 automatically" and "Set up Google Workspace automatically" now provision the application registration and the service account end to end, and six SaaS systems (Adobe, Zoom, Egnyte, KnowBe4, Spanning, Mimecast) gained an automatic browser-driven credential setup alongside the unchanged manual path. Offboarding now hides the leaver from the address book by default, and converts the mailbox to shared by default when a licence is removed, each with a per-case opt-out. Added the client-onboarding and client-offboarding roles, with archiving a client as its own restricted capability. Passwords can now be set to a specific value as well as generated. |
 | 1.0 | 14 July 2026 | Initial version, prepared for client review. |
