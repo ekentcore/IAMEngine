@@ -99,3 +99,7 @@ rollback-pre-apply.*
 
 # machine-specific node_modules symlink some tooling drops here — never track it
 runner/browser/node_modules
+
+# CI writes this at build time (commit the image was built from); never committed — the app falls
+# back to reading .git locally when it's absent (Settings → Deployment status)
+build-info.json

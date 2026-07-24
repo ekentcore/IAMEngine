@@ -16,8 +16,9 @@ import { AgentAutoUpdateToggle } from "./_components/agent-auto-update-toggle";
 import { AGENT_AUTO_UPDATE_KEY } from "@/lib/jobs/agent-updates";
 import { AgentMigrationSettings } from "./_components/agent-migration-settings";
 import { AGENT_MIGRATION_KEY, type AgentMigrationSetting } from "@/lib/jobs/agent-migration";
-import { loadDbBackupStatus, loadMaintenance } from "./_lib/loader";
+import { loadDbBackupStatus, loadMaintenance, loadDeploymentStatus } from "./_lib/loader";
 import { DbBackupCard } from "./_components/db-backup-card";
+import { DeploymentStatusCard } from "./_components/deployment-status-card";
 import { MaintenanceCard } from "./_components/maintenance-card";
 import { MergePrs } from "./_components/merge-prs";
 import { isSupervised } from "@/lib/supervised";
@@ -32,7 +33,7 @@ export default async function SettingsPage() {
     if (!me || !can(me.role, "settings.manage")) redirect("/clients");
   }
   // independent single-row reads — fetch in parallel, not as six serial round trips
-  const [rawSettings, autoFix, llmProviders, autoUpdate, dbBackup, agentMigration, maintenance] = await Promise.all([
+  const [rawSettings, autoFix, llmProviders, autoUpdate, dbBackup, agentMigration, maintenance, deployment] = await Promise.all([
     getAppSetting(db, NOTIFICATIONS_SETTING_KEY),
     getAppSetting<AutoFixSetting>(db, AUTO_FIX_SETTING_KEY),
     listProvidersMasked(db),
@@ -40,6 +41,7 @@ export default async function SettingsPage() {
     loadDbBackupStatus(),
     getAppSetting<AgentMigrationSetting>(db, AGENT_MIGRATION_KEY),
     loadMaintenance(),
+    loadDeploymentStatus(),
   ]);
   const settings = normalizeSettings(rawSettings);
   return (
@@ -65,6 +67,7 @@ export default async function SettingsPage() {
       <RestartServerButton supervised={isSupervised()}>
         <MergePrs available={await prsAvailable()} />
       </RestartServerButton>
+      <DeploymentStatusCard status={deployment} />
     </main>
   );
 }
