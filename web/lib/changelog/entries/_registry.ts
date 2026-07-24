@@ -192,9 +192,11 @@ export { entry as proofpointHttpsSchemeWedge } from "./proofpoint-https-scheme-w
 export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrations-and-worktree-retire";
 export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
 export { entry as referenceDocsV2 } from "./reference-docs-v2";
+export { entry as referenceDocsV3 } from "./reference-docs-v3";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";
 export { entry as requestedGroupsReachThePlan } from "./requested-groups-reach-the-plan";
 export { entry as resetChildToParent } from "./reset-child-to-parent";
+export { entry as rulesEditorRemoveSystem } from "./rules-editor-remove-system";
 export { entry as runLogFixedLinesPopulate } from "./run-log-fixed-lines-populate";
 export { entry as runLogFixedNoLongerBuriesARecurrence } from "./run-log-fixed-no-longer-buries-a-recurrence";
 export { entry as runlogBulkCopy } from "./runlog-bulk-copy";
