@@ -1386,7 +1386,10 @@ function Get-CtgUserDrive {
 }
 
 # Resolve an archive TARGET to a drive: a user email -> their OneDrive; a SharePoint site URL ->
-# that site's default document library. Anything else is a config error and throws with the rule.
+# that site's default document library; any other bare string -> a SharePoint site DISPLAY NAME,
+# resolved via Graph site search (FR#38: profiles carry prose like "Offboarded User Data SharePoint
+# site"). Anything short of an unambiguous name match throws — the caller fail-softs it to a WARN,
+# and a data-archival destination is never guessed.
 function Resolve-CtgDriveTarget {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
@@ -1401,7 +1404,31 @@ function Resolve-CtgDriveTarget {
         $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$Target/drive?`$select=id,webUrl" -ErrorAction Stop
         return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "the OneDrive of $Target" }
     }
-    throw "unrecognized OneDrive archive target '$Target' — use a user email or a SharePoint site URL"
+    if ($Target.Trim()) {
+        # A site NAME, possibly with the runbook's prose suffix ("… SharePoint site" / "… site") —
+        # strip it before searching; the tenant's site is named without it.
+        $name = ($Target -replace '(?i)\s+sharepoint\s+site\s*$', '' -replace '(?i)\s+site\s*$', '').Trim()
+        if (-not $name) { $name = $Target.Trim() }
+        $res = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites?search=$([uri]::EscapeDataString($name))" -ErrorAction Stop
+        # @(...) + null filter: a response with no 'value' yields @($null), whose .Count is 1 —
+        # which would read as a confident single match for a site that does not exist.
+        $hits = @(@(Get-CtgProp $res 'value') | Where-Object { $_ })
+        # Prefer an EXACT (case-insensitive) displayName match; else accept a single hit. Zero or
+        # several candidates -> refuse with the shortlist rather than archive into the wrong site.
+        $exact = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $name })
+        $pick = if ($exact.Count -eq 1) { $exact[0] } elseif ($hits.Count -eq 1) { $hits[0] } else { $null }
+        if (-not $pick) {
+            if ($hits.Count -eq 0) {
+                throw "no SharePoint site found matching '$name' (archive target '$Target') — use the site's exact name, its URL, or a user email. NB: app-only site search needs the Sites.Read.All application role"
+            }
+            $names = @($hits | ForEach-Object { [string](Get-CtgProp $_ 'displayName') } | Select-Object -First 5) -join "', '"
+            throw "$($hits.Count) SharePoint sites match '$name' (archive target '$Target'): '$names' — use the site's exact name or its URL so the archive can't land in the wrong site. NB: app-only site search needs the Sites.Read.All application role"
+        }
+        $dispName = [string](Get-CtgProp $pick 'displayName')
+        $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$([string](Get-CtgProp $pick 'id'))/drive?`$select=id,webUrl" -ErrorAction Stop
+        return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "SharePoint site '$dispName'" }
+    }
+    throw "unrecognized OneDrive archive target '$Target' — use a user email, a SharePoint site URL, or a SharePoint site name"
 }
 
 function Invoke-CtgM365Offboarding {
@@ -1930,7 +1957,14 @@ function Invoke-CtgM365Offboarding {
                         }
                     }
                 }
-                catch { $actions.Add("WARN OneDrive archive to '$target' did not run (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+                catch {
+                    # Blame the app role ONLY when Graph actually refused (403) — a config/resolution
+                    # error (bad target, ambiguous site name) used to get the same hint appended and
+                    # sent the operator off to grant a permission that was never the problem (FR#38).
+                    $ge = Get-CtgGraphError $_
+                    $hint = if ($ge.Status -eq 403 -or $ge.Code -match 'Authorization_RequestDenied') { " — the m365-admin app registration needs the Files.ReadWrite.All application role (grant + admin-consent)" } else { "" }
+                    $actions.Add("WARN OneDrive archive to '$target' did not run: $(if ($ge.Code) { "$($ge.Code) " })$($ge.Message)$hint")
+                }
             }
         }
     }

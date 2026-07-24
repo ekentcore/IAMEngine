@@ -117,7 +117,7 @@ function offboard(config: M365Config, _identity: Identity, _domain: string, user
     lines.push("", "# grant the case-requested delegate access to the whole OneDrive (name resolved at run time)", `POST /drives/<leaver's drive>/items/root/invite { recipients: ["${config.oneDriveGrantAccessTo}"], roles: ["write"] }`);
   }
   if (config.oneDriveBackup?.target) {
-    lines.push("", `# archive the OneDrive into 'Archive - <name>' on ${config.oneDriveBackup.target} (server-side Graph copies; source left for account deletion)`, `POST /drives/<leaver's drive>/items/<each root item>/copy { parentReference: <target drive> }`);
+    lines.push("", `# archive the OneDrive into 'Archive - <name>' on ${config.oneDriveBackup.target} (server-side Graph copies; source left for account deletion; drives resolved at run time)`, `POST /drives/<leaver's drive>/items/<each root item>/copy { parentReference: <target drive> }`);
   }
   if (config.removeLicense) {
     lines.push("", "# reclaim licenses (after mailbox conversion, per ordering rules)", `Set-MgUserLicense -UserId $UserPrincipalName -AddLicenses @() -RemoveLicenses (Get-MgUserLicenseDetail -UserId $UserPrincipalName).SkuId`);

@@ -575,8 +575,86 @@ Describe 'Invoke-CtgM365Offboarding' {
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{} }) -MailboxSizeGB 10
         $r.Status | Should -Be 'ok'
         ($r.Actions -join ' ') | Should -Match 'WARN oneDriveBackup is set but has no target'
+        # FR#38: a bare string is treated as a SharePoint site NAME; 'not-a-target' matches no site
+        # (the default mock answers the search with nothing), so this is now a zero-hit search WARN.
         $bad = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'not-a-target' } }) -MailboxSizeGB 10
         ($bad.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'not-a-target' did not run"
+        ($bad.Actions -join ' ') | Should -Match "no SharePoint site found matching 'not-a-target'"
+    }
+
+    # FR#38: the archive target may be a SharePoint site DISPLAY NAME — Six One's profile stores the
+    # prose "Offboarded User Data SharePoint site", which used to throw "unrecognized OneDrive archive
+    # target" (only URLs and emails were accepted). The prose suffix is stripped and the name resolved
+    # via Graph site search; anything short of an unambiguous match refuses — never guess a
+    # destination for data archival.
+    It 'resolves a bare SharePoint site NAME as the archive target and archives into it' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=Offboarded%20User%20Data') { return @{ value = @(@{ id = 'site-1'; displayName = 'Offboarded User Data' }) } }
+            if ($Uri -match '/sites/site-1/drive') { return @{ id = 'drv-dst'; webUrl = 'https://sp/offboarded' } }
+            if ($Uri -match '/root:/Archive') { throw 'itemNotFound' }
+            if ($Method -eq 'POST' -and $Uri -match '/drives/drv-dst/root/children') { return @{ id = 'fold-1' } }
+            if ($Uri -match '/drives/drv-dst/items/fold-1/children') { return @{ value = @() } }
+            if ($Uri -match '/drives/drv-src/root/children') { return @{ value = @(@{ id = 'i1'; name = 'Documents' }) } }
+            if ($Uri -match '/copy$') { return $null }   # 202, async
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Offboarded User Data SharePoint site' } }) -MailboxSizeGB 10
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+        ($r.Actions -join ' ') | Should -Match 'OneDrive archive ->'
+        ($r.Actions -join ' ') | Should -Match "SharePoint site 'Offboarded User Data'"
+    }
+
+    It 'refuses (fail-soft) when the site name matches MORE THAN ONE site — never guesses' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=') { return @{ value = @(@{ id = 's1'; displayName = 'Archive One' }, @{ id = 's2'; displayName = 'Archive Two' }) } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Archive' } }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+        ($r.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'Archive' did not run"
+        ($r.Actions -join ' ') | Should -Match '2 SharePoint sites match'
+    }
+
+    It 'refuses (fail-soft) when NO site matches the configured name, and names Sites.Read.All' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=') { return @{ value = @() } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Ghost Site' } }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+        ($r.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'Ghost Site' did not run"
+        ($r.Actions -join ' ') | Should -Match 'no SharePoint site found matching'
+        ($r.Actions -join ' ') | Should -Match 'Sites\.Read\.All'
+    }
+
+    # The archive catch used to append "(needs the Files.ReadWrite.All app role?)" to EVERY failure,
+    # sending operators off to grant a permission that was never the problem (FR#38: the real error
+    # was a config prose name). The hint now appears only on a real Graph 403.
+    It 'does NOT blame the Files.ReadWrite.All app role for a config/resolution error' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=') { return @{ value = @() } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Ghost Site' } }) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Not -Match 'Files\.ReadWrite\.All'
+    }
+
+    It 'DOES name the Files.ReadWrite.All app role when Graph answers a real 403 during resolution' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=') { throw '{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges to complete the operation."}}' }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Offboarded User Data' } }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'Offboarded User Data' did not run"
+        ($r.Actions -join ' ') | Should -Match 'Files\.ReadWrite\.All'
     }
 
     It 'honors removeManager: false (does not even read the manager)' {
