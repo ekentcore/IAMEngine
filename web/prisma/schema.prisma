@@ -296,6 +296,15 @@ model Agent {
   restartRequestedAt DateTime?
   restartRequestedBy String?
   restartDeliveredAt DateTime?
+  // Operator-requested browser-automation install ("Install browser" on the Agents page): the next
+  // heartbeat returns installBrowser:true (consumed), and the runner bootstraps a portable Node into
+  // its own folder if the host has none, then installs Playwright + Chromium in the background —
+  // the remote fix for an agent whose startup self-heal could never fire (no Node on the host).
+  // 'browser' appearing in capabilities on a later heartbeat is the success signal.
+  browserInstallRequested   Boolean   @default(false)
+  browserInstallRequestedAt DateTime?
+  browserInstallRequestedBy String?
+  browserInstallDeliveredAt DateTime?
   // Operator-driven app-URL migration. The agent reports its current base URL each heartbeat
   // (currentAppUrl); a global target (AppSetting agent_migration) + this per-agent canary flag make
   // the heartbeat return migrate:{appUrl}. The runner verifies the new URL, rewrites its own supervisor

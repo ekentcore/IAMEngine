@@ -441,8 +441,8 @@ export function makeRunnerService(db: PrismaClient) {
       return res.count;
     },
 
-    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null, authVia?: "per-agent" | "shared" | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean; provisionToken?: string }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, tokenRefreshRequested: true, tokenConfirmedAt: true, client: { select: { adDiscoverRequestedAt: true } } } });
+    async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null, authVia?: "per-agent" | "shared" | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; installBrowser: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean; provisionToken?: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, browserInstallRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, tokenRefreshRequested: true, tokenConfirmedAt: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -481,6 +481,15 @@ export function makeRunnerService(db: PrismaClient) {
       if (agent.enabled && agent.restartRequested) {
         const consumed = await db.agent.updateMany({ where: { id: agentId, restartRequested: true }, data: { restartRequested: false, restartDeliveredAt: new Date() } });
         restart = consumed.count > 0;
+      }
+      // Same atomic-consume for a browser-automation INSTALL request. The runner does the work in the
+      // background (portable Node bootstrap if the host has none, then Playwright + Chromium) and
+      // starts advertising 'browser' in capabilities on a later heartbeat — that, not this delivery,
+      // is the "it worked" signal the UI keys off.
+      let installBrowser = false;
+      if (agent.enabled && agent.browserInstallRequested) {
+        const consumed = await db.agent.updateMany({ where: { id: agentId, browserInstallRequested: true }, data: { browserInstallRequested: false, browserInstallDeliveredAt: new Date() } });
+        installBrowser = consumed.count > 0;
       }
       // Tell this (client-network) agent to run AD discovery if its client has a pending request.
       // Consume atomically so just one of the client's agents runs it (discovery is read-only, so a
@@ -572,7 +581,7 @@ export function makeRunnerService(db: PrismaClient) {
       }
       const confirm = planTokenConfirm({ via: authVia, tokenConfirmedAt: agent.tokenConfirmedAt });
       if (confirm) await db.agent.update({ where: { id: agentId }, data: confirm }).catch(() => {});
-      return { ok: true, enabled: agent.enabled, update, restart, discover, migrate, drain, governorActive: governor, provisionToken };
+      return { ok: true, enabled: agent.enabled, update, restart, discover, installBrowser, migrate, drain, governorActive: governor, provisionToken };
     },
 
     // Operator action: ask the client's on-prem agent to (re)discover AD OUs + groups. Set the flag;
@@ -653,6 +662,21 @@ export function makeRunnerService(db: PrismaClient) {
       const who = resolveActor(actor);
       await db.agent.update({ where: { id: agentId }, data: { restartRequested: true, restartRequestedAt: new Date(), restartRequestedBy: displayActor(who.actor), restartDeliveredAt: null } });
       await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.restart_requested", detail: { agentId } } });
+      return { id: agentId };
+    },
+
+    // Operator action: ask the runner to install browser automation on its next heartbeat — portable
+    // Node (if the host has none) + Playwright + Chromium, all in the runner's own folder. The remote
+    // fix for an agent that never advertises 'browser' (its startup self-heal needs Node already on
+    // PATH). Success shows up as 'browser' in the agent's reported capabilities a few beats later.
+    async requestBrowserInstall(agentId: string, actor: ActorInput = "ui"): Promise<{ id: string }> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, enabled: true, deletedAt: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
+      if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting a browser install");
+      const who = resolveActor(actor);
+      await db.agent.update({ where: { id: agentId }, data: { browserInstallRequested: true, browserInstallRequestedAt: new Date(), browserInstallRequestedBy: displayActor(who.actor), browserInstallDeliveredAt: null } });
+      await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.browser_install_requested", detail: { agentId } } });
       return { id: agentId };
     },
 

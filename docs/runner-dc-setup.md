@@ -97,3 +97,8 @@ from the app's current bundle, so always update the agent after deploying app/ru
   to target.
 - Central runner can't help here: it deliberately skips `active-directory`/`directory-sync`, so
   if no client-network agent is online those steps sit **pending** ("no runner") on the case.
+- **Browser automation** is off by default on a DC agent (the installer sets
+  `IAM_RUNNER_NO_BROWSER_INSTALL=1`, and a host without Node never self-heals the sidecar). If this
+  agent should take browser jobs, use **Install browser** on its row in the Agents page (runner
+  1.105+): it downloads a portable Node into the runner's own folder plus Playwright + Chromium in
+  the background — no RDP, nothing installed system-wide — and starts advertising `browser` when done.

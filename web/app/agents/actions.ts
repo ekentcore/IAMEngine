@@ -189,6 +189,19 @@ export async function requestAgentRestart(id: string) {
   }
 }
 
+// Ask the runner to install browser automation (portable Node if needed + Playwright + Chromium) on
+// its next heartbeat — enables the 'browser' capability remotely, no shell on the host required.
+export async function requestAgentBrowserInstall(id: string) {
+  try {
+    const me = await requirePermission("agent.manage");
+    await makeRunnerService(db).requestBrowserInstall(id, auditActor(me, "ui"));
+    revalidatePath("/agents");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: errMsg(e) };
+  }
+}
+
 // Ask this agent to move to the new app URL (the canary). Requires a global migration target set in
 // Settings; the runner verifies the new URL, rewrites its own scheduled task, and switches.
 export async function requestAgentMigrate(id: string) {

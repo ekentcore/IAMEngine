@@ -7,7 +7,7 @@
     Description       = 'Bridge from the PowerShell runner to the Node/Playwright browser sidecar (runner/browser). Shells out to run headless-Chromium flows for the few systems with no API. Reports the browser capability (Test-CtgBrowserAvailable) and runs a named flow (Invoke-CtgBrowserFlow).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Test-CtgBrowserAvailable', 'Install-CtgBrowser', 'Invoke-CtgBrowserFlow', 'Resolve-CtgNodeTool', 'ConvertFrom-CtgStageLine')
+    FunctionsToExport = @('Test-CtgBrowserAvailable', 'Install-CtgBrowser', 'Install-CtgNodeRuntime', 'Get-CtgNodeDist', 'Invoke-CtgBrowserFlow', 'Resolve-CtgNodeTool', 'ConvertFrom-CtgStageLine')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

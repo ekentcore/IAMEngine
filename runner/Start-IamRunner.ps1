@@ -3319,6 +3319,27 @@ while ($true) {
         }
         if ($hb.restart -eq $true) { Restart-CtgRunner }  # operator requested a plain restart — re-exec (never returns)
         if ($hb.discover -eq $true) { Invoke-CtgAdDiscovery }  # operator requested AD OU/group discovery
+        # Operator requested "Install browser automation" (Agents page). Unlike the startup self-heal,
+        # this bootstraps a PORTABLE Node into <runner>/.node when the host has none — the remote fix
+        # for an agent that could never self-heal (no Node → the elseif above never fired) without
+        # anyone shelling into the box. An EXPLICIT click also outranks IAM_RUNNER_NO_BROWSER_INSTALL
+        # (the installer's default for client-network agents): the operator is opting this host in.
+        # Same background rules as startup: never inline (a cold Node+Chromium download takes minutes
+        # and would stall heartbeats), one install job at a time, and the completion check above folds
+        # in the 'browser' capability on a later beat. Property guard: an older app never sends this.
+        if ($hb.PSObject.Properties['installBrowser'] -and $hb.installBrowser -eq $true -and -not $script:BrowserInstallJob -and -not (Test-CtgBrowserAvailable)) {
+            Write-Host "Operator requested browser automation — installing Node (if needed) + Playwright + Chromium in the BACKGROUND…" -ForegroundColor Yellow
+            try {
+                $script:BrowserModulePath = (Get-Module Coretelligent.Browser).Path
+                $script:BrowserInstallJob = Start-Job -Name 'ctg-browser-install' -ScriptBlock {
+                    param($m)
+                    Import-Module $m -Force
+                    [bool](Install-CtgBrowser -BootstrapNode)
+                } -ArgumentList $script:BrowserModulePath
+            } catch {
+                Write-Warning "browser sidecar: could not start the operator-requested install: $($_.Exception.Message)"
+            }
+        }
         if ($hb.migrate -and $hb.migrate.appUrl) { Invoke-CtgMigrate -NewAppUrl ([string]$hb.migrate.appUrl) }  # operator moved the app — verify + rewrite supervisor + switch
         # Maintenance drain (feature #7): the app is quiescing the fleet (e.g. an Azure host cutover).
         # Any job already in hand finished normally in the foreach below on a prior cycle (with its
