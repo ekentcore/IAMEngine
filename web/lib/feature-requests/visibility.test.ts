@@ -47,16 +47,17 @@ test("reopening an implemented request puts it back on the board", () => {
   assert.equal(frHideAtOnStatusChange("done", "building", NOW), null);
 });
 
-test("rejecting an open request does not auto-hide it — only Implemented arms the timer", () => {
-  // undefined leaves hideAt as it was (null for an open request), so it stays on the board until an
-  // admin hides it by hand.
-  assert.equal(frHideAtOnStatusChange("new", "declined", NOW), undefined);
+test("rejecting an open request arms the timer too, so it cannot sit in the visible table forever", () => {
+  // A rejected request leaves the board on status alone, but it still needs a deadline or it would
+  // stay in "Implemented and closed" for good.
+  assert.deepEqual(frHideAtOnStatusChange("new", "declined", NOW, null), days(FR_HIDE_WINDOW_DAYS));
 });
 
-test("re-triaging Implemented -> Rejected does NOT drag a hidden request back onto the board", () => {
-  // Both are terminal, so the running timer survives the re-triage. Returning null here would clear
-  // the timer of a request that hid weeks ago and pop it back onto the board.
-  assert.equal(frHideAtOnStatusChange("done", "declined", NOW), undefined);
+test("re-triaging Implemented -> Rejected does NOT drag an archived request back into view", () => {
+  // Both are resolved, so the running timer survives the re-triage. Arming a fresh one here would
+  // haul a request that archived weeks ago back into the visible table.
+  assert.equal(frHideAtOnStatusChange("done", "declined", NOW, days(-30)), undefined);
+  assert.equal(frHideAtOnStatusChange("done", "declined", NOW, days(3)), undefined); // still counting down
 });
 
 test("a no-op status save leaves an admin's manual hide alone", () => {
@@ -86,9 +87,9 @@ test("unhiding grants another full window from now, not from the old deadline", 
   assert.deepEqual(frHideWindowFrom(days(30)), days(30 + FR_HIDE_WINDOW_DAYS));
 });
 
-test("the hide note counts down, then reads Hidden", () => {
-  assert.equal(frHideNote(days(7), NOW), "Hides in 7 days");
-  assert.equal(frHideNote(days(3), NOW), "Hides in 3 days");
-  assert.equal(frHideNote(days(0.5), NOW), "Hides in under a day");
-  assert.equal(frHideNote(days(-1), NOW), "Hidden");
+test("the archive note counts down, then reads Archived", () => {
+  assert.equal(frHideNote(days(7), NOW), "Archives in 7 days");
+  assert.equal(frHideNote(days(3), NOW), "Archives in 3 days");
+  assert.equal(frHideNote(days(0.5), NOW), "Archives in under a day");
+  assert.equal(frHideNote(days(-1), NOW), "Archived");
 });

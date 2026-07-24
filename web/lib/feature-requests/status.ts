@@ -3,6 +3,21 @@
 export const FR_STATUSES = ["new", "planned", "building", "done", "declined"] as const;
 export type FeatureRequestStatus = (typeof FR_STATUSES)[number];
 
+// Where a request renders. A RESOLVED request (Implemented / Rejected) has left the work queue, so it
+// drops off the board the moment its status flips and lands in the tables below; everything else is
+// still remaining and stays on the board. This is the one definition of that split — the page, the
+// admin editor, the counts, and the hide timer all read it, so the board can never disagree with the
+// badge on a row. An unknown status counts as open: a request nobody has triaged is still work.
+export const FR_RESOLVED_STATUSES = ["done", "declined"] as const;
+
+export function frIsResolved(status: string): boolean {
+  return (FR_RESOLVED_STATUSES as readonly string[]).includes(status);
+}
+
+export function frIsOpen(status: string): boolean {
+  return !frIsResolved(status);
+}
+
 export const FR_STATUS_META: Record<FeatureRequestStatus, { label: string; fg: string; bg: string }> = {
   new: { label: "New", fg: "var(--muted, #6b7280)", bg: "var(--bg-soft, #f3f4f6)" },
   planned: { label: "Planned", fg: "var(--info-fg, #1d4ed8)", bg: "var(--info-bg, #eff6ff)" },

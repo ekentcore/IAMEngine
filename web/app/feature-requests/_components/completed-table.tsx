@@ -1,18 +1,23 @@
 "use client";
 
-// The collapsed Completed table under the board: every request whose hide timer has run out (7 days
-// after it was marked Implemented) plus anything an admin hid early. Collapsed by default — the
-// point of hiding is that the board stays short — but never deleted, so a request can always be
-// looked up by its number.
+// The tables under the board. A request lands here the moment it is RESOLVED — marked Implemented or
+// Rejected — so the board above it is only ever what is still remaining. Nothing is deleted: a
+// request stays here, numbered, for as long as the app lives, and reopening it sends it back up.
 //
-// Admins keep BOTH controls here, not just the unhide:
-//   - the status select, so a retired request can be reopened (set it back to Planned / Being
-//     scripted and it drops its timer and returns to the board) without first having to grant it
-//     another week just to reach the control;
-//   - "Show 7 more days", which puts it back on the board for another full window. It can be clicked
-//     again each time that window runs out.
-// Read-only viewers get neither — the table renders, the controls do not.
+// Two tiers, because "finished last week" and "finished last spring" want different amounts of room:
+//   Implemented and closed  the recent ones, open by default — the answer to "what just shipped?"
+//   Archived                the ones whose 7-day timer has run out (or that an admin archived early),
+//                           collapsed, so a year of finished work doesn't grow into an endless table.
+//
+// Admins keep every control here, on both tiers:
+//   - the status select, so a resolved request can be reopened (set it back to Planned / Being
+//     scripted and it drops its timer and returns to the board);
+//   - "Archive now" on a recent row, to fold it away without waiting out the week;
+//   - "Restore for 7 days" on an archived row, which lifts it back into the visible table for another
+//     full window. It can be clicked again each time that window runs out.
+// Read-only viewers get neither tier's controls — the tables render, the controls do not.
 import { useState } from "react";
+import { CollapsibleSection } from "@/app/_components/collapsible-section";
 import type { FeatureRequestRow } from "@/lib/feature-requests/serialize";
 import { FR_HIDE_WINDOW_DAYS, frNumber } from "@/lib/feature-requests/visibility";
 import { StatusSelect, type SendFn } from "./status-select";
@@ -29,6 +34,10 @@ function Controls({ row, canHide, send, onChange }: {
   const [err, setErr] = useState<string | null>(null);
   const onBusy = (b: boolean, e: string | null) => { setBusy(b); setErr(e); };
 
+  // One button, whichever way this row can move: an archived row comes back, a visible one folds away.
+  const action = row.hidden ? "unhide" : "hide";
+  const label = row.hidden ? `Restore for ${FR_HIDE_WINDOW_DAYS} days` : "Archive now";
+
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
       <StatusSelect req={row} send={send} onChange={onChange} onBusy={onBusy} />
@@ -37,25 +46,27 @@ function Controls({ row, canHide, send, onChange }: {
           type="button"
           onClick={() => {
             onBusy(true, null);
-            send(`/api/feature-requests/${row.id}/visibility`, "POST", { action: "unhide" })
+            send(`/api/feature-requests/${row.id}/visibility`, "POST", { action })
               .then((d) => { onChange(d); onBusy(false, null); })
               .catch((e: Error) => onBusy(false, e.message));
           }}
         >
-          Show {FR_HIDE_WINDOW_DAYS} more days
+          {label}
         </button>
       )}
+      {/* The timer the status flip armed: "Archives in 5 days". Nothing to say once it has run out. */}
+      {!row.hidden && row.hideNote && <span className="note">{row.hideNote}</span>}
       {busy && <span className="note">saving…</span>}
       {err && <span className="note" style={{ color: "#b3261e" }}>{err}</span>}
     </span>
   );
 }
 
-// One completed request. Owns the send-to-chat toggle so the panel can render in a full-width row
+// One resolved request. Owns the send-to-chat toggle so the panel can render in a full-width row
 // beneath the request rather than crammed into the narrow actions cell. columns: Number, Request,
 // Status, Filed by, Actions (Actions only present when editable — which is also the only time the
 // chat toggle shows), so the panel row spans 5.
-function CompletedRow({ row, canHide, send, onChange }: {
+function ResolvedRow({ row, canHide, send, onChange }: {
   row: FeatureRequestRow;
   canHide: boolean;
   send: SendFn;
@@ -94,6 +105,49 @@ function CompletedRow({ row, canHide, send, onChange }: {
   );
 }
 
+function ResolvedTable({ rows, canHide, send, onChange }: {
+  rows: FeatureRequestRow[];
+  canHide: boolean;
+  send?: SendFn;
+  onChange?: (r: FeatureRequestRow) => void;
+}) {
+  const editable = send !== undefined && onChange !== undefined;
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th style={{ width: "1%", whiteSpace: "nowrap" }}>Number</th>
+          <th>Request</th>
+          <th style={{ width: "1%", whiteSpace: "nowrap" }}>Status</th>
+          <th style={{ width: "1%", whiteSpace: "nowrap" }}>Filed by</th>
+          {editable && <th style={{ width: "1%" }} />}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) =>
+          editable ? (
+            <ResolvedRow key={r.id} row={r} canHide={canHide} send={send!} onChange={onChange!} />
+          ) : (
+            <tr key={r.id}>
+              <td className="mono tnum" style={{ whiteSpace: "nowrap" }}>{frNumber(r.number)}</td>
+              <td>
+                {r.title}
+                {r.resolutionNote && (
+                  <div className="note" style={{ marginTop: "0.15rem" }}>↳ {r.resolutionNote}</div>
+                )}
+              </td>
+              <td><FeatureStatusBadge status={r.status} /></td>
+              <td className="note" style={{ whiteSpace: "nowrap" }}>{r.authorEmail ?? "unknown"}</td>
+            </tr>
+          )
+        )}
+      </tbody>
+    </table>
+  );
+}
+
+// `rows` is every resolved request, both tiers — the caller splits board from resolved by status and
+// hands the resolved over whole, so this component owns where the archive line falls.
 export function CompletedTable({ rows, canHide = false, send, onChange }: {
   rows: FeatureRequestRow[];
   canHide?: boolean;
@@ -101,43 +155,28 @@ export function CompletedTable({ rows, canHide = false, send, onChange }: {
   onChange?: (r: FeatureRequestRow) => void;
 }) {
   if (rows.length === 0) return null;
-  const editable = send !== undefined && onChange !== undefined;
+  const recent = rows.filter((r) => !r.hidden);
+  const archived = rows.filter((r) => r.hidden);
 
   return (
-    <details style={{ marginTop: "1.6rem" }}>
-      <summary style={{ cursor: "pointer", color: "var(--faint)", fontSize: 13 }}>
-        Completed ({rows.length})
-      </summary>
-      <table>
-        <thead>
-          <tr>
-            <th style={{ width: "1%", whiteSpace: "nowrap" }}>Number</th>
-            <th>Request</th>
-            <th style={{ width: "1%", whiteSpace: "nowrap" }}>Status</th>
-            <th style={{ width: "1%", whiteSpace: "nowrap" }}>Filed by</th>
-            {editable && <th style={{ width: "1%" }} />}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) =>
-            editable ? (
-              <CompletedRow key={r.id} row={r} canHide={canHide} send={send!} onChange={onChange!} />
-            ) : (
-              <tr key={r.id}>
-                <td className="mono tnum" style={{ whiteSpace: "nowrap" }}>{frNumber(r.number)}</td>
-                <td>
-                  {r.title}
-                  {r.resolutionNote && (
-                    <div className="note" style={{ marginTop: "0.15rem" }}>↳ {r.resolutionNote}</div>
-                  )}
-                </td>
-                <td><FeatureStatusBadge status={r.status} /></td>
-                <td className="note" style={{ whiteSpace: "nowrap" }}>{r.authorEmail ?? "unknown"}</td>
-              </tr>
-            )
-          )}
-        </tbody>
-      </table>
-    </details>
+    <>
+      <CollapsibleSection title="Implemented and closed" count={recent.length}>
+        {recent.length === 0 ? (
+          <p className="note">Nothing resolved in the last {FR_HIDE_WINDOW_DAYS} days — the archive below has the rest.</p>
+        ) : (
+          <ResolvedTable rows={recent} canHide={canHide} send={send} onChange={onChange} />
+        )}
+      </CollapsibleSection>
+      {archived.length > 0 && (
+        <CollapsibleSection
+          title="Archived"
+          count={archived.length}
+          subtitle={`resolved more than ${FR_HIDE_WINDOW_DAYS} days ago`}
+          defaultOpen={false}
+        >
+          <ResolvedTable rows={archived} canHide={canHide} send={send} onChange={onChange} />
+        </CollapsibleSection>
+      )}
+    </>
   );
 }

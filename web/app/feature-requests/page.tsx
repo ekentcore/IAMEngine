@@ -3,12 +3,15 @@
 // get the inline status editor; everyone else sees a read-only board. Requests are filed from the
 // 💡 button in the header.
 //
-// A request drops off the board 7 days after it is marked Implemented and lands in the collapsed
-// Completed table at the bottom — still there, still searchable by its number, just not in the way.
-// Global and super admins (feature_request.hide) can hide one sooner or grant it another 7 days.
+// The board at the top is only what is REMAINING. Marking a request Implemented (or Rejected) moves
+// it straight down into the "Implemented and closed" table — no waiting — so the length of the board
+// is the size of the queue. Nothing is deleted: 7 days later a resolved request folds once more into
+// the collapsed "Archived" table, still numbered, still searchable. Global and super admins
+// (feature_request.hide) can archive one sooner or lift it back for another 7 days.
 import { redirect } from "next/navigation";
 import { authEnabled, getCurrentUser } from "@/lib/auth/current-user";
 import { can } from "@/lib/auth/permissions";
+import { frIsOpen } from "@/lib/feature-requests/status";
 import { frNumber } from "@/lib/feature-requests/visibility";
 import { frCounts } from "@/lib/feature-requests/counts";
 import { loadFeatureRequests } from "./_lib/loader";
@@ -31,8 +34,10 @@ export default async function FeatureRequestsPage() {
   }
   const requests = await loadFeatureRequests();
 
-  const board = requests.filter((r) => !r.hidden);
-  const completed = requests.filter((r) => r.hidden);
+  // Status decides the split, not the archive timer: a request is on the board while it is open, and
+  // below it from the moment it is resolved.
+  const board = requests.filter((r) => frIsOpen(r.status));
+  const completed = requests.filter((r) => !frIsOpen(r.status));
 
   return (
     <main>
@@ -51,7 +56,7 @@ export default async function FeatureRequestsPage() {
       ) : (
         <div>
           {board.length === 0 ? (
-            <p className="note">Nothing open — every request has been completed.</p>
+            <p className="note">Nothing remaining — every request has been implemented or closed.</p>
           ) : (
             board.map((r) => (
               <div key={r.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "0.7rem 0.9rem", marginBottom: "0.6rem" }}>
@@ -66,7 +71,7 @@ export default async function FeatureRequestsPage() {
               </div>
             ))
           )}
-          {/* Read-only: the table renders, but without the admin's unhide control. */}
+          {/* Read-only: the tables render, but without the admin's controls. */}
           <CompletedTable rows={completed} />
         </div>
       )}
