@@ -1,51 +1,14 @@
 // Easter-egg occasion logic — pure calendar math, no I/O. Every date-driven egg (birthday banner,
-// holiday-eve banner, holiday bulb glyph, New Year confetti) resolves through occasionsFor(date),
-// so the super-admin date simulator exercises all of them. Dates are "YYYY-MM-DD" calendar dates;
-// timezone resolution happens upstream in effective-date.ts. See
+// day-of holiday greetings, holiday-eve banner, holiday bulb glyph, New Year confetti) resolves
+// through occasionsFor(date), so the super-admin date simulator exercises all of them. Dates are
+// "YYYY-MM-DD" calendar dates; timezone resolution happens upstream in effective-date.ts. See
 // docs/superpowers/specs/2026-07-24-easter-eggs-design.md for the full spec.
 
-export type EggBanner = { kind: "birthday" | "holiday-eve"; message: string };
-export type EggState = { banner: EggBanner | null; bulbGlyph: string; newYear: boolean };
+import { parts, ymd, toDate, addDays, lastMondayOfMay, firstMondayOfSeptember, fourthThursdayOfNovember } from "./date-math";
+import { greetingsFor, type EggBanner } from "./greetings";
 
-function parts(date: string): { y: number; m: number; d: number } | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!m) return null;
-  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
-}
-
-function ymd(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-// Local-time Date for pure calendar math (weekday, day arithmetic). Never used for "now".
-function toDate(y: number, m: number, d: number): Date {
-  return new Date(y, m - 1, d);
-}
-
-function addDays(date: Date, delta: number): Date {
-  const out = new Date(date);
-  out.setDate(out.getDate() + delta);
-  return out;
-}
-
-function lastMondayOfMay(y: number): Date {
-  const d = toDate(y, 5, 31);
-  while (d.getDay() !== 1) d.setDate(d.getDate() - 1);
-  return d;
-}
-
-function firstMondayOfSeptember(y: number): Date {
-  const d = toDate(y, 9, 1);
-  while (d.getDay() !== 1) d.setDate(d.getDate() + 1);
-  return d;
-}
-
-function fourthThursdayOfNovember(y: number): Date {
-  const d = toDate(y, 11, 1);
-  while (d.getDay() !== 4) d.setDate(d.getDate() + 1);
-  return addDays(d, 21);
-}
+export type { EggBanner };
+export type EggState = { banners: EggBanner[]; bulbGlyph: string; newYear: boolean };
 
 // The "major holidays" that get an eve banner. A constant list — extend here.
 function holidaysFor(y: number): Array<{ name: string; date: Date }> {
@@ -106,14 +69,15 @@ function bulbGlyph(m: number, d: number): string {
 
 export function occasionsFor(date: string): EggState {
   const p = parts(date);
-  if (!p) return { banner: null, bulbGlyph: "💡", newYear: false };
-  // Birthday wins if both would ever apply — only one occasion banner renders.
-  const banner = birthdayBanner(date, p.y) ?? holidayEveBanner(date, p.y);
-  return {
-    banner,
-    bulbGlyph: bulbGlyph(p.m, p.d),
-    newYear: p.m === 1 && p.d <= 2,
-  };
+  if (!p) return { banners: [], bulbGlyph: "💡", newYear: false };
+  // All applicable occasion banners stack, in order: birthday, then day-of greetings, then eve.
+  const banners: EggBanner[] = [];
+  const bday = birthdayBanner(date, p.y);
+  if (bday) banners.push(bday);
+  banners.push(...greetingsFor(date));
+  const eve = holidayEveBanner(date, p.y);
+  if (eve) banners.push(eve);
+  return { banners, bulbGlyph: bulbGlyph(p.m, p.d), newYear: p.m === 1 && p.d <= 2 };
 }
 
 // Milestone case sparkle: the numeric tail of a case number is a positive multiple of 1000
