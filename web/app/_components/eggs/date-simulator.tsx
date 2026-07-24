@@ -57,6 +57,7 @@ export function DateSimulatorButton({ current }: { current?: string }) {
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 style={{ width: "100%", marginBottom: "0.8rem" }}
+                aria-label="Simulated date"
                 autoFocus
               />
               <div className="toolbar" style={{ justifyContent: "flex-end", gap: 8 }}>
