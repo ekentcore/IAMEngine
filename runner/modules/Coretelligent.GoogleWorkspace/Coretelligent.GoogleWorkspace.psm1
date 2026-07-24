@@ -153,6 +153,16 @@ function Get-CtgGoogleSessionScopes {
     if ($script:GoogleScopes) { @($script:GoogleScopes) } else { @() }
 }
 
+function Get-CtgGoogleCustomer {
+    # The Workspace customer id the current session was connected with. Module state
+    # ($script:GoogleCustomer) is INVISIBLE to the runner script's own $script: scope — before
+    # this seam existed the conn-test probe read an unset variable and sent an EMPTY customer=
+    # param, which the Directory API 400s (FR#35). Never returns empty.
+    [CmdletBinding()]
+    param()
+    if ($script:GoogleCustomer) { [string]$script:GoogleCustomer } else { 'my_customer' }
+}
+
 function Invoke-CtgGoogleApi {
     # Single HTTP seam (bearer auth). Mocked in tests. Returns $null on 404 (not found) — which is the
     # right answer for a GET ("no such user"), but WRONG for an action POST: a 404 there would be
@@ -739,4 +749,4 @@ function Invoke-CtgGoogleDwdGrant {
     throw "domain-wide delegation grant could not be confirmed — $err$ev"
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Get-CtgGoogleCustomer, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant

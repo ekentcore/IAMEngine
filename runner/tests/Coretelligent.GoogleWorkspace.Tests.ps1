@@ -329,6 +329,30 @@ Describe 'Connect-CtgGoogle session scopes' {
     }
 }
 
+Describe 'Get-CtgGoogleCustomer (FR#35)' {
+    # Module state ($script:GoogleCustomer) is invisible to the runner script's own $script:
+    # scope — the conn-test probe read an unset variable and sent customer= EMPTY, which Google
+    # 400s. The customer must cross the module boundary through this exported seam.
+
+    It 'returns the customer id the session was connected with' {
+        Connect-CtgGoogle -AccessToken 'tok-customer' -CustomerId 'C0123abcd'
+        Get-CtgGoogleCustomer | Should -Be 'C0123abcd'
+    }
+
+    It 'returns my_customer when none was given (a probe interpolation is never empty)' {
+        Connect-CtgGoogle -AccessToken 'tok-default'
+        $c = Get-CtgGoogleCustomer
+        $c | Should -Be 'my_customer'
+        "customer=$c" | Should -Not -Be 'customer='
+    }
+
+    It 'is exported by BOTH the psm1 and the psd1 manifest (export drift hides it in prod)' {
+        (Get-Command Get-CtgGoogleCustomer -Module Coretelligent.GoogleWorkspace) | Should -Not -BeNullOrEmpty
+        $psd1 = Import-PowerShellDataFile "$PSScriptRoot/../modules/Coretelligent.GoogleWorkspace/Coretelligent.GoogleWorkspace.psd1"
+        $psd1.FunctionsToExport | Should -Contain 'Get-CtgGoogleCustomer'
+    }
+}
+
 Describe 'Invoke-CtgGoogleApi — error body surfacing (FR#35)' {
     # A bare "Response status code does not indicate success: 400 (Bad Request)" hides Google's
     # actual reason ("Invalid Input: …"), which PowerShell parks on $_.ErrorDetails.Message —

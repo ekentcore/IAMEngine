@@ -646,17 +646,20 @@ function Use-CtgGoogleSecret {
         $clientIdField = & $pick @('ClientID')
         if ($clientIdField) { $customer = $clientIdField }
     }
+    $script:GoogleCustomerAdvisory = $null   # cleared every connect; the conn-test probe reports it
     if ($customer) {
         # Validate what we resolved: a real Workspace customer id is C + alphanumerics (C0123abcd;
         # Admin Console → Account settings), or the literal my_customer. In the wild the template's
-        # ClientID field frequently holds the service account's NUMERIC OAuth client_id instead —
-        # the Directory API then 400s "Invalid Input" and the connection test dies on valid creds
-        # (FR#35, UOVO Art). Fall back to my_customer with a WARN so the fleet self-heals; a genuine
-        # reseller-style C… value still passes through. Never log the full raw value.
+        # ClientID field frequently holds the service account's NUMERIC OAuth client_id instead
+        # (FR#35, UOVO Art secret 57051) — a value the Directory API would 400 on. Fall back to
+        # my_customer with a WARN so the fleet self-heals; a genuine reseller-style C… value still
+        # passes through. Never log the full raw value.
         $customer = ([string]$customer).Trim()
         if ($customer -ne 'my_customer' -and $customer -notmatch '^[Cc][0-9a-zA-Z]{4,}$') {
             $scrub = if ($customer.Length -gt 4) { $customer.Substring(0, 4) } else { $customer }
-            Write-CtgLog "google: the google-admin secret's ClientID/CustomerId value '$scrub…' ($($customer.Length) chars) doesn't look like a Workspace customer id (C0… from Admin Console → Account settings) — using my_customer instead. The service account's numeric OAuth client ID belongs on the DWD authorization screen, not in this field." 'WARN'
+            $advisory = "the google-admin secret's ClientID/CustomerId value '$scrub…' ($($customer.Length) chars) doesn't look like a Workspace customer id (C0… from Admin Console → Account settings) — using my_customer instead. The service account's numeric OAuth client ID belongs on the DWD authorization screen, not in this field."
+            Write-CtgLog "google: $advisory" 'WARN'
+            $script:GoogleCustomerAdvisory = $advisory
             $customer = 'my_customer'
         }
     }
@@ -2850,7 +2853,11 @@ $CONNTEST_PROBE['xmatters']    = { param($job, $creds)
 # client ID. So a successful Connect PROVES every requested scope; one live read then proves the
 # impersonated admin works. That turns the token grant into a real per-scope rights check.
 $CONNTEST_PROBE['google-workspace'] = { param($job, $creds)
-    $resp = Invoke-CtgGoogleApi -Method GET -Path "/users?customer=$script:GoogleCustomer&maxResults=1"
+    # The customer id lives in the MODULE's script scope — from here $script:GoogleCustomer is a
+    # different (never-assigned) variable, so interpolating it sent an EMPTY customer= param and
+    # Google 400'd every probe (FR#35). Read it through the module's exported seam instead.
+    $customer = Get-CtgGoogleCustomer
+    $resp = Invoke-CtgGoogleApi -Method GET -Path "/users?customer=$customer&maxResults=1"
     $scopes = @(Get-CtgGoogleSessionScopes)
     $script:ConnTestRights = @($scopes | ForEach-Object {
         @{ op = "scope $((($_ -split '/')[-1]))"; ok = $true; detail = 'authorized via domain-wide delegation (token minted with this scope)' }
@@ -2867,6 +2874,11 @@ $CONNTEST_PROBE['google-workspace'] = { param($job, $creds)
         }
     }
     if ($scopes.Count -eq 0) { $script:ConnTestRights = @(@{ op = 'verify delegation scopes'; ok = $null; detail = 'session did not record its scopes (token passed directly?)' }) }
+    # Use-CtgGoogleSecret self-healed a bad customer id to my_customer — say so HERE, where the
+    # operator who can fix the Delinea secret actually looks; the runner host's log file is not it.
+    if ($script:GoogleCustomerAdvisory) {
+        $script:ConnTestRights += @(@{ op = 'workspace customer id'; ok = $null; detail = $script:GoogleCustomerAdvisory })
+    }
     "google: users readable (delegation scopes verified: $($scopes.Count))"
 }
 # Spanning has NO Connect in $DISPATCH (Connect-CtgSpanning is a pure local assignment), so the probe
