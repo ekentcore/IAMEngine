@@ -57,6 +57,12 @@ on-prem systems. Azure realizes that split; it does not change it.
 ### Central cloud runner → Azure Container Apps (separate app)
 - Linux image: `mcr.microsoft.com/powershell` base, with `Microsoft.Graph.*` + `ExchangeOnlineManagement`
   (pin **3.9.2** — see the `ExoModuleVersion` note) preinstalled, plus the `runner/` tree.
+- **Browser automation:** either bake Node 18+ / `npm ci` in `runner/browser` / `npx playwright install
+  --with-deps chromium` into the image, or use the Agents page **Install browser** action (runner
+  1.105+) — the runner bootstraps a portable Node into `<runner>/.node` and installs
+  Playwright + Chromium itself. Note the remote install runs `playwright install chromium` WITHOUT
+  `--with-deps` (no root), so on a minimal Linux image the Chromium OS libraries still need to be in
+  the image; on Windows/macOS hosts the remote install is fully self-contained.
 - Runs **cloud/REST modules only** — all verified Linux-safe: M365/Entra, Exchange Online (EXO v3 is
   REST-based), Mimecast, Adobe, Google Workspace, Zoom, Spanning, KnowBe4, Egnyte, Jira, HubSpot,
   SentinelOne, Duo, xMatters, LogicMonitor.

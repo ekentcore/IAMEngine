@@ -13,6 +13,7 @@ export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case
 export { entry as adminAttentionModal } from "./admin-attention-modal";
 export { entry as adobeConsoleAutoSetup } from "./adobe-console-auto-setup";
 export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
+export { entry as agentRemoteBrowserInstall } from "./agent-remote-browser-install";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
 export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";

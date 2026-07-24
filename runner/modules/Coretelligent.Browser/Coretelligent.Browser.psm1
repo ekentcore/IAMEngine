@@ -24,12 +24,38 @@ $script:CommonNodeDirs = @(
     "$env:ProgramFiles\nodejs",                         # Windows default
     "$env:LOCALAPPDATA\Programs\nodejs"
 )
+
+# Where the RUNNER-LOCAL portable Node lives: <runner>/.node/node-v<ver>-<os>-<arch>. Installed by
+# Install-CtgNodeRuntime (the remote "Install browser automation" bootstrap) so a host with no system
+# Node — e.g. a client DC where nobody wants to RDP in and run an installer — can still run the
+# sidecar. A DOT directory on purpose: Get-CtgBuildId (and the app's bundle hash) skip dot-segments,
+# so the extracted runtime never makes the agent read as "update available" forever.
+function Get-CtgNodeInstallRoot {
+    Join-Path (Split-Path (Get-CtgBrowserRoot) -Parent) '.node'
+}
+
+# Directories inside the local portable install that may hold node/npm/npx: the extracted folder
+# itself on Windows (node.exe at the archive root) or its bin/ on Unix. Empty when nothing installed.
+function Get-CtgLocalNodeDirs {
+    $root = Get-CtgNodeInstallRoot
+    if (-not (Test-Path -LiteralPath $root)) { return @() }
+    $dirs = @()
+    foreach ($d in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        $dirs += $d.FullName
+        $bin = Join-Path $d.FullName 'bin'
+        if (Test-Path -LiteralPath $bin) { $dirs += $bin }
+    }
+    return $dirs
+}
+
 function Resolve-CtgNodeTool {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name)
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
-    foreach ($dir in $script:CommonNodeDirs) {
+    # Search the runner-local portable install FIRST (it exists precisely because the system dirs came
+    # up empty when it was bootstrapped), then the well-known system install roots.
+    foreach ($dir in @(Get-CtgLocalNodeDirs) + $script:CommonNodeDirs) {
         if (-not $dir) { continue }
         foreach ($ext in @('', '.cmd', '.exe')) {
             $candidate = Join-Path $dir "$Name$ext"
@@ -142,18 +168,101 @@ function Invoke-CtgNodeTool {
     return Invoke-CtgToolProcess -FilePath $cmd.Source -Arguments $Arguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
 }
 
+# Pinned Node LTS the remote bootstrap downloads. Pinned (not "latest") so every agent that
+# self-installs runs the SAME runtime we validated the flows against; override per host with
+# IAM_RUNNER_NODE_VERSION (no leading 'v') to roll a newer LTS without a code change.
+$script:DefaultNodeVersion = '22.11.0'
+
+function Get-CtgNodeDist {
+    <#
+    .SYNOPSIS
+        Describe the official nodejs.org portable build for a version/OS/arch: archive name, download
+        URL, and where node/npm land inside the extracted folder (archive root on Windows, bin/ on
+        Unix). Pure — every input is injectable so tests can pin each platform without mocking.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Version = $(if ($env:IAM_RUNNER_NODE_VERSION) { $env:IAM_RUNNER_NODE_VERSION.TrimStart('v') } else { $script:DefaultNodeVersion }),
+        [string]$Os      = $(if ($IsWindows) { 'win' } elseif ($IsMacOS) { 'darwin' } else { 'linux' }),
+        [string]$Arch    = $(if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) { 'arm64' } else { 'x64' })
+    )
+    $name = "node-v$Version-$Os-$Arch"
+    $ext  = if ($Os -eq 'win') { '.zip' } else { '.tar.gz' }
+    [pscustomobject]@{
+        Name      = $name
+        Archive   = "$name$ext"
+        Url       = "https://nodejs.org/dist/v$Version/$name$ext"
+        BinSubdir = $(if ($Os -eq 'win') { '' } else { 'bin' })
+    }
+}
+
+function Install-CtgNodeRuntime {
+    <#
+    .SYNOPSIS
+        Bootstrap a PORTABLE Node runtime into <runner>/.node when no system Node exists — the missing
+        ingredient that kept the browser sidecar off hosts nobody wants to touch by hand (the central
+        runner image, client DCs). Downloads the pinned official nodejs.org build, extracts it in
+        place (Expand-Archive for the Windows zip, `tar -xzf` elsewhere), and prepends its bin dir to
+        this process's PATH so npm/npx resolve immediately. No system install, no admin rights beyond
+        writing the runner's own folder. Returns the resolved node path, or $null on any failure —
+        never throws.
+    #>
+    [CmdletBinding()]
+    param([int]$TimeoutSeconds = 600)
+    try {
+        $existing = Resolve-CtgNodeTool 'node'
+        if ($existing) { return $existing }
+
+        $dist = Get-CtgNodeDist
+        $root = Get-CtgNodeInstallRoot
+        New-Item -ItemType Directory -Force $root | Out-Null
+
+        # A previous half-finished extract leaves the folder without its binary — wipe and redo.
+        $target = Join-Path $root $dist.Name
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
+
+        Write-Host "browser sidecar: downloading portable Node $($dist.Name) from nodejs.org …" -ForegroundColor Yellow
+        $archive = Join-Path $root $dist.Archive
+        Invoke-WebRequest -Uri $dist.Url -OutFile $archive -UseBasicParsing -TimeoutSec $TimeoutSeconds
+        try {
+            if ($archive -like '*.zip') {
+                Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
+            } else {
+                # tar ships on every platform the runner supports (Windows 10+, macOS, Linux); the
+                # official .tar.gz keeps the exec bits Expand-Archive would drop.
+                $r = Invoke-CtgToolProcess -FilePath 'tar' -Arguments @('-xzf', $archive, '-C', $root) -TimeoutSeconds $TimeoutSeconds
+                if ($r.Code -ne 0) { Write-Warning "browser sidecar: extracting Node failed ($($r.Code)): $($r.Tail)"; return $null }
+            }
+        } finally {
+            Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        }
+
+        $node = Resolve-CtgNodeTool 'node'   # finds the fresh install via Get-CtgLocalNodeDirs + prepends PATH
+        if (-not $node) { Write-Warning "browser sidecar: Node extracted but its binary was not found under $target" }
+        return $node
+    } catch {
+        Write-Warning "browser sidecar: portable Node install failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
 function Install-CtgBrowser {
     <#
     .SYNOPSIS
         One-time self-heal for the browser sidecar: when `node` is present but the Playwright harness
         (runner/browser/node_modules) or the Chromium binary is missing, install them — `npm install`
-        in runner/browser, then `npx playwright install chromium`. Best-effort, bounded (each step has
+        in runner/browser, then `npx playwright install chromium`. With -BootstrapNode (the operator's
+        remote "Install browser automation" directive), a missing Node is not a dead end: the portable
+        runtime is downloaded into <runner>/.node first. Best-effort, bounded (each step has
         a timeout), logs progress. Returns $true only if Test-CtgBrowserAvailable is true afterwards.
         Never throws — a failed install just leaves the agent without the 'browser' capability.
     #>
     [CmdletBinding()]
-    param([int]$TimeoutSeconds = 900) # npm install + a cold Chromium download can take minutes
+    param([int]$TimeoutSeconds = 900, [switch]$BootstrapNode) # npm install + a cold Chromium download can take minutes
     try {
+        if ($BootstrapNode -and -not (Resolve-CtgNodeTool 'node')) {
+            if (-not (Install-CtgNodeRuntime)) { return $false }   # it already warned with the reason
+        }
         if (-not (Resolve-CtgNodeTool 'node')) {
             Write-Warning "browser sidecar: 'node' is not on PATH — install Node 18+ to enable browser automation."
             return $false
@@ -344,4 +453,4 @@ function Invoke-CtgBrowserFlow {
     }
 }
 
-Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Invoke-CtgBrowserFlow, Resolve-CtgNodeTool, ConvertFrom-CtgStageLine
+Export-ModuleMember -Function Test-CtgBrowserAvailable, Install-CtgBrowser, Install-CtgNodeRuntime, Get-CtgNodeDist, Invoke-CtgBrowserFlow, Resolve-CtgNodeTool, ConvertFrom-CtgStageLine

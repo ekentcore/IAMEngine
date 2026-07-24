@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { AgentScope } from "@prisma/client";
 import { ActionsMenu } from "../../_components/actions-menu";
-import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity, requestAgentTokenRefresh, switchAllToPerAgentTokens, rotateAllTokens } from "../actions";
+import { enrollAgent, setAgentEnabled, createEnrollToken, requestAgentUpdate, requestAgentRestart, requestAgentBrowserInstall, requestAgentMigrate, requestAgentUpdates, trashAgent, restoreAgent, deleteAgentForever, setAgentPriority, updateAgentIdentity, requestAgentTokenRefresh, switchAllToPerAgentTokens, rotateAllTokens } from "../actions";
 import { CopyButton } from "@/app/_components/copy-button";
 import { migrateStatus } from "@/lib/agents/migrate-status";
 import { normalizeUrl } from "@/lib/jobs/agent-migration";
@@ -46,6 +46,12 @@ export type AgentVM = {
   restartRequestedBy: string | null;
   restartDeliveredAt: string | null;
   updateDeliveredAt: string | null;
+  // Remote browser-automation install (portable Node + Playwright + Chromium): queued -> delivered
+  // (runner downloading in the background) -> done ('browser' shows up in capabilities).
+  browserInstallRequested: boolean;
+  browserInstallRequestedAt: string | null;
+  browserInstallRequestedBy: string | null;
+  browserInstallDeliveredAt: string | null;
   // App-URL migration: the base URL the agent last reported polling, plus the move lifecycle.
   currentAppUrl: string | null;
   migrateRequested: boolean;
@@ -132,6 +138,22 @@ function restartStatus(a: AgentVM): { label: string; color: string } | null {
     const seen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
     if (seen > del + 3000) return { label: `✓ restarted${by} — runner back online`, color: "var(--ok-fg)" };
     return { label: `↻ restarting${by} — re-launching…`, color: "var(--info-fg)" };
+  }
+  return null;
+}
+
+// Live browser-install status, mirroring updateStatus/restartStatus: queued (set, not yet polled) ->
+// installing (the runner consumed it; Node/Playwright/Chromium download in the background) -> done
+// ('browser' appears in the capabilities it reports). The install window is long — a cold Chromium
+// download takes minutes — so the "installing" phase shows for up to 30 min before going quiet.
+function browserInstallStatus(a: AgentVM): { label: string; color: string } | null {
+  const by = a.browserInstallRequestedBy ? ` (by ${a.browserInstallRequestedBy})` : "";
+  if (a.browserInstallRequested) return { label: `↻ browser install queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
+  if (a.browserInstallDeliveredAt) {
+    const del = new Date(a.browserInstallDeliveredAt).getTime();
+    if (Date.now() - del > 30 * 60_000) return null;
+    if (a.capabilities?.includes("browser")) return { label: `✓ browser automation installed${by} — this runner now takes browser jobs`, color: "var(--ok-fg)" };
+    return { label: `↻ installing browser automation${by} — Node + Playwright + Chromium downloading in the background…`, color: "var(--info-fg)" };
   }
   return null;
 }
@@ -396,6 +418,10 @@ export function AgentsView({ agents, clients, trashed, currentBuild, currentVers
         fresh(a.updateDeliveredAt, 5 * 60_000) ||
         (a.restartRequested && fresh(a.restartRequestedAt, 10 * 60_000)) ||
         fresh(a.restartDeliveredAt, 5 * 60_000) ||
+        (a.browserInstallRequested && fresh(a.browserInstallRequestedAt, 10 * 60_000)) ||
+        // Keep polling through the whole install window (a cold Chromium download takes minutes) so
+        // the ✓ lands without a manual refresh — but stop early once 'browser' is being advertised.
+        (!a.capabilities?.includes("browser") && fresh(a.browserInstallDeliveredAt, 30 * 60_000)) ||
         (a.migrateRequested && fresh(a.migrateRequestedAt, 10 * 60_000)) ||
         (a.tokenRefreshRequested && fresh(a.tokenRefreshRequestedAt, 10 * 60_000)) ||
         fresh(a.tokenRefreshDeliveredAt, 5 * 60_000) ||
@@ -671,6 +697,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {a.currentAppUrl && <div className="note muted" style={{ marginTop: 2 }} title="the app URL this runner is polling">url: {a.currentAppUrl}</div>}
                   {(() => { const u = updateStatus(a); return u ? <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div> : null; })()}
                   {(() => { const r = restartStatus(a); return r ? <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div> : null; })()}
+                  {(() => { const b = browserInstallStatus(a); return b ? <div className="note" style={{ color: b.color, marginTop: 2 }}>{b.label}</div> : null; })()}
                   {(() => { const m = migrateStatus(a, migration.targetUrl, nowMs); return m ? <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div> : null; })()}
                 </td>
                 <td><AuthCell a={a} /></td>
@@ -690,6 +717,11 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                     {a.enabled && (
                       <button onClick={() => run(a.id, requestAgentRestart)} disabled={toggling === a.id || a.restartRequested} title="Restart this runner on its next heartbeat (re-exec, no code pull) — for a runner that heartbeats but stops claiming. Needs a supervised runner.">
                         {toggling === a.id ? "…" : a.restartRequested ? "Restarting…" : "Restart"}
+                      </button>
+                    )}
+                    {a.enabled && !a.capabilities?.includes("browser") && (
+                      <button onClick={() => run(a.id, requestAgentBrowserInstall)} disabled={toggling === a.id || a.browserInstallRequested} title="Install browser automation on this runner remotely: a portable Node (if the host has none) + Playwright + Chromium, all inside the runner's own folder. It starts taking browser jobs once 'browser' shows in its capabilities.">
+                        {toggling === a.id ? "…" : a.browserInstallRequested ? "Queued…" : "Install browser"}
                       </button>
                     )}
                     {a.enabled && !a.tokenConfirmedAt && (
@@ -752,6 +784,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
             const upToDate = isUpToDate(a);
             const u = updateStatus(a);
             const r = restartStatus(a);
+            const b = browserInstallStatus(a);
             const m = migrateStatus(a, migration.targetUrl, nowMs);
             const stuck = stuckLabel(a, ls.online, nowMs);
             return (
@@ -789,6 +822,7 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                   {a.currentAppUrl && <div className="note muted" style={{ marginTop: 2 }} title="the app URL this runner is polling">url: {a.currentAppUrl}</div>}
                   {u && <div className="note" style={{ color: u.color, marginTop: 2 }}>{u.label}</div>}
                   {r && <div className="note" style={{ color: r.color, marginTop: 2 }}>{r.label}</div>}
+                  {b && <div className="note" style={{ color: b.color, marginTop: 2 }}>{b.label}</div>}
                   {m && <div className="note" style={{ color: m.color, marginTop: 2 }}>{m.label}</div>}
                 </td>
                 <td><AuthCell a={a} /></td>
@@ -806,6 +840,9 @@ nohup ~/.local/pwsh/pwsh -NoProfile -ExecutionPolicy Bypass -File ~/iam-runner/S
                       : []),
                     ...(a.enabled
                       ? [{ label: a.restartRequested ? "Restarting…" : "Restart", disabled: toggling === a.id || a.restartRequested, onClick: () => run(a.id, requestAgentRestart) }]
+                      : []),
+                    ...(a.enabled && !a.capabilities?.includes("browser")
+                      ? [{ label: a.browserInstallRequested ? "Queued…" : "Install browser", disabled: toggling === a.id || a.browserInstallRequested, onClick: () => run(a.id, requestAgentBrowserInstall) }]
                       : []),
                     ...(a.enabled
                       ? [{ label: a.tokenRefreshRequested ? "Queued…" : (a.tokenConfirmedAt ? "Rotate token" : "Switch to individual token"), disabled: toggling === a.id || a.tokenRefreshRequested, onClick: () => run(a.id, requestAgentTokenRefresh) }]

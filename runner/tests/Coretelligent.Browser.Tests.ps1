@@ -70,6 +70,59 @@ Describe 'Install-CtgBrowser' {
     }
 }
 
+Describe 'Get-CtgNodeDist' {
+    It 'builds the Windows x64 artifact: zip, binaries at the archive root' {
+        $d = Get-CtgNodeDist -Version '22.11.0' -Os 'win' -Arch 'x64'
+        $d.Archive   | Should -Be 'node-v22.11.0-win-x64.zip'
+        $d.Url       | Should -Be 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-x64.zip'
+        $d.BinSubdir | Should -Be ''
+    }
+    It 'builds the Unix artifacts: tar.gz, binaries under bin/' {
+        (Get-CtgNodeDist -Version '22.11.0' -Os 'linux' -Arch 'x64').Url | Should -Be 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.gz'
+        (Get-CtgNodeDist -Version '22.11.0' -Os 'darwin' -Arch 'arm64').BinSubdir | Should -Be 'bin'
+    }
+    It 'honors the IAM_RUNNER_NODE_VERSION override, stripping a leading v' {
+        $env:IAM_RUNNER_NODE_VERSION = 'v23.1.0'
+        try { (Get-CtgNodeDist -Os 'win' -Arch 'x64').Name | Should -Be 'node-v23.1.0-win-x64' }
+        finally { Remove-Item Env:\IAM_RUNNER_NODE_VERSION -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Install-CtgNodeRuntime' {
+    It 'is a no-op returning the existing path when node is already resolvable (never downloads)' {
+        Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { '/usr/local/bin/node' } -ParameterFilter { $Name -eq 'node' }
+        Mock Invoke-WebRequest -ModuleName Coretelligent.Browser -MockWith { throw 'should not download' }
+        Install-CtgNodeRuntime | Should -Be '/usr/local/bin/node'
+        Should -Invoke Invoke-WebRequest -ModuleName Coretelligent.Browser -Times 0
+    }
+    It 'returns $null (and never throws) when the download fails — e.g. no egress to nodejs.org' {
+        $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-node-" + [guid]::NewGuid())
+        try {
+            Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+            Mock Get-CtgNodeInstallRoot -ModuleName Coretelligent.Browser -MockWith { $scratch }
+            Mock Invoke-WebRequest -ModuleName Coretelligent.Browser -MockWith { throw 'connection refused' }
+            Install-CtgNodeRuntime | Should -BeNullOrEmpty
+        } finally {
+            Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'Install-CtgBrowser -BootstrapNode' {
+    It 'bootstraps the portable Node when node is missing, and gives up cleanly when that fails' {
+        Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        Mock Install-CtgNodeRuntime -ModuleName Coretelligent.Browser -MockWith { $null }
+        Install-CtgBrowser -BootstrapNode | Should -BeFalse
+        Should -Invoke Install-CtgNodeRuntime -ModuleName Coretelligent.Browser -Times 1 -Exactly
+    }
+    It 'never bootstraps without the switch — the startup self-heal keeps its Node-already-present contract' {
+        Mock Resolve-CtgNodeTool -ModuleName Coretelligent.Browser -MockWith { $null } -ParameterFilter { $Name -eq 'node' }
+        Mock Install-CtgNodeRuntime -ModuleName Coretelligent.Browser -MockWith { throw 'should not bootstrap' }
+        Install-CtgBrowser | Should -BeFalse
+        Should -Invoke Install-CtgNodeRuntime -ModuleName Coretelligent.Browser -Times 0
+    }
+}
+
 Describe 'Invoke-CtgBrowserFlow' {
     It 'returns a graceful ok=$false (never throws) when the sidecar is unavailable' {
         Mock Test-CtgBrowserAvailable -ModuleName Coretelligent.Browser -MockWith { $false }
