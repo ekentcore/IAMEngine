@@ -21,9 +21,10 @@ import { db } from "@/lib/db";
 import { outdatedAgentCount } from "@/lib/jobs/agent-updates";
 import { openFeatureRequestCount } from "./feature-requests/_lib/loader";
 import { occasionsFor } from "@/lib/eggs/occasions";
-import { effectiveEggDate } from "@/lib/eggs/effective-date";
+import { effectiveEggDate, todayEastern } from "@/lib/eggs/effective-date";
 import { OccasionBanner } from "./_components/eggs/occasion-banner";
 import { KonamiEgg } from "./_components/eggs/konami-egg";
+import { JurassicEgg } from "./_components/eggs/jurassic-egg";
 import { ConsoleSignature } from "./_components/eggs/console-signature";
 import { NewYearEgg } from "./_components/eggs/new-year-egg";
 import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
@@ -98,6 +99,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
               showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
               showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
+              showEasterEggs={isRealSuperAdmin}
             />
             {/* Renders nothing; keeps the nav badge's open-count store seeded + live (see the component). */}
             <FeatureRequestCountSync serverCount={openFeatureRequests} />
@@ -110,6 +112,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 showDocs={!authEnabled() || (!!user && ROLE_RANK[user.role] >= ROLE_RANK.engineer)}
                 showFleetAudit={!authEnabled() || (!!user && can(user.role, "client.edit_secrets"))}
                 showConnectors={!authEnabled() || (!!user && can(user.role, "connector.manage"))}
+                showEasterEggs={isRealSuperAdmin}
               />
               {isRealSuperAdmin && !onLogin && <DateSimulatorButton current={simActive ? simCookie : undefined} />}
               {(!authEnabled() || !!user) && <FeatureRequestButton glyph={eggs.bulbGlyph} />}
@@ -121,11 +124,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         )}
         {acting.impersonating && user && <ImpersonationBanner name={user.name || user.email} role={user.role} />}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
-        {simActive && !onLogin && <SimulatedDateStrip date={eggDate} />}
+        {simActive && !onLogin && <SimulatedDateStrip date={eggDate} realDate={todayEastern()} />}
         {eggs.banners.map((b, i) => <OccasionBanner key={i} banner={b} />)}
         {loggedIn && !onLogin && (
           <>
             <KonamiEgg />
+            <JurassicEgg />
             <ConsoleSignature />
             {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
             {attention && <AdminAttentionModal userId={user?.id ?? null} {...attention} />}

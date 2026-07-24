@@ -1386,7 +1386,10 @@ function Get-CtgUserDrive {
 }
 
 # Resolve an archive TARGET to a drive: a user email -> their OneDrive; a SharePoint site URL ->
-# that site's default document library. Anything else is a config error and throws with the rule.
+# that site's default document library; any other bare string -> a SharePoint site DISPLAY NAME,
+# resolved via Graph site search (FR#38: profiles carry prose like "Offboarded User Data SharePoint
+# site"). Anything short of an unambiguous name match throws — the caller fail-softs it to a WARN,
+# and a data-archival destination is never guessed.
 function Resolve-CtgDriveTarget {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Target)
@@ -1401,7 +1404,47 @@ function Resolve-CtgDriveTarget {
         $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$Target/drive?`$select=id,webUrl" -ErrorAction Stop
         return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "the OneDrive of $Target" }
     }
-    throw "unrecognized OneDrive archive target '$Target' — use a user email or a SharePoint site URL"
+    if ($Target.Trim()) {
+        # A site NAME, possibly with the runbook's prose suffix ("… SharePoint site" / "… site").
+        # SEARCH with the suffix stripped (broader recall — the tenant's site is usually named
+        # without it), but never let the stripped form shadow a site literally named with it: a
+        # tenant holding both "HR" and "HR Site" with target "HR Site" must land in "HR Site".
+        $original = $Target.Trim()
+        $name = ($original -replace '(?i)\s+sharepoint\s+site\s*$', '' -replace '(?i)\s+site\s*$', '').Trim()
+        if (-not $name) { $name = $original }
+        $res = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites?search=$([uri]::EscapeDataString($name))" -ErrorAction Stop
+        # @(...) + null filter: a response with no 'value' yields @($null), whose .Count is 1 —
+        # which would read as a confident single match for a site that does not exist.
+        $hits = @(@(Get-CtgProp $res 'value') | Where-Object { $_ })
+        # Pick precedence: exact (case-insensitive) displayName match on the ORIGINAL target, then
+        # on the stripped name, then a lone hit — and only when that lone hit's name actually
+        # contains what the runbook named (Graph's search is fuzzy: it also matches description and
+        # webUrl, and one irrelevant hit must not become a data-archival destination). Anything
+        # else refuses rather than archive into the wrong site.
+        $exactOriginal = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $original })
+        $exactStripped = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $name })
+        $pick = $null
+        if ($exactOriginal.Count -eq 1) { $pick = $exactOriginal[0] }
+        elseif ($exactStripped.Count -eq 1) { $pick = $exactStripped[0] }
+        elseif ($hits.Count -eq 1) {
+            $dn = [string](Get-CtgProp $hits[0] 'displayName')
+            if ($dn -and $dn.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $pick = $hits[0] }
+        }
+        if (-not $pick) {
+            if ($hits.Count -eq 0) {
+                throw "no SharePoint site found matching '$name' (archive target '$Target') — use the site's exact name, its URL, or a user email. NB: app-only site search needs the Sites.Read.All application role"
+            }
+            $names = @($hits | ForEach-Object { [string](Get-CtgProp $_ 'displayName') } | Select-Object -First 5) -join "', '"
+            if ($hits.Count -eq 1) {
+                throw "no SharePoint site confidently matches '$name' (archive target '$Target') — the only search hit is '$names', which does not look like the configured name; use the site's exact name or its URL so the archive can't land in the wrong site"
+            }
+            throw "$($hits.Count) SharePoint sites match '$name' (archive target '$Target'): '$names' — use the site's exact name or its URL so the archive can't land in the wrong site"
+        }
+        $dispName = [string](Get-CtgProp $pick 'displayName')
+        $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$([string](Get-CtgProp $pick 'id'))/drive?`$select=id,webUrl" -ErrorAction Stop
+        return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "SharePoint site '$dispName'" }
+    }
+    throw "unrecognized OneDrive archive target '$Target' — use a user email, a SharePoint site URL, or a SharePoint site name"
 }
 
 function Invoke-CtgM365Offboarding {
@@ -1522,6 +1565,7 @@ function Invoke-CtgM365Offboarding {
             # Why a group may NOT be removable via Graph (Entra) — used to route it instead of erroring:
             OnPrem      = [bool](Get-CtgProp $ap 'onPremisesSyncEnabled')                 # AD-mastered -> the AD step removes it
             MailEnabled = [bool](Get-CtgProp $ap 'mailEnabled')                           # DL / mail-enabled security -> managed in Exchange
+            Unified     = (@(Get-CtgProp $ap 'groupTypes') -contains 'Unified')           # M365 group: mail-enabled BUT Graph-removable (FR#37)
             Dynamic     = (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') # rule-managed -> can't remove a member
         }
     })
@@ -1751,15 +1795,19 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
-    # 3. Remove from all groups (evidence already captured). Only CLOUD, non-mail, non-dynamic groups
-    # can be modified via Graph — route the rest instead of erroring on them:
+    # 3. Remove from all groups (evidence already captured). Only groups Graph can write are
+    # modified here — route the rest instead of erroring on them:
     #   - on-prem-synced groups are AD-mastered -> the active-directory step removes them
-    #   - mail-enabled groups / DLs are managed in Exchange (Graph can't change membership)
-    #   - dynamic groups are rule-managed -> a member can't be removed at all
+    #   - mail-enabled DLs / mail-enabled security groups are managed in Exchange (Graph can't
+    #     change membership) — EXCEPT Unified (M365) groups, which are mail-enabled but
+    #     Graph-removable (FR#37: the Exchange DL sweep enumerates Get-DistributionGroup, which
+    #     never returns Unified groups, so skipping them here left them on the leaver forever;
+    #     the onboard mirror already routes them this way)
+    #   - dynamic groups are rule-managed -> a member can't be removed at all (even Unified+dynamic)
     if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
         foreach ($g in $groupEvidence) {
             if ($g.OnPrem)      { $actions.Add("skipped on-prem-synced group: $($g.DisplayName) — removed by the AD step"); continue }
-            if ($g.MailEnabled) { $actions.Add("skipped mail-enabled group/DL: $($g.DisplayName) — managed in Exchange"); continue }
+            if ($g.MailEnabled -and -not $g.Unified) { $actions.Add("skipped mail-enabled group/DL: $($g.DisplayName) — managed in Exchange"); continue }
             if ($g.Dynamic)     { $actions.Add("skipped dynamic group: $($g.DisplayName) — membership is rule-managed"); continue }
             if ($PSCmdlet.ShouldProcess($upn, "Remove from group $($g.DisplayName)")) {
                 try {
@@ -1867,7 +1915,7 @@ function Invoke-CtgM365Offboarding {
         if ($drive -and $oneDrive) {
             $target = [string](Get-CtgProp $oneDrive 'target')
             if (-not $target) {
-                $actions.Add("WARN oneDriveBackup is set but has no target (user email or SharePoint site URL) — nothing archived")
+                $actions.Add("WARN oneDriveBackup is set but has no target (user email, SharePoint site URL, or SharePoint site name) — nothing archived")
             }
             else {
                 try {
@@ -1930,7 +1978,14 @@ function Invoke-CtgM365Offboarding {
                         }
                     }
                 }
-                catch { $actions.Add("WARN OneDrive archive to '$target' did not run (needs the Files.ReadWrite.All app role?): $($_.Exception.Message)") }
+                catch {
+                    # Blame the app role ONLY when Graph actually refused (403) — a config/resolution
+                    # error (bad target, ambiguous site name) used to get the same hint appended and
+                    # sent the operator off to grant a permission that was never the problem (FR#38).
+                    $ge = Get-CtgGraphError $_
+                    $hint = if ($ge.Status -eq 403 -or $ge.Code -match 'Authorization_RequestDenied') { " — the m365-admin app registration needs the Files.ReadWrite.All application role (grant + admin-consent)" } else { "" }
+                    $actions.Add("WARN OneDrive archive to '$target' did not run: $(if ($ge.Code) { "$($ge.Code) " })$($ge.Message)$hint")
+                }
             }
         }
     }

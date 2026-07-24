@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import type { RunReport, StepVerdict } from "@/lib/cases/run-report";
 import { resolveOutcomes, reopenOutcomes, dismissCaseWarnings, restoreCaseWarnings } from "@/app/runs/actions";
 import { ResolutionModal } from "./resolution-modal";
+import { CaseEggs } from "./case-eggs";
 import { GeneratePasswordButton, RevealResetPasswordButton } from "./generate-password-button";
 import { ForceSpanningSyncButton } from "./force-spanning-sync-button";
 import { PASSWORD_RESET_KEY, PASSWORD_RESET_SYSTEM_KEYS } from "@/lib/jobs/password-reset";
@@ -32,7 +33,8 @@ const PRE: React.CSSProperties = {
 
 function Badge({ verdict }: { verdict: StepVerdict }) {
   const v = VERDICT[verdict];
-  return <span className="badge" style={{ color: v.color, borderColor: v.color }}>{v.label}</span>;
+  // hal-gate: egg-only hook, inert until the "hal" egg toggles body.hal-mode (case-eggs.tsx).
+  return <span className={verdict === "needs_approval" ? "badge hal-gate" : "badge"} style={{ color: v.color, borderColor: v.color }}>{v.label}</span>;
 }
 
 // Procurement-case watch: shown on steps blocked on license seats (a WARN naming a Procurement
@@ -885,8 +887,10 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.35 } 50% { opacity: 1 } }`}</style>
+      {/* Easter eggs: typed-word modes riding the egg-only class hooks below (see case-eggs.tsx). */}
+      <CaseEggs offboard={report.action === "offboard"} />
       {report.credsMissing.length > 0 && (
-        <div style={{ margin: "0 0 0.6rem", padding: "0.5rem 0.7rem", borderRadius: 6, border: "1px solid #fde68a", background: "#fffbeb", color: "#92400e", fontSize: 13 }}>
+        <div className="yswp-banner" style={{ margin: "0 0 0.6rem", padding: "0.5rem 0.7rem", borderRadius: 6, border: "1px solid #fde68a", background: "#fffbeb", color: "#92400e", fontSize: 13 }}>
           ⚠ <b>Client credentials not set up</b> for this case:{" "}
           {report.credsMissing.map((m) => `${m.secretName} (${m.systems.join(", ")})`).join("; ")}.{" "}
           Set them on the client&rsquo;s <a href={`/clients/${report.client.slug}`}>Credentials panel</a> — these steps stay blocked until they resolve.
@@ -1012,8 +1016,9 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
         const spanningChildren = step.systemKey === "spanning" ? report.steps.filter((s) => s.systemKey === SPANNING_FORCE_SYNC_KEY) : [];
         return (
           <React.Fragment key={step.seq}>
-          <details open={isOpen} style={{ margin: "0.2rem 0" }}>
-            <summary onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
+          {/* os-printer / t800-done: egg-only hooks, inert until their modes are on (case-eggs.tsx). */}
+          <details open={isOpen} className={step.systemKey === "printers" ? "os-printer" : undefined} style={{ margin: "0.2rem 0" }}>
+            <summary className={step.intent && step.verdict === "verified" ? "t800-done" : undefined} onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
               {step.intent === "destructive" && (
@@ -1059,7 +1064,7 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {/* A pending step says WHY it hasn't started — waiting on predecessors, a missing
                   credential, or no runner — right on the row, no expanding needed. */}
               {step.pendingReason && (
-                <span style={{ marginLeft: 8, fontSize: 12, color: step.pendingReason.startsWith("blocked") ? "#b3261e" : "#8a6d00" }}>
+                <span className={step.pendingReason.startsWith("blocked") ? "yswp-blocked" : undefined} style={{ marginLeft: 8, fontSize: 12, color: step.pendingReason.startsWith("blocked") ? "#b3261e" : "#8a6d00" }}>
                   ⏳ {step.pendingReason}
                 </span>
               )}
@@ -1269,8 +1274,11 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
               {step.jobId && <MailboxNotConvertedDecision caseId={caseId} actions={step.actions} refresh={refresh} />}
               <ExchangeConvertDefaultOffer caseId={caseId} systemKey={step.systemKey} />
               {step.autoRetry && (
-                <div className="note" style={{ marginTop: 4, color: "#8a6d00" }} suppressHydrationWarning>
-                  ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
+                <div className="note gh-retry" data-attempt={step.autoRetry.count} style={{ marginTop: 4, color: "#8a6d00" }} suppressHydrationWarning>
+                  {/* gh-orig: the groundhog egg hides this span and reads data-attempt instead. */}
+                  <span className="gh-orig">
+                    ⟳ auto-retry scheduled ~{new Date(step.autoRetry.at).toLocaleTimeString()} (attempt {step.autoRetry.count}, waiting since {new Date(step.autoRetry.firstAt).toLocaleTimeString()}) — server-side, safe to close this page
+                  </span>
                 </div>
               )}
               {step.licenseOptions && step.jobId && <LicensePicker jobId={step.jobId} options={step.licenseOptions} refresh={refresh} waiting={waiting.has(step.seq)} onWait={() => setWaiting((s) => new Set(s).add(step.seq))} />}

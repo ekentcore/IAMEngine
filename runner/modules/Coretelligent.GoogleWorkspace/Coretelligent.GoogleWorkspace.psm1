@@ -153,6 +153,16 @@ function Get-CtgGoogleSessionScopes {
     if ($script:GoogleScopes) { @($script:GoogleScopes) } else { @() }
 }
 
+function Get-CtgGoogleCustomer {
+    # The Workspace customer id the current session was connected with. Module state
+    # ($script:GoogleCustomer) is INVISIBLE to the runner script's own $script: scope — before
+    # this seam existed the conn-test probe read an unset variable and sent an EMPTY customer=
+    # param, which the Directory API 400s (FR#35). Never returns empty.
+    [CmdletBinding()]
+    param()
+    if ($script:GoogleCustomer) { [string]$script:GoogleCustomer } else { 'my_customer' }
+}
+
 function Invoke-CtgGoogleApi {
     # Single HTTP seam (bearer auth). Mocked in tests. Returns $null on 404 (not found) — which is the
     # right answer for a GET ("no such user"), but WRONG for an action POST: a 404 there would be
@@ -170,7 +180,31 @@ function Invoke-CtgGoogleApi {
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
     try { return Invoke-RestMethod @p }
     catch {
-        if (-not $ThrowOn404 -and $_.Exception.Response.StatusCode.value__ -eq 404) { return $null }
+        $status = $null
+        try { $status = [int]$_.Exception.Response.StatusCode.value__ } catch { }
+        if (-not $ThrowOn404 -and $status -eq 404) { return $null }
+        # A bare "400 (Bad Request)" is useless — Google's actual reason ("Invalid Input:
+        # customer …") is in the response body, which PowerShell parks on $_.ErrorDetails.Message,
+        # never on the exception. Rethrow with it appended (truncated) so the failure reads like
+        # Google wrote it. No ErrorDetails (socket/DNS fault) → rethrow untouched.
+        $detail = $null
+        try { $detail = [string]$_.ErrorDetails.Message } catch { }
+        if ($detail) {
+            $reason = $null
+            try { $reason = [string](($detail | ConvertFrom-Json).error.message) } catch { }
+            if (-not $reason) { $reason = $detail }
+            $reason = ($reason -replace '\s+', ' ').Trim()
+            if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) + '…' }
+            $msg = "$(([string]$_.Exception.Message).TrimEnd() -replace '\.$', ''): $reason"
+            # Preserve the exception type + Response when we have one — callers (signOut) read
+            # $_.Exception.Response.StatusCode to tell a scope gap (403) from a bad token (401).
+            $resp = $null
+            try { $resp = $_.Exception.Response } catch { }
+            if ($resp -is [System.Net.Http.HttpResponseMessage]) {
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new($msg, $resp)
+            }
+            throw $msg
+        }
         throw
     }
 }
@@ -715,4 +749,4 @@ function Invoke-CtgGoogleDwdGrant {
     throw "domain-wide delegation grant could not be confirmed — $err$ev"
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Get-CtgGoogleCustomer, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant

@@ -3,7 +3,8 @@
 // agree on what { value: false } means. Clients spell the key both `hideFromGal` and
 // `hideFromGAL` (see profiles/coretelligent.json), so every read is case-insensitive.
 
-function readHideFromGal(config: unknown): unknown {
+// The raw configured value under either spelling (undefined when the lane says nothing at all).
+export function readHideFromGal(config: unknown): unknown {
   if (!config || typeof config !== "object") return undefined;
   const rec = config as Record<string, unknown>;
   if ("hideFromGal" in rec) return rec.hideFromGal;
