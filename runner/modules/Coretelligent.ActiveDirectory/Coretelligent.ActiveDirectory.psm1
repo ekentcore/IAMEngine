@@ -769,13 +769,56 @@ function Invoke-CtgADOffboarding {
         catch { $actions.Add("WARN could not disable computer '$computerName': $($_.Exception.Message)") }
     }
 
+    # 8. -a ADMIN-ACCOUNT SWEEP (config.adminAccountSuffix, e.g. '-a'): the person may hold a
+    # privileged secondary account named <sam><suffix> (mgallegos -> mgallegos-a) that must be
+    # disabled with them. The ticket only carries a display name, so the admin identity is derived
+    # from the RESOLVED primary, looked up EXACTLY (never the fuzzy-candidates machinery — a missing
+    # -a account must never pause the case), and when present run through this same offboard with the
+    # suffix stripped (depth-1 recursion) and the computer keys dropped (the -a account has no
+    # workstation of its own).
+    $adminEvidence = $null
+    $adminSuffix = [string](Get-CtgProp $Config 'adminAccountSuffix')
+    if ($adminSuffix) {
+        if ($adminSuffix -notmatch '^[A-Za-z0-9._-]{1,16}$') {
+            $actions.Add("WARN admin-account check skipped: suffix '$adminSuffix' is not a valid account-name fragment")
+        }
+        else {
+            $adminSam = "$sam$adminSuffix"
+            $primaryUpn = [string](Get-CtgProp $existing 'UserPrincipalName')
+            $adminUpn = ''
+            if ($primaryUpn -match '^([^@]+)@(.+)$') { $adminUpn = "$($Matches[1])$adminSuffix@$($Matches[2])" }
+            $samEsc = $adminSam -replace "'", "''"
+            $adminHit = @(Get-ADUser -Filter "SamAccountName -eq '$samEsc'" -ErrorAction SilentlyContinue @AdConnection)
+            if ($adminHit.Count -eq 0 -and $adminUpn) {
+                $adminUpnEsc = $adminUpn -replace "'", "''"
+                $adminHit = @(Get-ADUser -Filter "UserPrincipalName -eq '$adminUpnEsc'" -ErrorAction SilentlyContinue @AdConnection)
+            }
+            if ($adminHit.Count -eq 0) {
+                $actions.Add("admin account check: no $adminSam in AD — nothing extra to disable")
+            }
+            else {
+                $adminWho = [string]((Get-CtgProp $adminHit[0] 'SamAccountName') ?? $adminSam)
+                $actions.Add("admin account check: found $adminWho — disabling it the same way")
+                $adminCfg = @{}
+                foreach ($p in $Config.PSObject.Properties) {
+                    if ($p.Name -in @('adminAccountSuffix', 'disableComputer', 'computerName', 'disabledComputersOu')) { continue }
+                    $adminCfg[$p.Name] = $p.Value
+                }
+                $adminResult = Invoke-CtgADOffboarding -User ([pscustomobject]@{ SamAccountName = $adminWho; UserPrincipalName = $adminUpn }) -Config ([pscustomobject]$adminCfg) -AdConnection $AdConnection
+                foreach ($a in @(Get-CtgProp $adminResult 'Actions')) { $actions.Add("[$adminWho] $a") }
+                $adminEvidence = Get-CtgProp $adminResult 'Evidence'
+            }
+        }
+    }
+
     [pscustomobject]@{
         System='active-directory'; Status='ok'; Sam=$sam
         # Manager: the link this step CLEARED. The app reads it off the result and hands it to the
         # Exchange step (Full Access on the shared mailbox); it's evidence too, so the run report can
         # name the person whose access was removed.
         Manager=$managerInfo
-        Evidence=@{ Groups = $groupNames; Computer = $computerInfo; ProtectedGroups = @($protectedFound); Manager = $managerInfo }
+        # AdminAccount = what the -a sweep did (its own Groups/Manager evidence), $null when not configured.
+        Evidence=@{ Groups = $groupNames; Computer = $computerInfo; ProtectedGroups = @($protectedFound); Manager = $managerInfo; AdminAccount = $adminEvidence }
         Actions=$actions.ToArray()
     }
 }

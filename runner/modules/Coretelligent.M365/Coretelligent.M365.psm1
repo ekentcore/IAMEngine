@@ -1512,7 +1512,9 @@ function Invoke-CtgM365Offboarding {
     # 1. Evidence FIRST — snapshot group memberships before we remove anything ----
     $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
         Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }
-    $groupEvidence = foreach ($g in $memberships) {
+    # @(...) so ZERO memberships stays a countable array — under StrictMode a bare empty foreach
+    # yields $null and the .Count read below throws (the #218 Adobe crash, offboard edition).
+    $groupEvidence = @(foreach ($g in $memberships) {
         $ap = $g.AdditionalProperties
         [pscustomobject]@{
             Id          = $g.Id
@@ -1522,7 +1524,7 @@ function Invoke-CtgM365Offboarding {
             MailEnabled = [bool](Get-CtgProp $ap 'mailEnabled')                           # DL / mail-enabled security -> managed in Exchange
             Dynamic     = (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') # rule-managed -> can't remove a member
         }
-    }
+    })
     $actions.Add("captured $($groupEvidence.Count) group membership(s) as evidence")
 
     # 2. Block sign-in (idempotent) --------------------------------------------
@@ -2155,6 +2157,42 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
+    # -a ADMIN-ACCOUNT SWEEP (config.adminAccountSuffix, e.g. '-a'): the person may hold a privileged
+    # secondary account named <local>-a@<domain> (mgallegos -> mgallegos-a) that must be disabled with
+    # them. The ticket only carries a display name, so the admin identity is derived from the RESOLVED
+    # primary UPN, looked up EXACTLY (never the fuzzy-candidates machinery — a missing -a account must
+    # never pause the case), and when present run through this same offboard with the suffix stripped
+    # (depth-1 recursion). License/mailbox/OneDrive keys stay with the primary: those gates can park a
+    # case (DECISION_NEEDED), and an admin account must never hold a case hostage.
+    $adminEvidence = $null
+    $adminSuffix = [string](Get-CtgProp $Config 'adminAccountSuffix')
+    if ($adminSuffix) {
+        if ($adminSuffix -notmatch '^[A-Za-z0-9._-]{1,16}$') {
+            $actions.Add("WARN admin-account check skipped: suffix '$adminSuffix' is not a valid account-name fragment")
+        }
+        elseif ($upn -notmatch '^([^@]+)@(.+)$') {
+            $actions.Add("WARN admin-account check skipped: cannot derive an admin UPN from '$upn'")
+        }
+        else {
+            $adminUpn = "$($Matches[1])$adminSuffix@$($Matches[2])"
+            $adminHit = Get-MgUser -Filter "userPrincipalName eq '$($adminUpn -replace "'", "''")'" -ErrorAction SilentlyContinue
+            if (-not $adminHit) {
+                $actions.Add("admin account check: no $adminUpn — nothing extra to disable")
+            }
+            else {
+                $actions.Add("admin account check: found $adminUpn — disabling it the same way")
+                $adminCfg = @{}
+                foreach ($p in $Config.PSObject.Properties) {
+                    if ($p.Name -in @('adminAccountSuffix', 'removeLicense', 'mailbox', 'oneDriveBackup', 'oneDriveGrantAccessTo')) { continue }
+                    $adminCfg[$p.Name] = $p.Value
+                }
+                $adminResult = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = $adminUpn }) -Config ([pscustomobject]$adminCfg) -SystemKey $SystemKey
+                foreach ($a in @(Get-CtgProp $adminResult 'Actions')) { $actions.Add("[$adminUpn] $a") }
+                $adminEvidence = Get-CtgProp $adminResult 'Evidence'
+            }
+        }
+    }
+
     [pscustomobject]@{
         System   = 'm365'
         Status   = 'ok'
@@ -2162,7 +2200,8 @@ function Invoke-CtgM365Offboarding {
         Upn      = $upn
         # MfaMethods = the KINDS of second factor that were registered and removed (e.g. "phone",
         # "microsoftAuthenticator"). Types only — a phone number is PII and never lands in evidence.
-        Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence); MfaMethods = @($mfaRemoved) }
+        # AdminAccount = what the -a sweep did (its own Groups/Devices/MfaMethods), $null when not configured.
+        Evidence = @{ Groups = @($groupEvidence); Devices = @($deviceEvidence); MfaMethods = @($mfaRemoved); AdminAccount = $adminEvidence }
         # Who the manager WAS (captured before the clear) — same contract as the AD step's Manager,
         # so the app can hand it to Exchange's manager-delegate fallback on a re-run.
         Manager  = $managerInfo

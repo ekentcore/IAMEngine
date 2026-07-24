@@ -224,6 +224,7 @@
           "disable": true,
           "disableAccount": true,
           "resetPassword": true,
+          "adminAccountSuffix": "-a",
           "hideFromGAL": true,
           "removeGroups": true,
           "removeAllGroups": true,
@@ -256,6 +257,7 @@
           "convertToShared": { "skipIfMailboxOverGB": 50 },
           "delegateManagerFullAccess": true,
           "blockMobileDevices": true,
+          "adminAccountSuffix": "-a",
           "onPremExchangeUri": "http://core-cce1-ex01.coretelligent.local/PowerShell/"
         }
       }
@@ -301,7 +303,7 @@
         "when": "always",
         "captureEvidence": true,
         "dependsOn": ["exchange"],
-        "config": { "blockSignIn": true, "revokeSessions": true, "disableDevices": true, "captureDevices": true, "removeAllGroups": true }
+        "config": { "blockSignIn": true, "revokeSessions": true, "disableDevices": true, "captureDevices": true, "removeAllGroups": true, "adminAccountSuffix": "-a" }
       }
     },
     {

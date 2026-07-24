@@ -1009,3 +1009,46 @@ Describe 'Test-CtgHideFromGal' {
         Test-CtgHideFromGal '0' | Should -BeFalse
     }
 }
+
+Describe 'Invoke-CtgExchangeOffboarding admin-account (-a) sweep' {
+    BeforeEach {
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        Mock Set-Mailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-MailboxAutoReplyConfiguration -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -MockWith { $null }
+    }
+
+    It 'runs the disable path on the -a mailbox when the recipient exists, without converting it' {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { "$Identity" -eq 'jdoe-a@x.com' } -MockWith {
+            [pscustomobject]@{ PrimarySmtpAddress = 'jdoe-a@x.com' }
+        }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true; removeDistributionGroups = $false; adminAccountSuffix = '-a' }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        $r.Upn | Should -Be 'jdoe@x.com'      # the primary stays authoritative on the result
+        $r.MailboxSizeGB | Should -Be 10
+        ($r.Actions -join "`n") | Should -Match 'admin account check: found jdoe-a@x\.com'
+        # convert-to-shared is a mail-continuity step and is stripped from the -a pass; the CAS block is kept
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 2 -Exactly -ParameterFilter { $ActiveSyncEnabled -eq $false }
+    }
+
+    It 'reports plainly when there is no -a recipient' {
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true; removeDistributionGroups = $false; adminAccountSuffix = '-a' }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
+        $r.Status | Should -Be 'ok'
+        ($r.Actions -join "`n") | Should -Match 'admin account check: no jdoe-a@x\.com'
+        $r.PSObject.Properties['Candidates'] | Should -BeNullOrEmpty
+        Should -Invoke Set-CASMailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+    }
+
+    It 'does nothing extra when adminAccountSuffix is not configured' {
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 }; blockMobileDevices = $true; removeDistributionGroups = $false }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
+        ($r.Actions -join "`n") | Should -Not -Match 'admin account'
+        Should -Invoke Get-Recipient -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+    }
+}
