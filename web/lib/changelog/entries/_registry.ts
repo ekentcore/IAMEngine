@@ -9,6 +9,7 @@ export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as addDirectorySyncButton } from "./add-directory-sync-button";
 export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case-resolution";
+export { entry as adminAttentionModal } from "./admin-attention-modal";
 export { entry as adobeConsoleAutoSetup } from "./adobe-console-auto-setup";
 export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
