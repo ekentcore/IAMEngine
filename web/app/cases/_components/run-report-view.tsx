@@ -539,9 +539,10 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [lic, setLic] = useState(review.licenses.join(", "));
   const [fbk, setFbk] = useState(review.fallbacks.join(", "));
+  const [extraGroups, setExtraGroups] = useState(review.extraGroups);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const dirty = Object.keys(edits).length > 0 || lic !== review.licenses.join(", ") || fbk !== review.fallbacks.join(", ");
+  const dirty = Object.keys(edits).length > 0 || lic !== review.licenses.join(", ") || fbk !== review.fallbacks.join(", ") || extraGroups !== review.extraGroups;
   const SRC: Record<string, { label: string; color: string }> = { ai: { label: "AI", color: "#1e40af" }, operator: { label: "edited", color: "#15803d" }, derived: { label: "", color: "" } };
 
   return (
@@ -566,14 +567,20 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
           <input value={fbk} onChange={(e) => setFbk(e.target.value)} placeholder="comma-separated UPNs used if the primary is taken" style={{ fontSize: 13, maxWidth: 420 }} />
         </div>
         {review.groups.length > 0 && <div className="note" style={{ marginTop: 4 }}>Groups: {review.groups.map((g) => `${g.name}${g.type ? ` (${g.type})` : ""}`).join(", ")} <span className="muted">— type confirmed at run time; edit on the client page</span></div>}
+        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "0.3rem 0.6rem", alignItems: "center", marginTop: 4 }}>
+          <label style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>Additional groups (comma-separated)</label>
+          <input value={extraGroups} onChange={(e) => setExtraGroups(e.target.value)} placeholder="e.g. GIS Users, Finance Share" style={{ fontSize: 13, maxWidth: 420 }} />
+        </div>
       </div>
       {msg && <p className="note" style={{ color: "#15803d" }}>{msg}</p>}
       <button className="primary" disabled={busy || !dirty} style={{ fontSize: 12 }} onClick={async () => {
         setBusy(true); setMsg(null);
         try {
-          // Generic field edits -> /fields; m365 license/UPN/fallback -> /m365-override.
-          if (Object.keys(edits).length) {
-            const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: edits }) });
+          // Generic field edits (incl. extraGroups) -> /fields; m365 license/UPN/fallback -> /m365-override.
+          const extraGroupsChanged = extraGroups !== review.extraGroups;
+          const fieldEdits = extraGroupsChanged ? { ...edits, extraGroups } : edits;
+          if (Object.keys(fieldEdits).length) {
+            const r = await fetch(`/api/cases/${caseId}/fields`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: fieldEdits }) });
             if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
           }
           const licArr = lic.split(",").map((s) => s.trim()).filter(Boolean);
@@ -584,6 +591,13 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
           if (licChanged || fbChanged) {
             const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(licChanged ? { licenses: licArr } : {}), ...(fbChanged ? { fallbacks: fbArr } : {}), ...(upn ? { userPrincipalName: upn } : {}) }) });
             if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
+          }
+          // Additional groups only take effect on (re-)plan — re-plan immediately so they land on
+          // the AD/cloud step config right away instead of waiting for someone to notice and re-plan
+          // manually (same endpoint the Re-plan button uses).
+          if (extraGroupsChanged) {
+            const r = await fetch(`/api/cases/${caseId}/replan`, { method: "POST" });
+            if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "saved, but re-plan failed"); return; }
           }
           setEdits({}); setMsg("✓ Saved — applies on the next run/claim.");
           await refresh();

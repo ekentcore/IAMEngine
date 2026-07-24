@@ -106,6 +106,7 @@ export type RunReport = {
     groups: { name: string; type: string | null }[];
     licenses: string[];
     fallbacks: string[]; // conflict-fallback usernames (payload.userPrincipalNameFallbacks)
+    extraGroups: string; // operator-typed additional groups (FR #30), comma-separated for the input
   } | null;
   user: string | null;
   startedAt: string | null;
@@ -488,7 +489,10 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         }
       }
       const fallbacks = Array.isArray(p.userPrincipalNameFallbacks) ? (p.userPrincipalNameFallbacks as unknown[]).filter((x): x is string => typeof x === "string") : [];
-      return { fields, groups: [...groupMap.values()], licenses: [...licSet], fallbacks };
+      const extraGroups = Array.isArray(p.extraGroups)
+        ? (p.extraGroups as unknown[]).filter((x): x is string => typeof x === "string").join(", ")
+        : typeof p.extraGroups === "string" ? p.extraGroups : "";
+      return { fields, groups: [...groupMap.values()], licenses: [...licSet], fallbacks, extraGroups };
     })(),
     // A sweep is in flight when a validate-only job is still pending/dispatched/running.
     verifying: input.jobs.some((j) => Boolean((j.request as { validateOnly?: boolean } | null)?.validateOnly) && ["pending", "dispatched", "running"].includes(j.status)),

@@ -240,7 +240,9 @@ export function resolvePlannedConfigs(
   // is the only lane that can add DL members); security groups go to every directory lane — they
   // may live on-prem (AD) or in the cloud (Graph), and each runner adds the ones it actually has.
   const strList = (v: unknown): string[] =>
-    Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x.trim() : "")).filter((x) => x !== "") : [];
+    Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x.trim() : "")).filter((x) => x !== "")
+    : typeof v === "string" ? v.split(/[,;]/).map((x) => x.trim()).filter((x) => x !== "")
+    : [];
   // Requestor free-text must NEVER add someone to a privileged group: the runner binds as SYSTEM on
   // a DC, and a form field saying "Domain Admins" would otherwise make the hire a domain admin on
   // day one with no approval gate. Same well-known list the AD offboard's Test-CtgADProtectedGroup
@@ -258,7 +260,10 @@ export function resolvePlannedConfigs(
     cfg.groups = base;
   };
   const reqDls = safeGroups(strList(payload.emailDistroGroups));
-  const reqSec = safeGroups(strList(payload.securityGroups));
+  // FR #30: operator-typed "additional groups" on the case review panel (payload.extraGroups) merge
+  // into the same mastering-lane routing as ticket-picked security groups — AD lane if the client
+  // has one, else m365/entra — and pass the same protected-groups filter.
+  const reqSec = safeGroups([...strList(payload.securityGroups), ...strList(payload.extraGroups)]);
   // No Graph lane planned (exchange-only client): the namedGroups handoff below has nothing to read
   // from, so hand the DLs to the exchange job directly.
   const hasGraphLane = withLoc.some((j) => j.systemKey === "m365" || j.systemKey === "entra");
