@@ -282,3 +282,5 @@ export { entry as m365WritebackTemplateByName } from "./m365-writeback-template-
 export { entry as connTestOptionalFlagSurvivesWire } from "./conn-test-optional-flag-survives-wire";
 
 export { entry as pirateEgg } from "./pirate-egg";
+
+export { entry as easterEggsPage } from "./easter-eggs-page";

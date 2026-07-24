@@ -23,7 +23,7 @@ type Item = readonly [string, string];
 
 // Reference + admin pages, grouped for the menu. Role-gated entries are filtered by the flags
 // the server layout passes down (the server stays the authority; this only hides links).
-export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }): { label: string; items: Item[] }[] {
+export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean; showEasterEggs?: boolean }): { label: string; items: Item[] }[] {
   const reference: Item[] = [
     ...(flags.showDocs ? ([["/docs", "Documents"]] as const) : []),
     // Everyone sees the board (read-only below admin); the admin editor lives ON the page,
@@ -52,6 +52,8 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
     ...(flags.showSettings ? ([["/cutover", "Azure cutover"]] as const) : []),
     ...(flags.showSettings ? ([["/tools/db-copy", "DB copy"]] as const) : []),
     ...(flags.showSettings ? ([["/settings", "Settings"]] as const) : []),
+    // The egg field guide spoils everything on purpose, so only the REAL super-admin sees it.
+    ...(flags.showEasterEggs ? ([["/easter-eggs", "Easter eggs"]] as const) : []),
   ];
   return [
     { label: "Reference", items: reference },
@@ -62,7 +64,7 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
 
 const isActive = (path: string, href: string) => path === href || path.startsWith(`${href}/`);
 
-export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean }) {
+export function Nav(flags: { showUsers?: boolean; showAudit?: boolean; showSettings?: boolean; showChangelog?: boolean; showDocs?: boolean; showFleetAudit?: boolean; showConnectors?: boolean; showEasterEggs?: boolean }) {
   const path = usePathname() ?? "";
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
