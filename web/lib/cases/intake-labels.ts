@@ -13,6 +13,7 @@ export const INTAKE_LABELS: Record<string, string> = {
   mirrorPermissionsFromUser: "Mirror permissions from", roles: "Roles", role: "Role", listMembership: "List membership",
   requestedBy: "Requested by", emailAddressNeeded: "Email address needed?", officeLineRequired: "Office line required?",
   cellPhoneRequired: "Cell phone required?", productLicenses: "Product licenses", securityGroups: "Security groups",
+  extraGroups: "Additional groups",
   emailDistroGroups: "Email distribution groups", sharedMailboxes: "Shared mailboxes", otherUnlistedMailbox: "Other mailbox",
   fileShareAccess: "File share access", cloudApplications: "Cloud applications", otherCloudApps: "Other cloud apps",
   clientProvidingAsset: "Client providing asset?", needsComputer: "Needs computer?", printers: "Printers",
