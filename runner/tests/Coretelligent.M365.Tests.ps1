@@ -605,6 +605,44 @@ Describe 'Invoke-CtgM365Offboarding' {
         ($r.Actions -join ' ') | Should -Match "SharePoint site 'Offboarded User Data'"
     }
 
+    # REGRESSION (PR review): the prose suffix must not shadow a site literally NAMED with it.
+    # A tenant holding both "HR" and "HR Site" with target "HR Site" used to strip to "HR",
+    # exact-match "HR", and silently archive the leaver's data into the WRONG site. The ORIGINAL
+    # target name wins over the stripped form when both match exactly.
+    It 'prefers a site named EXACTLY like the original target over the suffix-stripped form' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=HR') { return @{ value = @(@{ id = 's-hr'; displayName = 'HR' }, @{ id = 's-hrsite'; displayName = 'HR Site' }) } }
+            if ($Uri -match '/sites/s-hrsite/drive') { return @{ id = 'drv-dst'; webUrl = 'https://sp/hrsite' } }
+            if ($Uri -match '/sites/s-hr/drive') { return @{ id = 'drv-WRONG'; webUrl = 'https://sp/hr' } }
+            if ($Uri -match '/root:/Archive') { throw 'itemNotFound' }
+            if ($Method -eq 'POST' -and $Uri -match '/drives/drv-dst/root/children') { return @{ id = 'fold-1' } }
+            if ($Uri -match '/drives/drv-dst/items/fold-1/children') { return @{ value = @() } }
+            if ($Uri -match '/drives/drv-src/root/children') { return @{ value = @(@{ id = 'i1'; name = 'Documents' }) } }
+            if ($Uri -match '/copy$') { return $null }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'HR Site' } }) -MailboxSizeGB 10
+        ($r.Actions -join ' ') | Should -Match "SharePoint site 'HR Site'"
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/drives/drv-WRONG' }
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+    }
+
+    # Graph's site search is FUZZY (it also matches description/webUrl) — a lone irrelevant hit
+    # must not become the archive destination just because it was the only one.
+    It 'refuses a single search hit whose name does not contain the configured name' {
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
+            if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
+            if ($Uri -match '/sites\?search=') { return @{ value = @(@{ id = 's-x'; displayName = 'Marketing' }) } }
+            return @{}
+        }
+        $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true; oneDriveBackup = [pscustomobject]@{ target = 'Offboarded User Data' } }) -MailboxSizeGB 10
+        $r.Status | Should -Be 'ok'
+        Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/copy$' }
+        ($r.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'Offboarded User Data' did not run"
+        ($r.Actions -join ' ') | Should -Match "'Marketing'"
+    }
+
     It 'refuses (fail-soft) when the site name matches MORE THAN ONE site — never guesses' {
         Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith {
             if ($Uri -match '/users/uid-1/drive') { return @{ id = 'drv-src'; webUrl = 'https://od/jdoe' } }
@@ -616,6 +654,9 @@ Describe 'Invoke-CtgM365Offboarding' {
         Should -Invoke Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -Times 0 -Exactly -ParameterFilter { $Uri -match '/copy$' }
         ($r.Actions -join ' ') | Should -Match "WARN OneDrive archive to 'Archive' did not run"
         ($r.Actions -join ' ') | Should -Match '2 SharePoint sites match'
+        # The search plainly WORKED here — pointing at the Sites.Read.All grant would be the same
+        # misleading-hint pattern this FR fixed. That NB belongs to the zero-hit message only.
+        ($r.Actions -join ' ') | Should -Not -Match 'Sites\.Read\.All'
     }
 
     It 'refuses (fail-soft) when NO site matches the configured name, and names Sites.Read.All' {

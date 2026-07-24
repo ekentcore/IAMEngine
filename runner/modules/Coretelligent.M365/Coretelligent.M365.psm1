@@ -1405,24 +1405,40 @@ function Resolve-CtgDriveTarget {
         return @{ DriveId = [string](Get-CtgProp $d 'id'); Label = "the OneDrive of $Target" }
     }
     if ($Target.Trim()) {
-        # A site NAME, possibly with the runbook's prose suffix ("… SharePoint site" / "… site") —
-        # strip it before searching; the tenant's site is named without it.
-        $name = ($Target -replace '(?i)\s+sharepoint\s+site\s*$', '' -replace '(?i)\s+site\s*$', '').Trim()
-        if (-not $name) { $name = $Target.Trim() }
+        # A site NAME, possibly with the runbook's prose suffix ("… SharePoint site" / "… site").
+        # SEARCH with the suffix stripped (broader recall — the tenant's site is usually named
+        # without it), but never let the stripped form shadow a site literally named with it: a
+        # tenant holding both "HR" and "HR Site" with target "HR Site" must land in "HR Site".
+        $original = $Target.Trim()
+        $name = ($original -replace '(?i)\s+sharepoint\s+site\s*$', '' -replace '(?i)\s+site\s*$', '').Trim()
+        if (-not $name) { $name = $original }
         $res = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites?search=$([uri]::EscapeDataString($name))" -ErrorAction Stop
         # @(...) + null filter: a response with no 'value' yields @($null), whose .Count is 1 —
         # which would read as a confident single match for a site that does not exist.
         $hits = @(@(Get-CtgProp $res 'value') | Where-Object { $_ })
-        # Prefer an EXACT (case-insensitive) displayName match; else accept a single hit. Zero or
-        # several candidates -> refuse with the shortlist rather than archive into the wrong site.
-        $exact = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $name })
-        $pick = if ($exact.Count -eq 1) { $exact[0] } elseif ($hits.Count -eq 1) { $hits[0] } else { $null }
+        # Pick precedence: exact (case-insensitive) displayName match on the ORIGINAL target, then
+        # on the stripped name, then a lone hit — and only when that lone hit's name actually
+        # contains what the runbook named (Graph's search is fuzzy: it also matches description and
+        # webUrl, and one irrelevant hit must not become a data-archival destination). Anything
+        # else refuses rather than archive into the wrong site.
+        $exactOriginal = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $original })
+        $exactStripped = @($hits | Where-Object { [string](Get-CtgProp $_ 'displayName') -ieq $name })
+        $pick = $null
+        if ($exactOriginal.Count -eq 1) { $pick = $exactOriginal[0] }
+        elseif ($exactStripped.Count -eq 1) { $pick = $exactStripped[0] }
+        elseif ($hits.Count -eq 1) {
+            $dn = [string](Get-CtgProp $hits[0] 'displayName')
+            if ($dn -and $dn.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $pick = $hits[0] }
+        }
         if (-not $pick) {
             if ($hits.Count -eq 0) {
                 throw "no SharePoint site found matching '$name' (archive target '$Target') — use the site's exact name, its URL, or a user email. NB: app-only site search needs the Sites.Read.All application role"
             }
             $names = @($hits | ForEach-Object { [string](Get-CtgProp $_ 'displayName') } | Select-Object -First 5) -join "', '"
-            throw "$($hits.Count) SharePoint sites match '$name' (archive target '$Target'): '$names' — use the site's exact name or its URL so the archive can't land in the wrong site. NB: app-only site search needs the Sites.Read.All application role"
+            if ($hits.Count -eq 1) {
+                throw "no SharePoint site confidently matches '$name' (archive target '$Target') — the only search hit is '$names', which does not look like the configured name; use the site's exact name or its URL so the archive can't land in the wrong site"
+            }
+            throw "$($hits.Count) SharePoint sites match '$name' (archive target '$Target'): '$names' — use the site's exact name or its URL so the archive can't land in the wrong site"
         }
         $dispName = [string](Get-CtgProp $pick 'displayName')
         $d = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$([string](Get-CtgProp $pick 'id'))/drive?`$select=id,webUrl" -ErrorAction Stop
@@ -1894,7 +1910,7 @@ function Invoke-CtgM365Offboarding {
         if ($drive -and $oneDrive) {
             $target = [string](Get-CtgProp $oneDrive 'target')
             if (-not $target) {
-                $actions.Add("WARN oneDriveBackup is set but has no target (user email or SharePoint site URL) — nothing archived")
+                $actions.Add("WARN oneDriveBackup is set but has no target (user email, SharePoint site URL, or SharePoint site name) — nothing archived")
             }
             else {
                 try {
