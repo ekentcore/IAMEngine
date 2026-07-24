@@ -38,6 +38,31 @@ test("migrated shows the reported URL and the requester", () => {
   assert.match(s!.label, /iam\.core\.tech/);
 });
 
+test("migrated banner still shows just under 4 hours after migratedAt", () => {
+  const s = migrateStatus({ ...base, migratedAt: iso(4 * 60 * 60_000 - 60_000), currentAppUrl: TARGET }, TARGET, NOW);
+  assert.equal(s?.kind, "migrated");
+});
+
+test("migrated banner retires 4 hours after migratedAt", () => {
+  const s = migrateStatus({ ...base, migratedAt: iso(4 * 60 * 60_000 + 60_000), currentAppUrl: TARGET }, TARGET, NOW);
+  assert.equal(s, null);
+});
+
+test("a stale migratedAt never falls through to queued/moving even with the flags still set", () => {
+  const s = migrateStatus(
+    {
+      ...base,
+      migratedAt: iso(5 * 60 * 60_000),
+      currentAppUrl: TARGET,
+      migrateRequested: true,
+      migrateDeliveredAt: iso(5 * 60 * 60_000),
+    },
+    TARGET,
+    NOW
+  );
+  assert.equal(s, null);
+});
+
 test("queued while the runner hasn't polled", () => {
   const s = migrateStatus({ ...base, migrateRequested: true }, TARGET, NOW);
   assert.equal(s?.kind, "queued");

@@ -14,6 +14,7 @@ export { entry as adobeOrgIdAccountid } from "./adobe-org-id-accountid";
 export { entry as agentRestartStatusVisible } from "./agent-restart-status-visible";
 export { entry as agentUrlMigration } from "./agent-url-migration";
 export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
+export { entry as agentsMigratedBadge4hWindow } from "./agents-migrated-badge-4h-window";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as auditAttributesDiscoveryToUser } from "./audit-attributes-discovery-to-user";
 export { entry as azureCutoverAgentRehoming } from "./azure-cutover-agent-rehoming";
