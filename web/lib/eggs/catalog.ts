@@ -1,7 +1,8 @@
 // The super-admin field guide to every easter egg — data only, rendered by /easter-eggs.
 // Live entries mirror the shipped eggs (specs: docs/superpowers/specs/2026-07-24-easter-eggs-design.md
-// and 2026-07-24-pirate-egg-design.md); idea entries are the approved backlog of candidates.
-// Keep this in sync when an egg ships: flip its idea entry to live (or add one) in the same PR.
+// and 2026-07-24-pirate-egg-design.md; the ten-egg batch is documented by its entries here).
+// Keep this in sync when an egg ships: flip its idea entry to live (or add one) in the same PR,
+// and update the counts asserted in catalog.test.ts.
 import type { Role } from "@prisma/client";
 
 export type EggStatus = "live" | "idea";
@@ -173,106 +174,116 @@ export const EGG_CATALOG: CatalogEgg[] = [
     exit: "Esc or click",
   },
 
-  // ---- Ideas — approved backlog, not built yet --------------------------------------------
+  // ---- The second batch (shipped together — the ten-egg PR) -------------------------------
   {
     slug: "matrix-agents",
     name: "Matrix rain on the fleet",
     emoji: "🟩",
-    status: "idea",
-    where: "/agents",
-    trigger: "Type \"matrix\"",
+    status: "live",
+    where: "/agents (any site version)",
+    trigger: "Type \"matrix\" (outside inputs)",
     description:
-      "Digital rain over the runner fleet: each online agent's heartbeat becomes a falling glyph column in its row; offline agents read \"unplugged\". Claim-gate cameo: \"There is no spoon RSAT.\"",
+      "Digital rain over the runner fleet: each online agent becomes a falling glyph column headed by its name; offline agents read UNPLUGGED in red. Caption: \"There is no spoon RSAT.\" Honors prefers-reduced-motion (static glyphs).",
+    exit: "Esc or click",
   },
   {
     slug: "hal-approval",
     name: "HAL 9000 approval gates",
     emoji: "🔴",
-    status: "idea",
-    where: "Case detail — approval-gated offboard steps",
-    trigger: "Type \"hal\"",
+    status: "live",
+    where: "Case detail — steps waiting for approval",
+    trigger: "Type \"hal\" (outside inputs)",
     description:
-      "Steps waiting on requiresApproval grow a pulsing red camera eye and the blocked reason reads \"I'm sorry, Dave. I'm afraid I can't do that.\" Fitting, since those gates really are server-side refusals.",
+      "Every \"needs approval\" badge goes black with a pulsing red camera eye and appends \"— I'm sorry, Dave. I'm afraid I can't do that.\" Fitting, since those gates really are server-side refusals.",
+    exit: "Esc or type it again",
   },
   {
     slug: "mission-impossible-reveal",
     name: "Self-destructing password reveal",
     emoji: "🧨",
-    status: "idea",
-    where: "Ad-hoc password reset reveal",
-    trigger: "Type \"missionimpossible\"",
+    status: "live",
+    where: "Case detail — the one-time password reveal",
+    trigger: "Type \"missionimpossible\" to arm, then reveal a generated password",
     description:
-      "The one-time reveal already atomically wipes the secret — this dramatizes it: after copy, the card burns away edge-to-edge behind a fuse spark and \"This password will self-destruct in 5 seconds.\"",
+      "The one-time reveal already atomically wipes the secret server-side — this dramatizes it: with the mode armed, clicking \"I saved it\" chars the card edge-to-edge behind an ember line before it closes. It NEVER burns on its own — an auto-close could lose a real password.",
+    exit: "Esc or type it again to disarm",
   },
   {
     slug: "terminator-offboard",
     name: "Terminator offboard HUD",
     emoji: "🤖",
-    status: "idea",
+    status: "live",
     where: "Offboard case detail",
-    trigger: "Type \"terminator\"",
+    trigger: "Type \"terminator\" (outside inputs; offboard cases only)",
     description:
-      "Completed destructive steps get the red T-800 scanline readout (\"TARGET: DEPROVISIONED\"), the case-close toast says \"Hasta la vista\", and a later onboard of the same user earns \"He's back.\"",
+      "Completed destructive and disable steps get the red T-800 scanline readout with a \"TARGET: DEPROVISIONED\" stamp, the page title earns a 🤖, and the hint pill says \"Hasta la vista, baby.\"",
+    exit: "Esc or type it again",
   },
   {
     slug: "wargames-dashboard",
     name: "WarGames terminal",
     emoji: "☎️",
-    status: "idea",
-    where: "Cases list / dashboard",
-    trigger: "Type \"wargames\"",
+    status: "live",
+    where: "/cases (any site version)",
+    trigger: "Type \"wargames\" (outside inputs)",
     description:
-      "Green phosphor WOPR skin, slow-typed \"SHALL WE PLAY A GAME?\", cases rendered as simulation entries; Esc exits with \"THE ONLY WINNING MOVE IS NOT TO PLAY.\"",
+      "WOPR boots over the case list: green phosphor and scanlines, slow-typed \"SHALL WE PLAY A GAME?\", the cases listed as AVAILABLE SIMULATIONS, closing on \"THE ONLY WINNING MOVE IS NOT TO PLAY.\" Reduced motion renders the transcript instantly.",
+    exit: "Esc or click",
   },
   {
     slug: "jurassic-denied",
-    name: "Jurassic Park permission denial",
+    name: "Jurassic Park magic word",
     emoji: "🦖",
-    status: "idea",
-    where: "Permission-denied views",
-    trigger: "Type \"jurassic\"",
+    status: "live",
+    where: "Anywhere",
+    trigger: "Type \"jurassic\" (outside inputs)",
     description:
-      "Dennis Nedry's \"Ah ah ah! You didn't say the magic word\" wagging-finger loop (pure CSS, no assets) over the denied panel. Client-scoping denials are the natural home.",
+      "Dennis Nedry's wagging-finger popup: \"Ah ah ah! You didn't say the magic word!\" — looping, pure CSS, no assets, mercifully no sound.",
+    exit: "Esc or click",
   },
   {
     slug: "office-space-printer",
     name: "Office Space printer send-off",
     emoji: "🖨️",
-    status: "idea",
-    where: "Manual printer checklist steps",
-    trigger: "Type \"officespace\"",
+    status: "live",
+    where: "Case detail — the Printers manual step",
+    trigger: "Type \"officespace\" (outside inputs)",
     description:
-      "The printer row glitches, flashes PC LOAD LETTER, then gets dragged offscreen and beaten (CSS shake and fly-out). For everyone who has ever dealt with a client printer.",
+      "The printer step flashes PC LOAD LETTER, shakes, then gets dragged offscreen to the parking lot. For everyone who has ever dealt with a client printer. Esc brings it back unharmed (unlike the movie).",
+    exit: "Esc or type it again",
   },
   {
     slug: "groundhog-retries",
     name: "Groundhog Day retries",
     emoji: "⏰",
-    status: "idea",
-    where: "Job detail with re-queued attempts",
-    trigger: "Type \"groundhog\"",
+    status: "live",
+    where: "Case detail — steps waiting on auto-retry",
+    trigger: "Type \"groundhog\" (outside inputs)",
     description:
-      "A much-retried job shows a 6:00 AM flip-clock badge and its attempt list rewords as \"Day 1… Day 2… Day 47.\" The stale-lease re-queue means retries genuinely do loop.",
+      "Every auto-retry note becomes a 6:00 alarm-clock readout counting \"Day <attempt>\" — because the vendor-sync retry loop genuinely is the same morning over and over until it isn't.",
+    exit: "Esc or type it again",
   },
   {
     slug: "bttf-time-circuits",
     name: "Back to the Future time circuits",
     emoji: "⚡",
-    status: "idea",
-    where: "Simulated-date strip (super admins)",
+    status: "live",
+    where: "The simulated-date strip (super admins, while simulating)",
     trigger: "Type \"bttf\" while the date simulator is active",
     description:
-      "The strip becomes DeLorean time circuits — DESTINATION TIME in red LED (simulated), PRESENT TIME in green (real) — and changing the date fires a flux-capacitor flash. Doubles as a can't-miss reminder that you're in simulated time.",
+      "The strip becomes DeLorean time circuits — DESTINATION TIME in red LED (simulated), PRESENT TIME in green (real) — behind a flux-capacitor flash. Doubles as a can't-miss reminder that you're in simulated time.",
+    exit: "Esc or type it again",
   },
   {
     slug: "gandalf-blocked",
-    name: "Gandalf on blocked jobs",
+    name: "Gandalf on blocked steps",
     emoji: "🧙",
-    status: "idea",
-    where: "Unclaimable / blocked jobs",
-    trigger: "Type \"gandalf\"",
+    status: "live",
+    where: "Case detail — blocked steps and the missing-credentials banner",
+    trigger: "Type \"gandalf\" (outside inputs)",
     description:
-      "A job stuck on a missing required secret or capability gets YOU SHALL NOT PASS stamped across it with a staff-slam shake — and the missing requirement listed underneath, so the joke sneaks in real diagnostics.",
+      "Steps blocked on a missing credential — and the case-level credentials banner — get YOU SHALL NOT PASS stamped across them with a staff-slam shake, while the missing requirement stays listed underneath. The joke sneaks in real diagnostics.",
+    exit: "Esc or type it again",
   },
 ];
 
