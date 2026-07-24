@@ -23,6 +23,7 @@ export { entry as backupAzureRestoreDrill } from "./backup-azure-restore-drill";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
 export { entry as caseExitDryRun } from "./case-exit-dry-run";
+export { entry as casePrerunPasswordReset } from "./case-prerun-password-reset";
 export { entry as casesEmptyM365autosetupJsonFilter } from "./cases-empty-m365autosetup-json-filter";
 export { entry as casesV2AccessRules } from "./cases-v2-access-rules";
 export { entry as changeActionGroundwork } from "./change-action-groundwork";
