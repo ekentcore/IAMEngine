@@ -41,6 +41,8 @@ export function menuGroups(flags: { showUsers?: boolean; showAudit?: boolean; sh
   const tools: Item[] = [
     ["/tools/google-key", "Google key converter"],
     ...(flags.showFleetAudit ? ([["/tools/fleet-m365", "Fleet setup — M365"]] as const) : []),
+    // The admin attention modal's test harness — same audience as the modal (global/super admin).
+    ...(flags.showSettings ? ([["/tools/popup-test", "Popup test"]] as const) : []),
     // Read-only fleet sweeps: who's missing permissions, who holds an escalation role, leaked seats.
     ...(flags.showFleetAudit ? ([["/fleet-audit", "Fleet audits"]] as const) : []),
   ];
