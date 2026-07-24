@@ -39,7 +39,7 @@ export function DateSimulatorButton({ current }: { current?: string }) {
         type="button"
         title="Simulate a date (easter-egg preview)"
         aria-label="Simulate a date"
-        onClick={() => setOpen(true)}
+        onClick={() => { setValue(current ?? ""); setOpen(true); }}
         style={{ padding: "0.15rem 0.4rem", fontSize: 14, lineHeight: 1 }}
       >
         📅
