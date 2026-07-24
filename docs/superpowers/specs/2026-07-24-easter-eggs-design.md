@@ -110,6 +110,17 @@ On case detail pages, when the numeric part of the case number is a multiple
 of 1000 (IAM0001000, IAM0002000, …), render a small ✨ beside the number with
 tooltip "milestone case". Pure render-time check; no schema change.
 
+### 11. Change log opening crawl (added 2026-07-24, second batch)
+On any `/changelog` page (v1/v2/v3 — mounted from the shared `ChangelogView`),
+typing **starwars** (case-insensitive, `lib/eggs/starwars.ts` state machine,
+konami-egg listener pattern, inputs/textareas ignored) shakes the screen for
+~0.75 s, then replaces the view with a full-screen opening crawl: black
+starfield, blue "A long time ago in a data center far, far away...." intro,
+then the newest 8 changelog entries scrolling in tilted yellow text, closing
+with "MAY THE UPTIME BE WITH YOU." **Esc or a click** returns to the page.
+`prefers-reduced-motion` skips the shake and renders the crawl as static,
+scrollable text. Changelog teaser entry: `Easter Egg - The Log Awakens` / 🥚✨.
+
 ## Shared confetti component
 Eggs 5 and 6 share one dependency-free canvas confetti component
 (~60 lines, `web/app/_components/eggs/confetti.tsx`). **No npm package is

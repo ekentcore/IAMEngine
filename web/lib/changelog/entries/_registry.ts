@@ -216,6 +216,7 @@ export { entry as spanningForceSyncWorks } from "./spanning-force-sync-works";
 export { entry as spanningHeadlessTokenHarvest } from "./spanning-headless-token-harvest";
 export { entry as spanningLoginHiddenView } from "./spanning-login-hidden-view";
 export { entry as spanningOtpBroker } from "./spanning-otp-broker";
+export { entry as starwarsEgg } from "./starwars-egg";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";
 export { entry as systemsEditorKb } from "./systems-editor-kb";
 export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
