@@ -121,6 +121,20 @@ with "MAY THE UPTIME BE WITH YOU." **Esc or a click** returns to the page.
 `prefers-reduced-motion` skips the shake and renders the crawl as static,
 scrollable text. Changelog teaser entry: `Easter Egg - The Log Awakens` / 🥚✨.
 
+### 12. Run-log Godfather mode (added 2026-07-24, third batch)
+On any `/runs` page (v1/v2/v3 — mounted from the shared `RunLogTable`), typing
+**godfather** (case-insensitive, `lib/eggs/godfather.ts` state machine, same
+listener pattern, inputs/textareas ignored) restyles every **error** line in
+the Godfather-poster look: cream-on-black, high-contrast didone serif
+(Didot / Bodoni 72 / Bodoni MT / Playfair Display stack — **no font file is
+shipped**), the ✗ error badge gets a gold border, the page `h1` gains a 🎩,
+and a fixed hint pill appears ("Every error is an offer you can't refuse").
+**Esc or typing the word again** toggles back. Implementation: the egg toggles
+a `gf-mode` class on `<body>`; the styling rides egg-only `gf-err` /
+`gf-err-badge` class hooks in the table (inert while the mode is off — the
+overrides need `!important` because the cells set their colors inline). Per
+the changelog policy (see egg 11's PR): **no changelog entry**.
+
 ## Shared confetti component
 Eggs 5 and 6 share one dependency-free canvas confetti component
 (~60 lines, `web/app/_components/eggs/confetti.tsx`). **No npm package is
