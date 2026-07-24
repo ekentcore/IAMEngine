@@ -19,6 +19,33 @@ export type ReplanResult =
   | { ok: true; outcome: PlanOutcome; refreshedFromServiceNow: boolean; mode: "full" | "incremental"; kept: number; added: number; rerun: number }
   | { ok: false; error: string; code: "not_found" | "already_started" };
 
+// A re-plan on a ServiceNow-sourced case re-pulls the ticket and wholesale-replaces the payload —
+// SN is the source of truth for everything it supplies. But an operator can hand-edit fields on the
+// case review panel (PATCH /api/cases/:id/fields, /m365-override, /offboard-target), which stamps
+// payload.fieldSource[k] = "operator". Those edits must survive the refresh (both for THIS plan and
+// for the write-back that follows it) or they silently vanish — the ticket re-pull erases a value
+// the requester's ticket never had an opinion on. Overlay every operator-sourced key from the
+// persisted payload onto the fresh intake, including the fieldSource bookkeeping itself so the
+// provenance badge survives; SN still wins for every key the operator hasn't touched, and — if SN
+// now ALSO supplies an operator-edited key — the operator's value wins (it's a deliberate override).
+export function mergeOperatorEdits(
+  freshPayload: Record<string, unknown>,
+  persistedPayload: Record<string, unknown>
+): Record<string, unknown> {
+  const fieldSource = persistedPayload.fieldSource && typeof persistedPayload.fieldSource === "object"
+    ? (persistedPayload.fieldSource as Record<string, unknown>)
+    : undefined;
+  if (!fieldSource) return freshPayload;
+  const operatorKeys = Object.keys(fieldSource).filter((k) => fieldSource[k] === "operator");
+  if (operatorKeys.length === 0) return freshPayload;
+  const merged = { ...freshPayload };
+  for (const k of operatorKeys) {
+    if (k in persistedPayload) merged[k] = persistedPayload[k];
+  }
+  merged.fieldSource = fieldSource;
+  return merged;
+}
+
 // `actor` is an AuditActor (label + User FK) for an operator-driven re-plan; a bare string for the
 // system callers that also re-plan (they carry no userId, by design).
 export async function replanCase(db: PrismaClient, caseId: string, actor: ActorInput, override?: string): Promise<ReplanResult> {
@@ -44,7 +71,7 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
       const intake = await fetchNormalizedIntake(info.serviceNowCaseNumber);
       if (intake) {
         action = intake.action;
-        payload = intake.payload;
+        payload = mergeOperatorEdits(intake.payload, info.payload);
         refreshedFromServiceNow = true;
       }
     } catch {

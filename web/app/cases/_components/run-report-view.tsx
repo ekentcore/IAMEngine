@@ -595,11 +595,16 @@ function ReviewPanel({ caseId, review, refresh }: { caseId: string; review: NonN
           // Additional groups only take effect on (re-)plan — re-plan immediately so they land on
           // the AD/cloud step config right away instead of waiting for someone to notice and re-plan
           // manually (same endpoint the Re-plan button uses).
+          let saveMsg = "✓ Saved — applies on the next run/claim.";
           if (extraGroupsChanged) {
             const r = await fetch(`/api/cases/${caseId}/replan`, { method: "POST" });
-            if (!r.ok) { setMsg(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "saved, but re-plan failed"); return; }
+            const d = (await r.json().catch(() => ({}))) as { error?: string; mode?: string; kept?: number; added?: number; rerun?: number };
+            if (!r.ok) { setMsg(d.error ?? "saved, but re-plan failed"); return; }
+            saveMsg = d.mode === "incremental"
+              ? `✓ Saved — re-plan kept ${d.kept} step${d.kept === 1 ? "" : "s"}, added ${d.added} new${d.rerun ? `, re-running ${d.rerun}` : ""}.`
+              : "✓ Saved — re-plan complete.";
           }
-          setEdits({}); setMsg("✓ Saved — applies on the next run/claim.");
+          setEdits({}); setMsg(saveMsg);
           await refresh();
         } catch (e) { setMsg((e as Error).message); }
         finally { setBusy(false); }
