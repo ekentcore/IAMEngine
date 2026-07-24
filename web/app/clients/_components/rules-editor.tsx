@@ -195,6 +195,20 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
     setActiveSystem(key);
   }
 
+  // FR #32 — drop a system's fragment from the current scope. Saves always PUT the whole
+  // globals/personas objects back, so without this an added key (even an empty `{}`) persists
+  // forever. In a persona scope this is exactly the FR #22 checklist un-check (withPersonaSystem
+  // with `on: false`), so by-persona membership and rule fragments stay in lockstep.
+  function removeSystem(sys: string) {
+    if (scope === "globals") {
+      if (action === "onboard") { const next = { ...globals }; delete next[sys]; setGlobals(next); }
+      else { const next = { ...globalsOffboard }; delete next[sys]; setGlobalsOffboard(next); }
+    } else {
+      setPersonas({ ...personas, [scope]: withPersonaSystem(personas[scope], sys, false, action) });
+    }
+    if (activeSystem === sys) setActiveSystem(systems.find((s) => s !== sys) ?? "");
+  }
+
   return (
     <dialog ref={ref} onClose={onClose} style={{ width: 860, maxWidth: "94vw" }}>
       <div className="row-between">
@@ -290,11 +304,21 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
             <span className="note">System:</span>
             {systems.map((sys) => {
               const byPersona = systemLanes[sys]?.onboard === "by_persona" || systemLanes[sys]?.offboard === "by_persona";
+              // Only a system whose key actually exists in this scope's fragment map can be removed —
+              // one listed purely via systemKeys has nothing here to delete.
+              const removable = Object.prototype.hasOwnProperty.call(scopeFragments, sys);
               return (
-                <button key={sys} className={activeSystem === sys ? "primary" : ""} onClick={() => setActiveSystem(sys)}
-                  title={byPersona ? "In 'by persona' mode — runs only for personas that include it (set membership per persona above)" : undefined}>
-                  {sys}{byPersona ? <span style={{ marginLeft: 4, fontSize: 10, color: "#7c3aed" }}>•persona</span> : null}
-                </button>
+                <span key={sys} style={{ display: "inline-flex", alignItems: "center" }}>
+                  <button className={activeSystem === sys ? "primary" : ""} onClick={() => setActiveSystem(sys)}
+                    title={byPersona ? "In 'by persona' mode — runs only for personas that include it (set membership per persona above)" : undefined}>
+                    {sys}{byPersona ? <span style={{ marginLeft: 4, fontSize: 10, color: "#7c3aed" }}>•persona</span> : null}
+                  </button>
+                  {removable && (
+                    <button onClick={() => removeSystem(sys)} aria-label={`Remove ${sys} from this scope`}
+                      title={`Remove ${sys}'s rules from ${scope === "globals" ? "Everyone" : `the "${scope}" persona`} (${action})`}
+                      style={{ color: "#b3261e", padding: "0 4px", marginLeft: 2 }}>×</button>
+                  )}
+                </span>
               );
             })}
             <button onClick={addSystem} className="note">+ system</button>

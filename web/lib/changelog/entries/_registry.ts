@@ -6,6 +6,7 @@ export { entry as acceptedFailureCaseStatus } from "./accepted-failure-case-stat
 export { entry as adAmbientAuthFirst } from "./ad-ambient-auth-first";
 export { entry as adDcOptional } from "./ad-dc-optional";
 export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
+export { entry as adSyncedGalHide } from "./ad-synced-gal-hide";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as addDirectorySyncButton } from "./add-directory-sync-button";
 export { entry as adhocStepsAboveCaseResolution } from "./adhoc-steps-above-case-resolution";
@@ -93,6 +94,7 @@ export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";
 export { entry as goliveReadinessPreflight } from "./golive-readiness-preflight";
+export { entry as googleCustomerIdValidation } from "./google-customer-id-validation";
 export { entry as googleDelineaFieldNamesMatchTemplate } from "./google-delinea-field-names-match-template";
 export { entry as googleKeyConverterTool } from "./google-key-converter-tool";
 export { entry as googleKeyFileUpload } from "./google-key-file-upload";
@@ -180,6 +182,7 @@ export { entry as offboardOnedriveDelegateAccess } from "./offboard-onedrive-del
 export { entry as offboardRevokeMfaAndSessions } from "./offboard-revoke-mfa-and-sessions";
 export { entry as offboardTargetPicker } from "./offboard-target-picker";
 export { entry as onedriveArchiveSiteName } from "./onedrive-archive-site-name";
+export { entry as offboardUnifiedGroupRemoval } from "./offboard-unified-group-removal";
 export { entry as onedriveGrantRealError } from "./onedrive-grant-real-error";
 export { entry as optionalCredEmptyLabel } from "./optional-cred-empty-label";
 export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-at-first-login-optional";
@@ -196,6 +199,7 @@ export { entry as referenceDocsV3 } from "./reference-docs-v3";
 export { entry as rehireAdoptsExistingAccount } from "./rehire-adopts-existing-account";
 export { entry as requestedGroupsReachThePlan } from "./requested-groups-reach-the-plan";
 export { entry as resetChildToParent } from "./reset-child-to-parent";
+export { entry as rulesEditorRemoveSystem } from "./rules-editor-remove-system";
 export { entry as runLogFixedLinesPopulate } from "./run-log-fixed-lines-populate";
 export { entry as runLogFixedNoLongerBuriesARecurrence } from "./run-log-fixed-no-longer-buries-a-recurrence";
 export { entry as runlogBulkCopy } from "./runlog-bulk-copy";
@@ -279,3 +283,5 @@ export { entry as m365WritebackTemplateByName } from "./m365-writeback-template-
 export { entry as connTestOptionalFlagSurvivesWire } from "./conn-test-optional-flag-survives-wire";
 
 export { entry as pirateEgg } from "./pirate-egg";
+
+export { entry as easterEggsPage } from "./easter-eggs-page";
