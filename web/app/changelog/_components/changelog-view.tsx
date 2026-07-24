@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { formatChangelogWhen, type ChangelogEntry } from "@/lib/changelog/entries";
 import { StarWarsEgg } from "./starwars-egg";
+import { PirateEgg } from "./pirate-egg";
 
 type Audience = "all" | "restricted" | "both";
 type ChannelResult = { channel: string; ok: boolean; error?: string };
@@ -88,6 +89,7 @@ export function ChangelogView({ entries }: { entries: ChangelogEntry[] }) {
   return (
     <div style={{ display: "grid", gap: 12, marginTop: "0.6rem" }}>
       <StarWarsEgg entries={entries} />
+      <PirateEgg entries={entries} />
       {entries.map((e) => (
         <section key={e.id} style={{ border: "1px solid var(--line, #e5e7eb)", borderRadius: 10, padding: "0.75rem 0.9rem" }}>
           <div className="row-between" style={{ alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
