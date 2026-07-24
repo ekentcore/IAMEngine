@@ -237,6 +237,7 @@ export { entry as perAgentRunnerAuth } from "./per-agent-runner-auth";
 
 export { entry as dbCopyTool } from "./db-copy-tool";
 export { entry as fixEdgeCryptoBuildCrash } from "./fix-edge-crypto-build-crash";
+export { entry as fixMigrateWorkingdir } from "./fix-migrate-workingdir";
 
 export { entry as dbCopyConnectionForm } from "./db-copy-connection-form";
 

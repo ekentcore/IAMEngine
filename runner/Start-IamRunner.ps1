@@ -2166,7 +2166,14 @@ function Invoke-CtgMigrate {
             $task = Get-ScheduledTask -TaskName 'iam-runner' -ErrorAction Stop
             $act = $task.Actions[0]
             $newArgs = Set-CtgAppUrlInArgString -ArgString $act.Arguments -NewUrl $NewAppUrl
-            $newAction = New-ScheduledTaskAction -Execute $act.Execute -Argument $newArgs -WorkingDirectory $act.WorkingDirectory
+            # New-ScheduledTaskAction's -WorkingDirectory is [ValidateNotNullOrEmpty]: a task whose
+            # action has no WorkingDirectory (older install-task.ps1 builds, or a hand-made task) would
+            # throw "argument is null or empty" and abort the whole migrate. Only pass it when we have a
+            # value, falling back to the install dir ($PSScriptRoot, = install-task.ps1's $InstallDir).
+            $actionParams = @{ Execute = $act.Execute; Argument = $newArgs }
+            $wd = if ($act.WorkingDirectory) { $act.WorkingDirectory } else { $PSScriptRoot }
+            if ($wd) { $actionParams['WorkingDirectory'] = $wd }
+            $newAction = New-ScheduledTaskAction @actionParams
             Set-ScheduledTask -TaskName 'iam-runner' -Action $newAction -ErrorAction Stop | Out-Null
         }
         elseif ($IsMacOS) {
