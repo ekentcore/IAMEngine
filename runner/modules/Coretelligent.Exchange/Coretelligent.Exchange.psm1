@@ -892,6 +892,15 @@ function Invoke-CtgExchangeOffboarding {
         Write-CtgStep "target is a MailUser (on-prem mailbox) — doing the on-prem convert, skipping EXO-only mailbox steps"
     }
 
+    # FR #27: the cloud mailbox may ALREADY be shared (converted by a previous run, or by hand) —
+    # independent of whether convertToShared is even configured on this case. Report it plainly so the
+    # license step (which keys off this exact phrase) proceeds instead of parking the case with
+    # "license KEPT" on a mailbox that was never going to un-convert itself.
+    $alreadyShared = $hasExoMailbox -and (Test-CtgCloudMailboxShared -Upn $upn)
+    if ($alreadyShared) {
+        $actions.Add("already a shared mailbox - no conversion needed; the licence is safe to remove")
+    }
+
     # 1. Convert to shared — unless over the threshold ------------------------
     # `convertToShared` drifted into four shapes across profiles: $true, { skipIfMailboxOverGB: 50 },
     # { value: true, unless: '…' }, and a nested mailbox.convertToShared. A bare `if ($cts)` tests the
@@ -900,7 +909,12 @@ function Invoke-CtgExchangeOffboarding {
     $cts = Get-CtgProp $Config 'convertToShared'
     if ($null -eq $cts) { $cts = Get-CtgProp (Get-CtgProp $Config 'mailbox') 'convertToShared' }
     $wantConvert = Test-CtgConvertToShared $cts
-    if ($wantConvert) {
+    if ($wantConvert -and $alreadyShared) {
+        # Already shared (reported above) — running Set-Mailbox/Set-RemoteMailbox -Type Shared again
+        # would be a redundant no-op call. Nothing left to do for this gate.
+        Write-CtgStep "$upn is already a shared mailbox — skipping the redundant convert-to-shared call"
+    }
+    elseif ($wantConvert) {
         $threshold = [double]((Get-CtgProp $cts 'skipIfMailboxOverGB') ?? 50)
         # UNKNOWN size ($null) must not pass this gate. `$null -gt 50` is $false in PowerShell, so an
         # un-negated comparison would treat an unreadable mailbox as safely small and convert it.

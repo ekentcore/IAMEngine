@@ -263,6 +263,29 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'over threshold'
     }
 
+    # FR #27: a mailbox that is ALREADY shared must unblock the license step (which keys off this exact
+    # phrase) even when convertToShared isn't configured at all on the case — offboard payloads carry
+    # only `userToOffboard` (no UPN), so this exercises that shape directly.
+    It 'reports an already-shared mailbox as converted and does not convert again (no convert config at all)' {
+        # -Config is Mandatory typed [pscustomobject] — an explicit $null fails parameter binding, so
+        # "no convert config at all" is expressed the same way the rest of this suite does: an empty
+        # object. Get-CtgProp reads 'convertToShared' off it as $null either way.
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
+        $r = Invoke-CtgExchangeOffboarding -User ([pscustomobject]@{ userToOffboard = 'jane.doe@x.com' }) -Config ([pscustomobject]@{})
+        ($r.Actions -join "`n") | Should -Match 'already a shared mailbox'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -ParameterFilter { $Type -eq 'Shared' }
+    }
+
+    It 'skips the redundant convert-to-shared call when the mailbox is already shared, even though convertToShared IS configured' {
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '10 GB (10,737,418,240 bytes)' } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config $config
+        ($r.Actions -join "`n") | Should -Match 'already a shared mailbox'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+    }
+
     It 'sets an out-of-office message when one is provided (on request)' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         $config = [pscustomobject]@{ autoReply = [pscustomobject]@{ message = 'No longer with the company.' } }
@@ -803,8 +826,15 @@ Describe 'Invoke-CtgExchangeOffboarding convert safety' {
     It 'hybrid: claims the convert only once the CLOUD reads SharedMailbox' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         Mock Get-RemoteMailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ Identity = 'jdoe' } }
-        # cloud has caught up
-        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        # NOT yet shared when the step starts (else the FR#27 already-shared pre-check would short-circuit
+        # the convert entirely) — the on-prem convert runs, and only the POST-convert read-back (the 3rd
+        # Get-Mailbox call: existence check, pre-check, then this verify) finds the cloud caught up.
+        $callState = @{ n = 0 }
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -MockWith {
+            $callState.n++
+            if ($callState.n -le 2) { [pscustomobject]@{ RecipientTypeDetails = 'UserMailbox' } }
+            else { [pscustomobject]@{ RecipientTypeDetails = 'SharedMailbox' } }
+        }.GetNewClosure()
         $r = Invoke-CtgExchangeOffboarding -User $script:user -Config ([pscustomobject]@{ convertToShared = $true })
         ($r.Actions -join ' ') | Should -Match 'verified shared in the cloud'
     }
