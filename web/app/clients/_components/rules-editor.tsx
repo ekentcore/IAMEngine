@@ -238,7 +238,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
           </div>
           {/* Scope tabs. Offboard is Everyone-only: an offboard ticket carries no role, so a persona
               can't be selected at plan time — per-persona offboard rules would silently never fire. */}
-          <div className="toolbar" style={{ flexWrap: "wrap", gap: 4, borderBottom: "1px solid #eee", paddingBottom: 8 }}>
+          <div className="toolbar" style={{ flexWrap: "wrap", gap: 4, borderBottom: "1px solid var(--line)", paddingBottom: 8 }}>
             <button className={scope === "globals" ? "primary" : ""} onClick={() => setScope("globals")}>Everyone</button>
             {action === "onboard" && Object.keys(personas).map((name) => (
               <button key={name} className={scope === name ? "primary" : ""} onClick={() => setScope(name)}>{name}</button>
@@ -249,7 +249,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
 
           {/* Persona header (name / titles / match / delete) */}
           {scope !== "globals" && personas[scope] && (
-            <div style={{ margin: "0.75rem 0", padding: "0.5rem 0.75rem", background: "#faf7fd", borderRadius: 4 }}>
+            <div style={{ margin: "0.75rem 0", padding: "0.5rem 0.75rem", background: "var(--bg-soft)", borderRadius: 4 }}>
               <div className="row-between">
                 <div style={{ flex: 1 }}>
                   <label>Persona name</label>
@@ -269,7 +269,7 @@ export function RulesEditor({ slug, open, onClose }: { slug: string | null; open
               to "by persona" in Edit systems) run for a hire ONLY when the selected persona is checked
               here. Independent of any group/OU/attribute — a checked system with no fragment still runs. */}
           {scope !== "globals" && personas[scope] && byPersonaSystems.length > 0 && (
-            <div style={{ margin: "0 0 8px", padding: "0.5rem 0.75rem", background: "#f5f3ff", border: "1px solid #e9e3fb", borderRadius: 4 }}>
+            <div style={{ margin: "0 0 8px", padding: "0.5rem 0.75rem", background: "var(--bg-soft)", border: "1px solid var(--line)", borderRadius: 4 }}>
               <label style={{ display: "block", marginBottom: 4 }}>
                 Systems this persona receives{" "}
                 <span className="note">(“by persona” systems run only for the personas checked here — no group/OU needed)</span>
@@ -366,7 +366,7 @@ function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, syste
         <label style={{ marginTop: 8 }}>Conditional rules</label>
         {conditional.length === 0 && <p className="note">No conditional group rules.</p>}
         {conditional.map((rule, i) => (
-          <div key={i} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
+          <div key={i} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="row-between">
               <span className="note">If…</span>
               <button onClick={() => setGroups(always, conditional.filter((_, j) => j !== i))} style={{ color: "#b3261e" }}>Delete rule</button>
@@ -383,13 +383,13 @@ function FragmentEditor({ frag, onChange, ous, groupOptions, action, slug, syste
       <section>
         <h3 style={{ margin: "0 0 4px" }}>{L.ou} <span className="note">(first matching rule wins; a rule with no condition is the default)</span></h3>
         {shadowOu && (
-          <p className="note" style={{ background: "#fef6e7", border: "1px solid #fde9c8", color: "#92400e", borderRadius: 4, padding: "4px 8px", marginBottom: 6 }}>
+          <p className="note" style={{ background: "var(--warn-bg)", border: "1px solid var(--warn-fg)", color: "var(--warn-fg)", borderRadius: 4, padding: "4px 8px", marginBottom: 6 }}>
             ⚠ The base OU set in <strong>Edit systems</strong> (<code style={{ fontSize: 11 }}>{shadowOu}</code>) overrides any OU rule here — the system’s own config wins at plan time. To change where accounts are created, edit it there.
           </p>
         )}
         {ouRows.length === 0 && <p className="note">No OU rule (uses the system default).</p>}
         {ouRows.map((row, i) => (
-          <div key={i} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
+          <div key={i} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="row-between">
               <input className="inline" style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} placeholder="OU=Users,OU=…,DC=…" value={row.path}
                 onChange={(e) => setOu(ouRows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)))} spellCheck={false} />
@@ -472,7 +472,7 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
       {Object.entries(attrs).map(([k, v]) => {
         const isCond = Array.isArray(v);
         return (
-          <div key={k} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginBottom: 6 }}>
+          <div key={k} style={{ border: "1px solid var(--line)", borderRadius: 4, padding: 8, marginBottom: 6 }}>
             <div className="toolbar" style={{ gap: 4 }}>
               <input list="ad-attrs" className="inline" style={{ width: 140 }} defaultValue={k} key={k} onBlur={(e) => { if (!rename(k, e.target.value)) e.target.value = k; }} placeholder="attribute" spellCheck={false} />
               <span className="note">=</span>
@@ -486,7 +486,7 @@ function AttributesEditor({ attrs, onChange }: { attrs: Record<string, AttrValue
             {isCond && (
               <div style={{ marginTop: 6 }}>
                 {(v as Array<{ value: string | number | boolean; when?: string }>).map((entry, i, arr) => (
-                  <div key={i} style={{ borderTop: i ? "1px dashed #eee" : undefined, paddingTop: i ? 6 : 0, marginTop: i ? 6 : 0 }}>
+                  <div key={i} style={{ borderTop: i ? "1px dashed var(--line)" : undefined, paddingTop: i ? 6 : 0, marginTop: i ? 6 : 0 }}>
                     <div className="toolbar" style={{ gap: 4 }}>
                       <AttrValueInput value={String(entry.value ?? "")}
                         onChange={(nv) => setVal(k, arr.map((x, j) => (j === i ? { ...x, value: nv } : x)))} />

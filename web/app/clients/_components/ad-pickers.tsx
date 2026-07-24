@@ -13,7 +13,7 @@ import { folderLabel, folderKind, buildTree } from "@/lib/clients/ad-folders";
 const KIND_ICON = { ou: "📁", container: "🗄", domain: "🌳" } as const;
 const folderIcon = (dn: string) => KIND_ICON[folderKind(dn)];
 
-const boxStyle: CSSProperties = { maxHeight: 280, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4, padding: 4, background: "#fff", fontSize: 13 };
+const boxStyle: CSSProperties = { maxHeight: 280, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 4, padding: 4, background: "var(--bg)", fontSize: 13 };
 const rowStyle: CSSProperties = { display: "flex", gap: 4, alignItems: "center", padding: "2px 4px", borderRadius: 3, whiteSpace: "nowrap" };
 
 export function OuTreePicker({ ous, onPick }: { ous: string[]; onPick: (dn: string) => void }) {
@@ -36,7 +36,7 @@ export function OuTreePicker({ ous, onPick }: { ous: string[]; onPick: (dn: stri
           {matches.length === 0 ? <div className="note" style={{ padding: 6 }}>no match</div>
             : matches.map((dn) => (
               <div key={dn} style={{ ...rowStyle, cursor: "pointer" }} onMouseDown={(e) => { e.preventDefault(); onPick(dn); }} title={dn}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#eef")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
                 <code style={{ fontSize: 11 }}>{dn}</code>
               </div>
             ))}
@@ -55,7 +55,7 @@ export function OuTreePicker({ ous, onPick }: { ous: string[]; onPick: (dn: stri
             ? <span onMouseDown={(e) => { e.preventDefault(); toggle(dn); }} style={{ cursor: "pointer", width: 12, display: "inline-block", color: "#888" }}>{isOpen ? "▾" : "▸"}</span>
             : <span style={{ width: 12, display: "inline-block" }} />}
           <span onMouseDown={(e) => { e.preventDefault(); onPick(dn); }} style={{ cursor: "pointer" }} title={dn}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#1565c0")} onMouseLeave={(e) => (e.currentTarget.style.color = "")}>
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--accent)")} onMouseLeave={(e) => (e.currentTarget.style.color = "")}>
             {folderIcon(dn)} {folderLabel(dn)}
           </span>
         </div>

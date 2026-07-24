@@ -194,13 +194,13 @@ export function TagList({ items, onChange, placeholder, options }: { items: stri
         />
       </div>
       {showDrop && (
-        <div style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, minWidth: 260, maxHeight: 220, overflowY: "auto", background: "#fff", border: "1px solid #ccc", borderRadius: 4, boxShadow: "0 2px 8px rgba(0,0,0,0.15)" }}>
+        <div style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, minWidth: 260, maxHeight: 220, overflowY: "auto", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 4, boxShadow: "0 2px 8px rgba(0,0,0,0.15)" }}>
           {matches.map((m) => (
             // onMouseDown (not click) so it fires before the input blur, and preventDefault keeps focus
             <div key={m} onMouseDown={(e) => { e.preventDefault(); add(m); }}
               style={{ padding: "3px 8px", cursor: "pointer", fontSize: 13 }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#eef")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
               {m}
             </div>
           ))}
