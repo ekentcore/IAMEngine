@@ -5,7 +5,7 @@
 // Keystrokes inside inputs/textareas are ignored, same as the Konami egg.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { advanceStarwars, STARWARS_LENGTH } from "@/lib/eggs/starwars";
+import { advanceStarwars, galacticize, STARWARS_LENGTH } from "@/lib/eggs/starwars";
 import type { ChangelogEntry } from "@/lib/changelog/entries";
 
 // A full log is hundreds of entries — a crawl of all of them would outlast the trilogy.
@@ -119,8 +119,8 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
   if (phase === "idle") return null;
 
   const crawlEntries = entries.slice(0, CRAWL_ENTRIES);
-  // ~14s per entry keeps the pace readable; the classic crawl runs about 85s.
-  const duration = `${Math.max(55, crawlEntries.length * 14)}s`;
+  // ~18s per entry keeps the pace readable; the classic crawl runs about 85s.
+  const duration = `${Math.max(70, crawlEntries.length * 18)}s`;
 
   return (
     <>
@@ -135,12 +135,12 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
               <div className="sw-scroll" style={{ "--sw-duration": duration } as React.CSSProperties}>
                 <h2>Episode MMXXVI</h2>
                 <h2>THE CHANGE LOG</h2>
-                <p>It is a period of relentless shipping. Rebel engineers, striking from a hidden repo, have won their first victories against the evil Galactic Backlog….</p>
+                <p>It is a period of relentless shipping. Rebel engineers, striking from a hidden repo, have won their first victories against the evil Galactic Backlog. Across two hundred star systems, the Empire's grip weakens with every release. These are the Rebellion's latest dispatches….</p>
                 {crawlEntries.map((e) => (
                   <div key={e.id}>
-                    <h3>{e.title}</h3>
+                    <h3>{galacticize(e.title)}</h3>
                     <p className="sw-when">{e.date}</p>
-                    {e.items.map((it, i) => <p key={i}>{it}</p>)}
+                    {e.items.map((it, i) => <p key={i}>{galacticize(it)}</p>)}
                   </div>
                 ))}
                 <h3>MAY THE UPTIME BE WITH YOU.</h3>

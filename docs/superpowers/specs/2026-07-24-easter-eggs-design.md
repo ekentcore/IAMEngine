@@ -117,8 +117,12 @@ typing **starwars** (case-insensitive, `lib/eggs/starwars.ts` state machine,
 konami-egg listener pattern, inputs/textareas ignored) shakes the screen for
 ~0.75 s, then replaces the view with a full-screen opening crawl: black
 starfield, blue "A long time ago in a data center far, far away...." intro,
-then the newest 8 changelog entries scrolling in tilted yellow text, closing
-with "MAY THE UPTIME BE WITH YOU." **Esc or a click** returns to the page.
+then the newest 8 changelog entries scrolling in tilted yellow text (~18 s per
+entry), closing with "MAY THE UPTIME BE WITH YOU." Entry text is reworded
+Galactic-Civil-War style by the pure `galacticize()` dictionary in
+`lib/eggs/starwars.ts` (clients→star systems, users→rebels, agents→protocol
+droids, Microsoft→the Empire, …); emails and dotted identifiers are protected
+from rewording. **Esc or a click** returns to the page.
 `prefers-reduced-motion` skips the shake and renders the crawl as static,
 scrollable text. No changelog entry, per the updated policy above.
 
