@@ -442,6 +442,14 @@ function Set-CtgMailboxRegional {
         Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $ManagerEmail -AccessRights Reviewer -Confirm:$false | Out-Null
         $actions.Add("granted $ManagerEmail Reviewer on calendar")
     }
+
+    # FR #33: per-client FIXED calendar reviewers (e.g. Logicsource's calendar.delegate.reviewer@...)
+    # granted on every onboarded user's calendar — same config.calendar node as grantManagerReviewer
+    # above, a sibling 'reviewers' list. Config is DATA (allowlisted accessRights), never a command.
+    $reviewers = @(Get-CtgProp $cal 'reviewers')
+    if ($cal -and $reviewers.Count -gt 0) {
+        foreach ($a in (Invoke-CtgExchangeCalendarReviewers -Identity $Identity -Reviewers $reviewers)) { $actions.Add($a) }
+    }
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
@@ -1387,6 +1395,57 @@ function Invoke-CtgExchangeMailboxAudit {
     return $actions.ToArray()
 }
 
+function Invoke-CtgExchangeCalendarReviewers {
+    <#
+    .SYNOPSIS
+        Grant a per-client FIXED list of reviewers on a new user's calendar (FR #33) — e.g. Logicsource's
+        calendar.delegate.reviewer@logicsource.com getting Reviewer on every onboarded user's calendar.
+        Config is DATA (an allowlisted accessRights value per entry), never a runnable command.
+    .NOTES
+        Idempotent: reads the user's existing folder permission first (an additive grant needs a
+        pre-read — unlike the audit-flags call above, which just re-writes an absolute set) and skips a
+        grant the user already holds at the SAME right. WARN-not-throw on both an unrecognized
+        accessRights value (falls back to Reviewer) and a failed grant (e.g. user not found) — never
+        blocks the onboard over a calendar-delegation nicety.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$Identity, $Reviewers)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $entries = @($Reviewers | Where-Object { $_ })
+    if ($entries.Count -eq 0) { return $actions.ToArray() }
+
+    # The EXO calendar-folder access-rights enum, canonical casing. A configured value is matched
+    # case-insensitively against this list (PowerShell -eq is case-insensitive) and the CANONICAL
+    # casing below is what's sent to Add-MailboxFolderPermission — never the raw config string.
+    $allowlist = @('Reviewer', 'Editor', 'Author', 'Contributor', 'NonEditingAuthor', 'PublishingAuthor', 'PublishingEditor', 'AvailabilityOnly', 'LimitedDetails')
+
+    foreach ($entry in $entries) {
+        # A bare string entry is shorthand for { user = <string> } with the default right (Reviewer).
+        $u = if ($entry -is [string]) { $entry } else { [string](Get-CtgProp $entry 'user') }
+        if ([string]::IsNullOrWhiteSpace($u)) { continue }
+        $rightsRaw = if ($entry -is [string]) { $null } else { Get-CtgProp $entry 'accessRights' }
+        $rights = if ($rightsRaw) { $allowlist | Where-Object { $_ -eq [string]$rightsRaw } | Select-Object -First 1 } else { $null }
+        if (-not $rights) {
+            if ($rightsRaw) { $actions.Add("WARN calendar reviewer '$u': unrecognized accessRights '$rightsRaw' (not in the allowlist) — falling back to Reviewer") }
+            $rights = 'Reviewer'
+        }
+        try {
+            $existing = Get-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -ErrorAction SilentlyContinue
+            if ($existing -and (@($existing.AccessRights) -contains $rights)) {
+                $actions.Add("$u already holds $rights on calendar")
+                continue
+            }
+            if ($PSCmdlet.ShouldProcess($Identity, "Grant $u $rights on calendar")) {
+                Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -AccessRights $rights -Confirm:$false | Out-Null
+                $actions.Add("granted $u $rights on calendar"); Write-CtgStep "✓ granted $u $rights on calendar"
+            }
+        } catch {
+            $actions.Add("WARN calendar reviewer grant failed for $u`: $($_.Exception.Message)"); Write-CtgStep "✗ calendar reviewer $u — $($_.Exception.Message)"
+        }
+    }
+    return $actions.ToArray()
+}
+
 function Invoke-CtgExchangeChange {
     <#
     .SYNOPSIS
@@ -1460,4 +1519,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
