@@ -1,0 +1,49 @@
+name: Trigger auto deployment for iam-engine-prod
+
+# When this action will be executed
+on:
+  # Automatically trigger it when detected changes in repo
+  push:
+    branches: 
+      [ main ]
+    paths:
+    - '**'
+    - '.github/workflows/iam-engine-prod-AutoDeployTrigger-8b777739-fbc6-4182-9f21-66288cf2959a.yml'
+
+  # Allow manual trigger 
+  workflow_dispatch:      
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions: 
+      id-token: write #This is required for requesting the OIDC JWT Token
+      contents: read #Required when GH token is used to authenticate with private repo
+
+    steps:
+      - name: Checkout to the branch
+        uses: actions/checkout@v2
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.IAMENGINEPROD_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.IAMENGINEPROD_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.IAMENGINEPROD_AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push container image to registry
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          appSourcePath: ${{ github.workspace }}
+          _dockerfilePathKey_: _dockerfilePath_
+          _targetLabelKey_: _targetLabel_
+          registryUrl: ca5416ac5a20acr.azurecr.io
+          registryUsername: ${{ secrets.IAMENGINEPROD_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.IAMENGINEPROD_REGISTRY_PASSWORD }}
+          containerAppName: iam-engine-prod
+          resourceGroup: rg-iam-engine-prod
+          imageToBuild: ca5416ac5a20acr.azurecr.io/iam-engine-prod:${{ github.sha }}
+          _buildArgumentsKey_: |
+            _buildArgumentsValues_
+
+
