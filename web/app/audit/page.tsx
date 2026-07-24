@@ -3,7 +3,8 @@
 // Data assembly lives in _lib/loader.tsx, shared with /audit/v2 (so this page also understands
 // comma-separated ?action= lists and ?user=, even though its UI only offers the single select).
 import { AuditFilters } from "./_components/audit-filters";
-import { loadAuditPage, fmtDetail, fmtDetailLong, AUDIT_LIMIT, type AuditSearchParams } from "./_lib/loader";
+import { loadAuditPage, AUDIT_LIMIT, type AuditSearchParams } from "./_lib/loader";
+import { AuditDetailCell } from "./_components/detail-cell";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Audit" };
@@ -25,7 +26,7 @@ export default async function AuditPage({ searchParams }: { searchParams: AuditS
               <td>{r.user ? <span title={r.user.email}>{r.user.name || r.user.email}</span> : <span className="muted">{r.actor}</span>}</td>
               <td><code style={{ fontSize: 11.5 }}>{r.action}</code></td>
               <td>{target(r)}</td>
-              <td className="note" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={fmtDetailLong(r.detail)}>{fmtDetail(r.detail)}</td>
+              <AuditDetailCell detail={r.detail} />
             </tr>
           ))}
           {rows.length === 0 && <tr><td colSpan={5} className="empty-state">No events match these filters.</td></tr>}
