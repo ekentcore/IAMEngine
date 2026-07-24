@@ -717,16 +717,29 @@ Describe 'Invoke-CtgM365Offboarding' {
                 [pscustomobject]@{ Id = 'g-onprem'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'DEPT-RemoteSupport'; onPremisesSyncEnabled = $true } }
                 [pscustomobject]@{ Id = 'g-mail'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'TechStaff'; mailEnabled = $true } }
                 [pscustomobject]@{ Id = 'g-dyn'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'All Users'; groupTypes = @('DynamicMembership') } }
+                # FR#37: a Unified (M365) group is mail-enabled but Graph-REMOVABLE — the Exchange DL
+                # sweep (Get-DistributionGroup) never sees it, so skipping it here left it forever.
+                [pscustomobject]@{ Id = 'g-unified'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = '61C LNG'; mailEnabled = $true; groupTypes = @('Unified') } }
+                # ...unless it is ALSO dynamic — membership is rule-managed, Graph refuses the write.
+                [pscustomobject]@{ Id = 'g-uni-dyn'; AdditionalProperties = @{ '@odata.type' = '#microsoft.graph.group'; displayName = 'All Staff Hub'; mailEnabled = $true; groupTypes = @('Unified', 'DynamicMembership') } }
             )
         }
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ removeAllGroups = $true }) -MailboxSizeGB 10
-        # Only the cloud security group is removed via Graph
+        # The cloud security group AND the Unified group are removed via Graph
         Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g-cloud' } -Times 1 -Exactly
-        Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -Times 1 -Exactly  # and ONLY that one
+        Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -ParameterFilter { $GroupId -eq 'g-unified' } -Times 1 -Exactly
+        Should -Invoke Remove-MgGroupMemberByRef -ModuleName Coretelligent.M365 -Times 2 -Exactly  # and ONLY those two
         $a = $r.Actions -join ' '
         $a | Should -Match 'skipped on-prem-synced group: DEPT-RemoteSupport'
         $a | Should -Match 'skipped mail-enabled group/DL: TechStaff'
         $a | Should -Match 'skipped dynamic group: All Users'
+        $a | Should -Match 'removed from group: 61C LNG'
+        $a | Should -Not -Match 'skipped mail-enabled group/DL: 61C LNG'
+        # Unified + dynamic still skips as dynamic (rule-managed)
+        $a | Should -Match 'skipped dynamic group: All Staff Hub'
+        # Evidence snapshot carries the Unified flag so a run report can show the routing
+        ($r.Evidence.Groups | Where-Object Id -eq 'g-unified').Unified | Should -BeTrue
+        ($r.Evidence.Groups | Where-Object Id -eq 'g-mail').Unified | Should -BeFalse
     }
 
     It 'treats an "already not a member" / not-found group removal as done, not a warning (idempotent)' {

@@ -1522,6 +1522,7 @@ function Invoke-CtgM365Offboarding {
             # Why a group may NOT be removable via Graph (Entra) — used to route it instead of erroring:
             OnPrem      = [bool](Get-CtgProp $ap 'onPremisesSyncEnabled')                 # AD-mastered -> the AD step removes it
             MailEnabled = [bool](Get-CtgProp $ap 'mailEnabled')                           # DL / mail-enabled security -> managed in Exchange
+            Unified     = (@(Get-CtgProp $ap 'groupTypes') -contains 'Unified')           # M365 group: mail-enabled BUT Graph-removable (FR#37)
             Dynamic     = (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') # rule-managed -> can't remove a member
         }
     })
@@ -1751,15 +1752,19 @@ function Invoke-CtgM365Offboarding {
         }
     }
 
-    # 3. Remove from all groups (evidence already captured). Only CLOUD, non-mail, non-dynamic groups
-    # can be modified via Graph — route the rest instead of erroring on them:
+    # 3. Remove from all groups (evidence already captured). Only groups Graph can write are
+    # modified here — route the rest instead of erroring on them:
     #   - on-prem-synced groups are AD-mastered -> the active-directory step removes them
-    #   - mail-enabled groups / DLs are managed in Exchange (Graph can't change membership)
-    #   - dynamic groups are rule-managed -> a member can't be removed at all
+    #   - mail-enabled DLs / mail-enabled security groups are managed in Exchange (Graph can't
+    #     change membership) — EXCEPT Unified (M365) groups, which are mail-enabled but
+    #     Graph-removable (FR#37: the Exchange DL sweep enumerates Get-DistributionGroup, which
+    #     never returns Unified groups, so skipping them here left them on the leaver forever;
+    #     the onboard mirror already routes them this way)
+    #   - dynamic groups are rule-managed -> a member can't be removed at all (even Unified+dynamic)
     if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
         foreach ($g in $groupEvidence) {
             if ($g.OnPrem)      { $actions.Add("skipped on-prem-synced group: $($g.DisplayName) — removed by the AD step"); continue }
-            if ($g.MailEnabled) { $actions.Add("skipped mail-enabled group/DL: $($g.DisplayName) — managed in Exchange"); continue }
+            if ($g.MailEnabled -and -not $g.Unified) { $actions.Add("skipped mail-enabled group/DL: $($g.DisplayName) — managed in Exchange"); continue }
             if ($g.Dynamic)     { $actions.Add("skipped dynamic group: $($g.DisplayName) — membership is rule-managed"); continue }
             if ($PSCmdlet.ShouldProcess($upn, "Remove from group $($g.DisplayName)")) {
                 try {
