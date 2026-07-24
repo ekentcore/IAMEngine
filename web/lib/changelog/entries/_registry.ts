@@ -285,3 +285,5 @@ export { entry as connTestOptionalFlagSurvivesWire } from "./conn-test-optional-
 export { entry as pirateEgg } from "./pirate-egg";
 
 export { entry as easterEggsPage } from "./easter-eggs-page";
+
+export { entry as tenNewEggs } from "./ten-new-eggs";

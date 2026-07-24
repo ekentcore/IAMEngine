@@ -45,14 +45,18 @@ export default async function EasterEggsPage() {
         {LIVE_EGGS.map((egg) => <EggCard key={egg.slug} egg={egg} />)}
       </div>
 
-      <h2 style={{ marginTop: "2.2rem" }}>Ideas — not built yet ({IDEA_EGGS.length})</h2>
-      <p className="note" style={{ maxWidth: 640 }}>
-        The approved backlog. Triggers and homes are proposals; each follows the house rules — typed
-        word outside inputs, zero dependencies, pure CSS, Esc to exit, portal-to-body for overlays.
-      </p>
-      <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-        {IDEA_EGGS.map((egg) => <EggCard key={egg.slug} egg={egg} />)}
-      </div>
+      {IDEA_EGGS.length > 0 && (
+        <>
+          <h2 style={{ marginTop: "2.2rem" }}>Ideas — not built yet ({IDEA_EGGS.length})</h2>
+          <p className="note" style={{ maxWidth: 640 }}>
+            The approved backlog. Triggers and homes are proposals; each follows the house rules — typed
+            word outside inputs, zero dependencies, pure CSS, Esc to exit, portal-to-body for overlays.
+          </p>
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            {IDEA_EGGS.map((egg) => <EggCard key={egg.slug} egg={egg} />)}
+          </div>
+        </>
+      )}
     </main>
   );
 }

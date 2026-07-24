@@ -30,8 +30,9 @@ test("live/idea splits cover the whole catalog", () => {
   assert.equal(LIVE_EGGS.length + IDEA_EGGS.length, EGG_CATALOG.length);
   assert.ok(LIVE_EGGS.every((e) => e.status === "live"));
   assert.ok(IDEA_EGGS.every((e) => e.status === "idea"));
-  // The shipped inventory: 14 live eggs (specs 1-12 + day-of greetings + pirate), 10 approved ideas.
-  // If you ship or add one, update the catalog AND these counts in the same PR.
-  assert.equal(LIVE_EGGS.length, 14);
-  assert.equal(IDEA_EGGS.length, 10);
+  // The shipped inventory: 24 live eggs — 14 from the first batches (specs 1-12 + day-of
+  // greetings + pirate) plus the ten-egg batch. If you ship or add one, update the catalog AND
+  // these counts in the same PR.
+  assert.equal(LIVE_EGGS.length, 24);
+  assert.equal(IDEA_EGGS.length, 0);
 });
