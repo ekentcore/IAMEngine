@@ -26,6 +26,7 @@ import { CollapsibleSection } from "../../_components/collapsible-section";
 import { caseEffectiveDate } from "@/lib/cases/schedule";
 import { IntakePanel } from "../_components/intake-panel";
 import { hasStartedJobs } from "@/lib/cases/job-status";
+import { isMilestoneCase } from "@/lib/eggs/occasions";
 
 export const dynamic = "force-dynamic";
 
@@ -136,7 +137,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <h1>{c.subject ?? "Case"}</h1>
           <p className="note">
             <Link href={`/clients/${c.client.slug}`}>{c.client.name}</Link> · {c.action} ·{" "}
-            {c.serviceNowCaseNumber ?? "no SN case"} · <span className="badge">{c.status.replace("_", " ")}</span>
+            {c.serviceNowCaseNumber ?? "no SN case"}
+            {isMilestoneCase(c.serviceNowCaseNumber) && <span title="milestone case" aria-label="milestone case"> ✨</span>}
+            {" · "}<span className="badge">{c.status.replace("_", " ")}</span>
             {(() => {
               const rule = (c.payload as { __intakeRule?: { label?: string } } | null)?.__intakeRule;
               return rule?.label ? <span className="badge" style={{ marginLeft: 6 }} title="This case was planned by a per-contact intake rule">Intake rule: {rule.label}</span> : null;
