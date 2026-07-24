@@ -160,6 +160,7 @@ export { entry as mimecastDocProductsPoc } from "./mimecast-doc-products-poc";
 export { entry as modelFilesReadwritePerm } from "./model-files-readwrite-perm";
 export { entry as moduleSetupGuidedVault } from "./module-setup-guided-vault";
 export { entry as nicknamePersonaLane } from "./nickname-persona-lane";
+export { entry as offboardAlreadySharedMailbox } from "./offboard-already-shared-mailbox";
 export { entry as offboardCaseRequestedDelegate } from "./offboard-case-requested-delegate";
 export { entry as offboardClearsManagerInEntra } from "./offboard-clears-manager-in-entra";
 export { entry as offboardConvertBeforeLicense } from "./offboard-convert-before-license";
