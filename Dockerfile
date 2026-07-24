@@ -27,6 +27,11 @@ COPY . .
 
 WORKDIR /app/web
 
+# Temporary build-only value so Prisma can validate the schema.
+# Azure supplies the real DATABASE_URL when the container runs.
+ARG DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
+ENV DATABASE_URL=${DATABASE_URL}
+
 RUN npx prisma generate
 RUN npm run build
 
