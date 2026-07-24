@@ -798,7 +798,9 @@ dialog.doc-modal::backdrop { background: color-mix(in srgb, #000 45%, transparen
    each on its own row. */
 .case-actions-menu { min-width: 232px; gap: 2px; }
 .case-actions-row { display: flex; align-items: center; padding: 2px; }
-.case-actions-row > * { width: 100%; }
+/* Only the trigger buttons fill the menu row — each action's <dialog> is a sibling in the same row
+   (FR#39: `> *` stretched the Import modal to max-width instead of the 440px dialog default). */
+.case-actions-row > :not(dialog) { width: 100%; }
 .case-actions-row button:not(.primary) { text-align: left; }
 
 /* --- easter eggs --- */

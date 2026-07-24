@@ -98,7 +98,7 @@ function Item({ it, n, slug, open, onToggle }: { it: RunbookItemVM; n: number; s
         {it.code && (
           <div style={{ marginTop: "0.5rem", marginLeft: "0.8rem" }}>
             <div className="note">Intended automation (PowerShell):</div>
-            <pre style={{ background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem", overflowX: "auto", fontSize: 11, lineHeight: 1.45, margin: "0.25rem 0 0" }}>
+            <pre style={{ background: "var(--bg-soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "0.6rem", overflowX: "auto", fontSize: 11, lineHeight: 1.45, margin: "0.25rem 0 0" }}>
               <code>{it.code}</code>
             </pre>
           </div>
@@ -132,7 +132,7 @@ function EmailBlock({ email, href }: { email: EmailArtifact; href: string }) {
         <div className="note">✉ Email template (helpdesk):</div>
         <a href={href} download className="note">download .eml →</a>
       </div>
-      <div style={{ background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
+      <div style={{ background: "var(--bg-soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
         <Row label="To" value={(email.to ?? []).join(", ")} />
         <Row label="Cc" value={(email.cc ?? []).join(", ")} />
         <Row label="Subject" value={email.subject} />
@@ -183,7 +183,7 @@ function AttachmentBlock({
       value={user[key]}
       placeholder={ph}
       onChange={(e) => setUser((u) => ({ ...u, [key]: e.target.value }))}
-      style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #e5e7eb", borderRadius: 4, width: 130 }}
+      style={{ fontSize: 12, padding: "2px 6px", border: "1px solid var(--line)", borderRadius: 4, width: 130 }}
     />
   );
 
@@ -193,7 +193,7 @@ function AttachmentBlock({
         <div className="note">📎 Attachment: {att.filename || "file"}</div>
         {att.href && <a href={att.href} target="_blank" rel="noreferrer" className="note">open in ServiceNow →</a>}
       </div>
-      <div style={{ background: "#f6f8fa", border: "1px solid #e5e7eb", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
+      <div style={{ background: "var(--bg-soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "0.6rem", margin: "0.25rem 0 0", fontSize: 12 }}>
         <div className="note" style={{ marginBottom: 4 }}>Resolve groups for a user (filled from the UM case later):</div>
         <div className="toolbar" style={{ gap: 6, flexWrap: "wrap" }}>
           {input("department", "Department")}
