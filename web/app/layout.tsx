@@ -69,7 +69,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const isRealSuperAdmin = !authEnabled() || acting.realUser?.role === "super_admin";
   const simCookie = cookies().get("simulated_date")?.value;
   const eggDate = effectiveEggDate(simCookie, isRealSuperAdmin);
-  const eggs = loggedIn && !onLogin ? occasionsFor(eggDate) : { banner: null, bulbGlyph: "💡", newYear: false };
+  const eggs = loggedIn && !onLogin ? occasionsFor(eggDate) : { banners: [], bulbGlyph: "💡", newYear: false };
   const simActive = isRealSuperAdmin && !!simCookie && eggDate === simCookie;
 
   return (
@@ -113,7 +113,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {acting.impersonating && user && <ImpersonationBanner name={user.name || user.email} role={user.role} />}
         {outdatedAgents > 0 && <AgentUpdateBanner count={outdatedAgents} canManage={canManageAgents} />}
         {simActive && !onLogin && <SimulatedDateStrip date={eggDate} />}
-        {eggs.banner && <OccasionBanner banner={eggs.banner} />}
+        {eggs.banners.map((b, i) => <OccasionBanner key={i} banner={b} />)}
         {loggedIn && !onLogin && (
           <>
             <KonamiEgg />
