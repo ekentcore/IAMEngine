@@ -1018,7 +1018,8 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
           <React.Fragment key={step.seq}>
           {/* os-printer / t800-done: egg-only hooks, inert until their modes are on (case-eggs.tsx). */}
           <details open={isOpen} className={step.systemKey === "printers" ? "os-printer" : undefined} style={{ margin: "0.2rem 0" }}>
-            <summary className={step.intent && step.verdict === "verified" ? "t800-done" : undefined} onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
+            {/* hm-wait: egg-only hook for the holdmusic egg, inert until body.hm-mode (case-eggs.tsx). */}
+            <summary className={[step.intent && step.verdict === "verified" ? "t800-done" : null, ["pending", "needs_approval", "running", "verifying"].includes(step.verdict) ? "hm-wait" : null].filter(Boolean).join(" ") || undefined} onClick={(e) => { e.preventDefault(); if (hasDetail) toggle(step.seq); }} style={{ cursor: hasDetail ? "pointer" : "default" }}>
               <strong style={{ marginRight: 6 }}>{step.seq}.</strong>
               <Badge verdict={step.verdict} /> {step.systemName} <span className="note">({step.systemKey})</span>
               {step.intent === "destructive" && (

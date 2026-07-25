@@ -25,6 +25,9 @@ import { effectiveEggDate, todayEastern } from "@/lib/eggs/effective-date";
 import { OccasionBanner } from "./_components/eggs/occasion-banner";
 import { KonamiEgg } from "./_components/eggs/konami-egg";
 import { JurassicEgg } from "./_components/eggs/jurassic-egg";
+import { MarioEgg } from "./_components/eggs/mario-egg";
+import { ClippyEgg } from "./_components/eggs/clippy-egg";
+import { RickrollEgg } from "./_components/eggs/rickroll-egg";
 import { ConsoleSignature } from "./_components/eggs/console-signature";
 import { NewYearEgg } from "./_components/eggs/new-year-egg";
 import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
@@ -130,6 +133,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <>
             <KonamiEgg />
             <JurassicEgg />
+            <MarioEgg />
+            <ClippyEgg />
+            <RickrollEgg />
             <ConsoleSignature />
             {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
             {attention && <AdminAttentionModal userId={user?.id ?? null} {...attention} />}

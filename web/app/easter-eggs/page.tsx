@@ -22,6 +22,11 @@ export default async function EasterEggsPage() {
         All eggs are cosmetic: no business logic, audit, or credential path is ever touched, and the
         date-driven ones can be previewed with the 📅 simulator in the header.
       </p>
+      <p className="note" style={{ maxWidth: 640 }}>
+        🔊 Some eggs now make sound — all of it synthesized in the browser (no audio files), quiet, and
+        only ever started by something you did (a typed word or a click). To mute every egg on this
+        machine, run <code>localStorage.setItem(&quot;egg-sounds&quot;, &quot;off&quot;)</code> in the console.
+      </p>
 
       <h2 style={{ marginTop: "1.6rem" }}>Live in the app ({LIVE_EGGS.length})</h2>
       <EggCatalogGrid eggs={LIVE_EGGS} />
