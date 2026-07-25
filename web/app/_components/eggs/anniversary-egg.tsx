@@ -1,10 +1,12 @@
 "use client";
 
 // March 22: confetti bursts and the wedding photo takes the screen with a big "Whoo Hoo!" —
-// once per person per year (localStorage-guarded, new-year pattern). Rendered only when the
-// layout's occasion state says it's the day; the photo ships at /eggs/wedding.jpg.
+// on every arrival at the clients list that day, before the clients show through. Rendered
+// only when the layout's occasion state says it's the day; the photo ships at /eggs/wedding.jpg.
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { usePathname } from "next/navigation";
+import { isClientsListPath } from "@/lib/eggs/occasions";
 import { fireConfetti } from "./confetti";
 
 const CSS = `
@@ -47,19 +49,13 @@ export function AnniversaryShow({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function AnniversaryEgg({ year }: { year: string }) {
+export function AnniversaryEgg() {
+  const pathname = usePathname();
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    const key = `iam-eggs-anniversary-${year}`;
-    try {
-      if (localStorage.getItem(key)) return;
-      localStorage.setItem(key, "1");
-    } catch {
-      return; // storage unavailable -> skip rather than fire on every load
-    }
-    setShow(true);
-  }, [year]);
+    if (isClientsListPath(pathname)) setShow(true);
+  }, [pathname]);
 
   useEffect(() => {
     if (!show) return;
