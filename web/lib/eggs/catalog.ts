@@ -286,6 +286,120 @@ export const EGG_CATALOG: CatalogEgg[] = [
     exit: "Esc or type it again",
   },
 
+  // ---- The sound batch (ten eggs, seven with synthesized audio — spec:
+  // docs/superpowers/specs/2026-07-24-sound-eggs-design.md). No audio assets anywhere; every
+  // sound is an original Web Audio synth gesture, and localStorage["egg-sounds"]="off" mutes all.
+  {
+    slug: "not-found-nope",
+    name: "The 404 rejection",
+    emoji: "🏀",
+    status: "live",
+    where: "Any URL that doesn't exist",
+    trigger: "Visit a missing page",
+    description:
+      "The app finally has a 404, and it does not want that URL in its house: a bouncing basketball plays the zero, a giant hand wags NO. NO. NO., and clicking the hand swats the request away with three synthesized uh-uh-uh thumps and a referee whistle. Sound is click-to-play (a page load is not a user gesture).",
+    exit: "The link back to the dashboard",
+  },
+  {
+    slug: "law-and-order",
+    name: "Law & Order cold open",
+    emoji: "🚔",
+    status: "live",
+    where: "/cases (any site version)",
+    trigger: "Type \"lawandorder\" (outside inputs)",
+    description:
+      "A black title card over the docket: \"In the identity system, the people are represented by two separate yet equally important groups: the runners, who execute the steps, and the admins, who approve them.\" IAM ENGINE — SPECIAL PROVISIONS UNIT, and the two-note DUN DUN lands as the card slams in. These are their cases.",
+    exit: "Esc or click",
+  },
+  {
+    slug: "sad-trombone",
+    name: "Sad trombone failures",
+    emoji: "🎺",
+    status: "live",
+    where: "/runs (any site version)",
+    trigger: "Type \"womp\" (outside inputs)",
+    description:
+      "Every failed row gets a 🎺 womp womp lead-in and a slow sag on its badge, while one synthesized wah-wah-wah-waaah plays the mode in. The kindest possible framing for a runner error.",
+    exit: "Esc or type it again",
+  },
+  {
+    slug: "dialup-agents",
+    name: "Dial-up fleet reconnect",
+    emoji: "📞",
+    status: "live",
+    where: "/agents (any site version)",
+    trigger: "Type \"dialup\" (outside inputs)",
+    description:
+      "A terminal dials 1-556-0456 and the whole 1997 ritual plays out in synth: DTMF digits, carrier tone, the filtered-noise SCREEEECH, then every agent connects at 56,000 bps. Someone needs the phone line, so hang up when you're done.",
+    exit: "Esc or click",
+  },
+  {
+    slug: "mario-coins",
+    name: "Coin block",
+    emoji: "🪙",
+    status: "live",
+    where: "Anywhere",
+    trigger: "Type \"mario\" (outside inputs)",
+    description:
+      "A ? block drops from the sky. Bonk it: a coin pops with the classic two-note chirp (synthesized, naturally) and the counter climbs. That's it. That's the egg. It's weirdly satisfying.",
+    exit: "Esc or click outside the block",
+  },
+  {
+    slug: "airhorn-ship",
+    name: "Airhorn for the newest ship",
+    emoji: "📣",
+    status: "live",
+    where: "/changelog (any site version)",
+    trigger: "Type \"airhorn\" (outside inputs)",
+    description:
+      "The newest changelog entry gets a gold SHIPPED banner and three pumps of a synthesized triple airhorn blast — bwaa, bwaa, bwaaaaa. Every release deserves a hype man.",
+    exit: "Esc or type it again",
+  },
+  {
+    slug: "clippy",
+    name: "Clipper, the assistant",
+    emoji: "📎",
+    status: "live",
+    where: "Anywhere",
+    trigger: "Type \"clippy\" (outside inputs)",
+    description:
+      "A fully original bent-wire office assistant boings into the corner with one page-aware line — \"It looks like you're provisioning a user. Have you tried turning them off and on again? Oh wait — that's offboarding.\" He has been waiting since 1997.",
+    exit: "Esc or click the bubble",
+  },
+  {
+    slug: "rickroll",
+    name: "The rickroll",
+    emoji: "🕺",
+    status: "live",
+    where: "Anywhere",
+    trigger: "Type \"rickroll\" (outside inputs)",
+    description:
+      "You got got: a disco overlay, a tireless CSS dancer, and the lyrics rewritten for IAM — \"Never gonna give you up (your licenses, that is)\". Deliberately the only silent sound egg: the melody plays in your head, which is the whole point.",
+    exit: "Esc or click",
+  },
+  {
+    slug: "this-is-fine",
+    name: "This is fine",
+    emoji: "🔥",
+    status: "live",
+    where: "/runs (any site version)",
+    trigger: "Type \"thisisfine\" (outside inputs)",
+    description:
+      "Failed rows smolder, a flame line flickers along the bottom of the viewport, and the hint dog sips his coffee: This is fine. Silent by design — the whole joke is the calm.",
+    exit: "Esc or type it again",
+  },
+  {
+    slug: "hold-music",
+    name: "Hold music",
+    emoji: "🎼",
+    status: "live",
+    where: "Case detail — steps still waiting to run",
+    trigger: "Type \"holdmusic\" (outside inputs)",
+    description:
+      "Pending and running steps go on hold — \"🎼 Your step is important to us. Please continue to hold.\" — while a soft synthesized Cmaj7/Fmaj7 arpeggio loops until you exit. You are caller number 3.",
+    exit: "Esc or type it again (stops the loop)",
+  },
+
   // ---- The anniversary egg ----------------------------------------------------------------
   {
     slug: "anniversary-wedding",

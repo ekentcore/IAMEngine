@@ -22,6 +22,17 @@ import { MatrixShow } from "@/app/agents/_components/matrix-egg";
 import { WarGamesShow } from "@/app/cases/_components/wargames-egg";
 import { CASE_EGG_SKINS } from "@/app/cases/_components/case-eggs";
 import { GODFATHER_CSS, GODFATHER_HINT } from "@/app/runs/_components/godfather-egg";
+import { NopeShow } from "@/app/_components/eggs/nope-404";
+import { MarioShow } from "@/app/_components/eggs/mario-egg";
+import { ClippyShow } from "@/app/_components/eggs/clippy-egg";
+import { RickrollShow } from "@/app/_components/eggs/rickroll-egg";
+import { LawAndOrderShow } from "@/app/cases/_components/lawandorder-egg";
+import { DialupShow } from "@/app/agents/_components/dialup-egg";
+import { WOMP_SKIN } from "@/app/runs/_components/womp-egg";
+import { FINE_SKIN } from "@/app/runs/_components/thisisfine-egg";
+import { AIRHORN_SKIN } from "@/app/changelog/_components/airhorn-egg";
+import { playEggSound, startEggLoop } from "@/app/_components/eggs/egg-audio";
+import { EGG_SOUNDS } from "@/lib/eggs/sounds";
 import type { ChangelogEntry } from "@/lib/changelog/format";
 
 export type EggDemo = {
@@ -352,6 +363,89 @@ function MissionImpossibleDemo() {
   );
 }
 
+// ---- the sound batch -------------------------------------------------------------------------
+// Opening a demo is a click, so demo sounds always satisfy autoplay policy. The same kill switch
+// applies here: localStorage["egg-sounds"] = "off" mutes everything.
+
+/** Staged failed run rows carrying the real gf-err hooks the /runs eggs restyle. */
+function FailedRowsStage({ label }: { label: string }) {
+  return (
+    <Stage label={label}>
+      <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+        <div>
+          <span className="badge" style={{ marginRight: 8 }}>ok</span>
+          <span style={{ color: "var(--muted)" }}>Mailbox converted to shared — 2.1 GB.</span>
+        </div>
+        <div>
+          <span className="gf-err-badge" style={{ borderRadius: 6, padding: "1px 7px", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", marginRight: 8 }}>failed</span>
+          <span className="gf-err" style={{ padding: "2px 6px", borderRadius: 4 }}>Connect-MgGraph: the tenant said no, then stopped returning calls.</span>
+        </div>
+      </div>
+    </Stage>
+  );
+}
+
+function WompDemo() {
+  useEffect(() => playEggSound(EGG_SOUNDS.trombone), []);
+  return (
+    <>
+      <ModeSkin {...WOMP_SKIN} />
+      <FailedRowsStage label="Failed rows on /runs — 🔊 one trombone, on the house" />
+    </>
+  );
+}
+
+function ThisIsFineDemo() {
+  return (
+    <>
+      <ModeSkin {...FINE_SKIN} />
+      <FailedRowsStage label="Failed rows on /runs, smoldering politely" />
+    </>
+  );
+}
+
+function AirhornDemo() {
+  useEffect(() => playEggSound(EGG_SOUNDS.airhorn), []);
+  return (
+    <>
+      <ModeSkin {...AIRHORN_SKIN} />
+      <Stage label="The newest /changelog entry — 🔊 with the reception it deserves">
+        <section className="ah-newest" style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "0.75rem 0.9rem", marginTop: 10 }}>
+          <b>Onboarding wizard learns to fly</b>
+          <p className="note" style={{ margin: "4px 0 0" }}>New-user cases now plan themselves from the intake form.</p>
+        </section>
+      </Stage>
+    </>
+  );
+}
+
+function HoldMusicDemo() {
+  useEffect(() => startEggLoop(EGG_SOUNDS.holdmusic), []);
+  return (
+    <>
+      <ModeSkin {...CASE_EGG_SKINS.holdmusic} />
+      <Stage label="Steps still waiting on a case — 🔊 the loop stops when you close this">
+        <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+          <details open>
+            <summary className="hm-wait" style={{ padding: "3px 6px" }}>Assign licenses — M365 <span className="badge">pending</span></summary>
+          </details>
+          <details open>
+            <summary className="hm-wait" style={{ padding: "3px 6px" }}>Create mailbox — Exchange <span className="badge" style={{ color: "#1565c0", borderColor: "#1565c0" }}>● running</span></summary>
+          </details>
+        </div>
+      </Stage>
+    </>
+  );
+}
+
+function NopeDemo() {
+  return (
+    <Stage label="The real app-wide 404 page — click the hand 🔊">
+      <NopeShow />
+    </Stage>
+  );
+}
+
 // ---- the registry ----------------------------------------------------------------------------
 
 export const EGG_DEMOS: Record<string, EggDemo> = {
@@ -391,5 +485,23 @@ export const EGG_DEMOS: Record<string, EggDemo> = {
   "groundhog-retries": { kind: "inline", render: () => <GroundhogDemo /> },
   "bttf-time-circuits": { kind: "inline", render: () => <BttfDemo /> },
   "gandalf-blocked": { kind: "inline", render: () => <GandalfDemo /> },
+  "not-found-nope": {
+    kind: "inline",
+    render: () => <NopeDemo />,
+    note: "Or visit the genuine article: any URL that doesn't exist, e.g. /not-in-my-house.",
+  },
+  "law-and-order": { kind: "takeover", render: (onClose) => <LawAndOrderShow cases={SAMPLE_CASES.map((c) => c.label)} onClose={onClose} /> },
+  "sad-trombone": { kind: "inline", render: () => <WompDemo /> },
+  "dialup-agents": { kind: "takeover", render: (onClose) => <DialupShow agents={sampleAgents(Date.now()).map((a) => a.name)} onClose={onClose} /> },
+  "mario-coins": { kind: "takeover", render: (onClose) => <MarioShow onClose={onClose} /> },
+  "airhorn-ship": { kind: "inline", render: () => <AirhornDemo /> },
+  clippy: {
+    kind: "takeover",
+    render: (onClose) => <ClippyShow pathname="/cases" onClose={onClose} />,
+    note: "The line changes by page — Clipper reads the room (well, the pathname).",
+  },
+  rickroll: { kind: "takeover", render: (onClose) => <RickrollShow onClose={onClose} /> },
+  "this-is-fine": { kind: "inline", render: () => <ThisIsFineDemo /> },
+  "hold-music": { kind: "inline", render: () => <HoldMusicDemo /> },
   "anniversary-wedding": { kind: "takeover", render: (onClose) => <AnniversaryShow onClose={onClose} /> },
 };
