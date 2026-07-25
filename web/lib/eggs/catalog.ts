@@ -399,6 +399,19 @@ export const EGG_CATALOG: CatalogEgg[] = [
       "Pending and running steps go on hold — \"🎼 Your step is important to us. Please continue to hold.\" — while a soft synthesized Cmaj7/Fmaj7 arpeggio loops until you exit. You are caller number 3.",
     exit: "Esc or type it again (stops the loop)",
   },
+
+  // ---- The anniversary egg ----------------------------------------------------------------
+  {
+    slug: "anniversary-wedding",
+    name: "March 22 wedding day",
+    emoji: "💒",
+    status: "live",
+    where: "Every page",
+    trigger: "Automatic on March 22, once per year",
+    description:
+      "Confetti bursts and the wedding photo takes over the screen with a big \"Whoo Hoo!\" — once per person per year, guarded by a per-year localStorage key like the New Year burst.",
+    exit: "Esc or click",
+  },
 ];
 
 export const LIVE_EGGS = EGG_CATALOG.filter((e) => e.status === "live");
