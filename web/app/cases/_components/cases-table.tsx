@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateOnly, formatDateTime } from "@/lib/dates";
 import { WarGamesEgg } from "./wargames-egg";
+import { LawAndOrderEgg } from "./lawandorder-egg";
 
 export type CaseRowVM = {
   id: string;
@@ -362,8 +363,9 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
 
   return (
     <>
-      {/* Easter egg: typing "wargames" boots WOPR over the case list (see wargames-egg.tsx). */}
+      {/* Easter eggs: "wargames" boots WOPR over the case list, "lawandorder" runs the cold open. */}
       <WarGamesEgg cases={cases.map((c) => ({ label: c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8), action: c.action, status: c.status }))} />
+      <LawAndOrderEgg cases={cases.map((c) => c.subject ?? c.serviceNowCaseNumber ?? c.id.slice(0, 8))} />
       <div className="filters" style={{ marginTop: "1rem" }}>
         <div className="search-field">
           <span className="search-icon" aria-hidden>⌕</span>

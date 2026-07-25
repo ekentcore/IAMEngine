@@ -11,6 +11,8 @@ import { CopyButton } from "./copy-button";
 import { FixButton } from "./fix-button";
 import { ClaudeFixButton, ClaudeFixChip, FixReviewPanel, useClaudeFixes, type FixTaskInfo } from "./claude-fix";
 import { GodfatherEgg } from "./godfather-egg";
+import { WompEgg } from "./womp-egg";
+import { ThisIsFineEgg } from "./thisisfine-egg";
 import { resolveManyOutcomes, resolveOutcomes, reopenOutcomes } from "../actions";
 import { copyText, copyFailureHint } from "@/lib/clipboard";
 
@@ -156,8 +158,11 @@ export function RunLogTable({ rows, emptyText, v2 = false, initialFixTasks, fixe
 
   return (
     <>
-      {/* Easter egg: typing "godfather" restyles the error lines (see godfather-egg.tsx). */}
+      {/* Easter eggs: "godfather" restyles error lines, "womp" gives them the trombone,
+          "thisisfine" sets them on fire (godfather-egg / womp-egg / thisisfine-egg). */}
       <GodfatherEgg />
+      <WompEgg />
+      <ThisIsFineEgg />
       {sel.size > 0 && (
         <div className="toolbar" style={{ alignItems: "center", gap: 8, margin: "0.4rem 0" }}>
           <b>{sel.size} selected</b>

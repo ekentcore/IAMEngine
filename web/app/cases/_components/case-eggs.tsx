@@ -7,11 +7,15 @@
 //   officespace       → the Printers manual step gets the parking-lot send-off (PC LOAD LETTER)
 //   groundhog         → auto-retry notes wake up at 6:00 on repeat ("Day <attempt>")
 //   missionimpossible → arms the password reveal: the card burns after "I saved it"
+//   holdmusic         → waiting steps go on hold, with a soft synth loop until you exit
 // All exit with Esc or by typing the word again. Everything here is cosmetic.
 // The namespace import keeps the module loadable under the node test runner (classic JSX
 // transform), which imports CASE_EGG_SKINS — module-scope JSX — via demo-coverage.test.ts.
 import * as React from "react";
-import { ModeEgg } from "@/app/_components/eggs/mode-egg";
+import { ModeEgg, ModeSkin } from "@/app/_components/eggs/mode-egg";
+import { useTypedWord } from "@/app/_components/eggs/use-typed-word";
+import { startEggLoop } from "@/app/_components/eggs/egg-audio";
+import { EGG_SOUNDS } from "@/lib/eggs/sounds";
 
 const MONO = `ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 
@@ -183,6 +187,23 @@ const MI_CSS = `
 }
 `;
 
+const HM_CSS = `
+body.hm-mode .hm-wait::after {
+  content: " 🎼 Your step is important to us. Please continue to hold.";
+  font-style: italic;
+  font-size: 12px;
+  color: #6d28d9;
+}
+@media (prefers-reduced-motion: no-preference) {
+  body.hm-mode .hm-wait::after { animation: hm-sway 3.2s ease-in-out infinite; display: inline-block; }
+  @keyframes hm-sway { 0%, 100% { transform: none; } 50% { transform: translateY(-1px); } }
+}
+.hm-hint span {
+  display: inline-block; background: #f5f3ff; color: #5b21b6; border: 1px solid #8b5cf6;
+  border-radius: 999px; padding: 4px 14px; font-size: 12.5px;
+}
+`;
+
 // Skin data per egg, exported so the /easter-eggs demo modal can replay the exact same look over
 // staged sample markup (ModeSkin). CaseEggs below wires each skin to its trigger word.
 export const CASE_EGG_SKINS = {
@@ -216,7 +237,23 @@ export const CASE_EGG_SKINS = {
     css: MI_CSS,
     hint: <span className="mi-hint"><span>Your mission, should you choose to accept it: the next password reveal self-destructs on “I saved it” — Esc to stand down</span></span>,
   },
+  holdmusic: {
+    bodyClass: "hm-mode",
+    css: HM_CSS,
+    hint: <span className="hm-hint"><span>🎼 You are caller number 3 — Esc (or type it again) to speak to a representative</span></span>,
+  },
 } as const;
+
+/** The one case egg with a soundtrack: ModeSkin plus the synth hold-music loop, which starts and
+ *  stops with the mode (typing the word is the user gesture the audio needs). */
+export function HoldMusicEgg() {
+  const [active] = useTypedWord("holdmusic");
+  React.useEffect(() => {
+    if (active) return startEggLoop(EGG_SOUNDS.holdmusic);
+  }, [active]);
+  if (!active) return null;
+  return <ModeSkin {...CASE_EGG_SKINS.holdmusic} />;
+}
 
 export function CaseEggs({ offboard }: { offboard: boolean }) {
   return (
@@ -227,6 +264,7 @@ export function CaseEggs({ offboard }: { offboard: boolean }) {
       <ModeEgg word="groundhog" {...CASE_EGG_SKINS.groundhog} />
       <ModeEgg word="gandalf" {...CASE_EGG_SKINS.gandalf} />
       <ModeEgg word="missionimpossible" {...CASE_EGG_SKINS.missionimpossible} />
+      <HoldMusicEgg />
     </>
   );
 }
