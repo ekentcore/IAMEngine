@@ -1,27 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toLocationsMap, normalizeTz, fetchCmnLocations, type CmnLocation } from "./locations";
-import type { SnConfig } from "./types";
-
-const cfg: SnConfig = { instanceUrl: "https://x.service-now.com", username: "u", password: "p" };
-
-test("fetchCmnLocations asks ServiceNow for active locations only, grouping the company/account OR", async () => {
-  let captured = "";
-  const fetcher = (async (url: RequestInfo | URL) => {
-    captured = String(url);
-    return new Response(JSON.stringify({ result: [] }), { status: 200, headers: { "content-type": "application/json" } });
-  }) as typeof fetch;
-  await fetchCmnLocations(cfg, "a".repeat(32), fetcher);
-  const q = new URL(captured).searchParams.get("sysparm_query") ?? "";
-  assert.ok(q.includes("^active=true"), `sysparm_query missing active filter: ${q}`);
-  // The active filter must apply to BOTH branches of the OR, so the OR clause needs to be grouped
-  // in parentheses: (company=X^ORaccount=X)^active=true — not company=X^ORaccount=X^active=true,
-  // which ServiceNow would parse as active=true applying only to the account= branch.
-  assert.ok(
-    q.startsWith(`(company=${"a".repeat(32)}^ORaccount=${"a".repeat(32)})^active=true`),
-    `sysparm_query does not group the OR before applying active=true: ${q}`,
-  );
-});
+import { toLocationsMap, normalizeTz, type CmnLocation } from "./locations";
 
 test("normalizeTz strips the region/company, leaving the zone", () => {
   assert.equal(normalizeTz("US/Central"), "Central");

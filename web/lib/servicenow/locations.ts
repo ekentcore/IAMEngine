@@ -33,9 +33,7 @@ export async function fetchCmnLocations(config: SnConfig, accountSysId: string, 
     config,
     TABLE,
     {
-      // Parentheses matter: `^OR` binds loosely, so without grouping, `^active=true` would apply
-      // only to the account= branch, letting inactive company-linked locations back in.
-      sysparm_query: `(company=${accountSysId}^ORaccount=${accountSysId})^active=true`,
+      sysparm_query: `company=${accountSysId}^ORaccount=${accountSysId}`,
       sysparm_fields: "name,street,city,state,zip,country,time_zone",
       sysparm_display_value: "all",
       sysparm_limit: "200",
