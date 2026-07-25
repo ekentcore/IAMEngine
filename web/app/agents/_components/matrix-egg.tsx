@@ -43,17 +43,14 @@ const CSS = `
 .mx-caption { text-align: center; padding: 0.7rem 1rem 1rem; font-size: 12.5px; color: #86efac; }
 `;
 
-export function MatrixEgg({ agents, now }: { agents: { name: string; lastSeenAt: string | null }[]; now: number }) {
-  const [active, setActive] = useTypedWord("matrix");
-
+/** The rain itself — mount = show. Click closes; the host (typed-word wrapper or the
+ *  /easter-eggs demo) owns Escape. */
+export function MatrixShow({ agents, now, onClose }: { agents: { name: string; lastSeenAt: string | null }[]; now: number; onClose: () => void }) {
   useEffect(() => {
-    if (!active) return;
     const { overflow } = document.body.style;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = overflow; };
-  }, [active]);
-
-  if (!active) return null;
+  }, []);
 
   // Same 90-second rule as the fleet table's lastSeen().
   const cols = agents.slice(0, 14).map((a, i) => ({
@@ -63,7 +60,7 @@ export function MatrixEgg({ agents, now }: { agents: { name: string; lastSeenAt:
   }));
 
   return createPortal(
-    <div className="mx-overlay" role="dialog" aria-label="The fleet, as the Matrix" onClick={() => setActive(false)}>
+    <div className="mx-overlay" role="dialog" aria-label="The fleet, as the Matrix" onClick={onClose}>
       <style>{CSS}</style>
       <div className="mx-cols">
         {cols.length === 0 && <div className="mx-caption" style={{ alignSelf: "center" }}>NO AGENTS IN THE CONSTRUCT.</div>}
@@ -89,4 +86,10 @@ export function MatrixEgg({ agents, now }: { agents: { name: string; lastSeenAt:
     </div>,
     document.body
   );
+}
+
+export function MatrixEgg({ agents, now }: { agents: { name: string; lastSeenAt: string | null }[]; now: number }) {
+  const [active, setActive] = useTypedWord("matrix");
+  if (!active) return null;
+  return <MatrixShow agents={agents} now={now} onClose={() => setActive(false)} />;
 }

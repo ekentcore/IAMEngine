@@ -193,35 +193,14 @@ function PirateCard({ entry, volley, end }: { entry?: ChangelogEntry; volley: nu
   );
 }
 
-export function PirateEgg({ entries }: { entries: ChangelogEntry[] }) {
-  const progress = useRef(0);
-  const [phase, setPhase] = useState<"idle" | "battle">("idle");
+/** The battle itself — mount = volley 0 fires. Click closes; the host (typed-word wrapper or
+ *  the /easter-eggs demo) owns Escape. */
+export function PirateShow({ entries, onClose }: { entries: ChangelogEntry[]; onClose: () => void }) {
   const [volley, setVolley] = useState(0);
-  const phaseRef = useRef(phase);
-  phaseRef.current = phase;
 
   const battleEntries = entries.slice(0, VOLLEY_ENTRIES);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (phaseRef.current === "battle") {
-        if (e.key === "Escape") setPhase("idle");
-        return;
-      }
-      if (isTypingTarget(e.target)) return;
-      progress.current = advancePirate(progress.current, e.key);
-      if (progress.current === PIRATE_LENGTH) {
-        progress.current = 0;
-        setVolley(0);
-        setPhase("battle");
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
-    if (phase !== "battle") return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const t = setInterval(() => {
       setVolley((v) => {
@@ -231,9 +210,7 @@ export function PirateEgg({ entries }: { entries: ChangelogEntry[] }) {
       });
     }, VOLLEY_MS);
     return () => clearInterval(t);
-  }, [phase, battleEntries.length]);
-
-  if (phase === "idle") return null;
+  }, [battleEntries.length]);
 
   const reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const atEnd = volley >= battleEntries.length;
@@ -242,7 +219,7 @@ export function PirateEgg({ entries }: { entries: ChangelogEntry[] }) {
   return createPortal(
     // Portaled to <body>: an ancestor with a transform/filter would otherwise become the
     // containing block for position:fixed, leaving the header uncovered.
-    <div className="pe-overlay" role="dialog" aria-label="Change log, high-seas edition" onClick={() => setPhase("idle")}>
+    <div className="pe-overlay" role="dialog" aria-label="Change log, high-seas edition" onClick={onClose}>
       <style>{CSS}</style>
       <div className="pe-sea">
         <div className="pe-wave" style={{ top: "8%" }} />
@@ -275,4 +252,31 @@ export function PirateEgg({ entries }: { entries: ChangelogEntry[] }) {
     </div>,
     document.body
   );
+}
+
+export function PirateEgg({ entries }: { entries: ChangelogEntry[] }) {
+  const progress = useRef(0);
+  const [active, setActive] = useState(false);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (activeRef.current) {
+        if (e.key === "Escape") setActive(false);
+        return;
+      }
+      if (isTypingTarget(e.target)) return;
+      progress.current = advancePirate(progress.current, e.key);
+      if (progress.current === PIRATE_LENGTH) {
+        progress.current = 0;
+        setActive(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  if (!active) return null;
+  return <PirateShow entries={entries} onClose={() => setActive(false)} />;
 }

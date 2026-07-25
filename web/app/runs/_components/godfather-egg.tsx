@@ -49,6 +49,11 @@ body.gf-mode h1::after { content: " 🎩"; }
 }
 `;
 
+// Exported for the /easter-eggs demo modal, which replays the exact same skin over staged
+// sample run-log rows.
+export const GODFATHER_CSS = CSS;
+export const GODFATHER_HINT = "Every error is an offer you can’t refuse — Esc (or type it again) to leave the family";
+
 export function GodfatherEgg() {
   const progress = useRef(0);
   const [active, setActive] = useState(false);

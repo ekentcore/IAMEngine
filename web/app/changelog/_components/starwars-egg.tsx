@@ -82,28 +82,10 @@ body.sw-shaking { animation: sw-shake ${SHAKE_MS}ms ease-in-out; }
 }
 `;
 
-export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
-  const progress = useRef(0);
-  const [phase, setPhase] = useState<"idle" | "shaking" | "crawl">("idle");
-  const phaseRef = useRef(phase);
-  phaseRef.current = phase;
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (phaseRef.current === "crawl") {
-        if (e.key === "Escape") setPhase("idle");
-        return;
-      }
-      if (phaseRef.current !== "idle" || isTypingTarget(e.target)) return;
-      progress.current = advanceStarwars(progress.current, e.key);
-      if (progress.current === STARWARS_LENGTH) {
-        progress.current = 0;
-        setPhase("shaking");
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+/** The whole show — mount = shake, then crawl. Click closes; the host (typed-word wrapper or
+ *  the /easter-eggs demo) owns Escape. */
+export function StarWarsShow({ entries, onClose }: { entries: ChangelogEntry[]; onClose: () => void }) {
+  const [phase, setPhase] = useState<"shaking" | "crawl">("shaking");
 
   useEffect(() => {
     if (phase !== "shaking") return;
@@ -116,8 +98,6 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
     };
   }, [phase]);
 
-  if (phase === "idle") return null;
-
   const crawlEntries = entries.slice(0, CRAWL_ENTRIES);
   // ~11s per entry keeps the pace readable; the classic crawl runs about 85s.
   const duration = `${Math.max(45, crawlEntries.length * 11)}s`;
@@ -128,7 +108,7 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
       {/* Portaled to <body>: an ancestor with a transform/filter would otherwise become the
           containing block for position:fixed, leaving the header uncovered. */}
       {phase === "crawl" && createPortal(
-        <div className="sw-overlay" role="dialog" aria-label="Change log, opening-crawl edition" onClick={() => setPhase("idle")}>
+        <div className="sw-overlay" role="dialog" aria-label="Change log, opening-crawl edition" onClick={onClose}>
           <div className="sw-intro">A long time ago in a data center far, far away....</div>
           <div className="sw-stage">
             <div className="sw-crawl">
@@ -153,4 +133,31 @@ export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
       )}
     </>
   );
+}
+
+export function StarWarsEgg({ entries }: { entries: ChangelogEntry[] }) {
+  const progress = useRef(0);
+  const [active, setActive] = useState(false);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (activeRef.current) {
+        if (e.key === "Escape") setActive(false);
+        return;
+      }
+      if (isTypingTarget(e.target)) return;
+      progress.current = advanceStarwars(progress.current, e.key);
+      if (progress.current === STARWARS_LENGTH) {
+        progress.current = 0;
+        setActive(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  if (!active) return null;
+  return <StarWarsShow entries={entries} onClose={() => setActive(false)} />;
 }

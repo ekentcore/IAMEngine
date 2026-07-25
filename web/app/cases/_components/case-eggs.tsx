@@ -8,6 +8,9 @@
 //   groundhog         → auto-retry notes wake up at 6:00 on repeat ("Day <attempt>")
 //   missionimpossible → arms the password reveal: the card burns after "I saved it"
 // All exit with Esc or by typing the word again. Everything here is cosmetic.
+// The namespace import keeps the module loadable under the node test runner (classic JSX
+// transform), which imports CASE_EGG_SKINS — module-scope JSX — via demo-coverage.test.ts.
+import * as React from "react";
 import { ModeEgg } from "@/app/_components/eggs/mode-egg";
 
 const MONO = `ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
@@ -180,47 +183,50 @@ const MI_CSS = `
 }
 `;
 
+// Skin data per egg, exported so the /easter-eggs demo modal can replay the exact same look over
+// staged sample markup (ModeSkin). CaseEggs below wires each skin to its trigger word.
+export const CASE_EGG_SKINS = {
+  hal: {
+    bodyClass: "hal-mode",
+    css: HAL_CSS,
+    hint: <span className="hal-hint"><span>This mission is too important for me to allow you to jeopardize it — Esc (or type it again) to disconnect HAL</span></span>,
+  },
+  terminator: {
+    bodyClass: "t800-mode",
+    css: T800_CSS,
+    hint: <span className="t800-hint"><span>Hasta la vista, baby — Esc (or type it again) to power down the T-800</span></span>,
+  },
+  officespace: {
+    bodyClass: "os-mode",
+    css: OS_CSS,
+    hint: <span className="os-hint"><span>PC LOAD LETTER?! — Esc (or type it again) to rescue the printer from the field</span></span>,
+  },
+  groundhog: {
+    bodyClass: "gh-mode",
+    css: GH_CSS,
+    hint: <span className="gh-hint"><span>Okay campers, rise and shine — Esc (or type it again) to make it February 3rd</span></span>,
+  },
+  gandalf: {
+    bodyClass: "yswp-mode",
+    css: YSWP_CSS,
+    hint: <span className="yswp-hint"><span>The blocked steps shall not pass (until their requirements resolve) — Esc to return to the Shire</span></span>,
+  },
+  missionimpossible: {
+    bodyClass: "mi-mode",
+    css: MI_CSS,
+    hint: <span className="mi-hint"><span>Your mission, should you choose to accept it: the next password reveal self-destructs on “I saved it” — Esc to stand down</span></span>,
+  },
+} as const;
+
 export function CaseEggs({ offboard }: { offboard: boolean }) {
   return (
     <>
-      <ModeEgg
-        word="hal"
-        bodyClass="hal-mode"
-        css={HAL_CSS}
-        hint={<span className="hal-hint"><span>This mission is too important for me to allow you to jeopardize it — Esc (or type it again) to disconnect HAL</span></span>}
-      />
-      {offboard && (
-        <ModeEgg
-          word="terminator"
-          bodyClass="t800-mode"
-          css={T800_CSS}
-          hint={<span className="t800-hint"><span>Hasta la vista, baby — Esc (or type it again) to power down the T-800</span></span>}
-        />
-      )}
-      <ModeEgg
-        word="officespace"
-        bodyClass="os-mode"
-        css={OS_CSS}
-        hint={<span className="os-hint"><span>PC LOAD LETTER?! — Esc (or type it again) to rescue the printer from the field</span></span>}
-      />
-      <ModeEgg
-        word="groundhog"
-        bodyClass="gh-mode"
-        css={GH_CSS}
-        hint={<span className="gh-hint"><span>Okay campers, rise and shine — Esc (or type it again) to make it February 3rd</span></span>}
-      />
-      <ModeEgg
-        word="gandalf"
-        bodyClass="yswp-mode"
-        css={YSWP_CSS}
-        hint={<span className="yswp-hint"><span>The blocked steps shall not pass (until their requirements resolve) — Esc to return to the Shire</span></span>}
-      />
-      <ModeEgg
-        word="missionimpossible"
-        bodyClass="mi-mode"
-        css={MI_CSS}
-        hint={<span className="mi-hint"><span>Your mission, should you choose to accept it: the next password reveal self-destructs on “I saved it” — Esc to stand down</span></span>}
-      />
+      <ModeEgg word="hal" {...CASE_EGG_SKINS.hal} />
+      {offboard && <ModeEgg word="terminator" {...CASE_EGG_SKINS.terminator} />}
+      <ModeEgg word="officespace" {...CASE_EGG_SKINS.officespace} />
+      <ModeEgg word="groundhog" {...CASE_EGG_SKINS.groundhog} />
+      <ModeEgg word="gandalf" {...CASE_EGG_SKINS.gandalf} />
+      <ModeEgg word="missionimpossible" {...CASE_EGG_SKINS.missionimpossible} />
     </>
   );
 }

@@ -7,16 +7,13 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useTypedWord } from "./use-typed-word";
 
-export function ModeEgg({ word, bodyClass, css, hint }: { word: string; bodyClass: string; css: string; hint: React.ReactNode }) {
-  const [active] = useTypedWord(word);
-
+/** The visual half of a mode egg — body class + CSS + hint pill while mounted. The typed-word
+ *  trigger lives in ModeEgg; the /easter-eggs demo modal mounts this directly over sample markup. */
+export function ModeSkin({ bodyClass, css, hint }: { bodyClass: string; css: string; hint: React.ReactNode }) {
   useEffect(() => {
-    if (!active) return;
     document.body.classList.add(bodyClass);
     return () => document.body.classList.remove(bodyClass);
-  }, [active, bodyClass]);
-
-  if (!active) return null;
+  }, [bodyClass]);
 
   return (
     <>
@@ -31,4 +28,10 @@ export function ModeEgg({ word, bodyClass, css, hint }: { word: string; bodyClas
       )}
     </>
   );
+}
+
+export function ModeEgg({ word, bodyClass, css, hint }: { word: string; bodyClass: string; css: string; hint: React.ReactNode }) {
+  const [active] = useTypedWord(word);
+  if (!active) return null;
+  return <ModeSkin bodyClass={bodyClass} css={css} hint={hint} />;
 }
