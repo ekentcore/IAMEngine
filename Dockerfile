@@ -38,8 +38,25 @@ RUN npm run build
 
 FROM base AS runtime
 
+# pg_dump/pg_restore for the in-app nightly backup + restore drill. The server is
+# PostgreSQL 17 (Azure Flexible Server) and pg_dump refuses a server newer than
+# itself, so the PGDG repo's client-17 is required — bookworm ships 15.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl gnupg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+       | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-17 \
+    && apt-get purge -y curl gnupg \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV PORT=3000
+# Point the backup's binary probe straight at the versioned bin dir (lib/jobs/db-backup.ts findPgBin).
+ENV PG_BIN_DIR=/usr/lib/postgresql/17/bin
 
 WORKDIR /app
 
