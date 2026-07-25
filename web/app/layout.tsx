@@ -139,7 +139,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <RickrollEgg />
             <ConsoleSignature />
             {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
-            {eggs.anniversary && <AnniversaryEgg year={eggDate.slice(0, 4)} />}
+            {eggs.anniversary && <AnniversaryEgg />}
             {attention && <AdminAttentionModal userId={user?.id ?? null} {...attention} />}
           </>
         )}

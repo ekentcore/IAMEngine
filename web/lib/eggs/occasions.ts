@@ -81,9 +81,16 @@ export function occasionsFor(date: string): EggState {
     banners,
     bulbGlyph: bulbGlyph(p.m, p.d),
     newYear: p.m === 1 && p.d <= 2,
-    // March 22: confetti + the wedding photo, once per person per year (anniversary-egg.tsx).
+    // March 22: confetti + the wedding photo on every visit to the clients list that day
+    // (anniversary-egg.tsx).
     anniversary: p.m === 3 && p.d === 22,
   };
+}
+
+// The anniversary overlay fires on arrival at a clients *list* (v1/v2/v3) — client detail
+// and review pages don't count.
+export function isClientsListPath(pathname: string | null | undefined): boolean {
+  return pathname === "/clients" || pathname === "/clients/v2" || pathname === "/clients/v3";
 }
 
 // Milestone case sparkle: the numeric tail of a case number is a positive multiple of 1000

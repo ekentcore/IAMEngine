@@ -406,10 +406,10 @@ export const EGG_CATALOG: CatalogEgg[] = [
     name: "March 22 wedding day",
     emoji: "💒",
     status: "live",
-    where: "Every page",
-    trigger: "Automatic on March 22, once per year",
+    where: "Clients list (v1/v2/v3)",
+    trigger: "Automatic on March 22, every time you open the clients list",
     description:
-      "Confetti bursts and the wedding photo takes over the screen with a big \"Whoo Hoo!\" — once per person per year, guarded by a per-year localStorage key like the New Year burst.",
+      "Confetti bursts and the wedding photo takes over the screen with a big \"Whoo Hoo!\" before the clients show through — every visit to the clients list that day, no once-a-year guard.",
     exit: "Esc or click",
   },
 ];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { occasionsFor, isMilestoneCase } from "./occasions";
+import { occasionsFor, isMilestoneCase, isClientsListPath } from "./occasions";
 
 function bannerOfKind(date: string, kind: string) {
   return occasionsFor(date).banners.find((b) => b.kind === kind) ?? null;
@@ -121,6 +121,17 @@ test("anniversary is true only on March 22, any year", () => {
   assert.equal(occasionsFor("2027-03-21").anniversary, false);
   assert.equal(occasionsFor("2027-03-23").anniversary, false);
   assert.equal(occasionsFor("2027-02-22").anniversary, false);
+});
+
+test("isClientsListPath: the three list routes, not detail/review/other pages", () => {
+  assert.equal(isClientsListPath("/clients"), true);
+  assert.equal(isClientsListPath("/clients/v2"), true);
+  assert.equal(isClientsListPath("/clients/v3"), true);
+  assert.equal(isClientsListPath("/clients/acme-co"), false);
+  assert.equal(isClientsListPath("/clients/review"), false);
+  assert.equal(isClientsListPath("/cases"), false);
+  assert.equal(isClientsListPath(null), false);
+  assert.equal(isClientsListPath(undefined), false);
 });
 
 // ---- Milestone case ----
