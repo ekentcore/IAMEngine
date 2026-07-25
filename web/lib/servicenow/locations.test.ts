@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toLocationsMap, normalizeTz, type CmnLocation } from "./locations";
+import { toLocationsMap, normalizeTz, fetchCmnLocations, type CmnLocation } from "./locations";
+import type { SnConfig } from "./types";
+
+const cfg: SnConfig = { instanceUrl: "https://x.service-now.com", username: "u", password: "p" };
+
+test("fetchCmnLocations asks ServiceNow for the client's active locations only", async () => {
+  let captured = "";
+  const fetcher = (async (url: RequestInfo | URL) => {
+    captured = String(url);
+    return new Response(JSON.stringify({ result: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  await fetchCmnLocations(cfg, "a".repeat(32), fetcher);
+  const q = new URL(captured).searchParams.get("sysparm_query") ?? "";
+  // Exact query, verified against the live instance (2026-07-25):
+  // - the field is the CUSTOM u_active — cmn_location has no OOB `active` column, and ServiceNow
+  //   silently IGNORES conditions on nonexistent fields (the filter would no-op).
+  // - NO parentheses: sysparm_query doesn't support grouping — `(company=…` made the whole query
+  //   invalid and ServiceNow matched ALL locations, pulling other clients' sites (the FR#28 regression).
+  //   `^OR` groups with the preceding condition, so a^ORb^c means (a OR b) AND c.
+  assert.equal(
+    q,
+    `company=${"a".repeat(32)}^ORaccount=${"a".repeat(32)}^u_active=true`,
+    `sysparm_query must be the paren-free client+u_active form: ${q}`,
+  );
+});
 
 test("normalizeTz strips the region/company, leaving the zone", () => {
   assert.equal(normalizeTz("US/Central"), "Central");

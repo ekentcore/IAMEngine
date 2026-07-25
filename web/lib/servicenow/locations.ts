@@ -33,7 +33,12 @@ export async function fetchCmnLocations(config: SnConfig, accountSysId: string, 
     config,
     TABLE,
     {
-      sysparm_query: `company=${accountSysId}^ORaccount=${accountSysId}`,
+      // No parentheses: sysparm_query doesn't support grouping — an invalid query makes ServiceNow
+      // match ALL rows (that's how other clients' sites leaked in). `^OR` groups with the preceding
+      // condition, so this reads (company OR account) AND u_active. The field is the instance's
+      // custom u_active — there is no OOB `active` column on cmn_location, and conditions on
+      // nonexistent fields are silently ignored.
+      sysparm_query: `company=${accountSysId}^ORaccount=${accountSysId}^u_active=true`,
       sysparm_fields: "name,street,city,state,zip,country,time_zone",
       sysparm_display_value: "all",
       sysparm_limit: "200",

@@ -293,3 +293,5 @@ export { entry as eggCatalogDemos } from "./egg-catalog-demos";
 export { entry as tenNewEggs } from "./ten-new-eggs";
 
 export { entry as anniversaryEgg } from "./anniversary-egg";
+
+export { entry as locationsActiveFilterFixed } from "./locations-active-filter-fixed";
