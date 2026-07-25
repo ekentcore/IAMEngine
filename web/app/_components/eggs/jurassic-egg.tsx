@@ -21,12 +21,11 @@ const CSS = `
 .jp-sub { font-size: 13px; color: #94a3b8; }
 `;
 
-export function JurassicEgg() {
-  const [active, setActive] = useTypedWord("jurassic");
-  if (!active) return null;
-
+/** The Nedry popup itself — mount = show. Click closes; the host (typed-word wrapper or the
+ *  /easter-eggs demo) owns Escape. */
+export function JurassicShow({ onClose }: { onClose: () => void }) {
   return createPortal(
-    <div className="jp-overlay" role="dialog" aria-label="Ah ah ah" onClick={() => setActive(false)}>
+    <div className="jp-overlay" role="dialog" aria-label="Ah ah ah" onClick={onClose}>
       <style>{CSS}</style>
       <div className="jp-card">
         <span className="jp-finger" aria-hidden>☝️</span>
@@ -38,4 +37,10 @@ export function JurassicEgg() {
     </div>,
     document.body
   );
+}
+
+export function JurassicEgg() {
+  const [active, setActive] = useTypedWord("jurassic");
+  if (!active) return null;
+  return <JurassicShow onClose={() => setActive(false)} />;
 }

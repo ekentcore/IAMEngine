@@ -78,7 +78,8 @@ const CIRCUIT_MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", 
 const CIRCUIT_MONO = `ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 
 // One LED row of the DeLorean time circuits: label + MON / DAY / YEAR segments in the row's color.
-function CircuitRow({ label, date, color }: { label: string; date: string; color: string }) {
+// Exported for the /easter-eggs demo modal, which stages the circuits without a live simulation.
+export function CircuitRow({ label, date, color }: { label: string; date: string; color: string }) {
   const [y, m, d] = date.split("-");
   const seg: React.CSSProperties = {
     background: "#000", color, fontFamily: CIRCUIT_MONO, padding: "1px 7px", borderRadius: 3,

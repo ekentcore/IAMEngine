@@ -51,14 +51,14 @@ export function buildTranscript(cases: { label: string; action: string; status: 
   ].join("\n");
 }
 
-export function WarGamesEgg({ cases }: { cases: { label: string; action: string; status: string }[] }) {
-  const [active, setActive] = useTypedWord("wargames");
+/** The WOPR terminal itself — mount = boot. Click closes; the host (typed-word wrapper or the
+ *  /easter-eggs demo) owns Escape. */
+export function WarGamesShow({ cases, onClose }: { cases: { label: string; action: string; status: string }[]; onClose: () => void }) {
   const [chars, setChars] = useState(0);
 
   const text = buildTranscript(cases);
 
   useEffect(() => {
-    if (!active) { setChars(0); return; }
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { setChars(text.length); return; }
     const t = setInterval(() => {
       setChars((n) => {
@@ -67,19 +67,16 @@ export function WarGamesEgg({ cases }: { cases: { label: string; action: string;
       });
     }, 26);
     return () => clearInterval(t);
-  }, [active, text.length]);
+  }, [text.length]);
 
   useEffect(() => {
-    if (!active) return;
     const { overflow } = document.body.style;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = overflow; };
-  }, [active]);
-
-  if (!active) return null;
+  }, []);
 
   return createPortal(
-    <div className="wg-overlay" role="dialog" aria-label="WOPR terminal" onClick={() => setActive(false)}>
+    <div className="wg-overlay" role="dialog" aria-label="WOPR terminal" onClick={onClose}>
       <style>{CSS}</style>
       <pre className="wg-pre">
         {text.slice(0, chars)}
@@ -89,4 +86,10 @@ export function WarGamesEgg({ cases }: { cases: { label: string; action: string;
     </div>,
     document.body
   );
+}
+
+export function WarGamesEgg({ cases }: { cases: { label: string; action: string; status: string }[] }) {
+  const [active, setActive] = useTypedWord("wargames");
+  if (!active) return null;
+  return <WarGamesShow cases={cases} onClose={() => setActive(false)} />;
 }
