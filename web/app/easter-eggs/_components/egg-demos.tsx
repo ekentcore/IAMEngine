@@ -15,6 +15,7 @@ import { fireConfetti } from "@/app/_components/eggs/confetti";
 import { EggToast } from "@/app/_components/eggs/egg-toast";
 import { CircuitRow } from "@/app/_components/eggs/date-simulator";
 import { JurassicShow } from "@/app/_components/eggs/jurassic-egg";
+import { AnniversaryShow } from "@/app/_components/eggs/anniversary-egg";
 import { StarWarsShow } from "@/app/changelog/_components/starwars-egg";
 import { PirateShow } from "@/app/changelog/_components/pirate-egg";
 import { MatrixShow } from "@/app/agents/_components/matrix-egg";
@@ -390,4 +391,5 @@ export const EGG_DEMOS: Record<string, EggDemo> = {
   "groundhog-retries": { kind: "inline", render: () => <GroundhogDemo /> },
   "bttf-time-circuits": { kind: "inline", render: () => <BttfDemo /> },
   "gandalf-blocked": { kind: "inline", render: () => <GandalfDemo /> },
+  "anniversary-wedding": { kind: "takeover", render: (onClose) => <AnniversaryShow onClose={onClose} /> },
 };

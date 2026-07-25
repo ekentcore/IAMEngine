@@ -27,6 +27,7 @@ import { KonamiEgg } from "./_components/eggs/konami-egg";
 import { JurassicEgg } from "./_components/eggs/jurassic-egg";
 import { ConsoleSignature } from "./_components/eggs/console-signature";
 import { NewYearEgg } from "./_components/eggs/new-year-egg";
+import { AnniversaryEgg } from "./_components/eggs/anniversary-egg";
 import { DateSimulatorButton, SimulatedDateStrip } from "./_components/eggs/date-simulator";
 import { BrandTitle } from "./_components/eggs/brand-title";
 
@@ -79,7 +80,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const isRealSuperAdmin = !authEnabled() || acting.realUser?.role === "super_admin";
   const simCookie = cookies().get("simulated_date")?.value;
   const eggDate = effectiveEggDate(simCookie, isRealSuperAdmin);
-  const eggs = loggedIn && !onLogin ? occasionsFor(eggDate) : { banners: [], bulbGlyph: "💡", newYear: false };
+  const eggs = loggedIn && !onLogin ? occasionsFor(eggDate) : { banners: [], bulbGlyph: "💡", newYear: false, anniversary: false };
   const simActive = isRealSuperAdmin && !!simCookie && eggDate === simCookie;
 
   return (
@@ -132,6 +133,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <JurassicEgg />
             <ConsoleSignature />
             {eggs.newYear && <NewYearEgg year={eggDate.slice(0, 4)} />}
+            {eggs.anniversary && <AnniversaryEgg year={eggDate.slice(0, 4)} />}
             {attention && <AdminAttentionModal userId={user?.id ?? null} {...attention} />}
           </>
         )}

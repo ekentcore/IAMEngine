@@ -285,6 +285,19 @@ export const EGG_CATALOG: CatalogEgg[] = [
       "Steps blocked on a missing credential — and the case-level credentials banner — get YOU SHALL NOT PASS stamped across them with a staff-slam shake, while the missing requirement stays listed underneath. The joke sneaks in real diagnostics.",
     exit: "Esc or type it again",
   },
+
+  // ---- The anniversary egg ----------------------------------------------------------------
+  {
+    slug: "anniversary-wedding",
+    name: "March 22 wedding day",
+    emoji: "💒",
+    status: "live",
+    where: "Every page",
+    trigger: "Automatic on March 22, once per year",
+    description:
+      "Confetti bursts and the wedding photo takes over the screen with a big \"Whoo Hoo!\" — once per person per year, guarded by a per-year localStorage key like the New Year burst.",
+    exit: "Esc or click",
+  },
 ];
 
 export const LIVE_EGGS = EGG_CATALOG.filter((e) => e.status === "live");

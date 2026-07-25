@@ -8,7 +8,7 @@ import { parts, ymd, toDate, addDays, lastMondayOfMay, firstMondayOfSeptember, f
 import { greetingsFor, type EggBanner } from "./greetings";
 
 export type { EggBanner };
-export type EggState = { banners: EggBanner[]; bulbGlyph: string; newYear: boolean };
+export type EggState = { banners: EggBanner[]; bulbGlyph: string; newYear: boolean; anniversary: boolean };
 
 // The "major holidays" that get an eve banner. A constant list — extend here.
 function holidaysFor(y: number): Array<{ name: string; date: Date }> {
@@ -69,7 +69,7 @@ function bulbGlyph(m: number, d: number): string {
 
 export function occasionsFor(date: string): EggState {
   const p = parts(date);
-  if (!p) return { banners: [], bulbGlyph: "💡", newYear: false };
+  if (!p) return { banners: [], bulbGlyph: "💡", newYear: false, anniversary: false };
   // All applicable occasion banners stack, in order: birthday, then day-of greetings, then eve.
   const banners: EggBanner[] = [];
   const bday = birthdayBanner(date, p.y);
@@ -77,7 +77,13 @@ export function occasionsFor(date: string): EggState {
   banners.push(...greetingsFor(date));
   const eve = holidayEveBanner(date, p.y);
   if (eve) banners.push(eve);
-  return { banners, bulbGlyph: bulbGlyph(p.m, p.d), newYear: p.m === 1 && p.d <= 2 };
+  return {
+    banners,
+    bulbGlyph: bulbGlyph(p.m, p.d),
+    newYear: p.m === 1 && p.d <= 2,
+    // March 22: confetti + the wedding photo, once per person per year (anniversary-egg.tsx).
+    anniversary: p.m === 3 && p.d === 22,
+  };
 }
 
 // Milestone case sparkle: the numeric tail of a case number is a positive multiple of 1000

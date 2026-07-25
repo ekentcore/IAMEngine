@@ -113,6 +113,16 @@ test("newYear is true only Jan 1-2", () => {
   assert.equal(occasionsFor("2027-01-03").newYear, false);
 });
 
+// ---- Anniversary (March 22) ----
+
+test("anniversary is true only on March 22, any year", () => {
+  assert.equal(occasionsFor("2027-03-22").anniversary, true);
+  assert.equal(occasionsFor("2031-03-22").anniversary, true);
+  assert.equal(occasionsFor("2027-03-21").anniversary, false);
+  assert.equal(occasionsFor("2027-03-23").anniversary, false);
+  assert.equal(occasionsFor("2027-02-22").anniversary, false);
+});
+
 // ---- Milestone case ----
 
 test("isMilestoneCase: trailing number multiple of 1000", () => {
