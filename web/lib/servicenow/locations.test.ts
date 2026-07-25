@@ -5,7 +5,7 @@ import type { SnConfig } from "./types";
 
 const cfg: SnConfig = { instanceUrl: "https://x.service-now.com", username: "u", password: "p" };
 
-test("fetchCmnLocations asks ServiceNow for active locations only, grouping the company/account OR", async () => {
+test("fetchCmnLocations asks ServiceNow for the client's active locations only", async () => {
   let captured = "";
   const fetcher = (async (url: RequestInfo | URL) => {
     captured = String(url);
@@ -13,13 +13,16 @@ test("fetchCmnLocations asks ServiceNow for active locations only, grouping the 
   }) as typeof fetch;
   await fetchCmnLocations(cfg, "a".repeat(32), fetcher);
   const q = new URL(captured).searchParams.get("sysparm_query") ?? "";
-  assert.ok(q.includes("^active=true"), `sysparm_query missing active filter: ${q}`);
-  // The active filter must apply to BOTH branches of the OR, so the OR clause needs to be grouped
-  // in parentheses: (company=X^ORaccount=X)^active=true — not company=X^ORaccount=X^active=true,
-  // which ServiceNow would parse as active=true applying only to the account= branch.
-  assert.ok(
-    q.startsWith(`(company=${"a".repeat(32)}^ORaccount=${"a".repeat(32)})^active=true`),
-    `sysparm_query does not group the OR before applying active=true: ${q}`,
+  // Exact query, verified against the live instance (2026-07-25):
+  // - the field is the CUSTOM u_active — cmn_location has no OOB `active` column, and ServiceNow
+  //   silently IGNORES conditions on nonexistent fields (the filter would no-op).
+  // - NO parentheses: sysparm_query doesn't support grouping — `(company=…` made the whole query
+  //   invalid and ServiceNow matched ALL locations, pulling other clients' sites (the FR#28 regression).
+  //   `^OR` groups with the preceding condition, so a^ORb^c means (a OR b) AND c.
+  assert.equal(
+    q,
+    `company=${"a".repeat(32)}^ORaccount=${"a".repeat(32)}^u_active=true`,
+    `sysparm_query must be the paren-free client+u_active form: ${q}`,
   );
 });
 
