@@ -10,5 +10,6 @@ export const entry: ChangelogEntry = {
     "No dump to drill against no longer ends the drill: the self-heal takes a fresh verified backup on the spot and restores that — a just-taken dump proves the dump→restore path end to end, which is the drill's whole job",
     "Every corrective action is recorded on the drill result and its audit row, and a drill that self-healed and then passed announces exactly what it fixed in chat — the same channel its failure would have used",
     "Fixed the silent-failure window that hid the 2026-07-23 drill death: settings loading now sits inside the run's try/catch, so a claimed run always records a result, writes its audit row, and alerts — it can no longer consume the weekly slot and vanish",
+    "The durable off-box copy (Azure Blob) is now actually runnable from the container: the image ships the az CLI the upload/download path shells out to, managed-identity auth logs itself in on first use (no stored secret, ever), and a drill that runs after Blob is switched on but before the first nightly upload lands falls back to the local path instead of failing — new scripts/configure-azure-backup.ts sets the backup.azure setting without ever accepting a raw key",
   ],
 };

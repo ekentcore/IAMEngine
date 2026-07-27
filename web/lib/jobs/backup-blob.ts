@@ -116,6 +116,28 @@ export function findAzBin(): string {
   return process.env.AZ_BIN || "az";
 }
 
+// --- managed-identity login --------------------------------------------------------------------------
+// `--auth-mode login` REUSES the CLI's existing session; it does not log in by itself, and a fresh
+// container has none — every upload would die with "Please run 'az login'". On Azure Container Apps
+// the identity endpoint is available in-process, so a one-time `az login --identity` binds the CLI to
+// the app's system-assigned identity with no secret involved. Cached per process (the heartbeat sweeps
+// must not fork a login per upload); a dev box with a human `az login` passes the account-show probe
+// and is left alone. `--allow-no-subscriptions` because the app's identity carries only the data-plane
+// role (Storage Blob Data Contributor on the backup account), never a subscription-level one.
+type ExecLike = (file: string, args: string[], opts: { timeout: number }) => Promise<unknown>;
+let azIdentityLoginOk = false;
+export function resetAzIdentityLogin(): void { azIdentityLoginOk = false; } // test seam
+export async function ensureAzIdentityLogin(exec: ExecLike = execFileP): Promise<void> {
+  if (azIdentityLoginOk) return;
+  const az = findAzBin();
+  try {
+    await exec(az, ["account", "show", "-o", "none"], { timeout: 30_000 });
+  } catch {
+    await exec(az, ["login", "--identity", "--allow-no-subscriptions", "-o", "none"], { timeout: 120_000 });
+  }
+  azIdentityLoginOk = true;
+}
+
 // Resolve the CLI auth flags + env for a given credentialRef. Managed identity ⇒ `--auth-mode login`,
 // no env secret. Otherwise the ref is a Delinea external id: broker a short-lived connection string
 // and hand it to az via AZURE_STORAGE_CONNECTION_STRING (never persisted, never logged un-redacted).
@@ -124,6 +146,7 @@ export async function resolveAzureAuth(
   cfg: AzureBackupConfig,
 ): Promise<{ args: string[]; env: Record<string, string> }> {
   if (cfg.credentialRef === MANAGED_IDENTITY) {
+    await ensureAzIdentityLogin();
     return { args: ["--auth-mode", "login"], env: {} };
   }
   const dc = delineaConfigFromEnv();
