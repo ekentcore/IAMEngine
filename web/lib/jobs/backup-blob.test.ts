@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   resolveAzureBackup, azureConfigured, blobPath, blobUrlOf, redactAzureSecrets, sha256File,
-  MANAGED_IDENTITY, AZURE_DEFAULTS,
+  ensureAzIdentityLogin, resetAzIdentityLogin, MANAGED_IDENTITY, AZURE_DEFAULTS,
 } from "./backup-blob";
 
 test("resolveAzureBackup: DARK by default — a missing/blank setting is disabled", () => {
@@ -53,6 +53,40 @@ test("redactAzureSecrets: scrubs SAS sig/se, AccountKey, connection strings — 
   assert.match(redactAzureSecrets("sig=rawtoken"), /sig=\*\*\*/);
   // benign text is left alone
   assert.equal(redactAzureSecrets("upload succeeded"), "upload succeeded");
+});
+
+test("ensureAzIdentityLogin: an existing az session is reused — no login forked", async () => {
+  resetAzIdentityLogin();
+  const calls: string[][] = [];
+  await ensureAzIdentityLogin(async (_f, args) => { calls.push(args); });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 2), ["account", "show"]); // probe only, never a login
+});
+
+test("ensureAzIdentityLogin: no session -> logs in with the managed identity, then caches per process", async () => {
+  resetAzIdentityLogin();
+  const calls: string[][] = [];
+  await ensureAzIdentityLogin(async (_f, args) => {
+    calls.push(args);
+    if (args[0] === "account") throw new Error("Please run 'az login' to setup account.");
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].slice(0, 2), ["login", "--identity"]);
+  assert.ok(calls[1].includes("--allow-no-subscriptions")); // the identity has only a data-plane role
+  // cached: a second call in the same process execs nothing (heartbeat sweeps must not fork logins)
+  await ensureAzIdentityLogin(async (_f, args) => { calls.push(args); });
+  assert.equal(calls.length, 2);
+});
+
+test("ensureAzIdentityLogin: a failed identity login propagates (upload alerts loudly) and is NOT cached", async () => {
+  resetAzIdentityLogin();
+  const failing = async (_f: string, args: string[]) => { throw new Error(`${args[0]} failed`); };
+  await assert.rejects(() => ensureAzIdentityLogin(failing), /login failed/);
+  // not cached as ok: the next call tries again rather than pretending a session exists
+  const calls: string[][] = [];
+  await ensureAzIdentityLogin(async (_f, args) => { calls.push(args); });
+  assert.equal(calls.length, 1);
+  resetAzIdentityLogin();
 });
 
 test("sha256File: stable, content-addressed checksum for end-to-end integrity", async () => {
