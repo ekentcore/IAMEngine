@@ -24,7 +24,7 @@ import fs from "node:fs/promises";
 import type { PrismaClient } from "@prisma/client";
 import { claimAppSetting, getAppSetting, setAppSetting } from "../settings";
 import { fireNotification } from "../notifications/sender";
-import { findPgBin, sanitizeError, DB_BACKUP_KEY, normalizeDbBackup, type DbBackupSetting } from "./db-backup";
+import { findPgBin, sanitizeError, runDbBackup, DB_BACKUP_KEY, normalizeDbBackup, type DbBackupSetting } from "./db-backup";
 import {
   loadAzureBackup, azureConfigured, downloadLatestBlob, sha256File, type AzureBackupConfig,
 } from "./backup-blob";
@@ -49,6 +49,7 @@ export type RestoreDrillResult = {
   canaryOk?: boolean;
   orphanCount?: number;
   failures?: string[]; // the specific assertion(s) that failed (empty on success)
+  selfHeal?: string[]; // corrective actions the drill took to acquire a dump (empty when none needed)
   durationMs?: number;
   scratchDb?: string;
   error?: string;
@@ -136,7 +137,47 @@ export function evaluateIntegrity(scratch: IntegritySnapshot, live: IntegritySna
 }
 
 // --- orchestration (injectable) --------------------------------------------------------------------
-export type AcquiredDump = { path: string; source: "local" | "blob"; checksumOk: boolean };
+export type AcquiredDump = { path: string; source: "local" | "blob"; checksumOk: boolean; selfHeal?: string[] };
+
+// Self-heal for the local-dump branch. The drill used to assume backupDir/latest.dump existed and died
+// with ENOENT when it didn't — which is guaranteed in the Azure container while `db_backup.backupDir`
+// still holds a Mac home-directory path. Instead of failing on an absent precondition, correct it:
+// create the missing directory; if the configured directory cannot exist on this host, fall back to a
+// scratch dir; if there is still no dump, take a fresh verified backup and drill against that — the
+// drill's job is to prove dump→restore works, and a just-taken dump proves it end to end. Every
+// corrective action is recorded in `selfHeal` so the result, audit row, and chat alert say exactly
+// what was wrong and what the self-heal did about it.
+export type LocalDumpDeps = {
+  exists: (p: string) => Promise<boolean>;
+  mkdir: (dir: string) => Promise<void>; // recursive; throws when the path is uncreatable here
+  takeBackup: (dir: string) => Promise<{ ok: boolean; file?: string; error?: string }>;
+  fallbackDir: string;
+};
+
+export async function acquireLocalDump(configuredDir: string, deps: LocalDumpDeps): Promise<AcquiredDump> {
+  const selfHeal: string[] = [];
+  let dir = configuredDir;
+  if (!(await deps.exists(dir))) {
+    try {
+      await deps.mkdir(dir);
+      selfHeal.push(`created missing backup directory ${dir}`);
+    } catch (err) {
+      // e.g. EACCES creating /Users/... inside the Linux container — the setting predates the move off
+      // the Mac. A scratch dir still lets the drill prove the restore path; the note names the bad path.
+      dir = deps.fallbackDir;
+      await deps.mkdir(dir);
+      selfHeal.push(
+        `configured backup directory ${configuredDir} is not usable on this host (${sanitizeError(err instanceof Error ? err.message : String(err))}) — used ${dir} instead`,
+      );
+    }
+  }
+  const latest = path.join(dir, "latest.dump");
+  if (await deps.exists(latest)) return { path: latest, source: "local", checksumOk: true, selfHeal };
+  selfHeal.push(`no dump found in ${dir} — taking a fresh backup to drill against`);
+  const b = await deps.takeBackup(dir);
+  if (!b.ok || !b.file) throw new Error(`self-heal backup failed: ${b.error ?? "unknown error"}`);
+  return { path: b.file, source: "local", checksumOk: true, selfHeal };
+}
 
 export type DrillDeps = {
   acquireDump: () => Promise<AcquiredDump>;
@@ -170,7 +211,7 @@ export async function runRestoreDrill(deps: DrillDeps): Promise<RestoreDrillResu
     return { ok: false, error: sanitizeError(err instanceof Error ? err.message : String(err)), at };
   }
   if (!acquired.checksumOk) {
-    return { ok: false, dumpUnderTest: acquired.path, source: acquired.source, checksumOk: false, at,
+    return { ok: false, dumpUnderTest: acquired.path, source: acquired.source, checksumOk: false, selfHeal: acquired.selfHeal, at,
       error: "dump checksum did not match the recorded value — the off-box copy may be corrupt", durationMs: now().getTime() - startedMs };
   }
 
@@ -191,6 +232,7 @@ export async function runRestoreDrill(deps: DrillDeps): Promise<RestoreDrillResu
       canaryOk: scratch.canaryClientsWithSystem > 0,
       orphanCount: scratch.orphanClientSystems,
       failures: verdict.failures,
+      selfHeal: acquired.selfHeal,
       durationMs: now().getTime() - startedMs,
       scratchDb: deps.scratchName,
       error: verdict.ok ? undefined : verdict.failures.join("; "),
@@ -202,6 +244,7 @@ export async function runRestoreDrill(deps: DrillDeps): Promise<RestoreDrillResu
       dumpUnderTest: acquired.path,
       source: acquired.source,
       checksumOk: acquired.checksumOk,
+      selfHeal: acquired.selfHeal,
       durationMs: now().getTime() - startedMs,
       scratchDb: deps.scratchName,
       error: sanitizeError(err instanceof Error ? err.message : String(err)),
@@ -276,8 +319,10 @@ async function gatherFrom(urls: string): Promise<IntegritySnapshot> {
 }
 
 // Build the real deps against DATABASE_URL. Prefers the Blob copy when Azure is configured (the truest
-// test of the off-box path, §3.5); otherwise drills the local latest.dump.
-export function pgDrillDeps(azure: AzureBackupConfig, localBackupDir: string, recordedChecksum?: string): DrillDeps {
+// test of the off-box path, §3.5); otherwise drills the local latest.dump, self-healing a missing
+// directory or dump (acquireLocalDump) — which is why this needs the whole DbBackupSetting, not just
+// the directory: the heal path takes a real backup with the operator's settings.
+export function pgDrillDeps(azure: AzureBackupConfig, backup: DbBackupSetting, recordedChecksum?: string): DrillDeps {
   const rawUrl = process.env.DATABASE_URL ?? "";
   if (!rawUrl) throw new Error("DATABASE_URL is not set");
   const urls = pgUrlsFromEnv(rawUrl);
@@ -296,9 +341,12 @@ export function pgDrillDeps(azure: AzureBackupConfig, localBackupDir: string, re
         if (recordedChecksum) checksumOk = (await sha256File(dl.localPath)) === recordedChecksum;
         return { path: dl.localPath, source: "blob", checksumOk };
       }
-      const local = path.join(localBackupDir, "latest.dump");
-      await fs.access(local); // throws if no local dump exists
-      return { path: local, source: "local", checksumOk: true };
+      return acquireLocalDump(backup.backupDir, {
+        exists: (p) => fs.access(p).then(() => true, () => false),
+        mkdir: async (d) => { await fs.mkdir(d, { recursive: true }); },
+        takeBackup: (d) => runDbBackup({ ...backup, backupDir: d }),
+        fallbackDir: path.join(os.tmpdir(), "iam-engine-backups"),
+      });
     },
     createScratch: async (name) => { await psql(urls.maintUrl, `CREATE DATABASE "${name}"`); },
     restore: async (name, dumpPath) => {
@@ -376,13 +424,14 @@ export async function sweepRestoreDrill(db: PrismaClient): Promise<void> {
   const claimed: RestoreDrillSetting = { ...drill, lastStartedAt: now.toISOString() };
   if (!(await claimAppSetting(db, DRILL_KEY, drillRaw, claimed))) return;
 
-  const azure = await loadAzureBackup(db);
-  const backup: DbBackupSetting = normalizeDbBackup(await getAppSetting<unknown>(db, DB_BACKUP_KEY));
-  const recordedChecksum = backup.lastResult?.checksum;
-
+  // Everything after the claim sits inside the try — the 2026-07-23 drill died loading settings
+  // BEFORE the old try, so lastStartedAt advanced with no result, no audit row, and no alert, and
+  // drillDue() then suppressed retries for a week. A claimed run must always record an outcome.
   let result: RestoreDrillResult;
   try {
-    result = await runRestoreDrill(pgDrillDeps(azure, backup.backupDir, recordedChecksum));
+    const azure = await loadAzureBackup(db);
+    const backup: DbBackupSetting = normalizeDbBackup(await getAppSetting<unknown>(db, DB_BACKUP_KEY));
+    result = await runRestoreDrill(pgDrillDeps(azure, backup, backup.lastResult?.checksum));
   } catch (err) {
     result = { ok: false, error: sanitizeError(err instanceof Error ? err.message : String(err)), at: now.toISOString() };
   }
@@ -400,6 +449,15 @@ export async function sweepRestoreDrill(db: PrismaClient): Promise<void> {
       event: "backupFailed",
       title: "Database restore drill FAILED",
       detail: `The scheduled restore drill could not prove the latest dump is restorable: ${result.error ?? "unknown error"}`,
+      at: result.at,
+    }).catch(() => {});
+  } else if (result.selfHeal && result.selfHeal.length > 0) {
+    // The drill hit the fault that used to fail it outright, corrected it, and then PASSED — that
+    // correction must reach chat just like the failure would have (same event key = same routing).
+    await fireNotification({
+      event: "backupFailed",
+      title: "Database restore drill self-healed and PASSED",
+      detail: `The drill hit a fault and its self-heal function corrected it: ${result.selfHeal.join("; ")}. The restored dump then passed every integrity check.`,
       at: result.at,
     }).catch(() => {});
   }

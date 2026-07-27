@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeDrill, drillDue, evaluateIntegrity, runRestoreDrill, computeStalenessAlert,
-  pgUrlsFromEnv, scratchDbName, KEY_TABLES, restoreDrillStatus,
-  type IntegritySnapshot, type DrillDeps,
+  pgUrlsFromEnv, scratchDbName, KEY_TABLES, restoreDrillStatus, acquireLocalDump,
+  type IntegritySnapshot, type DrillDeps, type LocalDumpDeps,
 } from "./restore-drill";
 
 // Local dates (new Date(y,m,d,h)) — drillDue anchors to LOCAL wall-clock hours like backupDue.
@@ -143,6 +143,91 @@ test("runRestoreDrill: a checksum mismatch on the blob copy fails before restori
   assert.equal(r.checksumOk, false);
   assert.match(r.error ?? "", /checksum/);
   assert.deepEqual(created, []);
+});
+
+// --- local-dump acquisition self-heal ---------------------------------------------------------------
+function fakeLocalDeps(over: {
+  existing?: string[];            // paths that exist up front
+  mkdirFails?: Record<string, string>; // dir -> error message
+  backup?: { ok: boolean; file?: string; error?: string };
+}): { deps: LocalDumpDeps; mkdirs: string[]; backups: string[] } {
+  const existing = new Set(over.existing ?? []);
+  const mkdirs: string[] = [];
+  const backups: string[] = [];
+  const deps: LocalDumpDeps = {
+    exists: async (p) => existing.has(p),
+    mkdir: async (d) => {
+      const fail = over.mkdirFails?.[d];
+      if (fail) throw new Error(fail);
+      mkdirs.push(d);
+      existing.add(d);
+    },
+    takeBackup: async (d) => {
+      backups.push(d);
+      return over.backup ?? { ok: true, file: `${d}/iam-20260726-030000.dump` };
+    },
+    fallbackDir: "/tmp/iam-engine-backups",
+  };
+  return { deps, mkdirs, backups };
+}
+
+test("acquireLocalDump: dir and dump present -> no self-heal, plain latest.dump", async () => {
+  const { deps, mkdirs, backups } = fakeLocalDeps({ existing: ["/b", "/b/latest.dump"] });
+  const a = await acquireLocalDump("/b", deps);
+  assert.equal(a.path, "/b/latest.dump");
+  assert.deepEqual(a.selfHeal, []);
+  assert.deepEqual(mkdirs, []);
+  assert.deepEqual(backups, []);
+});
+
+test("acquireLocalDump: MISSING dir is CREATED (the ENOENT drill failure), fresh backup taken", async () => {
+  const { deps, mkdirs, backups } = fakeLocalDeps({});
+  const a = await acquireLocalDump("/b", deps);
+  assert.deepEqual(mkdirs, ["/b"]); // the directory was created, not assumed
+  assert.deepEqual(backups, ["/b"]); // no dump existed -> a fresh one was taken to drill against
+  assert.equal(a.path, "/b/iam-20260726-030000.dump");
+  assert.ok(a.selfHeal?.some((s) => /created missing backup directory/.test(s)));
+  assert.ok(a.selfHeal?.some((s) => /taking a fresh backup/.test(s)));
+});
+
+test("acquireLocalDump: dir exists but dump missing -> self-heal takes a backup, no mkdir", async () => {
+  const { deps, mkdirs, backups } = fakeLocalDeps({ existing: ["/b"] });
+  const a = await acquireLocalDump("/b", deps);
+  assert.deepEqual(mkdirs, []);
+  assert.deepEqual(backups, ["/b"]);
+  assert.ok(a.selfHeal?.some((s) => /taking a fresh backup/.test(s)));
+});
+
+test("acquireLocalDump: uncreatable configured dir (Mac path in the container) falls back to scratch dir", async () => {
+  const { deps, mkdirs, backups } = fakeLocalDeps({
+    mkdirFails: { "/Users/evankent/Backups/iam-engine": "EACCES: permission denied, mkdir '/Users'" },
+  });
+  const a = await acquireLocalDump("/Users/evankent/Backups/iam-engine", deps);
+  assert.deepEqual(mkdirs, ["/tmp/iam-engine-backups"]);
+  assert.deepEqual(backups, ["/tmp/iam-engine-backups"]);
+  assert.ok(a.selfHeal?.some((s) => /not usable on this host/.test(s)));
+});
+
+test("acquireLocalDump: self-heal backup failing still fails the drill loudly", async () => {
+  const { deps } = fakeLocalDeps({ backup: { ok: false, error: "pg_dump exploded" } });
+  await assert.rejects(() => acquireLocalDump("/b", deps), /self-heal backup failed: pg_dump exploded/);
+});
+
+test("runRestoreDrill: selfHeal notes from acquisition land on the result (success AND failure)", async () => {
+  const heal = ["created missing backup directory /b"];
+  const ok = await runRestoreDrill(fakeDeps({
+    acquireDump: async () => ({ path: "/b/latest.dump", source: "local", checksumOk: true, selfHeal: heal }),
+  }).deps);
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.selfHeal, heal);
+
+  const bad = fakeDeps({
+    acquireDump: async () => ({ path: "/b/latest.dump", source: "local", checksumOk: true, selfHeal: heal }),
+    restoreThrows: new Error("pg_restore: error: boom"),
+  });
+  const r = await runRestoreDrill(bad.deps);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.selfHeal, heal);
 });
 
 // --- staleness alert throttle ----------------------------------------------------------------------

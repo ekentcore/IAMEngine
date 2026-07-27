@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     const backup = normalizeDbBackup(await getAppSetting(db, DB_BACKUP_KEY));
     let result;
     try {
-      result = await runRestoreDrill(pgDrillDeps(azure, backup.backupDir, backup.lastResult?.checksum));
+      result = await runRestoreDrill(pgDrillDeps(azure, backup, backup.lastResult?.checksum));
     } catch (err) {
       result = { ok: false, error: err instanceof Error ? err.message : String(err), at: new Date().toISOString() };
     }
