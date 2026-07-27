@@ -329,24 +329,37 @@ export function pgDrillDeps(azure: AzureBackupConfig, backup: DbBackupSetting, r
   const scratch = scratchDbName(urls.dbName);
   let tmpDownload: string | null = null;
 
+  const localAcquire = () =>
+    acquireLocalDump(backup.backupDir, {
+      exists: (p) => fs.access(p).then(() => true, () => false),
+      mkdir: async (d) => { await fs.mkdir(d, { recursive: true }); },
+      takeBackup: (d) => runDbBackup({ ...backup, backupDir: d }),
+      fallbackDir: path.join(os.tmpdir(), "iam-engine-backups"),
+    });
+
   return {
     liveDbName: urls.dbName,
     scratchName: scratch,
     acquireDump: async () => {
       if (azureConfigured(azure)) {
         tmpDownload = path.join(os.tmpdir(), `${scratch}.dump`);
-        const dl = await downloadLatestBlob(azure, urls.dbName, tmpDownload);
-        // Verify the downloaded blob against the checksum recorded at upload time, when we have one.
-        let checksumOk = true;
-        if (recordedChecksum) checksumOk = (await sha256File(dl.localPath)) === recordedChecksum;
-        return { path: dl.localPath, source: "blob", checksumOk };
+        try {
+          const dl = await downloadLatestBlob(azure, urls.dbName, tmpDownload);
+          // Verify the downloaded blob against the checksum recorded at upload time, when we have one.
+          let checksumOk = true;
+          if (recordedChecksum) checksumOk = (await sha256File(dl.localPath)) === recordedChecksum;
+          return { path: dl.localPath, source: "blob", checksumOk };
+        } catch (err) {
+          // ONLY the empty-container case falls back — Azure can be switched on before the first
+          // nightly upload has landed, and a drill in that window should still prove a restore. A
+          // transport/auth failure must fail the drill loudly, never silently degrade to local.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/no dump blobs under/.test(msg)) throw err;
+          const local = await localAcquire();
+          return { ...local, selfHeal: ["Azure Blob is enabled but holds no dump yet — drilled the local path instead", ...(local.selfHeal ?? [])] };
+        }
       }
-      return acquireLocalDump(backup.backupDir, {
-        exists: (p) => fs.access(p).then(() => true, () => false),
-        mkdir: async (d) => { await fs.mkdir(d, { recursive: true }); },
-        takeBackup: (d) => runDbBackup({ ...backup, backupDir: d }),
-        fallbackDir: path.join(os.tmpdir(), "iam-engine-backups"),
-      });
+      return localAcquire();
     },
     createScratch: async (name) => { await psql(urls.maintUrl, `CREATE DATABASE "${name}"`); },
     restore: async (name, dumpPath) => {

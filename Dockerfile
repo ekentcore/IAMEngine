@@ -41,14 +41,21 @@ FROM base AS runtime
 # pg_dump/pg_restore for the in-app nightly backup + restore drill. The server is
 # PostgreSQL 17 (Azure Flexible Server) and pg_dump refuses a server newer than
 # itself, so the PGDG repo's client-17 is required — bookworm ships 15.
+# azure-cli because the off-box backup copy (lib/jobs/backup-blob.ts) shells out to
+# `az storage blob upload/download` with the container app's managed identity — the
+# design (D2) chose the CLI over the @azure/* SDKs, so the CLI must be in the image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl gnupg \
     && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
        | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
        > /etc/apt/sources.list.d/pgdg.list \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+       | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main" \
+       > /etc/apt/sources.list.d/azure-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client-17 \
+    && apt-get install -y --no-install-recommends postgresql-client-17 azure-cli \
     && apt-get purge -y curl gnupg \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
