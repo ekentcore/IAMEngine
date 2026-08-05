@@ -39,7 +39,8 @@
         "config": {
           "ou": "SixOneUsers",
           "homeDrive": { "letter": "H", "unc": "\\\\61c-fs01\\Users\\<username>" },
-          "groups": ["Back Office Users"],
+          "groups": [],
+          "groupsNote": "FR #0000082: 'Back Office Users' used to be listed here, so EVERY Six One onboard added it. It is a request-only group — pick it on the ticket and the requested-groups path (FR #0000004) hands it to AD, which masters it. Do not re-add it here.",
           "conditionalGroups": [
             { "when": "avd == true",      "groups": ["61C-CORE_Users"] },
             { "when": "perimeter == true", "groups": ["Perimeter 81 requested groups"] }
