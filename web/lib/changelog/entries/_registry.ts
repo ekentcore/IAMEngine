@@ -30,6 +30,7 @@ export { entry as calendarReviewerGrants } from "./calendar-reviewer-grants";
 export { entry as caseExitDryRun } from "./case-exit-dry-run";
 export { entry as caseExtraGroups } from "./case-extra-groups";
 export { entry as casePrerunPasswordReset } from "./case-prerun-password-reset";
+export { entry as casesAssignedToColumn } from "./cases-assigned-to-column";
 export { entry as casesEmptyM365autosetupJsonFilter } from "./cases-empty-m365autosetup-json-filter";
 export { entry as casesV2AccessRules } from "./cases-v2-access-rules";
 export { entry as changeActionGroundwork } from "./change-action-groundwork";
