@@ -69,3 +69,38 @@ test("offboard delegate also lands on the m365 job as the OneDrive grant", () =>
   const none = resolvePlannedConfigs({}, { provideMailboxAccessTo: "Peter Hegland" }, "offboard", [optedOut]);
   assert.equal((none[0].config as Record<string, unknown>).oneDriveGrantAccessTo, undefined);
 });
+
+// FR #47: the intake captures the leaver's out-of-office message (u_out_of_office_message ->
+// payload.oooMessage) and NOTHING read it — a codebase-wide search found the mapper writing it and no
+// consumer at all. The Exchange executor has always implemented the destination
+// (config.autoReply.message -> Set-MailboxAutoReplyConfiguration), so the gap was purely plan-time.
+test("offboard hands the case's out-of-office message to the exchange job", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 1, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: { convertToShared: {} } };
+  const out = resolvePlannedConfigs(client, { userToOffboard: "Matt Halski", oooMessage: "I have left Acme. Please contact support@acme.com." }, "offboard", [job({}), exchange]);
+  const ex = out.find((j) => j.systemKey === "exchange")!.config as Record<string, unknown>;
+  assert.deepEqual(ex.autoReply, { message: "I have left Acme. Please contact support@acme.com." });
+  assert.deepEqual(ex.convertToShared, {}); // existing lane config preserved
+  // only Exchange can set an out-of-office — the AD job must not carry it
+  assert.equal((out.find((j) => j.systemKey === "active-directory")!.config as Record<string, unknown>).autoReply, undefined);
+});
+
+test("the ticket's out-of-office message overrides a profile-configured one", () => {
+  // Consistent with the FR #87 ruling: what the ticket says wins over the client's standing default.
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: { autoReply: { message: "the client default" } } };
+  const out = resolvePlannedConfigs({}, { oooMessage: "what the ticket asked for" }, "offboard", [exchange]);
+  assert.deepEqual((out[0].config as Record<string, unknown>).autoReply, { message: "what the ticket asked for" });
+});
+
+test("no out-of-office on the ticket leaves the profile's own autoReply untouched", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: { autoReply: { message: "the client default" } } };
+  for (const payload of [{}, { oooMessage: "" }, { oooMessage: "   " }, { oooMessage: null }]) {
+    const out = resolvePlannedConfigs({}, payload, "offboard", [exchange]);
+    assert.deepEqual((out[0].config as Record<string, unknown>).autoReply, { message: "the client default" }, `payload ${JSON.stringify(payload)}`);
+  }
+});
+
+test("an out-of-office message is never injected on an ONBOARD", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { oooMessage: "I have left" }, "onboard", [exchange]);
+  assert.equal((out[0].config as Record<string, unknown>).autoReply, undefined);
+});

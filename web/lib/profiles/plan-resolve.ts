@@ -107,7 +107,24 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     return j;
   });
 
-  return injectHideFromGal(withDelegate, payload, client.backbone);
+  // Case out-of-office (FR #0000047): the intake captures the leaver's auto-reply text
+  // (u_out_of_office_message -> payload.oooMessage) and NOTHING read it — the mapper wrote the field
+  // and there was no consumer anywhere in the codebase, so a requestor who filled it in got silence.
+  //
+  // The Exchange executor has always implemented the destination (config.autoReply.message ->
+  // Set-MailboxAutoReplyConfiguration), so the whole gap was plan-time and no runner change is needed.
+  //
+  // Exchange ONLY: it is the sole lane that can set a mailbox auto-reply. The ticket's text overrides a
+  // profile-configured default (same rule as FR #87 — what the ticket says beats the standing default),
+  // and an absent/blank message leaves the profile's own autoReply exactly as it was.
+  const ooo = typeof payload.oooMessage === "string" && payload.oooMessage.trim() ? payload.oooMessage.trim() : null;
+  const withOoo = !ooo ? withDelegate : withDelegate.map((j) => {
+    if (j.systemKey !== "exchange") return j;
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    return { ...j, config: { ...cfg, autoReply: { ...((cfg.autoReply as Record<string, unknown> | null) ?? {}), message: ooo } } };
+  });
+
+  return injectHideFromGal(withOoo, payload, client.backbone);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:
