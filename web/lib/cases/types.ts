@@ -100,7 +100,9 @@ export type CaseDetail = {
   // The operator's email when a signed-in engineer opened this case, else the raw actor label.
   createdBy: string | null;
   createdSource: CaseSource;
-  client: { name: string; slug: string };
+  // backbone = the directory that masters this client's identities; null for a roster-only client
+  // that isn't modelled yet. Read by the pre-run password reset to pick its target lane (FR #82/#80).
+  client: { name: string; slug: string; backbone: string | null };
   payload: Record<string, unknown>;
   jobs: PlannedJobView[];
 };
