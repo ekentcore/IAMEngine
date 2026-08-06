@@ -193,6 +193,7 @@ export { entry as personaSystemMembership } from "./persona-system-membership";
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
 export { entry as pr7Pr10Batch } from "./pr7-pr10-batch";
 export { entry as proofpointHttpsSchemeWedge } from "./proofpoint-https-scheme-wedge";
+export { entry as prsAnnouncesToChat } from "./prs-announces-to-chat";
 export { entry as prsMergeMigrationsAndWorktreeRetire } from "./prs-merge-migrations-and-worktree-retire";
 export { entry as readinessWiredUntestedClarity } from "./readiness-wired-untested-clarity";
 export { entry as referenceDocsV2 } from "./reference-docs-v2";

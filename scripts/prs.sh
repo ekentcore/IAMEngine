@@ -36,6 +36,13 @@
 # clean; otherwise it prints what to run by hand and changes nothing. Opt out for one run with
 # PRS_NO_SYNC=1. It still does NOT touch the database — after a merge that ships a migration you run
 # `npx prisma migrate deploy` from web/ yourself (see the end).
+#
+# Finally it ANNOUNCES what shipped to the chat rooms. Both halves come from what is already
+# configured: the Postgres credentials from the repo-root env file (POSTGRES_*), and the chat
+# destinations from that database (AppSetting["failure_notifications"] — the Settings > Notifications
+# row), sent through the app's own composer + sender so it is identical to the Send to chat button.
+# It announces the change-log entries the PR added, and asks before posting (these are customer
+# rooms). PRS_ANNOUNCE=1 sends without asking; PRS_NO_ANNOUNCE=1 never sends.
 set -euo pipefail
 
 command -v gh >/dev/null || { echo "gh CLI not found — brew install gh"; exit 1; }
@@ -103,6 +110,71 @@ sync_local_after_merge() {
     echo "      stalls) as soon as it recompiles. Affected:"
     sed 's/^/        /' <<<"$moved"
   fi
+}
+
+# After a merge, tell the chat rooms what shipped.
+#
+# Everything this needs is already configured in the app, so nothing is duplicated here:
+#   - the Postgres credentials come from the repo-root env file (POSTGRES_*), assembled into a
+#     DATABASE_URL by the same buildDatabaseUrl() that writes web/.env. No connection string is ever
+#     passed as an argument — it carries a password, and argv is world-readable in `ps`.
+#   - the chat destinations come from that database: AppSetting["failure_notifications"], the row the
+#     Settings > Notifications page writes. Same channels, same default/restricted split, same enabled
+#     flags as every other alert, so switching a room off in the UI switches it off here with no
+#     redeploy and no second place to remember.
+# The message is composed and sent by the app's own modules (lib/changelog/announce.ts +
+# lib/notifications/sender.ts), so a send from here is byte-identical to the Send to chat button.
+#
+# WHAT it announces: the change-log entries the merged PR added. That is the honest unit — an entry is
+# the human description of what shipped, already written and reviewed in the PR. A PR with no entry
+# announces nothing rather than inventing a summary from commit messages.
+#
+# These are REAL customer chat rooms, so it asks first — the same treatment run_migration_deploy gives
+# a database write, and for the same reason: the blast radius is other people's, and a mistake cannot
+# be recalled. With a terminal it shows a DRY RUN (resolved destinations + the exact message) and then
+# asks. Auto-send with PRS_ANNOUNCE=1; never send with PRS_NO_ANNOUNCE=1. With no terminal and no
+# PRS_ANNOUNCE it prints the command and sends nothing — silence is the safe default here.
+#
+# $1 = space-separated PR numbers (e.g. "41 42").
+announce_merged_to_chat() {
+  [[ "${PRS_NO_ANNOUNCE:-}" == "1" ]] && { echo; echo "announce: skipped (PRS_NO_ANNOUNCE=1)."; return 0; }
+  local prs="$1"
+  [[ -z "$prs" ]] && return 0
+  local root; root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [[ -z "$root" || ! -f "$root/web/scripts/announce-merged.ts" ]] && return 0
+
+  local n
+  for n in $prs; do
+    n="${n#\#}"
+    echo
+    echo "announce: what did #$n ship?"
+    if [[ "${PRS_ANNOUNCE:-}" == "1" ]]; then
+      echo "  PRS_ANNOUNCE=1 — sending without asking."
+      ( cd "$root/web" && npx tsx scripts/announce-merged.ts --pr "$n" ) \
+        || echo "  announce FAILED for #$n — the merge is unaffected; re-run by hand (see below)."
+      continue
+    fi
+    if [[ ! -t 1 || ! -r /dev/tty ]]; then
+      echo "  (no terminal to confirm at — not posting to customer rooms automatically.)"
+      echo "    cd \"$root/web\" && npx tsx scripts/announce-merged.ts --pr $n"
+      continue
+    fi
+    # Show it before offering to send it. A dry run resolves the destinations and the exact text, so
+    # the question below is one you can actually answer.
+    ( cd "$root/web" && npx tsx scripts/announce-merged.ts --pr "$n" --dry-run ) || {
+      echo "  couldn't prepare the announcement for #$n (database unreachable, or no entry) — skipping."
+      continue
+    }
+    local go=""
+    read -r -p "  Post this to the chat rooms now? [y/N] " go < /dev/tty || go=""
+    if [[ "$go" == "y" || "$go" == "Y" ]]; then
+      ( cd "$root/web" && npx tsx scripts/announce-merged.ts --pr "$n" ) \
+        || echo "  announce FAILED for #$n — the merge is unaffected; re-run it by hand."
+    else
+      echo "  skipped. Send it when you're ready:"
+      echo "    cd \"$root/web\" && npx tsx scripts/announce-merged.ts --pr $n"
+    fi
+  done
 }
 
 # The by-hand recipe, printed whenever the migration isn't (or can't be) run automatically.
@@ -536,6 +608,12 @@ if [[ "$PR" == "--all" ]]; then
   if [[ -n "$MIG_PRS" ]]; then
     run_migration_deploy "Merged PRs$MIG_PRS"
   fi
+
+  # One announcement pass for the whole batch, after the sync and the migration — so what reaches the
+  # room is what is actually deployed, not what merged a minute before the database caught up.
+  if [[ -n "$MERGED" ]]; then
+    announce_merged_to_chat "$MERGED" || true
+  fi
   exit 0
 fi
 
@@ -636,4 +714,11 @@ fi
 # local sync), not after every merge — same reason the local sync is suppressed here via PRS_IN_ALL.
 if [[ -n "$MIGRATIONS" && "${PRS_IN_ALL:-}" != "1" ]]; then
   run_migration_deploy "This PR (#$PR)"
+fi
+
+# Tell the rooms what shipped. LAST, and never fatal: the merge is already done and a chat failure
+# must not make a successful merge look failed. In a --all batch the whole batch is announced at the
+# end instead, so a ten-PR sweep asks once per PR rather than interleaving with the merges.
+if [[ "${PRS_IN_ALL:-}" != "1" ]]; then
+  announce_merged_to_chat "$PR" || true
 fi
