@@ -81,7 +81,9 @@ test("buildResolutionNote lists each step's actions, excludes case-resolution, a
     ],
     names: new Map([["m365", "Microsoft 365"], ["adobe", "Adobe"], ["hardware", "Hardware"], ["case-resolution", "Case resolution"]]),
   })));
-  assert.match(note, /Microsoft 365: created user jane\.doe@acme\.com; assigned E5/);
+  // FR #0000046: one action per line — the first rides the step line, the rest are indented under it.
+  // This used to assert the semicolon-joined form ("…jane.doe@acme.com; assigned E5").
+  assert.match(note, /Microsoft 365: created user jane\.doe@acme\.com\n\s+assigned E5/);
   assert.match(note, /✋ Hardware: completed by hand/);
   assert.match(note, /Follow-ups/);
   assert.match(note, /Adobe: token expired/);
