@@ -10,7 +10,8 @@ import { db } from "@/lib/db";
 import { getAppSetting } from "@/lib/settings";
 import { NOTIFICATIONS_SETTING_KEY, normalizeSettings } from "@/lib/notifications/types";
 import { sendAnnouncement, type AnnouncementAudience } from "@/lib/notifications/sender";
-import { CHANGELOG, formatChangelogWhen } from "@/lib/changelog/entries";
+import { CHANGELOG } from "@/lib/changelog/entries";
+import { changelogAnnouncement } from "@/lib/changelog/announce";
 
 const AUDIENCES: AnnouncementAudience[] = ["all", "restricted", "both"];
 const COMMENT_MAX = 2000;
@@ -35,16 +36,11 @@ export async function POST(req: Request) {
   const comment = typeof body?.comment === "string" ? body.comment.trim().slice(0, COMMENT_MAX) : "";
 
   const settings = normalizeSettings(await getAppSetting(db, NOTIFICATIONS_SETTING_KEY));
-  const detail = [
-    ...(comment ? [comment, ""] : []),
-    `Shipped: ${formatChangelogWhen(entry)}`,
-    ...entry.items.map((it) => `• ${it}`),
-  ].join("\n");
-  const results = await sendAnnouncement(settings, audience, {
-    event: "announcement",
-    title: `iam-engine update — ${entry.title}`,
-    detail,
-  });
+  // Composed by the shared helper, not inline: scripts/announce-merged.ts (run by prs.sh after a
+  // merge) posts to the SAME customer channels, and a message that differed by route would be a
+  // message nobody could recognise.
+  const { title, detail } = changelogAnnouncement(entry, comment);
+  const results = await sendAnnouncement(settings, audience, { event: "announcement", title, detail });
 
   // recordAudit swallows its own errors — the announcement already went out, so an audit blip must
   // not 500 this response (the operator would re-send and double-post to the client chats).
