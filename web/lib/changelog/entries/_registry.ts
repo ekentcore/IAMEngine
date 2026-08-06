@@ -53,6 +53,7 @@ export { entry as changelogTimesEasternUtcFix } from "./changelog-times-eastern-
 export { entry as chatAlertsWarningsAndMasterSwitch } from "./chat-alerts-warnings-and-master-switch";
 export { entry as clientLifecycleRoles } from "./client-lifecycle-roles";
 export { entry as clientsActionsMenu } from "./clients-actions-menu";
+export { entry as cleanerCaseResolutionNotes } from "./cleaner-case-resolution-notes";
 export { entry as concurrencyGovernor } from "./concurrency-governor";
 export { entry as connectorBuilder } from "./connector-builder";
 export { entry as connectorBrowserSessionAuth } from "./connector-browser-session-auth";
