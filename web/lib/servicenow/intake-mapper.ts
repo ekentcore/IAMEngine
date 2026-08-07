@@ -290,7 +290,11 @@ function offboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
     forwardPhoneVoicemail: bool(r, "u_phone_voicemail_being_forwarded"),
     forwardPhoneTo: val(r, "u_forward_to"),
     oooMessage: val(r, "u_out_of_office_message"),
-    provideMailboxAccessTo: bool(r, "u_enable_delegate") ? disp(r, "u_off_delegate_access") : null,
+    // FR #84: read as a LIST. ServiceNow returns a multi-value reference field ", "-joined, which is
+    // exactly what dispList splits — the same treatment u_who_are_direct_reports already gets. A
+    // single-valued field yields a one-element array, and the planner collapses that back to the
+    // original string on the wire, so nothing changes for the one-delegate case.
+    provideMailboxAccessTo: bool(r, "u_enable_delegate") ? dispList(r, "u_off_delegate_access") : [],
     allowedToMaintainEmail: bool(r, "u_permitted_to_maintain_email"),
     maintainEmailUntil: dateOnly(val(r, "u_maintain_email_until")),
     mailForwarded: bool(r, "u_mail_forwarded"),
