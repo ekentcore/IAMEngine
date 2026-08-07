@@ -872,7 +872,9 @@ export function makeCaseRepository(db: PrismaClient) {
       const c = await db.caseRequest.findUnique({
         where: { id },
         include: {
-          client: { select: { name: true, slug: true } },
+          // backbone: which directory actually masters this client's identities. The pre-run password
+          // reset picks its target lane from it (FR #0000080).
+          client: { select: { name: true, slug: true, backbone: true } },
           jobs: { orderBy: { sequence: "asc" } },
         },
       });
