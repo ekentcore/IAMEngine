@@ -29,6 +29,9 @@ export type CaseRowVM = {
   lastActionBy?: string | null; // who took that action (email), or null when not a signed-in user
   readiness?: "ready" | "partial" | "blocked" | "none"; // can this case's systems run? (are the creds set)
   readinessMissing?: string[]; // the unset secret names, for the tooltip
+  // Who opened/imported the case — the operator's email for a signed-in engineer, else the raw actor
+  // label ("servicenow-poller"). Shown as "Assigned to" (FR #0000045).
+  createdBy?: string | null;
   createdAtIso: string;
 };
 
@@ -62,7 +65,16 @@ const STATUS_COLOR: Record<string, string> = {
   running: "var(--info-fg)",
 };
 
-type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "lastRun" | "createdAt";
+type SortKey = "subject" | "clientName" | "action" | "serviceNowCaseNumber" | "jobCount" | "status" | "effectiveDate" | "lastRun" | "createdAt" | "createdBy";
+
+// Every operator is @core.tech, so the domain is a column's worth of noise repeated on every row.
+// Show the local part and keep the full value in the title. A non-email actor label
+// ("servicenow-poller") has no @ and renders unchanged — it is already the readable form.
+function assignedLabel(createdBy: string | null | undefined): string {
+  if (!createdBy) return "—";
+  const at = createdBy.indexOf("@");
+  return at > 0 ? createdBy.slice(0, at) : createdBy;
+}
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
@@ -435,6 +447,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
             <SortHead k="effectiveDate" label="Start / off date" />
             <SortHead k="lastRun" label="Last run" />
             <SortHead k="createdAt" label="Created" />
+            <SortHead k="createdBy" label="Assigned to" />
             <th aria-label="Run controls"></th>
             <th style={{ width: 28 }} aria-label="Actions"></th>
           </tr>
@@ -500,6 +513,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                 )}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+              <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.createdBy ?? "nobody recorded"}>{assignedLabel(c.createdBy)}</td>
               <td style={{ whiteSpace: "nowrap" }}>
                 {(() => {
                   const terminal = c.status === "completed" || c.status === "failed";
@@ -540,7 +554,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
           ))}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={12} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
+              <td colSpan={13} className="muted" style={{ textAlign: "center", padding: "2rem" }}>
                 {working.length === 0 ? (splitCompleted ? "No open cases — completed work is below." : "No cases yet. Import a ServiceNow ticket or create one.") : "No cases match your search."}
               </td>
             </tr>
@@ -578,7 +592,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
             <thead>
               <tr>
                 <th>Subject</th><th>Client</th><th>Action</th><th>SN case</th>
-                <th className="num">Jobs</th><th>Status</th><th>Start / off date</th><th>Last run</th><th>Created</th>
+                <th className="num">Jobs</th><th>Status</th><th>Start / off date</th><th>Last run</th><th>Created</th><th>Assigned to</th>
                 <th style={{ width: 28 }} aria-label="Actions"></th>
               </tr>
             </thead>
@@ -601,6 +615,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                     {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}
                   </td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>{new Date(c.createdAtIso).toLocaleDateString()}</td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.createdBy ?? "nobody recorded"}>{assignedLabel(c.createdBy)}</td>
                   <td style={{ width: 28, padding: 0, textAlign: "right" }}>
                     <button
                       onClick={() => remove(c)}
@@ -615,7 +630,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                 </tr>
               ))}
               {completed.length === 0 && (
-                <tr><td colSpan={10} className="muted" style={{ textAlign: "center", padding: "1.5rem" }}>No completed cases{terms.length ? " match your search" : " yet"}.</td></tr>
+                <tr><td colSpan={11} className="muted" style={{ textAlign: "center", padding: "1.5rem" }}>No completed cases{terms.length ? " match your search" : " yet"}.</td></tr>
               )}
             </tbody>
           </table>
