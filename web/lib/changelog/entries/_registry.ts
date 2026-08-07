@@ -218,6 +218,7 @@ export { entry as selfHealWatchdog } from "./self-heal-watchdog";
 export { entry as settingsDeploymentStatus } from "./settings-deployment-status";
 export { entry as setupRunCancelButton } from "./setup-run-cancel-button";
 export { entry as slackCatalogBuilt } from "./slack-catalog-built";
+export { entry as smallMailboxesNotEmpty } from "./small-mailboxes-not-empty";
 export { entry as slackConsoleBrowserSetup } from "./slack-console-browser-setup";
 export { entry as sharepointFullcontrolUsedRole } from "./sharepoint-fullcontrol-used-role";
 export { entry as sharepointOnedriveFullaccessGrant } from "./sharepoint-onedrive-fullaccess-grant";
