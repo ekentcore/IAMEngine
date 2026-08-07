@@ -93,7 +93,9 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
   // cases pause on import, and the reset route already supports paused cases) — pick whichever
   // planned job the ad-hoc reset job should ride on. Excluded for dry runs: nothing in a dry-run
   // case ever actually dispatches, so there's no real account yet to reset a password on.
-  const resetSourceJobId = c.dryRun ? null : pickResetSourceJob(c.jobs);
+  // The backbone decides WHICH directory the reset lands in: a Google-backbone client with an M365
+  // lane must reset in Google, not M365 (FR #0000080).
+  const resetSourceJobId = c.dryRun ? null : pickResetSourceJob(c.jobs, c.client.backbone);
   const resetSourceJob = resetSourceJobId ? c.jobs.find((j) => j.id === resetSourceJobId) ?? null : null;
   const scheduledForIso = caseMeta?.scheduledFor?.toISOString() ?? null;
   // The case's effective date string — the ScheduleButton computes its suggested time from this in

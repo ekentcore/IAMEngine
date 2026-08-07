@@ -97,6 +97,7 @@ export { entry as foundation } from "./foundation";
 export { entry as frameworkSystemsAreChecklistSteps } from "./framework-systems-are-checklist-steps";
 export { entry as goliveHardening } from "./golive-hardening";
 export { entry as goliveReadinessPreflight } from "./golive-readiness-preflight";
+export { entry as googleBackbonePasswordReset } from "./google-backbone-password-reset";
 export { entry as googleCustomerIdValidation } from "./google-customer-id-validation";
 export { entry as googleDelineaFieldNamesMatchTemplate } from "./google-delinea-field-names-match-template";
 export { entry as googleKeyConverterTool } from "./google-key-converter-tool";
