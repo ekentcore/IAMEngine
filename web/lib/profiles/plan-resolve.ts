@@ -93,8 +93,25 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
   // exchange step (Full Access, name resolved at run time) and to the m365/entra step (OneDrive
   // access — the same person the ticket named; opt out per client with
   // oneDriveDelegateAccess: false on the m365 offboard config).
-  const delegate = typeof payload.provideMailboxAccessTo === "string" && payload.provideMailboxAccessTo.trim()
-    ? payload.provideMailboxAccessTo.trim() : null;
+  //
+  // FR #0000084 widened this from ONE person to several. The intake field is a ServiceNow reference
+  // list, so it arrives either as a single name (one delegate, or an older stored payload) or as an
+  // array — both are accepted here.
+  //
+  // WIRE SHAPE follows the COUNT, not the input type: one delegate travels as a plain string, exactly
+  // as it did before, so a runner that has not yet picked up the widened module behaves identically on
+  // the overwhelmingly common case. The array shape appears only when there really is more than one
+  // name — the new behaviour engages only when the new feature is actually used.
+  const delegates = (Array.isArray(payload.provideMailboxAccessTo)
+    ? payload.provideMailboxAccessTo
+    : [payload.provideMailboxAccessTo])
+    .filter((d): d is string => typeof d === "string")
+    .map((d) => d.trim())
+    .filter(Boolean)
+    // De-duplicate case-insensitively: a repeated name would be granted twice and logged twice, which
+    // reads on the case as two different people getting access.
+    .filter((d, i, all) => all.findIndex((o) => o.toLowerCase() === d.toLowerCase()) === i);
+  const delegate: string | string[] | null = delegates.length === 0 ? null : delegates.length === 1 ? delegates[0] : delegates;
   const withDelegate = !delegate ? resolved : resolved.map((j) => {
     if (j.systemKey === "exchange") {
       return { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), grantFullAccessTo: delegate } };

@@ -401,6 +401,54 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'WARN the case asks for mailbox access'
     }
 
+    # FR #84: several delegates. The config carries a STRING for one (the case above, unchanged) and an
+    # ARRAY when the ticket named more than one.
+    It 'grants EVERY delegate the ticket named' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = @('phegland@61commodities.com', 'dgani@61commodities.com') })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'phegland@61commodities.com' }
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'dgani@61commodities.com' }
+        ($r.Actions -join ' ') | Should -Match 'granted case-requested delegate phegland@61commodities.com'
+        ($r.Actions -join ' ') | Should -Match 'granted case-requested delegate dgani@61commodities.com'
+    }
+
+    # The whole point of per-delegate isolation: a typo in one row must not cost the OTHER people their
+    # access. Before this, one unresolvable name was the only name, so it failed alone; in a list it
+    # would take the rest down with it if the loop bailed.
+    It 'one unresolvable delegate does not stop the others being granted' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Resolve-CtgAddressByDisplayName -ModuleName Coretelligent.Exchange -MockWith { $null }  # the NAME never resolves
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = @('Nobody Atall', 'dgani@61commodities.com') })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'dgani@61commodities.com' }
+        ($r.Actions -join ' ') | Should -Match "WARN the case asks for mailbox access for 'Nobody Atall'"
+        ($r.Actions -join ' ') | Should -Match 'granted case-requested delegate dgani@61commodities.com'
+    }
+
+    It 'a failed grant for one delegate does not stop the next' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith {
+            if ($User -eq 'phegland@61commodities.com') { throw 'Exchange said no' }
+        }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = @('phegland@61commodities.com', 'dgani@61commodities.com') })
+        ($r.Actions -join ' ') | Should -Match 'WARN could not grant phegland@61commodities.com Full Access'
+        ($r.Actions -join ' ') | Should -Match 'granted case-requested delegate dgani@61commodities.com'
+    }
+
+    It 'blank entries in the delegate list are ignored, not resolved' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
+        Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Resolve-CtgAddressByDisplayName -ModuleName Coretelligent.Exchange -MockWith { $null }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ grantFullAccessTo = @('', '   ', 'dgani@61commodities.com') })
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        Should -Invoke Resolve-CtgAddressByDisplayName -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+    }
+
     It 'is idempotent — no re-grant when the manager already has Full Access' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
         Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ User = 'boss@61commodities.com'; AccessRights = @('FullAccess') }) }
