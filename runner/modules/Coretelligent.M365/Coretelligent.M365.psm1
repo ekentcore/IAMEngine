@@ -51,6 +51,43 @@ function Get-CtgProp {
     return $null
 }
 
+# Translate a client-configured attribute NAME to the Graph property name Update-MgUser expects.
+#
+# Attribute maps are authored once and used on BOTH lanes, and profiles/_schema.json tells authors to
+# use "the exact directory attribute name (e.g. title, department, company, extensionAttribute4…)" —
+# i.e. LDAP spellings. The AD lane takes those verbatim; Graph will not. A fleet scan on 2026-08-17
+# found 30 distinct names across 192 clients, LDAP-dominated even on cloud lanes, so translating here
+# is what makes an existing attribute rule work without anyone re-entering their config.
+#
+# Returns $null when the attribute has no writable Graph equivalent — the caller reports that by name
+# rather than silently dropping it (FR #104: silence is the whole complaint).
+function ConvertTo-CtgGraphAttributeName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Name)
+    $k = ([string]$Name).Trim().ToLowerInvariant()
+    if (-not $k) { return $null }
+    # Writable single-value user properties on Update-MgUser, keyed by their lowercase spelling.
+    $graph = @{
+        'jobtitle' = 'JobTitle'; 'department' = 'Department'; 'companyname' = 'CompanyName'
+        'officelocation' = 'OfficeLocation'; 'mobilephone' = 'MobilePhone'; 'streetaddress' = 'StreetAddress'
+        'city' = 'City'; 'state' = 'State'; 'postalcode' = 'PostalCode'; 'country' = 'Country'
+        'businessphones' = 'BusinessPhones'; 'employeeid' = 'EmployeeId'; 'employeetype' = 'EmployeeType'
+        'displayname' = 'DisplayName'; 'givenname' = 'GivenName'; 'surname' = 'Surname'
+        'mailnickname' = 'MailNickname'; 'faxnumber' = 'FaxNumber'; 'preferredlanguage' = 'PreferredLanguage'
+    }
+    if ($graph.ContainsKey($k)) { return $graph[$k] }
+    # LDAP/AD spellings, mapped to their Graph equivalent. `c` (ISO-2 country code) and `co` (country
+    # name) both land on Country: Graph has one free-text country field, and usageLocation — which
+    # drives LICENSING — is deliberately NOT a target here, so a rule cannot silently change it.
+    $alias = @{
+        'title' = 'JobTitle'; 'mobile' = 'MobilePhone'; 'company' = 'CompanyName'
+        'physicaldeliveryofficename' = 'OfficeLocation'; 'telephonenumber' = 'BusinessPhones'
+        'l' = 'City'; 'st' = 'State'; 'co' = 'Country'; 'c' = 'Country'; 'sn' = 'Surname'
+    }
+    if ($alias.ContainsKey($k)) { return $alias[$k] }
+    return $null
+}
+
 # Add a user to a group, tolerating Entra's eventual consistency right after a hybrid sync: a
 # just-synced user can briefly be unqueryable for group ops ("...reference-property objects are not
 # present"). Retries with backoff; "already a member" counts as success. Returns $null on success or

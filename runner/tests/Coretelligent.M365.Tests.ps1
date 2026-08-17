@@ -1868,3 +1868,45 @@ Describe 'Invoke-CtgM365Offboarding admin-account (-a) sweep' {
         Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $AccountEnabled -eq $false }
     }
 }
+
+Describe 'ConvertTo-CtgGraphAttributeName' {
+    It 'translates the LDAP spellings operators actually use' {
+        InModuleScope Coretelligent.M365 {
+            ConvertTo-CtgGraphAttributeName -Name 'title'                      | Should -Be 'JobTitle'
+            ConvertTo-CtgGraphAttributeName -Name 'mobile'                     | Should -Be 'MobilePhone'
+            ConvertTo-CtgGraphAttributeName -Name 'company'                    | Should -Be 'CompanyName'
+            ConvertTo-CtgGraphAttributeName -Name 'physicalDeliveryOfficeName' | Should -Be 'OfficeLocation'
+            ConvertTo-CtgGraphAttributeName -Name 'telephoneNumber'            | Should -Be 'BusinessPhones'
+            ConvertTo-CtgGraphAttributeName -Name 'l'                          | Should -Be 'City'
+            ConvertTo-CtgGraphAttributeName -Name 'st'                         | Should -Be 'State'
+            ConvertTo-CtgGraphAttributeName -Name 'co'                         | Should -Be 'Country'
+        }
+    }
+
+    It 'passes valid Graph names through, case-insensitively' {
+        InModuleScope Coretelligent.M365 {
+            ConvertTo-CtgGraphAttributeName -Name 'department'   | Should -Be 'Department'
+            ConvertTo-CtgGraphAttributeName -Name 'streetAddress'| Should -Be 'StreetAddress'
+            ConvertTo-CtgGraphAttributeName -Name 'PostalCode'   | Should -Be 'PostalCode'
+            ConvertTo-CtgGraphAttributeName -Name 'jobtitle'     | Should -Be 'JobTitle'
+        }
+    }
+
+    It 'returns null for attributes with no writable Graph equivalent' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('extensionAttribute4','msDS-cloudExtensionAttribute1','proxyAddresses',
+                             'ipPhone','homePhone','description','mail','countryCode','usernamePattern')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -BeNullOrEmpty -Because "$n is not settable via Update-MgUser"
+            }
+        }
+    }
+
+    It 'maps every attribute Breakthrough Energy Ventures has configured' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('city','state','title','mobile','company','country',
+                             'department','postalCode','streetAddress','physicalDeliveryOfficeName')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -Not -BeNullOrEmpty -Because "core397 configured $n"
+            }
+        }
+    }
+}
