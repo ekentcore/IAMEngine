@@ -11,7 +11,7 @@ export const entry: ChangelogEntry = {
     "Where a rule and the ticket disagree, the RULE wins and the run report says so — e.g. \"JobTitle = 'Analyst' (rule) overrode 'Engineer' (ticket)\"",
     "An attribute 365 cannot write (extensionAttribute4, proxyAddresses, ipPhone…) is now named in the run report as skipped, instead of disappearing without a word — those stay mastered by Active Directory",
     "A manager set as a rule now applies in 365 too. The ticket still wins when it names one: a ticket knows this specific hire's manager, a client-wide rule doesn't",
-    "Offboard attribute rules (offboardAttributes) now apply on the 365 lane as well — they previously only worked on the Active Directory lane",
+    "Offboard attribute rules (offboardAttributes) now apply on the 365 lane too, for whichever of those attributes Graph can actually write (e.g. company, title) — AD-only attributes such as description have no Microsoft 365 equivalent and are named in the run report as skipped, not silently dropped",
     "Closes feature requests #0000104 and #0000087, which were the same defect reported twice",
   ],
 };

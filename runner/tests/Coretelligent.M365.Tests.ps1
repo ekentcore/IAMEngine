@@ -434,6 +434,19 @@ Describe 'Invoke-CtgM365Offboarding' {
         } -Times 1
     }
 
+    # FR #104 finding 5: a `manager` in offboardAttributes is lifted into .Manager (same helper the
+    # onboard path uses), but nothing on the offboard lane consumes .Manager — offboarding CLEARS the
+    # manager link, it doesn't set one. Before this fix that manager value vanished with no trace.
+    It 'reports a manager named in offboardAttributes as not applied, instead of dropping it silently' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName='jane.doe@x.com'; DisplayName='Jane Doe' }
+        $cfg = [pscustomobject]@{ offboardAttributes = @{ manager='Jim Goodmiller'; title='Departed' } }
+        $r = Invoke-CtgM365Offboarding -User $u -Config $cfg
+        ($r.Actions -join ' ') | Should -Match "WARN offboard attribute 'manager' is not applied on the offboard lane.*Jim Goodmiller"
+        # The rest of the map still applies normally.
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $JobTitle -eq 'Departed' } -Times 1
+    }
+
     It 'resolves the offboard target by display name when the case has no UPN' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-9'; UserPrincipalName = 'jpark@x.com'; AccountEnabled = $true } }
@@ -1974,6 +1987,18 @@ Describe 'ConvertTo-CtgGraphAttributeName' {
             }
         }
     }
+
+    # FR #104 finding 4: these four ARE writable via Update-MgUser, but none appears in the
+    # intake-derived attribute map, so a rule naming one would be a brand-new, unreported identity
+    # write — and mailNickname rewrites can trigger an Exchange Online primary-SMTP recalculation on
+    # every re-run. A rule naming any of these must be reported as not-settable, not applied silently.
+    It 'refuses identity-affecting properties even though Update-MgUser accepts them' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('displayname', 'givenname', 'surname', 'mailnickname')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -BeNullOrEmpty -Because "$n is an identity-affecting property with no reporting path"
+            }
+        }
+    }
 }
 
 Describe 'Resolve-CtgM365AttributeUpdate' {
@@ -2034,6 +2059,27 @@ Describe 'Resolve-CtgM365AttributeUpdate' {
             $r.Update.Count  | Should -Be 0
             $r.Manager       | Should -BeNullOrEmpty
             @($r.Skipped).Count | Should -Be 0
+            @($r.Collisions).Count | Should -Be 0
+        }
+    }
+
+    # FR #104 finding 3: `c` (ISO-2 country code) and `co` (country name) both map to Graph's single
+    # Country field. profiles/coretelligent.json authors both together on real clients, so with two
+    # different values whichever key a hashtable/JSON enumerates last used to win with no trace at all.
+    It 'reports a collision when two source attributes map to the same Graph property with different values' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ co = 'United States'; c = 'US' }
+            $r.Update['Country']    | Should -Be 'US'   # 'c' sorts before 'co'; deterministic winner
+            $r.Collisions.Count     | Should -Be 1
+            $r.Collisions[0]        | Should -Match "'co' = 'United States' collides with 'c' = 'US'"
+        }
+    }
+
+    It 'does not report a collision when two source attributes map to the same Graph property with the SAME value' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ co = 'US'; c = 'US' }
+            $r.Update['Country'] | Should -Be 'US'
+            @($r.Collisions).Count | Should -Be 0
         }
     }
 }
