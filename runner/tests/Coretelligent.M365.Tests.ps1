@@ -424,6 +424,16 @@ Describe 'Invoke-CtgM365Offboarding' {
         Mock Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
     }
 
+    It 'applies Config.offboardAttributes on the cloud lane' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName='jane.doe@x.com'; DisplayName='Jane Doe' }
+        $cfg = [pscustomobject]@{ offboardAttributes = @{ title='Departed'; company='BEV' } }
+        Invoke-CtgM365Offboarding -User $u -Config $cfg | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter {
+            $JobTitle -eq 'Departed' -and $CompanyName -eq 'BEV'
+        } -Times 1
+    }
+
     It 'resolves the offboard target by display name when the case has no UPN' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'userPrincipalName eq' } -MockWith { $null }
         Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Filter -match 'displayName eq' } -MockWith { [pscustomobject]@{ Id = 'uid-9'; UserPrincipalName = 'jpark@x.com'; AccountEnabled = $true } }

@@ -1640,6 +1640,27 @@ function Invoke-CtgM365Offboarding {
     $userId = $existing.Id
     $upn = [string]((Get-CtgProp $existing 'UserPrincipalName') ?? $upn)   # authoritative from here on
 
+    # Offboard attribute rules (config.offboardAttributes) — the AD lane has applied these since
+    # FR #37; the cloud lane ignored them, so e.g. description = "Offboarded" never landed in 365.
+    $offAttrs = Resolve-CtgM365AttributeUpdate -Attributes (Get-CtgProp $Config 'offboardAttributes')
+    if ($offAttrs.Update.Count -and $PSCmdlet.ShouldProcess($upn, "Set offboard attributes: $($offAttrs.Update.Keys -join ', ')")) {
+        try {
+            $offUpdate = $offAttrs.Update
+            Invoke-CtgM365Write { Update-MgUser -UserId $userId @offUpdate -ErrorAction Stop }
+            $actions.Add("set offboard attributes: $($offAttrs.Update.Keys -join ', ')")
+        } catch {
+            $om = [string]$_.Exception.Message
+            if ($om -match 'on-premises mastered|Directory Sync objects') {
+                $actions.Add("offboard attributes ($($offAttrs.Update.Keys -join ', ')) are on-prem-mastered (AD-synced) — the AD lane sets them on-prem; skipped in the cloud")
+            } else {
+                $actions.Add("WARN could not set offboard attributes ($($offAttrs.Update.Keys -join ', ')): $om")
+            }
+        }
+    }
+    foreach ($s in $offAttrs.Skipped) {
+        $actions.Add("WARN offboard attribute '$s' is not settable on the cloud lane — the AD lane masters it; skipped")
+    }
+
     # 1. Evidence FIRST — snapshot group memberships before we remove anything ----
     $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
         Where-Object { (Get-CtgProp $_.AdditionalProperties '@odata.type') -eq '#microsoft.graph.group' }
