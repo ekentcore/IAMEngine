@@ -88,6 +88,38 @@ function ConvertTo-CtgGraphAttributeName {
     return $null
 }
 
+# Turn a client-configured attribute map (globals / persona / location `attributes`) into something
+# the cloud lane can apply: a splattable Graph update, the manager lifted out, and the names that
+# have no Graph equivalent reported back so the caller can say so on the case.
+#
+# Pure — no Graph calls — so the precedence and mapping rules are unit-testable.
+function Resolve-CtgM365AttributeUpdate {
+    [CmdletBinding()]
+    param($Attributes)
+    $result = [pscustomobject]@{
+        Update  = @{}
+        Manager = $null
+        Skipped = [System.Collections.Generic.List[string]]::new()
+    }
+    if (-not $Attributes) { return $result }
+    # Works for a JSON-deserialized pscustomobject (production) or a hashtable (tests) — same shape
+    # handling Set-CtgADAttributes uses on the AD lane.
+    $names = if ($Attributes -is [hashtable]) { @($Attributes.Keys) } else { @($Attributes.PSObject.Properties.Name) }
+    foreach ($name in $names) {
+        $value = if ($Attributes -is [hashtable]) { $Attributes[$name] } else { $Attributes.$name }
+        # The same guard the intake path uses: Graph rejects an empty string, and an unresolved
+        # {token} means the planner had nothing to fill it with — writing it literally is worse
+        # than skipping it.
+        if ([string]::IsNullOrWhiteSpace([string]$value) -or ([string]$value) -match '\{') { continue }
+        if ($name -ieq 'manager') { $result.Manager = [string]$value; continue }
+        $graphName = ConvertTo-CtgGraphAttributeName -Name $name
+        if (-not $graphName) { $result.Skipped.Add([string]$name); continue }
+        if ($graphName -eq 'BusinessPhones') { $result.Update[$graphName] = @([string]$value) }
+        else { $result.Update[$graphName] = [string]$value }
+    }
+    return $result
+}
+
 # Add a user to a group, tolerating Entra's eventual consistency right after a hybrid sync: a
 # just-synced user can briefly be unqueryable for group ops ("...reference-property objects are not
 # present"). Retries with backoff; "already a member" counts as success. Returns $null on success or

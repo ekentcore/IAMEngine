@@ -1910,3 +1910,65 @@ Describe 'ConvertTo-CtgGraphAttributeName' {
         }
     }
 }
+
+Describe 'Resolve-CtgM365AttributeUpdate' {
+    It 'builds a splattable Graph update from an LDAP-named map' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ title='Analyst'; company='BEV'; city='Boston' }
+            $r.Update['JobTitle']    | Should -Be 'Analyst'
+            $r.Update['CompanyName'] | Should -Be 'BEV'
+            $r.Update['City']        | Should -Be 'Boston'
+            $r.Update.Count          | Should -Be 3
+        }
+    }
+
+    It 'accepts a JSON-deserialized pscustomobject as well as a hashtable' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes ([pscustomobject]@{ title='Analyst' })
+            $r.Update['JobTitle'] | Should -Be 'Analyst'
+        }
+    }
+
+    It 'drops empty values and unresolved {token} strings' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ title=''; department='  '; city='{location.city}'; state='MA' }
+            $r.Update.Count    | Should -Be 1
+            $r.Update['State'] | Should -Be 'MA'
+        }
+    }
+
+    It 'lifts manager out of the map instead of sending it to Update-MgUser' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ manager='Jim Goodmiller'; title='Analyst' }
+            $r.Manager                     | Should -Be 'Jim Goodmiller'
+            $r.Update.ContainsKey('Manager') | Should -BeFalse
+            $r.Update['JobTitle']          | Should -Be 'Analyst'
+        }
+    }
+
+    It 'reports unmappable attributes by name rather than dropping them silently' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ extensionAttribute4='X'; proxyAddresses='smtp:a@b.com'; title='Analyst' }
+            $r.Skipped        | Should -Contain 'extensionAttribute4'
+            $r.Skipped        | Should -Contain 'proxyAddresses'
+            $r.Update.Count   | Should -Be 1
+        }
+    }
+
+    It 'wraps businessPhones in an array, because Graph types it as a collection' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ telephoneNumber='+1 555 0100' }
+            ,$r.Update['BusinessPhones'] | Should -BeOfType [System.Object[]]
+            $r.Update['BusinessPhones'][0] | Should -Be '+1 555 0100'
+        }
+    }
+
+    It 'returns an empty result for a null map' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes $null
+            $r.Update.Count  | Should -Be 0
+            $r.Manager       | Should -BeNullOrEmpty
+            @($r.Skipped).Count | Should -Be 0
+        }
+    }
+}
