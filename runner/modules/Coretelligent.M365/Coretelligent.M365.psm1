@@ -1129,7 +1129,9 @@ function Invoke-CtgM365Onboarding {
     # 1c. Manager — resolve the manager (by email when the intake provided one, else by name — see
     # Resolve-CtgEntraUser) and set the Graph manager relationship. Without this the org chart /
     # "Reports to" stays empty even when u_manager_name was filled in.
-    $mgr = (Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerName') ?? (Get-CtgProp $User 'Manager')
+    # A rule manager FILLS A GAP rather than overriding — the one attribute where the ticket wins.
+    # A ticket names this specific hire's actual manager; a client-wide rule cannot know that.
+    $mgr = (Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerName') ?? (Get-CtgProp $User 'Manager') ?? $ruleAttrs.Manager
     if ((& $hasVal $mgr) -and $PSCmdlet.ShouldProcess($upn, "Set manager $mgr")) {
         $mgrUser = Resolve-CtgEntraUser -Identity ([string]$mgr)
         if ($mgrUser) {

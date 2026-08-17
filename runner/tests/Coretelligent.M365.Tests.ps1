@@ -334,6 +334,31 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -ParameterFilter { $BodyParameter['@odata.id'] -like '*mgr-9' } -Times 1
     }
 
+    It 'uses a rule manager when the ticket did not name one' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($Filter -like "*Jim Goodmiller*") { return [pscustomobject]@{ Id = 'mgr-1'; DisplayName = 'Jim Goodmiller' } }
+            return $null
+        }
+        Mock Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ manager='Jim Goodmiller' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 1
+    }
+
+    It 'never sends manager to Update-MgUser (Graph types it as a relationship)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { return $null }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ manager='Jim Goodmiller'; title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $null -ne $Manager } -Times 0 -Exactly
+    }
+
     It 'skips a DYNAMIC group (membership is rule-computed) without adding or warning' {
         Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { [pscustomobject]@{ Id = 'grp-dyn'; SecurityEnabled = $true; GroupTypes = @('DynamicMembership') } }
         $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; FirstName='Jane'; LastName='Doe'; JobTitle='Analyst'; MobilePhone=''; UsageLocation='US' }
