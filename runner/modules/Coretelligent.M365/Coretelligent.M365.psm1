@@ -1072,6 +1072,9 @@ function Invoke-CtgM365Onboarding {
     # a real value (Graph rejects an empty string or an unresolved {token}); reads are case-insensitive
     # so they pick up the camelCase intake payload (department, officeLocation, homeAddress, …).
     $hasVal = { param($v) -not [string]::IsNullOrWhiteSpace([string]$v) -and ([string]$v) -notmatch '\{' }
+    # Rule/role attributes from the client's config (globals, personas, locations). Resolved BEFORE
+    # the 1b block so step 1c can read $ruleAttrs.Manager.
+    $ruleAttrs = Resolve-CtgM365AttributeUpdate -Attributes (Get-CtgProp $Config 'attributes')
     if ($userId) {
         $attrMap = @(
             @{ K = 'JobTitle';       V = (Get-CtgProp $User 'JobTitle') }
@@ -1090,6 +1093,20 @@ function Invoke-CtgM365Onboarding {
         # business / office phone is an ARRAY in Graph
         $office = (Get-CtgProp $User 'OfficePhone') ?? (Get-CtgProp $User 'BusinessPhone') ?? (Get-CtgProp $User 'Did')
         if (& $hasVal $office) { $update['BusinessPhones'] = @([string]$office) }
+        # The AD lane has always honoured Config.attributes generically; the cloud lane never read it,
+        # so every attribute rule authored for a cloud client was silently ignored (FR #104/#87). The
+        # RULE WINS over the intake-derived value — an attribute deliberately configured on the client
+        # beats whatever the ticket happened to carry — and a disagreement is reported, never silent.
+        foreach ($k in @($ruleAttrs.Update.Keys)) {
+            $ruleVal = $ruleAttrs.Update[$k]
+            if ($update.ContainsKey($k) -and "$($update[$k])" -ne "$ruleVal") {
+                $actions.Add("$k = '$ruleVal' (rule) overrode '$($update[$k])' (ticket)")
+            }
+            $update[$k] = $ruleVal
+        }
+        foreach ($s in $ruleAttrs.Skipped) {
+            $actions.Add("WARN attribute '$s' is not settable on the cloud lane — the AD lane masters it; skipped")
+        }
         if ($update.Count -and $PSCmdlet.ShouldProcess($upn, "Set profile attributes: $($update.Keys -join ', ')")) {
             try {
                 Invoke-CtgM365Write { Update-MgUser -UserId $userId @update -ErrorAction Stop }

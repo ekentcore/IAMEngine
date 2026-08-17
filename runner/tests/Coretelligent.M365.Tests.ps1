@@ -277,6 +277,36 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Department -eq 'Engineering' -and $OfficeLocation -eq 'Boston' -and $StreetAddress -eq '1 Main St' } -Times 1
     }
 
+    It 'applies Config.attributes on the cloud lane, translating LDAP names (FR #104)' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ title='Analyst'; company='BEV'; physicalDeliveryOfficeName='Boston' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter {
+            $JobTitle -eq 'Analyst' -and $CompanyName -eq 'BEV' -and $OfficeLocation -eq 'Boston'
+        } -Times 1
+    }
+
+    It 'lets the rule win over the ticket, and says so on the case' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US'; JobTitle='Engineer' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $JobTitle -eq 'Analyst' } -Times 1
+        ($r.Actions -join ' ') | Should -Match "JobTitle.*Analyst.*rule.*Engineer.*ticket"
+    }
+
+    It 'names an attribute Graph cannot write instead of dropping it silently' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ extensionAttribute4='X'; title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd
+        ($r.Actions -join ' ') | Should -Match 'extensionAttribute4'
+    }
+
     It 'sets the manager, resolving a SNOW "First (Nick) Last" to the 365 "Nick Last"' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
             param($UserId, $Filter)
