@@ -83,10 +83,14 @@ function ConvertTo-CtgGraphAttributeName {
     # LDAP/AD spellings, mapped to their Graph equivalent. `c` (ISO-2 country code) and `co` (country
     # name) both land on Country: Graph has one free-text country field, and usageLocation — which
     # drives LICENSING — is deliberately NOT a target here, so a rule cannot silently change it.
+    # `sn` is absent for the same reason surname is absent from $graph above: it is the LDAP
+    # spelling of the same identity property, and leaving it here would reopen the unreported
+    # identity write through the back door — these maps are LDAP-dominated, so the LDAP spelling
+    # is the one a client is MORE likely to author, not less.
     $alias = @{
         'title' = 'JobTitle'; 'mobile' = 'MobilePhone'; 'company' = 'CompanyName'
         'physicaldeliveryofficename' = 'OfficeLocation'; 'telephonenumber' = 'BusinessPhones'
-        'l' = 'City'; 'st' = 'State'; 'co' = 'Country'; 'c' = 'Country'; 'sn' = 'Surname'
+        'l' = 'City'; 'st' = 'State'; 'co' = 'Country'; 'c' = 'Country'
     }
     if ($alias.ContainsKey($k)) { return $alias[$k] }
     return $null

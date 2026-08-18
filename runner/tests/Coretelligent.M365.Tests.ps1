@@ -1999,6 +1999,15 @@ Describe 'ConvertTo-CtgGraphAttributeName' {
             }
         }
     }
+
+    It 'refuses the LDAP spelling of an identity property too (sn, not just surname)' {
+        InModuleScope Coretelligent.M365 {
+            # These maps are LDAP-dominated, so `sn` is the spelling a client is MORE likely to author
+            # than `surname`. Leaving it mapped would reopen the unreported identity write it closes.
+            ConvertTo-CtgGraphAttributeName -Name 'sn' | Should -BeNullOrEmpty -Because 'sn is the LDAP spelling of surname'
+            ConvertTo-CtgGraphAttributeName -Name 'SN' | Should -BeNullOrEmpty -Because 'the refusal is case-insensitive'
+        }
+    }
 }
 
 Describe 'Resolve-CtgM365AttributeUpdate' {
