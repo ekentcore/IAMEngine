@@ -131,6 +131,7 @@ export { entry as llmProviderAzureForm } from "./llm-provider-azure-form";
 export { entry as locationGroupsPickerPrinters } from "./location-groups-picker-printers";
 export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-core";
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
+export { entry as m365AttributeRules } from "./m365-attribute-rules";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
 export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
 export { entry as m365LicenseDependencySelfheal } from "./m365-license-dependency-selfheal";

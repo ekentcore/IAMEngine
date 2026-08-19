@@ -51,6 +51,102 @@ function Get-CtgProp {
     return $null
 }
 
+# Translate a client-configured attribute NAME to the Graph property name Update-MgUser expects.
+#
+# Attribute maps are authored once and used on BOTH lanes, and profiles/_schema.json tells authors to
+# use "the exact directory attribute name (e.g. title, department, company, extensionAttribute4…)" —
+# i.e. LDAP spellings. The AD lane takes those verbatim; Graph will not. A fleet scan on 2026-08-17
+# found 30 distinct names across 192 clients, LDAP-dominated even on cloud lanes, so translating here
+# is what makes an existing attribute rule work without anyone re-entering their config.
+#
+# Returns $null when the attribute has no writable Graph equivalent — the caller reports that by name
+# rather than silently dropping it (FR #104: silence is the whole complaint).
+function ConvertTo-CtgGraphAttributeName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Name)
+    $k = ([string]$Name).Trim().ToLowerInvariant()
+    if (-not $k) { return $null }
+    # Writable single-value user properties on Update-MgUser, keyed by their lowercase spelling.
+    # Deliberately EXCLUDES displayName, givenName, surname and mailNickname even though Update-MgUser
+    # accepts them: none of those appear in the intake-derived attribute map, so a rule naming one would
+    # be a brand-new, unreported identity write — and mailNickname in particular can trigger an Exchange
+    # Online primary-SMTP recalculation on every re-run. A rule naming any of these is reported as
+    # not-settable (.Skipped) rather than silently rewriting the user's identity.
+    $graph = @{
+        'jobtitle' = 'JobTitle'; 'department' = 'Department'; 'companyname' = 'CompanyName'
+        'officelocation' = 'OfficeLocation'; 'mobilephone' = 'MobilePhone'; 'streetaddress' = 'StreetAddress'
+        'city' = 'City'; 'state' = 'State'; 'postalcode' = 'PostalCode'; 'country' = 'Country'
+        'businessphones' = 'BusinessPhones'; 'employeeid' = 'EmployeeId'; 'employeetype' = 'EmployeeType'
+        'faxnumber' = 'FaxNumber'; 'preferredlanguage' = 'PreferredLanguage'
+    }
+    if ($graph.ContainsKey($k)) { return $graph[$k] }
+    # LDAP/AD spellings, mapped to their Graph equivalent. `c` (ISO-2 country code) and `co` (country
+    # name) both land on Country: Graph has one free-text country field, and usageLocation — which
+    # drives LICENSING — is deliberately NOT a target here, so a rule cannot silently change it.
+    # `sn` is absent for the same reason surname is absent from $graph above: it is the LDAP
+    # spelling of the same identity property, and leaving it here would reopen the unreported
+    # identity write through the back door — these maps are LDAP-dominated, so the LDAP spelling
+    # is the one a client is MORE likely to author, not less.
+    $alias = @{
+        'title' = 'JobTitle'; 'mobile' = 'MobilePhone'; 'company' = 'CompanyName'
+        'physicaldeliveryofficename' = 'OfficeLocation'; 'telephonenumber' = 'BusinessPhones'
+        'l' = 'City'; 'st' = 'State'; 'co' = 'Country'; 'c' = 'Country'
+    }
+    if ($alias.ContainsKey($k)) { return $alias[$k] }
+    return $null
+}
+
+# Turn a client-configured attribute map (globals / persona / location `attributes`) into something
+# the cloud lane can apply: a splattable Graph update, the manager lifted out, and the names that
+# have no Graph equivalent reported back so the caller can say so on the case.
+#
+# Pure — no Graph calls — so the precedence and mapping rules are unit-testable.
+function Resolve-CtgM365AttributeUpdate {
+    [CmdletBinding()]
+    param($Attributes)
+    $result = [pscustomobject]@{
+        Update     = @{}
+        Manager    = $null
+        Skipped    = [System.Collections.Generic.List[string]]::new()
+        Collisions = [System.Collections.Generic.List[string]]::new()
+    }
+    if (-not $Attributes) { return $result }
+    # Works for a JSON-deserialized pscustomobject (production) or a hashtable (tests) — same shape
+    # handling Set-CtgADAttributes uses on the AD lane.
+    $names = if ($Attributes -is [hashtable]) { @($Attributes.Keys) } else { @($Attributes.PSObject.Properties.Name) }
+    # Sorted so the "winner" of a collision (below) is deterministic regardless of hashtable/JSON
+    # property enumeration order, which PowerShell does not guarantee.
+    $names = @($names | Sort-Object)
+    # Track which source attribute name landed on each Graph property, so two different LDAP spellings
+    # that alias to the same Graph field (e.g. `c` and `co` both -> Country) are reported instead of one
+    # silently overwriting the other with no trace on the case.
+    $wonBy = @{}
+    foreach ($name in $names) {
+        $value = if ($Attributes -is [hashtable]) { $Attributes[$name] } else { $Attributes.$name }
+        # The same guard the intake path uses: Graph rejects an empty string, and an unresolved
+        # {token} means the planner had nothing to fill it with — writing it literally is worse
+        # than skipping it.
+        if ([string]::IsNullOrWhiteSpace([string]$value) -or ([string]$value) -match '\{') { continue }
+        if ($name -ieq 'manager') { $result.Manager = [string]$value; continue }
+        $graphName = ConvertTo-CtgGraphAttributeName -Name $name
+        if (-not $graphName) { $result.Skipped.Add([string]$name); continue }
+        # The leading comma is load-bearing: without it, a single-element array returned from an `if`
+        # expression gets unwrapped back to a scalar string by PowerShell's pipeline semantics.
+        $newVal = if ($graphName -eq 'BusinessPhones') { , @([string]$value) } else { [string]$value }
+        if ($result.Update.ContainsKey($graphName)) {
+            $prevName = $wonBy[$graphName]
+            $prevVal = $result.Update[$graphName]
+            if ("$prevVal" -ne "$newVal") {
+                $result.Collisions.Add("'$name' = '$value' collides with '$prevName' = '$prevVal' (both map to $graphName) — kept '$prevName'")
+            }
+            continue   # first (alphabetically) name wins, deterministically
+        }
+        $result.Update[$graphName] = $newVal
+        $wonBy[$graphName] = [string]$name
+    }
+    return $result
+}
+
 # Add a user to a group, tolerating Entra's eventual consistency right after a hybrid sync: a
 # just-synced user can briefly be unqueryable for group ops ("...reference-property objects are not
 # present"). Retries with backoff; "already a member" counts as success. Returns $null on success or
@@ -1003,6 +1099,9 @@ function Invoke-CtgM365Onboarding {
     # a real value (Graph rejects an empty string or an unresolved {token}); reads are case-insensitive
     # so they pick up the camelCase intake payload (department, officeLocation, homeAddress, …).
     $hasVal = { param($v) -not [string]::IsNullOrWhiteSpace([string]$v) -and ([string]$v) -notmatch '\{' }
+    # Rule/role attributes from the client's config (globals, personas, locations). Resolved BEFORE
+    # the 1b block so step 1c can read $ruleAttrs.Manager.
+    $ruleAttrs = Resolve-CtgM365AttributeUpdate -Attributes (Get-CtgProp $Config 'attributes')
     if ($userId) {
         $attrMap = @(
             @{ K = 'JobTitle';       V = (Get-CtgProp $User 'JobTitle') }
@@ -1021,6 +1120,23 @@ function Invoke-CtgM365Onboarding {
         # business / office phone is an ARRAY in Graph
         $office = (Get-CtgProp $User 'OfficePhone') ?? (Get-CtgProp $User 'BusinessPhone') ?? (Get-CtgProp $User 'Did')
         if (& $hasVal $office) { $update['BusinessPhones'] = @([string]$office) }
+        # The AD lane has always honoured Config.attributes generically; the cloud lane never read it,
+        # so every attribute rule authored for a cloud client was silently ignored (FR #104/#87). The
+        # RULE WINS over the intake-derived value — an attribute deliberately configured on the client
+        # beats whatever the ticket happened to carry — and a disagreement is reported, never silent.
+        foreach ($k in @($ruleAttrs.Update.Keys)) {
+            $ruleVal = $ruleAttrs.Update[$k]
+            if ($update.ContainsKey($k) -and "$($update[$k])" -ne "$ruleVal") {
+                $actions.Add("$k = '$ruleVal' (rule) overrode '$($update[$k])' (ticket)")
+            }
+            $update[$k] = $ruleVal
+        }
+        foreach ($s in $ruleAttrs.Skipped) {
+            $actions.Add("WARN attribute '$s' has no Microsoft 365 equivalent — not set in the cloud (it is an on-prem/AD attribute)")
+        }
+        foreach ($c in $ruleAttrs.Collisions) {
+            $actions.Add("WARN attribute rule collision: $c")
+        }
         if ($update.Count -and $PSCmdlet.ShouldProcess($upn, "Set profile attributes: $($update.Keys -join ', ')")) {
             try {
                 Invoke-CtgM365Write { Update-MgUser -UserId $userId @update -ErrorAction Stop }
@@ -1043,7 +1159,9 @@ function Invoke-CtgM365Onboarding {
     # 1c. Manager — resolve the manager (by email when the intake provided one, else by name — see
     # Resolve-CtgEntraUser) and set the Graph manager relationship. Without this the org chart /
     # "Reports to" stays empty even when u_manager_name was filled in.
-    $mgr = (Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerName') ?? (Get-CtgProp $User 'Manager')
+    # A rule manager FILLS A GAP rather than overriding — the one attribute where the ticket wins.
+    # A ticket names this specific hire's actual manager; a client-wide rule cannot know that.
+    $mgr = (Get-CtgProp $User 'ManagerEmail') ?? (Get-CtgProp $User 'ManagerName') ?? (Get-CtgProp $User 'Manager') ?? $ruleAttrs.Manager
     if ((& $hasVal $mgr) -and $PSCmdlet.ShouldProcess($upn, "Set manager $mgr")) {
         $mgrUser = Resolve-CtgEntraUser -Identity ([string]$mgr)
         if ($mgrUser) {
@@ -1551,6 +1669,38 @@ function Invoke-CtgM365Offboarding {
     }
     $userId = $existing.Id
     $upn = [string]((Get-CtgProp $existing 'UserPrincipalName') ?? $upn)   # authoritative from here on
+
+    # Offboard attribute rules (config.offboardAttributes) — the AD lane has applied these since
+    # FR #37; the cloud lane ignored them, so e.g. company = "Offboarded" never landed in 365. AD-only
+    # attributes like `description` have no Graph equivalent — they land in .Skipped and are reported
+    # below, never silently dropped.
+    $offAttrs = Resolve-CtgM365AttributeUpdate -Attributes (Get-CtgProp $Config 'offboardAttributes')
+    if ($offAttrs.Update.Count -and $PSCmdlet.ShouldProcess($upn, "Set offboard attributes: $($offAttrs.Update.Keys -join ', ')")) {
+        try {
+            $offUpdate = $offAttrs.Update
+            Invoke-CtgM365Write { Update-MgUser -UserId $userId @offUpdate -ErrorAction Stop }
+            $actions.Add("set offboard attributes: $($offAttrs.Update.Keys -join ', ')")
+        } catch {
+            $om = [string]$_.Exception.Message
+            if ($om -match 'on-premises mastered|Directory Sync objects') {
+                $actions.Add("offboard attributes ($($offAttrs.Update.Keys -join ', ')) are on-prem-mastered (AD-synced) — the AD lane sets them on-prem; skipped in the cloud")
+            } else {
+                $actions.Add("WARN could not set offboard attributes ($($offAttrs.Update.Keys -join ', ')): $om")
+            }
+        }
+    }
+    foreach ($s in $offAttrs.Skipped) {
+        $actions.Add("WARN offboard attribute '$s' has no Microsoft 365 equivalent — not set in the cloud (it is an on-prem/AD attribute)")
+    }
+    foreach ($c in $offAttrs.Collisions) {
+        $actions.Add("WARN offboard attribute rule collision: $c")
+    }
+    # A `manager` in offboardAttributes is lifted into .Manager (same as onboard), but nothing on the
+    # offboard lane consumes it — offboarding CLEARS the manager link (below), it doesn't set one.
+    # Report it rather than let it vanish with no trace (the exact silence class FR #104 was filed about).
+    if ($offAttrs.Manager) {
+        $actions.Add("WARN offboard attribute 'manager' is not applied on the offboard lane (offboarding clears the manager link; it does not set one): $($offAttrs.Manager)")
+    }
 
     # 1. Evidence FIRST — snapshot group memberships before we remove anything ----
     $memberships = @(Get-MgUserMemberOf -UserId $userId -All -ErrorAction SilentlyContinue) |
