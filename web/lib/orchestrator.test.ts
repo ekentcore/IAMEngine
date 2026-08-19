@@ -205,6 +205,30 @@ test("ad-consistency-check is onboard-only and needs AD + cloud", () => {
   assert.equal(planCase(adOnly, "onboard", {}).some((j) => j.systemKey === "ad-consistency-check"), false);
 });
 
+// ── ad-standalone: neither synthetic hybrid step applies (FR #107) ───────────────────────────────
+test("ad-standalone onboard does NOT inject ad-email-writeback", () => {
+  // Standalone means AD and 365 are separate accounts on purpose, so stamping the CLOUD mailbox
+  // address into on-prem `mail` is wrong (FR #107).
+  const systems = [sys({ systemKey: "active-directory" }), sys({ systemKey: "m365", dependsOn: ["active-directory"] })];
+  const keys = planCase(systems, "onboard", {}, undefined, undefined, undefined, undefined, "ad_standalone").map((j) => j.systemKey);
+  assert.ok(!keys.includes("ad-email-writeback"), keys.join(","));
+});
+
+test("ad-standalone onboard does NOT inject ad-consistency-check", () => {
+  // The check compares the AD source anchor to an Entra object that is deliberately unrelated here,
+  // so it can only ever report a mismatch.
+  const systems = [sys({ systemKey: "active-directory" }), sys({ systemKey: "m365", dependsOn: ["active-directory"] })];
+  const keys = planCase(systems, "onboard", {}, undefined, undefined, undefined, undefined, "ad_standalone").map((j) => j.systemKey);
+  assert.ok(!keys.includes("ad-consistency-check"), keys.join(","));
+});
+
+test("ad_synced onboard STILL injects both (regression guard)", () => {
+  const systems = [sys({ systemKey: "active-directory" }), sys({ systemKey: "m365", dependsOn: ["active-directory"] })];
+  const keys = planCase(systems, "onboard", {}, undefined, undefined, undefined, undefined, "ad_synced").map((j) => j.systemKey);
+  assert.ok(keys.includes("ad-email-writeback"), keys.join(","));
+  assert.ok(keys.includes("ad-consistency-check"), keys.join(","));
+});
+
 test("a system whose every secret is 'not needed' plans as a manual step, not a failing api job", () => {
   const systems = [
     sys({ systemKey: "duo", secretNames: ["duo"], offboardWhen: "always" }),

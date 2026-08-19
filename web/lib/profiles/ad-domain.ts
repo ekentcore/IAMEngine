@@ -17,8 +17,10 @@
 import { deriveIdentity } from "../servicenow/intake-mapper";
 
 // The profile schema spells it "ad-standalone"; the Prisma enum is "ad_standalone". Accept both so a
-// profile-sourced value and a database-sourced value behave identically.
-const STANDALONE = new Set(["ad_standalone", "ad-standalone"]);
+// profile-sourced value and a database-sourced value behave identically. Exported so other call
+// sites (e.g. orchestrator.ts's synthetic-step guards) share this one definition instead of
+// re-deriving their own literal comparison that could drift from this one.
+export const STANDALONE = new Set(["ad_standalone", "ad-standalone"]);
 
 export function adUpnFor(
   payload: Record<string, unknown>,
