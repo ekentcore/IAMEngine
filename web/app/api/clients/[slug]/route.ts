@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
+import { STANDALONE } from "@/lib/profiles/ad-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
 import { refreshClientName } from "@/lib/clients/refresh-name";
 import { refreshClientLocations } from "@/lib/clients/refresh-locations";
@@ -192,6 +193,20 @@ export async function PATCH(req: Request, { params }: Ctx) {
   // the same way an invalid emailDomain does above.
   if (body.action === "set-ad-domain") {
     const raw = typeof body.domain === "string" ? body.domain : "";
+    // Standalone clients ONLY, enforced here and not merely hidden in the UI. Setting this stamps the
+    // usernamePattern edited-field marker, and prisma/seed.ts protects `identity` at COLUMN
+    // granularity — so a value typed on an ad-synced client would freeze that client's
+    // usernamePatterns, password policy and directorySync against every future profile reseed, while
+    // the runtime correctly ignored the domain itself. A silent, permanent side effect from a field
+    // that does nothing for that client.
+    const target = await db.client.findUnique({ where: { slug: params.slug }, select: { backbone: true } });
+    if (!target) return NextResponse.json({ error: "unknown client" }, { status: 404 });
+    if (!STANDALONE.has(String(target.backbone ?? ""))) {
+      return NextResponse.json(
+        { error: `an AD domain applies only to ad-standalone clients — this client's backbone is ${target.backbone ?? "not modeled"}` },
+        { status: 422 }
+      );
+    }
     let client;
     try {
       client = await repo.setAdDomain(params.slug, raw);

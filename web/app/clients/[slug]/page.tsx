@@ -20,6 +20,7 @@ import { SyncSystemsButton } from "../_components/sync-systems-button";
 import { AddDirectorySyncButton } from "../_components/add-directory-sync-button";
 import { EmailDomainsEditor } from "../_components/email-domains-editor";
 import { AdDomainEditor } from "../_components/ad-domain-editor";
+import { STANDALONE } from "@/lib/profiles/ad-domain";
 import { SetupStageChips } from "../_components/setup-stage-chips";
 import { RunbookView, type RunbookItemVM } from "../_components/runbook-view";
 import { RunbookEditor } from "../_components/runbook-editor";
@@ -343,7 +344,14 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       {/* Multi-domain clients: which email domains cases may onboard under (default = curated
           emailDomain). Pullable from the M365 tenant; the case page offers these before running. */}
       <EmailDomainsEditor slug={client.slug} domains={client.domains ?? []} defaultDomain={client.emailDomain ?? client.primaryDomain ?? null} />
-      <AdDomainEditor slug={client.slug} initial={adDomain} />
+      {/* Standalone clients ONLY. Rendered everywhere, this invited an operator on an ad-synced
+          client to set a value the runtime correctly ignores — while still stamping the
+          usernamePattern edited-field marker, which freezes that client's WHOLE identity blob
+          (usernamePatterns, password, directorySync) against future profile reseeds. The label
+          said "standalone only"; a label is advice, not a guard. */}
+      {STANDALONE.has(String(client.backbone ?? "")) && (
+        <AdDomainEditor slug={client.slug} initial={adDomain} />
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h2 style={{ marginRight: "auto" }}>Systems</h2>
