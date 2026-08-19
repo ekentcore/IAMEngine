@@ -45,3 +45,29 @@ export function adUpnFor(
     : [];
   return { upn, fallbacks };
 }
+
+// A permissive DNS-name check — accepts a `.local` namespace (core2187's AD is syee.local) as well
+// as a real public domain. Not a full RFC 1035 validator; just enough to reject obvious garbage
+// ("not a domain", a URL, a path) before it lands in the identity blob.
+const DNS_NAME =
+  /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+// Set (or clear) `identity.adDomain` for FR #83: "there's no way to specify that". `identity` also
+// carries usernamePatterns, password, and whatever else a profile put there — this MERGES the one
+// key in, so a client's other identity config survives the edit untouched. A blank/whitespace value
+// CLEARS the field (deletes the key) rather than storing "". Throws (message mentions "domain") when
+// the value doesn't look like a DNS name — the route turns that into a 422.
+export function mergeAdDomain(identity: unknown, value: string): Record<string, unknown> {
+  const base: Record<string, unknown> =
+    identity && typeof identity === "object" && !Array.isArray(identity) ? { ...(identity as Record<string, unknown>) } : {};
+  const trimmed = value.trim();
+  if (!trimmed) {
+    delete base.adDomain;
+    return base;
+  }
+  if (!DNS_NAME.test(trimmed)) {
+    throw new Error(`adDomain must look like a domain name (e.g. syee.local): "${value}"`);
+  }
+  base.adDomain = trimmed;
+  return base;
+}

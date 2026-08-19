@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { adUpnFor } from "../profiles/ad-domain";
 import { ALWAYS_ON_PREM_SYSTEMS } from "../cases/case-secrets";
 
 // The override applied at dispatch, extracted so it is testable without a database.

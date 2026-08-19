@@ -10,6 +10,7 @@ import { resolveActor, type ActorInput } from "../auth/actor";
 import type { AuditEntry, ClientDetail, ClientListItem, CreateClientInput, EditableSystem } from "./types";
 import { computeClientReadiness, type ConnTestState, type ClientReadiness, type RightsState } from "./readiness";
 import { parseRights, summarizeRights } from "../jobs/conn-test-logic";
+import { mergeAdDomain } from "../profiles/ad-domain";
 
 // Roll a stored ConnectionTest.rights JSON up to the RightsState the readiness vector consumes.
 function rightsStateOf(raw: unknown): RightsState {
@@ -553,6 +554,21 @@ export function makeClientRepository(db: PrismaClient) {
       // [0] = primary username; [1..] = conflict fallbacks (used when the primary UPN is taken).
       const patterns = [`${localPattern}@{domain}`, ...fallbacks.filter(Boolean).map((f) => `${f}@{domain}`)];
       const next = { ...identity, usernamePatterns: patterns };
+      return db.client.update({
+        where: { slug },
+        data: { identity: next as Prisma.InputJsonValue, editedFields: await addEdited(db, slug, "usernamePattern") },
+      });
+    },
+
+    // FR #83/#107: the AD domain an ad-standalone client's on-prem namespace uses when it differs
+    // from the mail domain (identity.adDomain — see lib/profiles/ad-domain.ts). mergeAdDomain does
+    // the actual merge/validate/clear so it stays testable without a database; this just reads the
+    // current identity blob and writes the merged result back. Reuses the "usernamePattern" edited
+    // marker (not a new one) because that is the flag that already protects the WHOLE identity
+    // column from being overwritten by a reseed — see stripEdited in prisma/seed.ts.
+    async setAdDomain(slug: string, adDomain: string) {
+      const c = await db.client.findUnique({ where: { slug }, select: { identity: true } });
+      const next = mergeAdDomain(c?.identity ?? null, adDomain);
       return db.client.update({
         where: { slug },
         data: { identity: next as Prisma.InputJsonValue, editedFields: await addEdited(db, slug, "usernamePattern") },
