@@ -277,6 +277,36 @@ Describe 'Invoke-CtgM365Onboarding' {
         Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Department -eq 'Engineering' -and $OfficeLocation -eq 'Boston' -and $StreetAddress -eq '1 Main St' } -Times 1
     }
 
+    It 'applies Config.attributes on the cloud lane, translating LDAP names (FR #104)' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ title='Analyst'; company='BEV'; physicalDeliveryOfficeName='Boston' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter {
+            $JobTitle -eq 'Analyst' -and $CompanyName -eq 'BEV' -and $OfficeLocation -eq 'Boston'
+        } -Times 1
+    }
+
+    It 'lets the rule win over the ticket, and says so on the case' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US'; JobTitle='Engineer' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $JobTitle -eq 'Analyst' } -Times 1
+        ($r.Actions -join ' ') | Should -Match "JobTitle.*Analyst.*rule.*Engineer.*ticket"
+    }
+
+    It 'names an attribute Graph cannot write instead of dropping it silently' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ extensionAttribute4='X'; title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd
+        ($r.Actions -join ' ') | Should -Match 'extensionAttribute4'
+    }
+
     It 'sets the manager, resolving a SNOW "First (Nick) Last" to the 365 "Nick Last"' {
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
             param($UserId, $Filter)
@@ -302,6 +332,31 @@ Describe 'Invoke-CtgM365Onboarding' {
         $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
         Invoke-CtgM365Onboarding -User $u -Config ([pscustomobject]@{ licenses = @() }) -InitialPassword $pwd | Out-Null
         Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -ParameterFilter { $BodyParameter['@odata.id'] -like '*mgr-9' } -Times 1
+    }
+
+    It 'uses a rule manager when the ticket did not name one' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($Filter -like "*Jim Goodmiller*") { return [pscustomobject]@{ Id = 'mgr-1'; DisplayName = 'Jim Goodmiller' } }
+            return $null
+        }
+        Mock Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ manager='Jim Goodmiller' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Set-MgUserManagerByRef -ModuleName Coretelligent.M365 -Times 1
+    }
+
+    It 'never sends manager to Update-MgUser (Graph types it as a relationship)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { return $null }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; FirstName='Jane'; LastName='Doe'; UsageLocation='US' }
+        $cfg = [pscustomobject]@{ licenses = @(); attributes = @{ manager='Jim Goodmiller'; title='Analyst' } }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Invoke-CtgM365Onboarding -User $u -Config $cfg -InitialPassword $pwd | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $null -ne $Manager } -Times 0 -Exactly
     }
 
     It 'skips a DYNAMIC group (membership is rule-computed) without adding or warning' {
@@ -367,6 +422,29 @@ Describe 'Invoke-CtgM365Offboarding' {
         Mock Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -ModuleName Coretelligent.M365 -MockWith { }
         Mock Get-MgUserManager -ModuleName Coretelligent.M365 -MockWith { $null }   # no manager set by default
         Mock Remove-MgUserManagerByRef -ModuleName Coretelligent.M365 -MockWith { }
+    }
+
+    It 'applies Config.offboardAttributes on the cloud lane' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName='jane.doe@x.com'; DisplayName='Jane Doe' }
+        $cfg = [pscustomobject]@{ offboardAttributes = @{ title='Departed'; company='BEV' } }
+        Invoke-CtgM365Offboarding -User $u -Config $cfg | Out-Null
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter {
+            $JobTitle -eq 'Departed' -and $CompanyName -eq 'BEV'
+        } -Times 1
+    }
+
+    # FR #104 finding 5: a `manager` in offboardAttributes is lifted into .Manager (same helper the
+    # onboard path uses), but nothing on the offboard lane consumes .Manager — offboarding CLEARS the
+    # manager link, it doesn't set one. Before this fix that manager value vanished with no trace.
+    It 'reports a manager named in offboardAttributes as not applied, instead of dropping it silently' {
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        $u = [pscustomobject]@{ UserPrincipalName='jane.doe@x.com'; DisplayName='Jane Doe' }
+        $cfg = [pscustomobject]@{ offboardAttributes = @{ manager='Jim Goodmiller'; title='Departed' } }
+        $r = Invoke-CtgM365Offboarding -User $u -Config $cfg
+        ($r.Actions -join ' ') | Should -Match "WARN offboard attribute 'manager' is not applied on the offboard lane.*Jim Goodmiller"
+        # The rest of the map still applies normally.
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $JobTitle -eq 'Departed' } -Times 1
     }
 
     It 'resolves the offboard target by display name when the case has no UPN' {
@@ -1866,5 +1944,151 @@ Describe 'Invoke-CtgM365Offboarding admin-account (-a) sweep' {
         $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config ([pscustomobject]@{ blockSignIn = $true }) -MailboxSizeGB 10
         ($r.Actions -join "`n") | Should -Not -Match 'admin account'
         Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly -ParameterFilter { $AccountEnabled -eq $false }
+    }
+}
+
+Describe 'ConvertTo-CtgGraphAttributeName' {
+    It 'translates the LDAP spellings operators actually use' {
+        InModuleScope Coretelligent.M365 {
+            ConvertTo-CtgGraphAttributeName -Name 'title'                      | Should -Be 'JobTitle'
+            ConvertTo-CtgGraphAttributeName -Name 'mobile'                     | Should -Be 'MobilePhone'
+            ConvertTo-CtgGraphAttributeName -Name 'company'                    | Should -Be 'CompanyName'
+            ConvertTo-CtgGraphAttributeName -Name 'physicalDeliveryOfficeName' | Should -Be 'OfficeLocation'
+            ConvertTo-CtgGraphAttributeName -Name 'telephoneNumber'            | Should -Be 'BusinessPhones'
+            ConvertTo-CtgGraphAttributeName -Name 'l'                          | Should -Be 'City'
+            ConvertTo-CtgGraphAttributeName -Name 'st'                         | Should -Be 'State'
+            ConvertTo-CtgGraphAttributeName -Name 'co'                         | Should -Be 'Country'
+        }
+    }
+
+    It 'passes valid Graph names through, case-insensitively' {
+        InModuleScope Coretelligent.M365 {
+            ConvertTo-CtgGraphAttributeName -Name 'department'   | Should -Be 'Department'
+            ConvertTo-CtgGraphAttributeName -Name 'streetAddress'| Should -Be 'StreetAddress'
+            ConvertTo-CtgGraphAttributeName -Name 'PostalCode'   | Should -Be 'PostalCode'
+            ConvertTo-CtgGraphAttributeName -Name 'jobtitle'     | Should -Be 'JobTitle'
+        }
+    }
+
+    It 'returns null for attributes with no writable Graph equivalent' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('extensionAttribute4','msDS-cloudExtensionAttribute1','proxyAddresses',
+                             'ipPhone','homePhone','description','mail','countryCode','usernamePattern')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -BeNullOrEmpty -Because "$n is not settable via Update-MgUser"
+            }
+        }
+    }
+
+    It 'maps every attribute Breakthrough Energy Ventures has configured' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('city','state','title','mobile','company','country',
+                             'department','postalCode','streetAddress','physicalDeliveryOfficeName')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -Not -BeNullOrEmpty -Because "core397 configured $n"
+            }
+        }
+    }
+
+    # FR #104 finding 4: these four ARE writable via Update-MgUser, but none appears in the
+    # intake-derived attribute map, so a rule naming one would be a brand-new, unreported identity
+    # write — and mailNickname rewrites can trigger an Exchange Online primary-SMTP recalculation on
+    # every re-run. A rule naming any of these must be reported as not-settable, not applied silently.
+    It 'refuses identity-affecting properties even though Update-MgUser accepts them' {
+        InModuleScope Coretelligent.M365 {
+            foreach ($n in @('displayname', 'givenname', 'surname', 'mailnickname')) {
+                ConvertTo-CtgGraphAttributeName -Name $n | Should -BeNullOrEmpty -Because "$n is an identity-affecting property with no reporting path"
+            }
+        }
+    }
+
+    It 'refuses the LDAP spelling of an identity property too (sn, not just surname)' {
+        InModuleScope Coretelligent.M365 {
+            # These maps are LDAP-dominated, so `sn` is the spelling a client is MORE likely to author
+            # than `surname`. Leaving it mapped would reopen the unreported identity write it closes.
+            ConvertTo-CtgGraphAttributeName -Name 'sn' | Should -BeNullOrEmpty -Because 'sn is the LDAP spelling of surname'
+            ConvertTo-CtgGraphAttributeName -Name 'SN' | Should -BeNullOrEmpty -Because 'the refusal is case-insensitive'
+        }
+    }
+}
+
+Describe 'Resolve-CtgM365AttributeUpdate' {
+    It 'builds a splattable Graph update from an LDAP-named map' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ title='Analyst'; company='BEV'; city='Boston' }
+            $r.Update['JobTitle']    | Should -Be 'Analyst'
+            $r.Update['CompanyName'] | Should -Be 'BEV'
+            $r.Update['City']        | Should -Be 'Boston'
+            $r.Update.Count          | Should -Be 3
+        }
+    }
+
+    It 'accepts a JSON-deserialized pscustomobject as well as a hashtable' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes ([pscustomobject]@{ title='Analyst' })
+            $r.Update['JobTitle'] | Should -Be 'Analyst'
+        }
+    }
+
+    It 'drops empty values and unresolved {token} strings' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ title=''; department='  '; city='{location.city}'; state='MA' }
+            $r.Update.Count    | Should -Be 1
+            $r.Update['State'] | Should -Be 'MA'
+        }
+    }
+
+    It 'lifts manager out of the map instead of sending it to Update-MgUser' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ manager='Jim Goodmiller'; title='Analyst' }
+            $r.Manager                     | Should -Be 'Jim Goodmiller'
+            $r.Update.ContainsKey('Manager') | Should -BeFalse
+            $r.Update['JobTitle']          | Should -Be 'Analyst'
+        }
+    }
+
+    It 'reports unmappable attributes by name rather than dropping them silently' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ extensionAttribute4='X'; proxyAddresses='smtp:a@b.com'; title='Analyst' }
+            $r.Skipped        | Should -Contain 'extensionAttribute4'
+            $r.Skipped        | Should -Contain 'proxyAddresses'
+            $r.Update.Count   | Should -Be 1
+        }
+    }
+
+    It 'wraps businessPhones in an array, because Graph types it as a collection' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ telephoneNumber='+1 555 0100' }
+            ,$r.Update['BusinessPhones'] | Should -BeOfType [System.Object[]]
+            $r.Update['BusinessPhones'][0] | Should -Be '+1 555 0100'
+        }
+    }
+
+    It 'returns an empty result for a null map' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes $null
+            $r.Update.Count  | Should -Be 0
+            $r.Manager       | Should -BeNullOrEmpty
+            @($r.Skipped).Count | Should -Be 0
+            @($r.Collisions).Count | Should -Be 0
+        }
+    }
+
+    # FR #104 finding 3: `c` (ISO-2 country code) and `co` (country name) both map to Graph's single
+    # Country field. profiles/coretelligent.json authors both together on real clients, so with two
+    # different values whichever key a hashtable/JSON enumerates last used to win with no trace at all.
+    It 'reports a collision when two source attributes map to the same Graph property with different values' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ co = 'United States'; c = 'US' }
+            $r.Update['Country']    | Should -Be 'US'   # 'c' sorts before 'co'; deterministic winner
+            $r.Collisions.Count     | Should -Be 1
+            $r.Collisions[0]        | Should -Match "'co' = 'United States' collides with 'c' = 'US'"
+        }
+    }
+
+    It 'does not report a collision when two source attributes map to the same Graph property with the SAME value' {
+        InModuleScope Coretelligent.M365 {
+            $r = Resolve-CtgM365AttributeUpdate -Attributes @{ co = 'US'; c = 'US' }
+            $r.Update['Country'] | Should -Be 'US'
+            @($r.Collisions).Count | Should -Be 0
+        }
     }
 }
