@@ -55,6 +55,10 @@
             }
           }
         },
+        "adDomain": {
+          "type": "string",
+          "description": "AD-STANDALONE ONLY: the on-prem AD DNS namespace / UPN suffix, when it differs from the mail domain (e.g. AD syee.local, mail olympuscosmetic.com). Sets the userPrincipalName the on-prem lane is handed; the cloud lane keeps emailDomain. Ignored unless backbone is ad-standalone — on an ad-synced client the two are the same by definition. Container/DN placement is NOT affected: the AD module resolves that live from the domain controller (Resolve-CtgAdDomain)."
+        },
         "password": {
           "type": "object",
           "additionalProperties": false,
