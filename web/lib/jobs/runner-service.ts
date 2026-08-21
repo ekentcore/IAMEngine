@@ -43,6 +43,7 @@ import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
+import { applyAdStandaloneUpn } from "./ad-standalone-upn";
 import { resolveActor, type ActorInput } from "../auth/actor";
 import { planTokenRefresh, planTokenConfirm } from "./agent-token-refresh";
 
@@ -1290,7 +1291,7 @@ export function makeRunnerService(db: PrismaClient) {
           j.systemKey === "exchange" && j.case.action === "offboard" && !casePayload.managerEmail
             ? managerByCase.get(j.caseRequestId)
             : undefined;
-        const payload =
+        const basePayload =
           j.systemKey === "ad-email-writeback"
             ? { ...casePayload, writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
             : j.systemKey === "ad-consistency-check"
@@ -1298,6 +1299,11 @@ export function makeRunnerService(db: PrismaClient) {
             : capturedManager
             ? { ...casePayload, managerEmail: capturedManager }
             : j.case.payload;
+        // AD-STANDALONE domain separation (FR #83/#107): on the on-prem lane, hand the AD-domain UPN
+        // instead of the mail-domain one. Wraps the chain above (not another arm of it) so
+        // ad-email-writeback / ad-consistency-check keep their own overrides AND get this one; a no-op
+        // for every client except a standalone one with identity.adDomain set.
+        const payload = applyAdStandaloneUpn(basePayload as Record<string, unknown>, j.systemKey, j.case.client);
         return {
           id: j.id,
           caseNumber: j.case.serviceNowCaseNumber ?? null,

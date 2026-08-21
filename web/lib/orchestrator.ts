@@ -2,6 +2,7 @@
 // See docs/DATA_MODEL.md ("Planning a case").
 import type { ClientSystem, Action, Mode } from "@prisma/client";
 import { OPTIONAL_SECRETS } from "./secrets/optional-secrets";
+import { STANDALONE } from "./profiles/ad-domain";
 
 // A step's INTENT — chiefly for offboarding. "disable" = reversible containment (lock the account,
 // isolate the device, revoke sessions); eventually safe to automate. "destructive" = actually deletes
@@ -129,18 +130,28 @@ export function planCase(
   // System keys to exclude from this plan regardless of onboardWhen (per-contact intake rules,
   // FR #0000019). Skipping active-directory also suppresses the synthetic ad-email-writeback /
   // ad-consistency-check steps, which only inject when active-directory is active.
-  skipSystems?: ReadonlySet<string>
+  skipSystems?: ReadonlySet<string>,
+  // The client's backbone (profile spelling "ad-standalone" or Prisma's "ad_standalone" — both
+  // accepted, see STANDALONE). Only consulted to suppress the two synthetic hybrid-only steps below
+  // for standalone clients; undefined means "not standalone", i.e. every caller's existing behaviour.
+  backbone?: string | null
 ): PlannedJob[] {
   const active = systems.filter(
     (s) => !skipSystems?.has(s.systemKey) && included(s, action, payload, personaSystems)
   );
+  // Standalone: AD and the cloud are two separate accounts for one person, managed independently —
+  // neither of the synthetic hybrid steps below makes sense there (FR #107).
+  const isAdStandalone = STANDALONE.has(String(backbone ?? ""));
   // Synthetic ONBOARD step: once the cloud mailbox exists, write the assigned email back into AD's
   // `mail` attribute. Applies to every AD-origin client (identity starts on-prem) automatically — no
   // per-client ClientSystem row or migration. It depends on the cloud consumers present (m365/exchange)
   // so it runs after them; the actual address is resolved + injected at dispatch time (runner-service
   // claim), since it isn't known until those run. Routed on-prem via ALWAYS_ON_PREM_SYSTEMS.
   const activeKeys = new Set(active.map((s) => s.systemKey));
-  if (action === "onboard" && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("exchange")) && !activeKeys.has("ad-email-writeback")) {
+  // NOT for ad-standalone: there, AD and the cloud are two separate accounts for one person, managed
+  // independently — so writing the CLOUD mailbox address into on-prem `mail` is wrong, not helpful
+  // (FR #107). Hybrid (ad_synced) is the case this step exists for.
+  if (action === "onboard" && !isAdStandalone && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("exchange")) && !activeKeys.has("ad-email-writeback")) {
     const base = active.find((s) => s.systemKey === "active-directory")!;
     active.push({
       ...base,
@@ -161,7 +172,10 @@ export function planCase(
   // matches the Entra immutableId — so a rehire / pre-existing cloud account LINKS instead of spawning
   // a duplicate. Detect + flag only (no auto-write). Runs on the client agent; the app injects the
   // Entra object's id/immutableId/sync state (from the m365 result) at dispatch time.
-  if (action === "onboard" && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("entra")) && !activeKeys.has("ad-consistency-check")) {
+  // NOT for ad-standalone: the on-prem object is not supposed to link to the cloud one, so an anchor
+  // comparison can only ever report a mismatch — noise that trains operators to ignore the warning
+  // where it does matter (FR #107).
+  if (action === "onboard" && !isAdStandalone && activeKeys.has("active-directory") && (activeKeys.has("m365") || activeKeys.has("entra")) && !activeKeys.has("ad-consistency-check")) {
     const base = active.find((s) => s.systemKey === "active-directory")!;
     active.push({
       ...base,

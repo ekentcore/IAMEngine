@@ -5,6 +5,7 @@
 export { entry as acceptedFailureCaseStatus } from "./accepted-failure-case-status";
 export { entry as adAmbientAuthFirst } from "./ad-ambient-auth-first";
 export { entry as adDcOptional } from "./ad-dc-optional";
+export { entry as adStandaloneDomainSeparation } from "./ad-standalone-domain-separation";
 export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
 export { entry as adSyncedGalHide } from "./ad-synced-gal-hide";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
@@ -130,6 +131,7 @@ export { entry as llmProviderAzureForm } from "./llm-provider-azure-form";
 export { entry as locationGroupsPickerPrinters } from "./location-groups-picker-printers";
 export { entry as m365AppAutoProvisionCore } from "./m365-app-auto-provision-core";
 export { entry as m365AppDelineaWriteback } from "./m365-app-delinea-writeback";
+export { entry as m365AttributeRules } from "./m365-attribute-rules";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
 export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
 export { entry as m365LicenseDependencySelfheal } from "./m365-license-dependency-selfheal";

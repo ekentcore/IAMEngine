@@ -86,7 +86,7 @@ export async function createAndPlanCase(
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
   const planned = resolvePlannedConfigs(client, payload, input.action,
     planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
-      new Set(client.notNeededSecrets), new Set(client.wiredOptionalSecrets), intakeRule?.skipSystems));
+      new Set(client.notNeededSecrets), new Set(client.wiredOptionalSecrets), intakeRule?.skipSystems, client.backbone));
   const status = deriveStatus(planned);
   const who = resolveActor(actor);
   const creator = { label: who.actor, userId: who.userId };

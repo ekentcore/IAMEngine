@@ -8,12 +8,14 @@ import { db } from "@/lib/db";
 import { makeClientRepository } from "@/lib/clients/repository";
 import { currentClientScope } from "@/lib/auth/client-scope";
 import { normalizeDomainInput } from "@/lib/clients/email-domain";
+import { STANDALONE } from "@/lib/profiles/ad-domain";
 import { hardRefreshClient } from "@/lib/clients/hard-refresh";
 import { refreshClientName } from "@/lib/clients/refresh-name";
 import { refreshClientLocations } from "@/lib/clients/refresh-locations";
 import { SnGatewayError } from "@/lib/servicenow/gateway";
 import { parseClientOverride } from "@/lib/notifications/types";
 import { applyLocationTargets } from "@/lib/profiles/location-targets";
+import { mergeAdDomain } from "@/lib/profiles/ad-domain";
 
 const BACKBONES = ["entra", "google", "ad_synced", "ad_standalone"];
 
@@ -179,6 +181,44 @@ export async function PATCH(req: Request, { params }: Ctx) {
       action: "client.email_domain.set",
       clientId: client.id,
       detail: { emailDomain: domain, locked: lock },
+    });
+    return NextResponse.json(client);
+  }
+
+  // FR #83/#107: the AD domain an ad-standalone client's on-prem namespace uses when it differs
+  // from its mail domain (e.g. AD syee.local, mail olympuscosmetic.com). Lives inside the identity
+  // Json blob alongside usernamePatterns/password/…, so repo.setAdDomain MERGES the one key in via
+  // mergeAdDomain rather than replacing identity wholesale. A blank value clears it; a value that
+  // doesn't look like a domain name throws (mergeAdDomain's message), which we turn into a 422 here
+  // the same way an invalid emailDomain does above.
+  if (body.action === "set-ad-domain") {
+    const raw = typeof body.domain === "string" ? body.domain : "";
+    // Standalone clients ONLY, enforced here and not merely hidden in the UI. Setting this stamps the
+    // usernamePattern edited-field marker, and prisma/seed.ts protects `identity` at COLUMN
+    // granularity — so a value typed on an ad-synced client would freeze that client's
+    // usernamePatterns, password policy and directorySync against every future profile reseed, while
+    // the runtime correctly ignored the domain itself. A silent, permanent side effect from a field
+    // that does nothing for that client.
+    const target = await db.client.findUnique({ where: { slug: params.slug }, select: { backbone: true } });
+    if (!target) return NextResponse.json({ error: "unknown client" }, { status: 404 });
+    if (!STANDALONE.has(String(target.backbone ?? ""))) {
+      return NextResponse.json(
+        { error: `an AD domain applies only to ad-standalone clients — this client's backbone is ${target.backbone ?? "not modeled"}` },
+        { status: 422 }
+      );
+    }
+    let client;
+    try {
+      client = await repo.setAdDomain(params.slug, raw);
+    } catch (e) {
+      return NextResponse.json({ error: (e as Error).message }, { status: 422 });
+    }
+    const adDomain = (client.identity as { adDomain?: unknown } | null)?.adDomain;
+    await repo.writeAudit({
+      actor: who.label, userId: who.userId,
+      action: "client.ad_domain.set",
+      clientId: client.id,
+      detail: { adDomain: typeof adDomain === "string" ? adDomain : null },
     });
     return NextResponse.json(client);
   }
