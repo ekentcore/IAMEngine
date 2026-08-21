@@ -35,8 +35,11 @@ already delivers `attributes` onto the m365/entra job config.
   informational skip rather than a warning; the `$hasVal` guard refuses empty values and unresolved
   `{token}` strings.
 - Runner module change ⇒ `runner/VERSION` bump and a runner deploy.
-- Test baseline is **2132 tests, 2126 pass, 6 fail** on `web/`; the six known failures are listed in
-  the spec and are not in scope. Runner tests run via `Invoke-Pester`.
+- Test baseline on THIS branch (cut from `origin/main`) is **2126 tests, 2120 pass, 6 fail** on
+  `web/`; the six known failures are listed in the spec and are not in scope. The spec quotes
+  2132/2126 because that run was taken on `fr-84-multiple-delegates`, which carries 6 extra tests
+  from FR #84's `plan-resolve.offboard.test.ts`; off main those are absent. Runner M365 suite
+  baseline is 149/149 via `Invoke-Pester` (Pester 6.0.1).
 
 ## Background: why a straight port of the AD pattern is wrong
 

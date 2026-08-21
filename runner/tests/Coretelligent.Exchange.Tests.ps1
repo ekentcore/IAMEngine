@@ -904,12 +904,11 @@ Describe 'ConvertFrom-CtgMailboxSize' {
     It 'reads the structured .Value.ToBytes() (a live EXO session)' {
         $size = [pscustomobject]@{ Value = [pscustomobject]@{ } }
         $size.Value | Add-Member -MemberType ScriptMethod -Name ToBytes -Value { 35127296 } # 33.5 MB
-        ConvertFrom-CtgMailboxSize $size | Should -Be 0.03
+        ConvertFrom-CtgMailboxSize $size | Should -Be 0.032714844
     }
     It 'recovers a unit-suffixed string with NO byte count — the UM0029906 shape' {
-        ConvertFrom-CtgMailboxSize '33.5 MB' | Should -Be 0.03
+        ConvertFrom-CtgMailboxSize '33.5 MB' | Should -Be 0.032714844
         ConvertFrom-CtgMailboxSize '1.2 GB'  | Should -Be 1.2
-        ConvertFrom-CtgMailboxSize '512 KB'  | Should -Be 0
         ConvertFrom-CtgMailboxSize '2 TB'    | Should -Be 2048
     }
     It 'a 33 MB mailbox is UNDER the 50 GB cap (the whole point — convert must be offered)' {
@@ -919,6 +918,42 @@ Describe 'ConvertFrom-CtgMailboxSize' {
         ConvertFrom-CtgMailboxSize 'Unlimited' | Should -BeNullOrEmpty
         ConvertFrom-CtgMailboxSize ''          | Should -BeNullOrEmpty
         ConvertFrom-CtgMailboxSize $null       | Should -BeNullOrEmpty
+    }
+    # FR #85. At two decimal places every mailbox under ~5 MB collapsed to exactly 0.00 GB, and 0 is a
+    # MEANINGFUL reading everywhere downstream: "known empty, the cheapest thing there is to convert".
+    # A 512 KB mailbox with real mail in it was therefore indistinguishable from an empty one. This
+    # test previously asserted `'512 KB' | Should -Be 0` — it pinned the bug.
+    It 'a small but NON-EMPTY mailbox does not read as zero' {
+        ConvertFrom-CtgMailboxSize '512 KB' | Should -Not -Be 0
+        (ConvertFrom-CtgMailboxSize '512 KB') -gt 0 | Should -BeTrue
+        ConvertFrom-CtgMailboxSize '1 MB'   | Should -Not -Be 0
+        ConvertFrom-CtgMailboxSize '1 KB'   | Should -Not -Be 0
+        ConvertFrom-CtgMailboxSize '4096 (4,096 bytes)' | Should -Not -Be 0
+    }
+    It 'a genuinely EMPTY mailbox still reads as exactly zero' {
+        ConvertFrom-CtgMailboxSize '0 GB (0 bytes)' | Should -Be 0
+        ConvertFrom-CtgMailboxSize '0 B'            | Should -Be 0
+    }
+    It 'a small mailbox is still under the cap, so convert is still offered' {
+        (ConvertFrom-CtgMailboxSize '512 KB') -lt 50 | Should -BeTrue
+    }
+}
+
+Describe 'Format-CtgMailboxSize' {
+    # "0.000488 GB" is technically true and tells an operator nothing. A size is only useful on a case
+    # note when the unit matches the magnitude — this is what the requestor actually sees.
+    It 'renders sub-gigabyte sizes in a unit a human reads' {
+        Format-CtgMailboxSize (ConvertFrom-CtgMailboxSize '512 KB') | Should -Be '512 KB'
+        Format-CtgMailboxSize (ConvertFrom-CtgMailboxSize '33.5 MB') | Should -Match '^33\.5 MB$'
+        Format-CtgMailboxSize (ConvertFrom-CtgMailboxSize '1.2 GB')  | Should -Be '1.2 GB'
+        Format-CtgMailboxSize (ConvertFrom-CtgMailboxSize '75 GB (80,530,636,800 bytes)') | Should -Be '75 GB'
+    }
+    It 'says "unknown" for an unreadable size — never a number' {
+        Format-CtgMailboxSize $null | Should -Be 'unknown'
+    }
+    It 'distinguishes a genuinely empty mailbox from a tiny one' {
+        Format-CtgMailboxSize 0 | Should -Be '0 (empty)'
+        Format-CtgMailboxSize (ConvertFrom-CtgMailboxSize '1 KB') | Should -Not -Be '0 (empty)'
     }
 }
 
@@ -931,13 +966,51 @@ Describe 'Invoke-CtgExchangeOffboarding convert safety' {
         Mock Set-CASMailbox -ModuleName Coretelligent.Exchange -MockWith { }
     }
 
-    It 'does NOT convert when the mailbox size is unknown — an unreadable size is not a small one' {
+    # FR #85 — POLICY REVERSAL, requested explicitly by the requestor after the risk was put to them.
+    # This test used to assert the opposite ("does NOT convert when the mailbox size is unknown — an
+    # unreadable size is not a small one"). An unreadable size is now treated as 0 so the offboard
+    # completes and moves forward rather than stalling on a transient EXO read failure.
+    #
+    # The accepted cost, stated here so it is never rediscovered by accident: a LARGE mailbox whose
+    # size read fails twice is now converted to shared and stripped of its licence, and Microsoft caps
+    # an unlicensed shared mailbox at 50 GB — past that the mailbox is locked and its mail
+    # inaccessible. The retry below is what makes that unlikely; the warning is what makes it findable.
+    It 'treats an unknown size as 0 and converts anyway — by operator policy (FR #85)' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { $null }
+        Mock Start-Sleep -ModuleName Coretelligent.Exchange -MockWith { }
         $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
         $r = Invoke-CtgExchangeOffboarding -User $script:user -Config $config
-        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 0 -Exactly -ParameterFilter { $Type -eq 'Shared' }
-        ($r.Actions -join ' ') | Should -Match 'WARN mailbox size UNKNOWN'
-        ($r.Actions -join ' ') | Should -Match 'WARN mailbox NOT converted'
+        Should -Invoke Set-Mailbox -ModuleName Coretelligent.Exchange -Times 1 -Exactly -ParameterFilter { $Type -eq 'Shared' }
+        ($r.Actions -join ' ') | Should -Match 'WARN mailbox size UNKNOWN after a retry'
+        ($r.Actions -join ' ') | Should -Match 'Proceeding as if the mailbox were EMPTY'
+        # the assumption must name its own worst case, on the case and in the work note
+        ($r.Actions -join ' ') | Should -Match '50 GB unlicensed-shared cap'
+        $r.MailboxSizeGB | Should -Be 0
+    }
+
+    It 'retries the size read once before assuming anything — a throttled read is usually transient' {
+        $script:calls = 0
+        Mock Start-Sleep -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith {
+            $script:calls++
+            if ($script:calls -eq 1) { return $null }          # first read throttles…
+            [pscustomobject]@{ TotalItemSize = '2 GB (2,147,483,648 bytes)' }  # …second succeeds
+        }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config $config
+        $r.MailboxSizeGB | Should -Be 2
+        ($r.Actions -join ' ') | Should -Match 'succeeded on retry'
+        # a recovered read must NOT leave the scary assumption note behind
+        ($r.Actions -join ' ') | Should -Not -Match 'Proceeding as if the mailbox were EMPTY'
+    }
+
+    It 'a small but non-empty mailbox reports a readable size, not "0 GB"' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '512 KB (524,288 bytes)' } }
+        $config = [pscustomobject]@{ convertToShared = [pscustomobject]@{ skipIfMailboxOverGB = 50 } }
+        $r = Invoke-CtgExchangeOffboarding -User $script:user -Config $config
+        ($r.Actions -join ' ') | Should -Match 'mailbox size: 512 KB'
+        ($r.Actions -join ' ') | Should -Not -Match 'mailbox size: 0'
+        $r.MailboxSizeGB | Should -Not -Be 0
     }
 
     It 'does NOT convert when the profile says value:false' {

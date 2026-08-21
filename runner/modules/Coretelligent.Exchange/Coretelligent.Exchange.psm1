@@ -288,6 +288,14 @@ function Get-CtgMailboxSizeGB {
 #   1. .Value.ToBytes()  — the structured ByteQuantifiedSize (a live EXO session); exact, FR #20's `.value`
 #   2. "(… bytes)"       — the string form's exact byte count, when present
 #   3. "33.5 MB"         — a unit-suffixed string with no byte count (a deserialized remote session)
+#
+# PRECISION (FR #0000085). All three paths round to NINE decimal places, not two. At two, every mailbox
+# under about 5 MB collapsed to exactly 0.00 GB — and 0 is a meaningful reading everywhere downstream:
+# it means "known empty, the cheapest thing there is to convert". A 512 KB mailbox with real mail in it
+# was therefore indistinguishable from an empty one, which is precisely what the request reported. Six
+# places resolves to the single byte, so anything a person would call "not empty" reads as not empty,
+# and a KB/MB round-trip back out for display lands on the number that went in.
+# A genuinely empty mailbox still returns exactly 0, and an unreadable one still returns $null.
 function ConvertFrom-CtgMailboxSize {
     param($TotalItemSize)
     if ($null -eq $TotalItemSize) { return $null }
@@ -296,13 +304,13 @@ function ConvertFrom-CtgMailboxSize {
     try {
         $v = $TotalItemSize.Value
         if ($null -ne $v -and ($v.PSObject.Methods.Name -contains 'ToBytes')) {
-            return [math]::Round([double]$v.ToBytes() / 1GB, 2)
+            return [math]::Round([double]$v.ToBytes() / 1GB, 9)
         }
     } catch { }
     $s = [string]$TotalItemSize
     # 2. Exact bytes in the parenthetical: "33.5 MB (35,127,296 bytes)".
     $m = [regex]::Match($s, '([\d,]+)\s*bytes')
-    if ($m.Success) { return [math]::Round([double]($m.Groups[1].Value -replace ',', '') / 1GB, 2) }
+    if ($m.Success) { return [math]::Round([double]($m.Groups[1].Value -replace ',', '') / 1GB, 9) }
     # 3. Unit-suffixed with no byte count: "33.5 MB", "1.2 GB", "512 KB", "0 B".
     $m = [regex]::Match($s, '(?i)([\d.]+)\s*(TB|GB|MB|KB|B)\b')
     if ($m.Success) {
@@ -310,9 +318,24 @@ function ConvertFrom-CtgMailboxSize {
         $factor = switch ($m.Groups[2].Value.ToUpper()) {
             'TB' { 1024 } 'GB' { 1 } 'MB' { 1 / 1024 } 'KB' { 1 / 1048576 } 'B' { 1 / 1073741824 } default { $null }
         }
-        if ($null -ne $factor) { return [math]::Round($n * $factor, 2) }
+        if ($null -ne $factor) { return [math]::Round($n * $factor, 9) }
     }
     return $null
+}
+
+# A mailbox size a human can read. "0.000488 GB" is technically the truth and tells an operator
+# nothing; a size is only useful on a case note if the unit matches the magnitude. Sub-gigabyte sizes
+# render in MB (or KB below a megabyte), so the small-but-not-empty mailbox this whole change is about
+# reports as "512 KB" rather than a row of zeroes. $null stays the word "unknown" — never a number.
+function Format-CtgMailboxSize {
+    param([System.Nullable[double]]$SizeGB)
+    if ($null -eq $SizeGB) { return 'unknown' }
+    if ($SizeGB -ge 1) { return ('{0} GB' -f [math]::Round($SizeGB, 2)) }
+    $mb = $SizeGB * 1024
+    if ($mb -ge 1) { return ('{0} MB' -f [math]::Round($mb, 2)) }
+    $kb = $SizeGB * 1048576
+    if ($kb -ge 0.01) { return ('{0} KB' -f [math]::Round($kb, 2)) }
+    return '0 (empty)'
 }
 
 # Does this client's config actually ask for a convert-to-shared?
@@ -884,10 +907,30 @@ function Invoke-CtgExchangeOffboarding {
     if ($resolved.DisplayName) { $actions.Add("resolved offboard target by display name '$($resolved.DisplayName)' -> $upn"); Write-CtgStep "resolved '$($resolved.DisplayName)' -> '$upn'" }
     Write-CtgStep "running: Get-MailboxStatistics -Identity '$upn' (mailbox size)"
     $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
-    # $null = the read failed or didn't parse. Say so plainly rather than printing "0 GB", which reads
-    # as a fact and is exactly what the 50 GB guards below (and the licence gate) key off.
-    if ($null -eq $sizeGB) { $actions.Add("WARN mailbox size UNKNOWN — Get-MailboxStatistics returned nothing or an unparseable size. Treating it as over threshold: the mailbox is not converted and the licence stays.") }
-    else { $actions.Add("mailbox size: $sizeGB GB") }
+    # A failed size read is usually TRANSIENT — EXO throttling, a dropped session, a slow statistics
+    # call — so ask a second time before concluding anything from it. One retry, because the assumption
+    # that follows a second failure is consequential enough to be worth a few seconds.
+    if ($null -eq $sizeGB) {
+        Write-CtgStep "mailbox size came back unreadable — retrying once (EXO throttling is usually transient)"
+        Start-Sleep -Seconds 5
+        $sizeGB = Get-CtgMailboxSizeGB -Identity $upn
+        if ($null -ne $sizeGB) { $actions.Add("mailbox size read failed once and succeeded on retry") }
+    }
+    if ($null -eq $sizeGB) {
+        # OPERATOR DECISION (FR #0000085, requested explicitly): an unreadable size is treated as 0 —
+        # i.e. as an empty mailbox — so the offboard completes the conversion and moves forward instead
+        # of stopping. This REVERSES the previous guard, which treated unknown as over-threshold and
+        # kept the licence, and the reversal has a real failure mode that must stay on the record:
+        # a large mailbox whose size read fails twice will now be converted to shared AND stripped of
+        # its licence, and Microsoft caps an unlicensed shared mailbox at 50 GB — past that the mailbox
+        # is locked and its mail inaccessible. That is the accepted trade for never stalling on a
+        # transient read failure. It is recorded loudly here, on the case, and in the work note, so a
+        # mailbox this assumption damages can always be traced back to this line.
+        $sizeGB = 0
+        $actions.Add("WARN mailbox size UNKNOWN after a retry — Get-MailboxStatistics returned nothing or an unparseable size. Proceeding as if the mailbox were EMPTY (0 GB) by operator policy: the conversion and the licence removal go ahead. If this mailbox was in fact over the 50 GB unlicensed-shared cap, it is now locked and its mail inaccessible — check it.")
+        Write-CtgStep "size still unreadable — assuming 0 GB by operator policy and continuing"
+    }
+    else { $actions.Add("mailbox size: $(Format-CtgMailboxSize $sizeGB)") }
 
     # Does the target have an EXO MAILBOX, or is it a MailUser (mailbox lives ON-PREM, EXO only holds a
     # mail-enabled pointer)? The EXO mailbox cmdlets below (Set-CASMailbox, Add/Get-MailboxPermission,
@@ -1562,4 +1605,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Format-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
