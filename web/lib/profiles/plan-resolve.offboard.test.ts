@@ -104,3 +104,50 @@ test("an out-of-office message is never injected on an ONBOARD", () => {
   const out = resolvePlannedConfigs({}, { oooMessage: "I have left" }, "onboard", [exchange]);
   assert.equal((out[0].config as Record<string, unknown>).autoReply, undefined);
 });
+
+// FR #84: FR #7 built the delegate grant for exactly ONE person — a single string on the payload and a
+// single string on the job config. Multiple delegates are now supported end to end.
+//
+// WIRE COMPATIBILITY is deliberate: one delegate still travels as a plain STRING, byte-identical to
+// what shipped before, so a runner that hasn't picked up the new module yet behaves exactly as it does
+// today. The array shape only appears when there is genuinely more than one name — i.e. the new
+// behaviour engages only when the new feature is actually used.
+test("a single delegate still travels as a plain string (old runners unaffected)", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: "Peter Hegland" }, "offboard", [exchange]);
+  assert.equal((out[0].config as Record<string, unknown>).grantFullAccessTo, "Peter Hegland");
+});
+
+test("several delegates travel as an array, in ticket order", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: ["Peter Hegland", "Dev Gani"] }, "offboard", [exchange]);
+  assert.deepEqual((out[0].config as Record<string, unknown>).grantFullAccessTo, ["Peter Hegland", "Dev Gani"]);
+});
+
+test("a one-element array collapses back to a string — the wire shape follows the COUNT, not the input type", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: ["Peter Hegland"] }, "offboard", [exchange]);
+  assert.equal((out[0].config as Record<string, unknown>).grantFullAccessTo, "Peter Hegland");
+});
+
+test("blanks and duplicates are dropped before anything is planned", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  // A duplicate would make the runner grant the same person twice and log it twice; "" and "  " are
+  // what an emptied ServiceNow row looks like.
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: ["Peter Hegland", "  ", "peter hegland", "", "Dev Gani"] }, "offboard", [exchange]);
+  assert.deepEqual((out[0].config as Record<string, unknown>).grantFullAccessTo, ["Peter Hegland", "Dev Gani"]);
+});
+
+test("an all-blank delegate list plans no grant at all", () => {
+  const exchange: PlannedJob = { systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  for (const payload of [{ provideMailboxAccessTo: [] }, { provideMailboxAccessTo: ["", "   "] }]) {
+    const out = resolvePlannedConfigs({}, payload, "offboard", [exchange]);
+    assert.equal((out[0].config as Record<string, unknown>).grantFullAccessTo, undefined, JSON.stringify(payload));
+  }
+});
+
+test("every delegate also reaches the OneDrive grant on the m365 job", () => {
+  const m365: PlannedJob = { systemKey: "m365", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
+  const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: ["Peter Hegland", "Dev Gani"] }, "offboard", [m365]);
+  assert.deepEqual((out[0].config as Record<string, unknown>).oneDriveGrantAccessTo, ["Peter Hegland", "Dev Gani"]);
+});

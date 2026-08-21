@@ -2008,7 +2008,12 @@ function Invoke-CtgM365Offboarding {
     # Both FAIL-SOFT: a OneDrive problem must never abort the containment above (sign-in blocked,
     # sessions revoked, groups removed). Needs the Files.ReadWrite.All app role — the warning names
     # it when Graph refuses.
-    $odDelegate = [string](Get-CtgProp $Config 'oneDriveGrantAccessTo')   # per-case, from the intake delegate
+    # Per-case, from the intake delegate. FR #0000084: a STRING for one delegate (unchanged) or an
+    # ARRAY when the ticket named several; @(...) normalises both to a list so there is one code path.
+    # The OUTER @(...) is load-bearing: a Where-Object that matches one item returns a scalar and one
+    # that matches none returns $null, and .Count on $null throws. Wrapping guarantees a real array.
+    $odDelegates = @(@(Get-CtgProp $Config 'oneDriveGrantAccessTo') | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+    $odDelegate = if ($odDelegates.Count) { $odDelegates[0] } else { $null }   # kept for the "is there any work?" test below
     $oneDrive = Get-CtgProp $Config 'oneDriveBackup'                       # profile-static { target }
     $odRetryAfterMinutes = $null   # set when archive copies are in flight — the app re-runs to confirm
     if ($odDelegate -or $oneDrive) {
@@ -2023,8 +2028,10 @@ function Invoke-CtgM365Offboarding {
         if (-not $drive -and -not $driveReadFailed) {
             $actions.Add("no OneDrive provisioned for $upn — nothing to grant or archive")
         }
-        # 4a. Grant the case-requested delegate access to the whole OneDrive (FR #8).
-        if ($drive -and $odDelegate) {
+        # 4a. Grant the case-requested delegate(s) access to the whole OneDrive (FR #8, widened by #84).
+        # Each delegate is INDEPENDENT: an unresolvable name warns about that name and the loop carries
+        # on, so one bad row can't cost the others their access.
+        foreach ($odDelegate in ($(if ($drive) { $odDelegates } else { @() }))) {
             # Resolve-CtgEntraUser handles BOTH forms (email/UPN exact, else display-name variants)
             # and returns the Graph default property set — which includes Mail/UserPrincipalName.
             # (Resolve-CtgM365User's default -Property selects neither, which read as "not found".)

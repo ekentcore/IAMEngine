@@ -1125,8 +1125,18 @@ function Invoke-CtgExchangeOffboarding {
     # captured as payload.provideMailboxAccessTo and planned onto this job as
     # config.grantFullAccessTo. Distinct from the profile-static manager delegate above (1b): this
     # one is per-case, whoever the requestor named, and used to be silently dropped.
-    $reqDelegate = [string](Get-CtgProp $Config 'grantFullAccessTo')
-    if ($reqDelegate) {
+    #
+    # FR #0000084 widened this from one person to several. config.grantFullAccessTo is a STRING for a
+    # single delegate (unchanged, so this reads exactly as before for the common case) or an ARRAY when
+    # the ticket named more than one. @(...) normalises both to a list, so there is one code path.
+    #
+    # Each delegate is INDEPENDENT: a name that can't be resolved, or a grant that fails, warns about
+    # THAT name and the loop carries on. One unresolvable person must never cost the others their
+    # access — that would turn a typo in one row into silent data-access loss for everyone else named.
+    # The OUTER @(...) is load-bearing: a Where-Object matching one item returns a scalar and one
+    # matching none returns $null, so without it this is not reliably a list.
+    $reqDelegates = @(@(Get-CtgProp $Config 'grantFullAccessTo') | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+    foreach ($reqDelegate in $reqDelegates) {
         if (-not $hasExoMailbox) {
             $actions.Add("WARN the case asks for mailbox access for '$reqDelegate' but $upn is a MailUser (on-prem mailbox) — grant Full Access on-prem")
         }
