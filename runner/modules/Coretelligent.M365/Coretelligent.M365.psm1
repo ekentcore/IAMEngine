@@ -2222,12 +2222,15 @@ function Invoke-CtgM365Offboarding {
         $actions.Add("license kept here by design — it is removed $(if ($by) { "in the $by step" } else { 'in a later step' }), after the mailbox is converted to shared")
     }
     elseif ($null -ne $removeLicense) {
-        # NOTE on an unreadable mailbox size: it is guarded at the SOURCE, in the Exchange executor.
-        # Get-CtgMailboxSizeGB returns $null (not 0) when the read fails, and the convert refuses to
-        # run without a size it can prove is under the cap — so it never reports a conversion, and this
-        # cascade lands on the "$convertedKnown -and -not $converted" branch below and keeps the
-        # licence. A reported conversion therefore already implies the size was read AND under
-        # threshold; re-checking it here would only re-derive what the convert already proved.
+        # NOTE on an unreadable mailbox size — this guarantee was DELIBERATELY WEAKENED by FR #0000085.
+        # It used to hold that the Exchange executor refused to convert without a size it could prove
+        # was under the cap, so an unreadable size never reported a conversion and this cascade kept
+        # the licence. It no longer does: after one retry, Exchange now treats an unreadable size as 0
+        # and converts anyway, by explicit operator policy, so $MailboxSizeGB can arrive here as 0
+        # meaning "never actually read". 0 is not > $threshold, so the licence IS removed. That is the
+        # accepted trade for never stalling an offboard on transient EXO throttling, and the risk it
+        # carries (a genuinely large mailbox converted and unlicensed, locked past Microsoft's 50 GB
+        # cap) is warned about loudly at the source in Coretelligent.Exchange.psm1, not re-checked here.
         if ($MailboxSizeGB -gt $threshold -and $oversizePolicy -eq 'keep') {
             # Answered: keep it. Say the seat is still billing BY CHOICE — a warning that reads like an
             # unresolved problem would send the next person to decide something already decided.

@@ -12,6 +12,6 @@ export const entry: ChangelogEntry = {
     "Each delegate is INDEPENDENT: a name that can't be resolved, or a grant Exchange refuses, warns about THAT name and the rest still get their access. One typo in one row must never cost the other people theirs — that would turn a typo into silent data-access loss",
     "Blank rows and repeated names are dropped before anything is planned. A duplicate would be granted twice and logged twice, which reads on the case like two different people got access",
     "Deliberate wire compatibility: ONE delegate still travels as a plain string, byte-identical to what shipped before, so a runner that hasn't picked up the new module behaves exactly as it does today. The list shape appears only when there is genuinely more than one name — the new behaviour engages only when the new feature is used",
-    "Runner 1.107.0 (Exchange + M365 modules) needs deploy",
+    "Runner 1.108.0 (Exchange + M365 modules) needs deploy",
   ],
 };
