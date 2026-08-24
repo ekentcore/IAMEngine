@@ -975,7 +975,7 @@ function Invoke-CtgM365Onboarding {
     foreach ($cand in $candidates) {
         # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
         # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
-        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes')
+        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes', 'OnPremisesSyncEnabled')
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
         # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
         # extensionAttributes at all.
@@ -983,6 +983,18 @@ function Invoke-CtgM365Onboarding {
         $foundMarker = if ($ext -and ($ext.PSObject.Properties.Name -contains 'ExtensionAttribute1')) { [string]$ext.ExtensionAttribute1 } else { '' }
         if ($foundMarker -and $foundMarker -ieq $marker) {
             $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
+        }
+        # A DIRECTORY-SYNCED account's extensionAttribute1 is MASTERED ON-PREM — Entra Connect copies
+        # whatever the client's own AD holds, and Graph cannot write it back on this lane. So the value
+        # says NOTHING about who provisioned the account, yet a non-empty one used to veto the name-match
+        # branch below: a correctly-synced account read as "a different user" and the onboard hard-failed
+        # with every candidate exhausted (FR #0000105 — Apollon, 5 of 8 onboards, because their AD fills
+        # extensionAttribute1). Discount it and let the name decide. Cloud-only accounts are untouched:
+        # there we are the only writer, so a foreign value genuinely means a different person.
+        if ($foundMarker -and [bool](Get-CtgProp $found 'OnPremisesSyncEnabled')) {
+            $actions.Add("note: $cand is directory-synced and its extensionAttribute1 ('$foundMarker') is mastered on-prem, not one of ours — ignoring it and matching on name instead")
+            Write-CtgM365Step "↪ $cand is on-prem mastered — its extensionAttribute1 is not a provisioning marker"
+            $foundMarker = ''
         }
         # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
         # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the
