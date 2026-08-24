@@ -1,14 +1,21 @@
 // PATCH /api/cases/:id/fields { fields: { <field>: <value> } } — fill in the "Needs Information"
-// fields the intake couldn't determine. Merges into the case payload (which the runner reads at
-// claim time, so no re-plan needed), drops the filled keys from payload.unknownFields, and releases
-// the hold once nothing's left to fill.
+// fields the intake couldn't determine, or correct one the ticket got wrong. Merges into the case
+// payload, drops the filled keys from payload.unknownFields, and releases the hold once nothing's
+// left to fill.
+//
+// Then RE-PLANS an unstarted case (FR #0000091). The payload alone is not enough: the runner reads
+// user fields from it at claim time, but job CONFIGS — groups, licences, attributes, OU — were
+// computed at plan time by the rules and personas, so a corrected department left every rule still
+// holding the ticket's original value and the correction silently did not take.
 import { NextResponse } from "next/server";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { makeCaseRepository } from "@/lib/cases/repository";
+import { replanCase } from "@/lib/cases/replan-service";
 import { recordAudit } from "@/lib/auth/audit";
+import { auditActor } from "@/lib/auth/actor";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +27,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
   const fields = body.fields && typeof body.fields === "object" ? (body.fields as Record<string, unknown>) : {};
 
-  const c = await db.caseRequest.findUnique({ where: { id: params.id }, select: { payload: true, pausedReason: true } });
+  const c = await db.caseRequest.findUnique({
+    where: { id: params.id },
+    select: { payload: true, pausedReason: true, jobs: { where: { startedAt: { not: null } }, select: { id: true }, take: 1 } },
+  });
   if (!c) return NextResponse.json({ error: "case not found" }, { status: 404 });
 
   const payload = { ...((c.payload ?? {}) as Record<string, unknown>) };
@@ -62,11 +72,29 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   await db.caseRequest.update({ where: { id: params.id }, data: { payload: payload as Prisma.InputJsonValue } });
 
+  // Re-run the rules and roles against the corrected value (FR #0000091). Job CONFIGS — groups,
+  // licences, attributes, OU — are computed at PLAN time from the payload, so writing the new value
+  // alone left every rule that keyed on it still holding the ticket's original.
+  //
+  // NOT on a case that has already started: an incremental re-plan can add or re-run steps, and a
+  // field save must not reshape a run in flight. Those keep today's behaviour and the explicit
+  // Re-plan button. Best-effort either way — the edit itself is already saved and is what the
+  // operator asked for, so a re-plan failure is REPORTED, never a failed save.
+  let replanned: string | null = null;
+  if (c.jobs.length === 0) {
+    try {
+      const r = await replanCase(db, params.id, auditActor(g.user, "ui"));
+      replanned = r.ok ? "replanned" : r.error;
+    } catch (e) {
+      replanned = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   // Release the "needs_info" hold once everything's provided.
   if (c.pausedReason === "needs_info" && remaining.length === 0) {
     await makeCaseRepository(db).setHold(params.id, null);
   }
   await recordAudit("case.fields.filled", { user: g.user, caseRequestId: params.id, detail: { filled, remaining: remaining.length } });
 
-  return NextResponse.json({ ok: true, filled, remaining: remaining.length, released: c.pausedReason === "needs_info" && remaining.length === 0 });
+  return NextResponse.json({ ok: true, filled, remaining: remaining.length, replanned, released: c.pausedReason === "needs_info" && remaining.length === 0 });
 }
