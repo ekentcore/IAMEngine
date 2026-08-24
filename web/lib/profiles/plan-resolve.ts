@@ -141,7 +141,23 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     return { ...j, config: { ...cfg, autoReply: { ...((cfg.autoReply as Record<string, unknown> | null) ?? {}), message: ooo } } };
   });
 
-  return injectHideFromGal(withOoo, payload, client.backbone);
+  // Case-requested mail forwarding (FR #0000097, and #0000099 filed as the same defect): the intake
+  // captures both halves — u_mail_forwarded -> payload.mailForwarded and u_forward_email_to ->
+  // payload.forwardEmailTo — and NOTHING read either. The Exchange executor has always implemented the
+  // destination (config.forwarding.address -> Set-Mailbox -ForwardingSmtpAddress), so like FR #47 above
+  // the entire gap was plan-time and no runner change is needed.
+  //
+  // MERGE rather than replace, for the same reason the OOO block merges: a profile that configured
+  // keepCopy keeps it, and the ticket supplies only the address. There is no intake field for keepCopy,
+  // so inventing a policy here would be guessing with the leaver's mail.
+  const fwd = caseForwardingAddress(payload);
+  const withForwarding = !fwd ? withOoo : withOoo.map((j) => {
+    if (j.systemKey !== "exchange") return j; // the only lane that can set mailbox forwarding
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    return { ...j, config: { ...cfg, forwarding: { ...((cfg.forwarding as Record<string, unknown> | null) ?? {}), address: fwd } } };
+  });
+
+  return injectHideFromGal(withForwarding, payload, client.backbone);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:
@@ -191,6 +207,25 @@ function injectHideFromGal(planned: PlannedJob[], payload: Record<string, unknow
     }
     return j;
   });
+}
+
+// The intake stores a reference field for DISPLAY: "lyao@aleto.co (55ebb6d8…)" — refLabel appends the
+// sys_id so the record stays lookup-able. -ForwardingSmtpAddress needs the address on its own.
+const SYS_ID_SUFFIX = /\s*\([^()]*\)\s*$/;
+// Deliberately strict: a DISPLAY NAME is not an SMTP address, and handing one to Exchange would fail
+// the step. local@domain.tld, no whitespace.
+const LOOKS_LIKE_EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+
+// The forwarding target an offboard ticket asked for, or null when it asked for none.
+export function caseForwardingAddress(payload: Record<string, unknown>): string | null {
+  // An address alone is NOT a request. Real cases (UM0030515, UM0030178) carry a populated target with
+  // mailForwarded=false — forwarding a leaver's mail against an explicit "no" would be worse than the
+  // bug this fixes.
+  if (payload.mailForwarded !== true) return null;
+  const raw = typeof payload.forwardEmailTo === "string" ? payload.forwardEmailTo.trim() : "";
+  if (!raw) return null;
+  const addr = raw.replace(SYS_ID_SUFFIX, "").trim();
+  return LOOKS_LIKE_EMAIL.test(addr) ? addr : null;
 }
 
 export function resolvePlannedConfigs(

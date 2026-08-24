@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolvePlannedConfigs } from "./plan-resolve";
+import { resolvePlannedConfigs, caseForwardingAddress } from "./plan-resolve";
 import type { PlannedJob } from "../orchestrator";
 
 const job = (config: unknown): PlannedJob => ({ systemKey: "active-directory", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config });
@@ -150,4 +150,49 @@ test("every delegate also reaches the OneDrive grant on the m365 job", () => {
   const m365: PlannedJob = { systemKey: "m365", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} };
   const out = resolvePlannedConfigs({}, { provideMailboxAccessTo: ["Peter Hegland", "Dev Gani"] }, "offboard", [m365]);
   assert.deepEqual((out[0].config as Record<string, unknown>).oneDriveGrantAccessTo, ["Peter Hegland", "Dev Gani"]);
+});
+
+const exch = (config: unknown): PlannedJob => ({ systemKey: "exchange", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config });
+const bare = { globals: {}, globalsOffboard: {}, personas: {} };
+
+test("caseForwardingAddress: strips the sys_id the intake appends for display", () => {
+  assert.equal(caseForwardingAddress({ mailForwarded: true, forwardEmailTo: "lyao@aleto.co (55ebb6d847383d1418d7d65c346d4354)" }), "lyao@aleto.co");
+  assert.equal(caseForwardingAddress({ mailForwarded: true, forwardEmailTo: "  lyao@aleto.co  " }), "lyao@aleto.co");
+});
+
+test("caseForwardingAddress: an address alone is NOT a request - mailForwarded gates it", () => {
+  // UM0030515 and UM0030178 are real cases shaped exactly like this. Forwarding a leaver's mail
+  // against an explicit "no" is worse than the bug this fixes.
+  assert.equal(caseForwardingAddress({ mailForwarded: false, forwardEmailTo: "brandon@drivecapital.com (af605134db3b15d0887192ccd3961959)" }), null);
+  assert.equal(caseForwardingAddress({ forwardEmailTo: "brandon@drivecapital.com" }), null);
+});
+
+test("caseForwardingAddress: a display name or a bare sys_id is not an SMTP address", () => {
+  assert.equal(caseForwardingAddress({ mailForwarded: true, forwardEmailTo: "Andrew Cohen (sysid123)" }), null);
+  assert.equal(caseForwardingAddress({ mailForwarded: true, forwardEmailTo: "sysidonly" }), null);
+  assert.equal(caseForwardingAddress({ mailForwarded: true, forwardEmailTo: "" }), null);
+  assert.equal(caseForwardingAddress({ mailForwarded: true }), null);
+});
+
+test("offboard plans the case-requested forwarding onto the exchange step (FR #0000097)", () => {
+  const out = resolvePlannedConfigs(bare, { mailForwarded: true, forwardEmailTo: "lyao@aleto.co (55ebb)" }, "offboard", [exch({ convertToShared: true })]);
+  const cfg = out[0].config as Record<string, unknown>;
+  assert.deepEqual(cfg.forwarding, { address: "lyao@aleto.co" });
+  assert.equal(cfg.convertToShared, true); // the rest of the config survives
+});
+
+test("offboard forwarding keeps a profile-configured keepCopy and only sets the address", () => {
+  const out = resolvePlannedConfigs(bare, { mailForwarded: true, forwardEmailTo: "lyao@aleto.co (55ebb)" }, "offboard", [exch({ forwarding: { keepCopy: true } })]);
+  assert.deepEqual((out[0].config as Record<string, unknown>).forwarding, { keepCopy: true, address: "lyao@aleto.co" });
+});
+
+test("offboard leaves forwarding alone when the ticket did not ask for it", () => {
+  const out = resolvePlannedConfigs(bare, { mailForwarded: false, forwardEmailTo: "x@y.com (id)" }, "offboard", [exch({ convertToShared: true })]);
+  assert.equal((out[0].config as Record<string, unknown>).forwarding, undefined);
+});
+
+test("offboard forwarding is exchange-only - the m365 lane is untouched", () => {
+  const m365 = { systemKey: "m365", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: null, secretNames: [], dependsOn: [], config: {} } as PlannedJob;
+  const out = resolvePlannedConfigs(bare, { mailForwarded: true, forwardEmailTo: "lyao@aleto.co (55ebb)" }, "offboard", [m365]);
+  assert.equal((out[0].config as Record<string, unknown>).forwarding, undefined);
 });
