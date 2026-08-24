@@ -961,6 +961,10 @@ function Invoke-CtgM365Onboarding {
     $existing = $null
     $chosenUpn = $null
     $adopt = $false
+    # The first occupied candidate, remembered so an exhausted list can NAME the account it collided
+    # with instead of just listing the usernames it tried (FR #0000092).
+    $takenUpn = $null
+    $takenBy = $null
     $createdFresh = $false
     $targetName = ([string]$User.DisplayName).Trim()
     # A nicknamed hire's DisplayName carries the nickname ("Bill Smith"); a rehire's existing account
@@ -975,7 +979,7 @@ function Invoke-CtgM365Onboarding {
     foreach ($cand in $candidates) {
         # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
         # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
-        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes')
+        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes', 'OnPremisesSyncEnabled')
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
         # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
         # extensionAttributes at all.
@@ -983,6 +987,18 @@ function Invoke-CtgM365Onboarding {
         $foundMarker = if ($ext -and ($ext.PSObject.Properties.Name -contains 'ExtensionAttribute1')) { [string]$ext.ExtensionAttribute1 } else { '' }
         if ($foundMarker -and $foundMarker -ieq $marker) {
             $existing = $found; $chosenUpn = $cand; $actions.Add("user exists ($cand) — our account (re-run), skipped create"); break
+        }
+        # A DIRECTORY-SYNCED account's extensionAttribute1 is MASTERED ON-PREM — Entra Connect copies
+        # whatever the client's own AD holds, and Graph cannot write it back on this lane. So the value
+        # says NOTHING about who provisioned the account, yet a non-empty one used to veto the name-match
+        # branch below: a correctly-synced account read as "a different user" and the onboard hard-failed
+        # with every candidate exhausted (FR #0000105 — Apollon, 5 of 8 onboards, because their AD fills
+        # extensionAttribute1). Discount it and let the name decide. Cloud-only accounts are untouched:
+        # there we are the only writer, so a foreign value genuinely means a different person.
+        if ($foundMarker -and [bool](Get-CtgProp $found 'OnPremisesSyncEnabled')) {
+            $actions.Add("note: $cand is directory-synced and its extensionAttribute1 ('$foundMarker') is mastered on-prem, not one of ours — ignoring it and matching on name instead")
+            Write-CtgM365Step "↪ $cand is on-prem mastered — its extensionAttribute1 is not a provisioning marker"
+            $foundMarker = ''
         }
         # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
         # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the
@@ -1000,10 +1016,20 @@ function Invoke-CtgM365Onboarding {
             }
             # collisionPolicy 'new' -> operator said different person: fall through to the collision path below.
         }
+        if (-not $takenUpn) { $takenUpn = $cand; $takenBy = [string]$found.DisplayName }
         $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
         Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"
     }
     if (-not $chosenUpn) {
+        # Every candidate is occupied. Dead-ending here is the wrong answer (FR #0000092): the account
+        # sitting on the primary candidate is very often the right person under a display name that
+        # doesn't match the ticket exactly (a middle initial, a maiden name, "Last, First" from a
+        # directory import). The case UI already renders Adopt / Different person from this marker, so
+        # ASK. Once the operator has said 'new' they have rejected adoption, and asking again would loop
+        # them forever — that case keeps the plain error, which by then genuinely IS "add a fallback".
+        if ($takenUpn -and $collisionPolicy -ine 'new') {
+            throw "DECISION_NEEDED:username_collision | Every candidate username is already in use. $takenUpn belongs to '$takenBy', which doesn't match this hire's name. If that IS this person, choose Adopt; if not, pick a different username. | upn=$takenUpn | name=$takenBy"
+        }
         throw "all candidate usernames are taken by other users: $($candidates -join ', '). Add another username fallback pattern (e.g. {firstinitial}{last}), or assign one manually."
     }
     if ($chosenUpn -ne $upn) { $actions.Add("using fallback username: $chosenUpn (primary $upn taken)"); Write-CtgM365Step "→ using fallback username: $chosenUpn"; $upn = $chosenUpn }

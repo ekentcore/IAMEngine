@@ -115,8 +115,92 @@ Describe 'Invoke-CtgM365Onboarding' {
             $r.Status | Should -Be 'ok'
             Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
         }
+
+        It 'ADOPTS a directory-synced same-name account whose extensionAttribute1 is mastered on-prem (FR #0000105)' {
+            $user = [pscustomobject]@{ DisplayName='Tina Montz'; UserPrincipalName='tina.montz@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Tina'; LastName='Montz'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+                [pscustomobject]@{ Id='uid-tina'; DisplayName='Tina Montz'; AccountEnabled=$true; OnPremisesSyncEnabled=$true;
+                                   OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = 'AWM-EMP-4417' } }
+            }
+            $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ cloudCreate='deny'; usernameCollisionPolicy='adopt' }) -InitialPassword $pwd
+            $r.Status | Should -Be 'ok'
+            Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+            ($r.Actions -join ' ') | Should -Match 'mastered on-prem'
+            ($r.Actions -join ' ') | Should -Match 'operator chose ADOPT'
+        }
+
+        It 'ASKS (does not dead-end) on a synced same-name account with an on-prem attribute and no policy yet' {
+            $user = [pscustomobject]@{ DisplayName='Tina Montz'; UserPrincipalName='tina.montz@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Tina'; LastName='Montz'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+                [pscustomobject]@{ Id='uid-tina'; DisplayName='Tina Montz'; AccountEnabled=$true; OnPremisesSyncEnabled=$true;
+                                   OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = 'AWM-EMP-4417' } }
+            }
+            { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ cloudCreate='deny' }) -InitialPassword $pwd } |
+                Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*'
+            Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        }
+
+        It 'still treats a CLOUD-ONLY account with a foreign marker as a different person (two John Smiths)' {
+            # The safety property this fix must NOT weaken: on a cloud account we are the only writer of
+            # extensionAttribute1, so a foreign value really does mean we provisioned it for someone else.
+            $user = [pscustomobject]@{ DisplayName='John Smith'; UserPrincipalName='john.smith@x.com'; UserPrincipalNameFallbacks=@('j.smith@x.com'); FirstName='John'; LastName='Smith'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+            $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+                param($UserId, $Filter)
+                if ($UserId -eq 'john.smith@x.com') {
+                    return [pscustomobject]@{ Id='uid-other'; DisplayName='John Smith'; AccountEnabled=$true; OnPremisesSyncEnabled=$false;
+                                              OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = 'someone.else@gmail.com' } }
+                }
+                return $null
+            }
+            $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd
+            ($r.Actions -join ' ') | Should -Match 'taken by a different user'
+            $r.Upn | Should -Be 'j.smith@x.com'
+        }
     }
 
+    It 'OFFERS Adopt when every candidate is taken and no decision has been made yet (FR #0000092)' {
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*upn=jane.doe@x.com*name=Jane N Doe*'
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'the exhausted-candidates decision matches the shape the case UI parses' {
+        # run-report-view.tsx:478 parses exactly this; a stray pipe in the message would silently hide
+        # the Adopt / Different person buttons and leave the operator with a wall of red text.
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        $msg = ''
+        try { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } catch { $msg = $_.Exception.Message }
+        $msg | Should -Match 'DECISION_NEEDED:username_collision \| [^|]+ \| upn=[^|]+ \| name=.+$'
+    }
+
+    It 'keeps the plain exhausted error once the operator has said DIFFERENT PERSON' {
+        # collisionPolicy 'new' means they already rejected adoption; re-asking would loop them forever.
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy='new' }) -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage '*all candidate usernames are taken by other users*'
+    }
     It 'uses the fallback username when the primary UPN is taken by a DIFFERENT person' {
         # Primary jdoe@x.com is taken by John Doe (a different person); fallback j.doe@x.com is free.
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {

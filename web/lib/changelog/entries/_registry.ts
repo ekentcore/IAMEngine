@@ -7,6 +7,7 @@ export { entry as adAmbientAuthFirst } from "./ad-ambient-auth-first";
 export { entry as adDcOptional } from "./ad-dc-optional";
 export { entry as adStandaloneDomainSeparation } from "./ad-standalone-domain-separation";
 export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
+export { entry as adsyncedAdoptSyncedAccount } from "./adsynced-adopt-synced-account";
 export { entry as adSyncedGalHide } from "./ad-synced-gal-hide";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";
 export { entry as addDirectorySyncButton } from "./add-directory-sync-button";
