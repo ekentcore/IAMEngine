@@ -62,7 +62,10 @@ Two corroborations: the error appears on 5 jobs, all `ad_synced`, zero across 11
 the same attribute is read-only in Entra for synced users, so the marker-stamping at line 1015 could never
 work on this lane either.
 
-**Confirm before coding (Task 0):** the elimination is strong but indirect. One Graph read settles it.
+**Confirmed (Task 0, 2026-08-24):** read directly from the tenant. All four sampled accounts are
+`onPremisesSyncEnabled = true`, carry a non-empty foreign `extensionAttribute1`, and have a
+`displayName` matching the ticket exactly. Apollon uses the attribute as a business-unit label
+("Apollon Financial", "Advisory Service", "Apollon Wealth Management"). Diagnosis holds.
 
 ## Why #92 is the same work item
 
@@ -94,7 +97,7 @@ the same dead end). One fix, two closures.
 - Consumes: nothing.
 - Produces: a yes/no that gates every later task.
 
-- [ ] **Step 1: Read the attribute on one affected account**
+- [x] **Step 1: Read the attribute on one affected account**
 
 Against the Apollon tenant, for any of the five names above:
 
@@ -105,10 +108,23 @@ Get-MgUser -UserId 'tina.montz@apollonfinancial.com' -Property 'Id,DisplayName,O
 
 Expected: `OnPremisesSyncEnabled = True` and `ExtensionAttribute1` NON-EMPTY and not an email we wrote.
 
-- [ ] **Step 2: Record the result in this plan**
+- [x] **Step 2: Record the result in this plan**
 
 If confirmed, continue. If `ExtensionAttribute1` is EMPTY, STOP — the root cause is then a DisplayName
 mismatch invisible in the log (a non-breaking space or a homoglyph), and Task 1 is the wrong fix.
+
+**Result, read live on 2026-08-24 against tenant `apollonwealth.com`:**
+
+| Account | displayName | onPremisesSyncEnabled | extensionAttribute1 |
+|---|---|---|---|
+| tina.montz@apollonfinancial.com | "Tina Montz" | true | `Apollon Financial` |
+| andres.mejia@apollonwealth.com | "Andres Mejia" | true | `Advisory Service` |
+| mark.avallone@apollonwealth.com | "Mark Avallone" | true | `Advisory Service` |
+| alex.gellerstedt@apollonwealth.com | "Alex Gellerstedt" | true | `Apollon Wealth Management` |
+
+Every one is sync-enabled, every one carries a non-empty value that is not one of our markers, and every
+displayName matches its ticket exactly — so `-not $foundMarker` was the failing half of the conjunction,
+as predicted. The client uses extensionAttribute1 as a business-unit label. **Root cause confirmed.**
 
 ---
 
@@ -123,7 +139,7 @@ mismatch invisible in the log (a non-breaking space or a homoglyph), and Task 1 
 - Produces: the candidate loop still reaches its fall-through for genuinely different people, which Task 2
   depends on.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add inside the existing `Context 'ad-synced adopt-only (cloudCreate=deny)'` block. Note the Pester v5 rule
 already recorded there: build `$user` and `$pwd` INSIDE each `It`, never at Context scope.
@@ -174,14 +190,14 @@ It 'still treats a CLOUD-ONLY account with a foreign marker as a different perso
 }
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `cd runner && pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/Coretelligent.M365.Tests.ps1 -Output Detailed"`
 
 Expected: the first two FAIL with `all candidate usernames are taken by other users`; the third already
 PASSES — it is the regression guard, and a green result there before the change is the point.
 
-- [ ] **Step 3: Add OnPremisesSyncEnabled to the property list**
+- [x] **Step 3: Add OnPremisesSyncEnabled to the property list**
 
 At line 979, extend the property list so the picker can see whether the account is on-prem mastered:
 
@@ -189,7 +205,7 @@ At line 979, extend the property list so the picker can see whether the account 
         $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes', 'OnPremisesSyncEnabled')
 ```
 
-- [ ] **Step 4: Discount a sync-mastered marker**
+- [x] **Step 4: Discount a sync-mastered marker**
 
 Insert immediately AFTER the marker-equality branch (the `if ($foundMarker -and $foundMarker -ieq $marker)`
 block that breaks out on a re-run) and BEFORE the `if (-not $foundMarker -and ...)` name branch. Order
@@ -210,13 +226,13 @@ matters: clearing it earlier would break the genuine re-run path, which must sti
         }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `cd runner && pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/Coretelligent.M365.Tests.ps1 -Output Detailed"`
 
 Expected: all three PASS, and the pre-existing 171 still pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add runner/modules/Coretelligent.M365/Coretelligent.M365.psm1 runner/tests/Coretelligent.M365.Tests.ps1
@@ -235,7 +251,7 @@ git commit -m "FR #105: a synced account's on-prem extensionAttribute1 is not a 
 - Consumes: the candidate loop from Task 1, specifically its fall-through branch.
 - Produces: a `DECISION_NEEDED:username_collision` throw whose shape `run-report-view.tsx:478` already parses.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```powershell
 It 'OFFERS Adopt when every candidate is taken and no decision has been made yet (FR #0000092)' {
@@ -280,13 +296,13 @@ It 'keeps the plain exhausted error once the operator has said DIFFERENT PERSON'
 }
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `cd runner && pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/Coretelligent.M365.Tests.ps1 -Output Detailed"`
 
 Expected: the first two FAIL (they get the plain "all candidate usernames are taken" error); the third PASSES.
 
-- [ ] **Step 3: Remember the first occupied candidate**
+- [x] **Step 3: Remember the first occupied candidate**
 
 Alongside the other loop-state declarations (`$existing = $null`, `$chosenUpn = $null`, `$adopt = $false`),
 add two more:
@@ -303,7 +319,7 @@ Then in the loop's fall-through — immediately BEFORE the existing
         if (-not $takenUpn) { $takenUpn = $cand; $takenBy = [string]$found.DisplayName }
 ```
 
-- [ ] **Step 4: Offer the decision instead of dead-ending**
+- [x] **Step 4: Offer the decision instead of dead-ending**
 
 Replace the whole `if (-not $chosenUpn) { throw ... }` block with:
 
@@ -322,13 +338,13 @@ Replace the whole `if (-not $chosenUpn) { throw ... }` block with:
     }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `cd runner && pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/Coretelligent.M365.Tests.ps1 -Output Detailed"`
 
 Expected: all PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add runner/modules/Coretelligent.M365/Coretelligent.M365.psm1 runner/tests/Coretelligent.M365.Tests.ps1
@@ -348,13 +364,13 @@ git commit -m "FR #92: an exhausted candidate list offers Adopt instead of dead-
 - Consumes: the behaviour shipped by Tasks 1 and 2, which the entry describes.
 - Produces: nothing later tasks read.
 
-- [ ] **Step 1: Bump the runner version**
+- [x] **Step 1: Bump the runner version**
 
 ```bash
 echo "1.109.0" > runner/VERSION
 ```
 
-- [ ] **Step 2: Write the changelog entry**
+- [x] **Step 2: Write the changelog entry**
 
 Create `web/lib/changelog/entries/adsynced-adopt-synced-account.ts`:
 
@@ -377,7 +393,7 @@ export const entry: ChangelogEntry = {
 };
 ```
 
-- [ ] **Step 3: Register it**
+- [x] **Step 3: Register it**
 
 Add the id-ordered line to `web/lib/changelog/entries/_registry.ts` (it sorts just after
 `adStandaloneDomainSeparation`):
@@ -386,7 +402,7 @@ Add the id-ordered line to `web/lib/changelog/entries/_registry.ts` (it sorts ju
 export { entry as adsyncedAdoptSyncedAccount } from "./adsynced-adopt-synced-account";
 ```
 
-- [ ] **Step 4: Verify both suites**
+- [x] **Step 4: Verify both suites**
 
 Run: `cd web && npm test`
 
@@ -396,7 +412,7 @@ Run: `cd runner && pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/Coretel
 
 Expected: 177 pass / 0 fail (171 existing + 6 new).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add runner/VERSION web/lib/changelog/entries/
