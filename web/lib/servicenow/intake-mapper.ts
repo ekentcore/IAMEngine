@@ -395,6 +395,13 @@ export function deriveIdentity(
   // first name and can't be trusted — EXCEPT an operator-edited one (fieldSource), which must
   // survive a re-plan exactly like it does for non-nicknamed hires.
   const operatorDisplayName = (payload.fieldSource as Record<string, unknown> | undefined)?.displayName === "operator";
+
+  // An operator-edited identity field must survive re-derivation, exactly as displayName already does.
+  // replanCase runs mergeOperatorEdits (which carefully preserves the operator's keys) and then calls
+  // this function, so without this the preserved value is overwritten one line later and a hand-
+  // corrected username silently reverts to the pattern on every re-plan (FR #0000091).
+  const src = (payload.fieldSource ?? {}) as Record<string, unknown>;
+  const keepOperator = <T,>(k: string, derived: T): T => (src[k] === "operator" && payload[k] != null ? (payload[k] as T) : derived);
   const displayName = ((operatorDisplayName || !nicknameTouched) && (payload.displayName as string))
     || [first, last].filter(Boolean).join(" ") || null;
 
@@ -402,12 +409,12 @@ export function deriveIdentity(
     ...payload,
     ...(nicknameTouched ? { firstName: first, legalFirstName: legalFirst } : {}),
     displayName,
-    userPrincipalName: upn,
-    userPrincipalNameFallbacks: fallbacks, // runner tries these when the primary is taken by another person
-    samAccountName: localPart || null,
-    mailNickname: localPart || null,
+    userPrincipalName: keepOperator("userPrincipalName", upn),
+    userPrincipalNameFallbacks: fallbacks, // always derived — generated alternates, never hand-edited
+    samAccountName: keepOperator("samAccountName", localPart || null),
+    mailNickname: keepOperator("mailNickname", localPart || null),
     primaryDomain: domain || null,
-    workEmail: upn,
+    workEmail: keepOperator("workEmail", upn),
   };
   return { ...merged, templateFields: emailTemplateFields(merged) };
 }

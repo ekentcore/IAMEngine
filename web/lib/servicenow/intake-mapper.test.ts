@@ -293,3 +293,46 @@ test("offboard forwardEmailTo: readable label + sys_id in parens (not a bare sys
   })).payload as Record<string, unknown>;
   assert.equal(bare.forwardEmailTo, "sysidonly");
 });
+
+test("deriveIdentity keeps an operator-edited UPN and its siblings (FR #0000091)", () => {
+  // The exact payload replanCase hands over after mergeOperatorEdits: PATCH /api/cases/:id/fields
+  // sets these four together and stamps each as operator-sourced.
+  const merged = {
+    firstName: "Jonathan", lastName: "Smith",
+    userPrincipalName: "jsmith@acme.com", samAccountName: "jsmith", mailNickname: "jsmith", workEmail: "jsmith@acme.com",
+    fieldSource: { userPrincipalName: "operator", samAccountName: "operator", mailNickname: "operator", workEmail: "operator" },
+  };
+  const out = deriveIdentity(merged, { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(out.userPrincipalName, "jsmith@acme.com");
+  assert.equal(out.samAccountName, "jsmith");
+  assert.equal(out.mailNickname, "jsmith");
+  assert.equal(out.workEmail, "jsmith@acme.com");
+});
+
+test("deriveIdentity still derives the fields the operator did NOT edit", () => {
+  // Only the UPN was hand-corrected; samAccountName must still follow the pattern.
+  const merged = {
+    firstName: "Jonathan", lastName: "Smith",
+    userPrincipalName: "jsmith@acme.com",
+    fieldSource: { userPrincipalName: "operator" },
+  };
+  const out = deriveIdentity(merged, { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(out.userPrincipalName, "jsmith@acme.com"); // kept
+  assert.equal(out.samAccountName, "jonathan.smith");     // derived
+});
+
+test("deriveIdentity re-derives everything when nothing is operator-sourced", () => {
+  const out = deriveIdentity({ firstName: "Jonathan", lastName: "Smith", userPrincipalName: "stale@acme.com" },
+    { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(out.userPrincipalName, "jonathan.smith@acme.com");
+  assert.equal(out.samAccountName, "jonathan.smith");
+});
+
+test("deriveIdentity always re-derives the conflict fallbacks, even beside an operator UPN", () => {
+  // Fallbacks are generated alternates, never hand-edited - they must track the client's patterns.
+  const out = deriveIdentity(
+    { firstName: "Jonathan", lastName: "Smith", mi: "Q", userPrincipalName: "jsmith@acme.com", fieldSource: { userPrincipalName: "operator" } },
+    { usernamePatterns: ["{first}.{last}@{domain}", "{first}.{mi}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(out.userPrincipalName, "jsmith@acme.com");
+  assert.deepEqual(out.userPrincipalNameFallbacks, ["jonathan.q@acme.com"]);
+});
