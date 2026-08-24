@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeOperatorEdits } from "./replan-service";
+import { deriveIdentity } from "../servicenow/intake-mapper";
 
 // Bug: replanCase used to wholesale-replace payload with the freshly re-pulled ServiceNow intake,
 // silently erasing any field the operator hand-edited via PATCH /api/cases/:id/fields (which stamps
@@ -66,4 +67,18 @@ test("mergeOperatorEdits ignores an operator key that vanished from the persiste
   const persisted = { userPrincipalName: "jane@acme.com", fieldSource: { extraGroups: "operator" } }; // extraGroups key itself missing
   const merged = mergeOperatorEdits(fresh, persisted);
   assert.equal("extraGroups" in merged, false);
+});
+
+test("an operator-edited UPN survives the FULL replan sequence (merge THEN derive)", () => {
+  // The merge tests above prove the value reaches the payload. This proves it is still there after
+  // deriveIdentity, which replanCase calls immediately afterwards - the step that used to undo it.
+  const persisted = {
+    firstName: "Jonathan", lastName: "Smith",
+    userPrincipalName: "jsmith@acme.com", samAccountName: "jsmith",
+    fieldSource: { userPrincipalName: "operator", samAccountName: "operator" },
+  };
+  const merged = mergeOperatorEdits({ firstName: "Jonathan", lastName: "Smith" }, persisted);
+  const out = deriveIdentity(merged, { usernamePatterns: ["{first}.{last}@{domain}"], primaryDomain: "acme.com" });
+  assert.equal(out.userPrincipalName, "jsmith@acme.com");
+  assert.equal(out.samAccountName, "jsmith");
 });
