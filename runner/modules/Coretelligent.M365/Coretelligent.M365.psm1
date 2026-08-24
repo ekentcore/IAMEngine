@@ -961,6 +961,10 @@ function Invoke-CtgM365Onboarding {
     $existing = $null
     $chosenUpn = $null
     $adopt = $false
+    # The first occupied candidate, remembered so an exhausted list can NAME the account it collided
+    # with instead of just listing the usernames it tried (FR #0000092).
+    $takenUpn = $null
+    $takenBy = $null
     $createdFresh = $false
     $targetName = ([string]$User.DisplayName).Trim()
     # A nicknamed hire's DisplayName carries the nickname ("Bill Smith"); a rehire's existing account
@@ -1012,10 +1016,20 @@ function Invoke-CtgM365Onboarding {
             }
             # collisionPolicy 'new' -> operator said different person: fall through to the collision path below.
         }
+        if (-not $takenUpn) { $takenUpn = $cand; $takenBy = [string]$found.DisplayName }
         $actions.Add("username '$cand' is taken by a different user ($($found.DisplayName)) — trying the next pattern")
         Write-CtgM365Step "↪ $cand taken by $($found.DisplayName) — trying fallback"
     }
     if (-not $chosenUpn) {
+        # Every candidate is occupied. Dead-ending here is the wrong answer (FR #0000092): the account
+        # sitting on the primary candidate is very often the right person under a display name that
+        # doesn't match the ticket exactly (a middle initial, a maiden name, "Last, First" from a
+        # directory import). The case UI already renders Adopt / Different person from this marker, so
+        # ASK. Once the operator has said 'new' they have rejected adoption, and asking again would loop
+        # them forever — that case keeps the plain error, which by then genuinely IS "add a fallback".
+        if ($takenUpn -and $collisionPolicy -ine 'new') {
+            throw "DECISION_NEEDED:username_collision | Every candidate username is already in use. $takenUpn belongs to '$takenBy', which doesn't match this hire's name. If that IS this person, choose Adopt; if not, pick a different username. | upn=$takenUpn | name=$takenBy"
+        }
         throw "all candidate usernames are taken by other users: $($candidates -join ', '). Add another username fallback pattern (e.g. {firstinitial}{last}), or assign one manually."
     }
     if ($chosenUpn -ne $upn) { $actions.Add("using fallback username: $chosenUpn (primary $upn taken)"); Write-CtgM365Step "→ using fallback username: $chosenUpn"; $upn = $chosenUpn }

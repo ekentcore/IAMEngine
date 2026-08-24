@@ -161,6 +161,46 @@ Describe 'Invoke-CtgM365Onboarding' {
         }
     }
 
+    It 'OFFERS Adopt when every candidate is taken and no decision has been made yet (FR #0000092)' {
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*upn=jane.doe@x.com*name=Jane N Doe*'
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
+    It 'the exhausted-candidates decision matches the shape the case UI parses' {
+        # run-report-view.tsx:478 parses exactly this; a stray pipe in the message would silently hide
+        # the Adopt / Different person buttons and leave the operator with a wall of red text.
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        $msg = ''
+        try { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } catch { $msg = $_.Exception.Message }
+        $msg | Should -Match 'DECISION_NEEDED:username_collision \| [^|]+ \| upn=[^|]+ \| name=.+$'
+    }
+
+    It 'keeps the plain exhausted error once the operator has said DIFFERENT PERSON' {
+        # collisionPolicy 'new' means they already rejected adoption; re-asking would loop them forever.
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jane.doe@x.com'; UserPrincipalNameFallbacks=@(); FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jane.doe@x.com') { return [pscustomobject]@{ Id='uid-jd'; DisplayName='Jane N Doe'; AccountEnabled=$true } }
+            return $null
+        }
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy='new' }) -InitialPassword $pwd } |
+            Should -Throw -ExpectedMessage '*all candidate usernames are taken by other users*'
+    }
     It 'uses the fallback username when the primary UPN is taken by a DIFFERENT person' {
         # Primary jdoe@x.com is taken by John Doe (a different person); fallback j.doe@x.com is free.
         Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
