@@ -648,6 +648,35 @@ Describe 'Invoke-CtgADConsistencyCheck' {
         $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
         $r.Flagged | Should -BeFalse
     }
+
+    It 'WARNS that it could not verify when the app reports the Entra object was never read (FR #0000093)' {
+        # The blank cloudObject used to be indistinguishable from a genuine 'no cloud object yet', so the
+        # check reported an all-clear for a comparison it never performed. The app now says WHY.
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $null; userId = $null
+                                                                                          read = $false; reason = 'the Microsoft 365 step failed - its Entra object was never reported' } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        ($r.Actions -join '|') | Should -Match 'WARN'
+        ($r.Actions -join '|') | Should -Match 'could NOT verify'
+        ($r.Actions -join '|') | Should -Match 'Microsoft 365 step failed'
+        ($r.Actions -join '|') | Should -Not -Match 'a fresh sync will create'
+        $r.Flagged | Should -BeTrue
+    }
+
+    It 'still reports the genuine no-cloud-object case as ok when the app DID read it' {
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $null; userId = $null; read = $true } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        ($r.Actions -join '|') | Should -Match 'a fresh sync will create'
+        ($r.Actions -join '|') | Should -Not -Match 'WARN'
+        $r.Flagged | Should -BeFalse
+    }
+
+    It 'an OLDER app that sends no read flag behaves exactly as before (backward compatible)' {
+        # A runner that has picked up this module while the app has not must not start crying wolf.
+        $u = [pscustomobject]@{ SamAccountName = 'jdoe'; cloudObject = [pscustomobject]@{ immutableId = $null; syncEnabled = $null; userId = $null } }
+        $r = Invoke-CtgADConsistencyCheck -User $u -Config ([pscustomobject]@{})
+        ($r.Actions -join '|') | Should -Match 'a fresh sync will create'
+        $r.Flagged | Should -BeFalse
+    }
 }
 
 Describe 'Invoke-CtgADHardMatch' {

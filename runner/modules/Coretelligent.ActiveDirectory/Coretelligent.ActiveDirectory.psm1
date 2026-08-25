@@ -1101,7 +1101,17 @@ function Invoke-CtgADConsistencyCheck {
     $userId = [string](Get-CtgProp $cloud 'userId')
 
     $actions = [System.Collections.Generic.List[string]]::new()
-    if ([string]::IsNullOrWhiteSpace($userId)) {
+    # The app injects read=$false when it never obtained an Entra object to compare against — the m365
+    # step failed, was completed by hand, or did not run. That is NOT the same as 'there is no cloud
+    # object yet', and reporting it as such handed the operator an all-clear for a comparison that never
+    # happened (FR #0000093 — the whole reason this check was being ignored). An older app sends no
+    # `read` field at all, in which case this branch is skipped and the behaviour is unchanged.
+    $read = Get-CtgProp $cloud 'read'
+    if ($read -eq $false) {
+        $why = [string](Get-CtgProp $cloud 'reason')
+        $actions.Add("WARN could NOT verify the AD/Entra link — $(if ($why) { $why } else { 'the Microsoft 365 step reported no Entra object' }). Nothing was compared, so this is NOT an all-clear: fix the 365 step and re-run it, then re-run this check.")
+    }
+    elseif ([string]::IsNullOrWhiteSpace($userId)) {
         $actions.Add('no matching Entra object reported — a fresh sync will create + anchor it (ok)')
     }
     elseif ($syncEnabled -eq $false) {
