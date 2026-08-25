@@ -11,7 +11,8 @@ import { CONCURRENCY_KEY, resolveCaps, admitUnderCaps, governorActive, groupKey,
 // AppSetting key for the setup-state dispatch gate ({ enforceTested: boolean }, default off).
 export const SETUP_GATE_KEY = "setup_gate";
 import { isConvertConfirmed, isConvertStillComing } from "./mailbox-convert";
-import { jobResultEnvelope } from "./job-result";
+import { jobResultEnvelope } from "./job-result";
+import { cloudObjectFor, type CloudObject } from "./cloud-object";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
@@ -1146,23 +1147,26 @@ export function makeRunnerService(db: PrismaClient) {
       // AD consistency check (Design D, detect-only): inject the Entra object's anchor data (from the
       // m365 result) so the on-prem agent can compare it to the AD source anchor without cloud creds.
       const checkCaseIds = [...new Set(claimed.filter((j) => j.systemKey === "ad-consistency-check").map((j) => j.caseRequestId))];
-      const cloudByCase = new Map<string, { immutableId: string | null; syncEnabled: boolean | null; userId: string | null }>();
+      const cloudByCase = new Map<string, CloudObject>();
       if (checkCaseIds.length > 0) {
+        // NOT filtered to succeeded any more: a failed or manually-completed m365 step is exactly the
+        // case the check used to pass silently, and the REASON has to reach the operator (FR #0000093).
         const m365s = await db.job.findMany({
-          where: { caseRequestId: { in: checkCaseIds }, systemKey: { in: ["m365", "entra"] }, status: "succeeded" },
-          select: { caseRequestId: true, result: true },
+          where: { caseRequestId: { in: checkCaseIds }, systemKey: { in: ["m365", "entra"] } },
+          orderBy: { finishedAt: "desc" },
+          select: { caseRequestId: true, status: true, result: true },
         });
+        const best = new Map<string, { status: string; result: unknown }>();
         for (const s of m365s) {
-          const res = (jobResultEnvelope(s.result) ?? {}) as Record<string, unknown>;
-          const pick = (a: string, b: string) => res[a] ?? res[b];
-          const immutableId = pick("OnPremImmutableId", "onPremImmutableId");
-          const syncEnabled = pick("OnPremSyncEnabled", "onPremSyncEnabled");
-          const userId = pick("UserId", "userId");
-          cloudByCase.set(s.caseRequestId, {
-            immutableId: typeof immutableId === "string" ? immutableId : null,
-            syncEnabled: typeof syncEnabled === "boolean" ? syncEnabled : null,
-            userId: typeof userId === "string" ? userId : null,
-          });
+          // Prefer a succeeded one; otherwise keep the most recent (the query is already newest-first).
+          const held = best.get(s.caseRequestId);
+          if (!held || (held.status !== "succeeded" && s.status === "succeeded")) {
+            best.set(s.caseRequestId, { status: s.status, result: s.result });
+          }
+        }
+        for (const id of checkCaseIds) {
+          const b = best.get(id) ?? null;
+          cloudByCase.set(id, cloudObjectFor(b ? { status: b.status, envelope: jobResultEnvelope(b.result) } : null));
         }
       }
 
@@ -1295,7 +1299,7 @@ export function makeRunnerService(db: PrismaClient) {
           j.systemKey === "ad-email-writeback"
             ? { ...casePayload, writebackEmail: emailByCase.get(j.caseRequestId) ?? null }
             : j.systemKey === "ad-consistency-check"
-            ? { ...casePayload, cloudObject: cloudByCase.get(j.caseRequestId) ?? { immutableId: null, syncEnabled: null, userId: null } }
+            ? { ...casePayload, cloudObject: cloudByCase.get(j.caseRequestId) ?? cloudObjectFor(null) }
             : capturedManager
             ? { ...casePayload, managerEmail: capturedManager }
             : j.case.payload;
