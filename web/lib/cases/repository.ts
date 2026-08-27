@@ -16,6 +16,7 @@ import { jobWarningLines, ADHOC_STEP_LABELS } from "./run-report";
 import { iamCaseNumber, needsIamNumber } from "./case-number";
 import { notM365AutoSetupCase } from "./exclude-m365-autosetup";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
+import { inheritsFromParent, applyParentInheritance, PARENT_INHERIT_SELECT } from "./parent-inheritance";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -157,26 +158,10 @@ export function makeCaseRepository(db: PrismaClient) {
       // the modeling inputs fall back individually so anything the child HAS set still wins.
       // Adding systems to the child later automatically ends the inheritance, and a child whose
       // inheritParentSystems was switched off (it doesn't match its parent) never inherits.
-      if (c.systems.length === 0 && c.parentId && c.inheritParentSystems) {
-        const p = await db.client.findUnique({
-          where: { id: c.parentId },
-          select: { identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true, adObjects: true, cloudGroups: true },
-        });
-        if (p && p.systems.length > 0) {
-          return {
-            ...c,
-            notNeededSecrets,
-            wiredOptionalSecrets,
-            systems: p.systems,
-            identity: c.identity ?? p.identity,
-            personas: c.personas ?? p.personas,
-            globals: c.globals ?? p.globals,
-            globalsOffboard: c.globalsOffboard ?? p.globalsOffboard,
-            locations: c.locations ?? p.locations,
-            adObjects: c.adObjects ?? p.adObjects,
-            cloudGroups: c.cloudGroups ?? p.cloudGroups,
-          };
-        }
+      if (inheritsFromParent(c)) {
+        const p = await db.client.findUnique({ where: { id: c.parentId! }, select: PARENT_INHERIT_SELECT });
+        const merged = applyParentInheritance({ ...c, notNeededSecrets, wiredOptionalSecrets }, p);
+        if (merged.systems !== c.systems) return merged;
       }
       return { ...c, notNeededSecrets, wiredOptionalSecrets };
     },
@@ -284,6 +269,7 @@ export function makeCaseRepository(db: PrismaClient) {
               adObjects: true, cloudGroups: true,
               intakeRules: true,
               parentId: true,
+              inheritParentSystems: true,
             },
           },
           jobs: { select: { status: true } },
@@ -292,12 +278,18 @@ export function makeCaseRepository(db: PrismaClient) {
       if (!c) return null;
       const notNeededSecrets = await notNeededSecretNames(db, c.client.id, c.client.parentId);
       const wiredOptionalSecrets = await wiredOptionalSecretNames(db, c.client.id, c.client.parentId);
+      // Same parent-inheritance the INITIAL plan applies. Without it a child with no systems of its own
+      // re-planned to ZERO jobs — 77% of their re-plans — so nothing existed for the requested-groups
+      // merge to land on and the ticket's groups were silently dropped (FR #0000042).
+      const inherited = inheritsFromParent(c.client)
+        ? applyParentInheritance(c.client, await db.client.findUnique({ where: { id: c.client.parentId! }, select: PARENT_INHERIT_SELECT }))
+        : c.client;
       return {
         serviceNowCaseNumber: c.serviceNowCaseNumber,
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         emailDomainOverride: c.emailDomainOverride,
-        client: { ...c.client, notNeededSecrets, wiredOptionalSecrets },
+        client: { ...inherited, notNeededSecrets, wiredOptionalSecrets },
         started: hasStartedJobs(c.jobs),
       };
     },
