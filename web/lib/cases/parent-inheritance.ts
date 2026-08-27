@@ -22,23 +22,43 @@ export function inheritsFromParent(child: { systems: unknown[]; parentId: string
   return child.systems.length === 0 && !!child.parentId && child.inheritParentSystems;
 }
 
-export function applyParentInheritance<C extends InheritableChild>(child: C, parent: InheritableParent | null): C {
-  // A parent with no systems has no runbook to lend — leave the child exactly as it is rather than
-  // blanking its modeling inputs against an empty parent.
+// Roles/personas + every-user rules follow the parent INDEPENDENTLY of systems. A child may
+// legitimately run its own systems while still following the parent's people rules; gating this on
+// "has no systems of its own" (as the systems link is) denied a child its parent's personas the moment
+// it owned a single ClientSystem row (FR #0000041).
+export function inheritsParentModeling(child: { parentId: string | null; inheritParentModeling: boolean }): boolean {
+  return !!child.parentId && child.inheritParentModeling;
+}
+
+export function applyParentInheritance<C extends InheritableChild>(
+  child: C,
+  parent: InheritableParent | null,
+  opts: { systems: boolean; modeling: boolean }
+): C {
+  // An UNMODELED parent (no systems of its own) has nothing to lend, for EITHER kind of inheritance —
+  // it is a roster-only row, not a runbook. Guarding both keeps this change strictly about the gate on
+  // the CHILD, which is what FR #0000041 is about.
   if (!parent || parent.systems.length === 0) return child;
-  return {
-    ...child,
-    systems: parent.systems,
-    identity: child.identity ?? parent.identity,
-    personas: child.personas ?? parent.personas,
-    globals: child.globals ?? parent.globals,
-    globalsOffboard: child.globalsOffboard ?? parent.globalsOffboard,
-    locations: child.locations ?? parent.locations,
-    adObjects: child.adObjects ?? parent.adObjects,
-    cloudGroups: child.cloudGroups ?? parent.cloudGroups,
-  };
-}
-
+  let out = child;
+  // Systems come WHOLESALE.
+  if (opts.systems) out = { ...out, systems: parent.systems };
+  // Modeling falls back INDIVIDUALLY, so anything the child HAS set still wins. NULL means unset; an
+  // empty object is a deliberate "none" and is left exactly as it is.
+  if (opts.modeling) {
+    out = {
+      ...out,
+      identity: out.identity ?? parent.identity,
+      personas: out.personas ?? parent.personas,
+      globals: out.globals ?? parent.globals,
+      globalsOffboard: out.globalsOffboard ?? parent.globalsOffboard,
+      locations: out.locations ?? parent.locations,
+      adObjects: out.adObjects ?? parent.adObjects,
+      cloudGroups: out.cloudGroups ?? parent.cloudGroups,
+    };
+  }
+  return out;
+}
+
 // The parent columns both planning paths need to read.
 export const PARENT_INHERIT_SELECT = {
   identity: true, personas: true, globals: true, globalsOffboard: true,

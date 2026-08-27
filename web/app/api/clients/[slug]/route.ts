@@ -284,6 +284,21 @@ export async function PATCH(req: Request, { params }: Ctx) {
     return NextResponse.json({ ...client, copiedSystems: copied });
   }
 
+  // The SEPARATE roles/personas link (FR #0000041). A child's own roles always win, so switching this
+  // ON never overwrites anything the child has set — it only fills in what the child leaves unset.
+  if (body.action === "set-parent-modeling") {
+    if (typeof body.inherit !== "boolean") return NextResponse.json({ error: "inherit must be a boolean" }, { status: 422 });
+    if (!existing.parentId) return NextResponse.json({ error: "this client has no parent to inherit from" }, { status: 422 });
+    const client = await repo.setInheritParentModeling(params.slug, body.inherit);
+    await repo.writeAudit({
+      actor: who.label, userId: who.userId,
+      action: "client.inherit_parent_modeling.set",
+      clientId: client.id,
+      detail: { inheritParentModeling: body.inherit },
+    });
+    return NextResponse.json(client);
+  }
+
   // Reset a child back to inheriting from its parent (FR #0000023) — the inverse of the "keep a copy"
   // break above. Whole-child (no systemKey) restores full inheritance; per-system overwrites one system
   // with the parent's version. scope "full" also clears the child's own credential wiring; "systems"

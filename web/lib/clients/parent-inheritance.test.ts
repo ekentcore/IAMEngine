@@ -19,14 +19,18 @@ function child(overrides: Record<string, unknown> = {}) {
     id: "child1", name: "Child", slug: "child", primaryDomain: "child.com",
     emailDomain: null, emailDomainLocked: false, serviceNowSysId: null, engineOptOut: false,
     identity: null, personas: null, globals: null, globalsOffboard: null, locations: null,
-    systems: [] as unknown[], parentId: "parent1", inheritParentSystems: true,
+    systems: [] as unknown[], parentId: "parent1", inheritParentSystems: true, inheritParentModeling: true,
     ...overrides,
   };
 }
 
+function parentWithPersonas() {
+  return { ...parent(), personas: { vet: {} } };
+}
+
 function parent(systems: unknown[] = PARENT_SYSTEMS) {
   return {
-    identity: { usernamePatterns: ["{first}@{domain}"] }, personas: null, globals: null,
+    identity: { usernamePatterns: ["{first}@{domain}"] }, personas: null as unknown, globals: null,
     globalsOffboard: null, locations: null, systems,
   };
 }
@@ -61,11 +65,31 @@ test("clientForPlanning inherits the parent's systems while the link is intact",
   assert.equal((c?.identity as { usernamePatterns: string[] }).usernamePatterns[0], "{first}@{domain}");
 });
 
-test("clientForPlanning does NOT inherit when inheritParentSystems is false", async () => {
+test("clientForPlanning does NOT inherit SYSTEMS when inheritParentSystems is false", async () => {
+  // FR #0000041 split the two: switching off the SYSTEMS link no longer switches off the people
+  // rules. A child can legitimately run its own systems while still following the parent's roles,
+  // and this test used to assert the old conflated behaviour.
   const { db } = fakeDb(child({ inheritParentSystems: false }));
   const c = await makeCaseRepository(db).clientForPlanning("child");
   assert.equal(c?.systems.length, 0);
+  assert.deepEqual(c?.identity, { usernamePatterns: ["{first}@{domain}"] }); // modeling still follows
+});
+
+test("clientForPlanning inherits NOTHING when both links are switched off", async () => {
+  const { db } = fakeDb(child({ inheritParentSystems: false, inheritParentModeling: false }));
+  const c = await makeCaseRepository(db).clientForPlanning("child");
+  assert.equal(c?.systems.length, 0);
   assert.equal(c?.identity, null);
+});
+
+test("a child with its OWN systems still picks up the parent's roles (FR #0000041)", async () => {
+  // core847: five systems of its own and its parent's four personas unreachable, because one gate
+  // answered two different questions.
+  const { db } = fakeDb(child({ systems: [{ systemKey: "exchange" }] }), parentWithPersonas());
+  const c = await makeCaseRepository(db).clientForPlanning("child");
+  assert.equal(c?.systems.length, 1);                       // its own, not the parent's
+  assert.equal((c?.systems[0] as { systemKey: string }).systemKey, "exchange");
+  assert.deepEqual(c?.personas, { vet: {} });               // the parent's roles arrive
 });
 
 test("copyParentModeling copies the parent's systems + null modeling onto the child", async () => {

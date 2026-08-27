@@ -11,6 +11,7 @@ import { OwnAgentToggle } from "../_components/own-agent-toggle";
 import { NoRunnerToggle } from "../_components/no-runner-toggle";
 import { EngineOptOutToggle } from "../_components/engine-opt-out-toggle";
 import { ParentInheritanceControl } from "../_components/parent-inheritance-control";
+import { ParentModelingToggle } from "../_components/parent-modeling-toggle";
 import { kbUrl } from "@/lib/servicenow/kb-url";
 import { automationPreview } from "@/lib/automation";
 import { MODULES } from "@/lib/modules/catalog";
@@ -308,6 +309,9 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
               ownSystemCount={client.systems.length}
               parentSystemCount={parent._count.systems}
             />
+          )}
+          {parent && (
+            <ParentModelingToggle slug={client.slug} parentName={parent.name} on={client.inheritParentModeling} />
           )}
           <OwnAgentToggle slug={client.slug} on={client.runCloudOnOwnAgent} hasAgent={hasClientAgent} />
           <NoRunnerToggle slug={client.slug} on={client.noRunner} />

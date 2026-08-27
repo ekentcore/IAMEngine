@@ -143,6 +143,12 @@ model Client {
   // doesn't match its parent — it then plans from its own (possibly copied) systems, or reads
   // unmodeled if it has none.
   inheritParentSystems   Boolean      @default(true)
+
+  // Roles/personas + every-user rules inheritance, SEPARATE from systems inheritance above. A child
+  // may legitimately run its own systems while still following the parent's people rules, so gating
+  // this on "has no systems of its own" (as the systems link is) denied a child its parent's personas
+  // the moment it owned a single ClientSystem row (FR #0000041). Set false to stop following them.
+  inheritParentModeling  Boolean      @default(true)
   // When true AND this client has its own (client-network) agent, ALL of its jobs — including cloud
   // ones (m365/exchange) — are claimed by that agent, not the central runner. Lets a client run
   // everything on-prem the way its native script did (e.g. Windows-store EXO cert). Falls back to the
