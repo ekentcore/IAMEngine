@@ -14,6 +14,7 @@ export type ClientListItem = {
   restricted: boolean; // internal-only: hidden from operators not granted it (see lib/auth/client-scope)
   engineOptOut: boolean; // "do not use engine" — the intake sweep / manual import skip this client's cases
   inheritParentSystems: boolean; // false = a system-less child does NOT plan from its parent (link broken)
+  inheritParentModeling: boolean; // false = this child does NOT follow its parent's roles/personas (FR #0000041)
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;

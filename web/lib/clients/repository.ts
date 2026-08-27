@@ -101,6 +101,7 @@ export function makeClientRepository(db: PrismaClient) {
           restricted: true,
           engineOptOut: true,
           inheritParentSystems: true,
+          inheritParentModeling: true,
           coreId: true,
           region: true,
           supportStatus: true,
@@ -176,6 +177,7 @@ export function makeClientRepository(db: PrismaClient) {
         restricted: r.restricted,
         engineOptOut: r.engineOptOut,
         inheritParentSystems: r.inheritParentSystems,
+        inheritParentModeling: r.inheritParentModeling,
         coreId: r.coreId,
         region: r.region,
         supportStatus: r.supportStatus,
@@ -389,6 +391,13 @@ export function makeClientRepository(db: PrismaClient) {
     // Break (or restore) the parent-systems inheritance for a child that doesn't match its parent.
     async setInheritParentSystems(slug: string, inheritParentSystems: boolean) {
       return db.client.update({ where: { slug }, data: { inheritParentSystems } });
+    },
+
+    // The SEPARATE roles/personas link (FR #0000041). Independent of systems inheritance above: a
+    // child may run its own systems while still following the parent's people rules, so switching one
+    // off must not switch off the other.
+    async setInheritParentModeling(slug: string, inheritParentModeling: boolean) {
+      return db.client.update({ where: { slug }, data: { inheritParentModeling } });
     },
     // Materialize the parent's modeling onto the child — exactly what clientForPlanning inherits:
     // the ClientSystem rows plus identity/personas/globals/locations WHERE THE CHILD HAS NONE.

@@ -15,6 +15,7 @@ export type ClientVM = {
   restricted: boolean;
   engineOptOut: boolean;
   inheritParentSystems: boolean;
+  inheritParentModeling: boolean;
   coreId: string | null;
   region: string | null;
   supportStatus: string | null;
