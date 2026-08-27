@@ -30,7 +30,7 @@ function parentWithPersonas() {
 
 function parent(systems: unknown[] = PARENT_SYSTEMS) {
   return {
-    identity: { usernamePatterns: ["{first}@{domain}"] }, personas: null, globals: null,
+    identity: { usernamePatterns: ["{first}@{domain}"] }, personas: null as unknown, globals: null,
     globalsOffboard: null, locations: null, systems,
   };
 }
