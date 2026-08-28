@@ -22,6 +22,10 @@ export type RunReportStep = {
   systemKey: string;
   systemName: string;
   status: string; // raw JobStatus
+  // Flagged by "Run this step only" and cleared when the result lands. A pending singleRun step is
+  // ARMED AND WAITING for a runner, not stalled — the report says so, because a paused case with a
+  // silent step is exactly what made this look broken (FR #0000101).
+  singleRun: boolean;
   verdict: StepVerdict;
   actions: string[];
   validation: { ok: boolean; checks: { name: string; expected?: unknown; actual?: unknown; pass: boolean }[] } | null;
@@ -413,6 +417,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       systemKey: j.systemKey,
       systemName: input.names.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
       status: j.status,
+      singleRun: Boolean((j as { singleRun?: boolean }).singleRun),
       verdict,
       // A manual step has no result to report — show its instruction note instead of an empty line.
       actions: j.mode === "manual" ? [...manualNotesOf(j.request), ...actionsOf(jr)] : actionsOf(jr),
@@ -555,7 +560,7 @@ export async function loadRunReport(db: PrismaClient, caseId: string): Promise<R
     where: { id: caseId },
     include: {
       client: { select: { id: true, name: true, slug: true, parentId: true } },
-      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, request: true, result: true, validation: true, progress: true, progressAt: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
+      jobs: { orderBy: { sequence: "asc" }, select: { id: true, systemKey: true, sequence: true, mode: true, status: true, singleRun: true, request: true, result: true, validation: true, progress: true, progressAt: true, error: true, startedAt: true, finishedAt: true, procurementWatch: { select: { number: true, state: true, note: true, lastCheckedAt: true } } } },
     },
   });
   if (!c) return null;

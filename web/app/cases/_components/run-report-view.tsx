@@ -1255,6 +1255,13 @@ export function RunReportView({ initial, caseId, writeEnabled }: { initial: RunR
                   </div>
                 );
               })()}
+              {step.singleRun && step.status === "pending" && (
+                <div className="note" style={{ marginTop: 6, color: "#1d4ed8" }}>
+                  ⏳ Queued to run on its own — waiting for a runner to pick it up. The case stays paused
+                  until you resume it. A runner won&apos;t look for new work until it finishes what it is
+                  already running, so this can take a few minutes; nothing is stuck.
+                </div>
+              )}
               {step.error && (
                 <div>
                   <pre style={{ ...PRE, color: "#b91c1c" }}>{step.error}</pre>
