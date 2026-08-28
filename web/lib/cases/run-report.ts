@@ -126,6 +126,8 @@ type JobRow = {
   sequence: number;
   mode: string;
   status: string;
+  // Set by "Run this step only" and cleared when the result lands (FR #0000101).
+  singleRun?: boolean;
   request: unknown;
   result: unknown;
   validation: unknown;
@@ -417,7 +419,7 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
       systemKey: j.systemKey,
       systemName: input.names.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
       status: j.status,
-      singleRun: Boolean((j as { singleRun?: boolean }).singleRun),
+      singleRun: Boolean(j.singleRun),
       verdict,
       // A manual step has no result to report — show its instruction note instead of an empty line.
       actions: j.mode === "manual" ? [...manualNotesOf(j.request), ...actionsOf(jr)] : actionsOf(jr),
