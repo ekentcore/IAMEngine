@@ -272,3 +272,20 @@ test("no LicenseDependencyIssues => step.licenseIssues is null", () => {
   const rr = buildRunReport(input());
   assert.equal(rr.steps[0].licenseIssues, null);
 });
+
+test("a pending single-run step is reported as singleRun so the case can say it is queued (FR #0000101)", () => {
+  // "Run this step only" pauses the case and arms ONE job. Without this the report showed a paused
+  // case with a silent pending step, which is exactly what read as "it did nothing" — the dispatch
+  // itself waits for a runner to finish its current batch and took 23 minutes on the reported case.
+  const rr = buildRunReport(input({
+    caseStatus: "paused",
+    jobs: [
+      { systemKey: "spanning", sequence: 0, mode: "api", status: "pending", singleRun: true, request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+      { systemKey: "m365", sequence: 1, mode: "api", status: "succeeded", request: {}, result: null, validation: null, error: null, startedAt: null, finishedAt: null },
+    ],
+    names: new Map([["spanning", "Spanning"], ["m365", "Microsoft 365"]]),
+  }));
+  assert.equal(rr.steps[0].singleRun, true);
+  assert.equal(rr.steps[0].status, "pending");
+  assert.equal(rr.steps[1].singleRun, false); // a normal step is never flagged
+});

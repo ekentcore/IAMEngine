@@ -129,6 +129,14 @@ function connTestRow(
   };
 }
 
+// Claim ordering. singleRun FIRST: "Run this step only" is a human sitting and watching, and a
+// runner does not poll again until its current batch drains (Start-IamRunner: it only sleeps when a
+// cycle claimed nothing). Behind arbitrary background work that meant a median 11-MINUTE wait before
+// the step even started — 23 minutes on the case that reported it — so the case paused and looked
+// dead (FR #0000101). Operator-initiated work jumps the queue; the rest keeps its stable
+// case-then-sequence order so a case's steps still run in order.
+export const CLAIM_ORDER: Prisma.JobOrderByWithRelationInput[] = [{ singleRun: "desc" }, { caseRequestId: "asc" }, { sequence: "asc" }];
+
 // A claimed job whose runner never posts a result is reclaimed after this long (crash/stall).
 const LEASE_MS = 10 * 60 * 1000;
 // A "running" job whose progress hasn't moved in this long has wedged (the worker died / a step hung
@@ -843,7 +851,7 @@ export function makeRunnerService(db: PrismaClient) {
             { singleRun: true, case: { deletedAt: null, ...scope } },
           ],
         },
-        orderBy: [{ caseRequestId: "asc" }, { sequence: "asc" }],
+        orderBy: CLAIM_ORDER,
         select: { id: true, caseRequestId: true, systemKey: true, sequence: true, mode: true, status: true, singleRun: true, request: true, case: { select: { status: true } } },
       });
       if (candidates.length === 0) return [];
