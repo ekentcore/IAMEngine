@@ -248,6 +248,7 @@ export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-spl
 export { entry as systemsEditorKb } from "./systems-editor-kb";
 export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
 export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-holds-mimecast-spanning";
+export { entry as unmodeledStepsBecomeManual } from "./unmodeled-steps-become-manual";
 export { entry as v2Offboarding } from "./v2-offboarding";
 export { entry as v3MenusCollapsibleSections } from "./v3-menus-collapsible-sections";
 export { entry as zoomBrowserAutoSetup } from "./zoom-browser-auto-setup";
