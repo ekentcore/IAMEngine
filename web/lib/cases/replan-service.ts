@@ -13,6 +13,7 @@ import { deriveStatus, type PlanOutcome } from "./planning-service";
 import { CaseAlreadyStartedError } from "./job-status";
 import { makeEmailDomainResolver } from "./plan-domain";
 import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resolve";
+import { unmodeledManualJobs } from "./unmodeled-steps";
 import { resolveActor, type ActorInput } from "../auth/actor";
 
 export type ReplanResult =
@@ -92,9 +93,15 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
     if (intakeRule) payload = { ...payload, __intakeRule: { id: intakeRule.id, label: intakeRule.label } };
   }
 
-  const planned = resolvePlannedConfigs(info.client, payload, action,
+  const plannedSystems = resolvePlannedConfigs(info.client, payload, action,
     planCase(info.client.systems, action, payload, personaSystemKeys(info.client, payload, action),
       new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets), intakeRule?.skipSystems, info.client.backbone));
+  // Same manual checklist steps the initial plan adds (FR #0000096). The synthetic key is stable,
+  // so a step an operator already ticked off is KEPT by the incremental re-plan, not resurrected.
+  const planned = [...plannedSystems, ...unmodeledManualJobs(
+    await repo.unmodeledSections(info.client.id, action),
+    plannedSystems.reduce((m, j) => Math.max(m, j.sequence), -1) + 1,
+  )];
   const status = deriveStatus(planned);
   let result: { mode: "full" | "incremental"; kept: number; added: number; rerun: number };
   try {

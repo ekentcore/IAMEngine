@@ -13,6 +13,7 @@ import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { offboardCandidatesOf, offboardCandidateQuery, acceptedKeysFor, type OffboardCandidate } from "../jobs/runner-service";
 import { blockingJobs, type JobLite } from "../jobs/runner-logic";
 import { jobResultEnvelope } from "../jobs/job-result";
+import { unmodeledStepTitle } from "./unmodeled-steps";
 
 export type StepVerdict = "verified" | "warning" | "failed" | "skipped" | "manual" | "needs_approval" | "pending" | "running" | "verifying" | "retrying";
 
@@ -417,7 +418,9 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         ? { number: j.procurementWatch.number, state: j.procurementWatch.state, note: j.procurementWatch.note ?? null, lastCheckedAt: j.procurementWatch.lastCheckedAt ? new Date(j.procurementWatch.lastCheckedAt).toISOString() : null }
         : null,
       systemKey: j.systemKey,
-      systemName: input.names.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
+      // An unmodeled step carries its runbook title on the job — show that, not the slugged
+      // synthetic key ("Visual Studio Subscriptions", not "unmodeled:visual-studio-subscriptions").
+      systemName: unmodeledStepTitle(j.request) ?? input.names.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
       status: j.status,
       singleRun: Boolean(j.singleRun),
       verdict,

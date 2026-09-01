@@ -14,6 +14,8 @@ function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
   const created: Array<Record<string, unknown>> = [];
   const updated: Array<Record<string, unknown>> = [];
   const db = {
+    // FR #0000096: the planner reads unmodeled runbook sections to plan manual checklist steps.
+    runbookSection: { findMany: async () => [] },
     caseRequest: {
       findUnique: async () => caseRow,
       update: async () => { calls.update++; },
@@ -36,7 +38,9 @@ function fakeDb(caseRow: unknown, keptJobs: unknown[] = []) {
           delete: async () => { calls.delete++; },
           findMany: async () => keptJobs,
         },
-        caseRequest: { findUnique: async () => caseRow, update: async () => { calls.update++; } },
+        // FR #0000096: the planner reads unmodeled runbook sections to plan manual checklist steps.
+    runbookSection: { findMany: async () => [] },
+    caseRequest: { findUnique: async () => caseRow, update: async () => { calls.update++; } },
         // The incremental path checks which kept failures the operator ACCEPTED ("ignore") so they
         // don't drag the replanned case back to "failed". No fixture accepts one.
         runOutcome: { findMany: async () => [] },
@@ -182,6 +186,8 @@ test("replan re-sequences a kept step to its planned position and does NOT re-ru
 test("replanInputs selects the client backbone (ad_synced GAL hide + cloudCreate read it on re-plan)", async () => {
   let captured: { select?: { client?: { select?: Record<string, unknown> } } } | null = null;
   const db = {
+    // FR #0000096: the planner reads unmodeled runbook sections to plan manual checklist steps.
+    runbookSection: { findMany: async () => [] },
     caseRequest: { findUnique: async (args: never) => { captured = args; return null; } },
   } as unknown as PrismaClient;
   const res = await makeCaseRepository(db).replanInputs("case-1");
