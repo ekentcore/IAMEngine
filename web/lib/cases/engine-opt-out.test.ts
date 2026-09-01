@@ -14,6 +14,8 @@ import type { CaseRepository } from "./repository";
 function fakeDb(opts: { existingCaseId?: string; engineOptOut: boolean }) {
   const calls = { restore: 0 };
   const db = {
+    // FR #0000096: the planner reads unmodeled runbook sections to plan manual checklist steps.
+    runbookSection: { findMany: async () => [] },
     caseRequest: {
       findUnique: async (a: { where: { serviceNowCaseNumber?: string; id?: string } }) => {
         // repo.findCaseIdByNumber

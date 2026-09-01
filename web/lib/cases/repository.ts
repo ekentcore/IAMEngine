@@ -17,6 +17,7 @@ import { iamCaseNumber, needsIamNumber } from "./case-number";
 import { notM365AutoSetupCase } from "./exclude-m365-autosetup";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import { inheritsFromParent, inheritsParentModeling, applyParentInheritance, PARENT_INHERIT_SELECT } from "./parent-inheritance";
+import { unmodeledStepTitle, type UnmodeledSection } from "./unmodeled-steps";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -124,6 +125,17 @@ export function makeCaseRepository(db: PrismaClient) {
   return {
     // Client + its systems + identity, needed to plan a case (identity/domain drive the UPN/
     // SamAccountName derivation). null if the client doesn't exist.
+    // Runbook sections the extractor could not map to a system. The planner turns each into a
+    // manual checklist step (FR #0000096); nothing else reads them at plan time.
+    async unmodeledSections(clientId: string, action: Action): Promise<UnmodeledSection[]> {
+      const rows = await db.runbookSection.findMany({
+        where: { clientId, action, status: "unmodeled" },
+        orderBy: { seq: "asc" },
+        select: { title: true, steps: true, guess: true },
+      });
+      return rows.map((r) => ({ title: r.title, steps: r.steps ?? [], guess: r.guess ?? null }));
+    },
+
     async clientForPlanning(slug: string): Promise<
       | {
           id: string; name: string; slug: string; primaryDomain: string;
@@ -897,7 +909,7 @@ export function makeCaseRepository(db: PrismaClient) {
           return {
             id: j.id,
             systemKey: j.systemKey,
-            systemName: nameByKey.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
+            systemName: unmodeledStepTitle(j.request) ?? nameByKey.get(j.systemKey) ?? ADHOC_STEP_LABELS[j.systemKey] ?? j.systemKey,
             sequence: j.sequence,
             mode: j.mode,
             status: j.status,

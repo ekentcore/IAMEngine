@@ -11,6 +11,7 @@ import { resolvePlannedConfigs, personaSystemKeys } from "../profiles/plan-resol
 import { resolveUnknownsWithAI } from "./ai-resolve";
 import { autoOffboardScheduleAt, offboardTargetResolved } from "./schedule";
 import { resolveActor, type ActorInput } from "../auth/actor";
+import { unmodeledManualJobs } from "./unmodeled-steps";
 
 export type PlanOutcome = {
   caseId: string;
@@ -84,9 +85,15 @@ export async function createAndPlanCase(
   }
 
   // Plan, then (for v2.1 clients) flatten persona/globals/location config into each onboard job.
-  const planned = resolvePlannedConfigs(client, payload, input.action,
+  const plannedSystems = resolvePlannedConfigs(client, payload, input.action,
     planCase(client.systems, input.action, payload, personaSystemKeys(client, payload, input.action),
       new Set(client.notNeededSecrets), new Set(client.wiredOptionalSecrets), intakeRule?.skipSystems, client.backbone));
+  // Unmodeled runbook sections become manual checklist steps, planned LAST — they depend on nothing
+  // and nothing depends on them, so the automated sequence is untouched (FR #0000096).
+  const planned = [...plannedSystems, ...unmodeledManualJobs(
+    await repo.unmodeledSections(client.id, input.action),
+    plannedSystems.reduce((m, j) => Math.max(m, j.sequence), -1) + 1,
+  )];
   const status = deriveStatus(planned);
   const who = resolveActor(actor);
   const creator = { label: who.actor, userId: who.userId };
