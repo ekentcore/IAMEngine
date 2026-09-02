@@ -157,7 +157,29 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     return { ...j, config: { ...cfg, forwarding: { ...((cfg.forwarding as Record<string, unknown> | null) ?? {}), address: fwd } } };
   });
 
-  return injectHideFromGal(withForwarding, payload, client.backbone);
+  // Spanning, destructive offboard (FR #0000095): unassign the licence rather than attempt an Archive
+  // conversion. The runner has always supported both (config.removeLicense -> /users/unassign) and
+  // nothing ever set the flag, so every client took the Archive path — which Kaseya's API cannot
+  // perform from a Standard licence ("Standard licenses cannot be converted to archived licenses").
+  // Measured before shipping: 37 of the 60 most recent Spanning offboards failed the swap and left a
+  // billable seat for a human to finish by hand, and three of the four destructive clients are in
+  // that list.
+  //
+  // Only for the DESTRUCTIVE classification. For everyone else the Archive conversion is the intent,
+  // and quietly unassigning their seats could delete backups nobody agreed to lose — Kaseya warn that
+  // deactivating a licence can do exactly that, which is why the runner refuses to auto-unassign on
+  // the default path. The gate here is that a destructive step already forces operator approval AND an
+  // evidence snapshot at plan time (orchestrator.ts), whatever the stored requiresApproval says.
+  //
+  // Explicit client config wins: a deliberately configured swapLicense or removeLicense is untouched.
+  const withSpanningDrop = withForwarding.map((j) => {
+    if (j.systemKey !== "spanning" || j.intent !== "destructive") return j;
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    if ("removeLicense" in cfg || "unassign" in cfg || "swapLicense" in cfg) return j;
+    return { ...j, config: { ...cfg, removeLicense: true } };
+  });
+
+  return injectHideFromGal(withSpanningDrop, payload, client.backbone);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:
