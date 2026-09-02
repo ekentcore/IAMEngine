@@ -236,6 +236,7 @@ export { entry as singleStepClaimedFirst } from "./single-step-claimed-first";
 export { entry as slackExecutorAndManualFlip } from "./slack-executor-and-manual-flip";
 export { entry as soundEggs } from "./sound-eggs";
 export { entry as spanningBrowserApiSetup } from "./spanning-browser-api-setup";
+export { entry as spanningDestructiveDropsLicence } from "./spanning-destructive-drops-licence";
 export { entry as spanningForceSyncCentralOnly } from "./spanning-force-sync-central-only";
 export { entry as spanningGuidedSetupDerived } from "./spanning-guided-setup-derived";
 export { entry as spanningForceSyncFixed } from "./spanning-force-sync-fixed";
