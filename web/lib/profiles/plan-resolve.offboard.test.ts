@@ -196,3 +196,48 @@ test("offboard forwarding is exchange-only - the m365 lane is untouched", () => 
   const out = resolvePlannedConfigs(bare, { mailForwarded: true, forwardEmailTo: "lyao@aleto.co (55ebb)" }, "offboard", [m365]);
   assert.equal((out[0].config as Record<string, unknown>).forwarding, undefined);
 });
+
+const spanning = (config: unknown, intent: "disable" | "destructive" | null = "destructive"): PlannedJob =>
+  ({ systemKey: "spanning", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent, secretNames: [], dependsOn: [], config } as PlannedJob);
+
+test("a DESTRUCTIVE spanning offboard drops the licence instead of converting to Archive (FR #0000095)", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [spanning({})]);
+  assert.equal((out[0].config as Record<string, unknown>).removeLicense, true);
+});
+
+test("a non-destructive spanning offboard still converts to Archive", () => {
+  // For these clients the Archive conversion IS the intent. Unassigning their seats could delete
+  // backups nobody agreed to lose.
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [spanning({}, "disable")]);
+  assert.equal((out[0].config as Record<string, unknown>).removeLicense, undefined);
+});
+
+test("an explicitly configured swapLicense wins over the destructive default", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [spanning({ swapLicense: { from: "Standard", to: "Archive" } })]);
+  const cfg = out[0].config as Record<string, unknown>;
+  assert.equal(cfg.removeLicense, undefined);           // the client configured a swap deliberately
+  assert.deepEqual(cfg.swapLicense, { from: "Standard", to: "Archive" });
+});
+
+test("an already-set removeLicense is left exactly as it is", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [spanning({ removeLicense: false })]);
+  assert.equal((out[0].config as Record<string, unknown>).removeLicense, false);
+});
+
+test("the rest of the spanning config survives the injection", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [spanning({ afterMailboxConvertAndLicenseRemoval: true })]);
+  const cfg = out[0].config as Record<string, unknown>;
+  assert.equal(cfg.afterMailboxConvertAndLicenseRemoval, true);
+  assert.equal(cfg.removeLicense, true);
+});
+
+test("a destructive step on ANOTHER system is not given a spanning licence flag", () => {
+  const m365 = { systemKey: "m365", sequence: 0, mode: "api", requiresApproval: false, captureEvidence: false, intent: "destructive", secretNames: [], dependsOn: [], config: {} } as PlannedJob;
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [m365]);
+  assert.equal((out[0].config as Record<string, unknown>).removeLicense, undefined);
+});
+
+test("a destructive spanning step is not touched on an ONBOARD", () => {
+  const out = resolvePlannedConfigs(bare, {}, "onboard", [spanning({})]);
+  assert.equal((out[0].config as Record<string, unknown>).removeLicense, undefined);
+});
