@@ -2032,6 +2032,54 @@ function Set-CtgPhase {
 # gallery module conjured from a typo'd cmdlet name.
 $script:CtgAutoInstallModules = @('Microsoft.Graph.*', 'ExchangeOnlineManagement', 'MSOnline', 'AzureAD', 'AzureADPreview', 'Az.*', 'ADSync', 'ActiveDirectory')
 
+# Set by the self-heal when it installs something that must not be imported into THIS process; the
+# poll loop restarts once the current job is finished (never mid-job — that would strand it).
+$script:CtgRestartReason = $null
+
+# Modules that share .NET assemblies (Azure.Core, Microsoft.Identity.Client, System.IdentityModel) and
+# therefore must never be imported into a process that has already loaded a sibling: the second import
+# binds an incompatible copy and the first module's calls stop returning. Grouped rather than
+# hardcoded as "EXO vs Graph" so the next auth-stack module added to the allowlist is covered too.
+# Modules that share .NET assemblies (Azure.Core, Microsoft.Identity.Client) and therefore must never
+# be imported into a process that has already loaded a sibling: the second import binds an
+# incompatible copy and the FIRST module's calls stop returning. A flat pattern -> group map, not a
+# nested array: @( @(...) ) flattens in PowerShell, which silently turned the membership test into a
+# scan of single characters' worth of pattern and never matched anything.
+$script:CtgAssemblySharingGroups = @{
+    'Microsoft.Graph.*'        = 'entra-auth-stack'
+    'ExchangeOnlineManagement' = 'entra-auth-stack'
+    'MSOnline'                 = 'entra-auth-stack'
+    'AzureAD'                  = 'entra-auth-stack'
+    'AzureADPreview'           = 'entra-auth-stack'
+    'Az.*'                     = 'entra-auth-stack'
+}
+
+function Test-CtgModuleConflictsWithLoaded {
+    # Would importing $Name into THIS process collide with a module already loaded in it?
+    # True only when a module matching a DIFFERENT pattern in the same group is loaded — a
+    # Microsoft.Graph submodule joining its own siblings shares one version line (the skew guard keeps
+    # them aligned) and stays allowed, which is the case the self-heal was built for.
+    #
+    # Loaded/Groups are parameters with live defaults so the decision is unit-testable without mocking
+    # the host's module list: tests pass both explicitly, production passes neither.
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string[]]$Loaded = @(Get-Module | ForEach-Object { $_.Name }),
+        [hashtable]$Groups = $script:CtgAssemblySharingGroups
+    )
+    if (-not $Groups) { return $false }
+    $myPattern = $null
+    $myGroup = $null
+    foreach ($p in $Groups.Keys) { if ($Name -like $p) { $myPattern = $p; $myGroup = $Groups[$p]; break } }
+    if (-not $myGroup) { return $false }   # not part of any shared-assembly stack
+    foreach ($p in $Groups.Keys) {
+        if ($p -eq $myPattern) { continue }          # same pattern = siblings, safe together
+        if ($Groups[$p] -ne $myGroup) { continue }   # a different stack entirely
+        foreach ($l in $Loaded) { if ($l -like $p) { return $true } }
+    }
+    return $false
+}
+
 function Get-CtgMissingCommandName {
     # Pull the unresolved command name out of a CommandNotFoundException (or its "The term 'X' is not
     # recognized" message). Returns $null when the error isn't a missing-command.
@@ -2081,6 +2129,26 @@ function Repair-CtgMissingModule {
             }
         }
         else { Install-Module $mod -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop }
+
+        # DO NOT Import-Module here when the new module shares .NET assemblies with one already loaded.
+        # ExchangeOnlineManagement and Microsoft.Graph both carry Azure.Core and Microsoft.Identity.Client;
+        # importing the second into a process that already bound the first loads a SECOND, incompatible
+        # copy, and from then on Graph calls never return — no error, no timeout, just a dead process
+        # holding a job.
+        #
+        # That is what wedged the central runner on 2026-09-02/03. ExchangeOnlineManagement went missing
+        # on CORE-CCE-DC01, this self-heal installed AND imported it mid-run, and the next Get-MgUser on
+        # the following job hung forever. The 600s stall watchdog then respawned the process, the app
+        # re-dispatched the job, and it wedged again — a loop that reads as "the runner keeps crashing".
+        #
+        # Installing is still right: the module IS missing and the next start needs it. Loading it is
+        # what we must not do here. Ask for a restart instead — a fresh process imports the full set
+        # cleanly at boot, which is the only safe order.
+        if (Test-CtgModuleConflictsWithLoaded $mod) {
+            $script:CtgRestartReason = "self-heal installed '$mod' (for '$CommandName'), which shares .NET assemblies with an already-loaded module — restarting so it loads cleanly"
+            Write-CtgLog -Level WARN -Message "self-heal: $script:CtgRestartReason"
+            return $null
+        }
         Import-Module $mod -Force -ErrorAction Stop
         return $mod
     } catch { Write-Warning "self-heal: failed to install '$mod' for '$CommandName': $($_.Exception.Message)"; return $null }
@@ -3476,6 +3544,12 @@ while ($true) {
                             Set-CtgPhase $job.id "missing command '$missing' — locating + installing its module"
                             $mod = Repair-CtgMissingModule $missing
                             if ($mod) { Set-CtgPhase $job.id "installed $mod — retrying $($job.systemKey)"; continue }
+                            # Installed, but deliberately not loaded into this process (assembly clash).
+                            # Fail the step with something an operator can act on, rather than the bare
+                            # "not recognized" — the restart happens as soon as this job is off the box.
+                            if ($script:CtgRestartReason) {
+                                throw "'$missing' needs a module that was just installed but CANNOT be loaded into the running runner without hanging it (it shares .NET assemblies with an already-loaded module). The runner is restarting now — re-run this step once it is back up."
+                            }
                         }
                         # Self-heal a STALE app-only Graph token: a RequestDenied on a Graph-backed step is
                         # often a token minted BEFORE consent was granted (the runner connects once per
@@ -3643,6 +3717,16 @@ while ($true) {
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"
         Write-CtgLog -Level WARN -Message "poll cycle error: $($_.Exception.Message)"
+    }
+    # A self-heal installed a module this process must not import (assembly clash — see
+    # Repair-CtgMissingModule). Restart NOW that the cycle's jobs are finished and their results are
+    # posted: a fresh process imports the whole set cleanly at boot, which is the only safe order.
+    # Deliberately here and not mid-job — restarting with a job in flight would strand it until the
+    # app's lease reclaim, which is the very loop this fix exists to end.
+    if ($script:CtgRestartReason) {
+        Write-CtgLog -Level WARN -Message "restarting: $script:CtgRestartReason"
+        $script:CtgRestartReason = $null
+        Restart-CtgRunner   # re-execs; never returns
     }
     # Drain: if this cycle claimed work, more may have just unblocked (dependency chains, an
     # operator's re-run) — poll again immediately and only sleep once the queue is empty.
