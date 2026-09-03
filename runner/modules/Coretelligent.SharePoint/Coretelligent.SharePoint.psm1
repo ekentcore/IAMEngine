@@ -174,49 +174,64 @@ function Invoke-CtgSharePointOffboardGrant {
         [hashtable]$CertArgs = @{}
     )
     $actions = [System.Collections.Generic.List[string]]::new()
-    $spDelegate = [string](Get-CtgProp $Job.config 'oneDriveGrantAccessTo')
-    if (-not $spDelegate) { return $actions.ToArray() }
+    # FR #0000084 widened the case-requested delegate from ONE person to several, and this reader was
+    # missed: [string] on an ARRAY joins its elements with a space, so two delegates became one
+    # nonexistent person ("Rachel Thompson Nicole Hayes") and the grant WARNed instead of running
+    # (FR #0000120 — UM0030521, where the mailbox side worked and this did not). Same normalisation the
+    # M365 and Exchange modules use: @(...) accepts a string OR an array and yields one code path.
+    $spDelegates = @(@(Get-CtgProp $Job.config 'oneDriveGrantAccessTo') | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+    if (-not $spDelegates.Count) { return $actions.ToArray() }
 
-    $dUser = Resolve-CtgEntraUser -Identity $spDelegate
-    $delegateEmail = if ($dUser) { [string]((Get-CtgProp $dUser 'Mail') ?? (Get-CtgProp $dUser 'UserPrincipalName')) } else { $null }
-    if (-not $delegateEmail) {
-        $actions.Add("WARN could not grant SharePoint/OneDrive access — the delegate '$spDelegate' was not found in Entra; grant it by hand")
-        return $actions.ToArray()
-    }
-
-    # Fix 5 (security): re-check the ORIGINAL delegate value (not the already-resolved email) for
-    # display-name ambiguity before granting anything — a site-collection-admin grant is high-privilege,
-    # so this path fails safe (skip + WARN) rather than handing full site control to a guessed person.
-    if (-not (Test-CtgDelegateUnambiguous -Identity $spDelegate)) {
-        $actions.Add("WARN SharePoint hand-off skipped — delegate '$spDelegate' matches multiple users; grant site access by hand")
-        return $actions.ToArray()
-    }
-
-    # OneDrive: derive the SITE url from the leaver's drive webUrl (…/personal/<user>/Documents… ->
-    # …/personal/<user>) — Grant-CtgSharePointSiteAccess needs a site, not a document-library path.
-    # Reuse the same UPN resolution the offboard executor/validator use so we grant on the SAME user
-    # it just offboarded.
+    # The leaver's OneDrive site is the same for every delegate, so resolve it ONCE rather than per
+    # name — it costs a Graph read and a drive lookup each time.
+    $odSiteUrl = $null
     try {
         $leaverUpn = Resolve-CtgM365Upn -User $Job.payload
         $drive = if ($leaverUpn) { Get-CtgUserDrive -UserId $leaverUpn } else { $null }
         $odSiteUrl = if ($drive) { Get-CtgOneDriveSiteUrl $drive.WebUrl } else { $null }
-        if ($odSiteUrl) {
-            $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $odSiteUrl -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs))
-        }
     }
     catch {
         $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
-        $actions.Add("WARN could not grant $delegateEmail SharePoint access to the leaver's OneDrive site: $emsg")
+        $actions.Add("WARN could not locate the leaver's OneDrive site: $emsg")
     }
 
-    # Any additional profile-configured SharePoint sites (string[] of site URLs) — same resolved
-    # delegate, one grant per site. Fix 4: same Graph/PnP-error extraction as the OneDrive-site grant
-    # above, for a consistent WARN shape instead of a bare exception message.
-    foreach ($site in @(Get-CtgProp $Job.config 'sharePointDelegateSites' | Where-Object { $_ })) {
-        try { $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $site -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs)) }
-        catch {
-            $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
-            $actions.Add("WARN could not grant $delegateEmail access to SharePoint site '$site': $emsg")
+    # Each delegate is INDEPENDENT: an unresolvable or ambiguous name warns about THAT name and the
+    # loop carries on, so one bad row cannot cost the other named people their access. Same rule the
+    # mailbox and OneDrive-invite paths already follow.
+    $extraSites = @(Get-CtgProp $Job.config 'sharePointDelegateSites' | Where-Object { $_ })
+    foreach ($spDelegate in $spDelegates) {
+        $dUser = Resolve-CtgEntraUser -Identity $spDelegate
+        $delegateEmail = if ($dUser) { [string]((Get-CtgProp $dUser 'Mail') ?? (Get-CtgProp $dUser 'UserPrincipalName')) } else { $null }
+        if (-not $delegateEmail) {
+            $actions.Add("WARN could not grant SharePoint/OneDrive access — the delegate '$spDelegate' was not found in Entra; grant it by hand")
+            continue
+        }
+
+        # Fix 5 (security): re-check the ORIGINAL delegate value (not the already-resolved email) for
+        # display-name ambiguity before granting anything — a site-collection-admin grant is
+        # high-privilege, so this path fails safe (skip + WARN) rather than handing full site control
+        # to a guessed person.
+        if (-not (Test-CtgDelegateUnambiguous -Identity $spDelegate)) {
+            $actions.Add("WARN SharePoint hand-off skipped — delegate '$spDelegate' matches multiple users; grant site access by hand")
+            continue
+        }
+
+        if ($odSiteUrl) {
+            try { $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $odSiteUrl -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs)) }
+            catch {
+                $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
+                $actions.Add("WARN could not grant $delegateEmail SharePoint access to the leaver's OneDrive site: $emsg")
+            }
+        }
+
+        # Any additional profile-configured SharePoint sites (string[] of site URLs) — same resolved
+        # delegate, one grant per site.
+        foreach ($site in $extraSites) {
+            try { $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $site -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs)) }
+            catch {
+                $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
+                $actions.Add("WARN could not grant $delegateEmail access to SharePoint site '$site': $emsg")
+            }
         }
     }
     $actions.ToArray()

@@ -129,6 +129,68 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         Mock -CommandName Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -MockWith { "granted $Delegate site-collection admin on $SiteUrl" }
     }
 
+    It 'grants EVERY delegate when the ticket named several (FR #0000120)' {
+        # FR #84 widened the case-requested delegate to a list, and this reader was missed: [string] on
+        # an ARRAY joins with a space, so two delegates became one nonexistent person
+        # ("Rachel Thompson Nicole Hayes") and the grant WARNed instead of running. UM0030521 is the
+        # case — the mailbox side worked and this did not.
+        Mock -CommandName Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -MockWith {
+            param($Identity)
+            switch ($Identity) {
+                'Rachel Thompson' { [pscustomobject]@{ Mail = 'rachel@x.com'; UserPrincipalName = 'rachel@x.com' } }
+                'Nicole Hayes'    { [pscustomobject]@{ Mail = 'nicole@x.com'; UserPrincipalName = 'nicole@x.com' } }
+                default           { $null }
+            }
+        }
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{}
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = @('Rachel Thompson', 'Nicole Hayes')
+                                         sharePointDelegateSites = @('https://x.sharepoint.com/sites/finance') }
+        }
+        $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 'x.onmicrosoft.com' -CertArgs @{ CertificateBase64 = 'Yg==' }
+        $joined = $actions -join '|'
+        # BOTH are granted, and the space-joined phantom never appears.
+        $joined | Should -Match 'rachel@x.com'
+        $joined | Should -Match 'nicole@x.com'
+        $joined | Should -Not -Match 'Rachel Thompson Nicole Hayes'
+        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 2 -Exactly
+    }
+
+    It 'a single delegate still travels as a plain string (unchanged for the common case)' {
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{}
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = 'Amelia Jones'; sharePointDelegateSites = @('https://x.sharepoint.com/sites/finance') }
+        }
+        $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 'x.onmicrosoft.com' -CertArgs @{ CertificateBase64 = 'Yg==' }
+        ($actions -join '|') | Should -Match 'amelia@x.com'
+        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1 -Exactly
+    }
+
+    It 'one unresolvable delegate does not cost the others their access' {
+        # Per-delegate isolation, the same rule the mailbox and OneDrive-invite paths follow.
+        Mock -CommandName Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -MockWith {
+            param($Identity)
+            if ($Identity -eq 'Real Person') { [pscustomobject]@{ Mail = 'real@x.com'; UserPrincipalName = 'real@x.com' } } else { $null }
+        }
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{}
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = @('Typo Name', 'Real Person')
+                                         sharePointDelegateSites = @('https://x.sharepoint.com/sites/finance') }
+        }
+        $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 'x.onmicrosoft.com' -CertArgs @{ CertificateBase64 = 'Yg==' }
+        $joined = $actions -join '|'
+        $joined | Should -Match "delegate 'Typo Name' was not found"
+        $joined | Should -Match 'real@x.com'
+        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1 -Exactly
+    }
+
+    It 'blanks and empty entries plan no grant at all' {
+        $job = [pscustomobject]@{ payload = [pscustomobject]@{}; config = [pscustomobject]@{ oneDriveGrantAccessTo = @('', '   ') } }
+        $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'a' -Tenant 't' -CertArgs @{ CertificateBase64 = 'Yg==' }
+        @($actions).Count | Should -Be 0
+        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 0 -Exactly
+    }
+
     It 'resolves a display-name delegate to an email BEFORE granting SharePoint site access' {
         $job = [pscustomobject]@{
             payload = [pscustomobject]@{}
