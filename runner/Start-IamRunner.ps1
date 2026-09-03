@@ -2036,6 +2036,48 @@ $script:CtgAutoInstallModules = @('Microsoft.Graph.*', 'ExchangeOnlineManagement
 # poll loop restarts once the current job is finished (never mid-job — that would strand it).
 $script:CtgRestartReason = $null
 
+# IN-FLIGHT MARKER — what this process is running right now, on disk.
+#
+# The stall watchdog kills a wedged process, but the JOB it was running is left mid-air: the app only
+# learns anything when the 10-minute claim lease expires, re-queues it once, and eventually fails it.
+# From an operator's seat that is half an hour of a step sitting at "running" with no explanation —
+# which is exactly how the 2026-09-03 EXO wedge presented.
+#
+# So: stamp the job on disk while it runs, clear it when it finishes, and on the next start report any
+# marker still lying there as a failure with a real reason. A killed process therefore turns into an
+# explained failure within one restart, not a silent 30-minute gap.
+$script:CtgInFlightFile = Join-Path $PSScriptRoot 'inflight.json'
+
+function Set-CtgInFlight {
+    param([Parameter(Mandatory)]$Job)
+    try {
+        @{ jobId = [string]$Job.id; systemKey = [string]$Job.systemKey; action = [string]$Job.action
+           caseNumber = [string]$Job.caseNumber; at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() } |
+            ConvertTo-Json -Compress | Set-Content -Path $script:CtgInFlightFile -Encoding utf8 -ErrorAction Stop
+    } catch { }   # best-effort: never let bookkeeping fail a job
+}
+
+function Clear-CtgInFlight {
+    try { if (Test-Path $script:CtgInFlightFile) { Remove-Item $script:CtgInFlightFile -Force -ErrorAction Stop } } catch { }
+}
+
+function Report-CtgAbandonedJob {
+    # Called ONCE at startup. A marker here means the previous process died while running that job —
+    # watchdog kill, host reboot, or an operator restart. Tell the app so the step fails with a reason
+    # instead of ageing out of its lease.
+    param([Parameter(Mandatory)][scriptblock]$Post)
+    if (-not (Test-Path $script:CtgInFlightFile)) { return $null }
+    $m = $null
+    try { $m = Get-Content $script:CtgInFlightFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+    Clear-CtgInFlight   # clear FIRST: a marker we cannot parse must not be retried on every boot
+    if (-not $m -or -not $m.jobId) { return $null }
+    $ageS = if ($m.at) { [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$m.at) } else { 0 }
+    $why = "the runner stopped while this step was running (it had been running for ${ageS}s) — most likely the stall watchdog restarted a wedged process. Nothing is known to have completed; re-run this step."
+    Write-CtgLog -Level WARN -Message "abandoned job $($m.jobId) [$($m.systemKey)] from the previous process — reporting it failed"
+    try { & $Post ([string]$m.jobId) $why } catch { }
+    return [string]$m.jobId
+}
+
 # Modules that share .NET assemblies (Azure.Core, Microsoft.Identity.Client, System.IdentityModel) and
 # therefore must never be imported into a process that has already loaded a sibling: the second import
 # binds an incompatible copy and the first module's calls stop returning. Grouped rather than
@@ -3314,6 +3356,17 @@ elseif ($ApiToken) { $wdArgs += @('-ApiToken',$ApiToken) }
 $script:Watchdog = Start-CtgWatchdog -HeartbeatFile $global:CtgHeartbeatFile -TimeoutSeconds $StallTimeoutSeconds -PwshPath $wdPwsh -RelaunchArgs $wdArgs
 Write-Host "watchdog armed: restart if no progress for ${StallTimeoutSeconds}s (heartbeat $global:CtgHeartbeatFile)" -ForegroundColor DarkGray
 
+# Did the PREVIOUS process die mid-job? Report it before claiming anything new, so the step fails with
+# a reason now rather than ageing out of its claim lease half an hour later. Runs once, here, because
+# by this point Invoke-AppApi and the agent token are both live.
+try {
+    $recovered = Report-CtgAbandonedJob -Post {
+        param([string]$JobId, [string]$Why)
+        $null = Invoke-AppApi POST "/api/jobs/$JobId/result" @{ agentId = $AgentId; status = 'failed'; error = $Why }
+    }
+    if ($recovered) { Write-Host "recovered abandoned job $recovered from the previous process — reported as failed" -ForegroundColor Yellow }
+} catch { Write-Warning "abandoned-job recovery: $($_.Exception.Message)" }
+
 while ($true) {
     # Liveness tick: the loop is alive (idle or between jobs). A long job keeps this fresh via
     # Send-CtgProgress; only a TRUE hang (no progress) lets it go stale and trips the watchdog.
@@ -3433,6 +3486,7 @@ while ($true) {
             $creds = @{}  # in scope for the catch's secret-scrub even if broking/execution throws early
             $script:Phase = 'starting'  # what we're doing now — the catch reports WHICH phase failed
             $global:CtgProgressJobId = $job.id  # so module-level Send-CtgProgress targets this job
+            Set-CtgInFlight $job                # on disk, so a killed process can report it next start
             # Header line so the console shows WHICH CASE this job is for (not just the opaque job id).
             $caseNo = if ($job.PSObject.Properties['caseNumber'] -and $job.caseNumber) { [string]$job.caseNumber } else { '(no case #)' }
             Write-Host "[$caseNo] $($job.action) $($job.systemKey)  (job $($job.id))" -ForegroundColor Cyan
@@ -3688,6 +3742,7 @@ while ($true) {
                 $null = Invoke-AppApi POST "/api/jobs/$($job.id)/result" @{ agentId = $AgentId; status = 'failed'; error = $err }
             }
             finally {
+                Clear-CtgInFlight                 # this job is accounted for — nothing to recover
                 $global:CtgProgressJobId = $null  # don't let a stray post target a finished job
                 # Leave nothing bound behind. These sessions are process-wide and this runner serves the
                 # whole fleet, so a session this job leaves open is one the NEXT client's job can
