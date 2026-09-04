@@ -193,6 +193,7 @@ export { entry as offboardLicenseAfterSharedConvert } from "./offboard-license-a
 export { entry as offboardManagerNotneededRunbook } from "./offboard-manager-notneeded-runbook";
 export { entry as offboardOnedriveArchive } from "./offboard-onedrive-archive";
 export { entry as offboardOnedriveDelegateAccess } from "./offboard-onedrive-delegate-access";
+export { entry as offboardRemovesAdGroups } from "./offboard-removes-ad-groups";
 export { entry as offboardRevokeMfaAndSessions } from "./offboard-revoke-mfa-and-sessions";
 export { entry as offboardTargetPicker } from "./offboard-target-picker";
 export { entry as onedriveArchiveSiteName } from "./onedrive-archive-site-name";

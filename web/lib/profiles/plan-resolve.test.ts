@@ -50,7 +50,16 @@ test("onboard payload → AD job gets the resolved OU, group union, and attribut
 test("offboard does not apply persona/role resolution", () => {
   const planned = [job("active-directory", { disable: true })];
   const resolved = resolvePlannedConfigs(client, payload, "offboard", planned);
-  assert.deepEqual((resolved[0].config as Record<string, unknown>), { disable: true });
+  const cfg = resolved[0].config as Record<string, unknown>;
+  // What this test is actually about: the ONBOARD-side persona/globals/location resolution must not
+  // leak into an offboard. It used to assert that by deep-equalling the whole config, which also
+  // asserted "nothing is ever added on offboard" — broader than the name, and no longer true now that
+  // FR #0000109 defaults AD group removal on the offboard lane. Assert the absences it means.
+  assert.equal(cfg.disable, true);
+  assert.equal(cfg.groups, undefined);      // onboard groups from globals/personas
+  assert.equal(cfg.ou, undefined);          // onboard OU placement
+  assert.equal(cfg.attributes, undefined);  // onboard attribute rules
+  assert.equal(cfg.licenses, undefined);
 });
 
 test("a v2.0 client (no personas/globals) passes through unchanged", () => {
