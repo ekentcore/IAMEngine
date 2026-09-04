@@ -552,3 +552,54 @@ test("non-ad-synced (entra) backbone never stamps cloudCreate", () => {
   assert.equal((resolved[0].config as Record<string, unknown>).cloudCreate, undefined);
   assert.equal((resolved[1].config as Record<string, unknown>).cloudCreate, undefined);
 });
+
+// FR #0000115: the ticket can name shared mailboxes the new user needs access to. The intake captured
+// them (payload.sharedMailboxes) and nothing planned them — the FOURTH field of this shape, after
+// #47 (out-of-office), #84 (delegates) and #97 (forwarding). The destination already exists: the m365
+// lane's defaultSharedMailboxes list, which the Exchange finish grants at FullAccess by default.
+test("case-requested shared mailboxes are unioned onto the m365 lane (FR #0000115)", () => {
+  const planned = [job("m365", {})];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: ["info@acme.com", "billing@acme.com"] }, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes,
+    ["info@acme.com", "billing@acme.com"]);
+});
+
+test("requested shared mailboxes UNION with the client's per-client defaults, never replace them", () => {
+  const planned = [job("m365", { defaultSharedMailboxes: [{ address: "team@acme.com", access: "SendAs" }] })];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: ["info@acme.com"] }, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes,
+    [{ address: "team@acme.com", access: "SendAs" }, "info@acme.com"]);
+});
+
+test("a mailbox the client already grants is not added twice (case-insensitive)", () => {
+  // A duplicate would be granted twice and logged twice, reading on the case as two separate grants.
+  const planned = [job("m365", { defaultSharedMailboxes: [{ address: "Info@acme.com", access: "FullAccess" }] })];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: ["info@acme.com"] }, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes,
+    [{ address: "Info@acme.com", access: "FullAccess" }]);
+});
+
+test("blanks and repeats in the ticket are dropped before planning", () => {
+  const planned = [job("m365", {})];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: ["  info@acme.com ", "", "INFO@acme.com", "   "] }, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes, ["info@acme.com"]);
+});
+
+test("a comma-separated string from the intake is split, the same as the group fields", () => {
+  const planned = [job("m365", {})];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: "info@acme.com, billing@acme.com" }, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes,
+    ["info@acme.com", "billing@acme.com"]);
+});
+
+test("no requested shared mailboxes leaves the client's own list untouched", () => {
+  const planned = [job("m365", { defaultSharedMailboxes: [{ address: "team@acme.com" }] })];
+  const resolved = resolvePlannedConfigs(client, payload, "onboard", planned);
+  assert.deepEqual((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes, [{ address: "team@acme.com" }]);
+});
+
+test("requested shared mailboxes are not planned on an OFFBOARD", () => {
+  const planned = [job("m365", {})];
+  const resolved = resolvePlannedConfigs(client, { ...payload, sharedMailboxes: ["info@acme.com"] }, "offboard", planned);
+  assert.equal((resolved[0].config as Record<string, unknown>).defaultSharedMailboxes, undefined);
+});

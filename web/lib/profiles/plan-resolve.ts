@@ -435,9 +435,36 @@ export function resolvePlannedConfigs(
         return { ...j, config: cfg };
       });
 
+  // Case-requested SHARED MAILBOXES (FR #0000115). The intake captured them
+  // (u_shared_resource_mailboxes -> payload.sharedMailboxes) and nothing planned them — the FOURTH
+  // field of this exact shape, after #47 (out-of-office), #84 (delegates) and #97 (forwarding).
+  //
+  // The destination already exists: the m365/entra lane's defaultSharedMailboxes list, which the
+  // Exchange finish grants at FullAccess by default (Invoke-CtgExchangeDefaultMailboxAccess, FR #15).
+  // That is why the requester saw per-client defaults working while ticket-named ones did nothing —
+  // the client list is profile config, and the ticket had no route to the same place.
+  //
+  // UNION, never replace: a client's standing list and the ticket's request are both wanted. Entries
+  // may be bare strings (FullAccess) or { address, access }, so compare on the address either way — a
+  // duplicate would be granted twice and logged twice, reading on the case as two separate grants.
+  const reqMailboxes = strList(payload.sharedMailboxes);
+  const withSharedMailboxes = reqMailboxes.length === 0 ? withRequested : withRequested.map((j) => {
+    if (j.systemKey !== "m365" && j.systemKey !== "entra") return j;
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    const base = Array.isArray(cfg.defaultSharedMailboxes) ? [...(cfg.defaultSharedMailboxes as unknown[])] : [];
+    const addressOf = (e: unknown): string =>
+      (typeof e === "string" ? e : String((e as { address?: unknown })?.address ?? "")).trim().toLowerCase();
+    const seen = new Set(base.map(addressOf).filter(Boolean));
+    for (const m of reqMailboxes) {
+      const k = m.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); base.push(m); }
+    }
+    return { ...j, config: { ...cfg, defaultSharedMailboxes: base } };
+  });
+
   const withMirror = !mirror
-    ? withRequested
-    : withRequested.map((j) =>
+    ? withSharedMailboxes
+    : withSharedMailboxes.map((j) =>
         DIRECTORY_SYSTEMS.has(j.systemKey)
           ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
           : j
