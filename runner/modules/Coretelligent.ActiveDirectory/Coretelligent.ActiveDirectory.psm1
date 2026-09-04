@@ -616,6 +616,13 @@ function Invoke-CtgADOffboarding {
     $protectedFound = @()
 
     if ((Get-CtgProp $Config 'removeAllGroups')) {
+        # Distinguish the engine's DEFAULT from a choice this client actually made, so an operator
+        # reading the run report can tell which it was. Before FR #0000109, 42 of 44 AD clients removed
+        # no groups at all because nothing ever set this flag; the default now fills that silence, and
+        # forces the evidence snapshot that makes it reversible.
+        if ([string](Get-CtgProp $Config 'removeAllGroupsBy') -eq 'engine-default') {
+            $actions.Add("removing all group memberships by ENGINE DEFAULT — this client has no group policy configured. Memberships are captured as evidence first; set removeAllGroups:false on the client to opt out.")
+        }
         foreach ($g in $memberships) {
             if ($g.Name -eq 'Domain Users') { continue }   # the OLD default primary — not removable this way
             # The "Disabled Users" group is now the user's PRIMARY group (set in step 2a) — a primary

@@ -179,7 +179,35 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     return { ...j, config: { ...cfg, removeLicense: true } };
   });
 
-  return injectHideFromGal(withSpanningDrop, payload, client.backbone);
+  // AD offboard group removal (FR #0000109). The AD module has always been able to do this —
+  // removeAllGroups strips every membership, skipping Domain Users, the new primary group, and any
+  // protected/privileged group (well-known admin names, an *Privileged* OU, or the client's own
+  // protectedGroups list), recording each skip as a manual-removal item rather than tearing it down.
+  // Nothing ever set the flag: of 44 live AD clients, 2 removed all groups, 0 had named-group rules,
+  // and 42 removed NOTHING. So a leaver kept every group — file-share, application and group-based
+  // licensing access — and the case reported green. Silence meant "keep everything", which is the
+  // wrong default for an offboard.
+  //
+  // The evidence half is NOT optional and is why these two are set together. 16 of those 44 captured
+  // no evidence on offboard, and stripping memberships nobody recorded is a one-way door: the
+  // snapshot is the only thing that makes this reversible.
+  //
+  // Explicit config wins in both directions — removeAllGroups:false is a deliberate opt-out, and a
+  // client with named removeGroups rules chose specific groups and does not get the blanket default.
+  const withAdGroups = withSpanningDrop.map((j) => {
+    if (j.systemKey !== "active-directory") return j;
+    const cfg = (j.config as Record<string, unknown> | null) ?? {};
+    if ("removeAllGroups" in cfg) return j;
+    const named = cfg.removeGroups;
+    if (Array.isArray(named) && named.length > 0) return j;
+    return {
+      ...j,
+      captureEvidence: true,
+      config: { ...cfg, removeAllGroups: true, removeAllGroupsBy: "engine-default" },
+    };
+  });
+
+  return injectHideFromGal(withAdGroups, payload, client.backbone);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:

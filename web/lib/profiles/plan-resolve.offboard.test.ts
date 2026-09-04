@@ -241,3 +241,52 @@ test("a destructive spanning step is not touched on an ONBOARD", () => {
   const out = resolvePlannedConfigs(bare, {}, "onboard", [spanning({})]);
   assert.equal((out[0].config as Record<string, unknown>).removeLicense, undefined);
 });
+
+const ad = (config: unknown, captureEvidence = false): PlannedJob =>
+  ({ systemKey: "active-directory", sequence: 0, mode: "api", requiresApproval: false, captureEvidence,
+     intent: "disable", secretNames: [], dependsOn: [], config } as PlannedJob);
+
+test("an AD offboard with no group policy defaults to removing all groups (FR #0000109)", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [ad({})]);
+  assert.equal((out[0].config as Record<string, unknown>).removeAllGroups, true);
+});
+
+test("the default ALSO forces an evidence snapshot - never strip what we didn't record", () => {
+  // 16 of 44 AD clients captured no evidence on offboard. Stripping every group without recording
+  // them first is a one-way door: nobody knows what to re-add.
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [ad({})]);
+  assert.equal(out[0].captureEvidence, true);
+});
+
+test("an explicit removeAllGroups:false is a deliberate opt-out and is honoured", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [ad({ removeAllGroups: false })]);
+  assert.equal((out[0].config as Record<string, unknown>).removeAllGroups, false);
+  assert.equal(out[0].captureEvidence, false); // no default fired, so nothing was forced
+});
+
+test("a client with named removeGroups rules keeps them and gets no blanket default", () => {
+  const client = { globals: {}, personas: {},
+    globalsOffboard: { "active-directory": { groups: ["Contractors"] } } };
+  const out = resolvePlannedConfigs(client, {}, "offboard", [ad({})]);
+  const cfg = out[0].config as Record<string, unknown>;
+  assert.deepEqual(cfg.removeGroups, ["Contractors"]);
+  assert.equal(cfg.removeAllGroups, undefined);
+});
+
+test("a client already capturing evidence is left exactly as it is", () => {
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [ad({}, true)]);
+  assert.equal(out[0].captureEvidence, true);
+  assert.equal((out[0].config as Record<string, unknown>).removeAllGroups, true);
+});
+
+test("the AD group default is AD-only - no other lane gets a group flag", () => {
+  const m365 = { systemKey: "m365", sequence: 0, mode: "api", requiresApproval: false,
+                 captureEvidence: false, intent: "disable", secretNames: [], dependsOn: [], config: {} } as PlannedJob;
+  const out = resolvePlannedConfigs(bare, {}, "offboard", [m365]);
+  assert.equal((out[0].config as Record<string, unknown>).removeAllGroups, undefined);
+});
+
+test("no AD group default is injected on an ONBOARD", () => {
+  const out = resolvePlannedConfigs(bare, {}, "onboard", [ad({})]);
+  assert.equal((out[0].config as Record<string, unknown>).removeAllGroups, undefined);
+});
