@@ -44,7 +44,9 @@ export function CaseDomainSelect({ caseId, options, defaultDomain, override, sta
         className="inline"
         value={current}
         disabled={busy || started}
-        title={started ? "Jobs have already run — the domain can no longer change" : "Which of the client's email domains this hire onboards under (re-plans on change)"}
+        title={started
+          ? "Steps have already run on this case. Changing the domain now would re-derive the username while the accounts already created keep the old one."
+          : "Which of the client's email domains this hire onboards under (re-plans on change)"}
         onChange={(e) => void apply(e.target.value === "" ? null : e.target.value)}
         style={{ fontSize: 12.5 }}
       >
@@ -54,6 +56,14 @@ export function CaseDomainSelect({ caseId, options, defaultDomain, override, sta
         ))}
       </select>
       {override && <span style={{ background: "var(--warn-bg)", color: "var(--warn-fg)", borderRadius: 6, padding: "1px 7px", fontSize: 11.5, fontWeight: 600 }}>override</span>}
+      {/* A greyed control with only a tooltip reads as "this feature is missing" — which is how this
+          landed as a bug report twice (FR #0000089, #0000111) for a picker that works and is in active
+          use. Say WHY it is locked and what to do instead, in the open. */}
+      {started && (
+        <span className="note" style={{ color: "var(--muted)" }}>
+          locked — steps have already run. To change it, trash this case and re-open it from the ticket.
+        </span>
+      )}
       {err && <span className="note" style={{ color: "#b91c1c" }}>{err}</span>}
     </span>
   );

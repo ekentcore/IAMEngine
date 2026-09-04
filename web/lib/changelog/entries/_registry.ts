@@ -29,6 +29,7 @@ export { entry as backupAzureRestoreDrill } from "./backup-azure-restore-drill";
 export { entry as baypineRunFixesAdoptRetryArchive } from "./baypine-run-fixes-adopt-retry-archive";
 export { entry as buildFromSystemsPreview } from "./build-from-systems-preview";
 export { entry as calendarReviewerGrants } from "./calendar-reviewer-grants";
+export { entry as caseDomainLockExplainsItself } from "./case-domain-lock-explains-itself";
 export { entry as caseExitDryRun } from "./case-exit-dry-run";
 export { entry as caseExtraGroups } from "./case-extra-groups";
 export { entry as casePrerunPasswordReset } from "./case-prerun-password-reset";
