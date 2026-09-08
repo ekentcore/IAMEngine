@@ -159,6 +159,49 @@ function Invoke-CtgAdSyncRemote {
     }
 }
 
+# Wait for a delta sync cycle to FINISH, rather than assuming it has (FR #0000112).
+#
+# Invoke-CtgDirectorySync used to fire Start-ADSyncSyncCycle and return immediately, so the m365 step
+# looked the account up before Entra Connect had written it — the "no synced M365 account for ..."
+# failures. FR #0000105 was the mirror image of this (a synced account misread once it DID exist).
+#
+# A bounded POLL, not a flat sleep: it returns as soon as the cycle settles (usually far sooner than a
+# fixed delay) and is honest when the sync genuinely has not finished. Same shape as Wait-CtgMailbox.
+#
+# THE RACE THIS HANDLES: Start-ADSyncSyncCycle returns before the scheduler reports the cycle as
+# running. Probing immediately would see SyncCycleInProgress=$false and declare it complete — which is
+# precisely the bug being fixed, reintroduced. So a cycle WE started waits one interval before the
+# first probe; one already in progress when we arrived is probed straight away.
+function Wait-CtgADSyncComplete {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][scriptblock]$Probe,   # $true while a cycle is running
+        [int]$TimeoutSeconds = 120,
+        [int]$IntervalSeconds = 10,
+        [switch]$SettleFirst                          # we just started it — let the scheduler catch up
+    )
+    $start = Get-Date
+    $deadline = $start.AddSeconds($TimeoutSeconds)
+    if ($SettleFirst) { Start-Sleep -Seconds ([Math]::Min($IntervalSeconds, $TimeoutSeconds)) }
+    while ($true) {
+        $running = $false
+        try { $running = [bool](& $Probe) }
+        catch {
+            # A probe failure is not a sync failure — the cycle may well be fine. Stop waiting and say so
+            # rather than burning the whole budget on a host we cannot read.
+            return [pscustomobject]@{ Status = 'unknown'; WaitedSeconds = [int]((Get-Date) - $start).TotalSeconds; Error = $_.Exception.Message }
+        }
+        if (-not $running) { return [pscustomobject]@{ Status = 'completed'; WaitedSeconds = [int]((Get-Date) - $start).TotalSeconds } }
+        if ((Get-Date) -ge $deadline) { return [pscustomobject]@{ Status = 'timeout'; WaitedSeconds = [int]((Get-Date) - $start).TotalSeconds } }
+        if (Get-Command Send-CtgProgress -ErrorAction SilentlyContinue) {
+            $elapsed = [int]((Get-Date) - $start).TotalSeconds
+            $remain = [int]($deadline - (Get-Date)).TotalSeconds
+            Send-CtgProgress "waiting for the Entra Connect delta sync to finish — ${elapsed}s elapsed (giving up in ${remain}s)"
+        }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
+}
+
 function Invoke-CtgDirectorySync {
     <#
     .SYNOPSIS
@@ -200,11 +243,38 @@ function Invoke-CtgDirectorySync {
         if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $remoteScript }
         else { Invoke-CtgAdSyncLocal -ScriptBlock $remoteScript }  # Entra Connect on THIS host — in-proc, else 5.1
 
-    if ($outcome -eq 'in-progress') {
+    $alreadyRunning = ($outcome -eq 'in-progress')
+    if ($alreadyRunning) {
         $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
     } else {
         $actions.Add("started delta sync (Start-ADSyncSyncCycle -PolicyType Delta)")
     }
+
+    # Wait for the cycle to finish before reporting success. Without this the step returned the instant
+    # the cycle was TRIGGERED, and the m365 step then looked up an account Entra Connect had not written
+    # yet (FR #0000112). Configurable per client; 0 turns the wait off entirely and restores the old
+    # fire-and-forget behaviour.
+    $waitSeconds = [int](((Get-CtgProp $Config 'waitForSyncSeconds') ?? 120))
+    if ($waitSeconds -gt 0) {
+        $statusScript = {
+            if (-not (Get-Command Get-ADSyncScheduler -ErrorAction SilentlyContinue)) {
+                $adm = Get-ChildItem "$env:ProgramFiles\Microsoft Azure AD*" -Recurse -Filter ADSync.psd1 -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($adm) { Import-Module $adm.FullName -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+            }
+            [bool](Get-ADSyncScheduler).SyncCycleInProgress
+        }
+        $probe = {
+            if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $statusScript }
+            else { Invoke-CtgAdSyncLocal -ScriptBlock $statusScript }
+        }.GetNewClosure()
+        $w = Wait-CtgADSyncComplete -Probe $probe -TimeoutSeconds $waitSeconds -SettleFirst:(-not $alreadyRunning)
+        switch ($w.Status) {
+            'completed' { $actions.Add("sync cycle finished after $($w.WaitedSeconds)s — the account should now be in Entra") }
+            'timeout'   { $actions.Add("WARN the sync cycle was still running after $($w.WaitedSeconds)s — carrying on without waiting further. A later step that cannot find the account in Entra is most likely this sync still catching up; re-run that step.") }
+            default     { $actions.Add("could not read the sync scheduler while waiting ($($w.Error)) — carrying on; the cycle was triggered and is probably fine") }
+        }
+    }
+
     [pscustomobject]@{ System = 'directory-sync'; Status = 'ok'; Actions = $actions.ToArray() }
 }
 
@@ -247,4 +317,4 @@ function Confirm-CtgDirectorySync {
     [pscustomobject]@{ ok = $enabled; checks = $checks }
 }
 
-Export-ModuleMember -Function Invoke-CtgDirectorySync, Confirm-CtgDirectorySync
+Export-ModuleMember -Function Invoke-CtgDirectorySync, Confirm-CtgDirectorySync, Wait-CtgADSyncComplete

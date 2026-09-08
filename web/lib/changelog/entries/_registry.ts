@@ -79,6 +79,7 @@ export { entry as delineaSecretserverCloudCreateFix } from "./delinea-secretserv
 export { entry as delineaTemplateByName } from "./delinea-template-by-name";
 export { entry as delineaWriteFailManualModal } from "./delinea-write-fail-manual-modal";
 export { entry as directorySyncAddsRunbookStep } from "./directory-sync-adds-runbook-step";
+export { entry as directorySyncWaitsToFinish } from "./directory-sync-waits-to-finish";
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
 export { entry as documentsUploadRedlineProgress } from "./documents-upload-redline-progress";
 export { entry as documentsVersionedInApp } from "./documents-versioned-in-app";

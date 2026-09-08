@@ -7,7 +7,7 @@
     Description       = 'Triggers an Azure AD Connect delta sync after on-prem AD changes (ADSync ships with Azure AD Connect; runs on the AAD Connect host).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Invoke-CtgDirectorySync', 'Confirm-CtgDirectorySync')
+    FunctionsToExport = @('Invoke-CtgDirectorySync', 'Confirm-CtgDirectorySync', 'Wait-CtgADSyncComplete')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()
