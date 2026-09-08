@@ -1183,6 +1183,13 @@ function Invoke-CtgM365ExoFinish {
             elseif ($emsg -match 'Unauthorized|Access.?Denied|do(es)? not have permission|ManageAsApp|insufficient|forbidden') {
                 "grant the m365-admin app the Exchange.ManageAsApp APPLICATION permission (admin consent), AND add its service principal to the Exchange Administrator role in '$org' — EXO app-only needs both."
             }
+            elseif ($emsg -match "GetResponseHeader|does not contain a method named") {
+                # NOT a permissions or certificate problem — the loaded ExchangeOnlineManagement build is
+                # the broken 3.10.0, whose REST cmdlets call a method PS7.6 removed. Saying "grant
+                # Exchange.ManageAsApp" here sent an operator to re-consent an app that was already
+                # fine (FR #0000130). Name the real cause and the real fix.
+                "this is NOT a permissions or certificate problem — the ExchangeOnlineManagement module loaded on this runner is a build that breaks on PowerShell 7.6 (its REST cmdlets call a method that was removed). The runner pins $ExoModuleVersion for exactly this reason; install it on this host (Install-Module ExchangeOnlineManagement -RequiredVersion $ExoModuleVersion -Force) and restart the runner."
+            }
             else {
                 "grant the m365-admin app Exchange.ManageAsApp + set its cert (CertificateBase64 or CertificateThumbprint) on the secret."
             }
@@ -2155,6 +2162,14 @@ function Repair-CtgMissingModule {
         # "Assembly with same name is already loaded" (see Repair-CtgGraphVersionSkew). Pin a new
         # Graph submodule to the version already on the host instead of grabbing the gallery latest.
         $reqVer = $null
+        # ExchangeOnlineManagement is PINNED for a reason: 3.10.0's REST cmdlets call the removed
+        # HttpResponseMessage.GetResponseHeader() and every Exchange job then dies with "does not
+        # contain a method named 'GetResponseHeader'" on PS7.6 (core2104 2026-07-15; core1748 again on
+        # 2026-09-08 — FR #0000129/#0000130). Startup installs and imports the pin, but THIS function
+        # used to install the gallery LATEST, which put the broken build on the host permanently — so
+        # the moment the pin was missing, the startup fallback picked 3.10.0 and Exchange broke fleet-
+        # wide for that agent. Install the pin here too.
+        if ($mod -eq 'ExchangeOnlineManagement') { $reqVer = $ExoModuleVersion }
         if ($mod -like 'Microsoft.Graph*') {
             $auth = Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue |
                 Sort-Object Version -Descending | Select-Object -First 1

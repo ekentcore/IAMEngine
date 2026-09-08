@@ -93,6 +93,7 @@ export { entry as exchangeDisconnectExportHotfix } from "./exchange-disconnect-e
 export { entry as exchangeManagerName } from "./exchange-manager-name";
 export { entry as exchangeRightsManageasapp } from "./exchange-rights-manageasapp";
 export { entry as exoPinSelfheal } from "./exo-pin-selfheal";
+export { entry as exoPinSurvivesSelfheal } from "./exo-pin-survives-selfheal";
 export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
 export { entry as extraAccessIndicator } from "./extra-access-indicator";
 export { entry as featureRequestNumbersAndAutoHide } from "./feature-request-numbers-and-auto-hide";
