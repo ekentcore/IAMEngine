@@ -22,6 +22,12 @@ BeforeAll {
     $f = [regex]::Match($script:Runner, '(?ms)^function Test-CtgModuleConflictsWithLoaded \{.*?^\}')
     $f.Success | Should -BeTrue -Because 'Start-IamRunner.ps1 must declare Test-CtgModuleConflictsWithLoaded'
     . ([scriptblock]::Create($f.Value))
+
+    foreach ($fn in 'Test-CtgSelfHealRestartAllowed', 'Set-CtgSelfHealRestart') {
+        $g = [regex]::Match($script:Runner, "(?ms)^function $([regex]::Escape($fn)) \{.*?^\}")
+        $g.Success | Should -BeTrue -Because "Start-IamRunner.ps1 must declare $fn"
+        . ([scriptblock]::Create($g.Value))
+    }
 }
 
 Describe 'Test-CtgModuleConflictsWithLoaded' {
@@ -79,5 +85,51 @@ Describe 'the self-heal never imports into a live process without checking' {
         $repair = [regex]::Match($script:Runner, '(?ms)^function Repair-CtgMissingModule \{.*?^\}').Value
         $repair | Should -Match 'CtgRestartReason'
         $script:Runner | Should -Match 'if \(\$script:CtgRestartReason\) \{[\s\S]*?Restart-CtgRunner'
+    }
+}
+
+# A supervised runner's Invoke-CtgRelaunch just `exit 0`s and trusts the service manager. If that
+# relaunch does not happen — a supervisor set to restart only on FAILURE reads exit 0 as a clean
+# shutdown — the runner stays DOWN until a human starts it. So an automatic restart that keeps being
+# requested does not loop noisily; it takes the fleet offline, once, and quietly. That is what the
+# self-heal restart did on 2026-09-08/09: the same missing module was repaired every poll cycle, each
+# time asking for a restart.
+Describe 'the self-heal restart cannot loop' {
+    BeforeEach { $script:MarkerPath = Join-Path $TestDrive "selfheal-$([guid]::NewGuid()).json" }
+
+    It 'allows the FIRST restart for a reason' {
+        Test-CtgSelfHealRestartAllowed -Reason 'installed EXO' -Path $script:MarkerPath | Should -BeTrue
+    }
+
+    It 'REFUSES a second restart for the same reason inside the window' {
+        $now = Get-Date
+        Set-CtgSelfHealRestart -Reason 'installed EXO' -Path $script:MarkerPath -Now $now
+        Test-CtgSelfHealRestartAllowed -Reason 'installed EXO' -Path $script:MarkerPath -Now $now.AddMinutes(5) -WindowMinutes 60 | Should -BeFalse
+    }
+
+    It 'allows it again once the window has passed' {
+        $now = Get-Date
+        Set-CtgSelfHealRestart -Reason 'installed EXO' -Path $script:MarkerPath -Now $now
+        Test-CtgSelfHealRestartAllowed -Reason 'installed EXO' -Path $script:MarkerPath -Now $now.AddMinutes(90) -WindowMinutes 60 | Should -BeTrue
+    }
+
+    It 'allows a restart for a DIFFERENT module — that repair has not been tried' {
+        $now = Get-Date
+        Set-CtgSelfHealRestart -Reason 'installed EXO' -Path $script:MarkerPath -Now $now
+        Test-CtgSelfHealRestartAllowed -Reason 'installed ADSync' -Path $script:MarkerPath -Now $now.AddMinutes(1) | Should -BeTrue
+    }
+
+    It 'allows the restart when the marker is unreadable rather than blocking forever' {
+        Set-Content -Path $script:MarkerPath -Value 'not json' -Encoding utf8
+        Test-CtgSelfHealRestartAllowed -Reason 'installed EXO' -Path $script:MarkerPath | Should -BeTrue
+    }
+
+    It 'the poll loop consults the guard before restarting' {
+        # A future edit that calls Restart-CtgRunner directly from the self-heal path would reopen the
+        # outage. The guard call must sit between the reason and the restart.
+        $guardAt = $script:Runner.IndexOf('Test-CtgSelfHealRestartAllowed -Reason $reason')
+        $restartAt = $script:Runner.IndexOf('Restart-CtgRunner   # re-execs')
+        $guardAt | Should -BeGreaterThan -1
+        $restartAt | Should -BeGreaterThan $guardAt
     }
 }

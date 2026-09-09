@@ -2043,6 +2043,39 @@ $script:CtgAutoInstallModules = @('Microsoft.Graph.*', 'ExchangeOnlineManagement
 # poll loop restarts once the current job is finished (never mid-job — that would strand it).
 $script:CtgRestartReason = $null
 
+# RESTART-LOOP GUARD.
+#
+# Invoke-CtgRelaunch on a SUPERVISED host just `exit 0`s and trusts the service manager to bring us
+# back. If that relaunch does not happen — a supervisor set to restart only on FAILURE reads exit 0 as
+# a clean shutdown — the runner stays down until a human starts it. So an automatic restart that keeps
+# being requested does not loop: it takes the fleet offline, once, and quietly.
+#
+# That is what the self-heal restart introduced (2026-09-08/09): each poll cycle repaired the same
+# missing module, asked for a restart, and exited. Recorded on disk rather than in memory precisely
+# because the process does not survive to remember.
+$script:CtgSelfHealRestartFile = Join-Path $PSScriptRoot 'selfheal-restart.json'
+$script:CtgSelfHealRestartWindowMinutes = 60
+
+function Test-CtgSelfHealRestartAllowed {
+    # Have we ALREADY restarted for this module recently? If so the restart plainly did not fix it —
+    # restarting again just takes us down again. Report and keep running instead: the step that needs
+    # the module fails with an actionable message, and every other system keeps working.
+    param([Parameter(Mandatory)][string]$Reason, [string]$Path = $script:CtgSelfHealRestartFile,
+          [datetime]$Now = (Get-Date), [int]$WindowMinutes = $script:CtgSelfHealRestartWindowMinutes)
+    if (-not (Test-Path $Path)) { return $true }
+    $m = $null
+    try { $m = Get-Content $Path -Raw -ErrorAction Stop | ConvertFrom-Json } catch { return $true }
+    if (-not $m -or -not $m.reason -or -not $m.at) { return $true }
+    if ([string]$m.reason -ne $Reason) { return $true }   # a DIFFERENT repair — worth one restart
+    $age = ($Now - [datetime]$m.at).TotalMinutes
+    return ($age -ge $WindowMinutes)
+}
+
+function Set-CtgSelfHealRestart {
+    param([Parameter(Mandatory)][string]$Reason, [string]$Path = $script:CtgSelfHealRestartFile, [datetime]$Now = (Get-Date))
+    try { @{ reason = $Reason; at = $Now.ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path $Path -Encoding utf8 -ErrorAction Stop } catch { }
+}
+
 # IN-FLIGHT MARKER — what this process is running right now, on disk.
 #
 # The stall watchdog kills a wedged process, but the JOB it was running is left mid-air: the app only
@@ -3794,9 +3827,20 @@ while ($true) {
     # Deliberately here and not mid-job — restarting with a job in flight would strand it until the
     # app's lease reclaim, which is the very loop this fix exists to end.
     if ($script:CtgRestartReason) {
-        Write-CtgLog -Level WARN -Message "restarting: $script:CtgRestartReason"
+        $reason = $script:CtgRestartReason
         $script:CtgRestartReason = $null
-        Restart-CtgRunner   # re-execs; never returns
+        if (Test-CtgSelfHealRestartAllowed -Reason $reason) {
+            Set-CtgSelfHealRestart -Reason $reason
+            Write-CtgLog -Level WARN -Message "restarting: $reason"
+            Restart-CtgRunner   # re-execs (or exits for the supervisor); never returns
+        }
+        else {
+            # We already restarted for this and it did not take. Restarting again would only take the
+            # runner down a second time — on a supervised host Invoke-CtgRelaunch exits and trusts the
+            # service manager, and if that relaunch is not happening we simply stay down.
+            Write-CtgLog -Level WARN -Message "NOT restarting again for: $reason — a restart was already tried within the last $($script:CtgSelfHealRestartWindowMinutes)m and the module is still missing. Install it on this host by hand; every other system keeps running meanwhile."
+            Write-Warning "self-heal restart suppressed (already tried recently): $reason"
+        }
     }
     # Drain: if this cycle claimed work, more may have just unblocked (dependency chains, an
     # operator's re-run) — poll again immediately and only sleep once the queue is empty.
