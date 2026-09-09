@@ -23,6 +23,7 @@ export { entry as agentUrlModalMergePrs } from "./agent-url-modal-merge-prs";
 export { entry as agentsMigratedBadge4hWindow } from "./agents-migrated-badge-4h-window";
 export { entry as auditActorProvenance } from "./audit-actor-provenance";
 export { entry as auditAttributesDiscoveryToUser } from "./audit-attributes-discovery-to-user";
+export { entry as autoUpdateStopsLooping } from "./auto-update-stops-looping";
 export { entry as azureCutoverAgentRehoming } from "./azure-cutover-agent-rehoming";
 export { entry as auditWatchedGraphAppPerms } from "./audit-watched-graph-app-perms";
 export { entry as azureInventoryAndS1Roster } from "./azure-inventory-and-s1-roster";

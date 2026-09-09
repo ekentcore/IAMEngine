@@ -47,6 +47,8 @@ export type AgentVM = {
   restartRequestedBy: string | null;
   restartDeliveredAt: string | null;
   updateDeliveredAt: string | null;
+  updateStalledAt: string | null;
+  updateAttempts: number;
   // Remote browser-automation install (portable Node + Playwright + Chromium): queued -> delivered
   // (runner downloading in the background) -> done ('browser' shows up in capabilities).
   browserInstallRequested: boolean;
@@ -114,6 +116,14 @@ function troubleshootCommand(a: AgentVM, origin: string): string {
 function updateStatus(a: AgentVM): { label: string; color: string } | null {
   const by = a.updateRequestedBy ? ` (by ${a.updateRequestedBy})` : "";
   if (a.updateRequested) return { label: `↻ update queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
+  // Auto-update gave up on this agent: it was told to self-update AGENT_UPDATE_MAX_ATTEMPTS times in
+  // a row and came back on the same build every time. This outranks the transient states below and
+  // does NOT expire after five minutes — it is a standing condition someone has to look at, and its
+  // whole reason for existing is that it used to be invisible. The runner is still up and working on
+  // its old code; the fix is a look at that host's runner log, then Update to try again.
+  if (a.updateStalledAt) {
+    return { label: `⚠ self-update is not taking — stopped retrying after ${a.updateAttempts} attempts; still running on its old build`, color: "var(--warn-fg)" };
+  }
   if (a.updateDeliveredAt) {
     const del = new Date(a.updateDeliveredAt).getTime();
     if (Date.now() - del > 5 * 60_000) return null;

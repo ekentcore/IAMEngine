@@ -295,6 +295,24 @@ model Agent {
   updateRequestedAt  DateTime?
   updateRequestedBy  String? // operator (email) who pushed the last self-update — for the Agents page
   updateDeliveredAt  DateTime?
+  // Auto-update CONVERGENCE guard. Self-update is fire-and-forget: the app tells a stale agent to
+  // update, the agent pulls and re-execs, and the app learns it worked only when the next heartbeat
+  // reports the new build. When the pull does NOT take, nothing noticed — the agent came back on the
+  // same build, looked stale again, and was told to update again 90s later, forever. That is not a
+  // harmless retry: a self-update EXITS the runner process (Invoke-CtgRelaunch), so a non-converging
+  // agent is killed every 90 seconds and depends entirely on its supervisor to bring it back. When
+  // the supervisor eventually gives up the agent is simply down and someone starts it by hand —
+  // which is how this presented, as a runner that "keeps crashing".
+  // updateAttempts counts CONSECUTIVE auto-updates issued without the build changing; it resets to 0
+  // the moment the agent reports the build the app serves. At AGENT_UPDATE_MAX_ATTEMPTS the app stops
+  // issuing auto-updates and stamps updateStalledAt/updateStalledBuild instead, so the agent keeps
+  // RUNNING on its old build (degraded, but working) and the Agents page says so out loud.
+  // updateStalledBuild is the app build it could not reach: once the app serves a DIFFERENT build
+  // that is a genuinely new thing to try, so the guard resets and the agent gets a fresh set of
+  // attempts. An operator's explicit Update click also resets it — that is the manual override.
+  updateAttempts     Int        @default(0)
+  updateStalledAt    DateTime?
+  updateStalledBuild String?
   // Operator-requested plain RESTART (no file pull): the "Restart" button sets it; the next heartbeat
   // returns restart:true (consumed) and the runner re-execs (its supervisor relaunches it). Clears a
   // wedged claim/work loop remotely without touching the box.

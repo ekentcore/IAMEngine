@@ -42,7 +42,7 @@ import { fireNotification } from "../notifications/sender";
 import { parseClientOverride } from "../notifications/types";
 import { outcomeFingerprint } from "../runs/outcomes-repo";
 import { runnerBuildId } from "../runner/bundle";
-import { agentBuildIsCurrent, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
+import { agentBuildIsCurrent, autoUpdateDecision, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
 import { applyAdStandaloneUpn } from "./ad-standalone-upn";
 import { resolveActor, type ActorInput } from "../auth/actor";
@@ -452,7 +452,7 @@ export function makeRunnerService(db: PrismaClient) {
     },
 
     async heartbeat(agentId: string, version?: string | null, semver?: string | null, startedAt?: string | null, capabilities?: string[] | null, appUrl?: string | null, migrateError?: string | null, authVia?: "per-agent" | "shared" | null): Promise<{ ok: true; enabled: boolean; update: boolean; restart: boolean; discover: boolean; installBrowser: boolean; migrate: { appUrl: string } | null; drain: boolean; governorActive: boolean; provisionToken?: string }> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, restartRequested: true, browserInstallRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, tokenRefreshRequested: true, tokenConfirmedAt: true, client: { select: { adDiscoverRequestedAt: true } } } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, version: true, semver: true, enabled: true, updateRequested: true, updateDeliveredAt: true, updateAttempts: true, updateStalledAt: true, updateStalledBuild: true, restartRequested: true, browserInstallRequested: true, migrateRequested: true, currentAppUrl: true, clientId: true, tokenRefreshRequested: true, tokenConfirmedAt: true, client: { select: { adDiscoverRequestedAt: true } } } });
       if (!agent) throw new HttpError(404, "unknown agent");
       // Tell an ENABLED agent to self-update at most once. Consume the flag with an ATOMIC
       // conditional flip (updateMany guarded by updateRequested:true) so two overlapping heartbeats
@@ -472,16 +472,36 @@ export function makeRunnerService(db: PrismaClient) {
       // is what makes a server restart (new bundle) roll the fleet forward on its own — no per-agent
       // click. A short cooldown via updateDeliveredAt keeps it from re-issuing every ~5s heartbeat
       // while the agent is mid-pull; a failed update naturally retries after the cooldown.
-      if (!update && agent.enabled) {
+      if (agent.enabled) {
         const reported = version ?? agent.version;
-        const cooldownOver = !agent.updateDeliveredAt || Date.now() - agent.updateDeliveredAt.getTime() > 90_000;
-        // Only pay for the settings read when this agent is actually on a stale build — an up-to-date
-        // agent (the common case) short-circuits before the DB round-trip.
-        if (cooldownOver && !agentBuildIsCurrent(reported, runnerBuildId())) {
-          const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
-          if (autoUpdate) {
-            update = true;
-            await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date() } }).catch(() => {});
+        const build = runnerBuildId();
+        if (agentBuildIsCurrent(reported, build)) {
+          // CONVERGED. Whatever it took to get here, the agent is on the served build, so clear the
+          // guard: the next time it falls behind it gets a full set of attempts again. Cheap guard so
+          // the common case (an up-to-date agent, every heartbeat, every agent) writes nothing.
+          if (agent.updateAttempts > 0 || agent.updateStalledAt) {
+            await db.agent.update({ where: { id: agentId }, data: { updateAttempts: 0, updateStalledAt: null, updateStalledBuild: null } }).catch(() => {});
+          }
+        } else if (!update) {
+          const cooldownOver = !agent.updateDeliveredAt || Date.now() - agent.updateDeliveredAt.getTime() > 90_000;
+          if (cooldownOver) {
+            const autoUpdate = (await getAppSetting<{ enabled?: boolean }>(db, AGENT_AUTO_UPDATE_KEY))?.enabled !== false; // default on
+            if (autoUpdate) {
+              // STALE and eligible. Everything above is unchanged; what is new is that we count the
+              // attempt and stop after AGENT_UPDATE_MAX_ATTEMPTS. The agent reporting a build that is
+              // still not the served one, cooldown expired, is the definition of an attempt that did
+              // not take — there is no other signal, because self-update is fire-and-forget.
+              const d = autoUpdateDecision({ attempts: agent.updateAttempts, stalledBuild: agent.updateStalledBuild, build });
+              if (d.action === "update") {
+                update = true;
+                await db.agent.update({ where: { id: agentId }, data: { updateDeliveredAt: new Date(), updateRequestedBy: "system:auto-update", updateRequestedAt: new Date(), updateAttempts: d.attempts, ...(d.reset ? { updateStalledAt: null, updateStalledBuild: null } : {}) } }).catch(() => {});
+              } else if (!agent.updateStalledAt || agent.updateStalledBuild !== build) {
+                // Give up on this build and say so ONCE. Not issuing the update is the point: the
+                // agent stays up on the build it has instead of being exited every 90 seconds by a
+                // pull that never lands. An operator's explicit Update click clears this and retries.
+                await db.agent.update({ where: { id: agentId }, data: { updateStalledAt: new Date(), updateStalledBuild: build } }).catch(() => {});
+              }
+            }
           }
         }
       }
@@ -638,7 +658,10 @@ export function makeRunnerService(db: PrismaClient) {
       if (agent.deletedAt) throw new HttpError(409, "agent is in the trash");
       if (!agent.enabled) throw new HttpError(409, "enable the runner before requesting an update");
       const who = resolveActor(actor);
-      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: displayActor(who.actor), updateDeliveredAt: null } });
+      // Clear the convergence guard: an explicit click is the manual override. If auto-update gave up
+      // on this agent, a human asking for it again means try once more — and it starts a fresh count,
+      // so a click can never be swallowed by a stall the operator can see on the page but not clear.
+      await db.agent.update({ where: { id: agentId }, data: { updateRequested: true, updateRequestedAt: new Date(), updateRequestedBy: displayActor(who.actor), updateDeliveredAt: null, updateAttempts: 0, updateStalledAt: null, updateStalledBuild: null } });
       await db.auditLog.create({ data: { actor: who.actor, userId: who.userId, action: "agent.update_requested", detail: { agentId } } });
       return { id: agentId };
     },

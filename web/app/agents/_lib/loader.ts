@@ -95,6 +95,8 @@ export async function loadAgentsPage() {
       updateRequestedAt: a.updateRequestedAt?.toISOString() ?? null,
       updateRequestedBy: a.updateRequestedBy ?? null,
       updateDeliveredAt: a.updateDeliveredAt?.toISOString() ?? null,
+      updateStalledAt: a.updateStalledAt?.toISOString() ?? null,
+      updateAttempts: a.updateAttempts,
       restartRequested: a.restartRequested,
       restartRequestedAt: a.restartRequestedAt?.toISOString() ?? null,
       restartRequestedBy: a.restartRequestedBy ?? null,
