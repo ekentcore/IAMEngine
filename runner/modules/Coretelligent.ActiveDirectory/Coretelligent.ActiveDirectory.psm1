@@ -153,11 +153,28 @@ function Set-CtgADAttributes {
 # Tries DisplayName, then Name, then SamAccountName. Returns the group-DN array (possibly empty)
 # when the user is found, or $null when no such user — so the caller can flag a miss vs. an
 # intentionally-empty membership.
+# Resolve the "make them like <X>" reference user and return their group DNs, or $null when no such
+# user exists.
+#
+# The identifier form is NOT ours to choose. The intake field is free text and, in practice, is almost
+# always an EMAIL: 36 of the last 40 mirror requests were addresses, not names. This used to try only
+# DisplayName, Name and SamAccountName, so every one of those missed and the step reported "mirror user
+# not found — mirror groups not applied" while the cloud lane, whose resolver handles a UPN, mirrored
+# the same person happily (FR #0000126 — UM0031004, roxana@agostinofoods.com).
+#
+# So: try the mail-shaped attributes FIRST when the value contains an "@", and the name-shaped ones
+# first when it does not. Both sets are always tried — a display name containing an @ is unlikely but
+# costs one extra query to rule out, and an address stored only in `mail` still resolves.
 function Get-CtgMirrorGroups {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ReferenceUser, [hashtable]$AdConnection = @{})
     $esc = $ReferenceUser -replace "'", "''"
-    foreach ($filter in @("DisplayName -eq '$esc'", "Name -eq '$esc'", "SamAccountName -eq '$esc'")) {
+    # EmailAddress is the AD `mail` attribute as the ActiveDirectory module surfaces it; a mirror user
+    # whose UPN differs from their SMTP address (common after a domain change) resolves on the second.
+    $byMail = @("UserPrincipalName -eq '$esc'", "EmailAddress -eq '$esc'")
+    $byName = @("DisplayName -eq '$esc'", "Name -eq '$esc'", "SamAccountName -eq '$esc'")
+    $filters = if ($ReferenceUser -like '*@*') { @($byMail) + @($byName) } else { @($byName) + @($byMail) }
+    foreach ($filter in $filters) {
         $ref = Get-ADUser -Filter $filter -Properties MemberOf -ErrorAction SilentlyContinue @AdConnection | Select-Object -First 1
         if ($ref) { return ,@($ref.MemberOf) }
     }

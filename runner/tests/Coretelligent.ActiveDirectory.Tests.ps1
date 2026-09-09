@@ -129,6 +129,47 @@ Describe 'Invoke-CtgADOnboarding' {
         ($r.Actions -join ' ') | Should -Match 'mirrored 2 group'
     }
 
+    It 'mirrors from a reference user identified by EMAIL, not just by name (FR #0000126)' {
+        # The intake field is free text and in practice is almost always an address: 36 of the last 40
+        # mirror requests were emails. This used to try only DisplayName/Name/SamAccountName, so every
+        # one of them missed and the step reported "mirror user not found" while the cloud lane — whose
+        # resolver handles a UPN — mirrored the same person happily (UM0031004).
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            if ($Filter -like "UserPrincipalName -eq 'roxana@agostinofoods.com'") {
+                [pscustomobject]@{ MemberOf = @('CN=Sales,OU=Groups,DC=x') }
+            } else { $null }
+        }
+        $config = [pscustomobject]@{ ou='Finance'; mirrorFromUser='roxana@agostinofoods.com' }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        ($r.Actions -join ' ') | Should -Match 'mirrored 1 group'
+        ($r.Actions -join ' ') | Should -Not -Match 'not found'
+        Should -Invoke Add-ADGroupMember -ModuleName Coretelligent.ActiveDirectory -ParameterFilter { $Identity -eq 'CN=Sales,OU=Groups,DC=x' } -Times 1
+    }
+
+    It 'resolves a mirror user whose SMTP address differs from their UPN (mail attribute)' {
+        # After a domain change the UPN and the mail address diverge; the address on the ticket is the
+        # one people know, so it must still resolve.
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            if ($Filter -like "EmailAddress -eq 'old.name@legacy.com'") {
+                [pscustomobject]@{ MemberOf = @('CN=Legacy,OU=Groups,DC=x') }
+            } else { $null }
+        }
+        $config = [pscustomobject]@{ ou='Finance'; mirrorFromUser='old.name@legacy.com' }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        ($r.Actions -join ' ') | Should -Match 'mirrored 1 group'
+    }
+
+    It 'still mirrors from a plain display name (unchanged for the common non-email case)' {
+        Mock Get-ADUser -ModuleName Coretelligent.ActiveDirectory -MockWith {
+            if ($Filter -like "DisplayName -eq 'Christine Holleran'") {
+                [pscustomobject]@{ MemberOf = @('CN=Finance-Team,OU=Groups,DC=x') }
+            } else { $null }
+        }
+        $config = [pscustomobject]@{ ou='Finance'; mirrorFromUser='Christine Holleran' }
+        $r = Invoke-CtgADOnboarding -User $user -Config $config
+        ($r.Actions -join ' ') | Should -Match 'mirrored 1 group'
+    }
+
     It 'threads the brokered ad-dc connection (Server + Credential) onto AD cmdlets' {
         $cred = [pscredential]::new('CORE\svc-ad', (ConvertTo-SecureString 'p' -AsPlainText -Force))
         $config = [pscustomobject]@{ ou='Finance'; groups=@('DEPT-Finance'); attributes=[pscustomobject]@{ title='Analyst' } }
