@@ -86,6 +86,31 @@ export function zoomParts(e: NotificationEvent): { head: string; lines: string[]
   return chunks.map((c) => ({ head: c.title, lines: c.detail.split("\n") }));
 }
 
+// What Zoom actually said, appended to the status code. Zoom answers a rejected webhook with a short
+// reason and we used to discard it, so every failure read "HTTP 400" and the only hint offered was
+// "set the Zoom verification token" -- which is silently wrong whenever a token IS set. Announcements
+// went nowhere for three weeks behind exactly that: a valid token, and a body reading "Failed to send
+// bot message", which nobody could see.
+//
+// The bot-message case gets a named cause because it is the one that looks like our bug and is not:
+// the token authenticated fine (a bad token fails differently, with a JSON error object), the webhook
+// still exists, and Zoom is refusing to DELIVER -- which is the app or its bot losing access to the
+// channel, fixed in Zoom, not here.
+export async function zoomErrorDetail(res: { text: () => Promise<string> }, token: string): Promise<string> {
+  let body = "";
+  try { body = (await res.text()).trim().replace(/\s+/g, " ").slice(0, 300); } catch { /* body already consumed or not readable */ }
+  const parts: string[] = [];
+  if (body) parts.push(body);
+  if (!token) parts.push("no Zoom verification token is set");
+  else if (/failed to send bot message/i.test(body)) {
+    parts.push(
+      "the token authenticated, so this is not a token problem — Zoom accepted the request and refused to deliver it. " +
+        "The Zoom app or its bot has lost access to that channel: re-add the bot to the channel (or re-authorise the app) in Zoom, then re-send.",
+    );
+  }
+  return parts.length ? ` — ${parts.join(" — ")}` : "";
+}
+
 export async function sendZoom(webhookUrl: string, token: string, e: NotificationEvent): Promise<SendResult> {
   try {
     const hook = webhookUrl.trim();
@@ -104,7 +129,7 @@ export async function sendZoom(webhookUrl: string, token: string, e: Notificatio
         body: JSON.stringify(zoomCard(p.head, p.lines)),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
-      if (!res.ok) failed.push(`part ${i + 1}/${parts.length}: HTTP ${res.status}${token ? "" : " — set the Zoom verification token"}`);
+      if (!res.ok) failed.push(`part ${i + 1}/${parts.length}: HTTP ${res.status}${await zoomErrorDetail(res, token)}`);
       if (i < parts.length - 1) await new Promise((r) => setTimeout(r, 300));
     }
     return failed.length ? { ok: false, error: failed.join("; ") } : { ok: true };

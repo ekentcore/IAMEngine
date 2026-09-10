@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageText, sendWebhook, sendZoom, sendTest, resolveWebhookDests, resolveEmailDests, zoomParts } from "./sender";
+import { messageText, sendWebhook, sendZoom, sendTest, resolveWebhookDests, resolveEmailDests, zoomParts, zoomErrorDetail } from "./sender";
 import { ZOOM_MESSAGE_BUDGET } from "./chunk";
 import { normalizeSettings, parseClientOverride, DEFAULT_NOTIFICATIONS, NOTIF_EVENTS, type NotificationEvent } from "./types";
 
@@ -200,4 +200,37 @@ test("sendZoom posts every part in order and reports a failed part", async () =>
     assert.equal(res.ok, false);
     assert.match(res.error ?? "", /part 2\//);
   } finally { globalThis.fetch = orig; }
+});
+
+// Zoom's own words on a rejected send. These used to be thrown away, so every failure read "HTTP 400"
+// and the one hint on offer ("set the Zoom verification token") was wrong whenever a token was set.
+// Announcements were refused for three weeks behind precisely that.
+const resWith = (body: string) => ({ text: async () => body });
+
+test("zoomErrorDetail includes what Zoom actually said", async () => {
+  const d = await zoomErrorDetail(resWith("Failed to send bot message"), "tok");
+  assert.match(d, /Failed to send bot message/);
+});
+
+test("zoomErrorDetail does NOT blame the token when a token is set", async () => {
+  const d = await zoomErrorDetail(resWith("Failed to send bot message"), "tok");
+  assert.doesNotMatch(d, /set the Zoom verification token/);
+  assert.match(d, /not a token problem/);
+  assert.match(d, /re-add the bot|re-authorise/i);
+});
+
+test("zoomErrorDetail still calls out a genuinely missing token", async () => {
+  const d = await zoomErrorDetail(resWith('{"code":"400"}'), "");
+  assert.match(d, /no Zoom verification token is set/);
+});
+
+test("zoomErrorDetail survives a body it cannot read, and adds nothing when there is nothing to add", async () => {
+  const unreadable = { text: async () => { throw new Error("already consumed"); } };
+  assert.equal(await zoomErrorDetail(unreadable, "tok"), "");
+});
+
+test("zoomErrorDetail collapses whitespace and caps a runaway body", async () => {
+  const d = await zoomErrorDetail(resWith("a\n\n  b" + "x".repeat(1000)), "tok");
+  assert.match(d, /a b/);
+  assert.ok(d.length < 400, `expected a capped detail, got ${d.length} chars`);
 });

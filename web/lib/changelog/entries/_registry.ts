@@ -268,6 +268,7 @@ export { entry as v3MenusCollapsibleSections } from "./v3-menus-collapsible-sect
 export { entry as wedgedRunnerReportsItsJob } from "./wedged-runner-reports-its-job";
 export { entry as zoomBrowserAutoSetup } from "./zoom-browser-auto-setup";
 export { entry as zoomChunkRealCap } from "./zoom-chunk-real-cap";
+export { entry as zoomSendSaysWhyItFailed } from "./zoom-send-says-why-it-failed";
 export { entry as zoomSenderPaginationGuard } from "./zoom-sender-pagination-guard";
 export { entry as m365SetupAutodetectFolder } from "./m365-setup-autodetect-folder";
 export { entry as adConntestOptionalDcSecret } from "./ad-conntest-optional-dc-secret";

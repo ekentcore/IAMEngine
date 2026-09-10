@@ -165,8 +165,17 @@ async function main() {
     const results = await sendAnnouncement(settings, AUDIENCE, { event: "announcement", title, detail });
     const failed = results.filter((r) => !r.ok);
     for (const r of results) console.log(`  ${r.ok ? "sent" : "FAILED"}  ${r.channel}${r.error ? ` — ${r.error}` : ""}`);
-    if (failed.length === results.length && results.length > 0) process.exitCode = 1; // every channel failed
-    console.log(`${DRY ? "would announce" : "announced"}: ${entry.id}`);
+    // Do not claim it went out when it did not. The exit code was already right, but the line printed
+    // underneath said "announced" regardless — so a totally failed send still READ like a success, and
+    // three weeks of announcements looked delivered while every one of them had been refused by Zoom.
+    if (failed.length === results.length && results.length > 0) {
+      process.exitCode = 1;
+      console.log(`NOT announced: ${entry.id} — every destination failed (see above)`);
+    } else if (failed.length) {
+      console.log(`partly announced: ${entry.id} — ${results.length - failed.length}/${results.length} destinations took it`);
+    } else {
+      console.log(`${DRY ? "would announce" : "announced"}: ${entry.id}`);
+    }
   }
 
   await db.$disconnect();
