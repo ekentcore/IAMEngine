@@ -20,6 +20,7 @@ BeforeAll {
     function global:Set-RemoteMailbox { [CmdletBinding()] param($Identity, $EmailAddressPolicyEnabled, $Type) }
     function global:Set-MailboxRegionalConfiguration { [CmdletBinding()] param($Identity, $Language, $TimeZone) }
     function global:Add-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
+    function global:Set-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User, $AccessRights, [switch]$Confirm) }
     function global:Get-MailboxFolderPermission { [CmdletBinding()] param($Identity, $User) }
     function global:Get-Mailbox { [CmdletBinding()] param($Identity, $RecipientTypeDetails, $ResultSize) }
     # distribution-list mirror (EXO)
@@ -196,6 +197,7 @@ Describe 'Invoke-CtgExchangeMailboxAudit' {
 Describe 'Invoke-CtgExchangeCalendarReviewers' {
     BeforeEach {
         Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Set-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { }
         Mock Get-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { $null }
     }
 
@@ -211,6 +213,35 @@ Describe 'Invoke-CtgExchangeCalendarReviewers' {
         $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'calendar.delegate.reviewer@logicsource.com' })
         Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 0
         ($r -join "`n") | Should -Match 'already holds Reviewer on calendar'
+    }
+
+    It 'CHANGES an existing permission at a different right instead of failing the grant (FR #0000135)' {
+        # Add- refuses outright when any entry already exists ("An existing permission entry was found
+        # for user"), and AvailabilityOnly is a right plenty of mailboxes already carry, so this was
+        # the ordinary case rather than an edge one.
+        Mock Get-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ User = 'd@x.com'; AccessRights = @('AvailabilityOnly') } }
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'd@x.com'; accessRights = 'Reviewer' })
+        Should -Invoke Set-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $Identity -eq 'u@x.com:\Calendar' -and $User -eq 'd@x.com' -and $AccessRights -eq 'Reviewer' }
+        Should -Invoke Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 0
+        ($r -join "`n") | Should -Match 'changed d@x.com from AvailabilityOnly to Reviewer'
+        ($r -join "`n") | Should -Not -Match 'WARN'
+    }
+
+    It 'recovers when the pre-read misses an entry that Add- then rejects' {
+        # The read says nothing is there; Add- disagrees. A denied/filtered read or a concurrent change
+        # both look like this, and a re-run must not fail on it.
+        Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { throw 'An existing permission entry was found for user: d@x.com.' }
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'd@x.com'; accessRights = 'Editor' })
+        Should -Invoke Set-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $AccessRights -eq 'Editor' }
+        ($r -join "`n") | Should -Match 'set d@x.com to Editor on calendar \(an entry already existed\)'
+        ($r -join "`n") | Should -Not -Match 'WARN'
+    }
+
+    It 'still WARNs (does not silently pass) when Add- fails for a real reason' {
+        Mock Add-MailboxFolderPermission -ModuleName Coretelligent.Exchange -MockWith { throw 'The user d@x.com was not found.' }
+        $r = Invoke-CtgExchangeCalendarReviewers -Identity 'u@x.com' -Reviewers @([pscustomobject]@{ user = 'd@x.com' })
+        Should -Invoke Set-MailboxFolderPermission -ModuleName Coretelligent.Exchange -Times 0
+        ($r -join "`n") | Should -Match 'WARN calendar reviewer grant failed for d@x.com'
     }
 
     It 'falls back to Reviewer for an unlisted accessRights value' {

@@ -1522,8 +1522,31 @@ function Invoke-CtgExchangeCalendarReviewers {
                 continue
             }
             if ($PSCmdlet.ShouldProcess($Identity, "Grant $u $rights on calendar")) {
-                Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -AccessRights $rights -Confirm:$false | Out-Null
-                $actions.Add("granted $u $rights on calendar"); Write-CtgStep "✓ granted $u $rights on calendar"
+                # Add- REFUSES when the user already has ANY entry on the folder ("An existing
+                # permission entry was found for user"), and the skip above only catches the case where
+                # that entry is the right we want. A user sitting on a DIFFERENT right — the common one
+                # is AvailabilityOnly, which plenty of mailboxes carry before we touch them — fell
+                # through to Add- and failed the grant (FR #0000135). Changing an existing entry is
+                # Set-'s job, so pick the cmdlet by what is actually on the folder.
+                if ($existing) {
+                    Set-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -AccessRights $rights -Confirm:$false | Out-Null
+                    $had = (@($existing.AccessRights) -join ', ')
+                    $actions.Add("changed $u from $had to $rights on calendar"); Write-CtgStep "✓ changed $u from $had to $rights on calendar"
+                }
+                else {
+                    try {
+                        Add-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -AccessRights $rights -Confirm:$false | Out-Null
+                        $actions.Add("granted $u $rights on calendar"); Write-CtgStep "✓ granted $u $rights on calendar"
+                    }
+                    catch {
+                        # The pre-read said there was no entry and Add- says there is. Either the read
+                        # was denied/filtered, or something added one in between. Both are recoverable
+                        # the same way, and re-running the step must not fail on it.
+                        if ([string]$_.Exception.Message -notmatch 'existing permission entry') { throw }
+                        Set-MailboxFolderPermission -Identity "${Identity}:\Calendar" -User $u -AccessRights $rights -Confirm:$false | Out-Null
+                        $actions.Add("set $u to $rights on calendar (an entry already existed)"); Write-CtgStep "✓ set $u to $rights on calendar (an entry already existed)"
+                    }
+                }
             }
         } catch {
             $actions.Add("WARN calendar reviewer grant failed for $u`: $($_.Exception.Message)"); Write-CtgStep "✗ calendar reviewer $u — $($_.Exception.Message)"
