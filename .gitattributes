@@ -12,3 +12,17 @@
 # safe for a flat, append-only, order-independent list, which is the whole reason _registry.ts is
 # shaped like one.
 web/lib/changelog/entries/_registry.ts merge=union
+
+# The runner BUNDLE must be byte-identical to what is committed, on every checkout and every
+# platform. The app serves these files straight off disk and the build id is a SHA-256 over their
+# raw bytes (web/lib/runner/bundle.ts), which the agent recomputes over its own copy to answer "am I
+# up to date?". With core.autocrlf=true on a Windows checkout, git materialised all 98 of them with
+# CRLF while storing LF — so the served bytes were a property of the working tree rather than of the
+# commit. Any tool that wrote a file with LF (a script, a formatter, an editor) changed the build id
+# without changing the code, and the next `git checkout` changed it back. The fleet was told to
+# self-update either way, and a self-update EXITS the runner process.
+#
+# eol=lf pins the working tree to what is committed, so the build id is reproducible from the commit
+# alone — the same on this box, in CI, and on a Linux host. Nothing here is Windows-line-ending
+# sensitive: PowerShell, Node and JSON all read LF natively.
+runner/** text eol=lf

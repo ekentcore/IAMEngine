@@ -225,6 +225,7 @@ export { entry as rulesEditorRemoveSystem } from "./rules-editor-remove-system";
 export { entry as runLogFixedLinesPopulate } from "./run-log-fixed-lines-populate";
 export { entry as runLogFixedNoLongerBuriesARecurrence } from "./run-log-fixed-no-longer-buries-a-recurrence";
 export { entry as runlogBulkCopy } from "./runlog-bulk-copy";
+export { entry as runnerBundleByteStable } from "./runner-bundle-byte-stable";
 export { entry as runnerGenerator } from "./runner-generator";
 export { entry as runnerGraphSkewGuard } from "./runner-graph-skew-guard";
 export { entry as runnerPoolOneBox } from "./runner-pool-one-box";
