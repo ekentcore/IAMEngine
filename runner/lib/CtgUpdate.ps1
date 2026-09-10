@@ -29,20 +29,36 @@ function Invoke-CtgManifestPull {
         [System.IO.File]::WriteAllText($dest, $resp.Content)
     }
     # PRUNE files no longer in the bundle. Pulling-without-deleting leaves stale leftovers (a removed/
-    # renamed module), and Get-CtgBuildId hashes EVERY file in the folder — so one leftover makes our
-    # build id differ from the app's forever: "update available" that re-pulls but never converges
-    # ("updated, back online… still the same version"). Keep only manifest files + the runtime files
-    # the hash already excludes. NOTE the walk is deliberately WITHOUT -Force: on Unix that hides
-    # dot-files (so the pool roster/locks are safe there), but on Windows Get-ChildItem returns them,
-    # so the skip-list below MUST cover every runtime dot-file the pool adds — otherwise a Windows
-    # self-update would delete .runner-pool.json (the roster) or a member's .runner.<id>.lock.
+    # renamed module), and Get-CtgBuildId hashes the folder — so one leftover makes our build id differ
+    # from the app's forever: "update available" that re-pulls but never converges ("updated, back
+    # online… still the same version").
+    #
+    # But prune ONLY within the file set the bundle could have shipped. Get-CtgBuildId (and the app's
+    # bundle.ts) both SKIP tests/, dist/, node_modules/, scripts/ and every dot-segment, so a file in
+    # one of those cannot move the build id and pruning it achieves nothing. It does do harm: the
+    # browser sidecar's dependencies live in browser/node_modules and the portable Node in .node, and
+    # neither is in the manifest — so this loop deleted @playwright/test on every self-update. The
+    # agent then stopped reporting the 'browser' capability, the claim gate withheld every browser job
+    # from every agent, and those jobs sat pending with no error and nobody able to run them. It was
+    # reinstalled by hand twice and destroyed again both times (FR #0000121).
+    #
+    # -Force so the walk sees dot-entries on every platform (PowerShell hides them on Unix but not on
+    # Windows); they are all skipped by the dot-segment rule below, so this only makes the two
+    # platforms agree rather than widening what gets deleted.
+    $skipDirs = 'tests', 'dist', 'node_modules', 'scripts'
     $want = @{}; foreach ($rel in $manifest.files) { $want[(Join-Path $RunnerDir $rel)] = $true }
-    foreach ($f in Get-ChildItem -LiteralPath $RunnerDir -Recurse -File -ErrorAction SilentlyContinue) {
+    foreach ($f in Get-ChildItem -LiteralPath $RunnerDir -Recurse -File -Force -ErrorAction SilentlyContinue) {
         if ($want.ContainsKey($f.FullName)) { continue }
-        # .build marker, ALL runner/pool lock files (.runner.lock, .runner.<agentId>.lock,
-        # .runner-pool.lock), the pool roster (.runner-pool.json) + its update sentinel
-        # (.runner-pool.update), macOS cruft, and logs — none ship in the bundle; never prune them.
-        if ($f.Name -eq '.build' -or $f.Name -like '.runner*.lock' -or $f.Name -eq '.runner-pool.json' -or $f.Name -eq '.runner-pool.update' -or $f.Name -eq '.DS_Store' -or $f.Name -like '*.log') { continue }
+        $rel = ([System.IO.Path]::GetRelativePath($RunnerDir, $f.FullName)).Replace([char]92, [char]47)
+        $excluded = $false
+        foreach ($seg in $rel.Split('/')) {
+            if ($skipDirs -contains $seg -or $seg.StartsWith('.')) { $excluded = $true; break }
+        }
+        # Outside the bundle's own file set — the build id never saw it, so leaving it costs nothing.
+        # This covers .build, every .runner*.lock, .runner-pool.json/.update, .DS_Store and .node, all
+        # of which used to need naming one by one.
+        if ($excluded) { continue }
+        if ($f.Name -like '*.Tests.ps1' -or $f.Name -like '*.log') { continue }
         try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; Write-Host "self-update: pruned stale $($f.Name)" -ForegroundColor DarkYellow } catch { }
     }
     return @{ buildId = $manifest.buildId; count = @($manifest.files).Count }

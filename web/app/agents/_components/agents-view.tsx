@@ -162,8 +162,16 @@ function browserInstallStatus(a: AgentVM): { label: string; color: string } | nu
   if (a.browserInstallRequested) return { label: `↻ browser install queued${by} — waiting for the runner to poll…`, color: "var(--warn-fg)" };
   if (a.browserInstallDeliveredAt) {
     const del = new Date(a.browserInstallDeliveredAt).getTime();
-    if (Date.now() - del > 30 * 60_000) return null;
-    if (a.capabilities?.includes("browser")) return { label: `✓ browser automation installed${by} — this runner now takes browser jobs`, color: "var(--ok-fg)" };
+    const installed = a.capabilities?.includes("browser");
+    if (Date.now() - del > 30 * 60_000) {
+      // Long past the download window. If the capability still is not there the install did not take,
+      // and going quiet here is what let that hide: it was requested twice on the central runner and
+      // failed both times, while every browser job queued behind it sat pending. The absence of a
+      // 'browser' chip was the only clue, and an absence is not something anyone spots. Say it.
+      if (installed) return null;
+      return { label: "⚠ browser automation was installed but this runner still does not report it — browser jobs (Spanning force sync, Entra device code) cannot run until it does", color: "var(--warn-fg)" };
+    }
+    if (installed) return { label: `✓ browser automation installed${by} — this runner now takes browser jobs`, color: "var(--ok-fg)" };
     return { label: `↻ installing browser automation${by} — Node + Playwright + Chromium downloading in the background…`, color: "var(--info-fg)" };
   }
   return null;

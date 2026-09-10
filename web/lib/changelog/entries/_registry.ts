@@ -233,6 +233,7 @@ export { entry as runnerPoolOneBox } from "./runner-pool-one-box";
 export { entry as runnerVersionStartupLog } from "./runner-version-startup-log";
 export { entry as securityP0Runner } from "./security-p0-runner";
 export { entry as selfHealWatchdog } from "./self-heal-watchdog";
+export { entry as selfUpdateKeepsBrowserSidecar } from "./self-update-keeps-browser-sidecar";
 export { entry as selfhealNeverImportsInProcess } from "./selfheal-never-imports-in-process";
 export { entry as selfhealRestartCannotLoop } from "./selfheal-restart-cannot-loop";
 export { entry as settingsDeploymentStatus } from "./settings-deployment-status";
