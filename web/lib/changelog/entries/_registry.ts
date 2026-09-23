@@ -351,3 +351,4 @@ export { entry as licenseHoldCoversMailboxSystems } from "./license-hold-covers-
 export { entry as mfaDenialHintRanksCauses } from "./mfa-denial-hint-ranks-causes";
 
 export { entry as syncWaitActuallyWaits } from "./sync-wait-actually-waits";
+export { entry as onedriveScaGrantActuallyRuns } from "./onedrive-sca-grant-actually-runs";
