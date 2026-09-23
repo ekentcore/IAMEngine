@@ -12,11 +12,16 @@ BeforeAll {
 }
 
 Describe 'Invoke-CtgDirectorySync' {
+    # waitForSyncSeconds = 0 in the tests that are about start-vs-skip rather than waiting. Until the
+    # closure bug was fixed these ran instantly BECAUSE the probe was broken: it threw, the wait gave up
+    # at once, and nobody noticed the poll was never running. With the wait working, a test that leaves
+    # it at the 120s default really does poll for 120s. Opting out explicitly keeps each test about one
+    # thing — and the ones that ARE about waiting say so.
     BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }  # local path loads ADSync in-proc
     It 'starts a delta sync when none is in progress' {
         Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
         Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
-        $r = Invoke-CtgDirectorySync
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 0 })
         $r.Status | Should -Be 'ok'
         Should -Invoke Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -Times 1 -Exactly -ParameterFilter { $PolicyType -eq 'Delta' }
         ($r.Actions -join ' ') | Should -Match 'started delta sync'
@@ -25,7 +30,7 @@ Describe 'Invoke-CtgDirectorySync' {
     It 'skips (idempotent) when a sync cycle is already running' {
         Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $true } }
         Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
-        $r = Invoke-CtgDirectorySync
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 0 })
         Should -Invoke Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -Times 0 -Exactly
         ($r.Actions -join ' ') | Should -Match 'already in progress'
     }
@@ -36,7 +41,7 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
         Mock Initialize-CtgADSync -ModuleName Coretelligent.DirectorySync -MockWith { $false }
         Mock Invoke-Command -ModuleName Coretelligent.DirectorySync -MockWith { 'started' }
         $cred = [pscredential]::new('CORP\svc', (ConvertTo-SecureString 'x' -AsPlainText -Force))
-        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync' }) -Credential $cred
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ host = 'Core-CCE-AzSync'; waitForSyncSeconds = 0 }) -Credential $cred
         $r.Status | Should -Be 'ok'
         Should -Invoke Invoke-Command -ModuleName Coretelligent.DirectorySync -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'Core-CCE-AzSync' }
         ($r.Actions -join ' ') | Should -Match 'remoting into Entra Connect host'
@@ -48,7 +53,7 @@ Describe 'Invoke-CtgDirectorySync remoting (Model A)' {
         Mock Get-ADDomain -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ DNSRoot = 'coretelligent.local' } }
         Mock Invoke-Command -ModuleName Coretelligent.DirectorySync -MockWith { 'started' }
         $cred = [pscredential]::new('CORP\svc', (ConvertTo-SecureString 'x' -AsPlainText -Force))
-        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{}) -Credential $cred
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 0 }) -Credential $cred
         Should -Invoke Invoke-Command -ModuleName Coretelligent.DirectorySync -Times 1 -Exactly -ParameterFilter { $ComputerName -eq 'CORE-CCE-AZSYNC.coretelligent.local' }
         ($r.Actions -join ' ') | Should -Match 'auto-discovered from AD'
     }
@@ -156,5 +161,118 @@ Describe 'Wait-CtgADSyncComplete' {
         $null = Wait-CtgADSyncComplete -Probe { $false } -TimeoutSeconds 2 -IntervalSeconds 10 -SettleFirst
         $sw.Stop()
         $sw.Elapsed.TotalSeconds | Should -BeLessThan 5
+    }
+}
+
+# FR #0000127: "The system appears to be only showing success when the system itself is successful and
+# doesn't throw any errors. I reran ... multiple times without success, but remoted into the server and
+# ran the command, and then it finally synced."
+#
+# Half of that request — reporting a sync already in progress — shipped with FR #0000112. This is the
+# other half, and it is not a message bug so much as a claim the step cannot support. A delta cycle
+# completing is evidence that A cycle ran. It is NOT evidence that THIS user was exported: their OU may
+# be out of sync scope, or a sync rule may filter them, and the cycle completes cleanly either way.
+#
+# directory-sync is in ALWAYS_ON_PREM_SYSTEMS and is brokered only ad-dc, so it has no Graph credential
+# and genuinely cannot read Entra to check. What it must not do is imply it did. This is the same defect
+# FR #0000093 found in ad-consistency-check, which reported "a fresh sync will anchor it (ok)" for a
+# comparison it had never performed (see web/lib/jobs/cloud-object.ts).
+Describe 'directory-sync claims only what it actually verified (FR #0000127)' {
+    BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }
+
+    It 'does not tell the operator the account "should now be in Entra"' {
+        # A finished cycle says nothing about any particular user. The old line read
+        # "sync cycle finished after Ns — the account should now be in Entra".
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
+        Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 1 })
+        ($r.Actions -join ' ') | Should -Not -Match 'should now be in Entra'
+    }
+
+    It 'WARNs when it could not read the scheduler, instead of "probably fine"' {
+        # This path had no WARN prefix, so run-report left the step green on a wait it never observed.
+        # The FIRST scheduler read decides start-vs-skip and must succeed; only the probe reads that
+        # follow it fail, which is the real shape of a host that becomes unreadable mid-wait.
+        $script:schedCalls = 0
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith {
+            $script:schedCalls++
+            if ($script:schedCalls -gt 1) { throw 'scheduler unreadable' }
+            [pscustomobject]@{ SyncCycleInProgress = $false }
+        }
+        Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 1 })
+        $joined = $r.Actions -join ' '
+        $joined | Should -Not -Match 'probably fine'
+        $joined | Should -Match 'WARN'
+    }
+
+    It 'does not promise that an already-running cycle will pick up the pending change' {
+        # A cycle already running when we arrived may have taken its snapshot BEFORE the AD write, so
+        # the change waits for the NEXT cycle. "will be picked up" is a guess stated as fact.
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $true } }
+        Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 0 })
+        ($r.Actions -join ' ') | Should -Not -Match 'will be picked up'
+    }
+}
+
+Describe 'the directory-sync read-back names what it checked (FR #0000127)' {
+    BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }
+
+    It 'says the scheduler check does NOT confirm the user reached Entra' {
+        # The check passed on SyncCycleEnabled alone — a tenant-wide health flag — and the case then
+        # showed directory-sync as verified, which operators read as "the user is in Entra".
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $true; SyncCycleInProgress = $false } }
+        $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'onboard'
+        $r.ok | Should -BeTrue    # it is still all this step CAN check — the pass is honest, the label was not
+        ($r.checks.name -join ' | ') | Should -Match 'not confirm|does not verify|mechanism'
+    }
+
+    It 'still fails when the scheduler is disabled (unchanged)' {
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleEnabled = $false; SyncCycleInProgress = $false } }
+        $r = Confirm-CtgDirectorySync -User ([pscustomobject]@{}) -Config ([pscustomobject]@{}) -Action 'offboard'
+        $r.ok | Should -BeFalse
+    }
+}
+
+# The bug the unit tests could not see. Wait-CtgADSyncComplete was tested as a pure unit with a
+# caller-supplied probe (see FR #0000112's own note: "a caller-supplied probe stands in for the
+# scheduler read"), so the seam was covered and the WIRING into it never was. Invoke-CtgDirectorySync
+# built its probe with .GetNewClosure(), which re-hosts a scriptblock in a fresh dynamic module scope
+# where this module's private helpers — Invoke-CtgAdSyncLocal / Invoke-CtgAdSyncRemote, neither
+# exported — cannot be resolved. Every probe threw CommandNotFound, the wait reported 'unknown', and
+# the step said "probably fine" and went green. So from runner 1.115.0 the wait never waited: it
+# started the cycle, slept one settle interval, failed to probe, and claimed success.
+#
+# These tests drive the REAL Invoke-CtgDirectorySync and assert the probe actually reached the
+# scheduler — the assertion the closure bug could not survive.
+Describe 'the sync wait actually probes the scheduler (FR #0000127)' {
+    BeforeEach { Mock Import-Module -ModuleName Coretelligent.DirectorySync -MockWith { } }
+
+    It 'reaches the scheduler through the probe rather than failing to resolve its own helpers' {
+        # Get-ADSyncScheduler is read once to decide start-vs-skip, then again by each probe. A probe
+        # that cannot resolve Invoke-CtgAdSyncLocal never reaches the scheduler at all, so a count above
+        # one is exactly what the closure bug made impossible.
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
+        Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 1 })
+        Should -Invoke Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -Times 2 -Exactly
+        ($r.Actions -join ' ') | Should -Match 'sync cycle finished'
+    }
+
+    It 'never reports a CommandNotFound as an unreadable scheduler' {
+        # The precise disguise: a wiring fault inside the runner was reported as a fact about the host.
+        Mock Get-ADSyncScheduler -ModuleName Coretelligent.DirectorySync -MockWith { [pscustomobject]@{ SyncCycleInProgress = $false } }
+        Mock Start-ADSyncSyncCycle -ModuleName Coretelligent.DirectorySync -MockWith { }
+        $r = Invoke-CtgDirectorySync -Config ([pscustomobject]@{ waitForSyncSeconds = 1 })
+        ($r.Actions -join ' ') | Should -Not -Match 'is not recognized as a name of a cmdlet'
+    }
+
+    It 'passes probe arguments instead of capturing them in a closure' {
+        # Guards the fix itself: .GetNewClosure() here is what broke it, and it reads as harmless.
+        $src = Get-Content "$PSScriptRoot/../modules/Coretelligent.DirectorySync/Coretelligent.DirectorySync.psm1" -Raw
+        # The CALL is what broke it; the comment explaining why it is gone must stay allowed.
+        $src | Should -Not -Match '\}\.GetNewClosure\(\)'
+        $src | Should -Match '-ProbeArgs'
     }
 }
