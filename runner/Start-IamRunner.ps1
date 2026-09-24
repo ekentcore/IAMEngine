@@ -50,6 +50,36 @@ if ($HealthCheck) {
 }
 $global:CtgHeartbeatFile = $HeartbeatFile
 
+# FR #0000171: pin the working directory to the runner's own folder before anything else runs.
+#
+# A Store-installed pwsh starts with BOTH its PowerShell location and its process working directory at
+# $PSHOME — C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>_x64__8wekyb3d8bbwe — which is
+# read-only even to an administrator. Any relative path written from there fails with "Access to the
+# path '...\WindowsApps\...\<name>' is denied", and the reporter of #171 saw exactly that for 'Scripts'
+# while starting this script; moving the working directory somewhere writable by hand fixed it.
+#
+# The relative path is NOT ours. Every write in this repo is anchored ($PSScriptRoot, $InstallDir,
+# GetTempPath) and a clean start from $PSHOME on a Store pwsh 7.6.6 does not reproduce it — so the
+# culprit is inside a dependency we call during startup module installs, whose per-scope path
+# computation degrades to a relative one on some hosts (an account with no resolvable MyDocuments/HOME,
+# which is what a SYSTEM scheduled task is). We cannot anchor a path inside someone else's module. The
+# working directory is the only lever we have over it, so we take it, once, here.
+#
+# BOTH have to be set and they are genuinely independent: PowerShell cmdlets (New-Item, Test-Path)
+# resolve against the provider location that Set-Location moves, while .NET APIs
+# ([System.IO.File], Directory.CreateDirectory) resolve against [Environment]::CurrentDirectory, which
+# Set-Location does NOT touch. Setting only one leaves half the calls still pointing at WindowsApps.
+#
+# Best-effort by design: a runner that cannot set its own directory must still start, and $PSScriptRoot
+# is empty when this file is dot-sourced rather than run, so there is nothing to anchor to then.
+if ($PSScriptRoot) {
+    try {
+        Set-Location -LiteralPath $PSScriptRoot
+        [Environment]::CurrentDirectory = $PSScriptRoot
+    }
+    catch { Write-Warning "could not set the working directory to $PSScriptRoot ($($_.Exception.Message)) - a relative path written by a dependency may fail if this process started somewhere read-only." }
+}
+
 $ErrorActionPreference = 'Stop'
 # This is a non-interactive background service. Suppress progress bars + ANSI cursor control: writing
 # a progress bar / colored output to a redirected or detached stdout (notably right after a self-update
@@ -233,14 +263,18 @@ if ($adReady) {
 # closing the applications." A child started with -NoProfile has none of that loaded, so the install
 # proceeds. Returns { Code; Tail } (the shape Invoke-CtgToolProcess uses); a non-zero exit is data,
 # not an exception — only a failure to START the child throws.
+# $Version is OPTIONAL: the EXO pin needs an exact build (that is its whole purpose), but PnP.PowerShell
+# deliberately tracks the gallery latest. Omitting -RequiredVersion is the honest way to say "latest" —
+# the alternative, inventing a version to satisfy a mandatory parameter, pins a build nobody chose.
 function Invoke-CtgPwshInstall {
     param([Parameter(Mandatory)][string]$Name,
-          [Parameter(Mandatory)][string]$Version,
+          [string]$Version,
           [string]$Scope = 'CurrentUser')
     $pwshPath = (Get-Process -Id $PID).Path
     if (-not $pwshPath) { $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
     if (-not $pwshPath) { throw 'cannot locate pwsh to run the install in a clean process' }
-    $cmd = "Install-Module -Name '$Name' -RequiredVersion '$Version' -Scope $Scope -Force -AllowClobber -Confirm:`$false -AcceptLicense -ErrorAction Stop"
+    $verArg = if ($Version) { " -RequiredVersion '$Version'" } else { '' }
+    $cmd = "Install-Module -Name '$Name'$verArg -Scope $Scope -Force -AllowClobber -Confirm:`$false -AcceptLicense -ErrorAction Stop"
     $out = & $pwshPath -NoProfile -NonInteractive -Command $cmd 2>&1
     $tail = (@($out) | Where-Object { $_ } | ForEach-Object { [string]$_ } | Select-Object -Last 4) -join ' | '
     return [pscustomobject]@{ Code = [int]$LASTEXITCODE; Tail = $tail }
@@ -304,21 +338,51 @@ if ($exoAvail) {
 
 # Self-heal PnP.PowerShell if it's absent — mirrors Install-CtgExoPin above. PnP powers
 # Grant-CtgSharePointSiteAccess (offboard hand-off: a leaver's manager/delegate gets full access to
-# their OneDrive/SharePoint content). Best-effort and fail-soft: a host with no gallery access simply
-# never loads Coretelligent.SharePoint, and the app's claim gate withholds those grants from it —
-# nothing else in the runner depends on PnP being present.
+# their OneDrive/SharePoint content). Nothing ELSE in the runner depends on PnP being present, so a
+# host that cannot get it keeps running every other system.
+#
+# There is no claim gate behind this, and a comment here used to say there was. $script:OnPremCapabilityProbe
+# reports 'active-directory' and 'directory-sync' only; no PnP capability is reported anywhere, and the
+# hand-off is not a job of its own — it rides inside the m365 offboard, which every cloud runner can
+# claim. So a runner without PnP claims the offboard exactly as before and simply does not perform the
+# grant. That is why the skip has to be reported on the case (see the Offboard dispatch block) and why
+# a failure here is recorded rather than warned into a console nobody is attached to.
+#
 # Returns whether PnP.PowerShell is available once installation is attempted, so callers don't have
 # to re-scan -ListAvailable themselves (Fix 3 — this used to run that scan, then the caller ran it
 # again immediately after to set $pnpAvail).
 function Install-CtgPnPModule {
     $avail = Get-Module -ListAvailable -Name PnP.PowerShell -ErrorAction SilentlyContinue
-    if ($avail) { return $true }
+    # Having the module outranks any reason we did not have it earlier — clear the recorded failure.
+    if ($avail) { $script:LastPnpError = $null; return $true }
     Write-Warning "PnP.PowerShell not installed — installing it so SharePoint/OneDrive full-access grants can run (offboard hand-off). Best-effort; a host with no gallery access will skip SharePoint grants."
     Initialize-CtgGallery
-    try { Install-Module PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -Confirm:$false -AcceptLicense -ErrorAction Stop; Write-Host "  installed PnP.PowerShell" -ForegroundColor Yellow }
-    catch { Write-Warning "  could not install PnP.PowerShell: $($_.Exception.Message)" }
-    [bool](Get-Module -ListAvailable -Name PnP.PowerShell -ErrorAction SilentlyContinue)
+    # Out-of-process, for the reason Invoke-CtgPwshInstall documents: this call used to run in-session,
+    # where PowerShellGet refuses while PackageManagement is loaded — and Initialize-CtgGallery loads it
+    # one line above, every time. The install therefore failed at EVERY startup on any host that did not
+    # already have PnP, which is the whole of FR #0000116: the site-collection-admin grant the request
+    # asks for exists and had never once run.
+    $tail = ''
+    try {
+        $r = Invoke-CtgPwshInstall -Name 'PnP.PowerShell' -Scope 'CurrentUser'
+        $tail = [string]$r.Tail
+    } catch {
+        $tail = $_.Exception.Message
+    }
+    if (Get-Module -ListAvailable -Name PnP.PowerShell -ErrorAction SilentlyContinue) {
+        $script:LastPnpError = $null
+        Write-Host "  installed PnP.PowerShell" -ForegroundColor Yellow
+        return $true
+    }
+    # Still absent. Name the CONSEQUENCE, not just the error: what stops working is the leaver's
+    # manager getting at the leaver's files, and the case will otherwise report only the Graph invite.
+    $script:LastPnpError = "could not install PnP.PowerShell; offboards on this runner cannot grant a delegate site-collection admin on the leaver's OneDrive/SharePoint — they get the per-item OneDrive invite only. Reason: $tail"
+    Write-Warning "  $script:LastPnpError"
+    return $false
 }
+# Initialised HERE, immediately before the call, for the same reason the EXO pin's is — anywhere later
+# and it would erase the verdict the self-heal just recorded.
+$script:LastPnpError = $null
 $pnpAvail = Install-CtgPnPModule
 if ($pnpAvail) { Import-Module "$PSScriptRoot/modules/Coretelligent.SharePoint/Coretelligent.SharePoint.psd1" -Force }
 
@@ -1322,6 +1386,20 @@ $DISPATCH = @{
                     catch { $spActions.Add("WARN SharePoint/OneDrive full-access grant did not run: $($_.Exception.Message)") }
                     if ($spActions.Count -gt 0) { $r.Actions = @($r.Actions) + $spActions.ToArray() }
                 }
+            }
+            # FR #0000116: a named delegate and no PnP used to skip in SILENCE — no action line, no
+            # warning, nothing on the case. What the run report then showed was the Graph /invite line
+            # from Invoke-CtgM365Offboarding ("granted delegate X access to …'s OneDrive"), green, and
+            # the operator had no way to know the full-access grant never happened. The invite is a
+            # per-item 'write' permission on the drive root; it is NOT the site-collection admin the
+            # hand-off exists to give. Say which one the delegate actually got.
+            elseif ($spDelegate) {
+                # $spDelegate above is [string] on a value that may be an ARRAY, which joins with a space
+                # and turns two people into one nonexistent name — the FR #0000120 bug. It is fine as the
+                # gate (any delegate at all), but this line NAMES them, so normalise the same way the
+                # M365, Exchange and SharePoint modules do rather than reprinting that mistake.
+                $spNames = (@(@(Get-CtgProp $job.config 'oneDriveGrantAccessTo') | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() }) -join ', ')
+                $r.Actions = @($r.Actions) + "WARN SharePoint hand-off skipped — PnP.PowerShell is not installed on this runner, so $spNames was NOT made site-collection admin on the leaver's OneDrive/SharePoint (the per-item OneDrive invite above is all they have). Install PnP.PowerShell on the runner host, then re-run this step, or grant site access by hand."
             }
             $r
         }
@@ -3513,6 +3591,13 @@ if (Test-CtgBrowserAvailable) {
 # reported" (allow, old behavior). Empty is forced to the literal '[]' (an empty pipe emits nothing).
 $script:RunnerCapabilitiesJson = if ($script:RunnerCapabilities.Count -eq 0) { '[]' } else { ($script:RunnerCapabilities | ConvertTo-Json -Compress -AsArray) }
 Write-Host "on-prem capabilities: $script:RunnerCapabilitiesJson" -ForegroundColor DarkGray
+
+# The PnP install runs at line ~353, long before Write-CtgLog exists, so its failure is RECORDED there
+# and reported here — the first point in startup where it can reach a file that outlives the process.
+# This matters because the runner is typically a Windows SYSTEM scheduled task: the Write-Warning that
+# install emits goes to a console nobody is attached to, which is exactly how FR #0000116 stayed
+# invisible from July to September. Logged once at startup, not per job.
+if ($script:LastPnpError) { Write-CtgLog -Level WARN -Message "PnP.PowerShell unavailable: $script:LastPnpError" }
 
 # Single-instance guard, keyed PER AGENT. The newest runner process for THIS agentId claims
 # .runner.<agentId>.lock with its PID at startup; an OLDER process for the same agent (e.g. one a

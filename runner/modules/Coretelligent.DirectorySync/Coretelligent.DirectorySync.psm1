@@ -172,10 +172,18 @@ function Invoke-CtgAdSyncRemote {
 # running. Probing immediately would see SyncCycleInProgress=$false and declare it complete — which is
 # precisely the bug being fixed, reintroduced. So a cycle WE started waits one interval before the
 # first probe; one already in progress when we arrived is probed straight away.
+#
+# $ProbeArgs exists because the caller's probe MUST NOT be a closure. A scriptblock built in this module
+# resolves commands in this module; .GetNewClosure() re-hosts it in a fresh dynamic module where the
+# private helpers (Invoke-CtgAdSyncLocal/Remote, neither exported) cannot be found, so every probe threw
+# CommandNotFound, which this function then reported as 'unknown' — "probably fine" — and the wait FR
+# #0000112 added silently never waited (FR #0000127). The probe now takes what it needs as arguments and
+# stays bound to this module.
 function Wait-CtgADSyncComplete {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][scriptblock]$Probe,   # $true while a cycle is running
+        [object[]]$ProbeArgs = @(),                  # passed to $Probe — keeps it a plain, module-bound scriptblock
         [int]$TimeoutSeconds = 120,
         [int]$IntervalSeconds = 10,
         [switch]$SettleFirst                          # we just started it — let the scheduler catch up
@@ -185,7 +193,7 @@ function Wait-CtgADSyncComplete {
     if ($SettleFirst) { Start-Sleep -Seconds ([Math]::Min($IntervalSeconds, $TimeoutSeconds)) }
     while ($true) {
         $running = $false
-        try { $running = [bool](& $Probe) }
+        try { $running = [bool](& $Probe @ProbeArgs) }
         catch {
             # A probe failure is not a sync failure — the cycle may well be fine. Stop waiting and say so
             # rather than burning the whole budget on a host we cannot read.
@@ -245,7 +253,10 @@ function Invoke-CtgDirectorySync {
 
     $alreadyRunning = ($outcome -eq 'in-progress')
     if ($alreadyRunning) {
-        $actions.Add("a sync cycle is already in progress — skipped (the pending change will be picked up)")
+        # NOT "the pending change will be picked up": a cycle already running when we arrived may have
+        # taken its snapshot BEFORE the AD write, in which case the change waits for the NEXT cycle. The
+        # old wording stated a guess as fact (FR #0000127).
+        $actions.Add("a sync cycle was already in progress — did not start another. If it began before this case's AD changes, they go up on the following cycle rather than this one.")
     } else {
         $actions.Add("started delta sync (Start-ADSyncSyncCycle -PolicyType Delta)")
     }
@@ -263,15 +274,23 @@ function Invoke-CtgDirectorySync {
             }
             [bool](Get-ADSyncScheduler).SyncCycleInProgress
         }
+        # NOT .GetNewClosure() — see Wait-CtgADSyncComplete. A closure loses this module's scope and the
+        # probe can no longer see Invoke-CtgAdSyncLocal/Remote, which is how the wait came to be inert.
+        # Everything it needs arrives as an argument instead, so it stays a plain module-bound scriptblock.
         $probe = {
-            if ($target.Remote) { Invoke-CtgAdSyncRemote -ComputerName $target.Host -Credential $Credential -ScriptBlock $statusScript }
-            else { Invoke-CtgAdSyncLocal -ScriptBlock $statusScript }
-        }.GetNewClosure()
-        $w = Wait-CtgADSyncComplete -Probe $probe -TimeoutSeconds $waitSeconds -SettleFirst:(-not $alreadyRunning)
+            param($t, $cred, $status)
+            if ($t.Remote) { Invoke-CtgAdSyncRemote -ComputerName $t.Host -Credential $cred -ScriptBlock $status }
+            else { Invoke-CtgAdSyncLocal -ScriptBlock $status }
+        }
+        $w = Wait-CtgADSyncComplete -Probe $probe -ProbeArgs @($target, $Credential, $statusScript) -TimeoutSeconds $waitSeconds -SettleFirst:(-not $alreadyRunning)
+        # What each outcome is ENTITLED to say. A finished delta cycle is evidence that a cycle ran — not
+        # that this user was exported: their OU may be outside the sync scope, or a sync rule may filter
+        # them, and the cycle completes cleanly either way. This step has no Graph credential (it is
+        # on-prem, brokered ad-dc only) so it cannot check, and must not imply that it did (FR #0000127).
         switch ($w.Status) {
-            'completed' { $actions.Add("sync cycle finished after $($w.WaitedSeconds)s — the account should now be in Entra") }
+            'completed' { $actions.Add("sync cycle finished after $($w.WaitedSeconds)s (this confirms the cycle ran, not that this user was included in it — verify in Entra if a later step cannot find them)") }
             'timeout'   { $actions.Add("WARN the sync cycle was still running after $($w.WaitedSeconds)s — carrying on without waiting further. A later step that cannot find the account in Entra is most likely this sync still catching up; re-run that step.") }
-            default     { $actions.Add("could not read the sync scheduler while waiting ($($w.Error)) — carrying on; the cycle was triggered and is probably fine") }
+            default     { $actions.Add("WARN could not read the sync scheduler while waiting ($($w.Error)) — the cycle was triggered but this step never observed it finish, so nothing here confirms the sync completed.") }
         }
     }
 
@@ -310,8 +329,14 @@ function Confirm-CtgDirectorySync {
         return [pscustomobject]@{ ok = $false; checks = @(@{ name = 'ADSync reachable'; expected = $true; actual = $false; pass = $false }) }
     }
     $enabled = [bool]$state.Enabled
+    # The check names say what was actually read. SyncCycleEnabled is a TENANT-WIDE health flag: it is
+    # true whenever Entra Connect is switched on, for every case, whether or not this user ever synced.
+    # Passing on it is legitimate — it is the only thing an on-prem step with no Graph credential can
+    # read — but calling it "verified" let operators read a green directory-sync as "the user is in
+    # Entra" (FR #0000127). Same defect FR #0000093 found in ad-consistency-check, which reported a
+    # reassuring line for a comparison it had never performed (web/lib/jobs/cloud-object.ts).
     $checks = @(
-        @{ name = 'Entra Connect sync scheduler enabled'; expected = $true; actual = $enabled; pass = $enabled },
+        @{ name = 'Entra Connect sync mechanism healthy (scheduler enabled) — does not confirm this user reached Entra'; expected = $true; actual = $enabled; pass = $enabled },
         @{ name = 'sync cycle running (informational)'; expected = $null; actual = [bool]$state.InProgress; pass = $true }
     )
     [pscustomobject]@{ ok = $enabled; checks = $checks }

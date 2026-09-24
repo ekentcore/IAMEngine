@@ -118,6 +118,13 @@ Describe 'Invoke-CtgExchangeDefaultMailboxAccess' {
         Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'finance@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Finance'; PrimarySmtpAddress='finance@x.com'; ExchangeGuid='11111111-1111-1111-1111-111111111111'; Identity='finance@x.com'; GrantSendOnBehalfTo=@() } }
         Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'vacation@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Global Vacation Calendar'; PrimarySmtpAddress='vacation@x.com'; ExchangeGuid='22222222-2222-2222-2222-222222222222'; Identity='vacation@x.com'; GrantSendOnBehalfTo=@() } }
         Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'missing@x.com' } -MockWith { $null }
+        # The bare-string entry. Its mock was missing, so the call matched no filter and — since Pester 6
+        # removed the fall-through to the real command — threw "No mock for command 'Get-Mailbox'
+        # matched the call". That is why this Describe's first test failed; the product was never
+        # involved. Worth keeping distinct from 'missing@x.com': that one returns $null on purpose to
+        # exercise the not-found WARN, so reusing it would have hidden the bare-string case behind a
+        # warning instead of granting anything.
+        Mock Get-Mailbox -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'plainstring@x.com' } -MockWith { [pscustomobject]@{ DisplayName='Plain String'; PrimarySmtpAddress='plainstring@x.com'; ExchangeGuid='33333333-3333-3333-3333-333333333333'; Identity='plainstring@x.com'; GrantSendOnBehalfTo=@() } }
         Mock Get-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
         Mock Get-RecipientPermission -ModuleName Coretelligent.Exchange -MockWith { @() }
         Mock Add-MailboxPermission -ModuleName Coretelligent.Exchange -MockWith { }
@@ -135,6 +142,12 @@ Describe 'Invoke-CtgExchangeDefaultMailboxAccess' {
         Should -Invoke Add-RecipientPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq '22222222-2222-2222-2222-222222222222' -and $Trustee -eq 'new@x.com' } -Times 1
         ($acts -join ' ') | Should -Match 'default shared mailbox FullAccess: Finance'
         ($acts -join ' ') | Should -Match 'default shared mailbox SendAs: Global Vacation Calendar'
+        # The bare string. The test named this case and passed it in, then asserted nothing about it —
+        # so "a bare string defaults to FullAccess", stated here and in the function's own .NOTES, was
+        # documented in two places and verified in none. It is a real branch: $entry -is [string] picks
+        # both the address AND the access level, and nothing else exercises that pair.
+        Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq '33333333-3333-3333-3333-333333333333' -and $User -eq 'new@x.com' -and ($AccessRights -contains 'FullAccess') } -Times 1
+        ($acts -join ' ') | Should -Match 'default shared mailbox FullAccess: Plain String'
     }
 
     It 'grants SendOnBehalf via Set-Mailbox' {
