@@ -379,3 +379,28 @@ test("offboard with no exchange system in the plan is unaffected", () => {
   const jobs = planCase(systems, "offboard", {});
   assert.deepEqual(jobs.find((j) => j.systemKey === "entra")!.dependsOn, ["m365"]);
 });
+
+// FR #173 / #134: per-case step selection (CaseRequest.requestedSystems / skippedSystems).
+test("a requested on-request system is planned even though the intake didn't signal it", () => {
+  const systems = [sys({ systemKey: "servicenow" }), sys({ systemKey: "zoom", onboardWhen: "on_request" })];
+  const keys = (requested?: string[]) => planCase(systems, "onboard", {}, undefined, undefined, undefined, undefined, null, requested ? new Set(requested) : undefined).map((j) => j.systemKey);
+  assert.deepEqual(keys(), ["servicenow"]);
+  assert.deepEqual(keys(["zoom"]), ["servicenow", "zoom"]);
+});
+
+test("skipping beats requesting, and a 'never' lane can't be requested", () => {
+  const systems = [sys({ systemKey: "zoom", onboardWhen: "on_request" }), sys({ systemKey: "entra", onboardWhen: "never" })];
+  assert.deepEqual(planCase(systems, "onboard", {}, undefined, undefined, undefined, new Set(["zoom"]), null, new Set(["zoom", "entra"])).map((j) => j.systemKey), []);
+});
+
+// FR #122: the editor now writes per-lane dependencies (lib/clients/lane-deps). The planner must order
+// each lane by its own list — this is the promise the split "Depends on" fields rely on.
+test("per-lane dependsOn orders each lane independently", () => {
+  const systems = [
+    sys({ systemKey: "zoom", dependsOn: ["slack"], config: { dependsOn: { onboard: ["slack"], offboard: [] } } }),
+    sys({ systemKey: "slack", dependsOn: [], config: { dependsOn: { onboard: [], offboard: ["zoom"] } } }),
+  ];
+  const order = (action: "onboard" | "offboard") => planCase(systems, action, {}).map((j) => j.systemKey);
+  assert.deepEqual(order("onboard"), ["slack", "zoom"]);
+  assert.deepEqual(order("offboard"), ["zoom", "slack"]);
+});

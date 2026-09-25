@@ -214,6 +214,21 @@ function Get-CtgGoogleUser {
     Invoke-CtgGoogleApi -Method GET -Path "/users/$Email"
 }
 
+function Get-CtgGoogleOrgUnits {
+    # FR #81: every OU path in the tenant, for the app's OU pickers (onboard target / offboard move).
+    # One Admin SDK call — orgunits?type=all returns the whole tree flat. The root ("/") is left out: the
+    # onboarding executor refuses to place a user there, so offering it would only invite a failed step.
+    # Needs the admin.directory.orgunit scope, which Connect-CtgGoogle already requests.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+    $customer = Get-CtgGoogleCustomer
+    $r = Invoke-CtgGoogleApi -Method GET -Path "/customer/$([uri]::EscapeDataString($customer))/orgunits?type=all"
+    # StrictMode: a tenant with no sub-OUs answers without organizationUnits at all — read it safely.
+    $paths = @(@(Get-CtgProp $r 'organizationUnits') | ForEach-Object { [string](Get-CtgProp $_ 'orgUnitPath') } | Where-Object { $_ -and $_ -ne '/' })
+    @($paths | Sort-Object -Unique)
+}
+
 function Get-CtgGoogleUserGroups {
     # Group emails the user currently belongs to (empty array if none).
     param([Parameter(Mandatory)][string]$Email)
@@ -749,4 +764,4 @@ function Invoke-CtgGoogleDwdGrant {
     throw "domain-wide delegation grant could not be confirmed — $err$ev"
 }
 
-Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleSessionScopes, Get-CtgGoogleCustomer, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant
+Export-ModuleMember -Function Connect-CtgGoogle, Get-CtgGoogleOrgUnits, Get-CtgGoogleSessionScopes, Get-CtgGoogleCustomer, Invoke-CtgGoogleApi, Get-CtgGoogleUser, Get-CtgGoogleUserGroups, Invoke-CtgGoogleOnboarding, Invoke-CtgGoogleOffboarding, Confirm-CtgGoogle, Invoke-CtgGooglePasswordReset, Invoke-CtgGoogleChange, Invoke-CtgGoogleOAuthSignin, Invoke-CtgGoogleDwdGrant
