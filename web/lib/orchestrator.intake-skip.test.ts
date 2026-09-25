@@ -36,7 +36,8 @@ test("skipSystems drops the named lanes and the synthetic AD steps", () => {
   assert.ok(!keys.includes("directory-sync"));
   assert.ok(!keys.includes("ad-email-writeback"));
   assert.ok(!keys.includes("ad-consistency-check"));
-  assert.ok(keys.includes("entra"));
+  // FR #117: with m365 in the lane, entra is folded into the m365 step rather than planned separately.
+  assert.ok(!keys.includes("entra"));
   assert.ok(keys.includes("m365"));
   assert.ok(keys.includes("exchange"));
 });

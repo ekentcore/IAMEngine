@@ -94,6 +94,7 @@ export { entry as egnyteApiPasswordGrant } from "./egnyte-api-password-grant";
 export { entry as egnyteBrowserSetup } from "./egnyte-browser-setup";
 export { entry as engineOptOutHardening } from "./engine-opt-out-hardening";
 export { entry as engineOptOutParentInheritance } from "./engine-opt-out-parent-inheritance";
+export { entry as entraMergedIntoM365 } from "./entra-merged-into-m365";
 export { entry as exchangeDisconnectExportHotfix } from "./exchange-disconnect-export-hotfix";
 export { entry as exchangeManagerName } from "./exchange-manager-name";
 export { entry as exchangeRightsManageasapp } from "./exchange-rights-manageasapp";

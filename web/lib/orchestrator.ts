@@ -3,6 +3,7 @@
 import type { ClientSystem, Action, Mode } from "@prisma/client";
 import { OPTIONAL_SECRETS } from "./secrets/optional-secrets";
 import { STANDALONE } from "./profiles/ad-domain";
+import { mergeEntraIntoM365 } from "./entra-merge";
 
 // A step's INTENT — chiefly for offboarding. "disable" = reversible containment (lock the account,
 // isolate the device, revoke sessions); eventually safe to automate. "destructive" = actually deletes
@@ -147,6 +148,9 @@ export function planCase(
   // per-client ClientSystem row or migration. It depends on the cloud consumers present (m365/exchange)
   // so it runs after them; the actual address is resolved + injected at dispatch time (runner-service
   // claim), since it isn't known until those run. Routed on-prem via ALWAYS_ON_PREM_SYSTEMS.
+  // FR #117: entra and m365 are the same executor — one step when both are in this lane. In place, so
+  // every use of `active` below (synthetic steps, ordering) sees the merged set.
+  active.splice(0, active.length, ...mergeEntraIntoM365(active));
   const activeKeys = new Set(active.map((s) => s.systemKey));
   // NOT for ad-standalone: there, AD and the cloud are two separate accounts for one person, managed
   // independently — so writing the CLOUD mailbox address into on-prem `mail` is wrong, not helpful

@@ -84,7 +84,9 @@ type Suggestion = {
   alternatives: { externalId: string; label: string }[];
 };
 
-const ALL_KEYS = Object.keys(CATALOG).sort();
+// FR #117: entra is not offered for new systems — it runs the same executor as m365, and when both are
+// in a lane the planner folds entra into the m365 step. A client that already has entra keeps its row.
+const ALL_KEYS = Object.keys(CATALOG).filter((k) => k !== "entra").sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : l === "always" ? "always" : "never");
 
 function rowFromCatalog(key: string): Row {

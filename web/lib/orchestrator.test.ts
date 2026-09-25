@@ -325,9 +325,11 @@ const adPipeline = () => [
   sys({ systemKey: "exchange", dependsOn: ["m365"] }),
 ];
 
-test("offboard: exchange converts the mailbox BEFORE entra/m365 take the licence off", () => {
+// FR #117: entra and m365 now plan as ONE m365 step when both are in the lane (lib/entra-merge.ts), so
+// these guards assert the invariants on the merged step. entra-only clients keep the entra step.
+test("offboard: exchange converts the mailbox BEFORE the (merged) m365 step takes the licence off", () => {
   const keys = planCase(adPipeline(), "offboard", {}).map((j) => j.systemKey);
-  assert.ok(keys.indexOf("exchange") < keys.indexOf("entra"), `exchange must precede entra: ${keys}`);
+  assert.ok(!keys.includes("entra"), `entra is folded into m365: ${keys}`);
   assert.ok(keys.indexOf("exchange") < keys.indexOf("m365"), `exchange must precede m365: ${keys}`);
   // ...and the on-prem origin invariant still holds.
   assert.ok(keys.indexOf("active-directory") < keys.indexOf("directory-sync"));
@@ -339,15 +341,20 @@ test("onboard is unchanged: create in AD, sync, then the cloud consumers with ex
   const keys = planCase(adPipeline(), "onboard", {})
     .map((j) => j.systemKey)
     .filter((k) => ["active-directory", "directory-sync", "entra", "m365", "exchange"].includes(k));
-  assert.deepEqual(keys, ["active-directory", "directory-sync", "entra", "m365", "exchange"]);
+  assert.deepEqual(keys, ["active-directory", "directory-sync", "m365", "exchange"]);
 });
 
-test("offboard: entra/m365 depend on exchange, and exchange never depends on them (no cycle)", () => {
+test("offboard: the merged m365 step depends on exchange, and exchange never depends on it (no cycle)", () => {
   const jobs = planCase(adPipeline(), "offboard", {});
   const dep = (k: string) => jobs.find((j) => j.systemKey === k)!.dependsOn;
-  assert.ok(dep("entra").includes("exchange"));
   assert.ok(dep("m365").includes("exchange"));
   assert.equal(dep("exchange").some((d) => d === "entra" || d === "m365"), false);
+});
+
+test("an entra-only offboard still plans entra, after exchange", () => {
+  const systems = [sys({ systemKey: "entra" }), sys({ systemKey: "exchange", dependsOn: ["entra"] })];
+  const jobs = planCase(systems, "offboard", {});
+  assert.deepEqual(jobs.map((j) => j.systemKey), ["exchange", "entra"]);
 });
 
 test("offboard: a cloud-only client's declared 'exchange dependsOn m365' is reordered too", () => {
@@ -370,12 +377,13 @@ test("ad-standalone (an AD system but no directory-sync): the pipeline rewrite d
   ];
   const jobs = planCase(systems, "onboard", {});
   const dep = (k: string) => jobs.find((j) => j.systemKey === k)!.dependsOn;
-  assert.deepEqual(dep("entra"), ["m365"]); // declared order preserved, not reversed
+  assert.equal(jobs.some((j) => j.systemKey === "entra"), false); // folded into m365 (FR #117)
   assert.deepEqual(dep("m365"), []); // not gated behind AD
 });
 
-test("offboard with no exchange system in the plan is unaffected", () => {
+test("offboard with no exchange system: entra folds into m365 with no self-dependency", () => {
   const systems = [sys({ systemKey: "m365" }), sys({ systemKey: "entra", dependsOn: ["m365"] })];
   const jobs = planCase(systems, "offboard", {});
-  assert.deepEqual(jobs.find((j) => j.systemKey === "entra")!.dependsOn, ["m365"]);
+  assert.deepEqual(jobs.map((j) => j.systemKey), ["m365"]);
+  assert.deepEqual(jobs[0].dependsOn, []);
 });
