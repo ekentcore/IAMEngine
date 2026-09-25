@@ -513,7 +513,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                     </Field>
                   )}
                   <Field label="Secrets" help={HELP.secrets}>
-                    <input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 200 }} />
+                    {/* FR #103: a SCIM system is provisioned by the identity provider and never dispatches, so
+                        there is nothing to wire. Any names already saved are kept (switching back to api
+                        restores them), just not offered for editing or wiring. */}
+                    {r.mode === "scim"
+                      ? <span className="note" style={{ display: "inline-block", width: 200 }} title="The identity provider provisions this app over SCIM — no credential is used">not needed (SCIM)</span>
+                      : <input value={r.secretNames.join(", ")} onChange={(e) => update(i, { secretNames: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 200 }} />}
                   </Field>
                   <Field label="Config (JSON)" help={HELP.config} grow>
                     <textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder={'{ "offboard": { } }'} rows={2} style={{ width: "100%", minWidth: 260, fontFamily: "monospace", fontSize: 12 }} />

@@ -500,7 +500,7 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
                     {s.requiresApproval && <span className="badge help" title={HELP.approval}>approval</span>}
                     {s.captureEvidence && <span className="badge help" title={HELP.evidence} style={{ marginLeft: s.requiresApproval ? 4 : 0 }}>evidence</span>}
                   </td>
-                  <td className="muted">{s.secretNames.join(", ") || "—"}</td>
+                  <td className="muted">{s.mode === "scim" ? "not needed (SCIM)" : s.secretNames.join(", ") || "—"}</td>
                 </tr>
               ))
             )}

@@ -732,7 +732,7 @@ export function makeClientRepository(db: PrismaClient) {
     async secretsWiring(slug: string): Promise<
       | {
           clientId: string;
-          systems: { systemKey: string; secretNames: string[] }[];
+          systems: { systemKey: string; secretNames: string[]; mode: string }[];
           secrets: { name: string; externalId: string; label: string | null; provider: string }[];
         }
       | null
@@ -743,7 +743,7 @@ export function makeClientRepository(db: PrismaClient) {
           id: true,
           parentId: true,
           inheritParentSystems: true,
-          systems: { select: { systemKey: true, secretNames: true } },
+          systems: { select: { systemKey: true, secretNames: true, mode: true } },
           secrets: { select: { name: true, externalId: true, label: true, provider: true } },
         },
       });
@@ -756,7 +756,7 @@ export function makeClientRepository(db: PrismaClient) {
       if (systems.length === 0 && c.parentId && c.inheritParentSystems) {
         const p = await db.client.findUnique({
           where: { id: c.parentId },
-          select: { systems: { select: { systemKey: true, secretNames: true } } },
+          select: { systems: { select: { systemKey: true, secretNames: true, mode: true } } },
         });
         if (p && p.systems.length > 0) systems = p.systems;
       }

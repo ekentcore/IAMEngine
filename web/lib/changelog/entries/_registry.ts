@@ -234,6 +234,7 @@ export { entry as runnerGenerator } from "./runner-generator";
 export { entry as runnerGraphSkewGuard } from "./runner-graph-skew-guard";
 export { entry as runnerPoolOneBox } from "./runner-pool-one-box";
 export { entry as runnerVersionStartupLog } from "./runner-version-startup-log";
+export { entry as scimSystemsNoWiring } from "./scim-systems-no-wiring";
 export { entry as securityP0Runner } from "./security-p0-runner";
 export { entry as selfHealWatchdog } from "./self-heal-watchdog";
 export { entry as selfUpdateKeepsBrowserSidecar } from "./self-update-keeps-browser-sidecar";

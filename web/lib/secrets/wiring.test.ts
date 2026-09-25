@@ -87,3 +87,34 @@ test("ad-dc shows as an OPTIONAL row on an AD client even though the system list
   const rows = deriveSecretRows([{ systemKey: "active-directory", secretNames: ["ad-dc"] }], []);
   assert.equal(rows.find((r) => r.name === "ad-dc")!.optional, true);
 });
+
+// FR #103: a SCIM system is provisioned by the IdP and never brokers a credential, so its
+// secretNames must not produce a row asking the operator to wire one.
+test("deriveSecretRows ignores the secrets of a SCIM system", () => {
+  const rows = deriveSecretRows(
+    [
+      { systemKey: "zoom", secretNames: ["zoom-api"], mode: "scim" },
+      { systemKey: "m365", secretNames: ["m365-admin"], mode: "api" },
+    ],
+    []
+  );
+  assert.deepEqual(rows.map((r) => r.name), ["m365-admin"]);
+});
+
+test("a secret shared with a non-SCIM system still shows, referenced only by that system", () => {
+  const rows = deriveSecretRows(
+    [
+      { systemKey: "slack", secretNames: ["shared"], mode: "scim" },
+      { systemKey: "exchange", secretNames: ["shared"], mode: "api" },
+    ],
+    []
+  );
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].referencedBy, ["exchange"]);
+});
+
+test("an already-wired secret stays visible even when its only system switched to SCIM", () => {
+  const rows = deriveSecretRows([{ systemKey: "zoom", secretNames: ["zoom-api"], mode: "scim" }], [{ name: "zoom-api", externalId: "4821" }]);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].referencedBy, []);
+});

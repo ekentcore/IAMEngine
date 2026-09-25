@@ -24,7 +24,10 @@ export type SecretRow = {
   optional?: boolean;
 };
 
-type SystemRef = { systemKey: string; secretNames: string[] };
+// mode: a "scim" system is provisioned by the identity provider — its steps are born succeeded and
+// never dispatch, so nothing ever brokers its secrets. Its secretNames are ignored here (FR #103):
+// offering a credential to wire for it would ask an operator to vault something no job will use.
+type SystemRef = { systemKey: string; secretNames: string[]; mode?: string };
 type ExistingSecret = { name: string; externalId?: string | null; label?: string | null; provider?: string | null };
 
 // Build one row per secret the client needs: the union of every secretName referenced across its
@@ -34,6 +37,7 @@ export function deriveSecretRows(systems: SystemRef[], existing: ExistingSecret[
   const referencedBy = new Map<string, Set<string>>();
   const optionalFor = new Map<string, Set<string>>();
   for (const s of systems) {
+    if (s.mode === "scim") continue;
     for (const name of s.secretNames ?? []) {
       if (!referencedBy.has(name)) referencedBy.set(name, new Set());
       referencedBy.get(name)!.add(s.systemKey);
