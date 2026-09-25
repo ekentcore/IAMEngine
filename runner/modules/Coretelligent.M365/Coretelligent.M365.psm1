@@ -2179,6 +2179,11 @@ function Invoke-CtgM365Offboarding {
     # which group assigns the rest — those drop when the user leaves that group (an on-prem-synced
     # licensing group like "M365 E3 Users Group" is removed by the AD step, then AD Connect syncs it).
     $removeLicense = Get-CtgProp $Config 'removeLicense'
+    # `removeLicense: false` is an explicit "keep the licence". The checks below used to be only
+    # `$null -ne $removeLicense`, and $false is not $null, so the licence came off anyway. A profile
+    # edited as text can carry the string "false" too.
+    $licenseOptOut = ($removeLicense -is [bool] -and -not $removeLicense) -or ($removeLicense -is [string] -and $removeLicense.Trim() -ieq 'false')
+    if ($licenseOptOut) { $removeLicense = $null }
     $mailbox = Get-CtgProp $Config 'mailbox'
     $threshold = if ($mailbox) { [double]((Get-CtgProp $mailbox 'sizeThresholdGB') ?? 50) } else { 50 }
 
@@ -2243,7 +2248,10 @@ function Invoke-CtgM365Offboarding {
     # than never asking.
     $mayRemoveWithoutConvert = $allowWithoutConvert -or ($oversizePolicy -eq 'remove') -or ($notConvertedPolicy -eq 'remove')
 
-    if ($null -ne $removeLicense -and $deferred) {
+    if ($licenseOptOut) {
+        $actions.Add("license kept: this client's profile sets removeLicense to false")
+    }
+    elseif ($null -ne $removeLicense -and $deferred) {
         $by = [string](Get-CtgProp $removeLicense 'removedBy')
         $actions.Add("license kept here by design — it is removed $(if ($by) { "in the $by step" } else { 'in a later step' }), after the mailbox is converted to shared")
     }

@@ -1090,6 +1090,18 @@ Describe 'Invoke-CtgM365Offboarding' {
         ($r.Actions -join ' ') | Should -Match "license 'SPE_E3' is GROUP-ASSIGNED by 'M365 E3 Users Group'"
     }
 
+    # removeLicense: false is an explicit "keep the licence" — it used to take the removal branch,
+    # because the guard was `$null -ne $removeLicense` and $false is not $null.
+    It 'KEEPS the license when the profile says removeLicense: false (bool or the string "false")' {
+        $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
+        foreach ($v in @($false, 'false')) {
+            $config = [pscustomobject]@{ removeLicense = $v; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 }; mailboxConverted = $true }
+            $r = Invoke-CtgM365Offboarding -User $user -Config $config -MailboxSizeGB 10
+            ($r.Actions -join ' ') | Should -Match 'license kept: this client''s profile sets removeLicense to false'
+        }
+        Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 0 -Exactly
+    }
+
     It 'removes the license when under the threshold and removeLicense is requested' {
         $user = [pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }
         $config = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 } }

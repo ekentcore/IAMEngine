@@ -150,6 +150,7 @@ export { entry as m365AttributeRules } from "./m365-attribute-rules";
 export { entry as m365AutoSetupOrchestrationCore } from "./m365-auto-setup-orchestration-core";
 export { entry as m365AutoSetupUsable } from "./m365-auto-setup-usable";
 export { entry as m365LicenseDependencySelfheal } from "./m365-license-dependency-selfheal";
+export { entry as m365RemoveLicenseFalseKeepsLicence } from "./m365-remove-license-false-keeps-licence";
 export { entry as m365SetupAutomaticallyOverview } from "./m365-setup-automatically-overview";
 export { entry as m365AutosetupSurfacesDelineaId } from "./m365-autosetup-surfaces-delinea-id";
 export { entry as m365CredsToIdentityServices } from "./m365-creds-to-identity-services";
