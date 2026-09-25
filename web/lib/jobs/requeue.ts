@@ -4,6 +4,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { carriedRetryMarker, type AutoRetryMarker } from "./auto-retry";
 import { resolveActor, type ActorInput } from "../auth/actor";
+import { userAdhocRequeueCheck } from "../cases/user-adhoc-service";
 
 export async function requeueJob(
   db: PrismaClient,
@@ -16,7 +17,7 @@ export async function requeueJob(
   // claims. When the conditional write misses, re-reading once and re-deciding turns "you lost a
   // benign race" into the right outcome instead of a 409 blaming a runner claim that never happened.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, mode: true, status: true, caseRequestId: true, request: true } });
+    const job = await db.job.findUnique({ where: { id: jobId }, select: { id: true, mode: true, status: true, caseRequestId: true, request: true, systemKey: true } });
     if (!job) return { ok: false, error: "unknown job", status: 404 };
     if (job.mode !== "api") return { ok: false, error: "only automated (api) jobs can be re-run", status: 422 };
 
@@ -44,7 +45,13 @@ export async function requeueJob(
     // A re-run is a FULL re-execution, not a validate-only pass — clear the validateOnly stamp the
     // auto-verify sweep may have left on the request, or the runner just re-validates and the step's
     // stale actions never refresh. The verify-pass rollback stamps go too (see verifyCase).
+    // FR #88 (L3): a correct/remove job has its own re-run rules (no reverting a newer correction; a
+    // remove needs a fresh window check and a fresh approval).
+    const adhoc = await userAdhocRequeueCheck(db, job);
+    if (!adhoc.ok) return adhoc;
     const req = { ...((job.request ?? {}) as Record<string, unknown>) };
+    if (adhoc.patch) Object.assign(req, adhoc.patch);
+    for (const k of adhoc.drop ?? []) delete req[k];
     delete req.validateOnly;
     delete req.priorStatus;
     delete req.priorError;

@@ -6,6 +6,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { blockingJobs, type JobLite } from "./runner-logic";
 import { acceptedKeysFor } from "./runner-service";
 import { resolveActor, type ActorInput } from "../auth/actor";
+import { userAdhocRequeueCheck } from "../cases/user-adhoc-service";
 
 type Result =
   | { ok: true; paused: boolean }
@@ -44,6 +45,10 @@ export async function runSingleStep(
   });
   if (!job) return { ok: false, error: "unknown job", status: 404 };
   if (job.mode !== "api") return { ok: false, error: "only automated (api) steps can be run by a runner", status: 422 };
+  // FR #88 (L3): same re-run rules as requeueJob for a correct/remove job — checked before anything
+  // (e.g. the case pause below) is changed.
+  const adhoc = await userAdhocRequeueCheck(db, job);
+  if (!adhoc.ok) return adhoc;
 
   // Dependency warning: surface unmet prerequisites so the operator can confirm. Bypassed on force.
   if (!force) {
@@ -73,6 +78,8 @@ export async function runSingleStep(
   // Reset the job for a clean isolated run (mirror requeue, but flag singleRun and DON'T reopen the
   // case to "queued" — it must stay paused).
   const r = { ...reqOf(job) };
+  if (adhoc.patch) Object.assign(r, adhoc.patch);
+  for (const k of adhoc.drop ?? []) delete r[k];
   delete r.validateOnly; // full run, not a verify-only pass
   delete r.priorStatus; // verify-pass rollback stamps (see verifyCase) — meaningless on a full re-run
   delete r.priorError;

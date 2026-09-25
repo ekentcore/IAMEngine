@@ -33,6 +33,8 @@ export const OPTIONAL_SECRETS: Record<string, string[]> = {
   "ad-consistency-check": ["ad-dc"],
   "ad-hard-match": ["ad-dc"],
   "ad-password-reset": ["ad-dc"],
+  "ad-remove-user": ["ad-dc"],
+  "ad-correct-user": ["ad-dc"],
 };
 
 export const ALL_OPTIONAL_SECRET_NAMES: ReadonlySet<string> = new Set(Object.values(OPTIONAL_SECRETS).flat());

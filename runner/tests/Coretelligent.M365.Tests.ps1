@@ -2235,3 +2235,27 @@ Describe 'Resolve-CtgM365AttributeUpdate' {
         }
     }
 }
+
+# FR #88 (final review, L2): when the pre-check misses and New-MgUser says the UPN "already exists", the
+# onboard carries on with that account — it did NOT create it, so it must report Adopted with the
+# account's creation date (Remove uses them never to purge an account that pre-dates the case).
+Describe 'onboarding: an "already exists" create reports the account as found, not created' {
+    It 'reports Adopted and the found account''s creation date' {
+        $created = [datetime]::new(2019, 3, 1, 12, 0, 0, [DateTimeKind]::Utc)
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith { $null }
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $Property -eq 'id,userPrincipalName,createdDateTime' } -MockWith {
+            [pscustomobject]@{ Id = 'uid-old'; UserPrincipalName = 'nhire@six-one.com'; CreatedDateTime = $created }
+        }
+        Mock New-MgUser -ModuleName Coretelligent.M365 -MockWith { throw '[Request_BadRequest] : Another object with the same value for property userPrincipalName already exists.' }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith { }
+        Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Get-MgSubscribedSku -ModuleName Coretelligent.M365 -MockWith { @() }
+        Mock Invoke-MgGraphRequest -ModuleName Coretelligent.M365 -MockWith { @{ value = @() } }
+        Mock Get-MgGroup -ModuleName Coretelligent.M365 -MockWith { @() }
+        $user = [pscustomobject]@{ DisplayName = 'New Hire'; FirstName = 'New'; LastName = 'Hire'; UserPrincipalName = 'nhire@six-one.com' }
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword (ConvertTo-SecureString 'P@ssw0rd!23456' -AsPlainText -Force)
+        $r.UserId | Should -Be 'uid-old'
+        $r.Adopted | Should -BeTrue
+        $r.AccountCreated | Should -Be $created
+    }
+}

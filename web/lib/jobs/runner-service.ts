@@ -16,6 +16,8 @@ import { jobResultEnvelope } from "./job-result";
 import { cloudObjectFor, type CloudObject } from "./cloud-object";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
 import { ADHOC_SYSTEM_KEYS } from "./adhoc";
+import { CORRECT_USER_SYSTEM_KEYS, userAdhocVersionExclusions, userAdhocResultStatus } from "./user-adhoc";
+import { commitUserCorrectionIfComplete } from "../cases/user-adhoc-service";
 import { HttpError, type BrokeredCredential, type ResultInput, type RunnerJob } from "./types";
 import { resolveSecretFields, delineaConfigFromEnv, delineaConfigured, getDelineaToken, getOneTimePasswordCode } from "../secrets/delinea";
 import { checkFieldShape } from "../secrets/field-requirements";
@@ -47,6 +49,7 @@ import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, autoUpdateDecision, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
 import { applyAdStandaloneUpn } from "./ad-standalone-upn";
+import { sharepointAccountDecision, type SharepointAccountFields } from "./provisioned-upn";
 import { resolveActor, type ActorInput } from "../auth/actor";
 import { planTokenRefresh, planTokenConfirm } from "./agent-token-refresh";
 
@@ -764,7 +767,7 @@ export function makeRunnerService(db: PrismaClient) {
 
     // Atomically claim up to `batchSize` eligible api jobs for this agent.
     async claim(agentId: string, batchSize: number, version?: string | null): Promise<RunnerJob[]> {
-      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true, priority: true } });
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { id: true, clientId: true, enabled: true, version: true, capabilities: true, priority: true, semver: true } });
       if (!agent) throw new HttpError(404, "unknown agent");
       if (!agent.enabled) throw new HttpError(403, "agent disabled");
 
@@ -888,7 +891,8 @@ export function makeRunnerService(db: PrismaClient) {
       // capability (Node+Playwright installed). browserExclusions returns the built-in browser systems
       // when the cap is absent (empty when present) — so when it fires, the connector keys go too.
       const builtinBrowserExcluded = browserExclusions(caps); // BROWSER_SYSTEMS when cap absent, else []
-      const excluded = [...new Set([...onPremExclude, ...builtinBrowserExcluded, ...(builtinBrowserExcluded.length ? browserConnectorKeys : [])])];
+      // FR #88 (L2): a runner older than the correct/remove executors would post "skipped" for them.
+      const excluded = [...new Set([...onPremExclude, ...builtinBrowserExcluded, ...(builtinBrowserExcluded.length ? browserConnectorKeys : []), ...userAdhocVersionExclusions(agent.semver)])];
       const candidates = await db.job.findMany({
         where: {
           status: "pending",
@@ -1179,6 +1183,35 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // SharePoint site-group mirror (FR #118): the new hire may have been created at a FALLBACK username
+      // (the primary belonged to someone else). Hand the sharepoint step the account the m365/entra step
+      // actually created, so the mirror can never land on the other person. Every status and mode is
+      // read, with each job's last run time and its latest failed outcome, so the decision knows
+      // whether to wait, require a fresh operator-set Username, or allow a sole candidate. See
+      // sharepointAccountDecision in provisioned-upn.ts.
+      const spCases = claimed.filter((j) => j.systemKey === "sharepoint" && j.case.action === "onboard");
+      const spCaseIds = [...new Set(spCases.map((j) => j.caseRequestId))];
+      const spFieldsByCase = new Map<string, SharepointAccountFields>();
+      if (spCaseIds.length > 0) {
+        const cloud = await db.job.findMany({
+          where: { caseRequestId: { in: spCaseIds }, systemKey: { in: ["m365", "entra"] } },
+          select: { caseRequestId: true, systemKey: true, status: true, mode: true, result: true, startedAt: true, progressAt: true },
+        });
+        const failures = await db.runOutcome.findMany({
+          where: { caseRequestId: { in: spCaseIds }, systemKey: { in: ["m365", "entra"] }, status: "failed", validateOnly: false },
+          orderBy: { at: "desc" },
+          select: { caseRequestId: true, systemKey: true, at: true, resolvedAt: true },
+        });
+        for (const id of spCaseIds) {
+          const siblings = cloud.filter((c) => c.caseRequestId === id).map((c) => ({
+            ...c,
+            latestFailure: failures.find((f) => f.caseRequestId === id && f.systemKey === c.systemKey) ?? null,
+          }));
+          const payload = (spCases.find((j) => j.caseRequestId === id)!.case.payload ?? {}) as Record<string, unknown>;
+          spFieldsByCase.set(id, sharepointAccountDecision(siblings, payload));
+        }
+      }
+
       // Offboard manager hand-off: exchange grants the departing user's MANAGER Full Access to the
       // converted shared mailbox (delegateManagerFullAccess). It normally runs first and reads the live
       // directory link — but if it runs AFTER active-directory (a re-run, or a first attempt that
@@ -1364,6 +1397,8 @@ export function makeRunnerService(db: PrismaClient) {
             ? { ...casePayload, cloudObject: cloudByCase.get(j.caseRequestId) ?? cloudObjectFor(null) }
             : capturedManager
             ? { ...casePayload, managerEmail: capturedManager }
+            : j.systemKey === "sharepoint" && spFieldsByCase.has(j.caseRequestId)
+            ? { ...casePayload, ...spFieldsByCase.get(j.caseRequestId)! }
             : j.case.payload;
         // AD-STANDALONE domain separation (FR #83/#107): on the on-prem lane, hand the AD-domain UPN
         // instead of the mail-domain one. Wraps the chain above (not another arm of it) so
@@ -1789,6 +1824,60 @@ export function makeRunnerService(db: PrismaClient) {
       return out;
     },
 
+    // FR #81 — Google Workspace OU discovery. Same request/claim/report shape as the cloud groups
+    // above, claimed by the central runner (it holds the Google Admin SDK path) with the client's
+    // google-workspace secret brokered inline.
+    async requestGoogleOuDiscovery(clientSlug: string, actor: ActorInput = "ui"): Promise<{ ok: true }> {
+      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true, systems: { where: { systemKey: "google-workspace" }, select: { id: true } } } });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      if (client.systems.length === 0) throw new HttpError(422, "this client has no google-workspace system to read OUs from");
+      await db.client.update({ where: { id: client.id }, data: { googleOusRequestedAt: new Date(), googleOusRequestedById: resolveActor(actor).userId } });
+      return { ok: true };
+    },
+
+    async claimGoogleOuDiscovery(agentId: string): Promise<{ clientSlug: string; primaryDomain: string; creds: Record<string, { fields?: Record<string, string>; note?: string }> }[]> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (!agent.enabled || agent.clientId) return []; // central (cloud) runner only
+      const pending = await db.client.findMany({
+        where: { googleOusRequestedAt: { not: null }, systems: { some: { systemKey: "google-workspace" } } },
+        select: { id: true, slug: true, primaryDomain: true, systems: { where: { systemKey: "google-workspace" }, select: { secretNames: true } } },
+        take: 5,
+      });
+      if (pending.length === 0) return [];
+      await db.client.updateMany({ where: { id: { in: pending.map((c) => c.id) } }, data: { googleOusRequestedAt: null } });
+      const cfg = delineaConfigFromEnv();
+      const out = [];
+      for (const c of pending) {
+        const creds: Record<string, { fields?: Record<string, string>; note?: string }> = {};
+        for (const name of c.systems[0]?.secretNames ?? []) {
+          const sec = await db.secret.findUnique({ where: { clientId_name: { clientId: c.id, name } }, select: { externalId: true } });
+          const { externalId } = effectiveExternalId(name, null, sec?.externalId ?? null);
+          if (!externalId) { creds[name] = { note: "no usable secret reference" }; continue; }
+          if (!delineaConfigured(cfg)) { creds[name] = { note: "Delinea not configured on the app" }; continue; }
+          const resolved = await resolveSecretFields(cfg, externalId);
+          creds[name] = resolved.ok ? { fields: resolved.fields } : { note: resolved.error ?? "unresolved" };
+        }
+        out.push({ clientSlug: c.slug, primaryDomain: c.primaryDomain, creds });
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "googleous.claim", detail: { clients: pending.map((c) => c.slug) } } });
+      return out;
+    },
+
+    async reportGoogleOus(agentId: string, clientSlug: string, ous: string[], error?: string | null): Promise<{ ok: true; count: number }> {
+      const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "Google OUs");
+      const clean = [...new Set(ous.filter((o) => typeof o === "string").map((o) => o.trim()).filter((o) => o.startsWith("/") && o !== "/"))].sort().slice(0, 5000);
+      // A failed read keeps the last good list (so the picker doesn't go empty) and records the error.
+      const prev = await db.client.findUnique({ where: { id: clientId }, select: { googleOus: true } });
+      const prevOus = ((prev?.googleOus ?? {}) as { ous?: string[] }).ous ?? [];
+      const value = error
+        ? { ous: prevOus, discoveredAt: ((prev?.googleOus ?? {}) as { discoveredAt?: string }).discoveredAt ?? null, error: String(error).slice(0, 500) }
+        : { ous: clean, discoveredAt: new Date().toISOString() };
+      const c = await db.client.update({ where: { id: clientId }, data: { googleOus: value }, select: { googleOusRequestedById: true } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: c.googleOusRequestedById, action: "googleous.result", clientId, detail: { count: error ? 0 : clean.length, error: error ?? null } } });
+      return { ok: true, count: error ? 0 : clean.length };
+    },
+
     async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
       // Central-runner-only, no cross-client write — shared with reportCloudMailboxes.
       const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "cloud groups");
@@ -1908,7 +1997,10 @@ export function makeRunnerService(db: PrismaClient) {
       const candidates = offboardCandidatesOf(result);
       const needsTargetDecision = input.status === "succeeded" && candidates.length > 0 && job.case.action === "offboard";
 
-      const status = needsTargetDecision ? "failed" : input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
+      const rawStatus = needsTargetDecision ? "failed" : input.status === "succeeded" ? "succeeded" : input.status === "skipped" ? "skipped" : "failed";
+      // FR #88 (L2): a correct/remove "skipped" (no executor on that runner) did NOT happen — record it failed.
+      const adhocStatus = userAdhocResultStatus(job.systemKey, rawStatus);
+      const status = adhocStatus.status as typeof rawStatus;
       if (job.status !== "dispatched" && job.status !== "running") {
         // idempotent: a lost-ack retry of the same outcome succeeds; a conflicting re-post 409s.
         if (job.status === status) {
@@ -1922,7 +2014,7 @@ export function makeRunnerService(db: PrismaClient) {
         where: { id: jobId },
         data: {
           status, result: (result ?? undefined) as Prisma.InputJsonValue | undefined, evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined, validation: (input.validation ?? undefined) as Prisma.InputJsonValue | undefined,
-          error: needsTargetDecision ? offboardDecisionError(result, candidates.length) : (input.error ?? null),
+          error: needsTargetDecision ? offboardDecisionError(result, candidates.length) : (adhocStatus.error ?? input.error ?? null),
           finishedAt: new Date(), singleRun: false,
           // A password reset that didn't land never shows its value — wipe it so a plaintext that was
           // never set on the account can't linger. A GENERATED reset keeps its value on success until
@@ -1932,6 +2024,16 @@ export function makeRunnerService(db: PrismaClient) {
           ...(PASSWORD_RESET_SYSTEM_KEYS.includes(job.systemKey) && (status !== "succeeded" || (job.request as Record<string, unknown> | null)?.manualPassword === true) ? { oneTimePassword: null } : {}),
         },
       });
+
+      // FR #88: a "Correct user" job that succeeded may have been the last one its correction was
+      // waiting on — only then does the case payload take the corrected identity. Never fatal to the
+      // result itself (the job outcome is already recorded); a miss is audited so it can be re-applied.
+      if (status === "succeeded" && CORRECT_USER_SYSTEM_KEYS.includes(job.systemKey)) {
+        try { await commitUserCorrectionIfComplete(db, jobId); }
+        catch (e) {
+          await db.auditLog.create({ data: { actor: "system:user-correction", action: "case.user.correct_commit_failed", jobId, caseRequestId: job.caseRequestId, clientId: job.case.clientId, detail: { error: (e as Error).message } } }).catch(() => undefined);
+        }
+      }
 
       const isAdhoc = ADHOC_SYSTEM_KEYS.includes(job.systemKey);
       // AUTO-RETRY: a succeeded result carrying RetryAfterMinutes (e.g. Spanning/Mimecast "user not

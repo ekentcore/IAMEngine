@@ -1696,6 +1696,37 @@ $DISPATCH = @{
 # moduleName = Coretelligent.M365). Alias it so an `entra` job isn't left without an executor.
 $DISPATCH['entra'] = $DISPATCH['m365']
 
+# FR #118: SharePoint SITE groups across every site in the tenant — offboard removes the leaver from
+# them, onboard with "mirror <user>" copies the reference user's. PnP app-only on the SAME m365-admin
+# cert as the OneDrive hand-off; Graph (the m365 Connect) is used only to find the tenant's SharePoint
+# root, from which the admin-centre URL is derived (config.rootUrl overrides it for an odd tenant).
+#
+# The decisions (who, whether there is anything to do, the site walk) live in the module's
+# Invoke-CtgSharePointSiteGroupsStep, where they are tested. This lane only supplies the leaver (resolved
+# exactly as the m365 lane does) and the PnP context — as a scriptblock, so an onboard with no mirror
+# user never needs PnP, the cert or the site list at all.
+function Invoke-CtgSharePointSiteGroupsLane {
+    param($Job, $Creds, [ValidateSet('onboard', 'offboard')][string]$Lane)
+    $context = {
+        if (-not $pnpAvail) { throw "PnP.PowerShell isn't available on this runner, so the SharePoint site-group step can't run here — it runs on a runner with PnP.PowerShell installed (the central runner installs it at startup when it can reach the gallery)." }
+        $certArgs = Get-CtgExoCertArgs $Creds['m365-admin']
+        if ($certArgs.Count -eq 0) { throw "the m365-admin secret has no certificate (CertificateBase64 or CertificateThumbprint) — SharePoint app-only access needs one, the same cert the Exchange step uses." }
+        $root = [string](Get-CtgProp $Job.config 'rootUrl')
+        if (-not $root) { $root = [string](Get-CtgProp (Invoke-MgGraphRequest -Method GET -Uri 'v1.0/sites/root?$select=webUrl' -ErrorAction Stop) 'webUrl') }
+        if ($root -notmatch '^https://([^./]+)\.sharepoint\.com') { throw "couldn't work out this tenant's SharePoint address (got '$root') — set config.rootUrl on the sharepoint system, e.g. https://contoso.sharepoint.com" }
+        @{ AppId = (Get-CtgM365AppId $Creds); Tenant = (Get-CtgTenantDomain $Job $Creds); CertArgs = $certArgs; AdminUrl = "https://$($Matches[1])-admin.sharepoint.com" }
+    }
+    Set-CtgPhase $Job.id "SharePoint site groups ($Lane)"
+    $leaver = if ($Lane -eq 'offboard') { Resolve-CtgM365Upn -User $Job.payload } else { '' }
+    Invoke-CtgSharePointSiteGroupsStep -Lane $Lane -Payload $Job.payload -Config $Job.config -LeaverUpn $leaver -Context $context
+}
+
+$DISPATCH['sharepoint'] = @{
+    Connect  = $DISPATCH['m365'].Connect
+    Onboard  = { param($job, $creds) Invoke-CtgSharePointSiteGroupsLane -Job $job -Creds $creds -Lane onboard }
+    Offboard = { param($job, $creds) Invoke-CtgSharePointSiteGroupsLane -Job $job -Creds $creds -Lane offboard }
+}
+
 # Ad-hoc "Generate random password" (INC0855142): dispatched on demand from a case's account line,
 # never planned. The app generates the value, injects it as config.newPassword at claim, and reveals
 # it once operator-side — the executors never return it. One executor per system serves both lanes
@@ -1713,6 +1744,44 @@ $DISPATCH['google-password-reset'] = @{
     Onboard = { param($job, $creds) Invoke-CtgGooglePasswordReset -User $job.payload -Config $job.config }
 }
 foreach ($k in 'ad-password-reset', 'm365-password-reset', 'google-password-reset') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
+
+# FR #88 — ad-hoc "Correct user" / "Remove user" on an onboard case: fix a misspelled name or a wrong
+# username/email, or hard-delete an account whose hire fell through. Same shape as the resets above:
+# never planned, one executor per system for both lanes, Connect aliased from the owning system. The
+# app gates every remove job on approval (and snapshots evidence) before a runner can claim it.
+$DISPATCH['ad-remove-user']        = @{ Onboard = { param($job, $creds) Invoke-CtgADRemoveUser -User (Add-ClientContext $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) } }
+$DISPATCH['ad-correct-user']       = @{ Onboard = { param($job, $creds) Invoke-CtgADCorrectUser -User (Get-CtgLookupUser $job) -Config $job.config -AdConnection (New-CtgAdConnection $creds) } }
+$DISPATCH['m365-remove-user']      = @{ Connect = $DISPATCH['m365'].Connect; Onboard = { param($job, $creds) Invoke-CtgM365RemoveUser -User $job.payload -Config $job.config } }
+$DISPATCH['m365-correct-user']     = @{ Connect = $DISPATCH['m365'].Connect; Onboard = { param($job, $creds) Invoke-CtgM365CorrectUser -User (Get-CtgLookupUser $job) -Config $job.config } }
+# exchange-correct-user runs on the CENTRAL runner against Exchange Online only: a hybrid mailbox is
+# readdressed by the AD step (directory sync carries it), so the on-prem Exchange session the exchange
+# lane opens when `exchange-onprem` is brokered is never wanted here (and unreachable from the cloud).
+# The app doesn't broker it; the Connect drops it too, for a job queued by an older app. Its session is
+# closed when the job ends, like the exchange lane's (the job loop's finally calls Disconnect).
+# A mailboxOptional job (queued off the m365 line — no exchange line on the plan) mirrors the m365
+# lane's best-effort EXO finishing: it connects inside Onboard, and a failed connect (e.g. an m365-admin
+# secret with no EXO cert) is a WARN manual follow-up saying the address was NOT changed, rather than a
+# failure that would stop the whole correction from committing.
+$DISPATCH['exchange-correct-user'] = @{
+    Connect    = { param($job, $creds)
+        if ((Get-CtgProp $job.config 'mailboxOptional') -eq $true) { return }  # connected best-effort in Onboard
+        $exo = @{} + $creds; [void]$exo.Remove('exchange-onprem'); & $DISPATCH['exchange'].Connect $job $exo
+    }
+    Disconnect = { Disconnect-CtgExchange }
+    Onboard    = { param($job, $creds)
+        if ((Get-CtgProp $job.config 'mailboxOptional') -eq $true) {
+            $exo = @{} + $creds; [void]$exo.Remove('exchange-onprem')
+            try { & $DISPATCH['exchange'].Connect $job $exo }
+            catch {
+                return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @("WARN manual follow-up: couldn't connect to Exchange Online ($($_.Exception.Message)) — the mailbox's primary address was NOT changed to $(Get-CtgProp $job.config 'newUpn'). Change it in the Exchange admin center (keep the old address as an alias).") }
+            }
+        }
+        Invoke-CtgExchangeCorrectAddress -User (Get-CtgLookupUser $job) -Config $job.config
+    }
+}
+$DISPATCH['google-remove-user']    = @{ Connect = $DISPATCH['google-workspace'].Connect; Onboard = { param($job, $creds) Invoke-CtgGoogleRemoveUser -User $job.payload -Config $job.config } }
+$DISPATCH['google-correct-user']   = @{ Connect = $DISPATCH['google-workspace'].Connect; Onboard = { param($job, $creds) Invoke-CtgGoogleCorrectUser -User (Get-CtgLookupUser $job) -Config $job.config } }
+foreach ($k in 'ad-remove-user', 'ad-correct-user', 'm365-remove-user', 'm365-correct-user', 'exchange-correct-user', 'google-remove-user', 'google-correct-user') { $DISPATCH[$k].Offboard = $DISPATCH[$k].Onboard }
 
 # Ad-hoc "force Spanning sync" (browser automation): dispatched on demand from a case's Spanning step
 # to make Spanning discover a just-created M365 user NOW (the Spanning API has no sync endpoint). Rides
@@ -1958,8 +2027,11 @@ $script:ConnectedTenant = @{}
 # ConnectedTenant['m365'] still == A's key, SKIPS Connect, and provisions/offboards A's user inside
 # B's tenant. Whenever a shared session is (re)bound, forget the SIBLING keys so they reconnect.
 $script:ConnectionGroups = @{
-    graph  = @('m365', 'entra', 'm365-password-reset', 'tap', 'notify')
-    google = @('google-workspace', 'google-password-reset')
+    graph  = @('m365', 'entra', 'm365-password-reset', 'tap', 'notify', 'sharepoint', 'm365-remove-user', 'm365-correct-user')
+    google = @('google-workspace', 'google-password-reset', 'google-remove-user', 'google-correct-user')
+    # FR #88: exchange-correct-user connects through the exchange lane's Connect (EXO only), and the
+    # Exchange Online session is process-wide.
+    exchange = @('exchange', 'exchange-correct-user')
 }
 
 # The other systemKeys that share an ambient connection with this one ('' when it owns its session).
@@ -2042,6 +2114,19 @@ function Add-ClientContext {
     if ($u -and -not $u.PSObject.Properties['PrimaryDomain']) {
         $u | Add-Member -NotePropertyName PrimaryDomain -NotePropertyValue $Job.client.primaryDomain -Force
     }
+    $u
+}
+
+# FR #88: a "Correct user" job finds the account by the identity it had BEFORE the correction — the app
+# updates the case's payload to the corrected names/email when it dispatches, and stamps the old ones on
+# config.previousIdentity. Overlay those onto a copy of the payload (the case payload itself is untouched).
+function Get-CtgLookupUser {
+    param($Job)
+    $u = [pscustomobject]@{}
+    if ($Job.payload) { foreach ($p in $Job.payload.PSObject.Properties) { $u | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force } }
+    $prev = Get-CtgProp $Job.config 'previousIdentity'
+    if ($prev) { foreach ($p in $prev.PSObject.Properties) { if ($null -ne $p.Value -and "$($p.Value)" -ne '') { $u | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force } } }
+    if ($Job.client -and -not $u.PSObject.Properties['PrimaryDomain']) { $u | Add-Member -NotePropertyName PrimaryDomain -NotePropertyValue $Job.client.primaryDomain -Force }
     $u
 }
 
@@ -3051,12 +3136,19 @@ $CONNTEST_PROBE = @{
     }
     'exchange'         = { param($job, $creds)
         $o = Get-OrganizationConfig -ErrorAction Stop
-        # A successful app-only connect + org read PROVES the app holds Exchange.ManageAsApp + the
-        # Exchange Administrator role — Connect-ExchangeOnline app-only cannot mint a token without both,
-        # and any Exchange cmdlet (this one included) would 401/403 without them. So report the one
-        # Exchange right as satisfied: an Exchange-Online client with Exchange.ManageAsApp granted now
-        # reads 1/1 in the rights panel, instead of a blank/no-rights row.
-        $script:ConnTestRights = @(@{ op = 'run Exchange Online cmdlets app-only (Exchange.ManageAsApp + Exchange Administrator role)'; ok = $true; detail = "connected app-only to $($o.Name)" })
+        # A successful app-only connect + org read proves Exchange.ManageAsApp and SOME Exchange role —
+        # not that every cmdlet the lanes call is in the session. Two things leave one out: an app role
+        # narrower than Exchange Administrator, or a session whose command module didn't load fully in
+        # this runner process (FR #125: Brighton Park had the role and still hit "'Get-MailboxStatistics'
+        # is not recognized" mid-offboard). Checking the cmdlets here surfaces either before a live case.
+        $missingCmdlets = @(Get-CtgExoMissingCmdlet)
+        $script:ConnTestRights = @(
+            @{ op = 'connect to Exchange Online app-only (Exchange.ManageAsApp + an Exchange role)'; ok = $true; detail = "connected app-only to $($o.Name)" },
+            @{ op = 'run the cmdlets the Exchange onboard/offboard steps use'; ok = ($missingCmdlets.Count -eq 0); detail = $(if ($missingCmdlets.Count) { "missing from the session: $($missingCmdlets -join ', ')" } else { 'all present' }) }
+        )
+        if ($missingCmdlets.Count) {
+            throw "org: $($o.Name) · connected, but $($missingCmdlets.Count) cmdlet(s) the Exchange steps use are missing from the session: $($missingCmdlets -join ', '). If the app does NOT have the Exchange Administrator role, assign it in Entra -> Roles and administrators; if it already does, restart the runner (its Exchange session didn't load fully) and re-test."
+        }
         "org: $($o.Name)"
     }
     'mimecast'         = { param($job, $creds)
@@ -3487,6 +3579,41 @@ function Invoke-CtgCloudGroupDiscovery {
     }
 }
 
+function Invoke-CtgGoogleOuDiscovery {
+    # FR #81: central runner only, same shape as Invoke-CtgCloudGroupDiscovery. For each client that
+    # asked ("Refresh Google OUs"), connect with the brokered google-admin secret and report the
+    # tenant's OU paths so the Google OU fields can offer a real list. Read-only (one Admin SDK GET).
+    $work = @()
+    try { $work = Invoke-AppApi POST '/api/runner/google-ous/claim' @{ agentId = $AgentId } } catch { return }
+    foreach ($w in @($work)) {
+        $global:CtgProgressJobId = $null
+        try {
+            $creds = @{}
+            if ($w.creds) {
+                foreach ($p in $w.creds.PSObject.Properties) {
+                    $f = @{}
+                    if ($p.Value.fields) { foreach ($q in $p.Value.fields.PSObject.Properties) { $f[$q.Name] = $q.Value } }
+                    $username = Select-CtgCredField $f $script:CRED_USERNAME_FIELDS
+                    $pw = Select-CtgCredField $f $script:CRED_PASSWORD_FIELDS
+                    $password = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { $null }
+                    $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
+                    $creds[$p.Name] = [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $f }
+                }
+            }
+            $job = [pscustomobject]@{ id = ''; systemKey = 'google-workspace'; client = [pscustomobject]@{ slug = $w.clientSlug; primaryDomain = $w.primaryDomain } }
+            & $DISPATCH['google-workspace'].Connect $job $creds
+            # Don't let a real job reuse this session as if it were its own.
+            Clear-CtgConnectionSiblings -SystemKey 'google-workspace' -IncludeSelf
+            $ous = @(Get-CtgGoogleOrgUnits)
+            $null = Invoke-AppApi POST '/api/runner/google-ous/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; ous = $ous }
+            Write-Host "  google OUs: reported $($ous.Count) for $($w.clientSlug)" -ForegroundColor Green
+        } catch {
+            Write-Warning "Google OU discovery failed for $($w.clientSlug): $($_.Exception.Message)"
+            try { $null = Invoke-AppApi POST '/api/runner/google-ous/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; ous = @(); error = [string]$_.Exception.Message } } catch { }
+        }
+    }
+}
+
 # Build id of the code we're actually running = hash of our own files (matches the app's hash of the
 # bundle it serves). Reported on every heartbeat → accurate even if a past restart half-landed, with
 # no marker file to keep in sync.
@@ -3898,6 +4025,21 @@ while ($true) {
                             }
                             throw "the Coretelligent module providing '$missing' isn't loaded on this host — it needs a host-specific dependency (the ActiveDirectory/RSAT module for AD, ExchangeOnlineManagement for Exchange, the ADSync module for directory-sync). This step must run on the client-network agent that has it, not the central/cloud runner."
                         }
+                        # FR #125: an Exchange Online cmdlet missing from a CONNECTED session is not a missing
+                        # module to install — the connect just used ExchangeOnlineManagement. Two causes:
+                        #   1. the app's Exchange role doesn't grant it (EXO builds an app-only session from the
+                        #      role and leaves out every cmdlet the role doesn't cover);
+                        #   2. the session's command module didn't finish loading in THIS runner process — the
+                        #      late-August/early-September state where the EXO module went missing or a self-heal
+                        #      loaded a second copy (see the 2026-09-03 hotfix). Brighton Park's Aug 31 failure
+                        #      already had the Exchange Administrator role, so this is the likelier cause there.
+                        # Installing and importing a module mid-run is the hazard that hotfix closed, so don't:
+                        # say what fixes each cause instead of the bare "not recognized".
+                        if ($missing -and (Get-Command Test-CtgExoCmdlet -ErrorAction SilentlyContinue) -and (Test-CtgExoCmdlet $missing) -and
+                            (Get-Command Get-ConnectionInformation -ErrorAction SilentlyContinue) -and
+                            @(Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Connected' }).Count -gt 0) {
+                            throw "'$missing' is not available in this Exchange Online session, though the connect succeeded — nothing needs installing. Either (1) the app registration's Exchange role doesn't include it: if the app does NOT already have Exchange Administrator, assign it in Entra -> Roles and administrators; or (2) if it already does, this runner's Exchange session didn't load fully — restart the runner, then re-run this step. Test connections on the client lists every cmdlet the Exchange steps need that the session is missing."
+                        }
                         if ($try -eq 0 -and $missing) {
                             Set-CtgPhase $job.id "missing command '$missing' — locating + installing its module"
                             $mod = Repair-CtgMissingModule $missing
@@ -4072,6 +4214,7 @@ while ($true) {
         # central runner; on-prem on the client agent). Never affects the job pipeline above.
         Invoke-CtgConnectionTests
         Invoke-CtgCloudGroupDiscovery
+        Invoke-CtgGoogleOuDiscovery
     }
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"

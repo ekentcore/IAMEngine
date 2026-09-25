@@ -44,6 +44,12 @@ export function mergeOperatorEdits(
     if (k in persistedPayload) merged[k] = persistedPayload[k];
   }
   merged.fieldSource = fieldSource;
+  // fieldEditedAt (FR #118) is the same bookkeeping's clock: the SharePoint step only trusts an
+  // operator Username set after the M365 step last ran, so dropping it here re-asks for an edit
+  // the operator already made.
+  if (persistedPayload.fieldEditedAt && typeof persistedPayload.fieldEditedAt === "object") {
+    merged.fieldEditedAt = persistedPayload.fieldEditedAt;
+  }
   return merged;
 }
 
@@ -93,9 +99,13 @@ export async function replanCase(db: PrismaClient, caseId: string, actor: ActorI
     if (intakeRule) payload = { ...payload, __intakeRule: { id: intakeRule.id, label: intakeRule.label } };
   }
 
+  // FR #173 / #134: the operator's per-case step selection rides on every re-plan. A case skip joins
+  // any intake-rule skip; requested systems switch on conditional lanes the intake didn't signal.
+  const skip = new Set([...(intakeRule?.skipSystems ?? []), ...(info.skippedSystems ?? [])]);
   const plannedSystems = resolvePlannedConfigs(info.client, payload, action,
     planCase(info.client.systems, action, payload, personaSystemKeys(info.client, payload, action),
-      new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets), intakeRule?.skipSystems, info.client.backbone));
+      new Set(info.client.notNeededSecrets), new Set(info.client.wiredOptionalSecrets), skip, info.client.backbone,
+      new Set(info.requestedSystems ?? [])));
   // Same manual checklist steps the initial plan adds (FR #0000096). The synthetic key is stable,
   // so a step an operator already ticked off is KEPT by the incremental re-plan, not resurrected.
   const planned = [...plannedSystems, ...unmodeledManualJobs(

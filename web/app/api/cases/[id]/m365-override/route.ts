@@ -8,6 +8,7 @@ import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recordAudit } from "@/lib/auth/audit";
+import { stampFieldEditedAt } from "@/lib/cases/field-edited-at";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     payload.mailNickname = local;
     payload.workEmail = upn;
     const fs = { ...((payload.fieldSource ?? {}) as Record<string, string>) }; fs.userPrincipalName = "operator"; payload.fieldSource = fs;
+    stampFieldEditedAt(payload, ["userPrincipalName"], new Date());
     changed.push("username");
   }
   const fb = strArr(body.fallbacks);

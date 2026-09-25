@@ -241,6 +241,41 @@ function Disconnect-CtgExchange {
     catch { Write-Verbose "Disconnect-ExchangeOnline: $($_.Exception.Message)" }
 }
 
+# The Exchange Online cmdlets this module's onboard/offboard lanes call (FR #125). A cmdlet can be
+# missing from a session that connected fine — the app's RBAC role may not grant it (EXO builds the
+# app-only session from the role), or the session's command module may not have loaded fully in this
+# process — and calling it then fails as "not recognized", which looks exactly like a missing module and
+# sent the runner off to install one. So a successful Connect-ExchangeOnline does NOT prove the lanes
+# can run; checking these names does. (The on-prem *-RemoteMailbox cmdlets are excluded — they come
+# from Connect-CtgExchangeOnPrem's session, not EXO.)
+$script:ExoLaneCmdlets = @(
+    'Get-Mailbox', 'Set-Mailbox', 'Get-MailboxStatistics', 'Get-Recipient', 'Get-CASMailbox', 'Set-CASMailbox',
+    'Get-MailboxPermission', 'Add-MailboxPermission', 'Remove-MailboxPermission',
+    'Get-RecipientPermission', 'Add-RecipientPermission',
+    'Get-MailboxFolderPermission', 'Add-MailboxFolderPermission', 'Set-MailboxFolderPermission',
+    'Set-MailboxRegionalConfiguration', 'Set-MailboxAutoReplyConfiguration',
+    'Get-DistributionGroup', 'Get-DistributionGroupMember', 'Add-DistributionGroupMember', 'Remove-DistributionGroupMember',
+    'Add-UnifiedGroupLinks', 'Remove-UnifiedGroupLinks'
+)
+
+function Get-CtgExoMissingCmdlet {
+    # The lane cmdlets absent from the current Exchange Online session — the ones the app's
+    # Exchange role doesn't grant, or that didn't load. Empty when every one is available. Call AFTER Connect-CtgExchange.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([string[]]$Name = $script:ExoLaneCmdlets)
+    @($Name | Where-Object { -not (Get-Command -Name $_ -CommandType Function, Cmdlet -ErrorAction SilentlyContinue) })
+}
+
+function Test-CtgExoCmdlet {
+    # Is $Name one of the Exchange Online cmdlets the lanes use? The runner's missing-command handler
+    # asks this to tell "it's missing from a connected session" apart from "a module isn't installed".
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([string]$Name)
+    [bool]($Name -and ($script:ExoLaneCmdlets -contains $Name))
+}
+
 # On-prem Exchange management session (hybrid only) — the *RemoteMailbox cmdlets (Enable/Get/Set-
 # RemoteMailbox) live ON-PREM, not in EXO, so the hybrid enable step needs a remote PowerShell
 # session to the client's Exchange server over Kerberos. We import ONLY *RemoteMailbox so the EXO
@@ -1628,4 +1663,61 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Format-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+# FR #88: move a cloud mailbox's PRIMARY address to the corrected email. -WindowsEmailAddress makes it
+# the primary SMTP address and Exchange keeps the old primary as an alias, so mail to the old address
+# still lands. A directory-synced mailbox is AD's (its proxyAddresses come from the AD step) — left alone.
+function Invoke-CtgExchangeCorrectAddress {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $newUpn = [string](Get-CtgProp $Config 'newUpn')
+    if (-not $newUpn) {
+        $actions.Add("no email change on this correction — the mailbox address stays as it is")
+        return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
+    }
+    $old = [string](@('UserPrincipalName', 'workEmail', 'email') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { ([string]$_) -match '@' } | Select-Object -First 1)
+    # WHICH mailbox: the Entra user the onboard created (config.target = the m365 line's id + UPN — maybe a
+    # fallback username, not the payload's). Any address resolves a mailbox (proxy addresses do): the
+    # target's, the case's, then the corrected one (a re-run). With the Entra id, a mailbox is used only
+    # if its ExternalDirectoryObjectId is that id; without it, a match only under the NEW address is refused.
+    $t = Get-CtgProp $Config 'target'
+    $entraId = [string](Get-CtgProp $t 'id')
+    $mbx = $null; $matchedNew = $false
+    foreach ($pair in @(@((Get-CtgProp $t 'upn'), $false), @($old, $false), @($newUpn, $true))) {
+        $addr = [string]$pair[0]
+        if (-not $addr) { continue }
+        try { $mbx = Get-Mailbox -Identity $addr -ErrorAction SilentlyContinue } catch { $mbx = $null }
+        if ($mbx) { $matchedNew = $pair[1]; break }
+    }
+    if ($mbx) {
+        $mbxId = [string](Get-CtgProp $mbx 'ExternalDirectoryObjectId')
+        if ($entraId -and $mbxId -and $mbxId -ine $entraId) {
+            throw "refused: mailbox $([string](Get-CtgProp $mbx 'PrimarySmtpAddress')) belongs to Entra object $mbxId, not the account this onboard created ($entraId) — address not changed"
+        }
+        if (-not $entraId -and $matchedNew) {
+            throw "refused: mailbox $([string](Get-CtgProp $mbx 'PrimarySmtpAddress')) was found only under the corrected address, and the onboard recorded no Entra id to prove it is this case's — address not changed"
+        }
+    }
+    if (-not $mbx) {
+        # Queued off the M365 line (the plan has no exchange line; the licence made the mailbox): a user
+        # with no mailbox (unlicensed) has no address to move — a warning, not a failed correction.
+        if ((Get-CtgProp $Config 'mailboxOptional') -eq $true) {
+            $actions.Add("WARN no Exchange Online mailbox found for $old or $newUpn — no primary address to change (is the user licensed?)")
+            return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
+        }
+        throw "mailbox not found for $old or $newUpn — address not changed"
+    }
+    if ((Get-CtgProp $mbx 'IsDirSynced') -eq $true) {
+        $actions.Add("the mailbox is synced from AD — the AD step sets the new primary address and directory sync carries it")
+    }
+    elseif ([string](Get-CtgProp $mbx 'PrimarySmtpAddress') -ieq $newUpn) {
+        $actions.Add("primary address already $newUpn — no change")
+    }
+    elseif ($PSCmdlet.ShouldProcess([string]$mbx.Identity, "Set primary SMTP $newUpn")) {
+        Set-Mailbox -Identity $mbx.Identity -WindowsEmailAddress $newUpn -ErrorAction Stop
+        $actions.Add("primary email address changed to $newUpn (the old address stays as an alias)")
+    }
+    [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = $actions.ToArray() }
+}
+
+Export-ModuleMember -Function Connect-CtgExchange, Get-CtgExoMissingCmdlet, Test-CtgExoCmdlet, Invoke-CtgExchangeCorrectAddress, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Format-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

@@ -12,11 +12,13 @@
 import { useEffect, useRef, useState } from "react";
 import { HardMatchButton } from "./hard-match-button";
 import { RevealPasswordButton } from "./reveal-password-button";
+import { DefaultPasswordButton } from "./default-password-button";
 import { GeneratePasswordButton } from "./generate-password-button";
 import { ScheduleButton } from "./schedule-button";
 import { PauseButton } from "./pause-button";
 import { CaseDomainSelect } from "./case-domain-select";
 import { ReplanButton } from "./replan-button";
+import { CorrectUserButton, RemoveUserButton, type UserIdentity } from "./user-fix-buttons";
 
 type DomainInfo = { options: string[]; defaultDomain: string | null; override: string | null };
 
@@ -30,16 +32,23 @@ type Props = {
   effectiveDate: string | null;
   showHardMatch: boolean;
   hasInitialPassword: boolean;
+  hasDefaultPassword: boolean; // FR #86: the client has a standing default initial password (onboards only)
   resetSourceJobId: string | null; // FR#31: the planned job an ad-hoc pre-run password reset rides on
   resetSourceSystemName: string | null;
   canResetPassword: boolean; // same case.dispatch-derived boolean as hasInitialPassword's reveal gate
   domain: DomainInfo | null; // onboard multi-domain clients only
+  // FR #88: correct / remove the user this onboard created (null = not offered: not an onboard, no step
+  // has run, or the viewer can't run cases). canRemove is false once the onboard is past its window.
+  // canCorrect is false once a Remove has deleted something. removeConfirm / removeAccounts name the
+  // accounts the onboard actually created (which may be fallback usernames), not the payload's name;
+  // removePreexisting names any that existed before the case (Remove is refused for those).
+  userFix?: { current: UserIdentity; canCorrect: boolean; canRemove: boolean; removeConfirm: string; removeAccounts: string[]; removePreexisting: string[] } | null;
 };
 
 export function CaseActionsMenu(props: Props) {
   const {
     caseId, action, started, paused, canSchedule, scheduledForIso, effectiveDate, showHardMatch,
-    hasInitialPassword, resetSourceJobId, resetSourceSystemName, canResetPassword, domain,
+    hasInitialPassword, hasDefaultPassword, resetSourceJobId, resetSourceSystemName, canResetPassword, domain,
   } = props;
   const wrap = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -64,6 +73,7 @@ export function CaseActionsMenu(props: Props) {
         <div role="menu" className="actions-menu case-actions-menu" style={{ display: open ? "flex" : "none" }}>
           {showHardMatch && <div className="case-actions-row">                <HardMatchButton caseId={caseId} /></div>}
           {hasInitialPassword && <div className="case-actions-row">           <RevealPasswordButton caseId={caseId} /></div>}
+          {hasDefaultPassword && <div className="case-actions-row">           <DefaultPasswordButton caseId={caseId} /></div>}
           {/* FR#31: reset a password before the case has run anything — the reset route already
               supports paused/pre-run cases; only the button was missing outside a run report row. */}
           {resetSourceJobId && canResetPassword && (
@@ -76,6 +86,8 @@ export function CaseActionsMenu(props: Props) {
           {action === "onboard" && domain && (
             <div className="case-actions-row"><CaseDomainSelect caseId={caseId} options={domain.options} defaultDomain={domain.defaultDomain} override={domain.override} started={started} /></div>
           )}
+          {props.userFix?.canCorrect && <div className="case-actions-row"><CorrectUserButton caseId={caseId} current={props.userFix.current} /></div>}
+          {props.userFix?.canRemove && props.userFix.removeConfirm && <div className="case-actions-row"><RemoveUserButton caseId={caseId} email={props.userFix.removeConfirm} accounts={props.userFix.removeAccounts} preexisting={props.userFix.removePreexisting} /></div>}
           <div className="actions-menu-sep" />
           <div className="case-actions-row">                                  <ReplanButton caseId={caseId} canReplan={true} started={started} /></div>
         </div>

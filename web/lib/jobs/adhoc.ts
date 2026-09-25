@@ -5,6 +5,7 @@
 // (runner-logic, gating, status) filters the SAME set; extend this when a new ad-hoc action is added.
 import type { Prisma } from "@prisma/client";
 import { PASSWORD_RESET_SYSTEM_KEYS } from "./password-reset";
+import { USER_ADHOC_SYSTEM_KEYS } from "./user-adhoc";
 
 // The systemKey a "force Spanning sync" job runs under. Distinct from the planned "spanning" line so
 // the case machinery never confuses the ad-hoc browser action with the real backup-license step.
@@ -52,7 +53,7 @@ export const EGNYTE_CONSOLE_SETUP_KEY = "egnyte-console-setup";
 export const KNOWBE4_CONSOLE_SETUP_KEY = "knowbe4-console-setup";
 
 export const ADHOC_SYSTEM_KEYS = [
-  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY, MIMECAST_CONSOLE_SETUP_KEY, SPANNING_CONSOLE_SETUP_KEY, ZOOM_CONSOLE_SETUP_KEY, ADOBE_CONSOLE_SETUP_KEY, SLACK_CONSOLE_SETUP_KEY, EGNYTE_CONSOLE_SETUP_KEY, KNOWBE4_CONSOLE_SETUP_KEY]),
+  ...new Set([...PASSWORD_RESET_SYSTEM_KEYS, ...USER_ADHOC_SYSTEM_KEYS, SPANNING_FORCE_SYNC_KEY, ENTRA_DEVICECODE_KEY, GOOGLE_OAUTH_SIGNIN_KEY, GOOGLE_DWD_GRANT_KEY, MIMECAST_CONSOLE_SETUP_KEY, SPANNING_CONSOLE_SETUP_KEY, ZOOM_CONSOLE_SETUP_KEY, ADOBE_CONSOLE_SETUP_KEY, SLACK_CONSOLE_SETUP_KEY, EGNYTE_CONSOLE_SETUP_KEY, KNOWBE4_CONSOLE_SETUP_KEY]),
 ];
 
 export function isAdhocSystemKey(systemKey: string): boolean {

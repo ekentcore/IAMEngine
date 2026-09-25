@@ -979,7 +979,7 @@ function Invoke-CtgM365Onboarding {
     foreach ($cand in $candidates) {
         # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
         # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
-        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes', 'OnPremisesSyncEnabled')
+        $found = Resolve-CtgM365User -Upn $cand -Property @('Id', 'DisplayName', 'AccountEnabled', 'OnPremisesExtensionAttributes', 'OnPremisesSyncEnabled', 'CreatedDateTime')
         if (-not $found) { $chosenUpn = $cand; Write-CtgM365Step "username available: $cand"; break }
         # Safe nested read (StrictMode throws on an absent property): a stranger's account may carry no
         # extensionAttributes at all.
@@ -1034,6 +1034,11 @@ function Invoke-CtgM365Onboarding {
     }
     if ($chosenUpn -ne $upn) { $actions.Add("using fallback username: $chosenUpn (primary $upn taken)"); Write-CtgM365Step "→ using fallback username: $chosenUpn"; $upn = $chosenUpn }
 
+    # FR #88: an EXISTING account (a re-run, a rehire matched by marker, or an operator Adopt) was not
+    # created by this onboard — say so, with its creation date, so Remove never purges a pre-existing
+    # account (it needs an offboard). The app decides with the case date (a re-run of THIS case is fresh).
+    $ctgAdopted = [bool]$existing
+    $ctgAccountCreated = if ($existing) { Get-CtgProp $existing 'CreatedDateTime' } else { $null }
     if ($existing) {
         $userId = $existing.Id
         # Adopted an unmarked same-name account: stamp our provisioning marker so the next re-run
@@ -1094,10 +1099,15 @@ function Invoke-CtgM365Onboarding {
                 $found = $null
                 for ($i = 0; $i -lt 3 -and -not $found; $i++) {
                     if ($i) { Start-Sleep -Seconds (2 * $i) }
-                    $found = Get-MgUser -UserId $upn -ErrorAction SilentlyContinue
+                    $found = Get-MgUser -UserId $upn -Property 'id,userPrincipalName,createdDateTime' -ErrorAction SilentlyContinue
                 }
                 if (-not $found) { throw }
                 $userId = $found.Id
+                # FR #88: this onboard did NOT create it — report it as found, with its creation date, so
+                # the app's date check decides whether it's this case's account (Remove never purges
+                # one that pre-dates the case).
+                $ctgAdopted = $true
+                $ctgAccountCreated = Get-CtgProp $found 'CreatedDateTime'
                 $actions.Add("user already exists ($upn) — confirmed by UPN, continuing to licensing/groups")
             }
         }
@@ -1486,6 +1496,8 @@ function Invoke-CtgM365Onboarding {
         Status  = 'ok'
         UserId  = $userId
         Upn     = $upn
+        Adopted = $ctgAdopted            # FR #88: the account existed before this run (see above)
+        AccountCreated = $ctgAccountCreated
         PrimarySmtpAddress = $primarySmtp
         OnPremImmutableId = $onPremImmutableId  # Entra source anchor (base64) — for the consistency check
         OnPremSyncEnabled = $onPremSyncEnabled  # $true synced from AD, $false cloud-only (duplicate risk)
@@ -2840,6 +2852,152 @@ function Invoke-CtgEntraTap {
 # Operator-dispatched "Generate random password" from a case's M365/Entra line. The APP generates the
 # value (revealed once to the operator, then wiped) and injects it as config.newPassword at claim;
 # this executor only sets it — the plaintext must NEVER appear in the result, actions, or an error.
+# ── FR #88: correct or remove a user THIS engine created (ad-hoc jobs from an onboard case) ─────────
+# WHICH account: config.target — what the onboard (or its latest SUCCEEDED correction) reported: the
+# Entra object id (UserId) and UPN. The payload's UPN alone is not enough: the onboard may have used a
+# fallback username because the primary belonged to someone else. With an id the user is looked up by
+# it and nothing else. Without one: the target UPN, then the case's UPN, and an account is used only if
+# it was provably created for this case (createdDateTime >= config.caseCreatedAt); a Correct may also
+# look under the NEW UPN (a re-run), but without an id such a match is refused.
+# A user synced from AD is AD's to change: the AD step does it and directory sync carries it here.
+
+# The exact UPN on the case — never a display-name search.
+function Get-CtgCaseUpnExact {
+    param([pscustomobject]$User)
+    [string](@('UserPrincipalName', 'workEmail', 'email') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { ([string]$_) -match '@' } | Select-Object -First 1)
+}
+
+# Was an account created no earlier than the case (5 min of clock-skew slack)? $false whenever either
+# side is missing or unreadable — the answer has to be PROVABLY yes.
+function Test-CtgCreatedSinceCase {
+    param($Created, $Since)
+    if (-not $Created -or -not $Since) { return $false }
+    $toUtc = { param($v) if ($v -is [datetime]) { $v.ToUniversalTime() } elseif ($v -is [DateTimeOffset]) { $v.UtcDateTime } else { [DateTimeOffset]::Parse([string]$v, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime } }
+    try { (& $toUtc $Created) -ge (& $toUtc $Since).AddMinutes(-5) } catch { $false }
+}
+
+# Resolve the Entra user a correct/remove job may act on: { User; Refused; Tried }.
+function Resolve-CtgM365CaseAccount {
+    param([pscustomobject]$User, [pscustomobject]$Config, [string]$Property, [switch]$IncludeNew, [switch]$Destructive)
+    $prop = "$Property,createdDateTime"
+    $t = Get-CtgProp $Config 'target'
+    $id = [string](Get-CtgProp $t 'id')
+    $adopted = Get-CtgProp $t 'adopted'
+    # A delete never touches an account that EXISTED before this case (a rehire, an operator Adopt).
+    if ($Destructive -and $adopted -eq $true) {
+        $name = @((Get-CtgProp $t 'upn'), $id) | Where-Object { $_ } | Select-Object -First 1
+        return [pscustomobject]@{ User = $null; Tried = [string]$name; Refused = "Entra user $name existed before this case (the onboard adopted it) — it needs an offboard, not a Remove" }
+    }
+    if ($id) {
+        $u = $null
+        try { $u = Get-MgUser -UserId $id -Property $prop -ErrorAction SilentlyContinue } catch { $u = $null }
+        # An onboard result from before the Adopted flag: the id proves WHICH account, not that this case
+        # created it — a delete also needs it to post-date the case.
+        if ($u -and $Destructive -and $adopted -ne $false -and -not (Test-CtgCreatedSinceCase (Get-CtgProp $u 'CreatedDateTime') (Get-CtgProp $Config 'caseCreatedAt'))) {
+            return [pscustomobject]@{ User = $null; Tried = "object id $id"; Refused = "Entra user $([string](Get-CtgProp $u 'UserPrincipalName')) (id $id) was created $(Get-CtgProp $u 'CreatedDateTime') — before this case ($(Get-CtgProp $Config 'caseCreatedAt')), or when can't be told — and the onboard didn't record whether it created or adopted it, so it may be a pre-existing account (that needs an offboard)" }
+        }
+        return [pscustomobject]@{ User = $u; Refused = $null; Tried = "object id $id" }
+    }
+    $cands = [System.Collections.Generic.List[object]]::new()
+    foreach ($pair in @(@((Get-CtgProp $t 'upn'), 'target'), @((Get-CtgCaseUpnExact $User), 'case'), @($(if ($IncludeNew) { Get-CtgProp $Config 'newUpn' }), 'new'))) {
+        $v = [string]$pair[0]
+        if ($v -match '@' -and -not ($cands | Where-Object { $_.Upn -ieq $v })) { $cands.Add([pscustomobject]@{ Upn = $v; Origin = $pair[1] }) }
+    }
+    $tried = @($cands | ForEach-Object { $_.Upn }) -join ', '
+    foreach ($c in $cands) {
+        $u = $null
+        try { $u = Get-MgUser -UserId $c.Upn -Property $prop -ErrorAction SilentlyContinue } catch { $u = $null }
+        if (-not $u) { continue }
+        $who = "$([string](Get-CtgProp $u 'UserPrincipalName')) (id $([string]$u.Id))"
+        if ($c.Origin -eq 'new') {
+            return [pscustomobject]@{ User = $null; Tried = $tried; Refused = "Entra user $who was found only under the CORRECTED UPN, and the onboard recorded no object id to prove it is this case's account" }
+        }
+        if (-not (Test-CtgCreatedSinceCase (Get-CtgProp $u 'CreatedDateTime') (Get-CtgProp $Config 'caseCreatedAt'))) {
+            return [pscustomobject]@{ User = $null; Tried = $tried; Refused = "Entra user $who was created $(Get-CtgProp $u 'CreatedDateTime') — before this case ($(Get-CtgProp $Config 'caseCreatedAt')), or when can't be told — and the onboard recorded no object id, so it can't be proven to be the account this onboard made" }
+        }
+        return [pscustomobject]@{ User = $u; Refused = $null; Tried = $tried }
+    }
+    [pscustomobject]@{ User = $null; Refused = $null; Tried = $tried }
+}
+
+# Hard-delete a cloud-mastered user: delete, then permanently purge from Deleted users (Graph keeps a
+# deleted user restorable for 30 days otherwise). Licences are released by the delete. The purge can
+# briefly 404 while the delete propagates, so it retries for up to ~30 s before warning. Not found, or
+# not provably this case's account = a WARN naming what it found, and nothing deleted.
+function Invoke-CtgM365RemoveUser {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $r = Resolve-CtgM365CaseAccount -User $User -Config $Config -Property 'id,userPrincipalName,onPremisesSyncEnabled' -Destructive
+    if (-not $r.Tried) { throw "no UPN/email or object id for the user — refusing to look the user up by display name for a delete" }
+    if ($r.Refused) {
+        $actions.Add("WARN $($r.Refused). Nothing deleted: check it in Entra")
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Deleted = $false; Actions = $actions.ToArray() }
+    }
+    $u = $r.User
+    if (-not $u) {
+        $actions.Add("WARN Entra user not found ($($r.Tried)) — nothing deleted. Already removed, or renamed outside this case: check Entra before assuming it is gone")
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Deleted = $false; Actions = $actions.ToArray() }
+    }
+    $upn = [string](Get-CtgProp $u 'UserPrincipalName'); if (-not $upn) { $upn = [string]$u.Id }
+    if ((Get-CtgProp $u 'OnPremisesSyncEnabled') -eq $true) {
+        $actions.Add("$upn is synced from AD — the AD step deletes it and directory sync removes the cloud copy (Microsoft then keeps it in Deleted users for 30 days; purge it there if it must go at once)")
+        # Nothing deleted HERE — the AD step deletes it (its own result says whether it did).
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; Deleted = $false; Actions = $actions.ToArray() }
+    }
+    $deleted = $false
+    if ($PSCmdlet.ShouldProcess($upn, "Delete and permanently purge")) {
+        Remove-MgUser -UserId $u.Id -ErrorAction Stop
+        $deleted = $true
+        $actions.Add("deleted Entra user $upn (id $([string]$u.Id); licences released)")
+        $purged = $false
+        for ($i = 0; $i -lt 6 -and -not $purged; $i++) {
+            try { Remove-MgDirectoryDeletedItem -DirectoryObjectId $u.Id -ErrorAction Stop; $purged = $true }
+            catch { if ($i -lt 5) { Start-Sleep -Seconds 5 } }
+        }
+        if ($purged) { $actions.Add("permanently purged $upn from Deleted users") }
+        else { $actions.Add("WARN $upn was deleted but not yet purged from Deleted users — purge it in Entra -> Deleted users, or re-run this step") }
+    }
+    [pscustomobject]@{ System = 'm365'; Status = 'ok'; Deleted = $deleted; UserId = [string]$u.Id; Upn = $upn; Actions = $actions.ToArray() }
+}
+
+# Correct names / UPN on a cloud-mastered user. Config: firstName, lastName, displayName, newUpn.
+# The mailbox's primary address is Exchange's to change (Invoke-CtgExchangeCorrectAddress). Re-run safe:
+# looked up by its object id (a first run's rename doesn't lose it); one already at the target is
+# "already correct". A synced user is left to the AD step. Not found / not provably ours = a failure.
+function Invoke-CtgM365CorrectUser {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][pscustomobject]$User, [Parameter(Mandatory)][pscustomobject]$Config)
+    $actions = [System.Collections.Generic.List[string]]::new()
+    $r = Resolve-CtgM365CaseAccount -User $User -Config $Config -Property 'id,userPrincipalName,givenName,surname,displayName,onPremisesSyncEnabled' -IncludeNew
+    if (-not $r.Tried) { throw "no UPN/email or object id for the user — can't find the user to correct" }
+    if ($r.Refused) { throw "refused: $($r.Refused) — nothing corrected" }
+    $u = $r.User
+    if (-not $u) { throw "Entra user not found ($($r.Tried)) — nothing corrected" }
+    $upn = [string](Get-CtgProp $u 'UserPrincipalName'); if (-not $upn) { $upn = [string]$u.Id }
+    if ((Get-CtgProp $u 'OnPremisesSyncEnabled') -eq $true) {
+        $actions.Add("$upn is synced from AD — the AD step makes the change and directory sync carries it to Entra")
+        return [pscustomobject]@{ System = 'm365'; Status = 'ok'; UserId = [string]$u.Id; Upn = $upn; OnPremSyncEnabled = $true; Actions = $actions.ToArray() }
+    }
+    $body = @{}
+    foreach ($pair in @(@('firstName', 'GivenName', 'givenName'), @('lastName', 'Surname', 'surname'), @('displayName', 'DisplayName', 'displayName'), @('newUpn', 'UserPrincipalName', 'userPrincipalName'))) {
+        $want = [string](Get-CtgProp $Config $pair[0])
+        $have = [string](Get-CtgProp $u $pair[1])
+        # A UPN is case-insensitive (Entra would reject a case-only rename as a conflict with itself).
+        $differs = if ($pair[0] -eq 'newUpn') { $want -ine $have } else { $want -cne $have }
+        if ($want -and $differs) { $body[$pair[2]] = $want }
+    }
+    $finalUpn = $upn
+    if ($body.Count -eq 0) { $actions.Add("already correct — nothing to change") }
+    elseif ($PSCmdlet.ShouldProcess($upn, "Update $($body.Keys -join ', ')")) {
+        Update-MgUser -UserId $u.Id -BodyParameter $body -ErrorAction Stop
+        $actions.Add("updated $($body.Keys -join ', ')$(if ($body['userPrincipalName']) { " ($upn -> $($body['userPrincipalName']))" })")
+        if ($body['userPrincipalName']) { $finalUpn = $body['userPrincipalName'] }
+    }
+    # The account's identity AFTER the correction — what a later Remove/Correct targets.
+    [pscustomobject]@{ System = 'm365'; Status = 'ok'; UserId = [string]$u.Id; Upn = $finalUpn; Actions = $actions.ToArray() }
+}
+
 function Invoke-CtgM365PasswordReset {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -3092,4 +3250,4 @@ function Get-CtgAppCredentialExpiry {
     @{ expiresAt = $pick.UtcDateTime.ToString('o'); note = '' }
 }
 
-Export-ModuleMember -Function Connect-CtgM365, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Resolve-CtgEntraUser, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry, Get-CtgGraphError, Get-CtgProxyAddressConflict, Get-CtgUserDrive, Invoke-CtgEntraDeviceCode
+Export-ModuleMember -Function Connect-CtgM365, Invoke-CtgM365RemoveUser, Invoke-CtgM365CorrectUser, New-CtgCompliantPassword, Resolve-CtgSkuId, Set-CtgSeatAwareLicense, Invoke-CtgM365CloudMirror, Resolve-CtgM365Upn, Resolve-CtgEntraUser, Get-CtgM365UserDevices, Invoke-CtgM365Onboarding, Invoke-CtgM365Offboarding, Invoke-CtgM365Change, Confirm-CtgM365, Invoke-CtgEntraTap, Invoke-CtgM365PasswordReset, Get-CtgAppCredentialExpiry, Get-CtgGraphError, Get-CtgProxyAddressConflict, Get-CtgUserDrive, Invoke-CtgEntraDeviceCode

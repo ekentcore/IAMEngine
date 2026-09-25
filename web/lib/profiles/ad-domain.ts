@@ -30,6 +30,9 @@ export function adUpnFor(
   const identity = (client.identity ?? {}) as { usernamePatterns?: string[] | null; adDomain?: unknown };
   const adDomain = typeof identity.adDomain === "string" ? identity.adDomain.trim() : "";
   if (!adDomain) return null;
+  // A committed "Correct user" (FR #88) records the AD UPN it actually set. Re-deriving from the names
+  // would give a different one (the correction takes the new email's local part), so it wins.
+  if (typeof payload.adUpn === "string" && payload.adUpn.trim()) return { upn: payload.adUpn.trim(), fallbacks: [] };
 
   // Re-derive with the AD domain substituted for the mail domain, reusing the SAME pattern engine
   // that produced the cloud UPN — so tokens, the nickname rule, and the conflict fallbacks all behave

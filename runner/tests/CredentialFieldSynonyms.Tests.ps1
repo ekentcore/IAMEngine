@@ -82,12 +82,12 @@ Describe 'brokered credential field synonyms' {
     }
 
     It 'is used by every place the runner rebuilds a credential' {
-        # Three sites rebuild $creds from brokered fields: Get-JobCredential, Get-ConnTestCredential,
-        # and the cloud-group discovery loop. A new one that reads $fields['Username'] directly would
+        # Four sites rebuild $creds from brokered fields: Get-JobCredential, Get-ConnTestCredential,
+        # the cloud-group discovery loop, and the Google OU discovery loop (FR #81). A new one that reads $fields['Username'] directly would
         # silently reintroduce the bug for that path only.
         $direct = [regex]::Matches($script:Runner, "\`$(fields|f)\['Username'\]")
         $direct.Count | Should -Be 0 -Because 'credential rebuilds must go through Select-CtgCredField'
         ([regex]::Matches($script:Runner, 'Select-CtgCredField \$\w+ \$script:CRED_USERNAME_FIELDS')).Count |
-            Should -Be 3 -Because 'Get-JobCredential, Get-ConnTestCredential and cloud-group discovery all broker credentials'
+            Should -Be 4 -Because 'Get-JobCredential, Get-ConnTestCredential, cloud-group discovery and Google OU discovery all broker credentials'
     }
 }

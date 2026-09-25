@@ -394,6 +394,12 @@ export function buildRunReport(input: BuildRunReportInput): RunReport {
         ? `waiting for ${blockers.map((b) => input.names.get(b.systemKey) ?? b.systemKey).join(", ")} to finish first`
         : "ready — waiting for a runner to claim it";
     }
+    // FR #88: an approval-gated Remove names the exact account approving it deletes (resolved from the
+    // onboard's own result, not the payload's username).
+    if (verdict === "needs_approval") {
+      const target = (((j.request ?? {}) as { config?: { approvalTarget?: unknown } }).config ?? {}).approvalTarget;
+      if (typeof target === "string" && target) pendingReason = `approving deletes ${target}`;
+    }
     const phaseTrail = phaseTrailOf(j.progress);
     // Only show a "current phase" while the step is actually in flight — a finished step's last
     // phase isn't what it's "doing now".

@@ -16,6 +16,7 @@ import { makeCaseRepository } from "@/lib/cases/repository";
 import { replanCase } from "@/lib/cases/replan-service";
 import { recordAudit } from "@/lib/auth/audit";
 import { auditActor } from "@/lib/auth/actor";
+import { stampFieldEditedAt } from "@/lib/cases/field-edited-at";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const touched: string[] = [];
   const filled: string[] = [];
   for (const [k, v] of Object.entries(fields)) {
+    // Provenance is written BY this route, never through it: a submitted fieldEditedAt could back-date
+    // the "set after the m365 step ran" check the sharepoint mirror relies on.
+    if (k === "fieldSource" || k === "fieldEditedAt") continue;
     const val = typeof v === "string" ? v.trim() : v;
     payload[k] = val;
     touched.push(k);
@@ -64,6 +68,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const fieldSource = { ...((payload.fieldSource ?? {}) as Record<string, string>) };
   for (const k of touched) fieldSource[k] = "operator";
   payload.fieldSource = fieldSource;
+  stampFieldEditedAt(payload, touched, new Date());
   if (payload.aiResolved && typeof payload.aiResolved === "object") {
     const ai = { ...(payload.aiResolved as Record<string, string>) };
     for (const k of touched) delete ai[k];

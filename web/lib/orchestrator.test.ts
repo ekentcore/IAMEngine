@@ -379,3 +379,48 @@ test("offboard with no exchange system in the plan is unaffected", () => {
   const jobs = planCase(systems, "offboard", {});
   assert.deepEqual(jobs.find((j) => j.systemKey === "entra")!.dependsOn, ["m365"]);
 });
+
+// PR #111 second review (N1): a sharepoint row from the systems editor has dependsOn [], so it was
+// claimed alongside m365 and could mirror onto the primary username's owner before m365 chose one.
+test("onboard: sharepoint always waits for the cloud-account step(s) in the plan", () => {
+  const systems = [sys({ systemKey: "sharepoint", dependsOn: [] }), sys({ systemKey: "m365" })];
+  const jobs = planCase(systems, "onboard", {});
+  assert.deepEqual(jobs.find((j) => j.systemKey === "sharepoint")!.dependsOn, ["m365"]);
+  assert.deepEqual(jobs.map((j) => j.systemKey), ["m365", "sharepoint"]);
+  const withEntra = planCase([sys({ systemKey: "sharepoint" }), sys({ systemKey: "entra" })], "onboard", {});
+  assert.deepEqual(withEntra.find((j) => j.systemKey === "sharepoint")!.dependsOn, ["entra"]);
+});
+
+test("onboard: a declared m365 -> sharepoint edge is dropped rather than forming a cycle; offboard is untouched", () => {
+  const systems = [sys({ systemKey: "sharepoint" }), sys({ systemKey: "m365", dependsOn: ["sharepoint"] })];
+  const jobs = planCase(systems, "onboard", {});
+  assert.deepEqual(jobs.find((j) => j.systemKey === "m365")!.dependsOn, []);
+  assert.deepEqual(jobs.find((j) => j.systemKey === "sharepoint")!.dependsOn, ["m365"]);
+  const off = planCase([sys({ systemKey: "sharepoint" }), sys({ systemKey: "m365" })], "offboard", {});
+  assert.deepEqual(off.find((j) => j.systemKey === "sharepoint")!.dependsOn, []);
+});
+
+// FR #173 / #134: per-case step selection (CaseRequest.requestedSystems / skippedSystems).
+test("a requested on-request system is planned even though the intake didn't signal it", () => {
+  const systems = [sys({ systemKey: "servicenow" }), sys({ systemKey: "zoom", onboardWhen: "on_request" })];
+  const keys = (requested?: string[]) => planCase(systems, "onboard", {}, undefined, undefined, undefined, undefined, null, requested ? new Set(requested) : undefined).map((j) => j.systemKey);
+  assert.deepEqual(keys(), ["servicenow"]);
+  assert.deepEqual(keys(["zoom"]), ["servicenow", "zoom"]);
+});
+
+test("skipping beats requesting, and a 'never' lane can't be requested", () => {
+  const systems = [sys({ systemKey: "zoom", onboardWhen: "on_request" }), sys({ systemKey: "entra", onboardWhen: "never" })];
+  assert.deepEqual(planCase(systems, "onboard", {}, undefined, undefined, undefined, new Set(["zoom"]), null, new Set(["zoom", "entra"])).map((j) => j.systemKey), []);
+});
+
+// FR #122: the editor now writes per-lane dependencies (lib/clients/lane-deps). The planner must order
+// each lane by its own list — this is the promise the split "Depends on" fields rely on.
+test("per-lane dependsOn orders each lane independently", () => {
+  const systems = [
+    sys({ systemKey: "zoom", dependsOn: ["slack"], config: { dependsOn: { onboard: ["slack"], offboard: [] } } }),
+    sys({ systemKey: "slack", dependsOn: [], config: { dependsOn: { onboard: [], offboard: ["zoom"] } } }),
+  ];
+  const order = (action: "onboard" | "offboard") => planCase(systems, action, {}).map((j) => j.systemKey);
+  assert.deepEqual(order("onboard"), ["slack", "zoom"]);
+  assert.deepEqual(order("offboard"), ["zoom", "slack"]);
+});
