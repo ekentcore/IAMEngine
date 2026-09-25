@@ -71,18 +71,41 @@ const utcInstant = (s: string | null): string | null => {
 
 // Reference / glide_list fields hold sys_ids in `value` but readable names in `display_value`
 // (SN joins lists with ", "). Always surface the names, as an array.
+//
+// FR #174: ", " is also legal INSIDE a name — a DL called "Sales, East" came through as two groups.
+// The sys_id list in `value` is the only unambiguous count. So: names fetchUserManagementCase looked up
+// by sys_id (stashed as a JSON array under "__names:<field>") win; one sys_id means the whole display
+// is one name; otherwise split, and listAmbiguous() tells the caller when the pieces don't add up.
+const listIds = (r: SnUserMgmtRecord, k: string): string[] => (val(r, k) ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const lookedUpNames = (r: SnUserMgmtRecord, k: string): string[] | null => {
+  const raw = val(r, `__names:${k}`);
+  if (!raw) return null;
+  try { const a: unknown = JSON.parse(raw); return Array.isArray(a) && a.every((x) => typeof x === "string") ? (a as string[]) : null; } catch { return null; }
+};
 const dispList = (r: SnUserMgmtRecord, k: string): string[] => {
+  const names = lookedUpNames(r, k);
+  if (names) return names;
   const d = disp(r, k);
-  return d ? d.split(", ").map((s) => s.trim()).filter(Boolean) : [];
+  if (!d) return [];
+  if (listIds(r, k).length === 1) return [d.trim()];
+  return d.split(", ").map((s) => s.trim()).filter(Boolean);
+};
+// A multi-item list whose display splits into a different number of names than it has sys_ids, with no
+// looked-up names: at least one name contains ", " and there's no telling where. The caller flags it.
+export const listAmbiguous = (r: SnUserMgmtRecord, k: string): boolean => {
+  const ids = listIds(r, k);
+  const d = disp(r, k);
+  return ids.length > 1 && !lookedUpNames(r, k) && !!d && d.split(", ").filter((s) => s.trim()).length !== ids.length;
 };
 // Some fields exist as both a base and a "_uc" twin; take the first that has values.
-const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => {
+const firstListKey = (r: SnUserMgmtRecord, ...keys: string[]): { list: string[]; key: string | null } => {
   for (const k of keys) {
     const l = dispList(r, k);
-    if (l.length) return l;
+    if (l.length) return { list: l, key: k };
   }
-  return [];
+  return { list: [], key: null };
 };
+const firstList = (r: SnUserMgmtRecord, ...keys: string[]): string[] => firstListKey(r, ...keys).list;
 
 // Office-location display -> M365 UsageLocation (ISO-3166 alpha-2). The office location is often a
 // CITY or STATE, not a country, so match those too; a US state/city resolves to US by a real match,
@@ -181,6 +204,26 @@ function onboardPayload(r: SnUserMgmtRecord): Record<string, unknown> {
       field: "usageLocation",
       label: "Usage location (M365)",
       note: `couldn't determine from office location "${officeLocation ?? "—"}" / timezone "${timezone ?? "—"}" — enter the ISO country code (e.g. US, GB, CA)`,
+    });
+  }
+  // FR #174: lists the runner acts on. One whose names couldn't be looked up and whose display doesn't
+  // split into as many names as it has entries holds the case — adding the wrong groups is worse than
+  // waiting. Separating with ";" lets a corrected name keep its comma (see strList in plan-resolve).
+  const actionLists: Array<{ field: string; label: string; keys: string[] }> = [
+    { field: "productLicenses", label: "Product licenses", keys: ["u_product_licenses"] },
+    { field: "securityGroups", label: "Security groups", keys: ["u_security_groups_uc"] },
+    { field: "emailDistroGroups", label: "Email distribution groups", keys: ["u_email_distro_groups_uc", "u_email_distro_groups"] },
+    { field: "sharedMailboxes", label: "Shared mailboxes", keys: ["u_shared_resource_mailboxes_uc", "u_shared_resource_mailboxes"] },
+    { field: "fileShareAccess", label: "File share access", keys: ["u_what_shares_should_they_have_access_to", "u_shared_drive_access_uc"] },
+    { field: "cloudApplications", label: "Cloud applications", keys: ["u_cloud_applications_uc", "u_cloud_applications"] },
+  ];
+  for (const l of actionLists) {
+    const { key } = firstListKey(r, ...l.keys);
+    if (!key || !listAmbiguous(r, key)) continue;
+    unknownFields.push({
+      field: l.field,
+      label: l.label,
+      note: `ServiceNow lists ${listIds(r, key).length} entries as "${disp(r, key)}", and at least one name contains a comma, so it can't tell where they split — enter the names separated by semicolons (e.g. Sales, East; Finance)`,
     });
   }
   return {

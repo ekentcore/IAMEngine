@@ -239,6 +239,7 @@ export { entry as selfHealWatchdog } from "./self-heal-watchdog";
 export { entry as selfUpdateKeepsBrowserSidecar } from "./self-update-keeps-browser-sidecar";
 export { entry as selfhealNeverImportsInProcess } from "./selfheal-never-imports-in-process";
 export { entry as selfhealRestartCannotLoop } from "./selfheal-restart-cannot-loop";
+export { entry as servicenowListNamesWithCommas } from "./servicenow-list-names-with-commas";
 export { entry as settingsDeploymentStatus } from "./settings-deployment-status";
 export { entry as setupRunCancelButton } from "./setup-run-cancel-button";
 export { entry as slackCatalogBuilt } from "./slack-catalog-built";

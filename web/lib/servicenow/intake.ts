@@ -73,6 +73,78 @@ async function resolveContactEmails(config: SnConfig, sysIds: string[], fetcher:
   }
 }
 
+// FR #174: the list (glide_list) fields the mapper reads. ServiceNow joins their display names with
+// ", ", which is ambiguous when a name itself contains ", " — so for any list whose display doesn't
+// split into as many names as it has sys_ids, look the names up by sys_id instead.
+const LIST_FIELDS = [
+  "u_who_are_direct_reports", "u_role_s", "u_coretelligent_list_membership", "u_product_licenses",
+  "u_security_groups_uc", "u_email_distro_groups_uc", "u_email_distro_groups",
+  "u_shared_resource_mailboxes_uc", "u_shared_resource_mailboxes",
+  "u_what_shares_should_they_have_access_to", "u_shared_drive_access_uc",
+  "u_cloud_applications_uc", "u_cloud_applications", "u_other_hardware_needed_uc", "u_other_hardware_opt_needed",
+  "u_installed_software_uc", "u_installed_software", "u_off_delegate_access",
+] as const;
+const UM_TABLE_NAME = "sn_customerservice_user_management";
+const DICTIONARY_TABLE = "/api/now/table/sys_dictionary";
+const TABLE_NAME_RE = /^[a-z][a-z0-9_]*$/;
+
+// Which table a list field references, and that table's display column — read from the dictionary
+// once per field and kept for the life of the process. null = couldn't tell (e.g. the integration user
+// may not read sys_dictionary); the mapper then flags the list instead of guessing. Only a found
+// answer is cached, so a transient failure is retried on the next import (this path is rare).
+type ListRef = { table: string; displayField: string };
+const listRefCache = new Map<string, ListRef>();
+async function listRefOf(config: SnConfig, field: string, fetcher: typeof fetch): Promise<ListRef | null> {
+  const cached = listRefCache.get(field);
+  if (cached) return cached;
+  let ref: ListRef | null = null;
+  try {
+    const defs = await snGet<Array<Record<string, string>>>(
+      config, DICTIONARY_TABLE,
+      { sysparm_query: `element=${field}^referenceISNOTEMPTY`, sysparm_fields: "name,reference", sysparm_display_value: "false", sysparm_limit: "10" },
+      fetcher
+    );
+    // The field may be defined on this table or on a parent; prefer this table's own definition.
+    const def = (defs ?? []).find((d) => d.name === UM_TABLE_NAME) ?? (defs ?? [])[0];
+    const table = def?.reference;
+    if (table && TABLE_NAME_RE.test(table)) {
+      const disp = await snGet<Array<Record<string, string>>>(
+        config, DICTIONARY_TABLE,
+        { sysparm_query: `name=${table}^display=true`, sysparm_fields: "element", sysparm_display_value: "false", sysparm_limit: "1" },
+        fetcher
+      );
+      const displayField = (disp ?? [])[0]?.element;
+      ref = { table, displayField: displayField && TABLE_NAME_RE.test(displayField) ? displayField : "name" };
+    }
+  } catch {
+    ref = null;
+  }
+  if (ref) listRefCache.set(field, ref);
+  return ref;
+}
+
+// The display names of a list field's records, in the field's own sys_id order. null when any of them
+// can't be read — a partial list would silently drop a group.
+async function resolveListNames(config: SnConfig, field: string, ids: string[], fetcher: typeof fetch): Promise<string[] | null> {
+  const ref = await listRefOf(config, field, fetcher);
+  if (!ref) return null;
+  try {
+    const rows = await snGet<Array<Record<string, string>>>(
+      config, `/api/now/table/${ref.table}`,
+      { sysparm_query: `sys_idIN${ids.join(",")}`, sysparm_fields: `sys_id,${ref.displayField}`, sysparm_display_value: "true", sysparm_limit: String(ids.length) },
+      fetcher
+    );
+    const byId = new Map((rows ?? []).map((row) => [row.sys_id, (row[ref.displayField] ?? "").trim()]));
+    const names = ids.map((id) => byId.get(id) ?? "");
+    return names.every(Boolean) ? names : null;
+  } catch {
+    return null;
+  }
+}
+
+// Test seam: forget cached dictionary lookups.
+export function resetListRefCache(): void { listRefCache.clear(); }
+
 export async function fetchUserManagementCase(
   config: SnConfig,
   number: string,
@@ -104,6 +176,15 @@ export async function fetchUserManagementCase(
     const sid = sysIdOf(f);
     const email = sid ? emails[sid] : undefined;
     if (email) row[`__email:${f}`] = { value: email, display_value: email };
+  }
+
+  // FR #174: look up the names of any list whose display doesn't split cleanly (best-effort).
+  for (const f of LIST_FIELDS) {
+    const ids = (row[f]?.value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const shown = (row[f]?.display_value ?? "").split(", ").filter((s) => s.trim());
+    if (ids.length < 2 || shown.length === ids.length) continue;
+    const names = await resolveListNames(config, f, ids, fetcher);
+    if (names) row[`__names:${f}`] = { value: JSON.stringify(names), display_value: names.join("; ") };
   }
   return row;
 }

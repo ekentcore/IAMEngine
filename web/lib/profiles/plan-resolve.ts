@@ -7,6 +7,7 @@ import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
 import { hideFromGalOptedOut, adLaneHidesViaAttribute, readHideFromGal } from "./hide-from-gal";
+import { splitTypedList } from "../cases/typed-list";
 import type { PlannedJob } from "../orchestrator";
 
 type PlanClient = {
@@ -383,9 +384,10 @@ export function resolvePlannedConfigs(
   // m365/entra lane (the exchange namedGroups handoff below routes mail-enabled ones to EXO, which
   // is the only lane that can add DL members); security groups go to every directory lane — they
   // may live on-prem (AD) or in the cloud (Graph), and each runner adds the ones it actually has.
+  // A typed list splits on ";" when it has one, else on "," (splitTypedList, FR #174).
   const strList = (v: unknown): string[] =>
     Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x.trim() : "")).filter((x) => x !== "")
-    : typeof v === "string" ? v.split(/[,;]/).map((x) => x.trim()).filter((x) => x !== "")
+    : typeof v === "string" ? splitTypedList(v)
     : [];
   // Requestor free-text must NEVER add someone to a privileged group: the runner binds as SYSTEM on
   // a DC, and a form field saying "Domain Admins" would otherwise make the hire a domain admin on

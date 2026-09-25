@@ -12,6 +12,7 @@ import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { splitTypedList, LIST_PAYLOAD_FIELDS } from "@/lib/cases/typed-list";
 import { makeCaseRepository } from "@/lib/cases/repository";
 import { replanCase } from "@/lib/cases/replan-service";
 import { recordAudit } from "@/lib/auth/audit";
@@ -45,6 +46,16 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     payload[k] = val;
     touched.push(k);
     if (typeof val === "string" ? val !== "" : val != null) filled.push(k);
+  }
+
+  // A typed value for a list field is stored as the array the intake would have produced (FR #174):
+  // "Sales, East; Finance" -> ["Sales, East", "Finance"]. One that splits to nothing isn't "filled".
+  for (const k of touched) {
+    const v = payload[k];
+    if (!LIST_PAYLOAD_FIELDS.has(k) || typeof v !== "string") continue;
+    const list = splitTypedList(v);
+    payload[k] = list;
+    if (list.length === 0 && filled.includes(k)) filled.splice(filled.indexOf(k), 1);
   }
   // Editing the UPN must keep its siblings consistent (deriveIdentity computed them together) — the
   // AD lane reads samAccountName independently, so leaving it stale creates an account that doesn't
