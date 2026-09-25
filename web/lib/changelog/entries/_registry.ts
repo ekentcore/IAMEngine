@@ -8,6 +8,7 @@ export { entry as adDcOptional } from "./ad-dc-optional";
 export { entry as adMirrorByEmail } from "./ad-mirror-by-email";
 export { entry as adStandaloneDomainSeparation } from "./ad-standalone-domain-separation";
 export { entry as adSyncedAdoptOnly } from "./ad-synced-adopt-only";
+export { entry as adoptUsesTheConfirmedAccount } from "./adopt-uses-the-confirmed-account";
 export { entry as adsyncedAdoptSyncedAccount } from "./adsynced-adopt-synced-account";
 export { entry as adSyncedGalHide } from "./ad-synced-gal-hide";
 export { entry as adFolderTreePicker } from "./ad-folder-tree-picker";

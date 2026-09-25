@@ -256,6 +256,48 @@ Describe 'Invoke-CtgM365Onboarding' {
         ($r.Actions -join ' ') | Should -Match 'operator chose ADOPT'
     }
 
+    # FR #0000175: a user who previously existed in M365 under a name that doesn't match the ticket
+    # ("Doe, Jane", a maiden name, a middle initial). Every candidate is taken, so the step asks "If that
+    # IS this person, choose Adopt". Adopt used to record only policy=adopt, which only ever adopts a
+    # SAME-name account, so the re-run asked the same question again, forever. The app now also sends
+    # the account the operator confirmed (usernameCollisionAdoptUpn), and that account is adopted.
+    It 'FR #175: ADOPTS the exact account the operator confirmed, even when its name differs (no loop)' {
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'uid-old'; DisplayName = 'Doe, Jane'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
+            if ($UserId -eq 'j.doe@x.com' -or "$Filter" -match 'j\.doe@x\.com') { return [pscustomobject]@{ Id = 'uid-other'; DisplayName = 'Jack Doe'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
+            return $null
+        }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        # Before the decision: every candidate taken, none by name -> ask, naming the first one.
+        { Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{}) -InitialPassword $pwd } | Should -Throw -ExpectedMessage '*DECISION_NEEDED:username_collision*upn=jdoe@x.com*'
+        # After Adopt on that account: it is adopted, marker stamped, nothing created, no second question.
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy = 'adopt'; usernameCollisionAdoptUpn = 'JDoe@x.com' }) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 0 -Exactly
+        $r.UserId | Should -Be 'uid-old'
+        $r.Upn | Should -Be 'jdoe@x.com'
+        ($r.Actions -join ' ') | Should -Match 'operator confirmed it is this person'
+        Should -Invoke Update-MgUser -ModuleName Coretelligent.M365 -ParameterFilter { $UserId -eq 'uid-old' -and $OnPremisesExtensionAttributes } -Times 1
+    }
+
+    It 'FR #175: policy=adopt WITHOUT a confirmed account still never adopts a differently-named stranger' {
+        # plan-resolve sets policy=adopt on its own for a rehire. That must keep meaning "same name only":
+        # it can't take over whichever account happens to hold the username.
+        Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+            param($UserId, $Filter)
+            if ($UserId -eq 'jdoe@x.com' -or "$Filter" -match 'jdoe@x\.com') { return [pscustomobject]@{ Id = 'stranger'; DisplayName = 'John Smith'; OnPremisesExtensionAttributes = [pscustomobject]@{ ExtensionAttribute1 = $null } } }
+            return $null
+        }
+        Mock Update-MgUser -ModuleName Coretelligent.M365 -MockWith {}
+        $user = [pscustomobject]@{ DisplayName='Jane Doe'; UserPrincipalName='jdoe@x.com'; UserPrincipalNameFallbacks=@('j.doe@x.com'); PersonalEmail='jane@gmail.com'; FirstName='Jane'; LastName='Doe'; JobTitle=''; MobilePhone=''; UsageLocation='US' }
+        $pwd = ConvertTo-SecureString 'Pw!23456789abc' -AsPlainText -Force
+        $r = Invoke-CtgM365Onboarding -User $user -Config ([pscustomobject]@{ usernameCollisionPolicy = 'adopt' }) -InitialPassword $pwd
+        Should -Invoke New-MgUser -ModuleName Coretelligent.M365 -Times 1 -Exactly
+        $r.Upn | Should -Be 'j.doe@x.com'
+    }
+
     It 'ENABLES an adopted account that is disabled (a rehire whose old account was disabled)' {
         # The bug this pins: adopting stamped the marker and moved on, but only the CREATE path ever
         # set AccountEnabled. A rehire's old account is disabled, so the onboard reported success while

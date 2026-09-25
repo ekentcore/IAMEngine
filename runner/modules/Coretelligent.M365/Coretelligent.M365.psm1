@@ -976,6 +976,11 @@ function Invoke-CtgM365Onboarding {
     # different person who happens to share a name): 'adopt' = it's ours, 'new' = different person
     # (use a fallback), unset/'ask' = PAUSE and let an operator decide on the case.
     $collisionPolicy = [string](Get-CtgProp $Config 'usernameCollisionPolicy')
+    # FR #0000175: the account the operator was shown in the decision and confirmed as this person. It is
+    # adopted whatever its display name — "Doe, Jane", a maiden name, a middle initial — because a human
+    # looked at it. policy=adopt ALONE (which plan-resolve also sets for a rehire) still means "same name
+    # only", so it can never take over whoever happens to hold the username.
+    $adoptUpn = [string](Get-CtgProp $Config 'usernameCollisionAdoptUpn')
     foreach ($cand in $candidates) {
         # Transient-aware: a genuine 404 -> $null (available); a throttle/timeout retries, then throws —
         # so a transient blip can NEVER make us skip the marker/adopt check and create a duplicate.
@@ -999,6 +1004,12 @@ function Invoke-CtgM365Onboarding {
             $actions.Add("note: $cand is directory-synced and its extensionAttribute1 ('$foundMarker') is mastered on-prem, not one of ours — ignoring it and matching on name instead")
             Write-CtgM365Step "↪ $cand is on-prem mastered — its extensionAttribute1 is not a provisioning marker"
             $foundMarker = ''
+        }
+        if ($collisionPolicy -ieq 'adopt' -and $adoptUpn -and $cand -ieq $adoptUpn) {
+            $existing = $found; $chosenUpn = $cand; $adopt = $true
+            $actions.Add("user exists ($cand) as '$($found.DisplayName)' — the operator confirmed it is this person and chose ADOPT (stamping marker), skipping create")
+            Write-CtgM365Step "↪ adopting '$($found.DisplayName)' ($cand), confirmed by the operator — continuing with licensing/groups"
+            break
         }
         # No marker but the SAME display name = AMBIGUOUS: a prior run created the account before
         # failing (ours, a re-run) OR a genuinely different person with the same name. Honor the

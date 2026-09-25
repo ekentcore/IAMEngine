@@ -3,6 +3,7 @@
 // license(s) to assign, the username, and the conflict-fallback username(s). Licenses write the
 // m365 job's config; username/fallbacks write the case payload (read by the runner at claim time).
 import { NextResponse } from "next/server";
+import { collisionDecision, decisionTargets } from "@/lib/cases/collision-decision";
 import { guard } from "@/lib/auth/route-guard";
 import { caseInScope } from "@/lib/auth/client-scope";
 import { Prisma } from "@prisma/client";
@@ -18,7 +19,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const g = await guard("case.dispatch"); if (g.res) return g.res;
   if (!(await caseInScope(db, params.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown; mailboxOversizePolicy?: unknown; allowCloudCreate?: unknown };
+  let body: { licenses?: unknown; userPrincipalName?: unknown; fallbacks?: unknown; usernameCollisionPolicy?: unknown; usernameCollisionAdoptUpn?: unknown; jobId?: unknown; mailboxOversizePolicy?: unknown; allowCloudCreate?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid JSON body" }, { status: 422 }); }
 
   // BOTH lanes: the M365 executor serves `m365` AND `entra` (entra is an alias of the same handler),
@@ -45,12 +46,23 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const payload = { ...((c.payload ?? {}) as Record<string, unknown>) };
   const changed: string[] = [];
 
-  // Operator's answer to an ambiguous same-name account: 'adopt' (it's a re-run of this person) or
-  // 'new' (a different person — use a fallback). Written to the m365 job config; the runner reads it.
-  if (body.usernameCollisionPolicy === "adopt" || body.usernameCollisionPolicy === "new") {
-    const n = await writeJobConfig("usernameCollisionPolicy", body.usernameCollisionPolicy);
-    if (!n) return NextResponse.json({ error: "this case has no M365/Entra step to record the choice on" }, { status: 422 });
-    changed.push(`collision:${body.usernameCollisionPolicy}`);
+  // Operator's answer to an ambiguous same-name account: 'adopt' (it's this person) or 'new' (a
+  // different person — use a fallback). Adopt also carries the account they confirmed, and the answer
+  // goes on the step that asked as well as the M365 jobs (FR #0000175 — see lib/cases/collision-decision).
+  const decision = collisionDecision(body.usernameCollisionPolicy, body.usernameCollisionAdoptUpn);
+  if (decision && "error" in decision) return NextResponse.json({ error: decision.error }, { status: 422 });
+  if (decision) {
+    const asking = typeof body.jobId === "string"
+      ? await db.job.findFirst({ where: { id: body.jobId, caseRequestId: params.id }, select: { id: true, systemKey: true, request: true } })
+      : null;
+    const targets = decisionTargets(c.jobs, asking);
+    if (!targets.length) return NextResponse.json({ error: "this case has no step to record the choice on" }, { status: 422 });
+    for (const j of targets) {
+      const reqJson = { ...((j.request ?? {}) as Record<string, unknown>) };
+      reqJson.config = { ...((reqJson.config ?? {}) as Record<string, unknown>), ...decision };
+      await db.job.update({ where: { id: j.id }, data: { request: reqJson as Prisma.InputJsonValue } });
+    }
+    changed.push(`collision:${decision.usernameCollisionPolicy}${decision.usernameCollisionAdoptUpn ? `:${decision.usernameCollisionAdoptUpn}` : ""}`);
   }
 
   // Operator's answer to an over-the-cap mailbox: 'remove' (free the seat, accept that Exchange purges

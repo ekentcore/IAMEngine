@@ -481,7 +481,8 @@ function CollisionDecision({ caseId, jobId, error, refresh }: { caseId: string; 
   async function decide(policy: "adopt" | "new") {
     setBusy(policy); setErr(null);
     try {
-      const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usernameCollisionPolicy: policy }) });
+      // FR #0000175: say WHICH account is being adopted, and which step asked — policy alone looped.
+      const r = await fetch(`/api/cases/${caseId}/m365-override`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usernameCollisionPolicy: policy, usernameCollisionAdoptUpn: policy === "adopt" ? upn ?? null : null, jobId }) });
       if (!r.ok) { setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed"); return; }
       await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
       await refresh();
