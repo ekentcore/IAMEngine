@@ -59,6 +59,8 @@ export type CaseListItem = {
   // ("system:intake-poll"). null only for rows predating this column.
   createdBy: string | null;
   createdSource: CaseSource;
+  // The person the case is about, as a name (FR #123) — null when the payload names nobody.
+  userName: string | null;
   // WHO the ServiceNow ticket is assigned to, mirrored by the assignee sweep (FR #0000045). Both null
   // = unassigned in ServiceNow; snAssigneeCheckedAt null = not read from ServiceNow yet.
   snAssignedTo: string | null;

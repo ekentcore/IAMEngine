@@ -15,7 +15,7 @@ export default async function CasesV3Page() {
   const done = rows.length - open;
 
   return (
-    <main>
+    <main className="fit">
       <div className="row-between">
         <div>
           <h1>Cases</h1>

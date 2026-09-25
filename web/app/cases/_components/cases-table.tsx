@@ -32,6 +32,9 @@ export type CaseRowVM = {
   // Who opened/imported the case — the operator's email for a signed-in engineer, else the raw actor
   // label ("servicenow-poller"). Shown in the "Assigned to" tooltip only.
   createdBy?: string | null;
+  // FR #123: the person the case is about. The "User" column shows this instead of the subject, which
+  // repeats the Action and client columns; the subject stays in the tooltip.
+  userName?: string | null;
   // FR #0000045: the ServiceNow ticket's assigned_to (display name + email), mirrored by the assignee
   // sweep. Both null = unassigned in ServiceNow — unless snAssigneeChecked is false (not read yet).
   snAssignedTo?: string | null;
@@ -39,6 +42,11 @@ export type CaseRowVM = {
   snAssigneeChecked?: boolean;
   createdAtIso: string;
 };
+
+// What the User column (and the mobile card title) shows: the person, else the subject, else an id.
+function userLabel(c: CaseRowVM): string {
+  return c.userName ?? c.subject ?? c.id.slice(0, 8);
+}
 
 export type TrashedCaseRowVM = {
   id: string;
@@ -90,7 +98,7 @@ function AssigneeCell({ c }: { c: CaseRowVM }) {
 type SortDir = "asc" | "desc";
 
 function haystack(c: CaseRowVM): string {
-  return [c.subject, c.clientName, c.action, c.serviceNowCaseNumber, c.imported ? "imported" : STATUS_LABEL[c.status] ?? c.status, c.statusHint, c.snAssignedTo, c.snAssignedToEmail, ...(c.warnings ?? [])]
+  return [c.userName, c.subject, c.clientName, c.action, c.serviceNowCaseNumber, c.imported ? "imported" : STATUS_LABEL[c.status] ?? c.status, c.statusHint, c.snAssignedTo, c.snAssignedToEmail, ...(c.warnings ?? [])]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -178,6 +186,9 @@ function compare(a: CaseRowVM, b: CaseRowVM, key: SortKey): number {
       return a.jobCount - b.jobCount;
     case "createdAt":
       return a.createdAtIso.localeCompare(b.createdAtIso);
+    case "subject":
+      // The column is labelled "User" and shows userLabel, so sort by what's on screen.
+      return userLabel(a).localeCompare(userLabel(b));
     case "assignedTo": {
       // Assigned people A–Z, then unassigned/unknown last — the same "empty sorts last" as lastRun.
       const av = a.snAssignedTo ?? a.snAssignedToEmail ?? ""; const bv = b.snAssignedTo ?? b.snAssignedToEmail ?? "";
@@ -457,13 +468,14 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               <input type="checkbox" checked={allSelected} aria-label="Select all" onChange={toggleAll}
                 ref={(el) => { if (el) el.indeterminate = selectedVisible.length > 0 && !allSelected; }} />
             </th>
-            <SortHead k="subject" label="Subject" />
-            <SortHead k="clientName" label="Client" />
+            {/* FR #123: the person, then what's happening to them and when, before the bookkeeping columns. */}
+            <SortHead k="subject" label="User" />
             <SortHead k="action" label="Action" />
+            <SortHead k="effectiveDate" label="Start / off date" />
+            <SortHead k="clientName" label="Client" />
             <SortHead k="serviceNowCaseNumber" label="SN case" />
             <SortHead k="jobCount" label="Jobs" num />
             <SortHead k="status" label="Status" />
-            <SortHead k="effectiveDate" label="Start / off date" />
             <SortHead k="lastRun" label="Last run" />
             <SortHead k="createdAt" label="Created" />
             <SortHead k="assignedTo" label="Assigned to" />
@@ -480,21 +492,8 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
               style={selected.has(c.id) ? { background: "var(--accent-soft)" } : undefined}
             >
               <td><input type="checkbox" checked={selected.has(c.id)} aria-label="Select case" onChange={() => toggleSel(c.id)} /></td>
-              <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
-              <td className="muted">{c.clientName}</td>
+              <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`} title={c.subject ?? undefined}>{userLabel(c)}</Link></td>
               <td><span className="badge">{c.action}</span></td>
-              <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
-              <td className="muted">{c.jobCount}</td>
-              <td>
-                <StatusBadge c={c} />
-                {c.lastActionLabel && (
-                  <div className="note" style={{ fontSize: 11, marginTop: 2 }} title="Most recent action taken on this case">
-                    {/* email on its OWN line — "Paused: long.email@core.tech" on one line was forcing the column wide */}
-                    <div style={{ whiteSpace: "nowrap" }}>{c.lastActionLabel}{c.lastActionBy ? ":" : ""}</div>
-                    {c.lastActionBy && <div style={{ opacity: 0.85 }}>{c.lastActionBy}</div>}
-                  </div>
-                )}
-              </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.effectiveDate ? (c.action === "offboard" ? "Offboarding date/time" : "Start date") : c.immediate ? "Immediate offboard — process now" : undefined}>
                 {c.effectiveDate
                   ? (() => {
@@ -512,6 +511,19 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   : c.immediate
                     ? <span className="badge" style={{ color: "var(--warn-fg)", borderColor: "var(--warn-bg)", background: "var(--warn-bg)" }}>Immediate</span>
                     : "—"}
+              </td>
+              <td className="muted">{c.clientName}</td>
+              <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
+              <td className="muted">{c.jobCount}</td>
+              <td>
+                <StatusBadge c={c} />
+                {c.lastActionLabel && (
+                  <div className="note" style={{ fontSize: 11, marginTop: 2 }} title="Most recent action taken on this case">
+                    {/* email on its OWN line — "Paused: long.email@core.tech" on one line was forcing the column wide */}
+                    <div style={{ whiteSpace: "nowrap" }}>{c.lastActionLabel}{c.lastActionBy ? ":" : ""}</div>
+                    {c.lastActionBy && <div style={{ opacity: 0.85 }}>{c.lastActionBy}</div>}
+                  </div>
+                )}
               </td>
               <td className="muted" style={{ whiteSpace: "nowrap" }} title={c.lastRunIso ? "Most recent step run" : "Hasn't run yet"}>
                 {c.lastRunIso ? (
@@ -587,7 +599,7 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
         {visible.map((c) => (
           <Link key={c.id} href={`/cases/${c.id}`} className="m-card">
             <div className="m-card-top">
-              <span className="m-card-title"><ReadinessDot c={c} />{c.subject ?? c.id.slice(0, 8)}</span>
+              <span className="m-card-title" title={c.subject ?? undefined}><ReadinessDot c={c} />{userLabel(c)}</span>
               <StatusBadge c={c} />
             </div>
             <div className="m-card-sub">{c.clientName}</div>
@@ -610,8 +622,8 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
           <table style={{ marginTop: "0.5rem" }}>
             <thead>
               <tr>
-                <th>Subject</th><th>Client</th><th>Action</th><th>SN case</th>
-                <th className="num">Jobs</th><th>Status</th><th>Start / off date</th><th>Last run</th><th>Created</th><th>Assigned to</th>
+                <th>User</th><th>Action</th><th>Start / off date</th><th>Client</th><th>SN case</th>
+                <th className="num">Jobs</th><th>Status</th><th>Last run</th><th>Created</th><th>Assigned to</th>
                 <th style={{ width: 28 }} aria-label="Actions"></th>
               </tr>
             </thead>
@@ -622,13 +634,13 @@ export function CasesTable({ cases, trashed, splitCompleted = false }: { cases: 
                   onMouseEnter={() => setHoveredId(c.id)}
                   onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
                 >
-                  <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`}>{c.subject ?? c.id.slice(0, 8)}</Link></td>
-                  <td className="muted">{c.clientName}</td>
+                  <td><ReadinessDot c={c} /><Link href={`/cases/${c.id}`} title={c.subject ?? undefined}>{userLabel(c)}</Link></td>
                   <td><span className="badge">{c.action}</span></td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
+                  <td className="muted">{c.clientName}</td>
                   <td className="muted">{c.serviceNowCaseNumber ?? "—"}</td>
                   <td className="muted">{c.jobCount}</td>
                   <td><StatusBadge c={c} /></td>
-                  <td className="muted" style={{ whiteSpace: "nowrap" }}>{c.effectiveDate ? formatDateOnly(c.effectiveDate) : "—"}</td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>
                     {formatDateTime(c.lastRunIso)}
                     {c.ranBy && <div className="note" style={{ fontSize: 11 }}>by {c.ranBy}</div>}

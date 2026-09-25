@@ -18,6 +18,7 @@ import { notM365AutoSetupCase } from "./exclude-m365-autosetup";
 import { type ClientScope, clientIdWhere, scopeAllows } from "../auth/client-scope";
 import { inheritsFromParent, inheritsParentModeling, applyParentInheritance, PARENT_INHERIT_SELECT } from "./parent-inheritance";
 import { unmodeledStepTitle, type UnmodeledSection } from "./unmodeled-steps";
+import { caseUserName } from "./user-name";
 
 // One-line explanation of a case's status, for the list hover tooltip. Reads the case's jobs the
 // same way deriveCaseStatus / the dependency gate do, so the hint matches the badge.
@@ -763,6 +764,7 @@ export function makeCaseRepository(db: PrismaClient) {
           lastActionBy: lastActionByCase.get(r.id)?.by ?? null,
           createdBy: r.createdBy?.startsWith("user:") ? r.createdBy.slice(5) : (r.createdBy ?? null),
           createdSource: r.createdSource,
+          userName: caseUserName(r.payload as Record<string, unknown> | null),
           snAssignedTo: r.snAssignedTo, snAssignedToEmail: r.snAssignedToEmail, snAssigneeCheckedAt: r.snAssigneeCheckedAt,
           readiness, readinessMissing: planMissing,
           clientName: r.client.name, clientSlug: r.client.slug, jobCount: r.jobs.length,

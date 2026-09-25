@@ -208,6 +208,10 @@ main {
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 /* Wider card for dense rosters (clients list has 11 columns). */
 main.wide { max-width: 1300px; }
+/* FR #110: a card that grows with its content (the Cases table) instead of a fixed cap — never
+   narrower than the normal card, never wider than the window. No overflow here: making <main> a scroll
+   container would stop sticky table headers pinning to the page. */
+main.fit { max-width: calc(100vw - 2rem); width: fit-content; min-width: min(1180px, calc(100vw - 2rem)); }
 /* Scroll a wide/long table INSIDE its card so right-edge action icons never clip and the roster
    scrolls without pushing the page. A bounded height makes this an internal scroll pane, which also
    keeps the sticky header working — it pins to the pane top (top:0) instead of the page (top:56px,
@@ -512,7 +516,7 @@ dialog::backdrop { background: rgba(18, 20, 28, 0.32); backdrop-filter: blur(2px
      hamburger, theme, the bare v2 track and Sign out; Account/Impersonate live on desktop. */
   .v2-switch .v2-switch-text { display: none; }
   .user-menu .user-wide { display: none; }
-  main, main.wide { max-width: 100%; margin: 0.5rem; padding: 1rem 0.9rem; }
+  main, main.wide, main.fit { max-width: 100%; min-width: 0; width: auto; margin: 0.5rem; padding: 1rem 0.9rem; }
   h1 { font-size: 1.3rem; }
   /* any remaining desktop tables (detail pages: systems matrix, secret wiring, run-report steps, …)
      scroll instead of breaking layout */

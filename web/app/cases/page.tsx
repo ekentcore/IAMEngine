@@ -10,7 +10,7 @@ export default async function CasesPage() {
   const { rows, trashedRows, clients } = await loadCasesPage();
 
   return (
-    <main>
+    <main className="fit">
       <div className="row-between">
         <div>
           <h1>Cases</h1>

@@ -52,6 +52,7 @@ export async function loadCasesPage() {
     // Who opened/imported the case (the "user:" prefix is stripped in the repository). Shown in the
     // "Assigned to" cell's tooltip — the column itself is the ServiceNow assignee below.
     createdBy: c.createdBy,
+    userName: c.userName,
     // FR #0000045: the ServiceNow ticket's assigned_to, mirrored by the assignee sweep.
     snAssignedTo: c.snAssignedTo,
     snAssignedToEmail: c.snAssignedToEmail,
