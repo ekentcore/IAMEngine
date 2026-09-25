@@ -40,3 +40,19 @@ test("markdownToDocxBuffer produces a non-trivial .docx buffer for markdown with
   assert.equal(buf[0], 0x50);
   assert.equal(buf[1], 0x4b);
 });
+
+// FR #98: the PDF path is the same page, print-ready.
+test("the print variant opens the print dialog and carries print-only rules", () => {
+  const html = styledHtmlDocument({ title: "Doc", audienceLabel: "Client-facing", version: "1.0", bodyHtml: "<p>body</p>", versionRows: [], print: true });
+  assert.match(html, /window\.print\(\)/);
+  assert.match(html, /@media print/);
+  assert.match(html, /@page/);
+  assert.match(html, /Save as PDF/);
+  assert.doesNotMatch(html, /<script[^>]+src=/); // still self-contained
+});
+
+test("the plain download has no print script (it must not pop a dialog)", () => {
+  const html = styledHtmlDocument({ title: "Doc", audienceLabel: "Client-facing", version: "1.0", bodyHtml: "<p>body</p>", versionRows: [] });
+  assert.doesNotMatch(html, /window\.print/);
+  assert.doesNotMatch(html, /@media print/);
+});

@@ -51,8 +51,30 @@ export function styledHtmlDocument(opts: {
   version: string;
   bodyHtml: string;
   versionRows: VersionRow[];
+  // FR #98: the PDF path. Adds print-only rules (always light, page margins, no breaks through a code
+  // block or table row, tables at full width) and opens the browser's print dialog on load, where
+  // "Save as PDF" produces the file. The browser's own renderer does the layout, so the PDF matches
+  // the HTML exactly and no PDF library or headless browser has to ship with the app.
+  print?: boolean;
 }): string {
-  const { title, audienceLabel, version, bodyHtml, versionRows } = opts;
+  const { title, audienceLabel, version, bodyHtml, versionRows, print } = opts;
+  const printCss = print
+    ? `
+  @page { margin: 18mm 16mm; }
+  @media print {
+    :root { --ink:#1a1a1a; --muted:#555b66; --line:#d6d9de; --bg:#ffffff; --accent:#1d4ed8; --code-bg:#f3f4f6; }
+    body { font-size: 11pt; }
+    main { max-width: none; padding: 0; }
+    table { display: table; }
+    pre, blockquote, tr, img { break-inside: avoid; }
+    h1, h2, h3, h4 { break-after: avoid; }
+    a { color: inherit; text-decoration: none; }
+    .print-hint { display: none; }
+  }
+  .print-hint { font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0 0 24px; }`
+    : "";
+  const printScript = print ? `\n<script>window.addEventListener("load", function () { window.print(); });</script>` : "";
+  const printHint = print ? `\n  <p class="print-hint">Choose <b>Save as PDF</b> as the printer to download this as a PDF. <a href="#" onclick="window.print(); return false;">Open the print dialog again</a></p>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -81,11 +103,11 @@ export function styledHtmlDocument(opts: {
   .doc-meta { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
   .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; font-size: 12px; color: var(--muted); }
   .version-table { font-size: 13px; }
-  .section-label { text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px; color: var(--muted); margin: 32px 0 6px; }
-</style>
+  .section-label { text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px; color: var(--muted); margin: 32px 0 6px; }${printCss}
+</style>${printScript}
 </head>
 <body>
-<main>
+<main>${printHint}
   <h1>${escapeHtml(title)}</h1>
   <p class="doc-meta"><span class="badge">${escapeHtml(audienceLabel)}</span> &nbsp; Version ${escapeHtml(version)}</p>
   <div class="doc-body">${bodyHtml}</div>

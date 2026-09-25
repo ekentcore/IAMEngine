@@ -4,7 +4,10 @@
 // links to the download route — the browser handles the attachment.
 import { useEffect, useRef, useState } from "react";
 
-const FORMATS: { format: string; label: string }[] = [
+// pdf opens a print-ready page in a new tab (its print dialog's "Save as PDF" writes the file — FR #98),
+// so it gets its own tab instead of replacing the document view.
+const FORMATS: { format: string; label: string; newTab?: boolean }[] = [
+  { format: "pdf", label: "PDF", newTab: true },
   { format: "docx", label: "Word (.docx)" },
   { format: "html", label: "Web page (.html)" },
   { format: "md", label: "Markdown (.md)" },
@@ -36,6 +39,7 @@ export function DownloadMenu({ slug, version }: { slug: string; version: string 
               key={f.format}
               role="menuitem"
               href={`/api/docs/${slug}/download?format=${f.format}`}
+              {...(f.newTab ? { target: "_blank", rel: "noreferrer" } : {})}
               className="nav-menu-item"
               style={{ display: "block", padding: "8px 12px" }}
               onClick={() => setOpen(false)}

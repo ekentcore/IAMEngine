@@ -1,4 +1,4 @@
-// Download a document as Markdown, a self-contained HTML page, or a Word .docx. Any signed-in
+// Download a document as Markdown, a self-contained HTML page, a Word .docx, or a PDF (via print). Any signed-in
 // operator may read a document their role is allowed to see (audience is re-checked here, not just
 // hidden in the UI). Serves the current published version by default; ?version=<id> serves a
 // specific version (a draft only for a manager, for the review screen's "preview").
@@ -12,7 +12,7 @@ import { markdownToDocxBuffer } from "@/lib/docs/docx";
 
 export const dynamic = "force-dynamic";
 
-type Format = "md" | "html" | "docx";
+type Format = "md" | "html" | "docx" | "pdf";
 
 export async function GET(req: NextRequest, { params }: { params: { slug: string } }) {
   const g = await guardAuth();
@@ -50,6 +50,12 @@ export async function GET(req: NextRequest, { params }: { params: { slug: string
     });
   }
 
+  if (format === "pdf") {
+    // FR #98: served INLINE (not as an attachment) as the print-ready page — it opens the browser's
+    // print dialog, and "Save as PDF" writes the file. See styledHtmlDocument's `print` option.
+    const html = styledHtmlDocument({ title: detail.doc.title, audienceLabel, version: version.version, bodyHtml: markdownToHtml(version.markdown), versionRows: rows, print: true });
+    return new NextResponse(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Content-Disposition": `inline; filename="${filenameBase}.html"` } });
+  }
   if (format === "docx") {
     const buffer = await markdownToDocxBuffer({ title: detail.doc.title, audienceLabel, version: version.version, markdown: version.markdown, versionRows: rows });
     return new NextResponse(new Uint8Array(buffer), {
@@ -60,5 +66,5 @@ export async function GET(req: NextRequest, { params }: { params: { slug: string
     });
   }
 
-  return NextResponse.json({ error: "unknown format — use md, html, or docx" }, { status: 400 });
+  return NextResponse.json({ error: "unknown format — use md, html, docx, or pdf" }, { status: 400 });
 }
