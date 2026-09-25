@@ -171,9 +171,14 @@ function Invoke-CtgSharePointOffboardGrant {
         [Parameter(Mandatory)][pscustomobject]$Job,
         [Parameter(Mandatory)][string]$AppId,
         [Parameter(Mandatory)][string]$Tenant,
-        [hashtable]$CertArgs = @{}
+        [hashtable]$CertArgs = @{},
+        # The seam that actually performs the PnP grants. Defaults to the out-of-process runner, which
+        # is the whole point of the fix; a test supplies its own so the grant logic can be exercised
+        # without spawning pwsh or owning PnP. Called as: & $GrantInvoker $grants $appId $tenant $certArgs
+        [scriptblock]$GrantInvoker = { param($g, $a, $t, $c) Invoke-CtgPnPGrantOutOfProcess -Grants $g -AppId $a -Tenant $t -CertArgs $c }
     )
     $actions = [System.Collections.Generic.List[string]]::new()
+    $grants = [System.Collections.Generic.List[hashtable]]::new()
     # FR #0000084 widened the case-requested delegate from ONE person to several, and this reader was
     # missed: [string] on an ARRAY joins its elements with a space, so two delegates became one
     # nonexistent person ("Rachel Thompson Nicole Hayes") and the grant WARNed instead of running
@@ -216,25 +221,120 @@ function Invoke-CtgSharePointOffboardGrant {
             continue
         }
 
+        # COLLECT, don't grant. Every PnP call is deferred to one child process below, so this loop —
+        # which is all Graph — cannot pull PnP's assemblies into the runner. See
+        # Invoke-CtgPnPGrantOutOfProcess for why that matters.
         if ($odSiteUrl) {
-            try { $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $odSiteUrl -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs)) }
-            catch {
-                $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
-                $actions.Add("WARN could not grant $delegateEmail SharePoint access to the leaver's OneDrive site: $emsg")
-            }
+            $grants.Add(@{ SiteUrl = $odSiteUrl; Delegate = $delegateEmail; Label = "$delegateEmail SharePoint access to the leaver's OneDrive site" })
         }
 
         # Any additional profile-configured SharePoint sites (string[] of site URLs) — same resolved
         # delegate, one grant per site.
         foreach ($site in $extraSites) {
-            try { $actions.Add((Grant-CtgSharePointSiteAccess -SiteUrl $site -Delegate $delegateEmail -AppId $AppId -Tenant $Tenant @CertArgs)) }
-            catch {
-                $emsg = try { $ge = Get-CtgGraphError $_; "$($ge.Code) $($ge.Message)".Trim() } catch { $_.Exception.Message }
-                $actions.Add("WARN could not grant $delegateEmail access to SharePoint site '$site': $emsg")
-            }
+            $grants.Add(@{ SiteUrl = $site; Delegate = $delegateEmail; Label = "$delegateEmail access to SharePoint site '$site'" })
         }
     }
+
+    # One child for ALL grants: the cost here is process start plus a PnP import, so paying it per
+    # delegate-site pair would be the expensive way to do the same thing.
+    if ($grants.Count -gt 0) {
+        try { foreach ($a in (& $GrantInvoker $grants.ToArray() $AppId $Tenant $CertArgs)) { $actions.Add([string]$a) } }
+        catch { $actions.Add("WARN the SharePoint/OneDrive grants did not run: $($_.Exception.Message)") }
+    }
     $actions.ToArray()
+}
+
+# Run the PnP grants in a CLEAN CHILD pwsh, so PnP.PowerShell's assemblies never enter the runner
+# process. This is not tidiness — it is the fix for a production incident (2026-09-23..25).
+#
+# PnP.PowerShell ships its own Microsoft.Identity.Client, Microsoft.IdentityModel.* and
+# System.IdentityModel.Tokens.Jwt. Microsoft.Graph is already loaded in the runner and carries its own
+# copies. Start-IamRunner.ps1's own $script:CtgAssemblySharingGroups comment states what happens when a
+# second module binds those: "the second import binds an incompatible copy and the FIRST module's calls
+# stop returning" — i.e. Graph goes silent, every later m365 job wedges, and the stall watchdog restarts
+# the runner 600s later. That surfaced as the runner "crashing" with nothing in runner.log, because a
+# hang writes no error.
+#
+# Importing this module is harmless (the .psd1 declares no RequiredModules). It is CALLING a PnP cmdlet
+# that auto-loads the assemblies, so the whole of that call has to happen somewhere else. The Graph-side
+# work — resolving the leaver, the drive, the site URL, the delegates and their ambiguity — deliberately
+# stays in the parent, where Graph already works; only the PnP grants cross the boundary. Sending the
+# Graph work too would just move the same clash into the child.
+#
+# The certificate reaches the child through a file in a private per-invocation directory, deleted by the
+# child before it does anything else, never on the command line where any process list would show it.
+# Same reasoning as Invoke-CtgAdSyncRemote's DPAPI hand-off in Coretelligent.DirectorySync.
+# Turn the child's stdout into action lines. Its own function because this is where a failed grant
+# either gets reported or disappears, and this repo has lost that argument before — a browser install
+# that "gave no output" (#80/#81), a sync wait that reported "probably fine" (FR #127). A child that
+# said nothing recognisable is reported as such, never as success.
+function ConvertFrom-CtgPnPGrantOutput {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][string[]]$Lines = @(), [int]$ExitCode = 0)
+    $clean = @($Lines | Where-Object { $_ -and $_.Trim() })
+    $actions = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in $clean) {
+        if ($l -like "OK`t*") { $actions.Add($l.Substring(3)) }
+        elseif ($l -like "ERR`t*") {
+            $parts = $l.Substring(4) -split "`t", 2
+            $label = $parts[0]
+            $why = if ($parts.Count -gt 1) { $parts[1] } else { 'no reason given' }
+            $actions.Add("WARN could not grant ${label}: $why")
+        }
+    }
+    if ($actions.Count -eq 0) {
+        $tail = ($clean | Select-Object -Last 4) -join ' | '
+        $actions.Add("WARN the SharePoint grant helper exited ($ExitCode) without reporting any grant" + $(if ($tail) { ": $tail" } else { ' and produced no output' }))
+    }
+    $actions.ToArray()
+}
+
+function Invoke-CtgPnPGrantOutOfProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Grants,   # @( @{ SiteUrl; Delegate; Label } )
+        [Parameter(Mandatory)][string]$AppId,
+        [Parameter(Mandatory)][string]$Tenant,
+        [hashtable]$CertArgs = @{},
+        [int]$TimeoutSeconds = 600
+    )
+    if (-not $Grants -or @($Grants).Count -eq 0) { return @() }
+    $pwshPath = (Get-Process -Id $PID).Path
+    if (-not $pwshPath) { $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source }
+    if (-not $pwshPath) { throw 'cannot locate pwsh to run the SharePoint grants in a clean process' }
+
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("ctg-pnp-" + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $dir -Force
+    if (-not $IsWindows) { & chmod 700 $dir 2>$null }
+    $payloadPath = Join-Path $dir 'grants.json'
+    $modulePath = Join-Path $PSScriptRoot 'Coretelligent.SharePoint.psd1'
+    try {
+        @{ Grants = @($Grants); AppId = $AppId; Tenant = $Tenant; CertArgs = $CertArgs; ModulePath = $modulePath } |
+            ConvertTo-Json -Depth 6 -Compress | Set-Content -LiteralPath $payloadPath -Encoding utf8
+        if (-not $IsWindows) { & chmod 600 $payloadPath 2>$null }
+
+        # The child reads the payload, DELETES it, then grants. Each line it prints is one action line;
+        # a failure on one grant is reported and the rest still run, exactly as the in-process loop did.
+        $child = @'
+param([string]$PayloadPath)
+$ErrorActionPreference = 'Stop'
+$p = Get-Content -LiteralPath $PayloadPath -Raw | ConvertFrom-Json
+Remove-Item -LiteralPath $PayloadPath -Force -ErrorAction SilentlyContinue
+Import-Module $p.ModulePath -Force
+$certArgs = @{}
+if ($p.CertArgs) { foreach ($k in $p.CertArgs.PSObject.Properties.Name) { $certArgs[$k] = $p.CertArgs.$k } }
+foreach ($g in @($p.Grants)) {
+    try { "OK`t" + (Grant-CtgSharePointSiteAccess -SiteUrl $g.SiteUrl -Delegate $g.Delegate -AppId $p.AppId -Tenant $p.Tenant @certArgs) }
+    catch { "ERR`t" + $g.Label + "`t" + $_.Exception.Message }
+}
+'@
+        $childPath = Join-Path $dir 'grant.ps1'
+        Set-Content -LiteralPath $childPath -Value $child -Encoding utf8
+        $out = & $pwshPath -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $childPath -PayloadPath $payloadPath 2>&1
+        $code = $LASTEXITCODE
+        return ConvertFrom-CtgPnPGrantOutput -Lines @($out | ForEach-Object { [string]$_ }) -ExitCode $code
+    }
+    finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 # A OneDrive drive's webUrl points at the document library (…/personal/<user>/Documents[/…]), not the
@@ -251,4 +351,4 @@ function Get-CtgOneDriveSiteUrl {
     $m.Groups[1].Value
 }
 
-Export-ModuleMember -Function Connect-CtgSharePointPnP, Grant-CtgSharePointSiteAccess, Get-CtgOneDriveSiteUrl, Test-CtgOffboardResolved, Invoke-CtgSharePointOffboardGrant, Test-CtgDelegateUnambiguous
+Export-ModuleMember -Function Connect-CtgSharePointPnP, Grant-CtgSharePointSiteAccess, Get-CtgOneDriveSiteUrl, Test-CtgOffboardResolved, Invoke-CtgSharePointOffboardGrant, Test-CtgDelegateUnambiguous, Invoke-CtgPnPGrantOutOfProcess, ConvertFrom-CtgPnPGrantOutput

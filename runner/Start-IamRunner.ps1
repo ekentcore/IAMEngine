@@ -2310,6 +2310,12 @@ $script:CtgAssemblySharingGroups = @{
     'AzureAD'                  = 'entra-auth-stack'
     'AzureADPreview'           = 'entra-auth-stack'
     'Az.*'                     = 'entra-auth-stack'
+    # PnP.PowerShell ships Microsoft.Identity.Client, Microsoft.IdentityModel.* and
+    # System.IdentityModel.Tokens.Jwt — it belongs here and was missing, which is how it came to be
+    # loaded alongside Graph and wedge it (2026-09-23..25). The SharePoint hand-off now runs in a child
+    # process (Invoke-CtgPnPGrantOutOfProcess) so nothing loads it here at all; this entry is the
+    # backstop for any OTHER path — a self-heal install, a future caller — that tries to.
+    'PnP.PowerShell'           = 'entra-auth-stack'
 }
 
 function Test-CtgModuleConflictsWithLoaded {

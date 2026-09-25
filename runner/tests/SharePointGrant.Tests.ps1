@@ -126,7 +126,14 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         Mock -CommandName Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -MockWith { [pscustomobject]@{ Mail = 'amelia@x.com'; UserPrincipalName = 'amelia@x.com' } }
         Mock -CommandName Resolve-CtgM365Upn -ModuleName Coretelligent.SharePoint -MockWith { $null }
         Mock -CommandName Get-CtgUserDrive -ModuleName Coretelligent.SharePoint -MockWith { $null }
-        Mock -CommandName Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -MockWith { "granted $Delegate site-collection admin on $SiteUrl" }
+        # The hand-off no longer calls Grant-CtgSharePointSiteAccess in this process — every grant goes
+        # to a child (see 'the PnP grants never run in the runner process'). Mock the seam instead and
+        # record what it was handed, so these tests still assert the same thing: WHICH grants get planned.
+        $script:PnpGrants = @()
+        Mock -CommandName Invoke-CtgPnPGrantOutOfProcess -ModuleName Coretelligent.SharePoint -MockWith {
+            $script:PnpGrants += @($Grants)
+            @($Grants | ForEach-Object { "granted $($_.Delegate) site-collection admin on $($_.SiteUrl)" })
+        }
     }
 
     It 'grants EVERY delegate when the ticket named several (FR #0000120)' {
@@ -153,7 +160,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $joined | Should -Match 'rachel@x.com'
         $joined | Should -Match 'nicole@x.com'
         $joined | Should -Not -Match 'Rachel Thompson Nicole Hayes'
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 2 -Exactly
+        @($script:PnpGrants).Count | Should -Be 2
     }
 
     It 'a single delegate still travels as a plain string (unchanged for the common case)' {
@@ -163,7 +170,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         }
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 'x.onmicrosoft.com' -CertArgs @{ CertificateBase64 = 'Yg==' }
         ($actions -join '|') | Should -Match 'amelia@x.com'
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1 -Exactly
+        @($script:PnpGrants).Count | Should -Be 1
     }
 
     It 'one unresolvable delegate does not cost the others their access' {
@@ -181,14 +188,14 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $joined = $actions -join '|'
         $joined | Should -Match "delegate 'Typo Name' was not found"
         $joined | Should -Match 'real@x.com'
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1 -Exactly
+        @($script:PnpGrants).Count | Should -Be 1
     }
 
     It 'blanks and empty entries plan no grant at all' {
         $job = [pscustomobject]@{ payload = [pscustomobject]@{}; config = [pscustomobject]@{ oneDriveGrantAccessTo = @('', '   ') } }
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'a' -Tenant 't' -CertArgs @{ CertificateBase64 = 'Yg==' }
         @($actions).Count | Should -Be 0
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 0 -Exactly
+        @($script:PnpGrants).Count | Should -Be 0
     }
 
     It 'resolves a display-name delegate to an email BEFORE granting SharePoint site access' {
@@ -199,7 +206,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 'x.onmicrosoft.com' -CertArgs @{ CertificateBase64 = 'Yg==' }
 
         Should -Invoke Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -Times 1 -ParameterFilter { $Identity -eq 'Amelia Jones' }
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1 -ParameterFilter { $Delegate -eq 'amelia@x.com' -and $SiteUrl -eq 'https://x.sharepoint.com/sites/finance' }
+        @($script:PnpGrants | Where-Object { $_.Delegate -eq 'amelia@x.com' -and $_.SiteUrl -eq 'https://x.sharepoint.com/sites/finance' }).Count | Should -Be 1
         $actions | Should -Contain 'granted amelia@x.com site-collection admin on https://x.sharepoint.com/sites/finance'
     }
 
@@ -208,7 +215,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $job = [pscustomobject]@{ payload = [pscustomobject]@{}; config = [pscustomobject]@{ oneDriveGrantAccessTo = 'Nobody Here' } }
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 't' -CertArgs @{}
 
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 0
+        @($script:PnpGrants).Count | Should -Be 0
         $actions | Should -Match "WARN.*Nobody Here.*not found"
     }
 
@@ -235,7 +242,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 't' -CertArgs @{}
 
         Should -Invoke Get-MgUser -ModuleName Coretelligent.SharePoint -Times 1 -ParameterFilter { $Filter -match "displayName eq 'Chris Lee'" -and $Top -eq 2 }
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 0
+        @($script:PnpGrants).Count | Should -Be 0
         $actions | Should -Match "WARN.*Chris Lee.*matches multiple users"
     }
 
@@ -248,7 +255,7 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 't' -CertArgs @{}
 
         Should -Invoke Get-MgUser -ModuleName Coretelligent.SharePoint -Times 0
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1
+        @($script:PnpGrants).Count | Should -Be 1
         $actions | Should -Contain 'granted amelia@x.com site-collection admin on https://x.sharepoint.com/sites/finance'
     }
 
@@ -260,14 +267,20 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         }
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 't' -CertArgs @{}
 
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 1
+        @($script:PnpGrants).Count | Should -Be 1
         $actions | Should -Contain 'granted amelia@x.com site-collection admin on https://x.sharepoint.com/sites/finance'
     }
 
-    It 'grants the resolved email on every configured SharePoint site, WARNing per-site on failure with the Graph error, not a bare exception message' {
-        Mock -CommandName Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -MockWith {
-            if ($SiteUrl -eq 'https://x.sharepoint.com/sites/bad') { throw [System.Exception]::new('{"error":{"code":"itemNotFound","message":"site not found"}}') }
-            "granted $Delegate site-collection admin on $SiteUrl"
+    It 'grants every configured site, and one failing site does not cost the others' {
+        # Per-site failure now comes back from the CHILD as its own line rather than from a try/catch
+        # around each in-process call, so the mock returns what the child would. The ERR -> WARN mapping
+        # itself is covered directly in 'ConvertFrom-CtgPnPGrantOutput'.
+        Mock -CommandName Invoke-CtgPnPGrantOutOfProcess -ModuleName Coretelligent.SharePoint -MockWith {
+            $script:PnpGrants += @($Grants)
+            @($Grants | ForEach-Object {
+                if ($_.SiteUrl -like '*sites/bad') { "WARN could not grant $($_.Label): itemNotFound site not found" }
+                else { "granted $($_.Delegate) site-collection admin on $($_.SiteUrl)" }
+            })
         }
         $job = [pscustomobject]@{
             payload = [pscustomobject]@{}
@@ -275,9 +288,10 @@ Describe 'Invoke-CtgSharePointOffboardGrant' {
         }
         $actions = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app-id' -Tenant 't' -CertArgs @{}
 
-        Should -Invoke Grant-CtgSharePointSiteAccess -ModuleName Coretelligent.SharePoint -Times 2
+        @($script:PnpGrants).Count | Should -Be 2
         $actions | Should -Contain 'granted amelia@x.com site-collection admin on https://x.sharepoint.com/sites/good'
         ($actions | Where-Object { $_ -match 'sites/bad' }) | Should -Match 'WARN'
+        ($actions | Where-Object { $_ -match 'sites/bad' }) | Should -Match 'itemNotFound'
     }
 }
 
@@ -300,5 +314,149 @@ Describe 'm365 Offboard dispatch — SharePoint hand-off wiring' {
     }
     It 'never calls Grant-CtgSharePointSiteAccess directly — only through Invoke-CtgSharePointOffboardGrant, which resolves the delegate first' {
         $script:OffboardBlock | Should -Not -Match 'Grant-CtgSharePointSiteAccess'
+    }
+}
+
+# PRODUCTION INCIDENT 2026-09-23..25: the central runner appeared to "keep crashing" after 1.127.0.
+# It was not crashing at startup. PnP.PowerShell ships its own Microsoft.Identity.Client,
+# Microsoft.IdentityModel.* and System.IdentityModel.Tokens.Jwt; Microsoft.Graph is already loaded in
+# the runner with its own copies. Start-IamRunner.ps1's $script:CtgAssemblySharingGroups comment says
+# what follows: "the second import binds an incompatible copy and the FIRST module's calls stop
+# returning". Graph went silent, the next m365 job wedged, and the stall watchdog restarted the process
+# 600s later — which is why runner.log showed "abandoned job ... from the previous process" and no error.
+#
+# FR #116 is what made it reachable: before it, Install-CtgPnPModule failed in-process on that host, so
+# $pnpAvail was false and the hand-off never ran. Fixing the install made the hand-off run, and calling
+# a PnP cmdlet auto-loads the assemblies.
+#
+# The invariant these tests hold: the RUNNER PROCESS never calls a PnP cmdlet. All Graph-side resolution
+# stays in-process (it needs Graph, which works there); only the grants cross into a child.
+Describe 'the PnP grants never run in the runner process' {
+    BeforeAll {
+        $script:SpSrc = Get-Content "$PSScriptRoot/../modules/Coretelligent.SharePoint/Coretelligent.SharePoint.psm1" -Raw
+        $script:RunnerSrc = Get-Content "$PSScriptRoot/../Start-IamRunner.ps1" -Raw
+    }
+
+    It 'routes every grant through the out-of-process seam, not Grant-CtgSharePointSiteAccess directly' {
+        # The hand-off used to call the granting function inline, inside the delegate loop.
+        $fn = [regex]::Match($script:SpSrc, '(?ms)^function Invoke-CtgSharePointOffboardGrant \{.*?^\}').Value
+        $fn | Should -Not -BeNullOrEmpty
+        $fn | Should -Not -Match 'Grant-CtgSharePointSiteAccess'
+        $fn | Should -Match '\$GrantInvoker'
+    }
+
+    It 'spawns a child pwsh for the grants' {
+        # Asserted against the whole module source, not a function-body regex: the child script is a
+        # here-string whose own closing brace sits in column 0, so '.*?^\}' stops inside it and silently
+        # matches a fragment. That is a trap worth not re-setting for the next person.
+        $script:SpSrc | Should -Match '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \$childPath'
+        $script:SpSrc | Should -Match 'Grant-CtgSharePointSiteAccess -SiteUrl \$g\.SiteUrl'   # the CHILD calls it
+    }
+
+    It 'never puts the certificate on the child command line' {
+        # A process list is world-readable; the pfx and its password are not. They go through a file the
+        # child deletes before it does anything else.
+        $script:SpSrc | Should -Not -Match 'ArgumentList.*CertificateBase64'
+        $script:SpSrc | Should -Match 'Remove-Item -LiteralPath \$PayloadPath -Force'
+    }
+
+    It 'always removes the temp directory holding the certificate' {
+        $script:SpSrc | Should -Match 'finally \{ Remove-Item -LiteralPath \$dir -Recurse -Force'
+    }
+
+    It 'lists PnP.PowerShell in the assembly-sharing guard' {
+        # The guard existed and PnP was not in it. It only gates the self-heal installer, so it is a
+        # backstop rather than the fix — but a module that wedges Graph must be named there.
+        $grp = [regex]::Match($script:RunnerSrc, '(?ms)\$script:CtgAssemblySharingGroups = @\{.*?\n\}').Value
+        $grp | Should -Match "'PnP\.PowerShell'\s*=\s*'entra-auth-stack'"
+    }
+}
+
+Describe 'Invoke-CtgSharePointOffboardGrant hands the right grants to the seam' {
+    BeforeEach {
+        Mock Resolve-CtgM365Upn -ModuleName Coretelligent.SharePoint -MockWith { 'leaver@x.com' }
+        Mock Get-CtgUserDrive -ModuleName Coretelligent.SharePoint -MockWith { [pscustomobject]@{ Id='d1'; WebUrl='https://t-my.sharepoint.com/personal/leaver_x_com/Documents' } }
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -MockWith { [pscustomobject]@{ Mail='amelia@x.com'; UserPrincipalName='amelia@x.com' } }
+        Mock Test-CtgDelegateUnambiguous -ModuleName Coretelligent.SharePoint -MockWith { $true }
+    }
+
+    It 'collects the OneDrive site and every configured SharePoint site into ONE child call' {
+        # One process start for the whole hand-off, not one per delegate-site pair.
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{ userPrincipalName = 'leaver@x.com' }
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = 'amelia@x.com'; sharePointDelegateSites = @('https://t.sharepoint.com/sites/finance') }
+        }
+        $script:calls = 0
+        $captured = $null
+        $acts = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app' -Tenant 't' -GrantInvoker {
+            param($g, $a, $t, $c) $script:calls++; $script:captured = $g; @("granted $($g.Count) sites")
+        }
+        $script:calls | Should -Be 1
+        @($script:captured).Count | Should -Be 2
+        @($script:captured)[0].SiteUrl | Should -Be 'https://t-my.sharepoint.com/personal/leaver_x_com'
+        @($script:captured)[1].SiteUrl | Should -Be 'https://t.sharepoint.com/sites/finance'
+        ($acts -join ' ') | Should -Match 'granted 2 sites'
+    }
+
+    It 'WARNs instead of throwing when the child itself fails' {
+        # A SharePoint problem must never fail the offboard — the containment work already ran.
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{ userPrincipalName = 'leaver@x.com' }
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = 'amelia@x.com' }
+        }
+        $acts = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app' -Tenant 't' -GrantInvoker { throw 'pwsh not found' }
+        ($acts -join ' ') | Should -Match 'WARN the SharePoint/OneDrive grants did not run: pwsh not found'
+    }
+
+    It 'does not start a child at all when no delegate resolves' {
+        $job = [pscustomobject]@{
+            payload = [pscustomobject]@{ userPrincipalName = 'leaver@x.com' }
+            config  = [pscustomobject]@{ oneDriveGrantAccessTo = 'nobody@x.com' }
+        }
+        Mock Resolve-CtgEntraUser -ModuleName Coretelligent.SharePoint -MockWith { $null }
+        $script:calls = 0
+        $acts = Invoke-CtgSharePointOffboardGrant -Job $job -AppId 'app' -Tenant 't' -GrantInvoker { param($g,$a,$t,$c) $script:calls++; @() }
+        $script:calls | Should -Be 0
+        ($acts -join ' ') | Should -Match 'was not found in Entra'
+    }
+}
+
+# Where a failed grant is either reported or lost. Tested directly because the spawn around it cannot
+# be exercised without PnP and a live tenant, and this is the part that decides what the case says.
+Describe 'ConvertFrom-CtgPnPGrantOutput' {
+    It 'passes an OK line through as the action it is' {
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @("OK`tgranted amelia@x.com site-collection admin on https://x/s")
+        $r | Should -Contain 'granted amelia@x.com site-collection admin on https://x/s'
+    }
+
+    It 'turns an ERR line into a WARN naming the grant and the reason' {
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @("ERR`tamelia@x.com on the leaver's OneDrive`taccess denied")
+        ($r -join ' ') | Should -Match "WARN could not grant amelia@x.com on the leaver's OneDrive: access denied"
+    }
+
+    It 'reports BOTH when one grant worked and another did not' {
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @("OK`tgranted a on s1", "ERR`tb on s2`tboom")
+        @($r).Count | Should -Be 2
+        ($r -join '|') | Should -Match 'granted a on s1'
+        ($r -join '|') | Should -Match 'WARN could not grant b on s2: boom'
+    }
+
+    It 'never reports silence as success' {
+        # The failure this whole file keeps re-learning: a helper that said nothing must not read as
+        # "nothing went wrong". Exit code and whatever it did say are carried into the warning.
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @('Import-Module: PnP.PowerShell not found') -ExitCode 1
+        @($r).Count | Should -Be 1
+        @($r)[0] | Should -Match 'WARN the SharePoint grant helper exited \(1\) without reporting any grant'
+        @($r)[0] | Should -Match 'PnP.PowerShell not found'
+    }
+
+    It 'says so when the helper produced no output at all' {
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @() -ExitCode 0
+        @($r)[0] | Should -Match 'produced no output'
+    }
+
+    It 'tolerates an ERR line with no reason rather than emitting a bare colon' {
+        $r = ConvertFrom-CtgPnPGrantOutput -Lines @("ERR`tsome grant")
+        @($r)[0] | Should -Match 'WARN could not grant some grant: no reason given'
     }
 }
