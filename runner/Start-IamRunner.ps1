@@ -1906,6 +1906,9 @@ $CONNECTOR_HANDLER = @{
 # action and re-validate up to $MaxRevalidate times — this self-heals eventual-consistency lags.
 # A persistent miss is NOT a failure: the job still succeeds; the validation block (ok=$false)
 # rides along on the result and the app's run report flags it as a warning.
+# A validator returns `final = $true` on a miss that re-running cannot fix — work deliberately left to a
+# human (e.g. a Google delete held for a Drive transfer, FR #128). The loop stops there: re-running the
+# executor would only repeat its side effects.
 $MaxRevalidate = 2
 
 function Invoke-JobWithValidation {
@@ -1924,7 +1927,7 @@ function Invoke-JobWithValidation {
     if ($validate) {
         $validation = & $validate $Job $Creds
         $attempt = 0
-        while ($validation -and -not $validation.ok -and -not $DryRun -and $attempt -lt $MaxRevalidate) {
+        while ($validation -and -not $validation.ok -and -not ($validation.PSObject.Properties['final'] -and $validation.final -eq $true) -and -not $DryRun -and $attempt -lt $MaxRevalidate) {
             Start-Sleep -Seconds (2 * ($attempt + 1))
             $result = & $Fn $Job $Creds          # idempotent re-run
             $validation = & $validate $Job $Creds
