@@ -21,6 +21,10 @@ export const CATALOG: Record<string, CatalogEntry> = {
   "directory-sync":  { mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "ad-dc", dependsOn: ["active-directory"] },
   m365:              { mode: "api", tier: 1, onboard: "always", offboard: "always", secret: "m365-admin", dependsOn: ["servicenow"] },
   entra:             { mode: "api", tier: 1, onboard: null,     offboard: "always", secret: "m365-admin", dependsOn: ["m365"] },
+  // FR #124: Temporary Access Pass (Entra) — was only reachable by hand-editing Coretelligent's profile,
+  // because a system missing here can't be picked in a client's Edit systems. Onboard-only, on the
+  // M365 module's tenant (same m365-admin credential), after the account exists. Mirrors Coretelligent.
+  tap:               { mode: "api", tier: 2, onboard: "always", offboard: null,     secret: "m365-admin", dependsOn: ["m365"] },
   exchange:          { mode: "api", tier: 1, onboard: null,     offboard: "always", secret: "m365-admin", dependsOn: ["m365"] },
   "google-workspace":{ mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "google-admin" },
   mimecast:          { mode: "api", tier: 2, onboard: "always", offboard: "always", secret: "mimecast", dependsOn: ["m365"] },
