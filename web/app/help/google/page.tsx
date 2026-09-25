@@ -63,6 +63,13 @@ export default function GoogleSetupPage() {
         domain hasn&rsquo;t added it — everything keeps working, and the offboard just warns that the tokens are
         still live until you paste the fourth scope here.
       </p>
+      <p className="note">
+        <b>Optional, for Drive transfers on offboard:</b> if the client moves a leaver&rsquo;s Drive to someone
+        (<code>transferTarget</code>), also add <code>https://www.googleapis.com/auth/admin.datatransfer</code>.
+        The runner asks for it in a separate token only when a transfer is due, so leaving it out breaks nothing
+        else — the offboard just warns that the Drive was <b>not</b> transferred and says to do it by hand in the
+        Admin console (Account &gt; Data transfer).
+      </p>
       <p className="note">Pick a <b>super-admin email</b> the service account will impersonate (any active super-admin) — you&rsquo;ll store it in the secret&rsquo;s <code>apiURL</code> field below.</p>
 
       <h2>3. Store it in Delinea</h2>

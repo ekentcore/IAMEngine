@@ -6,6 +6,7 @@
 import { buildPlanContext } from "./context";
 import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
+import { withOffboardActions } from "../cases/offboard-actions";
 import { hideFromGalOptedOut, adLaneHidesViaAttribute, readHideFromGal } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
 
@@ -207,7 +208,8 @@ function resolveOffboardConfigs(client: PlanClient, payload: Record<string, unkn
     };
   });
 
-  return injectHideFromGal(withAdGroups, payload, client.backbone);
+  // FR #128: the case's own delete/keep choices, last — they override the client's config for this case.
+  return withOffboardActions(injectHideFromGal(withAdGroups, payload, client.backbone), payload);
 }
 
 // FR #0000021: hide the leaver from the GAL by default on every offboard. Precedence:

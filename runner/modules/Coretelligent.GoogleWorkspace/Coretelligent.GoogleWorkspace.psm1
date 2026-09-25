@@ -3,7 +3,8 @@
 # Coretelligent.GoogleWorkspace
 # Google Workspace user lifecycle via the Admin SDK Directory API. Onboard creates a user,
 # places them in an OU (never Root) and adds group memberships; offboard captures evidence,
-# removes groups, moves to the Inactive OU and SUSPENDS (never deletes — the `archive` module
+# removes groups, moves to the Inactive OU and SUSPENDS (deletes only when a case chose it — FR #128,
+# approval-gated; otherwise the `archive` module
 # handles deletion later). Idempotent: checks state before changing it.
 #
 # Auth: domain-wide-delegated service account. Secret `google-admin` -> a bearer access token
@@ -17,6 +18,14 @@ $script:GoogleApiUrl = 'https://admin.googleapis.com/admin/directory/v1'
 $script:GoogleSecurityScope = 'https://www.googleapis.com/auth/admin.directory.user.security'
 $script:GoogleToken  = $null
 $script:GoogleScopes = @()
+# Drive ownership transfer uses the Data Transfer API, which needs its OWN scope. It is minted as a
+# separate, transfer-only token on demand (Get-CtgGoogleScopedToken), never added to the session's
+# scopes: delegation is all-or-nothing per exchange, so asking for it at connect would break every
+# domain that hasn't delegated it.
+$script:GoogleDataTransferUrl   = 'https://admin.googleapis.com/admin/datatransfer/v1'
+$script:GoogleDataTransferScope = 'https://www.googleapis.com/auth/admin.datatransfer'
+$script:GoogleMint = $null           # the connect's service-account signing inputs, for scoped tokens
+$script:GoogleScopedTokens = @{}     # scope -> @{ Token; Expires }
 
 function Get-CtgProp {
     param($Object, [Parameter(Mandatory)][string]$Name)
@@ -31,6 +40,39 @@ function Get-CtgProp {
 function ConvertTo-CtgBase64Url {
     param([Parameter(Mandatory)][byte[]]$Bytes)
     [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+# Mint an access token for exactly $scopeList (signed JWT -> OAuth exchange) with a service account.
+function New-CtgGoogleServiceToken {
+    param([string]$ClientEmail, [string]$Impersonate, [string]$PrivateKey, [string[]]$scopeList)
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $header = @{ alg = 'RS256'; typ = 'JWT' }
+    $claims = @{
+        iss   = $ClientEmail
+        sub   = $Impersonate                 # impersonated admin (domain-wide delegation)
+        scope = ($scopeList -join ' ')
+        aud   = 'https://oauth2.googleapis.com/token'
+        iat   = $now
+        exp   = $now + 3600
+    }
+    $enc = { param($o) ConvertTo-CtgBase64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
+    $signingInput = "$(& $enc $header).$(& $enc $claims)"
+
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+        $rsa.ImportFromPem($PrivateKey)      # service-account private_key is PKCS#8 PEM
+        $sigBytes = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signingInput),
+            [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    }
+    finally { $rsa.Dispose() }
+    $jwt = "$signingInput.$(ConvertTo-CtgBase64Url $sigBytes)"
+
+    $resp = Invoke-RestMethod -Method POST -Uri 'https://oauth2.googleapis.com/token' `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $jwt }
+    $t = Get-CtgProp $resp 'access_token'
+    if (-not $t) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
+    $t
 }
 
 function Connect-CtgGoogle {
@@ -66,42 +108,13 @@ function Connect-CtgGoogle {
     if ($PSCmdlet.ParameterSetName -eq 'Token') {
         $script:GoogleToken = $AccessToken
         $script:GoogleScopes = @()   # unknown — the caller minted the token
+        $script:GoogleMint = $null; $script:GoogleScopedTokens = @{}
         Write-Verbose "Google Workspace session established (token provided)."
         return
     }
 
     # Mint an access token for exactly $scopeList (signed JWT -> OAuth exchange).
-    $mint = {
-        param([string[]]$scopeList)
-        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $header = @{ alg = 'RS256'; typ = 'JWT' }
-        $claims = @{
-            iss   = $ClientEmail
-            sub   = $Impersonate                 # impersonated admin (domain-wide delegation)
-            scope = ($scopeList -join ' ')
-            aud   = 'https://oauth2.googleapis.com/token'
-            iat   = $now
-            exp   = $now + 3600
-        }
-        $enc = { param($o) ConvertTo-CtgBase64Url ([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
-        $signingInput = "$(& $enc $header).$(& $enc $claims)"
-
-        $rsa = [System.Security.Cryptography.RSA]::Create()
-        try {
-            $rsa.ImportFromPem($PrivateKey)      # service-account private_key is PKCS#8 PEM
-            $sigBytes = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($signingInput),
-                [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-        }
-        finally { $rsa.Dispose() }
-        $jwt = "$signingInput.$(ConvertTo-CtgBase64Url $sigBytes)"
-
-        $resp = Invoke-RestMethod -Method POST -Uri 'https://oauth2.googleapis.com/token' `
-            -ContentType 'application/x-www-form-urlencoded' `
-            -Body @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $jwt }
-        $t = Get-CtgProp $resp 'access_token'
-        if (-not $t) { throw "Google token exchange returned no access_token — check the service account, domain-wide delegation scopes, and that '$Impersonate' is a super-admin." }
-        $t
-    }
+    $mint = { param([string[]]$scopeList) New-CtgGoogleServiceToken -ClientEmail $ClientEmail -Impersonate $Impersonate -PrivateKey $PrivateKey -scopeList $scopeList }
 
     # Domain-wide delegation is all-or-nothing per request: the exchange FAILS OUTRIGHT if any single
     # requested scope isn't authorized for the service account's client ID. The offboard's "sign out
@@ -139,10 +152,56 @@ function Connect-CtgGoogle {
         }
     }
     $script:GoogleToken = $token
+    # Kept for the transfer-only token (Get-CtgGoogleScopedToken), for this session only.
+    $script:GoogleMint = @{ ClientEmail = $ClientEmail; Impersonate = $Impersonate; PrivateKey = $PrivateKey }
+    $script:GoogleScopedTokens = @{}
     # A minted token proves every scope it was minted with — record them so the connection test can
     # report them as verified, and so the offboard knows whether signOut is available at all.
     $script:GoogleScopes = @($granted)
     Write-Verbose "Google Workspace session established for $Impersonate (customer $CustomerId)."
+}
+
+function Get-CtgGoogleScopedToken {
+    # A token for exactly one extra scope, minted with the connect's service-account signer and cached
+    # for 50 minutes. Throws when the session was opened with a raw token (nothing to sign with) or the
+    # domain hasn't delegated the scope — the caller turns that into a clear follow-up.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Scope)
+    $c = $script:GoogleScopedTokens[$Scope]
+    if ($c -and $c.Expires -gt [DateTime]::UtcNow) { return $c.Token }
+    if (-not $script:GoogleMint) { throw "this Google session was opened with a ready-made token, so it can't mint the $Scope scope" }
+    try { $m = $script:GoogleMint; $t = New-CtgGoogleServiceToken -ClientEmail $m.ClientEmail -Impersonate $m.Impersonate -PrivateKey $m.PrivateKey -scopeList @($Scope) }
+    catch { throw "Google refused a token for $Scope — add it to the service account's domain-wide delegation (Admin console > Security > API controls). $($_.Exception.Message)" }
+    $script:GoogleScopedTokens[$Scope] = @{ Token = $t; Expires = [DateTime]::UtcNow.AddMinutes(50) }
+    $t
+}
+
+function Invoke-CtgGoogleDriveTransfer {
+    # Transfer a user's Drive files to another user via the Data Transfer API
+    # (POST admin/datatransfer/v1/transfers). It takes Google USER IDS, not emails, and the Drive
+    # application's id, which is looked up (GET /applications) rather than hardcoded. Returns the
+    # transfer resource. Throws with a readable reason on any failure — never reports success unseen.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FromEmail, [Parameter(Mandatory)][string]$ToEmail)
+    $from = Get-CtgGoogleUser -Email $FromEmail
+    if (-not $from) { throw "the leaver $FromEmail was not found in Google" }
+    $to = Get-CtgGoogleUser -Email $ToEmail
+    if (-not $to) { throw "the transfer target $ToEmail was not found in Google" }
+    $tok = Get-CtgGoogleScopedToken -Scope $script:GoogleDataTransferScope
+    $apps = Invoke-CtgGoogleApi -Method GET -Path '/applications' -BaseUrl $script:GoogleDataTransferUrl -Token $tok -ThrowOn404
+    $drive = @(@(Get-CtgProp $apps 'applications') | Where-Object { $_ -and ([string](Get-CtgProp $_ 'name')) -match 'Drive' }) | Select-Object -First 1
+    if (-not $drive) { throw "the Data Transfer API lists no Drive application for this domain" }
+    $body = @{
+        oldOwnerUserId           = [string](Get-CtgProp $from 'id')
+        newOwnerUserId           = [string](Get-CtgProp $to 'id')
+        applicationDataTransfers = @(@{
+            applicationId            = [string](Get-CtgProp $drive 'id')
+            applicationTransferParams = @(@{ key = 'PRIVACY_LEVEL'; value = @('PRIVATE', 'SHARED') })
+        })
+    }
+    $r = Invoke-CtgGoogleApi -Method POST -Path '/transfers' -Body $body -BaseUrl $script:GoogleDataTransferUrl -Token $tok -ThrowOn404
+    if (-not $r) { throw "the Data Transfer API returned no transfer" }
+    $r
 }
 
 function Get-CtgGoogleSessionScopes {
@@ -169,12 +228,14 @@ function Invoke-CtgGoogleApi {
     # indistinguishable from a successful empty 204 and would read as "it worked". -ThrowOn404 opts
     # such calls out of the swallow.
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Path, $Body, [switch]$ThrowOn404)
+    # -BaseUrl / -Token: another Google admin API on its own token (the Data Transfer API).
+    param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Path, $Body, [switch]$ThrowOn404, [string]$BaseUrl, [string]$Token)
     if (-not $script:GoogleToken) { throw "Call Connect-CtgGoogle first." }
     $p = @{
         Method      = $Method
-        Uri         = "$script:GoogleApiUrl$Path"
-        Headers     = @{ Authorization = "Bearer $script:GoogleToken" }
+        # An absolute URL, or -BaseUrl, reaches a sibling Admin API (the Data Transfer API); a path is Directory.
+        Uri         = if ($Path -match '^https://') { $Path } elseif ($BaseUrl) { "$BaseUrl$Path" } else { "$script:GoogleApiUrl$Path" }
+        Headers     = @{ Authorization = "Bearer $(if ($Token) { $Token } else { $script:GoogleToken })" }
         ContentType = 'application/json'
     }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 8) }
@@ -328,6 +389,39 @@ function Invoke-CtgGoogleOnboarding {
     [pscustomobject]@{ System = 'google-workspace'; Status = 'ok'; Email = $email; Ou = $ou; Actions = $actions.ToArray() }
 }
 
+# FR #128: the state of this user's Drive transfer, read from the Data Transfer API — so a re-run does
+# not post a second transfer on top of one Google is still running, and a held delete can go ahead once
+# Google reports it complete. Returns 'inProgress' (new or running), 'completed', 'failed', 'none' (no
+# transfer from this owner), or 'unknown' when it cannot be read — most often because the domain has not
+# delegated the admin.datatransfer scope. 'unknown' is never read as complete.
+# Transfers THIS runner posted, keyed "owner|target" -> when. When Google's own status can't be read (or
+# shows nothing yet), this is what stops a re-run — the runner's revalidation pass, an auto-retry or an
+# operator re-run — posting the same transfer again. Kept for 24h; a different runner process can't see
+# it, so at worst it posts once more there.
+$script:GoogleTransfersPosted = @{}
+$script:GoogleTransferMemoHours = 24
+# Offboards whose delete this runner HELD on its latest run (email -> $true). Confirm-CtgGoogle marks its
+# miss `final` only for these: a delete that DID run may still read back as present for a few seconds
+# (Google replication lag), and the runner's normal revalidation is what absorbs that.
+$script:GoogleDeleteHeld = @{}
+function Get-CtgGoogleTransferState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$UserId)
+    # Read with the transfer-only token (the Data Transfer API's own scope). No token — the domain hasn't
+    # delegated admin.datatransfer, or the session has nothing to sign with — reads as 'unknown'.
+    try {
+        $tok = Get-CtgGoogleScopedToken -Scope $script:GoogleDataTransferScope
+        $r = Invoke-CtgGoogleApi -Method GET -Path "/transfers?oldOwnerUserId=$([uri]::EscapeDataString($UserId))" -BaseUrl $script:GoogleDataTransferUrl -Token $tok
+    }
+    catch { return 'unknown' }
+    if ($null -eq $r) { return 'unknown' }
+    $codes = @(@(Get-CtgProp $r 'dataTransfers') | Where-Object { $_ } | ForEach-Object { [string](Get-CtgProp $_ 'overallTransferStatusCode') })
+    if ($codes -contains 'inProgress' -or $codes -contains 'new') { return 'inProgress' }
+    if ($codes -contains 'completed') { return 'completed' }
+    if ($codes -contains 'failed') { return 'failed' }
+    return 'none'
+}
+
 function Invoke-CtgGoogleOffboarding {
     <#
     .SYNOPSIS
@@ -345,7 +439,8 @@ function Invoke-CtgGoogleOffboarding {
     $email = [string](@('UserPrincipalName', 'email', 'WorkEmail', 'userToOffboard') | ForEach-Object { Get-CtgProp $User $_ } | Where-Object { $_ -match '@' } | Select-Object -First 1)
     if (-not $email) { throw "google: the case carries no email/UPN for the user to offboard — set the user's email on the case and re-run." }
 
-    if (-not (Get-CtgGoogleUser -Email $email)) {
+    $gUser = Get-CtgGoogleUser -Email $email
+    if (-not $gUser) {
         return [pscustomobject]@{ System = 'google-workspace'; Status = 'ok'; Email = $email; Actions = @("Google user not found ($email)"); Evidence = @{ Groups = @() } }
     }
 
@@ -370,10 +465,42 @@ function Invoke-CtgGoogleOffboarding {
     }
 
     # 4. On request: transfer Drive ownership to the delegate (only valid once moved out of Active Users).
+    # FR #128: read the transfer's state first — a re-run must not post a second transfer on top of one
+    # Google is still running (or has finished). A FAILED transfer is not re-posted blind either — it is
+    # reported for a human to fix. Only 'none' and unreadable ('unknown') post, as before.
     $transfer = Get-CtgProp $Config 'transferTarget'
-    if ($transfer -and $PSCmdlet.ShouldProcess($email, "Transfer Drive to $transfer")) {
-        Invoke-CtgGoogleApi -Method POST -Path '/dataTransfer' -Body @{ oldOwnerUserId = $email; newOwnerUserId = $transfer } | Out-Null
-        $actions.Add("transferred Drive ownership to: $transfer")
+    $transferState = 'none'
+    if ($transfer) {
+        $gUserId = [string](Get-CtgProp $gUser 'id')
+        $transferState = if ($gUserId) { Get-CtgGoogleTransferState -UserId $gUserId } else { 'unknown' }
+        if ($transferState -in 'inProgress', 'completed') {
+            $actions.Add("Drive transfer to $transfer already $(if ($transferState -eq 'completed') { 'complete' } else { 'in progress' }) in Google — not posted again")
+        }
+        # Google's own report first; this runner's memory only stands in when that says nothing.
+        elseif ($transferState -eq 'failed') {
+            $actions.Add("WARN Drive transfer to $transfer FAILED in Google — not posted again. Check the transfer in the Google Admin console.")
+        }
+        elseif ($script:GoogleTransfersPosted.ContainsKey("$email|$transfer") -and
+            ([datetime]::UtcNow - $script:GoogleTransfersPosted["$email|$transfer"]).TotalHours -lt $script:GoogleTransferMemoHours) {
+            $actions.Add("Drive transfer to $transfer already requested by this runner at $($script:GoogleTransfersPosted["$email|$transfer"].ToString('u')) — not posted again ($(if ($transferState -eq 'unknown') { "Google's transfer status can't be read here" } else { 'Google shows no transfer for this user yet' }))")
+        }
+        # The real request goes to the Data Transfer API (Invoke-CtgGoogleDriveTransfer) — this used to POST
+        # /dataTransfer on the Directory API, which doesn't exist; the 404 was swallowed and the step said
+        # "transferred" while nothing moved. Google runs a transfer in the background, so this REQUESTS it.
+        # One that can't be requested is a warning with the reason, and the rest of the offboard still runs.
+        elseif ($PSCmdlet.ShouldProcess($email, "Transfer Drive to $transfer")) {
+            try {
+                $t = Invoke-CtgGoogleDriveTransfer -FromEmail $email -ToEmail $transfer
+                $st = [string](Get-CtgProp $t 'overallTransferStatusCode')
+                $actions.Add("requested Drive ownership transfer to: $transfer (Google runs it in the background$(if ($st) { "; status: $st" }))")
+                $script:GoogleTransfersPosted["$email|$transfer"] = [datetime]::UtcNow
+                # Just requested: running now, if we can see transfers at all.
+                if ($transferState -ne 'unknown') { $transferState = 'inProgress' }
+            }
+            catch {
+                $actions.Add("WARN Drive ownership was NOT transferred to $transfer — $($_.Exception.Message). Transfer it by hand in the Google Admin console (Account > Data transfer)")
+            }
+        }
     }
 
     # 4b. Hide from the directory / GAL (FR #21) — Google calls it "contact sharing".
@@ -398,10 +525,30 @@ function Invoke-CtgGoogleOffboarding {
         }
     }
 
-    # 5. Suspend (deactivate) — NEVER delete.
+    # 5. Suspend (deactivate) — the default. FR #128: a case can choose DELETE instead (config.deleteUser,
+    # set per case and always approval-gated with evidence — see the app's offboard-actions). Google keeps
+    # a deleted user restorable for 20 days. A Drive transfer runs asynchronously in Google, and deleting
+    # the owner before it finishes loses the files — so with a transfer requested the delete is HELD:
+    # the user is suspended and the step says to delete once the transfer has completed.
+    # A held delete is NOT a finished step: it leaves a MANUAL checklist line, Confirm-CtgGoogle fails
+    # while the account exists (so the step lands "warning", never green), and — when the transfer's
+    # state can be read — RetryAfterMinutes re-runs it, deleting once Google reports the transfer done.
+    $deleteUser = (Get-CtgProp $Config 'deleteUser') -eq $true
+    $holdDelete = $deleteUser -and [bool]$transfer -and $transferState -ne 'completed'
+    $retryAfter = $null
+    if ($holdDelete) { $script:GoogleDeleteHeld[$email] = $true } else { [void]$script:GoogleDeleteHeld.Remove($email) }
     if ($PSCmdlet.ShouldProcess($email, "Suspend Google user")) {
         Invoke-CtgGoogleApi -Method PUT -Path "/users/$email" -Body @{ suspended = $true } | Out-Null
         $actions.Add("suspended Google user: $email")
+    }
+    if ($holdDelete) {
+        $why = switch ($transferState) {
+            'inProgress' { "Google is still running the Drive transfer to $transfer, and deleting the account before it finishes would lose the files. Re-checking automatically; the account is deleted once Google reports the transfer complete" }
+            'failed'     { "Google reports the Drive transfer to $transfer FAILED, and deleting the account now would lose the files. Fix the transfer in the Admin console first" }
+            default      { "a Drive transfer to $transfer was requested and its status cannot be read here (the admin.datatransfer scope is not delegated), so it cannot be proven complete" }
+        }
+        $actions.Add("MANUAL: delete $email in the Google Admin console (Directory -> Users -> the user -> Delete user) once the Drive transfer to $transfer shows complete — delete held: $why. The user is suspended.")
+        if ($transferState -eq 'inProgress') { $retryAfter = 15 }
     }
 
     # 6. Sign the user out everywhere — revokes their SESSIONS and OAuth refresh tokens.
@@ -444,13 +591,24 @@ function Invoke-CtgGoogleOffboarding {
         }
     }
 
-    [pscustomobject]@{
+    # 7. FR #128: delete, when this case chose it (and no Drive transfer is pending — see step 5). Last,
+    # so everything above ran against a live account; evidence was already captured in step 1.
+    if ($deleteUser -and -not $holdDelete -and $PSCmdlet.ShouldProcess($email, "Delete Google user")) {
+        # A 404 means it's already gone — the idempotent re-run case, not a failure.
+        Invoke-CtgGoogleApi -Method DELETE -Path "/users/$email" | Out-Null
+        $actions.Add("deleted Google user: $email (restorable in the Admin console for 20 days)")
+    }
+
+    $out = [pscustomobject]@{
         System   = 'google-workspace'
         Status   = 'ok'
         Email    = $email
         Evidence = @{ Groups = @($groupEvidence) }
         Actions  = $actions.ToArray()
     }
+    # RetryAfterMinutes: the app re-queues this job automatically (capped) — see sweepAutoRetries.
+    if ($retryAfter) { $out | Add-Member -NotePropertyName RetryAfterMinutes -NotePropertyValue $retryAfter }
+    $out
 }
 
 function Confirm-CtgGoogle {
@@ -481,6 +639,11 @@ function Confirm-CtgGoogle {
         $checks.Add(@{ name = 'Google user present'; expected = $true; actual = [bool]$u; pass = [bool]$u })
         $checks.Add(@{ name = 'not in Root OU'; expected = $true; actual = ($ou -and $ou -ne '/'); pass = [bool]($ou -and $ou -ne '/') })
     }
+    elseif ((Get-CtgProp $Config 'deleteUser') -eq $true) {
+        # FR #128: this case chose delete — the only thing to verify is that the account is gone. A delete
+        # HELD for a Drive transfer fails here on purpose: the approved step has not done what it was for.
+        $checks.Add(@{ name = 'Google user deleted'; expected = $true; actual = (-not $u); pass = (-not $u) })
+    }
     else {
         $checks.Add(@{ name = 'Google user suspended (not deleted)'; expected = $true; actual = $suspended; pass = $suspended })
         $inactiveOu = (Get-CtgProp $Config 'inactiveOu') ?? '/Email & Calendar/Inactive'
@@ -503,7 +666,15 @@ function Confirm-CtgGoogle {
         }
     }
     $ok = -not ($checks | Where-Object { -not $_.pass })
-    [pscustomobject]@{ ok = [bool]$ok; checks = @($checks) }
+    $v = [pscustomobject]@{ ok = [bool]$ok; checks = @($checks) }
+    # A delete held for a Drive transfer is work left to a human (or to the auto-retry that re-checks the
+    # transfer) — re-running the executor right now cannot finish it, so tell the runner's revalidation
+    # loop not to (it would only repeat the offboard, transfer post included).
+    # Only when the delete was HELD on the latest run — one that ran is left to normal revalidation.
+    if (-not $ok -and $Action -eq 'offboard' -and $u -and (Get-CtgProp $Config 'deleteUser') -eq $true -and $script:GoogleDeleteHeld[$email]) {
+        $v | Add-Member -NotePropertyName final -NotePropertyValue $true
+    }
+    $v
 }
 
 # ── Ad-hoc password reset (INC0855142) ───────────────────────────────────────────────────────────

@@ -117,6 +117,7 @@ export { entry as goliveReadinessPreflight } from "./golive-readiness-preflight"
 export { entry as googleBackbonePasswordReset } from "./google-backbone-password-reset";
 export { entry as googleCustomerIdValidation } from "./google-customer-id-validation";
 export { entry as googleDelineaFieldNamesMatchTemplate } from "./google-delinea-field-names-match-template";
+export { entry as googleDriveTransferRealApi } from "./google-drive-transfer-real-api";
 export { entry as googleKeyConverterTool } from "./google-key-converter-tool";
 export { entry as googleKeyFileUpload } from "./google-key-file-upload";
 export { entry as googleOauthDeheadUa } from "./google-oauth-dehead-ua";
@@ -212,6 +213,7 @@ export { entry as optionalCredEmptyLabel } from "./optional-cred-empty-label";
 export { entry as passwordChangeAtFirstLoginOptional } from "./password-change-at-first-login-optional";
 export { entry as passwordDialogControlsWork } from "./password-dialog-controls-work";
 export { entry as passwordResetGuiFix } from "./password-reset-gui-fix";
+export { entry as perCaseOffboardActions } from "./per-case-offboard-actions";
 export { entry as perContactIntakeRules } from "./per-contact-intake-rules";
 export { entry as personaSystemMembership } from "./persona-system-membership";
 export { entry as phoneRequestedRuleField } from "./phone-requested-rule-field";
