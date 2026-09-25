@@ -6,6 +6,7 @@ import { CATALOG } from "@/lib/generator/system-map";
 import { withOnboardOu } from "@/lib/clients/ad-folders";
 import { OuTreePicker } from "./ad-pickers";
 import { copyText } from "@/lib/clipboard";
+import type { AttachableConnector } from "@/lib/connectors/repository";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual" | "scim";
@@ -87,6 +88,19 @@ type Suggestion = {
 const ALL_KEYS = Object.keys(CATALOG).sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : l === "always" ? "always" : "never");
 
+// A published custom connector (FR #102) isn't in the static CATALOG, so it gets the defaults a built-in
+// API system would: runs in each lane its definition implements, off in the others, with the secrets the
+// definition references.
+function rowFromConnector(c: AttachableConnector): Row {
+  return {
+    ...rowFromCatalog(c.key),
+    mode: "api",
+    onboardWhen: c.onboard ? "always" : "never",
+    offboardWhen: c.offboard ? "always" : "never",
+    secretNames: [...c.secretNames],
+  };
+}
+
 function rowFromCatalog(key: string): Row {
   const c = CATALOG[key];
   return {
@@ -129,6 +143,8 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   // AD folders the agent discovered from the DC (client.adObjects.ous) — feeds the onboarding-OU tree
   // picker on the active-directory row. `ouPickerRow` tracks which row has its Browse tree open.
   const [adOus, setAdOus] = useState<string[]>([]);
+  // Published custom connectors this client can attach (FR #102) — the static CATALOG only lists built-ins.
+  const [connectors, setConnectors] = useState<AttachableConnector[]>([]);
   const [ouPickerRow, setOuPickerRow] = useState<number | null>(null);
   const [addKey, setAddKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +172,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   async function load(s: string) {
     setLoading(true); setError(null); setTab("manual"); setParsed(null); setKb(null); setPaste("");
     try {
-      const res = await fetch(`/api/clients/${s}`);
+      const [res, conn] = await Promise.all([
+        fetch(`/api/clients/${s}`),
+        // Best-effort: without the list the editor still works for every built-in system.
+        fetch("/api/connectors/published").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      ]);
+      setConnectors(Array.isArray(conn) ? (conn as AttachableConnector[]) : []);
       const c = await res.json();
       setName(c.name ?? s);
       setBackbone(c.backbone ?? "");
@@ -213,7 +234,8 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
   function addSystem(key: string) {
     if (!key || rows.some((r) => r.systemKey === key)) return;
-    const row = rowFromCatalog(key);
+    const custom = connectors.find((c) => c.key === key);
+    const row = custom ? rowFromConnector(custom) : rowFromCatalog(key);
     setRows((rs) => [...rs, row]);
     setAddKey("");
     // The system knows which secret it brokers the moment it's added, so scan this client's Delinea
@@ -394,6 +416,11 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             <select className="inline" value={addKey} onChange={(e) => setAddKey(e.target.value)}>
               <option value="">add system…</option>
               {ALL_KEYS.filter((k) => !rows.some((r) => r.systemKey === k)).map((k) => <option key={k} value={k}>{k}</option>)}
+              {connectors.some((c) => !rows.some((r) => r.systemKey === c.key)) && (
+                <optgroup label="Custom connectors">
+                  {connectors.filter((c) => !rows.some((r) => r.systemKey === c.key)).map((c) => <option key={c.key} value={c.key}>{c.name} ({c.key})</option>)}
+                </optgroup>
+              )}
             </select>
             <button onClick={() => addSystem(addKey)} disabled={!addKey}>Add</button>
           </div>
