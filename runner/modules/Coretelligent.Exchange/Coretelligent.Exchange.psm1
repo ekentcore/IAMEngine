@@ -241,6 +241,41 @@ function Disconnect-CtgExchange {
     catch { Write-Verbose "Disconnect-ExchangeOnline: $($_.Exception.Message)" }
 }
 
+# The Exchange Online cmdlets this module's onboard/offboard lanes call (FR #125). A cmdlet can be
+# missing from a session that connected fine — the app's RBAC role may not grant it (EXO builds the
+# app-only session from the role), or the session's command module may not have loaded fully in this
+# process — and calling it then fails as "not recognized", which looks exactly like a missing module and
+# sent the runner off to install one. So a successful Connect-ExchangeOnline does NOT prove the lanes
+# can run; checking these names does. (The on-prem *-RemoteMailbox cmdlets are excluded — they come
+# from Connect-CtgExchangeOnPrem's session, not EXO.)
+$script:ExoLaneCmdlets = @(
+    'Get-Mailbox', 'Set-Mailbox', 'Get-MailboxStatistics', 'Get-Recipient', 'Get-CASMailbox', 'Set-CASMailbox',
+    'Get-MailboxPermission', 'Add-MailboxPermission', 'Remove-MailboxPermission',
+    'Get-RecipientPermission', 'Add-RecipientPermission',
+    'Get-MailboxFolderPermission', 'Add-MailboxFolderPermission', 'Set-MailboxFolderPermission',
+    'Set-MailboxRegionalConfiguration', 'Set-MailboxAutoReplyConfiguration',
+    'Get-DistributionGroup', 'Get-DistributionGroupMember', 'Add-DistributionGroupMember', 'Remove-DistributionGroupMember',
+    'Add-UnifiedGroupLinks', 'Remove-UnifiedGroupLinks'
+)
+
+function Get-CtgExoMissingCmdlet {
+    # The lane cmdlets absent from the current Exchange Online session — the ones the app's
+    # Exchange role doesn't grant, or that didn't load. Empty when every one is available. Call AFTER Connect-CtgExchange.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([string[]]$Name = $script:ExoLaneCmdlets)
+    @($Name | Where-Object { -not (Get-Command -Name $_ -CommandType Function, Cmdlet -ErrorAction SilentlyContinue) })
+}
+
+function Test-CtgExoCmdlet {
+    # Is $Name one of the Exchange Online cmdlets the lanes use? The runner's missing-command handler
+    # asks this to tell "it's missing from a connected session" apart from "a module isn't installed".
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([string]$Name)
+    [bool]($Name -and ($script:ExoLaneCmdlets -contains $Name))
+}
+
 # On-prem Exchange management session (hybrid only) — the *RemoteMailbox cmdlets (Enable/Get/Set-
 # RemoteMailbox) live ON-PREM, not in EXO, so the hybrid enable step needs a remote PowerShell
 # session to the client's Exchange server over Kerberos. We import ONLY *RemoteMailbox so the EXO
@@ -1628,4 +1663,4 @@ function Invoke-CtgExchangeChange {
     [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Actions = @($actions) }
 }
 
-Export-ModuleMember -Function Connect-CtgExchange, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Format-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange
+Export-ModuleMember -Function Connect-CtgExchange, Get-CtgExoMissingCmdlet, Test-CtgExoCmdlet, Disconnect-CtgExchange, Connect-CtgExchangeOnPrem, Get-CtgMailboxSizeGB, ConvertFrom-CtgMailboxSize, Format-CtgMailboxSize, Test-CtgConvertToShared, Test-CtgCloudMailboxShared, Test-CtgHideFromGal, Invoke-CtgExchangeOnboarding, Invoke-CtgExchangeHybridOnboard, Invoke-CtgExchangeCloudOnboard, Invoke-CtgExchangeNamedGroups, Invoke-CtgExchangeDistListMirror, Invoke-CtgExchangeSharedMailboxMirror, Invoke-CtgExchangeSharedMailboxMirrorBounded, Invoke-CtgExchangeDefaultMailboxAccess, Invoke-CtgExchangeMailboxAudit, Invoke-CtgExchangeCalendarReviewers, Invoke-CtgExchangeChange, Set-CtgMailboxRegional, Wait-CtgMailbox, Invoke-CtgExchangeOffboarding, Confirm-CtgExchange

@@ -97,6 +97,7 @@ export { entry as engineOptOutParentInheritance } from "./engine-opt-out-parent-
 export { entry as exchangeDisconnectExportHotfix } from "./exchange-disconnect-export-hotfix";
 export { entry as exchangeManagerName } from "./exchange-manager-name";
 export { entry as exchangeRightsManageasapp } from "./exchange-rights-manageasapp";
+export { entry as exchangeRoleGapNamed } from "./exchange-role-gap-named";
 export { entry as exoPinSelfheal } from "./exo-pin-selfheal";
 export { entry as exoPinSurvivesSelfheal } from "./exo-pin-survives-selfheal";
 export { entry as exoTenantIsolation } from "./exo-tenant-isolation";
