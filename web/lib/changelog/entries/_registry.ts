@@ -139,6 +139,7 @@ export { entry as hideDryRunOption } from "./hide-dry-run-option";
 export { entry as importClientsByCoreid } from "./import-clients-by-coreid";
 export { entry as importDialogWidthDarkModeBlocks } from "./import-dialog-width-dark-mode-blocks";
 export { entry as kbFetchPipeline } from "./kb-fetch-pipeline";
+export { entry as keyboardSafePasswords } from "./keyboard-safe-passwords";
 export { entry as knowbe4BrowserSetup } from "./knowbe4-browser-setup";
 export { entry as llmModelAwareRequests } from "./llm-model-aware-requests";
 export { entry as llmProviderApiVersionAndAsk } from "./llm-provider-api-version-and-ask";

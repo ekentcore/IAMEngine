@@ -712,7 +712,7 @@ function New-CtgCompliantPassword {
     [CmdletBinding()]
     [OutputType([securestring])]
     param(
-        [int]$MinLength      = 14,
+        [int]$MinLength      = 16,
         [bool]$RequireUpper  = $true,
         [bool]$RequireLower  = $true,
         [bool]$RequireNumber = $true,
@@ -722,7 +722,10 @@ function New-CtgCompliantPassword {
     $upper   = 'ABCDEFGHJKLMNPQRSTUVWXYZ'   # no I, O
     $lower   = 'abcdefghijkmnpqrstuvwxyz'   # no l, o
     $number  = '23456789'                   # no 0, 1
-    $special = '!@#$%^&*-_=+?'
+    # FR #114: only symbols every keyboard layout has on a plain key or Shift. No `^` — it's a DEAD key
+    # on international layouts (^ then e types ê), so a password read over the phone becomes one nobody
+    # can type back. The length default went 14 -> 16 to more than repay the smaller alphabet.
+    $special = '!@#$%&*-_=+?'
 
     $required = [System.Collections.Generic.List[char]]::new()
     $poolBuilder = [System.Text.StringBuilder]::new()
@@ -745,7 +748,11 @@ function New-CtgCompliantPassword {
         ($chars[$i], $chars[$j]) = ($chars[$j], $chars[$i])
     }
 
-    ConvertTo-SecureString (-join $chars) -AsPlainText -Force
+    $plain = -join $chars
+    # Can't fail for the sets above; it's here so a future edit to them can't quietly ship a password
+    # with a character outside printable keyboard ASCII (FR #114).
+    if ($plain -notmatch '^[\x21-\x7E]+$') { throw "generated password contains a character outside printable keyboard ASCII" }
+    ConvertTo-SecureString $plain -AsPlainText -Force
 }
 
 function Connect-CtgM365 {

@@ -25,10 +25,10 @@ test("generatePassword returns a non-trivial string", () => {
   assert.notEqual(generatePassword(), generatePassword());
 });
 
-test("generateInitialPassword satisfies M365 complexity (upper+lower+digit+symbol), 16 chars, no ambiguous", () => {
+test("generateInitialPassword satisfies M365 complexity (upper+lower+digit+symbol), 18 chars, no ambiguous", () => {
   for (let i = 0; i < 200; i++) {
     const p = generateInitialPassword();
-    assert.equal(p.length, 16);
+    assert.equal(p.length, 18);
     assert.match(p, /[A-Z]/); assert.match(p, /[a-z]/); assert.match(p, /[0-9]/); assert.match(p, /[!@#$%^&*\-_+=]/);
     assert.doesNotMatch(p, /[0O1lI]/); // ambiguous chars excluded
   }
@@ -52,4 +52,20 @@ test("validateManualPassword rejects empty, short, over-long, low-complexity, an
 
 test("validateManualPassword allows internal spaces in a passphrase", () => {
   assert.equal(validateManualPassword("Correct Horse Battery 7"), null);
+});
+
+// FR #114: every generated password must be typeable on any keyboard, read aloud or not.
+test("generateInitialPassword is always printable keyboard ASCII and never uses the ^ dead key", () => {
+  for (let i = 0; i < 2000; i++) {
+    const p = generateInitialPassword();
+    assert.match(p, /^[\x21-\x7e]+$/);
+    assert.doesNotMatch(p, /\^/);
+  }
+});
+
+test("validateManualPassword refuses characters a standard keyboard doesn't have", () => {
+  assert.match(validateManualPassword("Welcome€2026!") ?? "", /standard keyboard/);
+  assert.match(validateManualPassword("Pässwort2026!") ?? "", /standard keyboard/);
+  assert.match(validateManualPassword("Price₣100abc") ?? "", /standard keyboard/);
+  assert.equal(validateManualPassword("Plain Keyboard 2026!"), null); // spaces inside a passphrase are fine
 });

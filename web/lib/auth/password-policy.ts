@@ -10,15 +10,24 @@
 // runner. A correcthorsebatterystaple-style passphrase passes easily once it carries a capital / digit
 // / symbol (FR #17 — BayPine).
 export const MANUAL_PASSWORD_HINT =
-  "At least 8 characters (3 of: uppercase, lowercase, number, symbol). Your directory's policy may require more.";
+  "At least 8 characters (3 of: uppercase, lowercase, number, symbol), standard keyboard characters only. Your directory's policy may require more.";
+
+// FR #114: a password is read to a new hire over the phone or typed on another keyboard layout, so it
+// must use only characters every standard keyboard has: printable ASCII (space through ~). Rules out
+// €, £, ₣, accented letters and look-alike Unicode that paste fine and then can't be typed.
+export function isKeyboardSafe(pw: string): boolean {
+  return /^[\x20-\x7e]*$/.test(pw);
+}
 
 // Validate an operator-supplied password (FR #17) against the Entra baseline. Returns null when it
 // clears the baseline, else a short reason. NOT a guarantee the target accepts it (AD/Google policies
 // vary) — it just rejects the clearly-doomed up front. Rejects leading/trailing whitespace (a
-// copy-paste hazard that silently breaks sign-in) but allows internal spaces so passphrases work.
+// copy-paste hazard that silently breaks sign-in) but allows internal spaces so passphrases work, and
+// anything a standard keyboard can't type (FR #114).
 export function validateManualPassword(pw: unknown): string | null {
   if (typeof pw !== "string" || pw.length === 0) return "Enter a password.";
   if (pw !== pw.trim()) return "Remove leading/trailing spaces.";
+  if (!isKeyboardSafe(pw)) return "Use only characters on a standard keyboard — no €, £, accented letters or other special symbols.";
   if (pw.length < 8) return "Password must be at least 8 characters.";
   if (pw.length > 256) return "Password must be 256 characters or fewer.";
   const categories = [/[A-Z]/, /[a-z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(pw)).length;
