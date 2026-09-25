@@ -2377,8 +2377,34 @@ function Invoke-CtgM365Offboarding {
                     $actions.Add("freed $($direct.Count) directly-assigned license(s): $($freed -join ', ')")
                 }
                 catch {
-                    if ([string]$_.Exception.Message -match 'inherited from a group') {
-                        $actions.Add("WARN license NOT removed — Microsoft rejected the removal because the license is inherited from a GROUP membership, and this user's assignment states couldn't be read to tell direct from group-assigned. A group-assigned license drops when the user leaves that group (on-prem-synced licensing groups are removed by the AD step). Re-run once Graph reports assignment states; if the license is group-assigned, no action is needed here.")
+                    $inheritedWarn = "WARN license NOT removed — Microsoft rejected the removal because the license is inherited from a GROUP membership, and this user's assignment states couldn't be read to tell direct from group-assigned. A group-assigned license drops when the user leaves that group (on-prem-synced licensing groups are removed by the AD step). Re-run once Graph reports assignment states; if the license is group-assigned, no action is needed here."
+                    if ([string]$_.Exception.Message -match 'inherited from a group') { $actions.Add($inheritedWarn) }
+                    # FR #0000177: "User does not have a corresponding license" — ONE of the SKUs we just
+                    # read as assigned is already gone, and Graph rejects the WHOLE call for it. The read
+                    # above can trail a removal by seconds: the m365 and entra lanes are the same executor
+                    # and can both reach this line, or Graph's replica still lists a licence that an
+                    # earlier pass freed. A retry then read the fresh list and passed, which is why the
+                    # step failed "randomly" and a re-run always fixed it. Not-a-licence-holder IS the
+                    # end state we want, so remove the SKUs one at a time and count the refused ones as
+                    # already removed; the ones still assigned are freed on this same run.
+                    elseif ([string]$_.Exception.Message -match 'does not have a corresponding license') {
+                        $freedIds = [System.Collections.Generic.List[string]]::new(); $goneIds = [System.Collections.Generic.List[string]]::new(); $inherited = $false
+                        foreach ($sku in $direct) {
+                            try {
+                                Invoke-CtgM365Write { Set-MgUserLicense -UserId $userId -AddLicenses @() -RemoveLicenses @($sku) } | Out-Null
+                                $freedIds.Add([string]$sku)
+                            }
+                            catch {
+                                $m = [string]$_.Exception.Message
+                                if ($m -match 'does not have a corresponding license') { $goneIds.Add([string]$sku) }
+                                elseif ($m -match 'inherited from a group') { $inherited = $true }
+                                else { throw }
+                            }
+                        }
+                        $nameOf = { param($ids) @($ids | ForEach-Object { if ($skuName.ContainsKey([string]$_)) { $skuName[[string]$_] } else { [string]$_ } }) -join ', ' }
+                        if ($freedIds.Count) { $actions.Add("freed $($freedIds.Count) directly-assigned license(s): $(& $nameOf $freedIds)") }
+                        if ($goneIds.Count) { $actions.Add("license(s) already removed before this step reached them (another step or an earlier run freed them): $(& $nameOf $goneIds)") }
+                        if ($inherited) { $actions.Add($inheritedWarn) }
                     }
                     else { throw }
                 }

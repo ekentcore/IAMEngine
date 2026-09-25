@@ -1097,6 +1097,54 @@ Describe 'Invoke-CtgM365Offboarding' {
         Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -Times 1 -Exactly   # license removed
     }
 
+    # FR #0000177: "[Request_BadRequest] : User does not have a corresponding license." failed the entra
+    # offboard at random, and a retry always passed: one SKU in the batch was already gone (the other
+    # lane, or a stale replica read), and Graph refuses the whole call for it.
+    Context 'FR #177: a licence that is already gone' {
+        BeforeEach {
+            Mock Get-MgUser -ModuleName Coretelligent.M365 -MockWith {
+                [pscustomobject]@{ Id = 'uid-1'; AccountEnabled = $true; LicenseAssignmentStates = @(
+                    [pscustomobject]@{ SkuId = 'sku-e3'; AssignedByGroup = $null },
+                    [pscustomobject]@{ SkuId = 'sku-flow'; AssignedByGroup = $null }
+                ) }
+            }
+            Mock Get-MgUserLicenseDetail -ModuleName Coretelligent.M365 -MockWith { @(
+                [pscustomobject]@{ SkuId = 'sku-e3'; SkuPartNumber = 'SPE_E3' },
+                [pscustomobject]@{ SkuId = 'sku-flow'; SkuPartNumber = 'FLOW_FREE' }
+            ) }
+            $script:licCfg = [pscustomobject]@{ removeLicense = [pscustomobject]@{}; mailbox = [pscustomobject]@{ sizeThresholdGB = 50 } }
+        }
+
+        It 'frees the licences still assigned and reports the gone one as done, instead of failing the step' {
+            # The batch is refused; singly, E3 is the one already removed and FLOW_FREE still comes off.
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith {
+                if (@($RemoveLicenses).Count -gt 1 -or @($RemoveLicenses) -contains 'sku-e3') { throw '[Request_BadRequest] : User does not have a corresponding license.' }
+            }
+            $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $script:licCfg -MailboxSizeGB 10
+            Should -Invoke Set-MgUserLicense -ModuleName Coretelligent.M365 -ParameterFilter { @($RemoveLicenses).Count -eq 1 -and $RemoveLicenses[0] -eq 'sku-flow' } -Times 1 -Exactly
+            $a = $r.Actions -join ' | '
+            $a | Should -Match 'freed 1 directly-assigned license\(s\): FLOW_FREE'
+            $a | Should -Match 'license\(s\) already removed before this step reached them .*: SPE_E3'
+            $a | Should -Not -Match 'WARN license'
+        }
+
+        It 'is done — not failed — when every licence was already gone' {
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith { throw '[Request_BadRequest] : User does not have a corresponding license.' }
+            $r = Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $script:licCfg -MailboxSizeGB 10
+            $r.Status | Should -Be 'ok'
+            ($r.Actions -join ' | ') | Should -Match 'already removed .*: SPE_E3, FLOW_FREE'
+            ($r.Actions -join ' | ') | Should -Not -Match 'freed \d'
+        }
+
+        It 'still fails on any OTHER refusal from the one-at-a-time pass' {
+            Mock Set-MgUserLicense -ModuleName Coretelligent.M365 -MockWith {
+                if (@($RemoveLicenses).Count -gt 1) { throw '[Request_BadRequest] : User does not have a corresponding license.' }
+                throw '[Authorization_RequestDenied] : Insufficient privileges to complete the operation.'
+            }
+            { Invoke-CtgM365Offboarding -User ([pscustomobject]@{ UserPrincipalName = 'jdoe@x.com' }) -Config $script:licCfg -MailboxSizeGB 10 } | Should -Throw '*Insufficient privileges*'
+        }
+    }
+
     # --- convert-to-shared BEFORE the license comes off --------------------------------------------
     # Taking the license off a mailbox that was never converted to shared is destructive: Exchange
     # purges an unlicensed, unconverted mailbox once its 30-day grace runs out. The Exchange step tells
