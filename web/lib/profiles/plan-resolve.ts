@@ -8,6 +8,7 @@ import { resolveSystemConfig } from "./resolve";
 import { evaluateLicenseRules } from "../m365/license-rules";
 import { hideFromGalOptedOut, adLaneHidesViaAttribute, readHideFromGal } from "./hide-from-gal";
 import type { PlannedJob } from "../orchestrator";
+import { withGoogleOu } from "./google-ou";
 
 type PlanClient = {
   backbone?: string | null;
@@ -279,6 +280,17 @@ export function caseForwardingAddress(payload: Record<string, unknown>): string 
 }
 
 export function resolvePlannedConfigs(
+  client: PlanClient,
+  payload: Record<string, unknown>,
+  action: string,
+  planned: PlannedJob[]
+): PlannedJob[] {
+  // FR #81: a per-case Google OU pick is the last word on where this user lands — applied after
+  // every client/persona/location default below, on both lanes.
+  return withGoogleOu(resolveLaneConfigs(client, payload, action, planned), payload, action);
+}
+
+function resolveLaneConfigs(
   client: PlanClient,
   payload: Record<string, unknown>,
   action: string,

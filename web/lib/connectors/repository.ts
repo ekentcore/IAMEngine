@@ -149,6 +149,24 @@ export async function publishedDefinitionsByKey(keys: string[]): Promise<Map<str
   return new Map(rows.map((r) => [r.key, { kind: r.kind, definition: r.definition }]));
 }
 
+// Published connectors as attachable systems (FR #102): what the client systems editor needs to offer
+// one in its "add system" list — the static CATALOG only knows the built-ins, so a published connector
+// had a SystemCatalog row (attach-able) but no way to be picked. Lanes are the ones the definition
+// actually implements; archived and draft connectors are not offered.
+export type AttachableConnector = { key: string; name: string; onboard: boolean; offboard: boolean; secretNames: string[] };
+
+export async function publishedConnectorSystems(): Promise<AttachableConnector[]> {
+  const rows = await db.connector.findMany({
+    where: { status: "published" },
+    orderBy: { key: "asc" },
+    select: { key: true, name: true, definition: true, secretNames: true },
+  });
+  return rows.map((r) => {
+    const lanes = definedLanes(r.definition as unknown as ConnectorDefinition);
+    return { key: r.key, name: r.name, onboard: lanes.onboard, offboard: lanes.offboard, secretNames: r.secretNames };
+  });
+}
+
 // Published browser-kind connector keys — they join BROWSER_SYSTEMS for the claim capability gate
 // (withheld from agents without Playwright) and the central-runner pinning exception.
 export async function publishedBrowserConnectorKeys(): Promise<string[]> {

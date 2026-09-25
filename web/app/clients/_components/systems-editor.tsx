@@ -5,7 +5,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { CATALOG } from "@/lib/generator/system-map";
 import { withOnboardOu } from "@/lib/clients/ad-folders";
 import { OuTreePicker } from "./ad-pickers";
+import { readLaneDeps, writeLaneDeps } from "@/lib/clients/lane-deps";
 import { copyText } from "@/lib/clipboard";
+import type { AttachableConnector } from "@/lib/connectors/repository";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
 type Mode = "api" | "browser" | "manual" | "scim";
@@ -17,11 +19,16 @@ type Row = {
   mode: Mode;
   onboardWhen: Lane;
   offboardWhen: Lane;
-  dependsOn: string[];
+  dependsOn: string[]; // FR #122: the ONBOARD order (and the shared fallback) — see lib/clients/lane-deps
+  dependsOnOffboard: string[]; // the OFFBOARD order; stored as a per-lane override only when it differs
   requiresApproval: boolean;
   captureEvidence: boolean;
   offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
-  onboardOu: string; // AD onboarding target DN (config.onboard.ou) — the field the runner actually uses
+  onboardOu: string; // AD onboarding target DN / Google onboarding OU path (config.onboard.ou) — the field the runner actually uses
+  // FR #119: what "mirror <user>" may copy on this lane (config.onboard.mirrorPolicy)
+  mirrorSecurityOnly: boolean;
+  mirrorExclude: string; // comma-separated group names; * wildcards
+  googleInactiveOu: string; // Google offboarding OU (config.offboard.inactiveOu) — FR #81
   galMode: GalMode; // hide-from-GAL deviation (config.offboard.hideFromGal) — default is hide, this only records opt-outs
   galAttribute: string; // AD-only: the attribute name when galMode === "attribute"
   secretNames: string[];
@@ -50,13 +57,18 @@ const HELP = {
   mode: "How the step runs — api: automated via a Coretelligent.* module · browser: Playwright automation · manual: a human checklist item recorded on the case.",
   onboard: "When this system runs on ONBOARDING — always · on request (only when the intake asks for it) · by persona (only when the matched persona's systems list includes it — edit personas under Roles & rules) · never (not part of onboarding).",
   offboard: "When this system runs on OFFBOARDING — always · on request · by persona (only when the matched persona granted it) · never. Onboard and Offboard are the two runbooks; set each independently.",
-  depends: "System keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
+  depends: "ONBOARDING: system keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
+  dependsOffboard: "OFFBOARDING: system keys that must finish first (comma-separated). Set it separately when the offboard order differs from the onboard one; leave it the same and they're stored as one list.",
   approval: "Destructive step — gated server-side. The job won't run until an operator approves it on the case (offboarding deletes/disables).",
   evidence: "Before doing anything, snapshot the user's current state (group memberships, license/app assignments) and attach it to the case — so there's an audit trail and you can restore if needed. Mainly used on offboarding.",
   intent: "How destructive this system's OFFBOARD step is. disable = reversible containment (lock the account, isolate the device, revoke sessions) — undoable, and a candidate for future automation. destructive = actually deletes data (e.g. delete a mailbox) — always requires operator approval AND snapshots state first so it's redoable.",
   secrets: "The Delinea secret references this system needs at run time (comma-separated names, e.g. m365-admin). Names only — never the values.",
   config: 'Per-lane JSON settings, nested under onboard / offboard. e.g. { "offboard": { "delete": true } }. Leave blank for defaults.',
   onboardOu: "Where new AD accounts are created (config.onboard.ou). This is the value the runner uses — it overrides any OU set in Roles & rules. Type a full DN or 📁 Browse the folders discovered from the DC. Leave blank to create at the domain default. Refresh the folder list under Roles & rules → “Refresh AD objects from DC”.",
+  mirrorSecurityOnly: "When an onboard says \"mirror <user>\", copy only that user's SECURITY groups on this system — distribution lists and Microsoft 365 groups are skipped.",
+  mirrorExclude: "Groups \"mirror <user>\" must never copy on this system, even if the reference user has them (comma-separated; * matches anything, e.g. ChatGPT*). Anything held back is listed on the step's result.",
+  googleOu: "Where new Google users are created (config.onboard.ou), as an OU path like /Active Users/Sales. Leave blank for the default, /Active Users. A single case can override it on the case page.",
+  googleInactiveOu: "Where offboarded Google users are moved (config.offboard.inactiveOu). Leave blank for the default, /Email & Calendar/Inactive. A single case can override it on the case page.",
   hideFromGal: "Hiding offboarded users from the Global Address List is the default (FR #21). Use this only to record a deviation: “Do NOT hide” opts this client out entirely; “Hide via AD attribute…” (AD only) hides by setting a named attribute (e.g. msExchHideFromAddressLists) to TRUE instead of the default mechanism.",
 };
 
@@ -87,6 +99,19 @@ type Suggestion = {
 const ALL_KEYS = Object.keys(CATALOG).sort();
 const mapLane = (l: string | null): Lane => (l === "on-request" ? "on_request" : l === "by-persona" ? "by_persona" : l === "always" ? "always" : "never");
 
+// A published custom connector (FR #102) isn't in the static CATALOG, so it gets the defaults a built-in
+// API system would: runs in each lane its definition implements, off in the others, with the secrets the
+// definition references.
+function rowFromConnector(c: AttachableConnector): Row {
+  return {
+    ...rowFromCatalog(c.key),
+    mode: "api",
+    onboardWhen: c.onboard ? "always" : "never",
+    offboardWhen: c.offboard ? "always" : "never",
+    secretNames: [...c.secretNames],
+  };
+}
+
 function rowFromCatalog(key: string): Row {
   const c = CATALOG[key];
   return {
@@ -95,15 +120,51 @@ function rowFromCatalog(key: string): Row {
     onboardWhen: mapLane(c?.onboard ?? null),
     offboardWhen: mapLane(c?.offboard ?? null),
     dependsOn: [],
+    dependsOnOffboard: [],
     requiresApproval: false,
     captureEvidence: false,
     offboardIntent: "disable",
     onboardOu: "",
+    mirrorSecurityOnly: false,
+    mirrorExclude: "",
+    googleInactiveOu: "",
     galMode: "default",
     galAttribute: "",
     secretNames: c?.secret ? [c.secret] : [],
     configText: "",
   };
+}
+
+// FR #119: the lanes that copy a reference user's groups ("mirror <user>") and honour a mirror policy.
+const MIRROR_SYSTEMS = new Set(["active-directory", "m365", "exchange"]);
+
+function readMirrorPolicy(config: unknown): { mirrorSecurityOnly: boolean; mirrorExclude: string } {
+  const p = ((config as { onboard?: { mirrorPolicy?: { securityOnly?: unknown; exclude?: unknown } } } | null)?.onboard?.mirrorPolicy) ?? {};
+  return {
+    mirrorSecurityOnly: p.securityOnly === true,
+    mirrorExclude: Array.isArray(p.exclude) ? p.exclude.map(String).join(", ") : "",
+  };
+}
+
+// Write config.onboard.mirrorPolicy from the two controls; an empty policy is removed, not stored.
+function withMirrorPolicy(config: Record<string, unknown>, securityOnly: boolean, excludeText: string): Record<string, unknown> {
+  const onboard = { ...((config.onboard as Record<string, unknown> | undefined) ?? {}) };
+  const exclude = excludeText.split(",").map((s) => s.trim()).filter(Boolean);
+  if (securityOnly || exclude.length) onboard.mirrorPolicy = { ...(securityOnly ? { securityOnly: true } : {}), ...(exclude.length ? { exclude } : {}) };
+  else delete onboard.mirrorPolicy;
+  if (Object.keys(onboard).length) return { ...config, onboard };
+  const { onboard: _drop, ...rest } = config;
+  return rest;
+}
+
+type GoogleOuState = { ous: string[]; discoveredAt: string | null; error: string | null; pending: boolean; busy: boolean };
+
+// The one-line status under "Refresh Google OUs".
+function googleOuNote(g: GoogleOuState): string {
+  if (g.pending) return "Requested — the runner reads them on its next poll…";
+  if (g.error) return `Last refresh failed: ${g.error}`;
+  if (g.discoveredAt) return `${g.ous.length} OUs · ${new Date(g.discoveredAt).toLocaleString()}`;
+  return "Not read yet — type a path, or refresh to pick from the tenant's OUs";
 }
 
 // Reads the GAL deviation out of a system's parsed config.offboard.hideFromGal. Handles both the
@@ -129,6 +190,10 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   // AD folders the agent discovered from the DC (client.adObjects.ous) — feeds the onboarding-OU tree
   // picker on the active-directory row. `ouPickerRow` tracks which row has its Browse tree open.
   const [adOus, setAdOus] = useState<string[]>([]);
+  // FR #81: the tenant's Google OU paths (discovered by the central runner) for the Google OU fields.
+  const [googleOus, setGoogleOus] = useState<GoogleOuState>({ ous: [], discoveredAt: null, error: null, pending: false, busy: false });
+  // Published custom connectors this client can attach (FR #102) — the static CATALOG only lists built-ins.
+  const [connectors, setConnectors] = useState<AttachableConnector[]>([]);
   const [ouPickerRow, setOuPickerRow] = useState<number | null>(null);
   const [addKey, setAddKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +221,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   async function load(s: string) {
     setLoading(true); setError(null); setTab("manual"); setParsed(null); setKb(null); setPaste("");
     try {
-      const res = await fetch(`/api/clients/${s}`);
+      const [res, conn] = await Promise.all([
+        fetch(`/api/clients/${s}`),
+        // Best-effort: without the list the editor still works for every built-in system.
+        fetch("/api/connectors/published").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      ]);
+      setConnectors(Array.isArray(conn) ? (conn as AttachableConnector[]) : []);
       const c = await res.json();
       setName(c.name ?? s);
       setBackbone(c.backbone ?? "");
@@ -164,18 +234,25 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       const ad = (c.adObjects ?? {}) as { ous?: unknown };
       setAdOus(Array.isArray(ad.ous) ? (ad.ous as string[]) : []);
       setOuPickerRow(null);
+      if ((c.systems ?? []).some((sys: { systemKey?: string }) => sys.systemKey === "google-workspace")) void loadGoogleOus(s);
       setRows(
         (c.systems ?? []).map((sys: Record<string, unknown>) => ({
           systemKey: sys.systemKey,
           mode: sys.mode,
           onboardWhen: sys.onboardWhen,
           offboardWhen: sys.offboardWhen,
-          // round-trip dependsOn — without this, every save wiped it and broke topo-ordering
-          dependsOn: Array.isArray(sys.dependsOn) ? sys.dependsOn : [],
+          // round-trip dependsOn — without this, every save wiped it and broke topo-ordering. Split per
+          // lane (FR #122): a config.dependsOn.<lane> override wins for its lane, else the shared list.
+          ...(() => {
+            const d = readLaneDeps(Array.isArray(sys.dependsOn) ? (sys.dependsOn as string[]) : [], sys.config);
+            return { dependsOn: d.onboard, dependsOnOffboard: d.offboard };
+          })(),
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
           offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
           onboardOu: String((sys.config as { onboard?: { ou?: unknown } } | null)?.onboard?.ou ?? ""),
+          ...readMirrorPolicy(sys.config),
+          googleInactiveOu: String((sys.config as { offboard?: { inactiveOu?: unknown } } | null)?.offboard?.inactiveOu ?? ""),
           ...galFromConfig(sys.config),
           secretNames: Array.isArray(sys.secretNames) ? sys.secretNames : [],
           configText: sys.config ? JSON.stringify(sys.config, null, 2) : "",
@@ -184,6 +261,32 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadGoogleOus(s: string) {
+    try {
+      const r = await fetch(`/api/clients/${s}/google-ous`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setGoogleOus((g) => ({ ...g, ous: Array.isArray(d.ous) ? d.ous : [], discoveredAt: d.discoveredAt ?? null, error: d.error ?? null, pending: Boolean(d.pending) }));
+    } catch { /* best-effort: the fields still take a typed path */ }
+  }
+
+  // Queue a discovery; the central runner picks it up on its next poll (seconds to a minute), so check
+  // back a few times rather than making the operator reopen the dialog.
+  async function refreshGoogleOus() {
+    if (!slug) return;
+    setGoogleOus((g) => ({ ...g, busy: true, error: null }));
+    try {
+      const r = await fetch(`/api/clients/${slug}/google-ous`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setGoogleOus((g) => ({ ...g, busy: false, error: d.error ?? `failed (${r.status})` })); return; }
+      setGoogleOus((g) => ({ ...g, busy: false, pending: true }));
+      for (const wait of [5000, 10000, 20000, 30000]) {
+        await new Promise((res) => setTimeout(res, wait));
+        await loadGoogleOus(slug);
+      }
+    } catch (e) { setGoogleOus((g) => ({ ...g, busy: false, error: (e as Error).message })); }
   }
 
   function update(i: number, patch: Partial<Row>) {
@@ -213,7 +316,8 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
   }
   function addSystem(key: string) {
     if (!key || rows.some((r) => r.systemKey === key)) return;
-    const row = rowFromCatalog(key);
+    const custom = connectors.find((c) => c.key === key);
+    const row = custom ? rowFromConnector(custom) : rowFromCatalog(key);
     setRows((rs) => [...rs, row]);
     setAddKey("");
     // The system knows which secret it brokers the moment it's added, so scan this client's Delinea
@@ -302,6 +406,15 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
       // config.onboard.ou (the field the runner reads), so it wins over the raw JSON textarea — the
       // same "structured control beats the blob" contract as offboardIntent above.
       if (r.systemKey === "active-directory") config = withOnboardOu(config, r.onboardOu.trim());
+      if (MIRROR_SYSTEMS.has(r.systemKey)) config = withMirrorPolicy(config, r.mirrorSecurityOnly, r.mirrorExclude);
+      // FR #81: the Google OU fields are authoritative the same way (blank = the executor's default).
+      if (r.systemKey === "google-workspace") {
+        config = withOnboardOu(config, r.onboardOu.trim());
+        const offboard = { ...((config.offboard as Record<string, unknown> | undefined) ?? {}) };
+        if (r.googleInactiveOu.trim()) offboard.inactiveOu = r.googleInactiveOu.trim(); else delete offboard.inactiveOu;
+        if (Object.keys(offboard).length) config = { ...config, offboard };
+        else { const { offboard: _drop, ...rest } = config; config = rest; }
+      }
       // The GAL control is authoritative for the offboard hide-from-GAL deviation: merge it into
       // config.offboard.hideFromGal (the planner flattens config.offboard onto the offboard job, so
       // this becomes the top-level config.hideFromGal the planner/runner read). Preserve any other
@@ -324,7 +437,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           config = { ...config, offboard };
         }
       }
-      systems.push({ ...r, secretNames: r.secretNames, config });
+      // FR #122: the two Depends-on fields are authoritative for run order — one shared list when they
+      // match (stored exactly as before), a config.dependsOn per-lane override when they differ.
+      const deps = writeLaneDeps({ onboard: r.dependsOn, offboard: r.dependsOnOffboard }, config);
+      config = deps.config;
+      const { dependsOnOffboard: _lane, ...row } = r;
+      systems.push({ ...row, dependsOn: deps.dependsOn, secretNames: r.secretNames, config });
     }
     try {
       const res = await fetch(`/api/clients/${slug}/systems`, {
@@ -394,6 +512,11 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
             <select className="inline" value={addKey} onChange={(e) => setAddKey(e.target.value)}>
               <option value="">add system…</option>
               {ALL_KEYS.filter((k) => !rows.some((r) => r.systemKey === k)).map((k) => <option key={k} value={k}>{k}</option>)}
+              {connectors.some((c) => !rows.some((r) => r.systemKey === c.key)) && (
+                <optgroup label="Custom connectors">
+                  {connectors.filter((c) => !rows.some((r) => r.systemKey === c.key)).map((c) => <option key={c.key} value={c.key}>{c.name} ({c.key})</option>)}
+                </optgroup>
+              )}
             </select>
             <button onClick={() => addSystem(addKey)} disabled={!addKey}>Add</button>
           </div>
@@ -475,8 +598,11 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                   <Field label="Offboard" help={HELP.offboard}>
                     <select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.offboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select>
                   </Field>
-                  <Field label="Depends on" help={HELP.depends}>
+                  <Field label="Onboard depends on" help={HELP.depends}>
                     <input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 150 }} />
+                  </Field>
+                  <Field label="Offboard depends on" help={HELP.dependsOffboard}>
+                    <input value={r.dependsOnOffboard.join(", ")} onChange={(e) => update(i, { dependsOnOffboard: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 150 }} />
                   </Field>
                   <Field label="Approval" help={HELP.approval}>
                     <input type="checkbox" style={{ width: "auto", height: 18 }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} />
@@ -519,6 +645,18 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                     <textarea value={r.configText} onChange={(e) => update(i, { configText: e.target.value })} placeholder={'{ "offboard": { } }'} rows={2} style={{ width: "100%", minWidth: 260, fontFamily: "monospace", fontSize: 12 }} />
                   </Field>
                 </div>
+                {/* FR #119 — mirror policy: what "mirror <user>" may copy on this lane (config.onboard.mirrorPolicy) */}
+                {MIRROR_SYSTEMS.has(r.systemKey) && (
+                  <div style={{ marginTop: "0.55rem", display: "flex", gap: "0.8rem", alignItems: "flex-end", flexWrap: "wrap", maxWidth: 720 }}>
+                    <label className="note" style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }} title={HELP.mirrorSecurityOnly}>
+                      <input type="checkbox" checked={r.mirrorSecurityOnly} onChange={(e) => update(i, { mirrorSecurityOnly: e.target.checked })} style={{ width: "auto" }} />
+                      Mirror security groups only
+                    </label>
+                    <Field label="Never mirror" help={HELP.mirrorExclude} grow>
+                      <input value={r.mirrorExclude} onChange={(e) => update(i, { mirrorExclude: e.target.value })} placeholder="e.g. ChatGPT*, Board Members" style={{ fontSize: 12 }} />
+                    </Field>
+                  </div>
+                )}
                 {/* Row 3 — AD onboarding OU/folder picker (writes config.onboard.ou, the field the runner uses) */}
                 {r.systemKey === "active-directory" && (
                   <div style={{ marginTop: "0.55rem", maxWidth: 520 }}>
@@ -536,6 +674,25 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                         <OuTreePicker ous={adOus} onPick={(dn) => { update(i, { onboardOu: dn }); setOuPickerRow(null); }} />
                       </div>
                     )}
+                  </div>
+                )}
+                {/* FR #81 — Google Workspace OUs (config.onboard.ou / config.offboard.inactiveOu, what the runner reads) */}
+                {r.systemKey === "google-workspace" && (
+                  <div style={{ marginTop: "0.55rem", display: "flex", gap: "0.8rem", flexWrap: "wrap", alignItems: "flex-end", maxWidth: 820 }}>
+                    <Field label="Onboarding OU" help={HELP.googleOu} grow>
+                      <input value={r.onboardOu} onChange={(e) => update(i, { onboardOu: e.target.value })} list="google-ou-options"
+                        placeholder="/Active Users" style={{ fontFamily: "monospace", fontSize: 12 }} />
+                    </Field>
+                    <Field label="Offboarding OU" help={HELP.googleInactiveOu} grow>
+                      <input value={r.googleInactiveOu} onChange={(e) => update(i, { googleInactiveOu: e.target.value })} list="google-ou-options"
+                        placeholder="/Email & Calendar/Inactive" style={{ fontFamily: "monospace", fontSize: 12 }} />
+                    </Field>
+                    {/* The tenant's OUs, discovered by the central runner (FR #81) — suggestions, not a lock-in. */}
+                    <datalist id="google-ou-options">{googleOus.ous.map((o) => <option key={o} value={o} />)}</datalist>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <button type="button" onClick={refreshGoogleOus} disabled={googleOus.busy}>{googleOus.busy ? "Requesting…" : "↻ Refresh Google OUs"}</button>
+                      <span className="note" style={{ fontSize: 11 }}>{googleOuNote(googleOus)}</span>
+                    </div>
                   </div>
                 )}
               </div>

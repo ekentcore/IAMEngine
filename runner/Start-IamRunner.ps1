@@ -3487,6 +3487,41 @@ function Invoke-CtgCloudGroupDiscovery {
     }
 }
 
+function Invoke-CtgGoogleOuDiscovery {
+    # FR #81: central runner only, same shape as Invoke-CtgCloudGroupDiscovery. For each client that
+    # asked ("Refresh Google OUs"), connect with the brokered google-admin secret and report the
+    # tenant's OU paths so the Google OU fields can offer a real list. Read-only (one Admin SDK GET).
+    $work = @()
+    try { $work = Invoke-AppApi POST '/api/runner/google-ous/claim' @{ agentId = $AgentId } } catch { return }
+    foreach ($w in @($work)) {
+        $global:CtgProgressJobId = $null
+        try {
+            $creds = @{}
+            if ($w.creds) {
+                foreach ($p in $w.creds.PSObject.Properties) {
+                    $f = @{}
+                    if ($p.Value.fields) { foreach ($q in $p.Value.fields.PSObject.Properties) { $f[$q.Name] = $q.Value } }
+                    $username = Select-CtgCredField $f $script:CRED_USERNAME_FIELDS
+                    $pw = Select-CtgCredField $f $script:CRED_PASSWORD_FIELDS
+                    $password = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { $null }
+                    $cred = if ($username -and $password) { [pscredential]::new([string]$username, $password) } else { $null }
+                    $creds[$p.Name] = [pscustomobject]@{ Username = $username; Password = $password; Credential = $cred; Fields = $f }
+                }
+            }
+            $job = [pscustomobject]@{ id = ''; systemKey = 'google-workspace'; client = [pscustomobject]@{ slug = $w.clientSlug; primaryDomain = $w.primaryDomain } }
+            & $DISPATCH['google-workspace'].Connect $job $creds
+            # Don't let a real job reuse this session as if it were its own.
+            Clear-CtgConnectionSiblings -SystemKey 'google-workspace' -IncludeSelf
+            $ous = @(Get-CtgGoogleOrgUnits)
+            $null = Invoke-AppApi POST '/api/runner/google-ous/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; ous = $ous }
+            Write-Host "  google OUs: reported $($ous.Count) for $($w.clientSlug)" -ForegroundColor Green
+        } catch {
+            Write-Warning "Google OU discovery failed for $($w.clientSlug): $($_.Exception.Message)"
+            try { $null = Invoke-AppApi POST '/api/runner/google-ous/result' @{ agentId = $AgentId; clientSlug = $w.clientSlug; ous = @(); error = [string]$_.Exception.Message } } catch { }
+        }
+    }
+}
+
 # Build id of the code we're actually running = hash of our own files (matches the app's hash of the
 # bundle it serves). Reported on every heartbeat → accurate even if a past restart half-landed, with
 # no marker file to keep in sync.
@@ -4072,6 +4107,7 @@ while ($true) {
         # central runner; on-prem on the client agent). Never affects the job pipeline above.
         Invoke-CtgConnectionTests
         Invoke-CtgCloudGroupDiscovery
+        Invoke-CtgGoogleOuDiscovery
     }
     catch {
         Write-Warning "poll cycle error: $($_.Exception.Message)"

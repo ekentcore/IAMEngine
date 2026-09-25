@@ -375,8 +375,21 @@ function Resolve-CtgEntraUser {
 # handles them and Graph can't edit them) and dynamic-membership groups can't be assigned, so both
 # are skipped. This is what pulls in cloud licensing groups (e.g. "APP - M365 E3"), distribution and
 # M365 groups. Returns an actions array.
+# FR #119: the client's mirror policy (job config.mirrorPolicy) — securityOnly / exclude[] wildcards.
+# Same rule as Coretelligent.ActiveDirectory and Coretelligent.Exchange; returns why a group must NOT
+# be mirrored, or $null to mirror it.
+function Get-CtgMirrorSkipReason {
+    param($Policy, [string]$Name, [bool]$IsSecurity)
+    if (-not $Policy) { return $null }
+    foreach ($p in @(Get-CtgProp $Policy 'exclude')) {
+        if ($p -and $Name -like [string]$p) { return "excluded by the client's mirror policy ('$p')" }
+    }
+    if ((Get-CtgProp $Policy 'securityOnly') -eq $true -and -not $IsSecurity) { return "not a security group — the client mirrors security groups only" }
+    return $null
+}
+
 function Invoke-CtgM365CloudMirror {
-    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$UserId)
+    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$UserId, $Policy)
     $actions = [System.Collections.Generic.List[string]]::new()
     $ref = Resolve-CtgEntraUser -Identity $MirrorUser
     if (-not $ref) { $actions.Add("WARN mirror user not found in Entra: $MirrorUser"); return $actions.ToArray() }
@@ -392,6 +405,11 @@ function Invoke-CtgM365CloudMirror {
         $gname = [string](Get-CtgProp $ap 'displayName'); if (-not $gname) { $gname = $mg.Id }
         if ((Get-CtgProp $ap 'onPremisesSyncEnabled') -eq $true) { $skipped++; Write-CtgM365Step "– on-prem group (AD lane owns it): $gname"; continue }
         if (@(Get-CtgProp $ap 'groupTypes') -contains 'DynamicMembership') { $skipped++; Write-CtgM365Step "– dynamic group (rule-based): $gname"; continue }
+        # A Microsoft 365 (Unified) group is a collaboration group, not a security group, even when
+        # Graph marks it securityEnabled — so securityOnly skips it along with distribution lists.
+        $isSecurityGroup = ((Get-CtgProp $ap 'securityEnabled') -eq $true) -and -not (@(Get-CtgProp $ap 'groupTypes') -contains 'Unified')
+        $why = Get-CtgMirrorSkipReason -Policy $Policy -Name $gname -IsSecurity $isSecurityGroup
+        if ($why) { $skipped++; $actions.Add("not mirrored: $gname — $why"); Write-CtgM365Step "– $gname — $why"; continue }
         # Distribution lists + mail-enabled security groups are managed in Exchange, NOT Graph —
         # New-MgGroupMember errors on them. Unified (M365) groups ARE mail-enabled but Graph-addable.
         $mailEnabled = (Get-CtgProp $ap 'mailEnabled') -eq $true
@@ -1420,7 +1438,7 @@ function Invoke-CtgM365Onboarding {
     # 3c. Mirror the reference user's cloud-only Entra groups (incl. cloud licensing groups) ---------
     $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
     if ($mirrorUser -and $PSCmdlet.ShouldProcess($upn, "Mirror cloud groups from $mirrorUser")) {
-        foreach ($a in (Invoke-CtgM365CloudMirror -MirrorUser ([string]$mirrorUser) -UserId $userId)) { $actions.Add($a) }
+        foreach ($a in (Invoke-CtgM365CloudMirror -MirrorUser ([string]$mirrorUser) -UserId $userId -Policy (Get-CtgProp $Config 'mirrorPolicy'))) { $actions.Add($a) }
     }
 
     # 3b. Seat-aware E5/E3 fallback (live SKU consumption) ----------------------
@@ -2722,7 +2740,10 @@ function Confirm-CtgM365 {
                         $ap = $_.AdditionalProperties
                         ([string](Get-CtgProp $ap '@odata.type')) -match 'microsoft\.graph\.group' -and
                         (@(Get-CtgProp $ap 'groupTypes') -notcontains 'DynamicMembership') -and
-                        ((Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true)
+                        ((Get-CtgProp $ap 'onPremisesSyncEnabled') -ne $true) -and
+                        # FR #119: a group the mirror policy held back was deliberately NOT copied —
+                        # counting it as missing would fail every mirror on a client that has a policy.
+                        ($null -eq (Get-CtgMirrorSkipReason -Policy (Get-CtgProp $Config 'mirrorPolicy') -Name ([string](Get-CtgProp $ap 'displayName')) -IsSecurity (((Get-CtgProp $ap 'securityEnabled') -eq $true) -and -not (@(Get-CtgProp $ap 'groupTypes') -contains 'Unified'))))
                     })
                     $myIds = @($myMemberships | ForEach-Object { $_.Id })
                     $missing = @($refGroups | Where-Object { $myIds -notcontains $_.Id })

@@ -165,6 +165,22 @@ function Set-CtgADAttributes {
 # So: try the mail-shaped attributes FIRST when the value contains an "@", and the name-shaped ones
 # first when it does not. Both sets are always tried — a display name containing an @ is unlikely but
 # costs one extra query to rule out, and an address stored only in `mail` still resolves.
+# FR #119: a client's mirror policy (job config.mirrorPolicy, from the system's config.onboard):
+#   securityOnly — copy only security groups from the reference user (distribution lists are skipped)
+#   exclude[]    — never copy a group whose name matches (PowerShell wildcards, case-insensitive),
+#                  e.g. LogicSource's "ChatGPT*", which grants a paid app seat per member
+# Returns why a group must NOT be mirrored, or $null to mirror it. Same rule in the M365 and Exchange
+# modules, so a group excluded here isn't copied by the cloud lanes either.
+function Get-CtgMirrorSkipReason {
+    param($Policy, [string]$Name, [bool]$IsSecurity)
+    if (-not $Policy) { return $null }
+    foreach ($p in @(Get-CtgProp $Policy 'exclude')) {
+        if ($p -and $Name -like [string]$p) { return "excluded by the client's mirror policy ('$p')" }
+    }
+    if ((Get-CtgProp $Policy 'securityOnly') -eq $true -and -not $IsSecurity) { return "not a security group — the client mirrors security groups only" }
+    return $null
+}
+
 function Get-CtgMirrorGroups {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ReferenceUser, [hashtable]$AdConnection = @{})
@@ -298,9 +314,20 @@ function Invoke-CtgADOnboarding {
         }
         else {
             $seen = [System.Collections.Generic.HashSet[string]]::new([string[]]$groups, [System.StringComparer]::OrdinalIgnoreCase)
-            $added = 0
-            foreach ($dn in $mirrorGroups) { if ($dn -and $seen.Add([string]$dn)) { $groups.Add([string]$dn); $added++ } }
-            $actions.Add("mirrored $added group(s) from '$mirrorUser'")
+            $added = 0; $held = 0
+            $policy = Get-CtgProp $Config 'mirrorPolicy'
+            foreach ($dn in $mirrorGroups) {
+                if (-not $dn) { continue }
+                if ($policy) {
+                    # Only looked up when a policy exists — the common no-policy path stays one query.
+                    $g = Get-ADGroup -Identity ([string]$dn) -Properties GroupCategory -ErrorAction SilentlyContinue @AdConnection
+                    $name = if ($g) { [string]$g.Name } else { ([string]$dn -replace '^CN=([^,]+),.*$', '$1') }
+                    $why = Get-CtgMirrorSkipReason -Policy $policy -Name $name -IsSecurity ([bool]($g -and [string]$g.GroupCategory -eq 'Security'))
+                    if ($why) { $held++; $actions.Add("not mirrored: $name — $why"); continue }
+                }
+                if ($seen.Add([string]$dn)) { $groups.Add([string]$dn); $added++ }
+            }
+            $actions.Add("mirrored $added group(s) from '$mirrorUser'$(if ($held) { ", $held held back by the mirror policy" })")
         }
     }
     foreach ($group in $groups) {

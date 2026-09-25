@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import { HardMatchButton } from "./hard-match-button";
 import { RevealPasswordButton } from "./reveal-password-button";
+import { DefaultPasswordButton } from "./default-password-button";
 import { GeneratePasswordButton } from "./generate-password-button";
 import { ScheduleButton } from "./schedule-button";
 import { PauseButton } from "./pause-button";
@@ -30,6 +31,7 @@ type Props = {
   effectiveDate: string | null;
   showHardMatch: boolean;
   hasInitialPassword: boolean;
+  hasDefaultPassword: boolean; // FR #86: the client has a standing default initial password (onboards only)
   resetSourceJobId: string | null; // FR#31: the planned job an ad-hoc pre-run password reset rides on
   resetSourceSystemName: string | null;
   canResetPassword: boolean; // same case.dispatch-derived boolean as hasInitialPassword's reveal gate
@@ -39,7 +41,7 @@ type Props = {
 export function CaseActionsMenu(props: Props) {
   const {
     caseId, action, started, paused, canSchedule, scheduledForIso, effectiveDate, showHardMatch,
-    hasInitialPassword, resetSourceJobId, resetSourceSystemName, canResetPassword, domain,
+    hasInitialPassword, hasDefaultPassword, resetSourceJobId, resetSourceSystemName, canResetPassword, domain,
   } = props;
   const wrap = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -64,6 +66,7 @@ export function CaseActionsMenu(props: Props) {
         <div role="menu" className="actions-menu case-actions-menu" style={{ display: open ? "flex" : "none" }}>
           {showHardMatch && <div className="case-actions-row">                <HardMatchButton caseId={caseId} /></div>}
           {hasInitialPassword && <div className="case-actions-row">           <RevealPasswordButton caseId={caseId} /></div>}
+          {hasDefaultPassword && <div className="case-actions-row">           <DefaultPasswordButton caseId={caseId} /></div>}
           {/* FR#31: reset a password before the case has run anything — the reset route already
               supports paused/pre-run cases; only the button was missing outside a run report row. */}
           {resetSourceJobId && canResetPassword && (

@@ -482,9 +482,22 @@ function Set-CtgMailboxRegional {
 # Dynamic distribution groups are computed, not assignable, so they're not returned/handled. Runs in
 # the exchange lane (which already has the EXO session) AFTER the mailbox lands, so the new user is a
 # valid recipient. Idempotent; returns an actions array.
+# FR #119: the client's mirror policy (job config.mirrorPolicy) — securityOnly / exclude[] wildcards.
+# Same rule as Coretelligent.ActiveDirectory and Coretelligent.M365; returns why a group must NOT be
+# mirrored, or $null to mirror it.
+function Get-CtgMirrorSkipReason {
+    param($Policy, [string]$Name, [bool]$IsSecurity)
+    if (-not $Policy) { return $null }
+    foreach ($p in @(Get-CtgProp $Policy 'exclude')) {
+        if ($p -and $Name -like [string]$p) { return "excluded by the client's mirror policy ('$p')" }
+    }
+    if ((Get-CtgProp $Policy 'securityOnly') -eq $true -and -not $IsSecurity) { return "not a security group — the client mirrors security groups only" }
+    return $null
+}
+
 function Invoke-CtgExchangeDistListMirror {
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$NewUser)
+    param([Parameter(Mandatory)][string]$MirrorUser, [Parameter(Mandatory)][string]$NewUser, $Policy)
     $actions = [System.Collections.Generic.List[string]]::new()
     $ref = Get-Recipient -Identity $MirrorUser -ErrorAction SilentlyContinue
     if (-not $ref) { $actions.Add("WARN mirror user not found in Exchange: $MirrorUser"); return $actions.ToArray() }
@@ -497,6 +510,8 @@ function Invoke-CtgExchangeDistListMirror {
         Where-Object { $_.RecipientTypeDetails -in @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList') -and -not $_.IsDirSynced })
     $copied = 0; $skipped = 0
     foreach ($g in $groups) {
+        $why = Get-CtgMirrorSkipReason -Policy $Policy -Name ([string]$g.DisplayName) -IsSecurity ([string]$g.RecipientTypeDetails -eq 'MailUniversalSecurityGroup')
+        if ($why) { $skipped++; $actions.Add("not mirrored: $($g.DisplayName) — $why"); Write-CtgStep "– $($g.DisplayName) — $why"; continue }
         if (-not $PSCmdlet.ShouldProcess($NewUser, "Add to $($g.DisplayName)")) { continue }
         try {
             Add-DistributionGroupMember -Identity $g.Identity -Member $NewUser -BypassSecurityGroupManagerCheck -ErrorAction Stop
@@ -511,7 +526,7 @@ function Invoke-CtgExchangeDistListMirror {
             else { $actions.Add("WARN dist group '$($g.DisplayName)': $m"); Write-CtgStep "✗ group: $($g.DisplayName) — $m" }
         }
     }
-    $actions.Add("distribution/mail-enabled mirror from ${MirrorUser}: $copied added, $skipped on-prem (AD lane) — of $($groups.Count) cloud-only")
+    $actions.Add("distribution/mail-enabled mirror from ${MirrorUser}: $copied added, $skipped skipped (on-prem-synced, or held back by the mirror policy) — of $($groups.Count) cloud-only")
     return $actions.ToArray()
 }
 
@@ -741,7 +756,7 @@ function Invoke-CtgExchangeCloudOnboard {
     if ($names.Count -gt 0) { $g = Invoke-CtgExchangeNamedGroups -NewUser $email -Groups $names; if ($g) { $actions.AddRange([string[]]$g) } }
     else { $actions.Add("no distribution lists requested for this user") }
     $mirror = Get-CtgProp $Config 'mirrorFromUser'
-    if ($mirror) { $m = Invoke-CtgExchangeDistListMirror -MirrorUser $mirror -NewUser $email; if ($m) { $actions.AddRange([string[]]$m) } }
+    if ($mirror) { $m = Invoke-CtgExchangeDistListMirror -MirrorUser $mirror -NewUser $email -Policy (Get-CtgProp $Config 'mirrorPolicy'); if ($m) { $actions.AddRange([string[]]$m) } }
     return [pscustomobject]@{ System = 'exchange'; Status = 'ok'; Email = $email; Actions = $actions.ToArray() }
 }
 
@@ -813,7 +828,7 @@ function Invoke-CtgExchangeHybridOnboard {
     }
     $mirrorUser = Get-CtgProp $Config 'mirrorFromUser'
     if ($mirrorUser -and $enableEmail) {
-        try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enableEmail))) { $actions.Add($a) } }
+        try { foreach ($a in (Invoke-CtgExchangeDistListMirror -MirrorUser ([string]$mirrorUser) -NewUser ([string]$enableEmail) -Policy (Get-CtgProp $Config 'mirrorPolicy'))) { $actions.Add($a) } }
         catch { $actions.Add("WARN distribution mirror failed: $($_.Exception.Message)") }
     }
 

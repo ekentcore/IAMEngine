@@ -1789,6 +1789,60 @@ export function makeRunnerService(db: PrismaClient) {
       return out;
     },
 
+    // FR #81 — Google Workspace OU discovery. Same request/claim/report shape as the cloud groups
+    // above, claimed by the central runner (it holds the Google Admin SDK path) with the client's
+    // google-workspace secret brokered inline.
+    async requestGoogleOuDiscovery(clientSlug: string, actor: ActorInput = "ui"): Promise<{ ok: true }> {
+      const client = await db.client.findUnique({ where: { slug: clientSlug }, select: { id: true, systems: { where: { systemKey: "google-workspace" }, select: { id: true } } } });
+      if (!client) throw new HttpError(404, `unknown client ${clientSlug}`);
+      if (client.systems.length === 0) throw new HttpError(422, "this client has no google-workspace system to read OUs from");
+      await db.client.update({ where: { id: client.id }, data: { googleOusRequestedAt: new Date(), googleOusRequestedById: resolveActor(actor).userId } });
+      return { ok: true };
+    },
+
+    async claimGoogleOuDiscovery(agentId: string): Promise<{ clientSlug: string; primaryDomain: string; creds: Record<string, { fields?: Record<string, string>; note?: string }> }[]> {
+      const agent = await db.agent.findUnique({ where: { id: agentId }, select: { enabled: true, clientId: true } });
+      if (!agent) throw new HttpError(404, "unknown agent");
+      if (!agent.enabled || agent.clientId) return []; // central (cloud) runner only
+      const pending = await db.client.findMany({
+        where: { googleOusRequestedAt: { not: null }, systems: { some: { systemKey: "google-workspace" } } },
+        select: { id: true, slug: true, primaryDomain: true, systems: { where: { systemKey: "google-workspace" }, select: { secretNames: true } } },
+        take: 5,
+      });
+      if (pending.length === 0) return [];
+      await db.client.updateMany({ where: { id: { in: pending.map((c) => c.id) } }, data: { googleOusRequestedAt: null } });
+      const cfg = delineaConfigFromEnv();
+      const out = [];
+      for (const c of pending) {
+        const creds: Record<string, { fields?: Record<string, string>; note?: string }> = {};
+        for (const name of c.systems[0]?.secretNames ?? []) {
+          const sec = await db.secret.findUnique({ where: { clientId_name: { clientId: c.id, name } }, select: { externalId: true } });
+          const { externalId } = effectiveExternalId(name, null, sec?.externalId ?? null);
+          if (!externalId) { creds[name] = { note: "no usable secret reference" }; continue; }
+          if (!delineaConfigured(cfg)) { creds[name] = { note: "Delinea not configured on the app" }; continue; }
+          const resolved = await resolveSecretFields(cfg, externalId);
+          creds[name] = resolved.ok ? { fields: resolved.fields } : { note: resolved.error ?? "unresolved" };
+        }
+        out.push({ clientSlug: c.slug, primaryDomain: c.primaryDomain, creds });
+      }
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, action: "googleous.claim", detail: { clients: pending.map((c) => c.slug) } } });
+      return out;
+    },
+
+    async reportGoogleOus(agentId: string, clientSlug: string, ous: string[], error?: string | null): Promise<{ ok: true; count: number }> {
+      const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "Google OUs");
+      const clean = [...new Set(ous.filter((o) => typeof o === "string").map((o) => o.trim()).filter((o) => o.startsWith("/") && o !== "/"))].sort().slice(0, 5000);
+      // A failed read keeps the last good list (so the picker doesn't go empty) and records the error.
+      const prev = await db.client.findUnique({ where: { id: clientId }, select: { googleOus: true } });
+      const prevOus = ((prev?.googleOus ?? {}) as { ous?: string[] }).ous ?? [];
+      const value = error
+        ? { ous: prevOus, discoveredAt: ((prev?.googleOus ?? {}) as { discoveredAt?: string }).discoveredAt ?? null, error: String(error).slice(0, 500) }
+        : { ous: clean, discoveredAt: new Date().toISOString() };
+      const c = await db.client.update({ where: { id: clientId }, data: { googleOus: value }, select: { googleOusRequestedById: true } });
+      await db.auditLog.create({ data: { actor: `agent:${agentId}`, userId: c.googleOusRequestedById, action: "googleous.result", clientId, detail: { count: error ? 0 : clean.length, error: error ?? null } } });
+      return { ok: true, count: error ? 0 : clean.length };
+    },
+
     async reportCloudGroups(agentId: string, clientSlug: string, groups: { name: string; type: string }[]): Promise<{ ok: true; count: number }> {
       // Central-runner-only, no cross-client write — shared with reportCloudMailboxes.
       const clientId = await assertCentralAgentForClient(db, agentId, clientSlug, "cloud groups");

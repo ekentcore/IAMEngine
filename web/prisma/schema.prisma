@@ -120,6 +120,12 @@ model Client {
   cloudGroups            Json?
   cloudGroupsRequestedAt DateTime?
   cloudGroupsRequestedById  String? // who requested the last cloud discovery — see adDiscoverRequestedById
+  // Google Workspace OU paths discovered from the tenant (FR #81) to back the Google OU pickers —
+  // { ous: string[], discoveredAt, error? }. Same request-flag shape as cloudGroups: "Refresh Google
+  // OUs" sets googleOusRequestedAt, the CENTRAL runner claims it, reads orgunits and posts the result.
+  googleOus              Json?
+  googleOusRequestedAt   DateTime?
+  googleOusRequestedById String?
   // Shared mailboxes discovered from Exchange Online alongside the cloud groups (same "Refresh"
   // request flag; the central runner enumerates Get-Mailbox -RecipientTypeDetails SharedMailbox when
   // the m365-admin secret carries an EXO cert). Backs the per-client "default shared-mailbox access"
@@ -488,6 +494,13 @@ model CaseRequest {
   createdByUserId      String?
   createdByUser        User?      @relation("CaseCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   createdSource        CaseSource @default(manual)
+  // Per-case step selection (FR #173 / #134), set on the case's "Steps on this case" panel and applied
+  // by every plan and re-plan. requestedSystems turns ON an on-request (or by-persona) system the
+  // intake didn't signal — the runner otherwise has no way to know it was asked for. skippedSystems
+  // turns OFF a system this one case doesn't need. Columns, not payload keys: a re-plan re-pulls the
+  // ServiceNow ticket and replaces the payload wholesale, which would silently drop the choice.
+  requestedSystems     String[]   @default([])
+  skippedSystems       String[]   @default([])
   // WHO the ServiceNow ticket is assigned to — the ticket's own `assigned_to`, mirrored by the
   // assignee sweep (lib/jobs/assignee-sweep.ts) because the assignment happens in ServiceNow after
   // import, never here. Name is the sys_user display value, email its dot-walked email. Both null =
