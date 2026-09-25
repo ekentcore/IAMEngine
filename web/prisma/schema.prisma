@@ -191,6 +191,7 @@ model Client {
   connHealth      ConnHealthState[]
   userAccess      UserClientAccess[]
   setupCredentials ModuleSetupCredential[]
+  universalChoices UniversalChoice[]
 }
 
 model SystemCatalog {
@@ -1126,4 +1127,26 @@ model FleetM365TestRun {
   clients    Int      @default(0) // distinct clients swept
 
   @@index([scope, startedAt]) // "the latest sweep of this scope"
+}
+
+// One of a client's ServiceNow Universal Choices (the picklist entries on its onboarding form),
+// pulled by "Sync choices" and mapped BY HAND to the groups a hire who picks it should get. Keyed by
+// the choice's ServiceNow sys_id; question/label/value are refreshed on every sync, the mapping never
+// is. A choice ServiceNow no longer returns keeps its mapping and is marked goneAt, not deleted.
+model UniversalChoice {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  snSysId      String
+  question     String // "Cloud Applications", "Security Group", ...
+  label        String
+  value        String
+  m365Groups   String[]  @default([])
+  googleGroups String[]  @default([])
+  syncedAt     DateTime  @default(now())
+  goneAt       DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([clientId, snSysId])
+  @@index([clientId, question])
 }

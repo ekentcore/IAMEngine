@@ -1,6 +1,7 @@
 // Thin Prisma wrapper for the cases domain. Factory-style for testability, mirroring
 // lib/clients/repository.ts.
 import type { PrismaClient, ClientSystem, CaseStatus, Action } from "@prisma/client";
+import type { ChoiceMapping } from "../clients/universal-choices";
 import { Prisma } from "@prisma/client"; // value import — Prisma.DbNull is used at runtime
 import type { PlannedJob } from "../orchestrator";
 import type { AuditEntry } from "../clients/types";
@@ -121,6 +122,9 @@ async function wiredOptionalSecretNames(db: PrismaClient, clientId: string, pare
   return [...effective].filter(([name, id]) => ALL_OPTIONAL_SECRET_NAMES.has(name) && secretIsSet(id)).map(([name]) => name);
 }
 
+// The UniversalChoice columns the planner reads (lib/clients/universal-choices matchChoices).
+const UNIVERSAL_CHOICE_SELECT = { question: true, label: true, value: true, m365Groups: true, googleGroups: true } as const;
+
 export function makeCaseRepository(db: PrismaClient) {
   return {
     // Client + its systems + identity, needed to plan a case (identity/domain drive the UPN/
@@ -144,6 +148,7 @@ export function makeCaseRepository(db: PrismaClient) {
           engineOptOut: boolean;
           identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
           adObjects: unknown; cloudGroups: unknown;
+          universalChoices: ChoiceMapping[];
           intakeRules: unknown;
           notNeededSecrets: string[];
           wiredOptionalSecrets: string[];
@@ -158,6 +163,7 @@ export function makeCaseRepository(db: PrismaClient) {
           emailDomain: true, emailDomainLocked: true, serviceNowSysId: true, engineOptOut: true,
           identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
           adObjects: true, cloudGroups: true,
+          universalChoices: { select: UNIVERSAL_CHOICE_SELECT },
           intakeRules: true,
           parentId: true, inheritParentSystems: true, inheritParentModeling: true,
         },
@@ -261,6 +267,7 @@ export function makeCaseRepository(db: PrismaClient) {
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
             identity: unknown; personas: unknown; globals: unknown; globalsOffboard: unknown; locations: unknown; systems: ClientSystem[];
             adObjects: unknown; cloudGroups: unknown;
+            universalChoices: ChoiceMapping[];
             intakeRules: unknown;
             notNeededSecrets: string[];
             wiredOptionalSecrets: string[];
@@ -280,6 +287,7 @@ export function makeCaseRepository(db: PrismaClient) {
               emailDomain: true, emailDomainLocked: true, serviceNowSysId: true,
               identity: true, personas: true, globals: true, globalsOffboard: true, locations: true, systems: true,
               adObjects: true, cloudGroups: true,
+              universalChoices: { select: UNIVERSAL_CHOICE_SELECT },
               intakeRules: true,
               parentId: true,
               inheritParentSystems: true,

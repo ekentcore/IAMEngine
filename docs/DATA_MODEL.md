@@ -17,6 +17,11 @@ maps the ServiceNow intake forms to the `CaseRequest` payload.
   `offboardWhen` (always | on-request | by-persona | never), `dependsOn`, `requiresApproval`,
   `captureEvidence`, and a free-form `config` JSON for the per-client bits (license
   bundles, group lists, OU paths, mailbox thresholds, transfer targets).
+- UniversalChoice — one of a client's ServiceNow Universal Choices (the picklist entries on its
+  onboarding form): `question` / `label` / `value`, pulled by "Sync from ServiceNow", plus the
+  hand-mapped `m365Groups` / `googleGroups` a hire who picks it gets at plan time
+  (lib/clients/universal-choices). A sync never touches the mapping; a choice ServiceNow drops
+  is marked `goneAt`, not deleted.
 - Secret — per-client secret reference: `provider` (delinea) + `externalId` + label.
   Never a value. ClientSystem references secrets by name.
 - Agent — a registered runner. `scope` (central | client-network), `clientId` (null for

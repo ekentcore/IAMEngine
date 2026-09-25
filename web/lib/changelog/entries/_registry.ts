@@ -265,6 +265,7 @@ export { entry as starwarsEgg } from "./starwars-egg";
 export { entry as spanningPortalSecretSplit } from "./spanning-portal-secret-split";
 export { entry as systemsEditorKb } from "./systems-editor-kb";
 export { entry as tenFixHardeningBatch } from "./ten-fix-hardening-batch";
+export { entry as universalChoiceGroups } from "./universal-choice-groups";
 export { entry as unlicensedUserHoldsMimecastSpanning } from "./unlicensed-user-holds-mimecast-spanning";
 export { entry as unmodeledStepsBecomeManual } from "./unmodeled-steps-become-manual";
 export { entry as v2Offboarding } from "./v2-offboarding";

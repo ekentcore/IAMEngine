@@ -36,6 +36,7 @@ import { M365PasswordEditor } from "../_components/m365-password-editor";
 import { RolesRulesView } from "../_components/roles-rules-view";
 import { EditRulesButton } from "../_components/edit-rules-button";
 import { IntakeRulesEditor } from "../_components/intake-rules-editor";
+import { UniversalChoicesEditor } from "../_components/universal-choices-editor";
 import { SecretsPanel } from "../_components/secrets-panel";
 import { ConnectionTestPanel } from "../_components/connection-test-panel";
 import { ClientNotifyOverride } from "../_components/client-notify-override";
@@ -523,6 +524,8 @@ export default async function ClientDetailPage({ params }: { params: { slug: str
       />
 
       <IntakeRulesEditor slug={client.slug} systemKeys={client.systems.map((s) => s.systemKey)} />
+
+      <UniversalChoicesEditor slug={client.slug} />
 
       {readiness && readiness.tier !== "no_systems" && (
         <>
