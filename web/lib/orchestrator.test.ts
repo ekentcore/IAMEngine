@@ -379,3 +379,15 @@ test("offboard with no exchange system in the plan is unaffected", () => {
   const jobs = planCase(systems, "offboard", {});
   assert.deepEqual(jobs.find((j) => j.systemKey === "entra")!.dependsOn, ["m365"]);
 });
+
+// FR #122: the editor now writes per-lane dependencies (lib/clients/lane-deps). The planner must order
+// each lane by its own list — this is the promise the split "Depends on" fields rely on.
+test("per-lane dependsOn orders each lane independently", () => {
+  const systems = [
+    sys({ systemKey: "zoom", dependsOn: ["slack"], config: { dependsOn: { onboard: ["slack"], offboard: [] } } }),
+    sys({ systemKey: "slack", dependsOn: [], config: { dependsOn: { onboard: [], offboard: ["zoom"] } } }),
+  ];
+  const order = (action: "onboard" | "offboard") => planCase(systems, action, {}).map((j) => j.systemKey);
+  assert.deepEqual(order("onboard"), ["slack", "zoom"]);
+  assert.deepEqual(order("offboard"), ["zoom", "slack"]);
+});

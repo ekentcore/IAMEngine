@@ -83,6 +83,7 @@ export { entry as defaultSharedMailboxAccess } from "./default-shared-mailbox-ac
 export { entry as delineaSecretserverCloudCreateFix } from "./delinea-secretserver-cloud-create-fix";
 export { entry as delineaTemplateByName } from "./delinea-template-by-name";
 export { entry as delineaWriteFailManualModal } from "./delinea-write-fail-manual-modal";
+export { entry as dependsOnPerLane } from "./depends-on-per-lane";
 export { entry as directorySyncAddsRunbookStep } from "./directory-sync-adds-runbook-step";
 export { entry as directorySyncWaitsToFinish } from "./directory-sync-waits-to-finish";
 export { entry as dismissWarningsOnADoneCase } from "./dismiss-warnings-on-a-done-case";
