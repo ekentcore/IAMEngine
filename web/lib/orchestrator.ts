@@ -95,10 +95,14 @@ function identityPipelineDeps(
 }
 
 // Decide whether a system participates in this action, given the case payload.
-function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>, personaSystems?: ReadonlySet<string>): boolean {
+function included(cs: ClientSystem, action: Action, payload: Record<string, unknown>, personaSystems?: ReadonlySet<string>, requested?: ReadonlySet<string>): boolean {
   const when = action === "onboard" ? cs.onboardWhen : cs.offboardWhen;
   if (when === "never") return false;
   if (when === "always") return true;
+  // FR #173: an operator asked for this system on this case (CaseRequest.requestedSystems). Only
+  // conditional lanes can be requested — "never" means the client doesn't run the system in this lane
+  // at all, so there is no modeled step to turn on.
+  if (requested?.has(cs.systemKey)) return true;
   // by_persona: only when the selected persona's bundle lists this system (no persona -> excluded,
   // same shape as an unsignalled on_request). The key set comes from the caller via
   // personaSystemKeys() so persona selection stays centralized in buildPlanContext.
@@ -134,10 +138,13 @@ export function planCase(
   // The client's backbone (profile spelling "ad-standalone" or Prisma's "ad_standalone" — both
   // accepted, see STANDALONE). Only consulted to suppress the two synthetic hybrid-only steps below
   // for standalone clients; undefined means "not standalone", i.e. every caller's existing behaviour.
-  backbone?: string | null
+  backbone?: string | null,
+  // FR #173: on-request / by-persona systems an operator turned ON for this case (see included()).
+  // Skipping wins over requesting: skipSystems is applied first.
+  requestedSystems?: ReadonlySet<string>
 ): PlannedJob[] {
   const active = systems.filter(
-    (s) => !skipSystems?.has(s.systemKey) && included(s, action, payload, personaSystems)
+    (s) => !skipSystems?.has(s.systemKey) && included(s, action, payload, personaSystems, requestedSystems)
   );
   // Standalone: AD and the cloud are two separate accounts for one person, managed independently —
   // neither of the synthetic hybrid steps below makes sense there (FR #107).
