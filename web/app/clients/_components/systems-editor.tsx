@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { CATALOG } from "@/lib/generator/system-map";
 import { withOnboardOu } from "@/lib/clients/ad-folders";
 import { OuTreePicker } from "./ad-pickers";
+import { readLaneDeps, writeLaneDeps } from "@/lib/clients/lane-deps";
 import { copyText } from "@/lib/clipboard";
 
 type Lane = "always" | "on_request" | "never" | "by_persona";
@@ -17,7 +18,8 @@ type Row = {
   mode: Mode;
   onboardWhen: Lane;
   offboardWhen: Lane;
-  dependsOn: string[];
+  dependsOn: string[]; // FR #122: the ONBOARD order (and the shared fallback) — see lib/clients/lane-deps
+  dependsOnOffboard: string[]; // the OFFBOARD order; stored as a per-lane override only when it differs
   requiresApproval: boolean;
   captureEvidence: boolean;
   offboardIntent: "disable" | "destructive"; // offboard classification (config.intent.offboard)
@@ -50,7 +52,8 @@ const HELP = {
   mode: "How the step runs — api: automated via a Coretelligent.* module · browser: Playwright automation · manual: a human checklist item recorded on the case.",
   onboard: "When this system runs on ONBOARDING — always · on request (only when the intake asks for it) · by persona (only when the matched persona's systems list includes it — edit personas under Roles & rules) · never (not part of onboarding).",
   offboard: "When this system runs on OFFBOARDING — always · on request · by persona (only when the matched persona granted it) · never. Onboard and Offboard are the two runbooks; set each independently.",
-  depends: "System keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
+  depends: "ONBOARDING: system keys that must finish first (comma-separated). Drives run order — e.g. directory-sync depends on exchange, active-directory.",
+  dependsOffboard: "OFFBOARDING: system keys that must finish first (comma-separated). Set it separately when the offboard order differs from the onboard one; leave it the same and they're stored as one list.",
   approval: "Destructive step — gated server-side. The job won't run until an operator approves it on the case (offboarding deletes/disables).",
   evidence: "Before doing anything, snapshot the user's current state (group memberships, license/app assignments) and attach it to the case — so there's an audit trail and you can restore if needed. Mainly used on offboarding.",
   intent: "How destructive this system's OFFBOARD step is. disable = reversible containment (lock the account, isolate the device, revoke sessions) — undoable, and a candidate for future automation. destructive = actually deletes data (e.g. delete a mailbox) — always requires operator approval AND snapshots state first so it's redoable.",
@@ -95,6 +98,7 @@ function rowFromCatalog(key: string): Row {
     onboardWhen: mapLane(c?.onboard ?? null),
     offboardWhen: mapLane(c?.offboard ?? null),
     dependsOn: [],
+    dependsOnOffboard: [],
     requiresApproval: false,
     captureEvidence: false,
     offboardIntent: "disable",
@@ -170,8 +174,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           mode: sys.mode,
           onboardWhen: sys.onboardWhen,
           offboardWhen: sys.offboardWhen,
-          // round-trip dependsOn — without this, every save wiped it and broke topo-ordering
-          dependsOn: Array.isArray(sys.dependsOn) ? sys.dependsOn : [],
+          // round-trip dependsOn — without this, every save wiped it and broke topo-ordering. Split per
+          // lane (FR #122): a config.dependsOn.<lane> override wins for its lane, else the shared list.
+          ...(() => {
+            const d = readLaneDeps(Array.isArray(sys.dependsOn) ? (sys.dependsOn as string[]) : [], sys.config);
+            return { dependsOn: d.onboard, dependsOnOffboard: d.offboard };
+          })(),
           requiresApproval: Boolean(sys.requiresApproval),
           captureEvidence: Boolean(sys.captureEvidence),
           offboardIntent: ((sys.config as { intent?: { offboard?: unknown } } | null)?.intent?.offboard) === "destructive" ? "destructive" : "disable",
@@ -324,7 +332,12 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
           config = { ...config, offboard };
         }
       }
-      systems.push({ ...r, secretNames: r.secretNames, config });
+      // FR #122: the two Depends-on fields are authoritative for run order — one shared list when they
+      // match (stored exactly as before), a config.dependsOn per-lane override when they differ.
+      const deps = writeLaneDeps({ onboard: r.dependsOn, offboard: r.dependsOnOffboard }, config);
+      config = deps.config;
+      const { dependsOnOffboard: _lane, ...row } = r;
+      systems.push({ ...row, dependsOn: deps.dependsOn, secretNames: r.secretNames, config });
     }
     try {
       const res = await fetch(`/api/clients/${slug}/systems`, {
@@ -475,8 +488,11 @@ export function SystemsEditor({ slug, open, onClose }: { slug: string | null; op
                   <Field label="Offboard" help={HELP.offboard}>
                     <select value={r.offboardWhen} onChange={(e) => update(i, { offboardWhen: e.target.value as Lane })} style={{ ...LANE_STYLE[r.offboardWhen], fontWeight: 600 }}>{LANES.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}</select>
                   </Field>
-                  <Field label="Depends on" help={HELP.depends}>
+                  <Field label="Onboard depends on" help={HELP.depends}>
                     <input value={r.dependsOn.join(", ")} onChange={(e) => update(i, { dependsOn: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 150 }} />
+                  </Field>
+                  <Field label="Offboard depends on" help={HELP.dependsOffboard}>
+                    <input value={r.dependsOnOffboard.join(", ")} onChange={(e) => update(i, { dependsOnOffboard: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} placeholder="—" style={{ width: 150 }} />
                   </Field>
                   <Field label="Approval" help={HELP.approval}>
                     <input type="checkbox" style={{ width: "auto", height: 18 }} checked={r.requiresApproval} onChange={(e) => update(i, { requiresApproval: e.target.checked })} />

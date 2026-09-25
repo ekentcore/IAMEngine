@@ -82,3 +82,15 @@ test("an operator-edited UPN survives the FULL replan sequence (merge THEN deriv
   assert.equal(out.userPrincipalName, "jsmith@acme.com");
   assert.equal(out.samAccountName, "jsmith");
 });
+
+test("mergeOperatorEdits keeps fieldEditedAt, so an operator Username keeps its edit time across a re-pull", () => {
+  const fresh = { userPrincipalName: "jsmith@acme.com" };
+  const persisted = {
+    userPrincipalName: "jsmith2@acme.com",
+    fieldSource: { userPrincipalName: "operator" },
+    fieldEditedAt: { userPrincipalName: "2026-09-23T15:00:00.000Z" },
+  };
+  const merged = mergeOperatorEdits(fresh, persisted);
+  assert.equal(merged.userPrincipalName, "jsmith2@acme.com");
+  assert.deepEqual(merged.fieldEditedAt, { userPrincipalName: "2026-09-23T15:00:00.000Z" });
+});

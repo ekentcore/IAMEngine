@@ -256,6 +256,7 @@ export function makeCaseRepository(db: PrismaClient) {
     async replanInputs(caseId: string): Promise<
       | { serviceNowCaseNumber: string | null; action: Action; payload: Record<string, unknown>;
           emailDomainOverride: string | null;
+          requestedSystems: string[]; skippedSystems: string[];
           client: {
             id: string; slug: string; primaryDomain: string; backbone: string | null;
             emailDomain: string | null; emailDomainLocked: boolean; serviceNowSysId: string | null;
@@ -270,7 +271,7 @@ export function makeCaseRepository(db: PrismaClient) {
       const c = await db.caseRequest.findUnique({
         where: { id: caseId },
         select: {
-          serviceNowCaseNumber: true, action: true, payload: true, emailDomainOverride: true,
+          serviceNowCaseNumber: true, action: true, payload: true, emailDomainOverride: true, requestedSystems: true, skippedSystems: true,
           client: {
             select: {
               // `backbone` must stay in this select: the planner's ad_synced injections (the FR#36
@@ -305,6 +306,7 @@ export function makeCaseRepository(db: PrismaClient) {
         action: c.action,
         payload: (c.payload ?? {}) as Record<string, unknown>,
         emailDomainOverride: c.emailDomainOverride,
+        requestedSystems: c.requestedSystems, skippedSystems: c.skippedSystems,
         client: { ...inherited, notNeededSecrets, wiredOptionalSecrets },
         started: hasStartedJobs(c.jobs),
       };

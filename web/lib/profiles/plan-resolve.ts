@@ -462,13 +462,33 @@ export function resolvePlannedConfigs(
     return { ...j, config: { ...cfg, defaultSharedMailboxes: base } };
   });
 
+  // FR #118 + #119: the sharepoint step honours the mirror policy's "never mirror" list
+  // (config.mirrorPolicy.exclude) too. Its own policy wins; without one it inherits the cloud lane's
+  // (m365, else entra) — the policy is set on those rows, and a group like ChatGPT is exactly the kind
+  // that also shows up as a SharePoint site group. Only `exclude` carries over: `securityOnly` means
+  // nothing for a site group.
+  const sharepointMirrorPolicy = (j: PlannedJob): Record<string, unknown> | null => {
+    const own = ((j.config as Record<string, unknown> | null) ?? {}).mirrorPolicy;
+    if (own && typeof own === "object") return null; // already on the job — leave it be
+    for (const key of ["m365", "entra"]) {
+      const lane = withSharedMailboxes.find((x) => x.systemKey === key);
+      const policy = ((lane?.config as Record<string, unknown> | null) ?? {}).mirrorPolicy as { exclude?: unknown } | undefined;
+      const exclude = strList(policy?.exclude);
+      if (exclude.length > 0) return { exclude };
+    }
+    return null;
+  };
+
   const withMirror = !mirror
     ? withSharedMailboxes
-    : withSharedMailboxes.map((j) =>
-        DIRECTORY_SYSTEMS.has(j.systemKey)
-          ? { ...j, config: { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror } }
-          : j
-      );
+    : withSharedMailboxes.map((j) => {
+        // FR #118: sharepoint mirrors the reference user's SITE groups (the directory lanes cover the rest).
+        if (!DIRECTORY_SYSTEMS.has(j.systemKey) && j.systemKey !== "sharepoint") return j;
+        const cfg: Record<string, unknown> = { ...((j.config as Record<string, unknown> | null) ?? {}), mirrorFromUser: mirror };
+        const inherited = j.systemKey === "sharepoint" ? sharepointMirrorPolicy(j) : null;
+        if (inherited) cfg.mirrorPolicy = inherited;
+        return { ...j, config: cfg };
+      });
 
   // Re-hire (FR #3): "Is this a Re-Hire = Yes" means the person USED to exist here, so an executor
   // finding a same-name account is the EXPECTED outcome — adopt it (enable, stamp, reconcile)

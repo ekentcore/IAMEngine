@@ -47,6 +47,7 @@ import { runnerBuildId } from "../runner/bundle";
 import { agentBuildIsCurrent, autoUpdateDecision, AGENT_AUTO_UPDATE_KEY } from "./agent-updates";
 import { decideAutoRetry, type AutoRetryMarker } from "./auto-retry";
 import { applyAdStandaloneUpn } from "./ad-standalone-upn";
+import { sharepointAccountDecision, type SharepointAccountFields } from "./provisioned-upn";
 import { resolveActor, type ActorInput } from "../auth/actor";
 import { planTokenRefresh, planTokenConfirm } from "./agent-token-refresh";
 
@@ -1179,6 +1180,35 @@ export function makeRunnerService(db: PrismaClient) {
         }
       }
 
+      // SharePoint site-group mirror (FR #118): the new hire may have been created at a FALLBACK username
+      // (the primary belonged to someone else). Hand the sharepoint step the account the m365/entra step
+      // actually created, so the mirror can never land on the other person. Every status and mode is
+      // read, with each job's last run time and its latest failed outcome, so the decision knows
+      // whether to wait, require a fresh operator-set Username, or allow a sole candidate. See
+      // sharepointAccountDecision in provisioned-upn.ts.
+      const spCases = claimed.filter((j) => j.systemKey === "sharepoint" && j.case.action === "onboard");
+      const spCaseIds = [...new Set(spCases.map((j) => j.caseRequestId))];
+      const spFieldsByCase = new Map<string, SharepointAccountFields>();
+      if (spCaseIds.length > 0) {
+        const cloud = await db.job.findMany({
+          where: { caseRequestId: { in: spCaseIds }, systemKey: { in: ["m365", "entra"] } },
+          select: { caseRequestId: true, systemKey: true, status: true, mode: true, result: true, startedAt: true, progressAt: true },
+        });
+        const failures = await db.runOutcome.findMany({
+          where: { caseRequestId: { in: spCaseIds }, systemKey: { in: ["m365", "entra"] }, status: "failed", validateOnly: false },
+          orderBy: { at: "desc" },
+          select: { caseRequestId: true, systemKey: true, at: true, resolvedAt: true },
+        });
+        for (const id of spCaseIds) {
+          const siblings = cloud.filter((c) => c.caseRequestId === id).map((c) => ({
+            ...c,
+            latestFailure: failures.find((f) => f.caseRequestId === id && f.systemKey === c.systemKey) ?? null,
+          }));
+          const payload = (spCases.find((j) => j.caseRequestId === id)!.case.payload ?? {}) as Record<string, unknown>;
+          spFieldsByCase.set(id, sharepointAccountDecision(siblings, payload));
+        }
+      }
+
       // Offboard manager hand-off: exchange grants the departing user's MANAGER Full Access to the
       // converted shared mailbox (delegateManagerFullAccess). It normally runs first and reads the live
       // directory link — but if it runs AFTER active-directory (a re-run, or a first attempt that
@@ -1364,6 +1394,8 @@ export function makeRunnerService(db: PrismaClient) {
             ? { ...casePayload, cloudObject: cloudByCase.get(j.caseRequestId) ?? cloudObjectFor(null) }
             : capturedManager
             ? { ...casePayload, managerEmail: capturedManager }
+            : j.systemKey === "sharepoint" && spFieldsByCase.has(j.caseRequestId)
+            ? { ...casePayload, ...spFieldsByCase.get(j.caseRequestId)! }
             : j.case.payload;
         // AD-STANDALONE domain separation (FR #83/#107): on the on-prem lane, hand the AD-domain UPN
         // instead of the mail-domain one. Wraps the chain above (not another arm of it) so

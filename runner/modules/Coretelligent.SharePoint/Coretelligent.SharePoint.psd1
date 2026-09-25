@@ -7,7 +7,7 @@
     Description       = 'App-only SharePoint/OneDrive access via PnP.PowerShell, reusing the m365-admin certificate — offboard hand-off (grant a manager/delegate full access to a leaver''s content).'
     PowerShellVersion = '7.0'
 
-    FunctionsToExport = @('Connect-CtgSharePointPnP', 'Grant-CtgSharePointSiteAccess', 'Get-CtgOneDriveSiteUrl', 'Test-CtgOffboardResolved', 'Invoke-CtgSharePointOffboardGrant', 'Test-CtgDelegateUnambiguous', 'Invoke-CtgPnPGrantOutOfProcess', 'ConvertFrom-CtgPnPGrantOutput')
+    FunctionsToExport = @('Connect-CtgSharePointPnP', 'Get-CtgSharePointSiteUrls', 'Invoke-CtgSharePointSiteGroupsOffboard', 'Invoke-CtgSharePointSiteGroupsMirror', 'Invoke-CtgSharePointSiteGroupsStep', 'Invoke-CtgSharePointSiteGroupsWalk', 'Invoke-CtgSharePointSiteWalkOutOfProcess', 'Grant-CtgSharePointSiteAccess', 'Get-CtgOneDriveSiteUrl', 'Test-CtgOffboardResolved', 'Invoke-CtgSharePointOffboardGrant', 'Test-CtgDelegateUnambiguous', 'Invoke-CtgPnPGrantOutOfProcess', 'ConvertFrom-CtgPnPGrantOutput')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()
