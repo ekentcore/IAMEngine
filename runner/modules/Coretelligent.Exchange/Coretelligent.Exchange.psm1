@@ -845,6 +845,54 @@ function Wait-CtgMailbox {
     }
 }
 
+# FR #0000176: the departing user's cloud distribution lists / mail-enabled security groups, read from
+# the USER's side instead of by walking every DL in the tenant. Returns
+# { Groups = @({ Identity; DisplayName }); Skipped = @(notes); Source; Error }.
+#   1) Microsoft Graph memberOf — the exchange lane binds Graph to THIS client before connecting EXO.
+#      The user is looked up by the EXO recipient's ExternalDirectoryObjectId, not the UPN, so a Graph
+#      session left on another tenant can only miss (404 -> fallback), never return someone else's groups.
+#      Keeps mail-enabled, non-Unified groups (Unified/M365 groups are Graph-writable — the M365 step
+#      removes them, FR#37); skips on-prem-synced (the AD step owns them) and dynamic (rule-managed) ones.
+#   2) Exchange's own server-side filter (Members -eq '<DN>') — one query, when Graph is not available.
+function Get-CtgExchangeUserDistributionGroups {
+    param([Parameter(Mandatory)][string]$Upn)
+    $skipped = [System.Collections.Generic.List[string]]::new()
+    $rcpt = Get-Recipient -Identity $Upn -ErrorAction SilentlyContinue
+    $objId = [string](Get-CtgProp $rcpt 'ExternalDirectoryObjectId')
+    if ($objId -and (Get-Command Get-MgUserMemberOf -ErrorAction SilentlyContinue)) {
+        try {
+            $groups = @(foreach ($g in @(Get-MgUserMemberOf -UserId $objId -All -ErrorAction Stop)) {
+                $ap = Get-CtgProp $g 'AdditionalProperties'
+                if ((Get-CtgProp $ap '@odata.type') -ne '#microsoft.graph.group') { continue }   # directory roles, admin units
+                if (-not [bool](Get-CtgProp $ap 'mailEnabled')) { continue }                     # security group: the M365 step removes it
+                $types = @(Get-CtgProp $ap 'groupTypes')
+                if ($types -contains 'Unified') { continue }                                     # M365 group: the M365 step removes it (FR#37)
+                $name = [string](Get-CtgProp $ap 'displayName')
+                if ([bool](Get-CtgProp $ap 'onPremisesSyncEnabled')) { $skipped.Add("skipped on-prem-synced distribution list: $name — removed by the AD step"); continue }
+                if ($types -contains 'DynamicMembership') { $skipped.Add("skipped dynamic distribution list: $name — membership is rule-managed"); continue }
+                # The group's address is an identity Exchange documents; the Entra object id is the fallback.
+                [pscustomobject]@{ Identity = [string]((Get-CtgProp $ap 'mail') ?? $g.Id); DisplayName = $name }
+            })
+            return [pscustomobject]@{ Groups = $groups; Skipped = $skipped.ToArray(); Source = 'Microsoft Graph'; Error = $null }
+        }
+        catch { Write-CtgStep "Graph membership read failed ($($_.Exception.Message)) — asking Exchange instead" }
+    }
+    $dn = [string](Get-CtgProp $rcpt 'DistinguishedName')
+    if (-not $dn) { return [pscustomobject]@{ Groups = @(); Skipped = @(); Source = 'Exchange'; Error = "no Exchange recipient found for $Upn" } }
+    $safe = $dn -replace "'", "''"
+    try {
+        $hits = @(Get-Recipient -ResultSize Unlimited -Filter "Members -eq '$safe'" -ErrorAction Stop |
+            Where-Object { (Get-CtgProp $_ 'RecipientTypeDetails') -in @('MailUniversalDistributionGroup', 'MailUniversalSecurityGroup', 'RoomList') })
+    }
+    catch { return [pscustomobject]@{ Groups = @(); Skipped = @(); Source = 'Exchange'; Error = "$($_.Exception.Message)" } }
+    $groups = @(foreach ($h in $hits) {
+        $name = [string](Get-CtgProp $h 'DisplayName')
+        if ([bool](Get-CtgProp $h 'IsDirSynced')) { $skipped.Add("skipped on-prem-synced distribution list: $name — removed by the AD step"); continue }
+        [pscustomobject]@{ Identity = (Get-CtgProp $h 'Identity'); DisplayName = $name }
+    })
+    [pscustomobject]@{ Groups = $groups; Skipped = $skipped.ToArray(); Source = 'Exchange'; Error = $null }
+}
+
 function Invoke-CtgExchangeOffboarding {
     <#
     .SYNOPSIS
@@ -1191,27 +1239,34 @@ function Invoke-CtgExchangeOffboarding {
     }
 
     # 5. Remove from CLOUD distribution lists / mail-enabled groups (Graph can't change these; the
-    # Entra step routed them here). Only IsDirSynced=$false ones — on-prem-synced DLs are removed by
-    # the AD step. Config removeDistributionGroups (default on). Scans the DLs the user belongs to.
+    # Entra step routed them here). Only cloud-mastered ones — on-prem-synced DLs are removed by the AD
+    # step. Config removeDistributionGroups (default on). FR #0000176: ask for the USER's groups
+    # (Get-CtgExchangeUserDistributionGroups) instead of reading every DL in the tenant and then every
+    # DL's member list — one lookup, not one per DL, which on a large tenant was minutes of a stalled step.
     if ((Get-CtgProp $Config 'removeDistributionGroups') -ne $false) {
-        Write-CtgStep "scanning cloud distribution lists for '$upn' memberships…"
-        $dls = @(Get-DistributionGroup -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object { -not (Get-CtgProp $_ 'IsDirSynced') })
-        $checked = 0; $removed = 0
-        foreach ($dl in $dls) {
-            $checked++
-            $members = @(Get-DistributionGroupMember -Identity $dl.Identity -ResultSize Unlimited -ErrorAction SilentlyContinue)
-            $isMember = @($members | ForEach-Object { [string](Get-CtgProp $_ 'PrimarySmtpAddress') }) -contains $upn
-            if (-not $isMember) { continue }
+        Write-CtgStep "looking up '$upn''s distribution list memberships…"
+        $dlLookup = Get-CtgExchangeUserDistributionGroups -Upn $upn
+        $removed = 0
+        if ($dlLookup.Error) {
+            $actions.Add("WARN could not read $upn's distribution lists ($($dlLookup.Error)) — the user may STILL BE IN some; re-run this step or remove them by hand")
+        }
+        foreach ($dl in $dlLookup.Groups) {
             if ($PSCmdlet.ShouldProcess($dl.DisplayName, "Remove $upn from distribution list")) {
                 try {
                     Remove-DistributionGroupMember -Identity $dl.Identity -Member $upn -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop
                     $actions.Add("removed from cloud distribution list: $($dl.DisplayName)")
                     $removed++
                 }
-                catch { $actions.Add("WARN could not remove from DL $($dl.DisplayName): $($_.Exception.Message)") }
+                catch {
+                    $m = "$($_.Exception.Message)"
+                    # Idempotent end-state: already not a member (a re-run, or someone got there first).
+                    if ($m -match 'not a member|MemberNotFound|couldn.t be found') { $actions.Add("already not a member of $($dl.DisplayName) (skipped)") }
+                    else { $actions.Add("WARN could not remove from DL $($dl.DisplayName): $m") }
+                }
             }
         }
-        $actions.Add("scanned $checked cloud distribution list(s); removed from $removed")
+        foreach ($sk in $dlLookup.Skipped) { $actions.Add($sk) }
+        if (-not $dlLookup.Error) { $actions.Add("found $($dlLookup.Groups.Count) cloud distribution list(s) via $($dlLookup.Source); removed from $removed") }
     }
 
     # -a ADMIN-ACCOUNT SWEEP (config.adminAccountSuffix, e.g. '-a'): the person may hold a privileged

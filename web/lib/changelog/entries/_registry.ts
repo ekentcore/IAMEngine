@@ -195,6 +195,7 @@ export { entry as offboardClearsManagerInEntra } from "./offboard-clears-manager
 export { entry as offboardCaseOutOfOffice } from "./offboard-case-out-of-office";
 export { entry as offboardConvertBeforeLicense } from "./offboard-convert-before-license";
 export { entry as offboardConvertByDefault } from "./offboard-convert-by-default";
+export { entry as offboardDistributionListsLookup } from "./offboard-distribution-lists-lookup";
 export { entry as offboardHideFromGal } from "./offboard-hide-from-gal";
 export { entry as offboardIdentityResolution } from "./offboard-identity-resolution";
 export { entry as offboardLicenceFleetSweep } from "./offboard-licence-fleet-sweep";

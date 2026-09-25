@@ -27,6 +27,7 @@ BeforeAll {
     function global:Get-Recipient { [CmdletBinding()] param($Identity, $Filter, $ResultSize) }
     function global:Get-User { [CmdletBinding()] param($Identity) }
     function global:Get-MgUserManager { [CmdletBinding()] param($UserId) } # Entra manager link (Graph)
+    function global:Get-MgUserMemberOf { [CmdletBinding()] param($UserId, [switch]$All) } # the user's groups (Graph) — FR #176
     function global:Add-DistributionGroupMember { [CmdletBinding()] param($Identity, $Member, [switch]$BypassSecurityGroupManagerCheck) }
     function global:Get-DistributionGroup { [CmdletBinding()] param($Identity, $ResultSize, $Filter) }
     function global:Get-DistributionGroupMember { [CmdletBinding()] param($Identity, $ResultSize) }
@@ -503,21 +504,91 @@ Describe 'Invoke-CtgExchangeOffboarding' {
         ($r.Actions -join ' ') | Should -Match 'already has Full Access'
     }
 
-    It 'removes the user from CLOUD distribution lists, skipping on-prem-synced ones' {
+    # FR #0000176: the leaver's DLs come from ONE membership lookup, never a walk of every DL in the tenant.
+    It 'FR #176: reads the user''s groups from Graph (no tenant-wide DL scan) and removes only the cloud DLs' {
         Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
-        Mock Get-DistributionGroup -ModuleName Coretelligent.Exchange -MockWith {
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'jdoe@61commodities.com' } -MockWith {
+            [pscustomobject]@{ ExternalDirectoryObjectId = 'u-1'; DistinguishedName = 'CN=jdoe,OU=x' }
+        }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.Exchange -ParameterFilter { $UserId -eq 'u-1' } -MockWith {
+            $grp = {
+                param($id, $name, $mail, [bool]$mailEnabled, [string[]]$types, [bool]$onPrem, $odata = '#microsoft.graph.group')
+                $ap = [System.Collections.Generic.Dictionary[string, object]]::new()
+                $ap['@odata.type'] = $odata; $ap['displayName'] = $name; $ap['mail'] = $mail; $ap['mailEnabled'] = $mailEnabled
+                $ap['groupTypes'] = $types; $ap['onPremisesSyncEnabled'] = $(if ($onPrem) { $true } else { $null })
+                [pscustomobject]@{ Id = $id; AdditionalProperties = $ap }
+            }
             @(
-                [pscustomobject]@{ Identity = 'cloud-dl'; DisplayName = 'Notifications'; IsDirSynced = $false }
-                [pscustomobject]@{ Identity = 'synced-dl'; DisplayName = 'TechStaff'; IsDirSynced = $true }   # on-prem -> AD removes it
+                (& $grp 'g-dl'   'Notifications'  'notify@61commodities.com' $true  @()                    $false)   # cloud DL -> remove
+                (& $grp 'g-sync' 'TechStaff'      'tech@61commodities.com'   $true  @()                    $true)    # on-prem -> AD step
+                (& $grp 'g-m365' 'Team Site'      'team@61commodities.com'   $true  @('Unified')           $false)   # M365 group -> M365 step
+                (& $grp 'g-sec'  'VPN Users'      $null                      $false @()                    $false)   # security -> M365 step
+                (& $grp 'g-dyn'  'All Staff'      'all@61commodities.com'    $true  @('DynamicMembership') $false)   # rule-managed
+                (& $grp 'r-1'    'Helpdesk Admin' $null                      $false @()                    $false '#microsoft.graph.directoryRole')
             )
         }
-        Mock Get-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { @([pscustomobject]@{ PrimarySmtpAddress = 'jdoe@61commodities.com' }) }
+        Mock Get-DistributionGroup -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Get-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
         Mock Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
         $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ removeDistributionGroups = $true })
-        # only the cloud DL is touched; the synced one is skipped (filtered out before the member check)
+        Should -Invoke Get-DistributionGroup -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        Should -Invoke Get-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'notify@61commodities.com' -and $Member -eq 'jdoe@61commodities.com' } -Times 1 -Exactly
+        Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 1 -Exactly
+        $a = $r.Actions -join ' | '
+        $a | Should -Match 'removed from cloud distribution list: Notifications'
+        $a | Should -Match 'skipped on-prem-synced distribution list: TechStaff'
+        $a | Should -Match 'skipped dynamic distribution list: All Staff'
+        $a | Should -Match 'found 1 cloud distribution list\(s\) via Microsoft Graph; removed from 1'
+        $a | Should -Not -Match 'WARN'
+    }
+
+    It 'FR #176: without Graph, asks Exchange for the user''s groups in ONE filtered query (no scan)' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'jdoe@61commodities.com' } -MockWith {
+            [pscustomobject]@{ ExternalDirectoryObjectId = 'u-1'; DistinguishedName = "CN=O'Doe,OU=x" }
+        }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.Exchange -MockWith { throw 'Authentication needed. Please call Connect-MgGraph.' }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter -eq "Members -eq 'CN=O''Doe,OU=x'" } -MockWith {
+            @(
+                [pscustomobject]@{ Identity = 'cloud-dl';  DisplayName = 'Notifications'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $false }
+                [pscustomobject]@{ Identity = 'synced-dl'; DisplayName = 'TechStaff';     RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $true }
+                [pscustomobject]@{ Identity = 'm365';      DisplayName = 'Team Site';     RecipientTypeDetails = 'GroupMailbox';                   IsDirSynced = $false }
+            )
+        }
+        Mock Get-DistributionGroup -ModuleName Coretelligent.Exchange -MockWith { }
+        Mock Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ removeDistributionGroups = $true })
+        Should -Invoke Get-DistributionGroup -ModuleName Coretelligent.Exchange -Times 0 -Exactly
         Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'cloud-dl' } -Times 1 -Exactly
         Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 1 -Exactly
-        ($r.Actions -join ' ') | Should -Match 'removed from cloud distribution list: Notifications'
+        ($r.Actions -join ' | ') | Should -Match 'found 1 cloud distribution list\(s\) via Exchange; removed from 1'
+    }
+
+    It 'FR #176: a re-run where the user already left the DL is done, not a warning' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'jdoe@61commodities.com' } -MockWith { [pscustomobject]@{ DistinguishedName = 'CN=jdoe,OU=x' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter } -MockWith {
+            [pscustomobject]@{ Identity = 'cloud-dl'; DisplayName = 'Notifications'; RecipientTypeDetails = 'MailUniversalDistributionGroup'; IsDirSynced = $false }
+        }
+        Mock Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { throw "The recipient jdoe@61commodities.com isn't a member of the group Notifications. MemberNotFoundException" }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ removeDistributionGroups = $true })
+        $a = $r.Actions -join ' | '
+        $a | Should -Match 'already not a member of Notifications'
+        $a | Should -Not -Match 'WARN could not remove'
+    }
+
+    It 'FR #176: when neither Graph nor Exchange can list the groups, it WARNS instead of reporting none' {
+        Mock Get-MailboxStatistics -ModuleName Coretelligent.Exchange -MockWith { [pscustomobject]@{ TotalItemSize = '1 GB (1,073,741,824 bytes)' } }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Identity -eq 'jdoe@61commodities.com' } -MockWith { [pscustomobject]@{ ExternalDirectoryObjectId = 'u-1'; DistinguishedName = 'CN=jdoe,OU=x' } }
+        Mock Get-MgUserMemberOf -ModuleName Coretelligent.Exchange -MockWith { throw 'throttled' }
+        Mock Get-Recipient -ModuleName Coretelligent.Exchange -ParameterFilter { $Filter } -MockWith { throw 'server busy' }
+        Mock Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -MockWith { }
+        $r = Invoke-CtgExchangeOffboarding -User $user -Config ([pscustomobject]@{ removeDistributionGroups = $true })
+        Should -Invoke Remove-DistributionGroupMember -ModuleName Coretelligent.Exchange -Times 0 -Exactly
+        $a = $r.Actions -join ' | '
+        $a | Should -Match "WARN could not read jdoe@61commodities.com's distribution lists \(server busy\)"
+        $a | Should -Not -Match 'found 0'
     }
 
     It 'looks the manager up from the DIRECTORY when the case has none, and grants Full Access' {
@@ -567,7 +638,7 @@ Describe 'Invoke-CtgExchangeOffboarding' {
             [pscustomobject]@{ PrimarySmtpAddress = 'emcphillips@core.tech' }
         }
         $u = [pscustomobject]@{ UserPrincipalName = 'ahoule@core.tech'; managerName = 'Elizabeth McPhillips' }
-        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true })
+        $r = Invoke-CtgExchangeOffboarding -User $u -Config ([pscustomobject]@{ delegateManagerFullAccess = $true; removeDistributionGroups = $false })
         Should -Invoke Add-MailboxPermission -ModuleName Coretelligent.Exchange -Times 1 -ParameterFilter { $User -eq 'emcphillips@core.tech' -and @($AccessRights) -contains 'FullAccess' }
         ($r.Actions -join ' ') | Should -Match "resolved manager 'Elizabeth McPhillips' from the case -> emcphillips@core.tech"
     }

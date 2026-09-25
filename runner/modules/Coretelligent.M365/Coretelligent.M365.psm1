@@ -1976,8 +1976,8 @@ function Invoke-CtgM365Offboarding {
     #   - on-prem-synced groups are AD-mastered -> the active-directory step removes them
     #   - mail-enabled DLs / mail-enabled security groups are managed in Exchange (Graph can't
     #     change membership) — EXCEPT Unified (M365) groups, which are mail-enabled but
-    #     Graph-removable (FR#37: the Exchange DL sweep enumerates Get-DistributionGroup, which
-    #     never returns Unified groups, so skipping them here left them on the leaver forever;
+    #     Graph-removable (FR#37: the Exchange DL step removes mail-enabled NON-Unified groups only, so
+    #     skipping Unified ones here left them on the leaver forever;
     #     the onboard mirror already routes them this way)
     #   - dynamic groups are rule-managed -> a member can't be removed at all (even Unified+dynamic)
     if ((Get-CtgProp $Config 'removeAllGroups') -ne $false) {
