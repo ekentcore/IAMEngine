@@ -4,7 +4,7 @@ IAM Engine Automated user onboarding and offboarding across your identity and Sa
 
 Client overview · summary · Prepared for client review
 
-Version 3.0 · 24 July 2026. This edition retires the dry-run mode in favour of staged read-only verification, moves runners to per-agent authentication, and adds the privileged secondary-account sweep on offboarding and the runbook-detail automation on onboarding. A full list of changes is in the version history at the end of this document.
+Version 4.0 · 30 September 2026. This edition records that offboarding now removes Active Directory group memberships by default, that a ticket naming several people for a mailbox or OneDrive now reaches all of them, and that the out-of-office message, mail forwarding and requested shared mailboxes a ticket asks for are now applied. It documents the attribute rules on the Microsoft 365 lane, the manual steps for runbook sections we have not automated, and one deliberate policy change on mailbox conversion whose cost is stated in full. A full list of changes is in the version history at the end.
 
 ### What this document covers
 
@@ -165,11 +165,35 @@ A typical onboarding plan for an organization with on-premises Active Directory 
 
 The line items runbooks tend to leave as hand work are carried as per-client configuration and executed on the same case: mailbox-auditing settings applied to every new mailbox, standing calendar delegates (a named account granted Reviewer on every new hire's calendar), and per-office groups and printers. These are data, not scripts: every action or permission name is validated against the vendor's own allowlist before it is applied. An operator can also add one-off extras to a single case (an "Additional groups" field at review time), which pass the same protected-groups safety filter as everything else.
 
+### Your attribute rules apply to Microsoft 365, not only Active Directory
+
+The attributes you configure with roles and rules — title, department, office, address, company, mobile — are written to the Microsoft 365 account. Earlier editions built a fixed list of fields from the ticket on that lane and never read your rules at all, so anything you had configured for a cloud-only client was silently ignored. The names you have already entered keep working; they are translated to what Microsoft expects.
+
+Where a rule and the ticket disagree, the rule wins, and the case says so in as many words — "JobTitle = 'Analyst' (rule) overrode 'Engineer' (ticket)". An attribute Microsoft 365 cannot write, such as extensionAttribute4 or ipPhone, is named on the case as skipped rather than disappearing without comment; those stay mastered by Active Directory. Offboard attribute rules apply on the cloud lane too, for whichever of them Microsoft 365 can actually write.
+
+### Correcting a field re-runs the rules that depend on it
+
+Correct something the ticket got wrong — department, job title, location, employment type — and the rules and personas keyed on it re-run, so groups, licences, attributes and OU follow the corrected value. Previously the new value was saved and every rule kept firing on the ticket's original, so the correction quietly did not take. This applies to a case that has not started yet; a case already running is not reshaped underneath itself, and keeps its Re-plan button.
+
+An operator's own corrections survive that re-run. An edited username, login name, mail nickname or work email is preserved rather than being reverted to the pattern-generated form.
+
+### The manager is matched on their email address
+
+A manager's name arrives from the ticket subject to a character limit, so a long name arrives cut off and matched nobody — and the step did not fail, it warned and carried on, so onboarding finished with no manager set and the case looked clean. The manager is now matched on the email address the ticket already carries, falling back to the name where the contact record has no address.
+
 ### On a synced tenant, the account must come from your directory
 
-For a client whose identities sync up from on-premises Active Directory, the Microsoft 365 step adopts the account the sync delivers and never creates a cloud one — so a mistyped on-premises address can no longer cause a silent duplicate cloud identity. If the expected account has not appeared, the case pauses with a decision for an operator rather than guessing. Where a particular hire genuinely needs a cloud-created account, an operator can allow it for that one case, or the client can be configured to always allow it.
+For a client whose identities sync up from on-premises Active Directory, the Microsoft 365 step adopts the account the sync delivers and never creates a cloud one — so a mistyped on-premises address can no longer cause a silent duplicate cloud identity. If the expected account has not appeared, the case pauses with a decision for an operator rather than guessing. Where every candidate username is already taken, the case now offers **Adopt** or **Different person** instead of dead-ending: the account on the primary username is often the right person under a slightly different display name — a middle initial, a maiden name, a "Last, First" directory import. Answering "different person" brings back the plain error, because at that point a fallback username pattern really is the fix. Where a particular hire genuinely needs a cloud-created account, an operator can allow it for that one case, or the client can be configured to always allow it.
+
+### Runbook sections we have not automated appear as manual steps
+
+A runbook section the engine has not modelled as a system — Dropsuite, Box, Verizon, LogMeIn, Salesforce, Visual Studio subscriptions — used to vanish from the case entirely. It now appears as a manual step carrying your runbook's own instructions, and holds the case open until it is ticked off. The Run Report is therefore the whole checklist rather than only the automated part of it.
+
+There are 241 of these across 134 client-and-action pairs, so most cases gain one step and a few gain several. They were always work somebody had to do; they were simply not written anywhere the case could see them.
 
 ### Licensing and address collisions explain themselves
+
+When there is no free licence seat, the account is created unlicensed and the steps that genuinely need a licence wait rather than running against a mailbox that does not exist yet — Exchange, Teams and SharePoint as well as Mimecast and Spanning. They say what they are waiting for and release on their own once the licence is assigned. Steps that do not need one, such as the AD account, the laptop or a Zoom seat, carry on.
 
 Interdependent license service plans are assigned together, and a plan whose prerequisite the user genuinely does not hold is held back individually: the base license still lands, the mailbox still provisions, and the case reports exactly which plan was held back, why, and offers a retry once the prerequisite is added. An email alias that collides with an existing object no longer surfaces as a raw directory error: the engine names who holds the address — a live user, a soft-deleted one (the usual culprit after a rehire), or a group — and says what to do about it.
 
@@ -188,14 +212,46 @@ Offboarding is designed around one principle: contain first, destroy later, and 
 | # | Step | What happens |
 | --- | --- | --- |
 | 1 | Capture evidence | Before anything is removed, the user's current state is captured and attached to the case: every group membership, every application assignment. If the termination is disputed, or the person is reinstated, the record of what they had is on the case. |
-| 2 | Active Directory | Password is reset (and captured for the manager, where your runbook says so). All group memberships are removed. The user is hidden from the address book, the manager link is cleared, the account is disabled, and, unless your profile carries the do-not-move guardrail, the object is moved to the Disabled Users OU. |
+| 2 | Active Directory | Password is reset (and captured for the manager, where your runbook says so). All group memberships are removed — by default, and see below. The user is hidden from the address book, the manager link is cleared, the account is disabled, and, unless your profile carries the do-not-move guardrail, the object is moved to the Disabled Users OU. |
 | 3 | Entra ID | The account is confirmed disabled, cloud group memberships and enterprise-application assignments are removed, registered MFA factors are stripped, and active sessions are revoked. |
-| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When your runbook removes the Microsoft 365 licence, converting the mailbox to shared is the default, so the seat is reclaimed and the mail is kept. A mailbox too large to convert surfaces a decision for the operator (keep the licence and the mail, or remove it and lose the mail) rather than being skipped silently. A mailbox that is already shared — converted by an earlier run, or by hand — is recognized as already safe, and the licence step proceeds instead of parking the case. Delegated access is granted to the named recipient. |
+| 4 | Exchange | Mailbox is converted to shared, or forwarded, or given an out-of-office and a delegate, whatever your runbook specifies. When your runbook removes the Microsoft 365 licence, converting the mailbox to shared is the default, so the seat is reclaimed and the mail is kept. A mailbox too large to convert surfaces a decision for the operator (keep the licence and the mail, or remove it and lose the mail) rather than being skipped silently. Sizes are now reported in a unit a person reads — "512 KB", "33.5 MB", "75 GB" — and a mailbox with a little mail in it no longer rounds to 0 and read as empty. A mailbox that is already shared — converted by an earlier run, or by hand — is recognized as already safe, and the licence step proceeds instead of parking the case. Delegated access is granted to the named recipient. |
 | 5 | Endpoint | Where SentinelOne is in scope, the departing user's registered devices are identified and disconnected from the network. Isolation is reversible; shutdown is not, and is gated. |
 | 6 | SaaS estate | Access removed and seats reclaimed across the estate: Mimecast, Adobe, Zoom, Spanning, Duo, VPN, Jira, and the rest. License downticks happen after the mailbox conversion, not before. |
 | 7 | Data custody | Drive and file ownership transfer, per your runbook. |
 | 8 | Deferred archive | Where a grace period applies (typically 30 to 90 days), the archive or delete step is scheduled rather than executed. An immediate-termination flag collapses the grace period to now. |
 | 9 | Equipment return | Checklist item. |
+
+### Group memberships are now removed by default
+
+Group membership is what grants file-share, application and group-based licence access, so an offboard that leaves it in place has not really offboarded anyone. Until this edition, a client with no group policy configured had silence read as "keep everything", and of 44 Active Directory clients, 42 removed nothing at all while the case still reported green. Memberships are now removed by default.
+
+Two things make that safe rather than merely correct. Protected and privileged groups are still never stripped — well-known admin groups, anything in a Privileged OU, and each client's own protected list — and each is reported on the case as a manual removal, exactly as before. And the default forces a snapshot of every membership **before** anything is removed, so the change can be undone; 16 of those clients were capturing no evidence at all, and stripping groups nobody had recorded would have been a one-way door.
+
+A client that wants different behaviour still gets it: named group rules are respected as before, and setting "remove all groups" to false is an explicit opt-out the engine honours. The case says which it was — your configured choice, or the engine's default.
+
+### A ticket naming several people now reaches all of them
+
+Where a ticket names more than one person for the leaver's mailbox or OneDrive, every one of them is granted access. The earlier implementation was built for exactly one name, so a ticket naming two delivered access to one and said nothing about the other.
+
+Each named person is independent: a name that cannot be resolved, or a grant Exchange refuses, warns about **that** name and everybody else still gets their access. One typo must never cost the other people theirs. Blank rows and repeated names are dropped before anything is planned.
+
+For OneDrive and SharePoint, the delegate is made a site-collection administrator — full access to everything on the site, rather than the per-item share that a drive invitation gives. Where the engine cannot perform that grant it now says so on the case, names the person who did not get site access, and says what they do have instead, rather than passing silently.
+
+### What the ticket asks for is now applied
+
+Three fields the intake form had always captured were read by nothing, so a requestor who filled them in got silence:
+
+- **Out-of-office message.** The leaver's mailbox now answers with the text the ticket supplied, internally and externally. A blank message leaves your client-wide default exactly as it was.
+
+- **Mail forwarding.** Applied when the ticket's "mail forwarded" box is ticked — an address on its own is not a request, and recent tickets had one filled in alongside an explicit no. A client configured to keep a copy in the mailbox keeps that setting.
+
+- **Requested shared mailboxes** (onboarding). Mailboxes named on the ticket are granted at Full Access, combined with — not replacing — the standing list your client configuration carries.
+
+### A deliberate policy change, and what it costs
+
+Stated plainly because it is a real trade-off you are carrying. An offboard used to stop and keep the licence when it could not read the mailbox's size. It now treats an unreadable size as 0 and converts the mailbox to shared, so the case moves forward. The read is retried once first, because a failed read is usually transient throttling.
+
+The cost: a **large** mailbox whose size read fails twice will be converted to shared and stripped of its licence, and Microsoft caps an unlicensed shared mailbox at 50 GB — past that the mailbox is locked and its mail inaccessible. Every such assumption writes a loud warning naming that exact risk onto the case, the audit record and the ServiceNow work note, so a mailbox it damages can be traced straight back to it.
 
 ### Hidden from the address book by default
 
@@ -222,6 +278,8 @@ Client-specific hazards are encoded as guardrails in your profile rather than li
 - do-not-delete: the identity is disabled and retained, never removed.
 
 - no-device-wipe-without-approval: endpoint destruction is always gated.
+
+Where a client's Spanning offboard is classified destructive, the licence is now unassigned and the seat freed rather than attempting an Archive conversion. That conversion was failing far more often than it worked — of the 60 most recent Spanning offboards, 37 left a billable seat behind — because the vendor's API cannot convert a Standard licence into an Archive one. Clients not classified destructive are unchanged: for them the archive conversion is the intent, and quietly dropping licences could delete backups nobody agreed to lose. Freeing a seat can remove backup data, so it stays behind the same approval gate and evidence capture every destructive step carries.
 
 ### Scheduled offboards
 
@@ -404,6 +462,7 @@ Questions, and requests for the detailed setup guide for any individual system, 
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 4.0 | 30 September 2026 | Offboarding now removes Active Directory group memberships by default, with a snapshot taken first and protected groups still never stripped. A ticket naming several people for the mailbox or OneDrive now reaches all of them, and the OneDrive delegate is made a site-collection administrator. The out-of-office message, mail forwarding and ticket-requested shared mailboxes are applied. Your attribute rules now apply on the Microsoft 365 lane, corrections to a case re-run the rules that depend on them, and the manager is matched by email. Runbook sections we have not automated appear as manual steps. Licence holds now cover Exchange, Teams and SharePoint. A destructive Spanning offboard frees the seat. One deliberate policy change: an unreadable mailbox size now converts rather than stopping, and the cost of that is stated in full. |
 | 3.0 | 24 July 2026 | Retired the dry-run mode in favour of the staged read-only verification, and documented why. Runners now authenticate with per-agent tokens, rotated remotely. Offboarding gains the privileged secondary-account sweep and recognizes an already-shared mailbox so the licence step proceeds. Onboarding gains per-client mailbox-auditing and calendar-delegate automation, an additional-groups field on the case, adopt-only account handling on synced tenants, self-healing license dependency assignment, and named-holder address-collision errors. Fleet health monitoring with proactive alerts, and a one-run-per-tenant-system concurrency guard. |
 | 2.0 | 22 July 2026 | Automated setup: "Set up Microsoft 365 automatically" and "Set up Google Workspace automatically" now provision the application registration and the service account end to end, and six SaaS systems (Adobe, Zoom, Egnyte, KnowBe4, Spanning, Mimecast) gained an automatic browser-driven credential setup alongside the unchanged manual path. Offboarding now hides the leaver from the address book by default, and converts the mailbox to shared by default when a licence is removed, each with a per-case opt-out. Added the client-onboarding and client-offboarding roles, with archiving a client as its own restricted capability. Passwords can now be set to a specific value as well as generated. |
 | 1.0 | 14 July 2026 | Initial version, prepared for client review. |

@@ -2,7 +2,7 @@
 
 IAM Engine Security Design: how the platform is secured, and why each decision was made
 
-Version 3.0 · 24 July 2026. This edition documents per-agent runner authentication (section 5.2), the retirement of the dry-run mode and the reasoning (section 8.2), the vault-subfolder guarantee for provisioned credentials (section 3.6), and the concurrency and drain controls (section 8.8); the roadmap in section 12 is updated. The version history is at the end.
+Version 4.0 · 30 September 2026. This edition adds process isolation for modules that share authentication libraries (section 8.9) and how a certificate is handed to an isolated child, the evidence rule now enforced by the default removal of Active Directory group memberships (8.10), and a deliberate policy change on mailbox conversion with its cost stated (8.11). Section 12 gains three verification gaps we have chosen to publish rather than leave implied. The version history is at the end.
 
 This document is written for the person whose job is to say no. It does not summarize our security controls; it explains the reasoning behind each one: what we were defending against, what we considered, what we chose, and what the choice costs. Where we have not finished something, it is in section 12, stated plainly.
 
@@ -382,6 +382,32 @@ Alongside it, a maintenance mode can drain the whole fleet: nothing new is dispa
 | Disable a user | Atomically revokes every live session that user holds, in the same transaction. |
 | Revoke a session | Immediate: every request revalidates against the session store. |
 
+### 8.9 Process isolation for modules that share authentication libraries
+
+Several vendor PowerShell modules the runner uses — Microsoft.Graph, ExchangeOnlineManagement and PnP.PowerShell — each ship their own build of `Microsoft.Identity.Client` and `System.IdentityModel.*`. Loading two of them into one process leaves two incompatible copies of those assemblies in memory, and the practical effect is not an error: the **first** module's calls stop returning. No exception, no timeout, a step that simply stops.
+
+This is a safety property, not only a reliability one. A privileged automation process that hangs mid-job holds whatever credential that job was brokered, and the operator sees a case that looks busy rather than one that has failed — so the failure mode is silent, which is the class of failure this document treats most seriously (2.5).
+
+Three controls apply. Modules known to share those libraries are declared in one place and the self-heal will not load a conflicting one into a running process — it installs, then restarts once the current job has reported. The SharePoint/OneDrive hand-off, which needs PnP alongside Graph, runs in a **short-lived child process** rather than in the runner at all. And a child process that returns nothing recognisable is recorded as having reported nothing, never as success.
+
+The certificate that child needs is handed over in a file inside a private per-invocation directory, deleted by the child before it does any work and by the parent in a guaranteed cleanup block. It is never placed on the command line, where any process listing on the host would expose it. This mirrors how a credential is handed to the Windows PowerShell 5.1 child used for directory sync.
+
+### 8.10 Evidence before removal, enforced by the default
+
+Offboarding now removes Active Directory group memberships by default, where previously an unconfigured client had silence read as "keep everything". Group membership is what grants file-share, application and group-based licence access, so that default is the correct one — but it changes what an unattended run can take away, and the control that makes it acceptable is the evidence rule.
+
+The default **forces** a snapshot of every membership before anything is removed. Not "captures where configured" — the removal cannot proceed without it. Of the clients this affects, sixteen were previously capturing no evidence on offboard at all, and stripping memberships nobody had recorded would have been a one-way door: no record of what the person held, and no way to reinstate them correctly.
+
+Protected and privileged groups are still never stripped — well-known administrative groups, anything in a Privileged OU, and each client's own protected list — and each is reported on the case as manual work rather than silently left. The case states which behaviour applied: the client's configured choice, or the engine's default.
+
+### 8.11 A policy change we chose, and its cost
+
+Section 2.5 commits us to publishing the boundaries of our own controls, so this is recorded as a decision rather than left in a change log.
+
+An offboard used to stop and keep the licence when it could not read the mailbox's size. At explicit request, it now treats an unreadable size as zero and converts the mailbox to shared so the case can proceed. The size read is retried once first, because a failed read is usually transient throttling.
+
+The cost is real and is not hypothetical. A **large** mailbox whose size read fails twice will be converted to shared and stripped of its licence, and Microsoft caps an unlicensed shared mailbox at 50 GB — beyond that the mailbox is locked and its contents inaccessible. Every assumption of this kind writes a warning naming that exact risk onto the case, the audit record and the ServiceNow work note, so any mailbox it damages can be traced directly back to the assumption that damaged it. We accepted a availability risk to remove an operator-blocking stall; we did not accept it quietly.
+
 ## 9. Credential delivery to the new starter
 
 The last mile of onboarding is where good credential hygiene usually dies: a password typed into a chat message, an email, a ticket comment.
@@ -448,6 +474,9 @@ Everything above is implemented and in force today. This section is what is not,
 | Automated credential rotation. | Agent tokens now rotate remotely, per agent, from the application — no installer re-run. Rotation of tenant credentials (client secrets, certificates) remains a manual procedure; expiry is monitored and alerted, see section 4.7. | Medium |
 | Rate limiting and account lockout on the operator sign-in endpoint. Failed sign-ins are audited with the source address, but nothing throttles them. | Not shipped. The exposure is limited to break-glass local accounts; SSO accounts cannot be password-attacked through this path at all. | Medium, and cheap. |
 | A data retention policy. The ServiceNow intake payload, which contains personal data about your employees, is currently retained for the life of the case record, with no scheduled minimization after the case completes. | Not shipped. We are defining a policy that scrubs the personal fields once a case is closed and the automation no longer needs them, while retaining the audit trail and outcome. | Medium. See section 13. |
+| Verification that a synced user actually reached Entra. The directory-sync step confirms the sync mechanism is healthy and that a cycle completed — not that this particular account was included in it. An account outside the sync scope, or filtered by a sync rule, completes a cycle indistinguishably from one that synced. | Not shipped, and not cheaply shippable: the step runs on-premises and holds no cloud credential, so it cannot check. What changed in this edition is that it no longer implies otherwise. Real verification needs a cloud read injected from the application. | Medium |
+| Live validation of the OneDrive site-collection-admin grant. The grant is implemented and its failure paths are exercised, but no successful grant has yet been performed against a live tenant. | The mechanism was built against mocked vendor cmdlets and, until this month, could never run at all on the hosts that needed it. The isolated child process is verified end to end; the successful-grant path is not. | Medium, and it closes itself on the next real offboard with a delegate. |
+| MFA factor removal on nine tenants. `UserAuthenticationMethod.ReadWrite.All` is not granted on nine client app registrations, so a departing user's registered second factors are not stripped there. | Detected and reported: the step warns rather than failing, and the warning now names the missing grant as the likeliest cause instead of suggesting a retry that cannot work. Until each tenant grants it, those leavers keep their factors. | High for the affected tenants, and it is a consent action on their side. |
 | Azure hosting with a managed TLS certificate and platform secrets in Azure Key Vault via managed identity. | In progress. The database now runs on Azure managed Postgres, and the application move is sequenced behind a guided, verified, reversible cutover console with a go-live preflight that checks migrations, agent convergence, credentials, and backups before the first real case. | Medium |
 
 ## 13. Data handling
@@ -494,6 +523,7 @@ Questions, and any control in this document you would like evidenced rather than
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 4.0 | 30 September 2026 | Added 8.9, process isolation for vendor modules that ship conflicting authentication libraries, including how a certificate is passed to an isolated child without appearing in a process listing. Added 8.10, the evidence-before-removal rule now enforced by the default removal of Active Directory group memberships. Added 8.11, the deliberate mailbox-conversion policy change with its availability cost stated in full. Section 12 gains three published gaps: no verification that a synced user reached Entra, no live validation of the OneDrive site-admin grant, and nine tenants without the MFA-removal grant. |
 | 3.0 | 24 July 2026 | Runners now authenticate with per-agent tokens, hashed at rest and rotatable remotely; sections 5.2, 10, and 12 updated accordingly. Retired the dry-run mode and documented the reasoning (section 8.2). Added the vault-subfolder guarantee for provisioned credentials (section 3.6), the fleet-wide escalation-role audit (section 4.6), and the concurrency and drain controls (section 8.8). Section 12 updated: restore drills prove backups restorable and off-box copies are built; the Azure move is in progress behind a verified cutover. No control described in the previous edition was weakened. |
 | 2.0 | 22 July 2026 | Added the security reasoning for automatic credential provisioning (section 3.6): the platform can now create a credential in your systems and vault it, and does so holding a reference and never a value, with the browser-setup safeguards stated. Documented the two client-lifecycle roles and archiving as its own separated permission (section 7.3). No control described in the previous edition was weakened; the roadmap in section 12 is unchanged. |
 | 1.0 | 14 July 2026 | Initial version, for client security review. |
