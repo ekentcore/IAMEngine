@@ -34,3 +34,12 @@ runner/** text eol=lf
 # starts. Same class of bug as the runner bundle above: a file's meaning became a property of the
 # checkout rather than of the commit.
 *.sh text eol=lf
+
+# The seeded reference documents are published into the database verbatim, and the /docs review
+# screen renders a line-by-line redline against what is already published. A Windows checkout with
+# core.autocrlf=true turns every line into a changed line — so publishing an edit to one paragraph
+# would present as a rewrite of the whole document, and the reviewer approving it can see nothing.
+# It also flips the stored markdown to CRLF, so the NEXT publish from a Linux host reverses it.
+# Third instance of the same class as the runner bundle and the shell scripts above: the content
+# became a property of the checkout rather than of the commit.
+web/prisma/seed-docs/** text eol=lf
