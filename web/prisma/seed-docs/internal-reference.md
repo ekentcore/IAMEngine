@@ -4,7 +4,7 @@ IAM Engine Internal reference: architecture, mechanics, and security implementat
 
 INTERNAL: CORETELLIGENT STAFF ONLY. NOT FOR CLIENT DISTRIBUTION.
 
-Version 3.0 · 24 July 2026. Tracks the client documents to their 3.0 edition — dry run retired, per-agent runner authentication, the offboard admin-account sweep, adopt-only on synced tenants — and adds the fleet-operations tooling built for the Azure move. Version history at the end.
+Version 4.0 · 30 September 2026. Tracks the client documents to their 4.0 edition — AD group removal by default, multi-delegate mailbox and OneDrive access, the intake fields that were captured and never read, attribute rules on the Microsoft 365 lane — and adds a fleet-reliability section covering the runner incidents of September: the module-load wedge, the self-update loop, the build-id line-ending defect, the in-flight marker, and the PnP/Graph assembly clash. Version history at the end.
 
 ### About this document
 
@@ -361,6 +361,39 @@ The tooling built ahead of the Azure move, all reachable under Tools, Reference,
 
 Connection-test hygiene shipped alongside: a credential marked not-needed renders as a read-only N/A row and is never dispatched; the AD/directory-sync test authenticates like a real job (ambient SYSTEM on a domain controller passes with a live Get-ADDomain read and no stored credential — ad-dc is optional, best-effort); and a missing OPTIONAL Graph capability renders as "+N optional", never a red missing-count.
 
+### Runner reliability: what September taught us
+
+Five separate incidents on the central runner between 3 and 25 September had the same outward appearance — "the runner keeps crashing" — and four different causes. None of them was a crash. They are recorded together because the pattern matters more than any one of them.
+
+**Loading two modules that share .NET assemblies wedges the process.** ExchangeOnlineManagement, Microsoft.Graph and PnP.PowerShell each ship their own copies of `Microsoft.Identity.Client` and `System.IdentityModel.*`. Loading a second one into a process already using the first leaves two incompatible copies in memory, after which the **first** module's calls never return — no error, no timeout, a stopped step. The stall watchdog restarts the process ten minutes later, the app hands the same job back, and it hangs again.
+
+The runner carries an explicit guard for this (`$script:CtgAssemblySharingGroups`) and repairs a missing module by installing it **without** loading it, restarting once the current job has reported. The 25 September incident happened because PnP.PowerShell was not listed in that guard, and because a fix to the PnP installer made the module loadable on that host for the first time. The SharePoint hand-off now runs in a short-lived child process so those assemblies never enter the runner at all; the guard entry is a backstop for any future caller.
+
+**A self-update exits the process, so anything that triggers one repeatedly takes the runner down.** Three defects did:
+
+- The app decided an agent was stale by comparing build hashes and never counted failed attempts, so an update that did not take was requested every 90 seconds indefinitely. It now stops after three consecutive updates that do not move the build, leaves the agent up on the code it has, and says so on the Agents page as a standing condition.
+- The build id was computed over files as they sit on disk, and a Windows checkout rewrites line endings — so the hash was a property of whoever last checked out the repo, not of the code. A web-only merge marked all 20 runners stale. The bundle is now pinned to one line-ending style and two tests hold it there.
+- A runner that died mid-step left an in-flight marker that counted toward the build hash, so it came back computing a build the app could never match and was told to update forever. The marker is now a per-agent dot-file, which also stopped a second runner in the same folder declaring the first one's live job dead.
+
+**A self-heal that never worked is worse than none.** The ExchangeOnlineManagement pin installed inside the runner's own process, where PowerShell refuses while its package manager is in use. It failed at every startup, fell back to the broken build, and reported it through a console a Windows scheduled task never attaches. Installs now run in a clean child process, and a failure is reported on the heartbeat and shown on the agent's row. The same defect and the same fix applied to PnP.PowerShell.
+
+**The lesson worth carrying.** In every one of these the engine knew what was wrong and said it somewhere nobody reads, or said something untrue. Of the production issues in this period the majority were failures of *reporting*, not of execution. A helper that returns nothing recognisable is now recorded as having said nothing, never as success.
+
+### Host requirements the fleet depends on
+
+| Requirement | Why it matters |
+| --- | --- |
+| `PnP.PowerShell` on the runner host | The OneDrive/SharePoint site-collection-admin hand-off cannot run without it. Absent, the offboard writes a warning naming the delegate who did **not** get site access. Installed by the runner at startup, out-of-process. |
+| `ExchangeOnlineManagement` pinned to 3.9.2 | 3.10.0's REST calls use a method PowerShell 7.6 removed. The pin is installed at startup and the module self-heal respects it rather than fetching the newest build. |
+| Browser sidecar (portable Node + Playwright) | Required for browser-driven flows. A self-update used to delete it on every run; the prune now leaves alone what the app was never going to send. A failed install reports its actual reason on the agent's row. |
+| Working directory | The runner pins its own install folder at startup, so a Store-installed PowerShell cannot resolve a dependency's relative path into the read-only WindowsApps package folder. |
+
+### Deploy and data safety
+
+Merging to main is the deploy. The container now applies pending migrations **before** it serves, so a release can no longer go live ahead of its own schema — previously a missing column took down every page touching that table, because the data layer asks for all columns at once. A migration that fails stops the container and the previous release keeps serving.
+
+The weekly restore drill self-heals rather than dying on a missing precondition: it creates the backup directory, falls back to a scratch path where the configured one cannot exist on that host, and where there is no dump to drill against it takes a fresh verified backup and restores that — which proves the dump-to-restore path end to end, the drill's whole purpose. Every corrective action is recorded on the drill result and announced in chat.
+
 ## 8. Summary
 
 The IAM Engine executes your onboarding and offboarding runbook, across your whole estate, the same way every time. Cloud systems are driven through APIs from Coretelligent's environment, using service principals you create and can revoke. On-premises systems are driven by a lightweight agent inside your network that makes outbound connections only and requires no inbound firewall change. Every step checks state before it changes it, verifies the result afterward, and records what it did.
@@ -373,6 +406,7 @@ For the client-facing narrative and the per-system setup guide, see the companio
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 4.0 | 30 September 2026 | Tracks the client documents to 4.0: AD group removal by default with a pre-removal snapshot, multi-delegate mailbox and OneDrive access with site-collection admin, the intake fields joined up at last (out-of-office, mail forwarding, requested shared mailboxes), attribute rules on the Microsoft 365 lane, adopt-on-collision for synced tenants, manual steps for unmodelled runbook sections, licence holds covering Exchange/Teams/SharePoint, and the unreadable-mailbox-size policy change. New **Runner reliability** section recording September's five incidents and the one pattern behind them, the **host requirements** table (PnP, the Exchange pin, the browser sidecar, the working directory), and migrate-before-serve plus the self-healing restore drill. |
 | 3.0 | 24 July 2026 | Tracks the client documents to 3.0: dry run retired (with the -WhatIf reasoning), per-agent runner tokens with remote rotation, the offboard -a admin-account sweep, adopt-only M365 on ad-synced clients, per-client mailbox-audit / calendar-reviewer / additional-groups onboarding config, license-dependency self-heal, named-holder alias collisions, lane-aware location groups, and the already-shared-mailbox licence unblock. New Fleet operations section: fleet M365 setup, fleet audits, fleet health with proactive alerts, go-live preflight, the Azure cutover console, maintenance/drain, the concurrency governor, the runner pool, restore drills and off-box backups, DB copy, and deployment status. Deployment-state and planned-work tables updated. |
 | 2.0 | 22 July 2026 | Tracks the client documents to 2.0. Added automatic credential provisioning (Microsoft 365 and Google via vendor API from a device-code sign-in; Adobe, Zoom, Egnyte, KnowBe4, Spanning, Mimecast via browser), and its handling in the security section. Documented the offboarding address-book-hide and convert-to-shared defaults with their opt-outs, the specific-password option, and the two client-lifecycle roles with archiving as its own permission. |
 | 1.0 | 14 July 2026 | Initial version. |

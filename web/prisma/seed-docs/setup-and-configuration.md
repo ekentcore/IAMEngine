@@ -4,7 +4,7 @@ IAM Engine Setup and Configuration Guide: exact permissions and steps, system by
 
 Companion to the IAM Engine client overview · Prepared for client IT and security teams
 
-Version 3.0 · 24 July 2026. This edition replaces the dry-run verification stage with the staged read-only checks, documents how optional permissions and not-needed systems report on connection tests, and corrects the Egnyte credential. See the version history at the end.
+Version 4.0 · 30 September 2026. This edition adds the separate AD domain for standalone clients, the parent/child inheritance switches, what the directory-sync step now waits for and what it does not verify, and the host requirements for the SharePoint hand-off and browser automation. It also records that no additional Graph permission is needed to reset a synced user's password. See the version history at the end.
 
 ### About this guide
 
@@ -83,6 +83,8 @@ A Global Administrator user account cannot be used, and never will be able to be
 | Device.ReadWrite.All | Offboarding: disable the leaver's Entra-joined devices. Without it, their device objects stay enabled and the engine raises a warning. | If we disable devices |
 | Exchange.ManageAsApp | Exchange Online administration. Office 365 Exchange Online API, not Graph. Note this one is not sufficient on its own: the app's service principal must also hold the **Exchange Administrator** directory role, and Exchange Online app-only authenticates with a certificate rather than the client secret. | Only if Exchange is in scope |
 
+A note on resetting an AD-synced user's password. Earlier editions of the engine refused outright for any directory-synced account, assuming the tenant had no password write-back. It now attempts the reset and lets Microsoft decide: where write-back is enabled it simply works, and where it is not, Microsoft refuses in its own words and the case says so and points at the Active Directory line instead. Nothing in your tenant is changed by an attempt that is refused. This deliberately does **not** require `OnPremDirectorySynchronization.Read.All` — reading the write-back flag directly would have meant adding a permission to every client's app registration to learn something the write itself already answers.
+
 Required versus optional is honored in what you see: a connection test reports a missing optional capability as "+N optional", never as a red failure, so a deliberately narrow grant does not read as a broken one.
 
 By design, the application registration is not granted permission to grant itself permissions. It holds neither Application.ReadWrite.All nor AppRoleAssignment.ReadWrite.All. Adding a Graph permission is always a deliberate act by one of your administrators. This is a constraint we impose on ourselves.
@@ -113,6 +115,8 @@ Required only if you have on-premises AD. Executed by an agent in your network. 
 
 - A domain-joined Windows host with PowerShell 7 and the RSAT Active Directory module. Outbound HTTPS only; no inbound rules.
 
+- PowerShell 7 installed from the Microsoft Store is supported. That package folder is read-only even to an administrator, and a Store-installed PowerShell starts inside it, so the agent moves to its own install folder before it does anything else. Nothing is required of you; it is noted because a hand-run of the script from such a shell used to fail with an "access to the path ... is denied" error that looked like a permissions problem and was not.
+
 #### You provide: AD rights (optionally, a service account)
 
 The agent can run under an account that already holds the necessary rights, in which case no AD credential is stored at all, and it simply uses the ambient domain context. If you prefer a dedicated service account, it needs:
@@ -127,9 +131,19 @@ The connection test authenticates exactly the way a real job does: an agent runn
 
 The sync cmdlets exist only on the Entra Connect server, which is frequently not a domain controller. Name that host in your profile and the agent will remote into it using the same AD credential; that account must be permitted to run a sync cycle there.
 
+The step waits for the cycle to finish rather than returning the moment it is triggered, so the Microsoft 365 step that follows is not looking for an account the sync has not written yet. The wait is a bounded poll — it carries on as soon as the cycle settles — and it is configurable per client, with 0 restoring the old fire-and-forget behaviour. If the cycle is still running when the budget expires, the step warns and moves on rather than holding the onboard.
+
+What it does **not** prove, stated plainly: that this particular user was included in that cycle. A delta cycle completing is evidence a cycle ran. The account may sit outside the sync scope, or be filtered by a sync rule, and the cycle finishes cleanly either way. The step is on-premises and holds no cloud credential, so it cannot check — what it verifies is that the sync mechanism is healthy, and it now says so in those terms rather than implying the user reached Entra.
+
 #### Hybrid Exchange
 
 If you run hybrid Exchange, mailbox enablement and conversion must happen on-premises. A cloud-side change is simply overwritten by the next directory sync. We need an AD account with Exchange Recipient Management rights (frequently the same account as above) and your Exchange PowerShell endpoint URI. Note that this must be the internal FQDN the service principal name actually matches, not your public mail domain. A mismatch here is the single most common hybrid setup failure we see.
+
+#### If your AD namespace differs from your email domain
+
+Standalone AD clients frequently run an internal namespace that is not the mail domain — AD `example.local` with mail `example.com`. The client record carries an **AD domain** separate from the email domain: the on-prem account is created in the AD namespace while Microsoft 365 keeps the email domain. This applies to onboarding only. Offboarding finds the existing person against the live directory by sign-in name or display name rather than rebuilding one from a pattern, so it is unaffected.
+
+Two steps are deliberately skipped for standalone clients, because they only make sense where the on-prem account syncs to a cloud twin: the email write-back that copies the 365 address into on-prem AD, and the AD/Entra consistency check. On a standalone client there is no synced twin to compare against.
 
 A note on OU paths. "The server is unwilling to process the request" on user creation is, in our experience, almost never a permissions problem; it is a wrong distinguished name. The two causes are a domain mismatch (the OU path was built from the email domain rather than the AD domain; your AD may be corp.example.com while your mail is example.com) and OU name spacing. The engine now derives distinguished names from the domain itself rather than from the email domain, which eliminates the first class entirely.
 
@@ -199,6 +213,7 @@ For the narrative version of this material (what the platform does, how it works
 
 | Version | Date | What changed |
 | --- | --- | --- |
+| 4.0 | 30 September 2026 | Added the separate **AD domain** for standalone clients (on-prem namespace distinct from the email domain), and recorded the two steps deliberately skipped for them. Documented what the directory-sync step now waits for, and what a completed cycle does not prove. Noted that a Store-installed PowerShell 7 is supported on an agent host. Recorded that resetting an AD-synced user's password needs no additional Graph permission — the attempt is made and Microsoft decides. |
 | 3.0 | 24 July 2026 | Removed the dry-run verification stage — the mode is retired, and the four staged read-only checks are the verification. Documented optional-permission reporting ("+N optional", never a failure), not-needed systems as read-only N/A rows on connection tests, and the ambient-identity Active Directory connection test (an agent on a domain controller passes with no stored credential). Corrected the Egnyte credential to the Client ID + Client Secret + admin-login password grant, with a pre-minted token as the alternative. |
 | 2.0 | 22 July 2026 | Added automatic setup: Microsoft 365 and Google Workspace can now be provisioned end to end from a single administrator sign-in, and Adobe, Zoom, Egnyte, KnowBe4, Spanning, and Mimecast gained an automatic browser-driven credential setup alongside the manual steps, which are unchanged. Documented the Google key converter for locked-down machines, and the setup-provenance record kept for every connector. |
 | 1.0 | 14 July 2026 | Initial version. |
